@@ -1,0 +1,64 @@
+# AIOps Provider Configuration
+# This file declares intended provider availability and routing metadata.
+# Runtime availability still depends on credentials/env vars in adapters:
+# - Claude requires ANTHROPIC_API_KEY
+# - GPT/Codex require OPENAI_API_KEY
+# Keep this file aligned with routes.yml defaults/fallbacks.
+
+providers:
+  ollama:
+    enabled: true
+    description: "Local Ollama instance with FAST/SMART split (gemma3:4b + qwen3:8b)"
+    base_url: "${AIOPS_OLLAMA_BASE_URL:-http://192.168.3.87:11434}"
+    default_model: "gemma3:4b"
+    roles:
+      - classify
+      - summarize
+    timeout_seconds: 120
+
+  claude:
+    enabled: true
+    description: "Claude API for deep reasoning, planning, and code review"
+    model: "claude-sonnet-4-20250514"
+    roles:
+      - plan
+      - review
+    timeout_seconds: 120
+
+  gpt:
+    enabled: true
+    description: "OpenAI GPT-5-nano for general conversation and execution fallback"
+    base_url: "${AIOPS_OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    model: "${AIOPS_GPT_MODEL:-gpt-5-nano}"
+    roles:
+      - plan
+      - review
+    timeout_seconds: 120
+
+  codex:
+    enabled: true
+    description: "OpenAI gpt-4.1-nano for code generation and infra automation"
+    base_url: "${AIOPS_OPENAI_BASE_URL:-https://api.openai.com/v1}"
+    model: "${AIOPS_CODEX_MODEL:-gpt-4.1-nano}"
+    roles:
+      - code
+      - execute
+    timeout_seconds: 120
+
+executors:
+  local:
+    enabled: true
+    description: "Local command executor with safety controls"
+    timeout_seconds: 120
+    max_output_bytes: 1048576
+
+  ssh:
+    enabled: false  # Disabled by default for safety
+    description: "SSH executor for remote hosts"
+    allowed_hosts: []
+    timeout_seconds: 60
+
+  docker:
+    enabled: true
+    description: "Docker container management"
+    timeout_seconds: 30

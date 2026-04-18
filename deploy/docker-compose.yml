@@ -1,0 +1,40 @@
+services:
+  aiops-orchestrator:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: aiops-orchestrator
+    restart: always
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    volumes:
+      - aiops-data:/app/data
+      - ../config:/app/config:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:-999}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; r = httpx.get('http://localhost:8000/health', timeout=5); assert r.status_code == 200"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - aiops-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  aiops-data:
+    name: aiops-data
+
+networks:
+  aiops-net:
+    name: aiops-net
+    external: true

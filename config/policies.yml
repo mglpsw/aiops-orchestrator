@@ -1,0 +1,76 @@
+# AIOps Policy Configuration
+# Controls risk classification, allowed/blocked operations, and approval rules.
+
+# Global policy mode:
+#   safe       - auto-approve low risk, require approval for medium+
+#   supervised - require approval for all actions (default)
+#   manual-only - block all automated execution
+mode: supervised
+
+# Auto-approve low-risk tasks in "safe" mode
+auto_approve_low_risk: false
+
+# --- Execution authorization ---
+# Users allowed to trigger host command execution via @aiops or the orchestrator API.
+# Users with role=admin in Open WebUI are always authorized regardless of this list.
+# Format: list of email addresses (case-insensitive).
+allowed_exec_users:
+  - mf.soares@ks-sm.net
+
+# Blocked operations (always denied, no override)
+blocked_operations:
+  - "reboot"
+  - "shutdown"
+  - "poweroff"
+  - "halt"
+  - "rm -rf /"
+  - "mkfs"
+  - "fdisk"
+  - "dd if=*of=/dev/*"
+  - "iptables -F"
+  - "docker system prune"
+  - "pct destroy"
+  - "qm destroy"
+
+# High-risk operations (require explicit approval)
+high_risk_operations:
+  - "systemctl restart *"
+  - "systemctl stop *"
+  - "docker stop *"
+  - "docker rm *"
+  - "apt remove *"
+  - "apt purge *"
+  - "pct stop *"
+  - "pct start *"
+  - "rm -rf *"
+
+# Protected services (extra caution required)
+protected_services:
+  - prometheus
+  - grafana
+  - npm
+  - open-webui
+  - nextcloud
+  - adguard
+  - docker
+  - sshd
+  - networking
+
+# Protected containers/VMs
+protected_targets:
+  containers:
+    - 102  # docker
+    - 103  # adguard
+    - 200  # monitor
+  vms:
+    - 100  # omv-nas
+    - 101  # win-bi-plex
+
+# Risk classification overrides by target
+target_policies:
+  "192.168.3.50":  # Proxmox host
+    max_allowed_risk: low
+    note: "Proxmox host - read-only operations only"
+  "192.168.3.200":  # Monitor CT
+    max_allowed_risk: medium
+    note: "Monitoring stack - handle with care"

@@ -1,0 +1,39 @@
+# AIOps Task Routing Configuration
+# Maps task roles to preferred providers with fallbacks.
+
+routes:
+  # Intent classification (fast, cheap)
+  classify: ollama
+
+  # Execution planning (deep reasoning)
+  plan: claude
+
+  # Plan review (independent second opinion)
+  review: claude
+
+  # Code generation and infra automation
+  code: codex
+
+  # Task execution
+  execute: local
+
+  # Result summarization (fast, cheap)
+  summarize: ollama
+
+fallbacks:
+  classify: ollama
+  plan: ollama
+  review: ollama
+  summarize: ollama
+
+# Route overrides by task type (future use)
+task_type_routes:
+  code_review:
+    plan: claude
+    review: claude
+  system_query:
+    plan: ollama
+    summarize: ollama
+  infrastructure:
+    plan: claude
+    execute: local

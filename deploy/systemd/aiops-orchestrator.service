@@ -1,0 +1,23 @@
+[Unit]
+Description=AIOps Orchestrator
+Documentation=https://github.com/your-org/monitoring-project/tree/main/aiops
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/aiops
+EnvironmentFile=/opt/aiops/.env
+ExecStart=docker compose -f /opt/aiops/deploy/docker-compose.yml up aiops-orchestrator
+ExecStop=docker compose -f /opt/aiops/deploy/docker-compose.yml stop aiops-orchestrator
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aiops-orchestrator
+TimeoutStartSec=60s
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target

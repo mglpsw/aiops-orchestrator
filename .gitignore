@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Data/artifacts
+data/calibration/calibration/
+data/calibration/benchmarks/
+*.db
+*.sqlite*
+
+# Secrets
+.env
+*.key
+*.pem
+auth.json
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+logs/
