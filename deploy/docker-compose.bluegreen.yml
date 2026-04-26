@@ -1,0 +1,23 @@
+name: aiops-orchestrator-bluegreen
+
+services:
+  aiops-orchestrator:
+    container_name: aiops-orchestrator-next
+    ports:
+      - "8001:8000"
+    environment:
+      AIOPS_DEFAULT_MODE: observe
+      AIOPS_ENABLE_EXECUTE: "false"
+      AIOPS_REQUIRE_APPROVAL: "true"
+      AIOPS_AUTH_ENABLED: "false"
+      AIOPS_API_TOKEN: ""
+      AIOPS_METRICS_ENABLED: "true"
+      AGENT_ROUTER_BASE_URL: http://agent-router:8010
+      PROMETHEUS_BASE_URL: http://192.168.3.200:9090
+      OLLAMA_BASE_URL: http://192.168.3.87:11434
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

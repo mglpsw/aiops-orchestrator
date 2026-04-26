@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # AIOps Orchestrator - Script de Instalação
-# Instala o orquestrador na CT Docker (102) em /opt/aiops
+# Instala o orquestrador na CT Docker (102) em /opt/aiops-orchestrator
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 TARGET_CT=102
-TARGET_PATH="/opt/aiops"
+TARGET_PATH="/opt/aiops-orchestrator"
 
 echo "=== AIOps Orchestrator — Instalador ==="
 echo "Origem : $PROJECT_DIR"
@@ -34,6 +34,9 @@ echo "[2/6] Copiando arquivos do projeto..."
 pct push $TARGET_CT "$PROJECT_DIR/requirements.txt" "$TARGET_PATH/requirements.txt"
 pct push $TARGET_CT "$PROJECT_DIR/deploy/Dockerfile" "$TARGET_PATH/deploy/Dockerfile"
 pct push $TARGET_CT "$PROJECT_DIR/deploy/docker-compose.yml" "$TARGET_PATH/deploy/docker-compose.yml"
+if [ -f "$PROJECT_DIR/deploy/docker-compose.bluegreen.yml" ]; then
+    pct push $TARGET_CT "$PROJECT_DIR/deploy/docker-compose.bluegreen.yml" "$TARGET_PATH/deploy/docker-compose.bluegreen.yml"
+fi
 
 # Cria subdiretórios do app na CT
 for dir in app app/api app/core app/adapters app/policies app/models app/services app/utils app/agent_router; do
@@ -91,7 +94,7 @@ for i in $(seq 1 30); do
         echo "Ready:   http://192.168.3.155:8000/ready"
         echo ""
         echo "Próximos passos:"
-        echo "1. Edite /opt/aiops/.env na CT 102 para definir as chaves de API"
+        echo "1. Edite /opt/aiops-orchestrator/.env na CT 102 para definir as chaves de API"
         echo "2. Configure a integração com o WebUI (veja docs/INTEGRATIONS.md)"
         echo "3. Execute: bash scripts/smoke_test.sh"
         exit 0

@@ -4,7 +4,7 @@
 set -euo pipefail
 
 TARGET_CT=102
-BACKUP_DIR="/opt/aiops/backups"
+BACKUP_DIR="/opt/aiops-orchestrator/backups"
 ACTION="${1:-list}"
 
 echo "=== AIOps — Rollback ==="
@@ -16,7 +16,7 @@ case "$ACTION" in
         ;;
     stop)
         echo "Parando o AIOps Orchestrator..."
-        pct exec $TARGET_CT -- bash -c "cd /opt/aiops/deploy && docker-compose down"
+        pct exec $TARGET_CT -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose down"
         echo "Serviço parado. Volume de dados preservado."
         ;;
     restore)
@@ -28,14 +28,14 @@ case "$ACTION" in
             exit 1
         fi
         echo "Parando serviço..."
-        pct exec $TARGET_CT -- bash -c "cd /opt/aiops/deploy && docker-compose down"
+        pct exec $TARGET_CT -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose down"
         echo "Restaurando banco de dados de $DB_BACKUP..."
         pct exec $TARGET_CT -- bash -c "
             docker run --rm -v aiops-data:/data -v '$BACKUP_DIR':/backup alpine \
                 cp '/backup/$DB_BACKUP' /data/aiops.db
         "
         echo "Reiniciando serviço..."
-        pct exec $TARGET_CT -- bash -c "cd /opt/aiops/deploy && docker-compose up -d"
+        pct exec $TARGET_CT -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose up -d"
         echo "Rollback concluído. Verifique: curl http://192.168.3.155:8000/health"
         ;;
     *)

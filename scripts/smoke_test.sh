@@ -9,7 +9,7 @@ ERRORS=0
 
 # Lê o token do .env na CT
 if command -v pct &>/dev/null; then
-    TOKEN=$(pct exec 102 -- grep AIOPS_API_TOKEN /opt/aiops/.env 2>/dev/null | cut -d= -f2 || echo "")
+    TOKEN=$(pct exec 102 -- grep AIOPS_API_TOKEN /opt/aiops-orchestrator/.env 2>/dev/null | cut -d= -f2 || echo "")
 fi
 
 if [ -z "$TOKEN" ]; then

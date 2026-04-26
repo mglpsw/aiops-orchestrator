@@ -3,7 +3,7 @@
 set -euo pipefail
 
 TARGET_CT=102
-BACKUP_DIR="/opt/aiops/backups"
+BACKUP_DIR="/opt/aiops-orchestrator/backups"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_NAME="aiops-backup-$TIMESTAMP"
 
@@ -20,7 +20,7 @@ pct exec $TARGET_CT -- bash -c "
     fi
 
     # Faz backup da configuração
-    tar czf '$BACKUP_DIR/${BACKUP_NAME}-config.tar.gz' -C /opt/aiops config/ .env 2>/dev/null || true
+    tar czf '$BACKUP_DIR/${BACKUP_NAME}-config.tar.gz' -C /opt/aiops-orchestrator config/ .env 2>/dev/null || true
     echo 'Configuração salva'
 
     # Remove backups antigos (mantém os últimos 10)

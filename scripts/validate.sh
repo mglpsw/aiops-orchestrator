@@ -37,10 +37,10 @@ check "Ready endpoint" curl -sf "$BASE_URL/ready"
 check "Metrics endpoint" curl -sf "$BASE_URL/metrics"
 
 echo "[5] Verificando arquivos de configuração..."
-check "providers.yml exists" pct exec $TARGET_CT -- test -f /opt/aiops/config/providers.yml
-check "policies.yml exists" pct exec $TARGET_CT -- test -f /opt/aiops/config/policies.yml
-check "routes.yml exists" pct exec $TARGET_CT -- test -f /opt/aiops/config/routes.yml
-check ".env exists" pct exec $TARGET_CT -- test -f /opt/aiops/.env
+check "providers.yml exists" pct exec $TARGET_CT -- test -f /opt/aiops-orchestrator/config/providers.yml
+check "policies.yml exists" pct exec $TARGET_CT -- test -f /opt/aiops-orchestrator/config/policies.yml
+check "routes.yml exists" pct exec $TARGET_CT -- test -f /opt/aiops-orchestrator/config/routes.yml
+check ".env exists" pct exec $TARGET_CT -- test -f /opt/aiops-orchestrator/.env
 
 echo "[6] Verificando persistência de dados..."
 check "Data volume exists" pct exec $TARGET_CT -- docker volume inspect aiops-data

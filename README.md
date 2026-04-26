@@ -7,7 +7,7 @@ validadas contra policies YAML.
 Integra-se com o [`agent-router-api`](https://github.com/mglpsw/agent-router-api)
 através da rota `@aiops` do router.
 
-Extraído de `homelab/aiops` em 2026-04-18.
+Repo canônico da CT 102: `/opt/aiops-orchestrator`.
 
 ---
 
@@ -30,8 +30,8 @@ Extraído de `homelab/aiops` em 2026-04-18.
 cp .env.example .env
 # Edit .env (AGENT_ROUTER_API_TOKEN, OLLAMA_HOST, API keys)
 
-cd deploy
-docker compose up -d aiops-orchestrator
+cd /opt/aiops-orchestrator
+docker compose -f deploy/docker-compose.yml up -d aiops-orchestrator
 curl -H "Authorization: Bearer $AGENT_ROUTER_API_TOKEN" http://localhost:8000/health
 ```
 
@@ -42,7 +42,7 @@ O orchestrator compartilha a network Docker `aiops-net`. Deploy o
 
 ```bash
 # No agent-router-api repo:
-cd deploy && docker compose up -d
+cd /opt/aiops-orchestrator && docker compose -f deploy/docker-compose.yml up -d
 # No aiops-orchestrator repo:
 cd deploy && docker compose up -d
 ```
@@ -102,3 +102,5 @@ pytest tests/ -v
 - [`docs/SECURITY.md`](docs/SECURITY.md)
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
 - [`docs/ROLLBACK.md`](docs/ROLLBACK.md)
+- [`docs/aiops-bluegreen-operations.md`](docs/aiops-bluegreen-operations.md)
+- [`docs/bluegreen-deployment.md`](docs/bluegreen-deployment.md)

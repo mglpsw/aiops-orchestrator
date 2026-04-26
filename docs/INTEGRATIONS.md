@@ -23,7 +23,7 @@ import httpx
 from typing import Optional
 
 ORCHESTRATOR_URL = "http://aiops-orchestrator:8000"  # Docker network name
-API_TOKEN = "YOUR_TOKEN_HERE"  # From /opt/aiops/.env
+API_TOKEN = "YOUR_TOKEN_HERE"  # From /opt/aiops-orchestrator/.env
 
 class Filter:
     def __init__(self):
@@ -108,7 +108,7 @@ curl http://192.168.3.87:11434/api/tags
 ```
 
 ### Configure in AIOps
-In `/opt/aiops/.env`:
+In `/opt/aiops-orchestrator/.env`:
 ```
 AIOPS_OLLAMA_BASE_URL=http://192.168.3.87:11434
 AIOPS_OLLAMA_DEFAULT_MODEL=llama3.1:8b
@@ -124,7 +124,7 @@ AIOPS_OLLAMA_DEFAULT_MODEL=llama3.1:8b
 ### Get API Key
 1. Go to https://console.anthropic.com/
 2. Create an API key
-3. Add to `/opt/aiops/.env`:
+3. Add to `/opt/aiops-orchestrator/.env`:
 ```
 AIOPS_CLAUDE_API_KEY=<anthropic-api-key>
 AIOPS_CLAUDE_MODEL=claude-sonnet-4-20250514

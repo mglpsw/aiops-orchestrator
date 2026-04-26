@@ -25,62 +25,62 @@ pct exec 102 -- docker logs -f aiops-orchestrator
 ### Start / Stop / Restart
 ```bash
 # Start
-pct exec 102 -- bash -c "cd /opt/aiops/deploy && docker-compose up -d"
+pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose up -d"
 
 # Stop (preserves data)
-pct exec 102 -- bash -c "cd /opt/aiops/deploy && docker-compose down"
+pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose down"
 
 # Restart
 pct exec 102 -- docker restart aiops-orchestrator
 
 # Rebuild and restart (after code changes)
-pct exec 102 -- bash -c "cd /opt/aiops/deploy && docker-compose up -d --build"
+pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose up -d --build"
 ```
 
 ### Validate
 ```bash
-bash /root/homelab/aiops/scripts/validate.sh
+bash /opt/aiops-orchestrator/scripts/validate.sh
 ```
 
 ### Teste de fumaça
 ```bash
-bash /root/homelab/aiops/scripts/smoke_test.sh
+bash /opt/aiops-orchestrator/scripts/smoke_test.sh
 ```
 
 ### Backup
 ```bash
-bash /root/homelab/aiops/scripts/backup.sh
+bash /opt/aiops-orchestrator/scripts/backup.sh
 ```
 
 ### Reversão
 ```bash
 # Listar backups disponíveis
-bash /root/homelab/aiops/scripts/rollback.sh list
+bash /opt/aiops-orchestrator/scripts/rollback.sh list
 
 # Stop service safely
-bash /root/homelab/aiops/scripts/rollback.sh stop
+bash /opt/aiops-orchestrator/scripts/rollback.sh stop
 
 # Restore from backup
-bash /root/homelab/aiops/scripts/rollback.sh restore aiops-20260411_120000.db
+bash /opt/aiops-orchestrator/scripts/rollback.sh restore aiops-20260411_120000.db
 ```
 
 ## Alterações de configuração
 
 ### Edit Environment
 ```bash
-pct exec 102 -- nano /opt/aiops/.env
+pct exec 102 -- nano /opt/aiops-orchestrator/.env
 pct exec 102 -- docker restart aiops-orchestrator
 ```
 
 ### Edit Policies
 ```bash
-pct exec 102 -- nano /opt/aiops/config/policies.yml
+pct exec 102 -- nano /opt/aiops-orchestrator/config/policies.yml
 pct exec 102 -- docker restart aiops-orchestrator
 ```
 
 ### Edit Provider Routes
 ```bash
-pct exec 102 -- nano /opt/aiops/config/routes.yml
+pct exec 102 -- nano /opt/aiops-orchestrator/config/routes.yml
 pct exec 102 -- docker restart aiops-orchestrator
 ```
 
