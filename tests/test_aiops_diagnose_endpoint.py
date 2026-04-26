@@ -13,7 +13,7 @@ from app.main import create_app
 
 @pytest.fixture()
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("AIOPS_API_TOKEN", "test-token")
+    monkeypatch.setenv("AGENT_ROUTER_API_TOKEN", "test-token")
     monkeypatch.setenv("AIOPS_DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/aiops.db")
     get_settings.cache_clear()
     reset_aiops_metrics()

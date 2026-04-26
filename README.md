@@ -18,7 +18,7 @@ Extraído de `homelab/aiops` em 2026-04-18.
 - **Adaptadores executor**: local shell, SSH, Docker
 - **Policy engine**: YAML-based rules (allow/deny por pattern)
 - **Provider registry**: abstração para múltiplos LLMs
-- **Autenticação por token** (`AIOPS_API_TOKEN`)
+- **Autenticação por token** (`AGENT_ROUTER_API_TOKEN` ou `AIOPS_API_TOKEN`)
 - **Métricas Prometheus**: `/metrics`
 - **SQLite persistence** para savings/histórico
 
@@ -28,11 +28,11 @@ Extraído de `homelab/aiops` em 2026-04-18.
 
 ```bash
 cp .env.example .env
-# Edit .env (AIOPS_API_TOKEN, OLLAMA_HOST, API keys)
+# Edit .env (AGENT_ROUTER_API_TOKEN, OLLAMA_HOST, API keys)
 
 cd deploy
 docker compose up -d aiops-orchestrator
-curl -H "Authorization: Bearer $AIOPS_API_TOKEN" http://localhost:8000/health
+curl -H "Authorization: Bearer $AGENT_ROUTER_API_TOKEN" http://localhost:8000/health
 ```
 
 ### Integração com agent-router-api
@@ -56,12 +56,23 @@ O router então encaminha `@aiops` para `http://aiops-orchestrator:8000`.
 | Path | Descrição |
 |---|---|
 | `/health` | Healthcheck |
+| `/healthz` | Healthcheck alias |
+| `/ready` | Readiness check |
+| `/readyz` | Readiness alias |
 | `/metrics` | Métricas Prometheus |
-| `/v1/task` | Executa tarefa (autenticado) |
-| `/v1/task/{id}` | Consulta status |
+| `/v1/chat` | Ingestão de chat (autenticado) |
+| `/v1/chat/ingest` | Alias de ingestão de chat (autenticado) |
+| `/v1/tasks` | Lista tarefas (autenticado) |
+| `/v1/tasks/{id}` | Consulta status |
 | `/v1/providers` | Lista provedores disponíveis |
 
 Ver `docs/OPERATIONS.md` para detalhes.
+
+### Autenticação
+
+- Envie `Authorization: Bearer <token>` ou `X-Agent-Router-Token: <token>`.
+- Configure o token com `AGENT_ROUTER_API_TOKEN` ou, para compatibilidade, `AIOPS_API_TOKEN`.
+- Rotas protegidas: `POST /v1/chat`, `POST /v1/chat/ingest`, `GET /v1/tasks`, `GET /v1/tasks/{id}`, `GET /v1/approvals`, `POST /v1/approvals/{task_id}`, `GET /v1/providers/status`, `POST /v1/aiops/diagnose` e qualquer rota sensível de execução/planejamento existente.
 
 ### AIOps Diagnose Endpoint v1
 

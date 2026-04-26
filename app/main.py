@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.auth import TokenAuthMiddleware
 from app.api.routes import router as api_router
 from app.api.metrics import router as metrics_router
 from app.agent_router.main import router as aiops_router
@@ -59,10 +58,7 @@ def create_app() -> FastAPI:
         redoc_url="/redoc" if settings.debug else None,
     )
 
-    # Auth middleware
-    app.add_middleware(TokenAuthMiddleware)
-
-    # CORS - restrict to local network. Added after auth so it wraps preflight requests.
+    # CORS - restrict to local network and keep preflight behavior simple.
     _extra_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
@@ -83,6 +79,7 @@ def create_app() -> FastAPI:
 
     # Health endpoints (public, no auth needed)
     @app.get("/health")
+    @app.get("/healthz")
     async def health():
         return {
             "status": "healthy",
@@ -92,6 +89,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/ready")
+    @app.get("/readyz")
     async def ready():
         """Readiness check - verifies dependencies."""
         from app.models.database import get_engine
@@ -122,7 +120,7 @@ def create_app() -> FastAPI:
         return {
             "ready": all_ready,
             "checks": checks,
-            "uptime_seconds": (datetime.utcnow() - _start_time).total_seconds() if _start_time else 0,
+            "uptime_seconds": (datetime.now(timezone.utc) - _start_time).total_seconds() if _start_time else 0,
         }
 
     return app

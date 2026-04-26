@@ -15,7 +15,7 @@ from app.main import create_app
 class ApiMiddlewareTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
-        os.environ["AIOPS_API_TOKEN"] = "test-token"
+        os.environ["AGENT_ROUTER_API_TOKEN"] = "test-token"
         os.environ["AIOPS_DATABASE_URL"] = f"sqlite+aiosqlite:///{self.tmpdir.name}/aiops.db"
         get_settings.cache_clear()
         self.client = TestClient(create_app())
@@ -31,10 +31,21 @@ class ApiMiddlewareTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "healthy")
 
+    def test_healthz_is_public(self) -> None:
+        response = self.client.get("/healthz")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "healthy")
+
     def test_protected_route_requires_token(self) -> None:
         response = self.client.get("/v1/tasks")
 
         self.assertEqual(response.status_code, 401)
+
+    def test_readyz_is_public(self) -> None:
+        response = self.client.get("/readyz")
+
+        self.assertEqual(response.status_code, 200)
 
     def test_cors_allows_local_network_origin_with_port(self) -> None:
         origin = "http://192.168.3.155:3001"

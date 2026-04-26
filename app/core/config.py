@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -34,7 +34,11 @@ class Settings(BaseSettings):
     log_format: str = "json"  # json | text
 
     # --- Auth ---
-    api_token: str = Field(default="changeme", description="Shared token between WebAI and orchestrator")
+    api_token: str = Field(
+        default="",
+        validation_alias=AliasChoices("AGENT_ROUTER_API_TOKEN", "AIOPS_API_TOKEN"),
+        description="Shared token for protecting sensitive API routes",
+    )
 
     # --- Database ---
     database_url: str = Field(default="sqlite+aiosqlite:///data/aiops.db")

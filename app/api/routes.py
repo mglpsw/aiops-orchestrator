@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.auth import require_api_token
 from app.models.database import get_db
 from app.models.schemas import (
     ChatIngestRequest, ChatIngestResponse,
@@ -21,11 +22,12 @@ from app.utils.logging import get_logger
 
 logger = get_logger("api.routes")
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_api_token)])
 
 
 # --- Chat / Ingest ---
 
+@router.post("/v1/chat", response_model=ChatIngestResponse)
 @router.post("/v1/chat/ingest", response_model=ChatIngestResponse)
 async def chat_ingest(
     request: ChatIngestRequest,
