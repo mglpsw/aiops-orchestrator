@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_router.metrics import render_aiops_metrics_lines
 from app.models.database import get_db
 from app.services.task_service import TaskService
 
@@ -48,5 +49,7 @@ async def prometheus_metrics(db: AsyncSession = Depends(get_db)):
         f'aiops_blocked_actions_total {m["blocked_actions_total"]}',
         "",
     ])
+
+    lines.extend(render_aiops_metrics_lines())
 
     return "\n".join(lines)

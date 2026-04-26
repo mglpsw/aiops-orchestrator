@@ -63,6 +63,16 @@ O router então encaminha `@aiops` para `http://aiops-orchestrator:8000`.
 
 Ver `docs/OPERATIONS.md` para detalhes.
 
+### AIOps Diagnose Endpoint v1
+
+- `POST /v1/aiops/diagnose`
+- Request: `AIOpsDiagnoseRequest`
+- Response: `AIOpsDiagnoseResponse`
+- Diagnostic-only
+- `dry_run` obrigatório e sempre `true`
+- Sem execução, remediação ou `command`
+- Checks suportados: `readiness`, `backend_up`, `error_rate`, `latency_p95`, `blocked_tasks`, `model_selection`, `ollama_models_count`
+
 ---
 
 ## Tests

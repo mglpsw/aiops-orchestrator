@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth import TokenAuthMiddleware
 from app.api.routes import router as api_router
 from app.api.metrics import router as metrics_router
+from app.agent_router.main import router as aiops_router
 from app.core.config import get_settings
 from app.models.database import init_db
 from app.services.provider_registry import get_registry
@@ -77,6 +78,7 @@ def create_app() -> FastAPI:
 
     # Routes
     app.include_router(api_router)
+    app.include_router(aiops_router)
     app.include_router(metrics_router)
 
     # Health endpoints (public, no auth needed)
