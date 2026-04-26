@@ -3,7 +3,7 @@
 
 routes:
   # Intent classification (fast, cheap)
-  classify: ollama
+  classify: claude
 
   # Execution planning (deep reasoning)
   plan: claude
@@ -18,13 +18,13 @@ routes:
   execute: local
 
   # Result summarization (fast, cheap)
-  summarize: ollama
+  summarize: claude
 
 fallbacks:
-  classify: ollama
-  plan: ollama
-  review: ollama
-  summarize: ollama
+  classify: gpt
+  plan: gpt
+  review: gpt
+  summarize: gpt
 
 # Route overrides by task type (future use)
 task_type_routes:
