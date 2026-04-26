@@ -52,6 +52,19 @@ echo "[8] Verificando se os serviços existentes não foram afetados..."
 check "NPM running" pct exec $TARGET_CT -- docker ps --filter name=npm --filter status=running -q
 check "Nextcloud running" pct exec $TARGET_CT -- docker ps --filter name=nextcloud_app --filter status=running -q
 
+echo "[9] Verificando catálogo de actions..."
+CATALOG_SCRIPT="$(dirname "$0")/validate_actions_catalog.sh"
+if [ -f "$CATALOG_SCRIPT" ]; then
+    if bash "$CATALOG_SCRIPT"; then
+        echo "  [OK] Catálogo de actions válido"
+    else
+        echo "  [FALHA] Catálogo de actions inválido"
+        ERRORS=$((ERRORS + 1))
+    fi
+else
+    echo "  [SKIP] validate_actions_catalog.sh não encontrado"
+fi
+
 echo ""
 if [ $ERRORS -eq 0 ]; then
     echo "=== Todas as verificações passaram! ==="

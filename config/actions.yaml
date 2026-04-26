@@ -1,0 +1,111 @@
+# AIOps Action Catalog
+# version: "1.0"
+# phase: diagnostic-only (v1)
+#
+# Regras:
+#   - Apenas ações mode: readonly e risk: low são permitidas no v1.
+#   - Nenhum comando livre, interpolação de variáveis de usuário ou shell pipe.
+#   - Todo action_id deve ser único neste arquivo.
+#   - Validado por scripts/validate_actions_catalog.sh antes de qualquer deploy.
+
+version: "1.0"
+
+catalog:
+  - action_id: git_status
+    description: "Exibe o estado atual da árvore de trabalho do repositório canônico"
+    command: "git -C /opt/aiops-orchestrator status"
+    mode: readonly
+    risk: low
+    timeout_seconds: 10
+    requires_approval: false
+    tags: [git, diagnostic]
+
+  - action_id: git_diff_stat
+    description: "Exibe estatísticas de diff em relação ao HEAD (sem patch completo)"
+    command: "git -C /opt/aiops-orchestrator diff --stat HEAD"
+    mode: readonly
+    risk: low
+    timeout_seconds: 10
+    requires_approval: false
+    tags: [git, diagnostic]
+
+  - action_id: git_log_recent
+    description: "Exibe os 10 commits mais recentes em formato compacto"
+    command: "git -C /opt/aiops-orchestrator log --oneline -10"
+    mode: readonly
+    risk: low
+    timeout_seconds: 10
+    requires_approval: false
+    tags: [git, diagnostic]
+
+  - action_id: docker_compose_config
+    description: "Valida e exibe a configuração final do docker-compose (sem iniciar nada)"
+    command: "docker compose -f /opt/aiops-orchestrator/deploy/docker-compose.yml config"
+    mode: readonly
+    risk: low
+    timeout_seconds: 15
+    requires_approval: false
+    tags: [docker, diagnostic]
+
+  - action_id: systemctl_status_aiops
+    description: "Exibe o status da unit systemd do aiops-orchestrator"
+    command: "systemctl status aiops-orchestrator --no-pager"
+    mode: readonly
+    risk: low
+    timeout_seconds: 10
+    requires_approval: false
+    tags: [systemd, diagnostic]
+
+  - action_id: curl_health_8000
+    description: "Verifica o endpoint /health da produção estável (porta 8000)"
+    command: "curl -fsS http://127.0.0.1:8000/health"
+    mode: readonly
+    risk: low
+    timeout_seconds: 10
+    requires_approval: false
+    tags: [http, diagnostic, production]
+
+  - action_id: curl_ready_8000
+    description: "Verifica o endpoint /ready da produção estável (porta 8000)"
+    command: "curl -fsS http://127.0.0.1:8000/ready"
+    mode: readonly
+    risk: low
+    timeout_seconds: 10
+    requires_approval: false
+    tags: [http, diagnostic, production]
+
+  - action_id: curl_health_8001
+    description: "Verifica o endpoint /health do runtime next/observe (porta 8001)"
+    command: "curl -fsS http://127.0.0.1:8001/health"
+    mode: readonly
+    risk: low
+    timeout_seconds: 10
+    requires_approval: false
+    tags: [http, diagnostic, next]
+
+  - action_id: curl_ready_8001
+    description: "Verifica o endpoint /ready do runtime next/observe (porta 8001)"
+    command: "curl -fsS http://127.0.0.1:8001/ready"
+    mode: readonly
+    risk: low
+    timeout_seconds: 10
+    requires_approval: false
+    tags: [http, diagnostic, next]
+
+  - action_id: journalctl_aiops_recent
+    description: "Exibe as últimas 50 linhas do journal do aiops-orchestrator"
+    command: "journalctl -u aiops-orchestrator -n 50 --no-pager"
+    mode: readonly
+    risk: low
+    timeout_seconds: 10
+    requires_approval: false
+    tags: [journald, diagnostic]
+
+  - action_id: prometheus_query
+    description: "Consulta o endpoint de query do Prometheus para a métrica 'up'"
+    command: "curl -fsS 'http://192.168.3.200:9090/api/v1/query?query=up'"
+    mode: readonly
+    risk: low
+    timeout_seconds: 15
+    requires_approval: false
+    tags: [prometheus, diagnostic, metrics]
