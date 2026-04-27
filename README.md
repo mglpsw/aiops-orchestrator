@@ -141,11 +141,14 @@ Ver `docs/OPERATIONS.md` para detalhes.
   - `GET /v1/aiops/runs/{run_id}`
 - Executa apenas funções internas fixas read-only e allowlisted
 - Nesta fase, o subconjunto executável inclui health/ready de `8000` e `8001`,
-  `git_status`, `git_diff_stat`, `docker_compose_config` e `docker_compose_bluegreen_config`
-- Também suporta inspeção local read-only via `git_status`, `git_diff_stat`, `docker_compose_config`
-  e `docker_compose_bluegreen_config`
+  `git_status`, `git_diff_stat`, `docker_compose_config`, `docker_compose_bluegreen_config`
+  e `systemctl_status_aiops`
+- Também suporta inspeção local read-only via `git_status`, `git_diff_stat`, `docker_compose_config`,
+  `docker_compose_bluegreen_config` e `systemctl_status_aiops`
 - `docker_compose_config` e `docker_compose_bluegreen_config` usam validação `docker compose ... config --quiet`
 - `git_diff_stat` usa somente `git diff --stat`
+- `systemctl_status_aiops` consulta apenas o estado read-only da unit `aiops-orchestrator.service`
+- `systemctl_status_aiops` não reinicia, não recarrega e não altera o serviço
 - O repositório alvo é fixo/allowlisted via `AIOPS_ACTION_REPO_ROOT`
 - Não aceita `command` ou `argv` no request e não expõe `command` ou `argv` na resposta
 - Requer approval válido e audit log ativo

@@ -57,8 +57,8 @@ catalog:
     tags: [docker, diagnostic]
 
   - action_id: systemctl_status_aiops
-    description: "Exibe o status da unit systemd do aiops-orchestrator"
-    command: "systemctl status aiops-orchestrator --no-pager"
+    description: "Consulta o estado read-only da unit systemd do aiops-orchestrator"
+    command: "systemctl show aiops-orchestrator.service --no-pager --property=Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,MainPID,ActiveEnterTimestamp,InactiveEnterTimestamp,NRestarts"
     mode: readonly
     risk: low
     timeout_seconds: 10

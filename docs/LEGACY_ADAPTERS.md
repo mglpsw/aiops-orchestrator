@@ -33,6 +33,8 @@ The following adapters exist in `app/adapters/`:
 - The official runner does not import these adapters.
 - The official runner does not accept shell text, free-form arguments, or request-driven command
   strings.
+- The current `systemctl_status_aiops` action is also handled by the official runner and does not
+  depend on these legacy adapters.
 
 ### Future reintroduction
 

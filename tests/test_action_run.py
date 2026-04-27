@@ -143,6 +143,33 @@ def _fake_subprocess_run_factory(calls: list[dict[str, object]]):
             "--quiet",
         ]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if list(argv) == [
+            "systemctl",
+            "show",
+            "aiops-orchestrator.service",
+            "--no-pager",
+            "--property=Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,MainPID,ActiveEnterTimestamp,InactiveEnterTimestamp,NRestarts",
+        ]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "Id=aiops-orchestrator.service\n"
+                    "LoadState=loaded\n"
+                    "ActiveState=active\n"
+                    "SubState=running\n"
+                    "Result=success\n"
+                    "ExecMainStatus=0\n"
+                    "MainPID=1234\n"
+                    "ActiveEnterTimestamp=Mon 2026-04-27 10:00:00 UTC\n"
+                    "InactiveEnterTimestamp=n/a\n"
+                    "NRestarts=0\n"
+                    "Authorization: Bearer super-secret-token\n"
+                    "password=super-secret\n"
+                    "api_key=sk-test-key\n"
+                    + ("z" * 8000)
+                ),
+                stderr="",
+            )
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected argv")
 
     return _fake_run
@@ -296,7 +323,7 @@ def test_run_blocks_unknown_and_non_executable_actions(api_client: TestClient) -
         json={
             "target": "agent-router",
             "approval_id": approval_id,
-            "action_ids": ["systemctl_status_aiops"],
+            "action_ids": ["journalctl_aiops_recent"],
         },
     )
 
@@ -305,7 +332,58 @@ def test_run_blocks_unknown_and_non_executable_actions(api_client: TestClient) -
     assert unknown.json()["blocked_steps"][0]["action_id"] == "does_not_exist"
     assert non_executable.status_code == 200
     assert non_executable.json()["status"] == "blocked"
-    assert non_executable.json()["blocked_steps"][0]["action_id"] == "systemctl_status_aiops"
+    assert non_executable.json()["blocked_steps"][0]["action_id"] == "journalctl_aiops_recent"
+
+
+def test_run_executes_systemctl_status_aiops_with_fixed_process(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_id = _create_approved_approval(api_client)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.agent_router.services.action_runner.subprocess.run",
+        _fake_subprocess_run_factory(calls),
+        raising=True,
+    )
+    monkeypatch.setenv("PATH", "/tmp/malicious")
+    get_settings.cache_clear()
+
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["systemctl_status_aiops"],
+            "reason": "Inspect systemd status",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["results"][0]["action_id"] == "systemctl_status_aiops"
+    assert body["results"][0]["truncated"] is True
+    assert "super-secret-token" not in body["results"][0]["output_preview"]
+    assert "[REDACTED]" in body["results"][0]["output_preview"]
+    assert len(calls) == 1
+    assert calls[0]["argv"] == [
+        "systemctl",
+        "show",
+        "aiops-orchestrator.service",
+        "--no-pager",
+        "--property=Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,MainPID,ActiveEnterTimestamp,InactiveEnterTimestamp,NRestarts",
+    ]
+    assert calls[0]["shell"] is False
+    assert calls[0]["timeout"] == 5
+    assert calls[0]["cwd"] == str(Path("/opt/aiops-orchestrator").resolve())
+    env = calls[0]["env"]
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["HOME"] == str(Path("/opt/aiops-orchestrator").resolve())
+    assert "AGENT_ROUTER_API_TOKEN" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "ANTHROPIC_API_KEY" not in env
 
 
 def test_run_executes_git_status_and_docker_compose_config_with_fixed_process(

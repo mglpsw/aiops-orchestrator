@@ -26,7 +26,15 @@ _HTTP_ACTION_ENDPOINTS: dict[str, str] = {
     "curl_ready_8001": "http://127.0.0.1:8001/ready",
 }
 
-_PROCESS_ACTIONS = frozenset({"git_status", "docker_compose_config", "git_diff_stat", "docker_compose_bluegreen_config"})
+_PROCESS_ACTIONS = frozenset(
+    {
+        "git_status",
+        "docker_compose_config",
+        "git_diff_stat",
+        "docker_compose_bluegreen_config",
+        "systemctl_status_aiops",
+    }
+)
 _FIXED_PATH = "/usr/bin:/bin"
 
 _SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -283,6 +291,24 @@ async def run_docker_compose_bluegreen_config() -> ActionExecutionResult:
     )
 
 
+async def run_systemctl_status_aiops() -> ActionExecutionResult:
+    repo_root = resolve_action_repo_root()
+    settings = get_settings()
+    return await asyncio.to_thread(
+        _run_fixed_process,
+        action_id="systemctl_status_aiops",
+        argv=[
+            "systemctl",
+            "show",
+            "aiops-orchestrator.service",
+            "--no-pager",
+            "--property=Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,MainPID,ActiveEnterTimestamp,InactiveEnterTimestamp,NRestarts",
+        ],
+        cwd=repo_root,
+        timeout_seconds=settings.run_timeout_seconds,
+    )
+
+
 _RUNNERS = {
     "curl_health_8000": run_curl_health_8000,
     "curl_ready_8000": run_curl_ready_8000,
@@ -292,6 +318,7 @@ _RUNNERS = {
     "docker_compose_config": run_docker_compose_config,
     "git_diff_stat": run_git_diff_stat,
     "docker_compose_bluegreen_config": run_docker_compose_bluegreen_config,
+    "systemctl_status_aiops": run_systemctl_status_aiops,
 }
 
 

@@ -99,10 +99,11 @@ Valida a configuração base + blue/green sem iniciar nada.
 
 ### systemctl_status_aiops
 
-Exibe o status da unit systemd do aiops-orchestrator (se gerenciado via systemd).
+Consulta o estado read-only da unit systemd do aiops-orchestrator.
 
-- **Comando:** `systemctl status aiops-orchestrator --no-pager`
+- **Comando interno fixo:** `systemctl show aiops-orchestrator.service --no-pager --property=Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,MainPID,ActiveEnterTimestamp,InactiveEnterTimestamp,NRestarts`
 - **Risk:** low | **Mode:** readonly | **Timeout:** 10s | **Approval:** false
+- **Execução:** função interna fixa; o catálogo não é fonte de comando executável.
 
 ### curl_health_8000
 
@@ -410,6 +411,7 @@ As ações read-only locais desta fase são fixas e allowlisted:
 - `git_diff_stat` usa o equivalente interno a `git diff --stat`
 - `docker_compose_config` usa o equivalente interno a `docker compose -f deploy/docker-compose.yml config --quiet`
 - `docker_compose_bluegreen_config` usa o equivalente interno a `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config --quiet`
+- `systemctl_status_aiops` usa o equivalente interno a `systemctl show aiops-orchestrator.service --no-pager --property=Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,MainPID,ActiveEnterTimestamp,InactiveEnterTimestamp,NRestarts`
 
 O comando do catálogo continua sendo apenas documentação/allowlist. O runner nunca executa texto
 livre vindo do request ou do YAML.
@@ -519,12 +521,18 @@ continua restrito a funções internas fixas, read-only e allowlisted.
 - `curl_ready_8000`
 - `curl_health_8001`
 - `curl_ready_8001`
+- `git_status`
+- `git_diff_stat`
+- `docker_compose_config`
+- `docker_compose_bluegreen_config`
+- `systemctl_status_aiops`
 
 ### O que ele faz
 
 - Exige `approval_id` aprovado e correspondente ao `target`
 - Rejeita `command` no payload com HTTP 422
-- Usa cliente HTTP Python interno com timeout e output truncado
+- Usa cliente HTTP Python interno para as ações `curl_*` e subprocess restrito para as
+  inspeções locais read-only fixas, sempre com timeout e output truncado
 - Redige tokens, segredos e cabeçalhos sensíveis do `output_preview`
 - Persiste metadados do run em JSONL local
 - Registra eventos auditáveis antes e depois da execução
@@ -533,7 +541,7 @@ continua restrito a funções internas fixas, read-only e allowlisted.
 
 - Não executa comando livre
 - Não lê `command` do catálogo como comando executável
-- Não usa `subprocess`, `shell=True`, SSH, `docker exec`, `git push/pull`, `docker compose up/down` ou `systemctl restart`
+- Não usa `subprocess` livre, `shell=True`, SSH, `docker exec`, `git push/pull`, `docker compose up/down`, `systemctl restart`, `systemctl start`, `systemctl stop`, `systemctl reload`, `systemctl enable` ou `systemctl disable`
 - Não implementa `GitHub Bridge`, `Claude Bridge` ou `Codex Bridge`
 
 ### Request

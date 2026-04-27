@@ -145,7 +145,8 @@ Executa apenas funções internas fixas, read-only e allowlisted, após approval
 - **Storage:** JSONL local configurável (`var/runs/aiops_runs.jsonl` por padrão)
 - **Endpoints associados:** `POST /v1/aiops/actions/run`
 - **Ações fixas v1:** `curl_health_8000`, `curl_ready_8000`, `curl_health_8001`, `curl_ready_8001`,
-  `git_status`, `git_diff_stat`, `docker_compose_config`, `docker_compose_bluegreen_config`
+  `git_status`, `git_diff_stat`, `docker_compose_config`, `docker_compose_bluegreen_config`,
+  `systemctl_status_aiops`
 - **Garantia:** não usa `command` do catálogo como comando executável
 - **Escopo v1:** health/ready de `8000` e `8001` + inspeção local read-only fixa
 
@@ -178,6 +179,20 @@ Consulta leituras seguras dos runs persistidos sem permitir reexecução.
 
 - Não implementado nesta fase
 - Qualquer reativação futura deve começar com nova sessão de desenho, approval, policy e testes
+
+### Fluxo de execução read-only expandido
+
+```text
+Diagnose
+→ Plan
+→ Dry-run
+→ Approval
+→ Run read-only health checks
+→ Run read-only Git/Compose inspection
+→ Run read-only systemd status
+→ Run history
+→ Audit log
+```
 
 ---
 
@@ -227,7 +242,8 @@ POST /v1/aiops/diagnose
     │      → Executa apenas funções fixas allowlisted
     │      → Sem shell, sem subprocess, sem SSH, sem docker exec
     │      → Inclui inspeção local fixa (`git_status`, `git_diff_stat`,
-    │         `docker_compose_config`, `docker_compose_bluegreen_config`)
+    │         `docker_compose_config`, `docker_compose_bluegreen_config`,
+    │         `systemctl_status_aiops`)
     │      → Persiste metadados e registra auditoria
     │
     ├─ 9. Run History

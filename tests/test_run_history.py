@@ -103,6 +103,32 @@ def _fake_subprocess_run(argv, **kwargs):
         "--quiet",
     ]:
         return SimpleNamespace(returncode=0, stdout="", stderr="")
+    if list(argv) == [
+        "systemctl",
+        "show",
+        "aiops-orchestrator.service",
+        "--no-pager",
+        "--property=Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,MainPID,ActiveEnterTimestamp,InactiveEnterTimestamp,NRestarts",
+    ]:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "Id=aiops-orchestrator.service\n"
+                "LoadState=loaded\n"
+                "ActiveState=active\n"
+                "SubState=running\n"
+                "Result=success\n"
+                "ExecMainStatus=0\n"
+                "MainPID=1234\n"
+                "ActiveEnterTimestamp=Mon 2026-04-27 10:00:00 UTC\n"
+                "InactiveEnterTimestamp=n/a\n"
+                "NRestarts=0\n"
+                "Authorization: Bearer super-secret-token\n"
+                "password=super-secret\n"
+                "api_key=sk-test-key\n"
+            ),
+            stderr="",
+        )
     return SimpleNamespace(returncode=1, stdout="", stderr="unexpected argv")
 
 
@@ -222,6 +248,23 @@ def test_run_history_includes_git_diff_and_bluegreen_compose_runs(api_client: Te
     bluegreen_body = bluegreen_detail.json()
     assert "command" not in json.dumps(bluegreen_body)
     assert "argv" not in json.dumps(bluegreen_body)
+
+
+def test_run_history_includes_systemctl_status_runs(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = _create_approved_run(api_client, monkeypatch, action_id="systemctl_status_aiops")
+
+    recent = api_client.get("/v1/aiops/runs/recent?limit=20", headers=_auth())
+    detail = api_client.get(f"/v1/aiops/runs/{run_id}", headers=_auth())
+
+    assert recent.status_code == 200
+    assert detail.status_code == 200
+    assert recent.json()["runs"][0]["run_id"] == run_id
+    assert detail.json()["results"][0]["action_id"] == "systemctl_status_aiops"
+    detail_body = detail.json()
+    assert "command" not in json.dumps(detail_body)
+    assert "argv" not in json.dumps(detail_body)
+    assert "super-secret-token" not in json.dumps(detail_body)
+    assert "password" not in json.dumps(detail_body).lower()
 
 
 def test_get_run_returns_detail_and_missing_returns_404(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
