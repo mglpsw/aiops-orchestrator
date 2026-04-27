@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router as api_router
 from app.api.metrics import router as metrics_router
-from app.agent_router.main import router as aiops_router
+from app.agent_router.main import router as aiops_router, init_catalog_on_startup, get_catalog_readiness
 from app.core.config import get_settings
 from app.models.database import init_db
 from app.services.provider_registry import get_registry
@@ -37,6 +37,17 @@ async def lifespan(app: FastAPI):
     # Initialize providers
     registry = get_registry()
     logger.info("Provider registry initialized")
+
+    # Validate and cache the action catalog
+    init_catalog_on_startup()
+    catalog_info = get_catalog_readiness()
+    if catalog_info["status"] == "ok":
+        logger.info("Action catalog loaded: %d actions", catalog_info["actions_count"])
+    else:
+        logger.error(
+            "Action catalog failed to load — readiness will be degraded. "
+            "Fix config/actions.yaml and restart."
+        )
 
     _start_time = datetime.now(timezone.utc)
     logger.info("AIOps Orchestrator ready on %s:%d", settings.host, settings.port)
@@ -93,7 +104,7 @@ def create_app() -> FastAPI:
     async def ready():
         """Readiness check - verifies dependencies."""
         from app.models.database import get_engine
-        checks = {"database": False, "providers": False}
+        checks: dict[str, bool] = {"database": False, "providers": False, "action_catalog": False}
 
         # Check DB
         try:
@@ -116,10 +127,18 @@ def create_app() -> FastAPI:
         except Exception:
             pass
 
+        # Check action catalog (loaded at startup)
+        catalog_info = get_catalog_readiness()
+        checks["action_catalog"] = catalog_info["status"] == "ok"
+
         all_ready = all(checks.values())
         return {
             "ready": all_ready,
+            "status": "ready" if all_ready else "not_ready",
             "checks": checks,
+            "dependencies": {
+                "action_catalog": catalog_info,
+            },
             "uptime_seconds": (datetime.now(timezone.utc) - _start_time).total_seconds() if _start_time else 0,
         }
 

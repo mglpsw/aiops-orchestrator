@@ -16,12 +16,26 @@
 Layer 1: Authentication (Bearer token)
 Layer 2: Intent Classification (LLM risk assessment)
 Layer 3: Policy Engine (hardcoded denylist + regras configuráveis)
-Layer 4: Action Catalog (allowlist estrutural — config/actions.yaml)
+Layer 4: Action Catalog (allowlist estrutural — validado no boot)
 Layer 5: Plan Validation (cada action_id verificado contra catálogo)
 Layer 6: Approval Gate (revisão humana obrigatória)
 Layer 7: Execution Safety (timeout, masking, backup)
 Layer 8: Audit Trail (log completo de cada decisão e ação)
 ```
+
+### Validação do catálogo no boot
+
+O catálogo `config/actions.yaml` é **validado durante o startup** da aplicação via
+`init_catalog_on_startup()` (lifespan em `app/main.py`). A falha de validação é detectada antes
+da primeira requisição, não na primeira chamada de endpoint:
+
+| Estado do catálogo | Efeito no startup              | Efeito nos endpoints                       |
+| ------------------ | ------------------------------ | ------------------------------------------ |
+| Válido             | Cache populado, log INFO       | Endpoints de catálogo/plano funcionam      |
+| Inválido/ausente   | Cache vazio, log ERROR         | `/ready` → `not_ready`; catalog/plan → 503 |
+| Inválido/ausente   | Readiness degradada            | `/diagnose` → 200 com `action_plan: null`  |
+
+Nenhum `command` ou conteúdo do catálogo é exposto no `/ready` ou em qualquer resposta de erro.
 
 ### Hardcoded Denylist (não pode ser sobrescrita)
 

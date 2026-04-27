@@ -92,7 +92,8 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - Somente `action_ids` presentes em `config/actions.yaml` são aceitos
 - Nenhum comando livre, shell, SSH ou remediação automática
 - `action_ids` desconhecidos vão para `blocked_steps` (fail-closed)
-- Ver `docs/ACTIONS.md` para schema, regras e processo de adição futura
+- O catálogo é validado no **startup** da aplicação; falha degrada `/ready` para `not_ready` antes da primeira requisição
+- Ver `docs/ACTIONS.md` para schema, regras, validação no startup e processo de adição futura
 
 ---
 

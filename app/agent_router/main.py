@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,9 +28,54 @@ from app.services.action_planner import plan_actions
 
 router = APIRouter(dependencies=[Depends(require_api_token)])
 
-# Module-level catalog cache — loaded once, fail-closed.
-# Tests may patch _get_catalog() to inject a fixture catalog.
+# ---------------------------------------------------------------------------
+# Catalog state — set once at startup, readable by /ready
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _CatalogState:
+    status: str = "unloaded"        # "ok" | "error" | "unloaded"
+    error: str | None = None        # redacted message, never contains commands
+    actions_count: int = 0
+    loaded_at: datetime | None = field(default=None)
+
+
+# Module-level catalog cache and state.
+# init_catalog_on_startup() sets both; _get_catalog() uses the cache.
+# _reset_catalog_cache() resets both — intended for tests only.
 _catalog_cache: ActionCatalog | None = None
+_catalog_state: _CatalogState = _CatalogState()
+
+
+def init_catalog_on_startup() -> None:
+    """Load and cache the action catalog at application startup.
+
+    Records status in _catalog_state for use by /ready. Always attempts a
+    fresh load regardless of current cache state (startup semantics). On
+    success the cache is populated; on failure the cache is cleared and state
+    is marked as error so /ready degrades gracefully.
+    """
+    global _catalog_cache, _catalog_state
+    try:
+        catalog = load_catalog()
+        _catalog_cache = catalog
+        _catalog_state = _CatalogState(
+            status="ok",
+            actions_count=catalog.count,
+            loaded_at=datetime.now(timezone.utc),
+        )
+    except CatalogLoadError as exc:
+        _catalog_cache = None
+        _catalog_state = _CatalogState(status="error", error=str(exc))
+
+
+def get_catalog_readiness() -> dict[str, object]:
+    """Return a safe, command-free snapshot of catalog state for /ready."""
+    return {
+        "status": _catalog_state.status,
+        "actions_count": _catalog_state.actions_count,
+    }
 
 
 def _get_catalog() -> ActionCatalog:
@@ -39,9 +86,10 @@ def _get_catalog() -> ActionCatalog:
 
 
 def _reset_catalog_cache() -> None:
-    """Reset the module-level catalog cache. Intended for tests only."""
-    global _catalog_cache
+    """Reset catalog cache and state. Intended for tests only."""
+    global _catalog_cache, _catalog_state
     _catalog_cache = None
+    _catalog_state = _CatalogState()
 
 
 # ---------------------------------------------------------------------------

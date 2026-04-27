@@ -139,6 +139,39 @@ Consulta o endpoint de query do Prometheus para a métrica `up` (health check b�
 
 ## Validação do catálogo
 
+### Validação no startup (runtime)
+
+O catálogo é validado automaticamente durante o startup da aplicação via
+`init_catalog_on_startup()` (chamado pelo lifespan em `app/main.py`).
+
+**O que acontece no startup:**
+
+| Situação | Resultado |
+| -------- | --------- |
+| Catálogo válido | Cache populado, estado `ok`, log `INFO: Action catalog loaded: N actions` |
+| Catálogo inválido | Cache vazio, estado `error`, log `ERROR: Action catalog failed to load`, readiness degradada |
+| Arquivo ausente | Idem — catálogo inválido |
+
+**Estado do catálogo no `/ready`:**
+
+```json
+{
+  "status": "not_ready",
+  "checks": { "action_catalog": false },
+  "dependencies": {
+    "action_catalog": {
+      "status": "error",
+      "actions_count": 0
+    }
+  }
+}
+```
+
+O catálogo é cacheado em memória após o primeiro carregamento bem-sucedido.
+Recarregamentos por requisição não ocorrem — o cache só é substituído num novo startup.
+
+### Validação antes do commit
+
 Execute antes de qualquer commit que altere `config/actions.yaml`:
 
 ```bash

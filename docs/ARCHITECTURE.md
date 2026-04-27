@@ -87,9 +87,10 @@ se uma ação requer aprovação humana.
 Sugere ações do catálogo (`config/actions.yaml`) com base nos findings do Diagnostic Engine.
 Nenhum comando livre. Toda ação planejada requer aprovação humana antes de execução.
 
-- **Status:** Parcialmente implementado via `app/services/orchestrator.py` (legado)
-- **Evolução:** Migrar para catálogo estruturado + approval gate explícito
-- **Catálogo:** `config/actions.yaml` (somente read-only no v1)
+- **Implementado:** `app/services/action_planner.py`, `app/services/action_catalog.py`
+- **Catálogo:** `config/actions.yaml` — validado no boot, cacheado em memória
+- **Startup:** `init_catalog_on_startup()` carrega e valida o catálogo antes da primeira requisição
+- **Readiness:** falha de catálogo degrada `/ready` para `not_ready` imediatamente no boot
 
 ### Componente: Local Agent Bridge
 
