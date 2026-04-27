@@ -150,6 +150,7 @@ def _run_agent(
     router_base: str = "",
     router_api_key: str = "",
     router_model: str = "",
+    step_summary_path: Path | None = None,
     expected_exit_code: int = 0,
 ) -> tuple[list[str], list[dict[str, object]]]:
     comments: list[str] = []
@@ -177,6 +178,10 @@ def _run_agent(
     monkeypatch.setenv("AGENT_ROUTER_BASE_URL", router_base)
     monkeypatch.setenv("AGENT_ROUTER_API_KEY", router_api_key)
     monkeypatch.setenv("AGENT_ROUTER_MODEL", router_model)
+    if step_summary_path is not None:
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(step_summary_path))
+    else:
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     assert review.main() == expected_exit_code
     return comments, router_payloads
 
@@ -478,23 +483,39 @@ def test_issue_comment_on_issue_is_supported_and_does_not_call_router(monkeypatc
     assert "apenas Pull Requests" in comments[0]
 
 
-def test_comment_write_403_is_sanitized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+@pytest.mark.parametrize("existing_comments", [[], [{"id": 55, "body": f"{review.COMMENT_MARKER}\nold body"}]])
+def test_comment_write_403_falls_back_to_step_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    existing_comments: list[dict[str, object]],
+) -> None:
     payload = _event_payload(pull_request=True, body="/agent review", association="MEMBER", login="alice")
+    step_summary = tmp_path / "step-summary.md"
     comments, router_payloads = _run_agent(
         monkeypatch,
         tmp_path,
         payload=payload,
         pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        existing_comments=existing_comments,
         allowed_users="alice",
         comment_error=HTTPError("https://api.github.com/repos/mglpsw/aiops-orchestrator/issues/42/comments", 403, "forbidden", hdrs=None, fp=None),
-        expected_exit_code=1,
+        step_summary_path=step_summary,
     )
     captured = capsys.readouterr()
     assert not comments
     assert not router_payloads
-    assert "GitHub token cannot write PR comments; check workflow permissions: issues: write" in captured.err
+    assert review._COMMENT_403_LOG_MESSAGE in captured.err
     assert "Traceback" not in captured.err
     assert "secret-token" not in captured.err
+    assert "Authorization" not in captured.err
+    assert "AGENT_ROUTER_API_KEY" not in captured.err
+    assert step_summary.exists()
+    summary = step_summary.read_text(encoding="utf-8")
+    assert review.COMMENT_MARKER in summary
+    assert "# Agent Review" in summary
+    assert "secret-token" not in summary
+    assert "AGENT_ROUTER_API_KEY" not in summary
 
 
 def test_unauthorized_comment_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -535,6 +556,57 @@ def test_existing_marker_comment_is_updated_instead_of_spamming(monkeypatch: pyt
     assert len(patches) == 1
     assert patches[0].startswith(review.COMMENT_MARKER)
     assert router_payloads == []
+
+
+def test_comment_write_403_without_step_summary_stays_silent_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review", association="MEMBER", login="alice")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        allowed_users="alice",
+        comment_error=HTTPError("https://api.github.com/repos/mglpsw/aiops-orchestrator/issues/42/comments", 403, "forbidden", hdrs=None, fp=None),
+        expected_exit_code=0,
+    )
+    captured = capsys.readouterr()
+    assert not comments
+    assert not router_payloads
+    assert review._COMMENT_403_LOG_MESSAGE in captured.err
+    assert "Step summary unavailable; short review:" in captured.err
+    assert "Traceback" not in captured.err
+    assert "secret-token" not in captured.err
+    assert "AGENT_ROUTER_API_KEY" not in captured.err
+
+
+def test_internal_error_still_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review", association="MEMBER", login="alice")
+    fake_urlopen, _, _, _ = _make_fake_urlopen(
+        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+    )
+    monkeypatch.setattr(review.urllib.request, "urlopen", fake_urlopen)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "mglpsw/aiops-orchestrator")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("AGENT_ALLOWED_USERS", "alice")
+    monkeypatch.setenv("AGENT_REVIEW_LLM_ENABLED", "false")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
+    monkeypatch.setattr(
+        review,
+        "build_deterministic_findings",
+        lambda files, checks: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        review.main()
 
 
 def test_workflow_security_guardrails() -> None:
