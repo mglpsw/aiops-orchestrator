@@ -25,11 +25,13 @@ MAX_PATCH_SNIPPET_CHARS = 180
 MAX_BUNDLE_CHARS = 6000
 MAX_COMMENT_CHARS = 5000
 MAX_LLM_NOTE_CHARS = 320
+MAX_LLM_ASK_RESPONSE_CHARS = 420
 COMMENT_MARKER = "<!-- aiops-agent-review:v2 -->"
 _COMMENT_403_LOG_MESSAGE = "GitHub token cannot write PR comments; wrote review to step summary instead"
 
 _COMMAND_REVIEW = "/agent review"
 _COMMAND_REVIEW_LLM = "/agent review llm"
+_COMMAND_ASK = "/agent ask"
 _PRIVATE_KEY_RE = re.compile(r"(?i)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----")
 _ENV_BLOCK_RE = re.compile(r"(?i)\b\.env\b")
 _GITHUB_TOKEN_VALUE_RE = re.compile(r"(?i)\bgh[pousr]_[A-Za-z0-9_]{16,}\b|\bgithub_pat_[A-Za-z0-9_]{16,}\b|\bsk-[A-Za-z0-9-]{8,}\b")
@@ -305,7 +307,7 @@ def _normalize_patch_text(patch: str | None) -> list[str]:
 
 
 def _looks_like_review_command_line(line: str) -> bool:
-    return line == _COMMAND_REVIEW or line == _COMMAND_REVIEW_LLM or line.startswith("/agent review")
+    return line == _COMMAND_REVIEW or line == _COMMAND_REVIEW_LLM or line.startswith("/agent review") or line.startswith(_COMMAND_ASK)
 
 
 def parse_agent_review_command(body: str) -> str:
@@ -317,11 +319,23 @@ def parse_agent_review_command(body: str) -> str:
             return "review"
         if line == _COMMAND_REVIEW_LLM:
             return "review_llm"
+        if line.startswith(_COMMAND_ASK):
+            return "ask"
         if line.startswith("/agent review"):
             return "unknown"
         if line.startswith("/agent"):
             return "unknown"
     return "none"
+
+
+def extract_agent_ask_question(body: str) -> str:
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line.startswith(_COMMAND_ASK):
+            continue
+        question = line[len(_COMMAND_ASK) :].strip()
+        return _truncate_text(question, 1000)
+    return ""
 
 
 def _allowed_users_from_env(raw: str | None) -> set[str]:
@@ -699,11 +713,16 @@ def build_deterministic_findings(files: list[FileChange], checks: list[CheckSumm
     return rank_findings(candidates)
 
 
-def review_status(findings: list[Finding]) -> str:
-    if any(finding.severity == "P1" for finding in findings):
+def review_status(deterministic_findings: list[Finding], llm_findings: list[Finding] | None = None) -> str:
+    if any(finding.severity == "P1" for finding in deterministic_findings):
         return "changes_requested"
-    if any(finding.severity == "P2" for finding in findings):
-        return "attention_needed"
+    if any(finding.severity == "P2" for finding in deterministic_findings):
+        return "needs_review"
+    if llm_findings:
+        if any(finding.severity == "P1" for finding in llm_findings):
+            return "changes_requested"
+        if any(finding.severity == "P2" for finding in llm_findings):
+            return "needs_review"
     return "approved"
 
 
@@ -735,25 +754,27 @@ def render_review(
     llm_mode: bool,
     llm_warning: str | None = None,
     llm_notes: str | None = None,
+    llm_findings: list[Finding] | None = None,
 ) -> str:
-    status = review_status(findings)
+    llm_findings = llm_findings or []
+    status = review_status(findings, llm_findings=llm_findings)
     lines = [
         COMMENT_MARKER,
         "",
-        "# Agent Review",
+        "# Revisão do Agent",
         "",
-        "## Resultado",
+        "## Resumo",
         f"- Status: {status}",
         f"- PR: {f'#{pr_context.pr_number}' if pr_context.pr_number is not None else 'n/a'}",
         f"- Autor: {pr_context.author}",
         f"- Base: {pr_context.base_ref or 'n/a'}",
         f"- Head: {pr_context.head_ref or 'n/a'}",
         f"- Commit analisado: {pr_context.head_sha or 'n/a'}",
-        f"- Modo: {'deterministic + Agent Router' if llm_mode else 'deterministic review'}",
+        f"- Modo: {'revisão determinística + Agent Router' if llm_mode else 'revisão determinística'}",
         "- Código do PR executado: não",
         f"- Escopo: {summarize_pr_scope(pr_context.files)}",
         "",
-        "## Achados",
+        "## Achados críticos",
     ]
     p1 = [finding for finding in findings if finding.severity == "P1"]
     p2 = [finding for finding in findings if finding.severity == "P2"]
@@ -765,21 +786,35 @@ def render_review(
     else:
         lines.extend(_render_findings_block("P1 — Bloqueadores", p1))
         lines.extend(_render_findings_block("P2 — Importantes", p2))
+    if llm_findings:
+        lines.extend(["", "## Achados do LLM"])
+        llm_p1 = [finding for finding in llm_findings if finding.severity == "P1"]
+        llm_p2 = [finding for finding in llm_findings if finding.severity == "P2"]
+        llm_p3 = [finding for finding in llm_findings if finding.severity == "P3"]
+        if llm_p1:
+            lines.extend(_render_findings_block("P1 — Bloqueadores", llm_p1))
+        if llm_p2:
+            lines.extend(_render_findings_block("P2 — Importantes", llm_p2))
+        if llm_p3:
+            lines.extend(_render_findings_block("P3 — Sugestões", llm_p3))
     if checks:
         failing = [check for check in checks if (check.conclusion or check.status or "").lower() not in {"success", "neutral", "skipped"}]
         if failing:
-            lines.extend(["", "## CI / Checks"])
+            lines.extend(["", "## Verificações de CI"])
             for check in failing[:3]:
                 state = check.conclusion or check.status or "unknown"
                 lines.append(f"- {check.name}: {state}{f' ({check.url})' if check.url else ''}")
+    llm_note_lines: list[str] = []
     if llm_warning:
-        lines.extend(["", "## LLM", f"- {llm_warning}"])
+        llm_note_lines.append(f"- {llm_warning}")
     if llm_notes:
-        lines.extend(["", "## LLM notes", f"- {_truncate_text(_redact_sensitive_text(llm_notes), MAX_LLM_NOTE_CHARS)}"])
+        llm_note_lines.append(f"- {_truncate_text(_redact_sensitive_text(llm_notes), MAX_LLM_NOTE_CHARS)}")
+    if llm_note_lines:
+        lines.extend(["", "## Notas do LLM", *llm_note_lines])
     lines.extend(
         [
             "",
-            "## Nota de segurança",
+            "## Observação de segurança",
             "Este agent analisou metadados e diff via GitHub API. Ele não executou código do PR, não fez checkout da branch do PR para execução e não teve permissão de deploy.",
         ]
     )
@@ -872,10 +907,10 @@ def fetch_review_context(client: GitHubClient, payload: dict[str, Any], command_
 
 def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: list[Finding]) -> str:
     lines = [
-        f"PR title: {_redact_sensitive_text(pr_context.title or '')}",
-        f"PR body: {_redact_sensitive_text(_truncate_text(pr_context.body or '', 600))}",
-        f"Scope: {summarize_pr_scope(pr_context.files)}",
-        "Files:",
+        f"Título do PR: {_redact_sensitive_text(pr_context.title or '')}",
+        f"Descrição do PR: {_redact_sensitive_text(_truncate_text(pr_context.body or '', 600))}",
+        f"Escopo: {summarize_pr_scope(pr_context.files)}",
+        "Arquivos alterados:",
     ]
     for file in pr_context.files[:MAX_FILES_ANALYZED]:
         snippet = _short_patch_for_bundle(file.patch)
@@ -888,19 +923,64 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
             state = check.conclusion or check.status or "unknown"
             lines.append(f"- {check.name}: {state}")
     if deterministic_findings:
-        lines.append("Deterministic findings:")
+        lines.append("Achados determinísticos:")
         for finding in deterministic_findings[:MAX_FINDINGS]:
             lines.append(
-                f"- {finding.severity} {finding.file}: {_redact_sensitive_text(finding.evidence)} | {finding.risk} | {finding.recommendation}"
+                f"- {finding.severity} {finding.file}: {_redact_sensitive_text(finding.evidence)} | {_redact_sensitive_text(finding.risk)} | {_redact_sensitive_text(finding.recommendation)}"
             )
     lines.extend(
         [
-            "Review contract:",
-            "- Max 5 findings.",
-            "- Prioritize P1 and P2.",
-            "- No long summary.",
-            "- No praise.",
-            "- Do not invent files or lines.",
+            "Contrato de revisão:",
+            "- Responda em pt-BR.",
+            "- Seja curto, objetivo e acionável.",
+            "- Max 5 achados.",
+            "- Priorize P1 e P2.",
+            "- Não faça elogios nem resumo longo.",
+            "- Não invente arquivos ou linhas.",
+        ]
+    )
+    bundle = "\n".join(lines)
+    return _truncate_text(_redact_sensitive_text(bundle), MAX_BUNDLE_CHARS)
+
+
+def _last_bot_comment(pr_context: ReviewContext) -> str | None:
+    for comment in reversed(pr_context.recent_comments):
+        body = str(comment.get("body") or "")
+        if COMMENT_MARKER in body:
+            return _truncate_text(_redact_sensitive_text(body), 1200)
+    return None
+
+
+def _build_ask_bundle(pr_context: ReviewContext, deterministic_findings: list[Finding], question: str) -> str:
+    lines = [
+        f"Pergunta do usuário: {_redact_sensitive_text(_truncate_text(question, 300))}",
+        f"Título do PR: {_redact_sensitive_text(pr_context.title or '')}",
+        f"Descrição do PR: {_redact_sensitive_text(_truncate_text(pr_context.body or '', 600))}",
+        f"Escopo: {summarize_pr_scope(pr_context.files)}",
+        "Arquivos alterados:",
+    ]
+    for file in pr_context.files[:MAX_FILES_ANALYZED]:
+        snippet = _short_patch_for_bundle(file.patch)
+        lines.append(
+            f"- {file.path} [{file.status}] +{file.additions} -{file.deletions}: {_redact_sensitive_text(snippet)}"
+        )
+    last_bot_comment = _last_bot_comment(pr_context)
+    if last_bot_comment:
+        lines.extend(["Último comentário do bot:", last_bot_comment])
+    if deterministic_findings:
+        lines.append("Achados determinísticos recentes:")
+        for finding in deterministic_findings[:MAX_FINDINGS]:
+            lines.append(
+                f"- {finding.severity} {finding.file}: {_redact_sensitive_text(finding.evidence)} | {_redact_sensitive_text(finding.risk)} | {_redact_sensitive_text(finding.recommendation)}"
+            )
+    lines.extend(
+        [
+            "Contrato de resposta:",
+            "- Responda em pt-BR se a pergunta estiver em português; caso contrário, responda no idioma do usuário.",
+            "- Seja curto, direto e específico ao diff.",
+            "- Não invente arquivos, linhas, logs ou fatos fora do payload.",
+            "- Se houver incerteza, diga isso explicitamente.",
+            "- Se o usuário pedir falso positivo, explique com base no diff/contexto.",
         ]
     )
     bundle = "\n".join(lines)
@@ -914,9 +994,10 @@ def build_agent_router_payload(
     model: str | None,
 ) -> dict[str, Any]:
     system_prompt = (
-        "Você é um reviewer de Pull Request. Encontre apenas bugs reais, regressões de segurança, "
-        "quebras de CI/runtime e violações do contrato. Retorne no máximo 5 achados P1/P2/P3. "
-        "Não elogie. Não faça resumo longo. Não invente arquivos/linhas. Se não houver P1/P2, diga isso claramente."
+        "Você é um reviewer de Pull Request. Responda sempre em pt-BR. Encontre apenas bugs reais, "
+        "regressões de segurança, quebras de CI/runtime e violações de contrato. Retorne no máximo "
+        "5 achados P1/P2/P3 em formato estruturado com severity, file, evidence, risk e recommendation. "
+        "Não elogie. Não faça resumo longo. Não invente arquivos ou linhas. Se não houver P1/P2, diga isso claramente."
     )
     payload: dict[str, Any] = {
         "messages": [
@@ -925,6 +1006,31 @@ def build_agent_router_payload(
         ],
         "temperature": 0.1,
         "max_tokens": 1200,
+    }
+    if model:
+        payload["model"] = model
+    return payload
+
+
+def build_agent_router_ask_payload(
+    pr_context: ReviewContext,
+    deterministic_findings: list[Finding],
+    *,
+    question: str,
+    model: str | None,
+) -> dict[str, Any]:
+    system_prompt = (
+        "Você é um assistente de follow-up para Pull Requests. Responda sempre em pt-BR quando a pergunta estiver em português; "
+        "caso contrário, responda no idioma do usuário. Seja curto, objetivo e acionável. Baseie-se apenas no payload fornecido. "
+        "Não invente arquivos, linhas, logs ou segredos. Se o usuário pedir falso positivo, explique sua incerteza quando existir."
+    )
+    payload: dict[str, Any] = {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": _build_ask_bundle(pr_context, deterministic_findings, question)},
+        ],
+        "temperature": 0.1,
+        "max_tokens": 300,
     }
     if model:
         payload["model"] = model
@@ -1050,6 +1156,67 @@ def parse_agent_router_response(raw_response: str) -> LLMReview:
     return _parse_content(outer)
 
 
+def extract_router_response_text(raw_response: str) -> str:
+    sanitized = _redact_sensitive_text(raw_response.strip())
+    if not sanitized:
+        return ""
+
+    def _extract_content(content: Any) -> str:
+        if isinstance(content, dict):
+            for key in ("answer", "response", "summary", "notes", "content", "text", "message"):
+                if key not in content:
+                    continue
+                extracted = _extract_content(content.get(key))
+                if extracted:
+                    return extracted
+            if "choices" in content and isinstance(content["choices"], list) and content["choices"]:
+                return _extract_content(content["choices"][0])
+            return _redact_sensitive_text(_truncate_text(json.dumps(content, ensure_ascii=False), 600))
+        if isinstance(content, list):
+            parts = [_extract_content(item) for item in content]
+            joined = " ".join(part for part in parts if part)
+            return _redact_sensitive_text(_truncate_text(joined, 600))
+        if isinstance(content, str):
+            text = _redact_sensitive_text(content.strip())
+            if not text:
+                return ""
+            try:
+                inner = json.loads(text)
+            except Exception:
+                return text
+            return _extract_content(inner)
+        return _redact_sensitive_text(str(content).strip())
+
+    try:
+        outer = json.loads(sanitized)
+    except Exception:
+        if sanitized.lstrip().startswith(("{", "[")):
+            return _redact_sensitive_text(_truncate_text(sanitized, MAX_LLM_ASK_RESPONSE_CHARS))
+        return _redact_sensitive_text(_truncate_text(sanitized, MAX_LLM_ASK_RESPONSE_CHARS))
+
+    if isinstance(outer, dict):
+        if "choices" in outer and isinstance(outer["choices"], list) and outer["choices"]:
+            choice = outer["choices"][0]
+            if isinstance(choice, dict):
+                message = choice.get("message") or {}
+                if isinstance(message, dict) and "content" in message:
+                    return _extract_content(message["content"])
+                if "text" in choice:
+                    return _extract_content(choice["text"])
+        if "output_text" in outer:
+            return _extract_content(outer["output_text"])
+        if "content" in outer:
+            return _extract_content(outer["content"])
+        if "answer" in outer:
+            return _extract_content(outer["answer"])
+        if "response" in outer:
+            return _extract_content(outer["response"])
+        if "review" in outer:
+            return _extract_content(outer["review"])
+        return _extract_content(outer)
+    return _extract_content(outer)
+
+
 def merge_deterministic_and_llm_findings(
     deterministic_findings: list[Finding],
     llm_review: LLMReview | None,
@@ -1068,27 +1235,35 @@ def merge_deterministic_and_llm_findings(
 
 
 def _build_unauthorized_message() -> str:
-    return "Agent review não foi executado por falta de autorização."
+    return "Comentário ignorado: você não está autorizado a acionar este agent."
 
 
 def _build_issue_message() -> str:
-    return "Esta primeira versão suporta apenas Pull Requests. Futuramente, podemos adicionar `/agent summarize` para issues comuns."
+    return "Este agent só responde em Pull Requests."
 
 
 def _build_llm_disabled_message() -> str:
-    return "LLM review não está habilitado; review determinístico publicado."
+    return "LLM desabilitado; use /agent review para review determinístico."
 
 
 def _build_llm_key_missing_message() -> str:
-    return "LLM review indisponível; chave do router ausente."
+    return "LLM desabilitado ou chave do router ausente; use /agent review para review determinístico."
 
 
 def _build_llm_router_warning(reason: str) -> str:
-    return f"LLM review indisponível ({reason}); review determinístico publicado."
+    return f"LLM indisponível ({reason}); use /agent review para review determinístico."
 
 
 def _build_llm_timeout_warning(timeout_seconds: int) -> str:
-    return f"LLM review indisponível (timeout após {timeout_seconds}s); review determinístico publicado."
+    return f"LLM indisponível (timeout após {timeout_seconds}s); use /agent review para review determinístico."
+
+
+def _build_ask_disabled_message() -> str:
+    return "Agent ask requer LLM habilitado; use /agent review para review determinístico."
+
+
+def _build_ask_router_warning(reason: str) -> str:
+    return f"Agent ask indisponível ({reason}); use /agent review para review determinístico."
 
 
 def _sanitize_router_base_url(base_url: str) -> str:
@@ -1249,6 +1424,56 @@ def main() -> int:
 
     pr_context = fetch_review_context(client, payload, command_mode)
     deterministic_findings = build_deterministic_findings(pr_context.files, pr_context.checks)
+    if command_mode == "ask":
+        question = extract_agent_ask_question(body)
+        if not question:
+            if not _publish_comment(client, _issue_comment_path(client, pr_context.issue_number), "Escreva sua pergunta após `/agent ask`."):
+                return 1
+            return 0
+        if not llm_enabled:
+            if not _publish_comment(client, _issue_comment_path(client, pr_context.issue_number), _build_ask_disabled_message()):
+                return 1
+            return 0
+        if not router_api_key:
+            if not _publish_comment(client, _issue_comment_path(client, pr_context.issue_number), _build_ask_disabled_message()):
+                return 1
+            return 0
+        router_payload = build_agent_router_ask_payload(pr_context, deterministic_findings, question=question, model=router_model)
+        try:
+            raw_router = call_agent_router_review(
+                router_payload,
+                base_url=router_base_url,
+                api_key=router_api_key or None,
+                timeout_seconds=router_timeout_seconds,
+            )
+            answer = _truncate_text(_redact_sensitive_text(extract_router_response_text(raw_router)), MAX_LLM_ASK_RESPONSE_CHARS).strip()
+            if not answer:
+                raise AgentRouterResponseError("empty ask response")
+            if not _publish_comment(client, _issue_comment_path(client, pr_context.issue_number), answer):
+                return 1
+            return 0
+        except AgentRouterTimeoutError:
+            fallback = _build_ask_router_warning(f"timeout após {router_timeout_seconds}s")
+            _log_agent_router_failure("timeout", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
+        except AgentRouterAuthError:
+            fallback = _build_ask_router_warning("autenticação falhou")
+            _log_agent_router_failure("autenticação falhou", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
+        except AgentRouterRateLimitError:
+            fallback = _build_ask_router_warning("limite de taxa")
+            _log_agent_router_failure("limite de taxa", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
+        except AgentRouterUnavailableError:
+            fallback = _build_ask_router_warning("router indisponível")
+            _log_agent_router_failure("router indisponível", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
+        except AgentRouterResponseError:
+            fallback = _build_ask_router_warning("resposta inválida")
+            _log_agent_router_failure("resposta inválida", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
+        except Exception:
+            fallback = _build_ask_router_warning("erro inesperado")
+            _log_agent_router_failure("erro inesperado", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
+        if not _publish_comment(client, _issue_comment_path(client, pr_context.issue_number), fallback):
+            return 1
+        return 0
+
     llm_review: LLMReview | None = None
     llm_warning: str | None = None
     if command_mode == "review_llm":
@@ -1266,15 +1491,16 @@ def main() -> int:
                     timeout_seconds=router_timeout_seconds,
                 )
                 llm_review = parse_agent_router_response(raw_router)
+                llm_warning = llm_review.warning
             except AgentRouterTimeoutError:
                 llm_warning = _build_llm_timeout_warning(router_timeout_seconds)
                 _log_agent_router_failure("timeout", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
             except AgentRouterAuthError:
-                llm_warning = _build_llm_router_warning("auth")
-                _log_agent_router_failure("auth", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
+                llm_warning = _build_llm_router_warning("autenticação falhou")
+                _log_agent_router_failure("autenticação falhou", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
             except AgentRouterRateLimitError:
-                llm_warning = _build_llm_router_warning("rate limited")
-                _log_agent_router_failure("rate limited", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
+                llm_warning = _build_llm_router_warning("limite de taxa")
+                _log_agent_router_failure("limite de taxa", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
             except AgentRouterUnavailableError:
                 llm_warning = _build_llm_router_warning("router indisponível")
                 _log_agent_router_failure("router indisponível", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
@@ -1285,14 +1511,14 @@ def main() -> int:
                 llm_warning = _build_llm_router_warning("erro inesperado")
                 _log_agent_router_failure("erro inesperado", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
 
-    merged_findings, llm_notes = merge_deterministic_and_llm_findings(deterministic_findings, llm_review)
     markdown = render_review(
-        merged_findings,
+        deterministic_findings,
         pr_context.checks,
         pr_context,
         llm_mode=command_mode == "review_llm",
         llm_warning=llm_warning,
-        llm_notes=llm_notes,
+        llm_notes=llm_review.notes if llm_review else None,
+        llm_findings=llm_review.findings if llm_review else None,
     )
     if not _publish_review_comment(client, pr_context, markdown):
         return 1
