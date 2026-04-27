@@ -189,8 +189,6 @@ In CT 200, edit `/opt/monitoring/prometheus/prometheus.yml` and add:
 
 Then reload Prometheus:
 ```bash
-pct exec 200 -- docker exec prometheus kill -HUP 1
-# or
 curl -X POST http://192.168.3.200:9090/-/reload
 ```
 
@@ -225,3 +223,4 @@ class CodexBridgeAdapter(BaseExecutorAdapter):
 
 The executor adapter interface provides: command, cwd, timeout, dry_run, env.
 All safety checks (policy, approval, audit) still apply.
+Nesta fase, essa integração permanece futura e não faz parte do caminho canônico.

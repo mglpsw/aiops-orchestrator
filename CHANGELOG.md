@@ -1,4 +1,4 @@
-# Release Notes
+# Changelog
 
 ## v0.18.0 - AIOps readonly/chat checkpoint
 
@@ -38,36 +38,6 @@
 - o runner continua estritamente read-only nesta fase
 
 ### Next: agent-router-api
-
-O próximo foco recomendado é `agent-router-api`, com fronteiras explícitas entre chat,
-diagnóstico e qualquer superfície futura de execução.
-
-## Checkpoint da fase AIOps
-
-Esta sequência consolidou a base canônica do AIOps Orchestrator em modo seguro,
-read-only e auditável.
-
-- runner read-only allowlisted
-- approval gate persistente
-- histórico de runs e auditoria
-- redaction forte de segredos, tokens e headers
-- Prometheus allowlisted sem PromQL livre
-- diagnóstico inteligente com findings estruturados
-- GitHub Agent Review on-demand
-- chat/OpenWebUI com intents AIOps determinísticas
-
-### Garantias preservadas
-
-- sem shell livre
-- sem SSH
-- sem `docker exec`
-- sem deploy automático
-- sem actions novas
-- sem runner novo
-- sem execução de actions pelo chat
-- sem exposição de secrets, headers ou payload bruto
-
-### Próxima fase
 
 O próximo foco recomendado é `agent-router-api`, com fronteiras explícitas entre chat,
 diagnóstico e qualquer superfície futura de execução.

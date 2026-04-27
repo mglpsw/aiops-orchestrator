@@ -15,17 +15,20 @@ sempre:
 
 ## Status canônico atual
 
-Esta é a fotografia canônica do projeto antes da próxima fase:
+Release canônico: `v0.18.0`.
+
+Esta é a fotografia canônica do projeto após o checkpoint final da fase AIOps readonly/chat:
 
 - o caminho produtivo é diagnóstico + planejamento + simulação + aprovação + execução read-only;
 - o runner oficial não aceita shell livre;
 - o catálogo é estrutural e validado no startup;
 - o histórico de runs e o audit log já existem;
-- o diagnóstico agora retorna findings enriquecidos com `impact`, `probable_cause`, `confidence`, `next_validation` e `recommended_action_ids`;
-- o health score passou a ser severity-aware e a aceitar baseline temporal simples via `metadata` quando há dados;
-- o GitHub Agent Review está disponível para revisão on-demand de PRs;
-- o Agent Router pode ser usado opcionalmente apenas como API de revisão LLM, nunca como executor.
-- o chat compatível com OpenWebUI detecta intents AIOps determinísticas e roteia para diagnóstico, runs, approvals e status sem executar actions;
+- o diagnóstico retorna findings enriquecidos com `impact`, `probable_cause`, `confidence`, `next_validation` e `recommended_action_ids`;
+- o health score é severity-aware e aceita baseline temporal simples via `metadata` quando há dados;
+- o GitHub Agent Review está disponível para revisão on-demand de PRs com `/agent review`, `/agent review llm` e `/agent ask`;
+- o Agent Router pode ser usado opcionalmente apenas como API de revisão LLM, nunca como executor;
+- o chat compatível com OpenWebUI detecta intents AIOps determinísticas e roteia para diagnose, runs, approvals e status sem executar actions;
+- as respostas públicas do chat e do `/agent ask` são curtas, seguras e em pt-BR por padrão.
 
 ## Arquitetura atual
 
@@ -152,6 +155,7 @@ Garantias principais:
 
 - GitHub Agent Review on-demand via comentário de PR com `/agent review`
 - modo opcional `/agent review llm` com Agent Router, somente como API de análise/revisão
+- follow-up com `/agent ask`, com resposta contextual separada do review principal
 - validação blue/green via `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config`
 - auditoria estruturada para plan, dry-run, approvals e run
 
@@ -198,32 +202,10 @@ docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.y
 
 ## Roadmap imediato
 
-### Session 14
-
-- consolidar e estabilizar a superfície canônica
-- revisar redundâncias documentais e alinhar termos
-- manter o runner read-only e o catálogo fail-closed
-
-### Session 15
-
-- endurecer observabilidade e auditoria
-- revisar cobertura de redaction e histórico
-- manter zero execução livre
-
-### Session 16
-
-- tratar migração/isolamento adicional das surfaces legadas
-- reduzir dependências históricas sem quebrar compatibilidade
-
-### Session 17
-
-- revisar integrações opcionais já existentes, sem ampliar escopo executor
-- manter Agent Router apenas como API de análise/revisão
-
 ### Session 18
 
 - integrar o fluxo de chat/OpenWebUI ao AIOps determinístico
-- atualizar docs, release notes e checkpoint final da fase
+- fechar o checkpoint de release `v0.18.0`
 - preparar a próxima fase com fronteiras explícitas de segurança e foco em `agent-router-api`
 
 ## Resumo

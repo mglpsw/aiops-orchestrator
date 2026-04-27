@@ -4,13 +4,15 @@ O GitHub Agent Review responde a comentários em Pull Requests com três comando
 
 - `/agent review` para revisão determinística
 - `/agent review llm` para revisão determinística com apoio opcional do Agent Router
-- `/agent ask <pergunta>` para follow-up curto sobre o PR
+- `/agent ask <pergunta>` para follow-up curto sobre o PR, com resposta separada da revisão principal
 
 ## Uso
 
 Comente em um Pull Request uma linha que comece com um dos comandos acima.
 
 O workflow lê o evento do GitHub, consulta metadados e diff via API e publica uma resposta no próprio PR.
+Ele não executa código do PR, não faz checkout da branch para execução e não publica segredos, headers
+ou payloads brutos.
 
 ## Autorização
 
@@ -75,6 +77,8 @@ Achados soltos em texto livre do LLM não promovem o status automaticamente.
 - Se o router falhar, o workflow publica apenas o review determinístico e avisa que o LLM ficou indisponível.
 - Se o token do GitHub não puder criar ou atualizar comentários no PR, a resposta é escrita no `GITHUB_STEP_SUMMARY` do workflow em vez de falhar.
 - O timeout padrão do router é `60s`; aumente só se o caminho até o Ollama exigir mais latência.
+- O prompt reforça que placeholders de teste como `test-token`, `dummy`, `fake`, `example`,
+  `placeholder` e `REDACTED` não são segredos reais quando aparecem em fixtures ou testes.
 
 ### Formato esperado do LLM
 
@@ -89,6 +93,8 @@ Para a revisão, o formato ideal é JSON estruturado com:
 - `recommendation`
 
 Para o `/agent ask`, a resposta deve ser curta e baseada apenas no diff e no contexto sanitizado.
+Se houver suporte de API de reply/thread para o comentário que disparou o comando, prefira a thread;
+caso contrário, use um comentário top-level curto citando o autor e a pergunta.
 
 ## Follow-up com `/agent ask`
 
@@ -114,6 +120,7 @@ O payload enviado ao router inclui:
 - Se o usuário perguntar explicitamente em outro idioma, o modelo deve responder no idioma do usuário.
 - O bot responde curto e evita texto genérico.
 - Se o usuário perguntar se algo é falso positivo, o bot responde com base no diff/contexto e sinaliza incerteza quando existir.
+- A resposta do `/agent ask` é publicada separadamente do review principal e não substitui o comentário de revisão.
 
 ### Fallbacks
 

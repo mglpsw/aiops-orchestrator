@@ -5,7 +5,7 @@
 O catálogo de actions (`config/actions.yaml`) define o conjunto explícito e allowlisted de operações
 que o Action Planner pode sugerir. Nenhum comando livre é aceito fora deste catálogo.
 
-**Fase atual (v1):** apenas ações `mode: readonly` e `risk: low` estão no catálogo.
+**Fase atual (v1 / v0.18.0 checkpoint):** apenas ações `mode: readonly` e `risk: low` estão no catálogo.
 Ações de escrita, restart, deploy ou remediação não existem nesta fase.
 
 ---
@@ -129,6 +129,8 @@ Consulta um bundle fixo e allowlisted de métricas do Prometheus sem aceitar Pro
 - **Contrato Session 16:** a action só aceita o bundle allowlisted e falha de forma bounded
   quando o Prometheus estiver indisponível, responder HTTP 4xx/5xx, retornar JSON inválido ou
   atingir timeout.
+- **Contrato final da fase readonly/chat:** continua sem shell livre, sem SSH, sem `docker exec`
+  e sem alterar o Prometheus no caminho canônico.
 
 ### curl_health_8000
 

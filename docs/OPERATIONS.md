@@ -118,18 +118,17 @@ curl -s http://192.168.3.155:8000/metrics
 - `aiops_approvals_pending` - Tasks awaiting approval
 - `aiops_blocked_actions_total` - Actions blocked by policy
 
-### Banco de dados Inspection
-```bash
-pct exec 102 -- docker exec aiops-orchestrator python3 -c "
-import sqlite3
-conn = sqlite3.connect('/app/data/aiops.db')
-cursor = conn.cursor()
-cursor.execute('SELECT status, COUNT(*) FROM tasks GROUP BY status')
-for row in cursor.fetchall():
-    print(f'  {row[0]}: {row[1]}')
-conn.close()
-"
-```
+### Inspeção canônica
+
+Para inspeção operacional, prefira as APIs read-only do próprio orquestrador:
+
+- `GET /v1/aiops/runs/recent`
+- `GET /v1/aiops/runs/{run_id}`
+- `GET /v1/aiops/audit/recent`
+
+O caminho canônico desta fase evita `docker exec`, shell livre e execução remota de código.
+Se uma inspeção mais profunda for necessária, ela deve ser tratada como exceção operacional
+fora do fluxo read-only padronizado.
 
 ## Troubleshooting Quick Reference
 
