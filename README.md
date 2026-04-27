@@ -135,12 +135,16 @@ Ver `docs/OPERATIONS.md` para detalhes.
   - `AIOPS_RUN_TIMEOUT_SECONDS`
   - `AIOPS_RUN_OUTPUT_MAX_BYTES`
   - `AIOPS_RUN_STORE_MAX_RECORDS`
+  - `AIOPS_ACTION_REPO_ROOT`
 - Histórico:
   - `GET /v1/aiops/runs/recent`
   - `GET /v1/aiops/runs/{run_id}`
 - Executa apenas funções internas fixas read-only e allowlisted
 - Nesta fase, o subconjunto executável é limitado a health/ready de `8000` e `8001`
-- Não aceita `command` no request e não expõe `command` na resposta
+- Também suporta inspeção local read-only via `git_status` e `docker_compose_config`
+- `docker_compose_config` usa validação `docker compose ... config --quiet`
+- O repositório alvo é fixo/allowlisted via `AIOPS_ACTION_REPO_ROOT`
+- Não aceita `command` ou `argv` no request e não expõe `command` ou `argv` na resposta
 - Requer approval válido e audit log ativo
 
 ---

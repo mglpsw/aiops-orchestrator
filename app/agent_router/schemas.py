@@ -246,11 +246,14 @@ class ActionRunResult(BaseModel):
     truncated: bool = False
 
 
+RunStatus = Literal["ok", "partial", "failed", "blocked"]
+
+
 class ActionRunResponse(BaseModel):
     run_id: str
     target: str
     approval_id: str
-    status: Literal["ok", "partial", "failed", "blocked"]
+    status: RunStatus
     started_at: str
     finished_at: str
     results: list[ActionRunResult] = Field(default_factory=list)
@@ -262,7 +265,7 @@ class RunSummary(BaseModel):
     run_id: str
     target: str
     approval_id: str
-    status: Literal["ok", "partial", "failed", "blocked"]
+    status: RunStatus
     started_at: str
     finished_at: str
     requested_action_ids: list[str] = Field(default_factory=list)
@@ -275,7 +278,7 @@ class RunDetailResponse(BaseModel):
     run_id: str
     target: str
     approval_id: str
-    status: Literal["ok", "partial", "failed", "blocked"]
+    status: RunStatus
     started_at: str
     finished_at: str
     requested_action_ids: list[str] = Field(default_factory=list)

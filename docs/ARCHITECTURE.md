@@ -144,6 +144,8 @@ Executa apenas funções internas fixas, read-only e allowlisted, após approval
 - **Persistência:** `app/agent_router/services/run_store.py`
 - **Storage:** JSONL local configurável (`var/runs/aiops_runs.jsonl` por padrão)
 - **Endpoints associados:** `POST /v1/aiops/actions/run`
+- **Ações fixas v1:** `curl_health_8000`, `curl_ready_8000`, `curl_health_8001`, `curl_ready_8001`,
+  `git_status`, `docker_compose_config`
 - **Garantia:** não usa `command` do catálogo como comando executável
 - **Escopo v1:** apenas health/ready de `8000` e `8001`
 
@@ -203,6 +205,7 @@ POST /v1/aiops/diagnose
     │      → Exige approval válido
     │      → Executa apenas funções fixas allowlisted
     │      → Sem shell, sem subprocess, sem SSH, sem docker exec
+    │      → Inclui inspeção local fixa (`git_status`, `docker_compose_config`)
     │      → Persiste metadados e registra auditoria
     │
     ├─ 9. Run History

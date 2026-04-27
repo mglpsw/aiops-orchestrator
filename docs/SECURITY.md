@@ -78,12 +78,17 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 
 - O endpoint executa apenas funções internas fixas e allowlisted
 - Nesta v1, apenas health/ready de `8000` e `8001` são executáveis
+- Nesta sessão, `git_status` e `docker_compose_config` também entram como funções internas fixas
 - `command` no request é rejeitado e nunca é interpretado
 - Nenhum `command` do catálogo é executado diretamente
+- O único `subprocess` permitido fica encapsulado no runner e usa `shell=False`, `argv` fixo,
+  `cwd` allowlisted e `env` sanitizado
 - Nenhum shell livre, `subprocess` arbitrário, SSH ou `docker exec` é permitido
 - `GitHub Bridge`, `Claude Bridge` e `Codex Bridge` não fazem parte desta fase
 - Falhas de auditoria continuam fail-closed quando o audit log é obrigatório
 - Saída é truncada e segredos são redigidos antes da persistência
+- O repositório usado por `git_status` e `docker_compose_config` vem somente de
+  `AIOPS_ACTION_REPO_ROOT` (ou default seguro), nunca do request
 
 ### `/v1/aiops/runs/recent` e `/v1/aiops/runs/{run_id}` — garantias de histórico
 
@@ -117,6 +122,7 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 
 - O run store guarda apenas metadados operacionais seguros dos runs read-only
 - O caminho padrão é `var/runs/aiops_runs.jsonl`
+- O histórico não registra `command` nem `argv`
 - `GET /v1/aiops/runs/recent` e `GET /v1/aiops/runs/{run_id}` são leitura somente
 - O store não expõe `command`, segredos ou cabeçalhos de autenticação
 - O histórico não executa ações e não permite reexecução

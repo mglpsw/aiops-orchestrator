@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -104,6 +105,30 @@ async def _fake_get_partial(self, url: str, *args, **kwargs) -> _FakeResponse:
 
 async def _fake_get_truncating(self, url: str, *args, **kwargs) -> _FakeResponse:
     return _FakeResponse(200, "Authorization: Bearer super-secret-token " + ("x" * 8000))
+
+
+def _fake_subprocess_run_factory(calls: list[dict[str, object]]):
+    def _fake_run(argv, **kwargs):
+        call = {"argv": list(argv), **kwargs}
+        calls.append(call)
+        if list(argv) == ["git", "status", "--short", "--branch"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "## main\n"
+                    " M config/actions.yaml\n"
+                    " Authorization: Bearer super-secret-token\n"
+                    " password=super-secret\n"
+                    " api_key=sk-test-key\n"
+                    + ("x" * 8000)
+                ),
+                stderr="",
+            )
+        if list(argv) == ["docker", "compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"]:
+            return SimpleNamespace(returncode=0, stdout="services:\n  app:\n    image: aiops\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unexpected argv")
+
+    return _fake_run
 
 
 def test_run_with_approved_approval_executes_read_only_actions(api_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -254,7 +279,7 @@ def test_run_blocks_unknown_and_non_executable_actions(api_client: TestClient) -
         json={
             "target": "agent-router",
             "approval_id": approval_id,
-            "action_ids": ["git_status"],
+            "action_ids": ["git_diff_stat"],
         },
     )
 
@@ -263,7 +288,69 @@ def test_run_blocks_unknown_and_non_executable_actions(api_client: TestClient) -
     assert unknown.json()["blocked_steps"][0]["action_id"] == "does_not_exist"
     assert non_executable.status_code == 200
     assert non_executable.json()["status"] == "blocked"
-    assert non_executable.json()["blocked_steps"][0]["action_id"] == "git_status"
+    assert non_executable.json()["blocked_steps"][0]["action_id"] == "git_diff_stat"
+
+
+def test_run_executes_git_status_and_docker_compose_config_with_fixed_process(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    approval_id = _create_approved_approval(api_client)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.agent_router.services.action_runner.subprocess.run",
+        _fake_subprocess_run_factory(calls),
+        raising=True,
+    )
+    monkeypatch.setenv("PATH", "/tmp/malicious")
+    get_settings.cache_clear()
+
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["git_status", "docker_compose_config"],
+            "reason": "Inspect repository and compose config",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert [result["action_id"] for result in body["results"]] == [
+        "git_status",
+        "docker_compose_config",
+    ]
+    assert body["results"][0]["output_preview"].startswith("## main")
+    assert body["results"][0]["truncated"] is True
+    assert "super-secret-token" not in body["results"][0]["output_preview"]
+    assert "[REDACTED]" in body["results"][0]["output_preview"]
+    assert body["results"][1]["output_preview"] == "docker compose config valid"
+    assert "command" not in json.dumps(body)
+    assert "argv" not in json.dumps(body)
+
+    assert len(calls) == 2
+    assert calls[0]["argv"] == ["git", "status", "--short", "--branch"]
+    assert calls[1]["argv"] == ["docker", "compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"]
+    for call in calls:
+        assert call["shell"] is False
+        assert call["timeout"] == 5
+        assert call["cwd"] == str(Path("/opt/aiops-orchestrator").resolve())
+        env = call["env"]
+        assert env["PATH"] == "/usr/bin:/bin"
+        assert "AGENT_ROUTER_API_TOKEN" not in env
+        assert "OPENAI_API_KEY" not in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert env["HOME"] == str(Path("/opt/aiops-orchestrator").resolve())
+
+    audit_events = _read_jsonl(_audit_log_path(tmp_path))
+    event_types = [event["event_type"] for event in audit_events]
+    assert "action_run_requested" in event_types
+    assert "action_run_started" in event_types
+    assert "action_run_completed" in event_types
 
 
 def test_run_rejects_command_field(api_client: TestClient) -> None:
@@ -276,6 +363,21 @@ def test_run_rejects_command_field(api_client: TestClient) -> None:
             "approval_id": approval_id,
             "action_ids": ["curl_health_8000"],
             "command": "rm -rf /",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_run_rejects_extra_fields(api_client: TestClient) -> None:
+    approval_id = _create_approved_approval(api_client)
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["curl_health_8000"],
+            "argv": ["git", "status"],
         },
     )
     assert response.status_code == 422
@@ -373,4 +475,5 @@ def test_run_store_persists_metadata(api_client: TestClient, tmp_path: Path, mon
     assert records[0]["run_id"] == response.json()["run_id"]
     assert records[0]["requested_action_ids"] == ["curl_health_8000"]
     assert "command" not in json.dumps(records[0])
+    assert "argv" not in json.dumps(records[0])
     assert "Authorization" not in json.dumps(records[0])

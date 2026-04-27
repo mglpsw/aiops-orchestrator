@@ -1,31 +1,42 @@
-"""Fixed read-only runner for the first execution-capable AIOps v1 actions.
+"""Fixed read-only runner for allowlisted AIOps v1 actions.
 
-This runner never shells out, never executes YAML command strings, and only
-performs allowlisted HTTP GET requests to local health/readiness endpoints.
+This runner never accepts shell text from requests or YAML. HTTP actions are
+performed through fixed URLs, and the local inspection actions use subprocess
+only through a tightly controlled helper with shell=False, fixed argv, fixed
+cwd, sanitized env, timeout, truncation, and redaction.
 """
 
 from __future__ import annotations
 
+import asyncio
 import re
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from time import perf_counter
 
 import httpx
 
-from app.core.config import get_settings
+from app.core.config import BASE_DIR, get_settings
 
-_ACTION_ENDPOINTS: dict[str, str] = {
+_HTTP_ACTION_ENDPOINTS: dict[str, str] = {
     "curl_health_8000": "http://127.0.0.1:8000/health",
     "curl_ready_8000": "http://127.0.0.1:8000/ready",
     "curl_health_8001": "http://127.0.0.1:8001/health",
     "curl_ready_8001": "http://127.0.0.1:8001/ready",
 }
 
+_PROCESS_ACTIONS = frozenset({"git_status", "docker_compose_config"})
+_FIXED_PATH = "/usr/bin:/bin"
+
 _SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)authorization\s*:\s*bearer\s+[^\s\"']+"), "[REDACTED]"),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-+/=]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bsk-[A-Za-z0-9-]{8,}\b"), "[REDACTED]"),
-    (re.compile(r'(?i)"(?:authorization|api[_-]?key|token|secret|password)"\s*:\s*"[^"]*"'), '"[REDACTED]":"[REDACTED]"'),
+    (
+        re.compile(r'(?i)"(?:authorization|api[_-]?key|token|secret|password)"\s*:\s*"[^"]*"'),
+        '"[REDACTED]":"[REDACTED]"',
+    ),
     (re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password)\b\s*[:=]\s*([^\s,;]+)"), "[REDACTED]"),
 )
 
@@ -44,8 +55,23 @@ class ActionRunError(RuntimeError):
     """Raised when a fixed internal action cannot be executed."""
 
 
+def resolve_action_repo_root() -> Path:
+    settings = get_settings()
+    path = Path(settings.action_repo_root)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    path = path.resolve()
+    if not path.exists() or not path.is_dir():
+        raise ActionRunError(f"Action repo root not found: {path}")
+    required = [path / "config" / "actions.yaml", path / "deploy" / "docker-compose.yml"]
+    missing = [candidate for candidate in required if not candidate.exists()]
+    if missing:
+        raise ActionRunError(f"Action repo root missing expected files: {', '.join(str(item) for item in missing)}")
+    return path
+
+
 def allowed_action_ids() -> frozenset[str]:
-    return frozenset(_ACTION_ENDPOINTS)
+    return frozenset(_HTTP_ACTION_ENDPOINTS) | _PROCESS_ACTIONS
 
 
 def _redact_sensitive_text(text: str) -> str:
@@ -65,6 +91,90 @@ def _truncate_text(text: str, max_bytes: int) -> tuple[str, bool]:
     if len(data) <= max_bytes:
         return text, False
     return data[:max_bytes].decode("utf-8", errors="ignore"), True
+
+
+def _sanitized_env(cwd: Path) -> dict[str, str]:
+    return {
+        "PATH": _FIXED_PATH,
+        "HOME": str(cwd),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "COMPOSE_DISABLE_ENV_FILE": "1",
+        "COMPOSE_PROJECT_NAME": "aiops-orchestrator",
+    }
+
+
+def _format_success_preview(action_id: str, stdout: str, stderr: str, success_message: str | None) -> str:
+    if success_message is not None:
+        return success_message
+    parts = [part for part in (stdout.strip(), stderr.strip()) if part]
+    return "\n".join(parts)
+
+
+def _run_fixed_process(
+    *,
+    action_id: str,
+    argv: list[str],
+    cwd: Path,
+    timeout_seconds: int,
+    success_message: str | None = None,
+) -> ActionExecutionResult:
+    settings = get_settings()
+    started = perf_counter()
+    try:
+        completed = subprocess.run(  # noqa: S603 - tightly controlled allowlisted runner
+            argv,
+            shell=False,
+            cwd=str(cwd),
+            env=_sanitized_env(cwd),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        status = "ok" if completed.returncode == 0 else "failed"
+        exit_code = int(completed.returncode)
+        if status == "ok":
+            raw_preview = _format_success_preview(action_id, stdout, stderr, success_message)
+        else:
+            raw_preview = _format_success_preview(action_id, stdout, stderr, None)
+        preview, truncated = _truncate_text(_redact_sensitive_text(raw_preview), settings.run_output_max_bytes)
+        return ActionExecutionResult(
+            action_id=action_id,
+            status=status,
+            exit_code=exit_code,
+            duration_ms=max(1, int((perf_counter() - started) * 1000)),
+            output_preview=preview,
+            truncated=truncated,
+        )
+    except subprocess.TimeoutExpired:
+        preview, truncated = _truncate_text(
+            _redact_sensitive_text(f"{action_id} timed out after {timeout_seconds}s"),
+            settings.run_output_max_bytes,
+        )
+        return ActionExecutionResult(
+            action_id=action_id,
+            status="failed",
+            exit_code=124,
+            duration_ms=max(1, int((perf_counter() - started) * 1000)),
+            output_preview=preview,
+            truncated=truncated,
+        )
+    except (FileNotFoundError, PermissionError, OSError) as exc:
+        exit_code = 127 if isinstance(exc, FileNotFoundError) else 126 if isinstance(exc, PermissionError) else 1
+        preview, truncated = _truncate_text(_redact_sensitive_text(str(exc)), settings.run_output_max_bytes)
+        return ActionExecutionResult(
+            action_id=action_id,
+            status="failed",
+            exit_code=exit_code,
+            duration_ms=max(1, int((perf_counter() - started) * 1000)),
+            output_preview=preview,
+            truncated=truncated,
+        )
 
 
 async def _run_http_get(action_id: str, url: str) -> ActionExecutionResult:
@@ -99,19 +209,44 @@ async def _run_http_get(action_id: str, url: str) -> ActionExecutionResult:
 
 
 async def run_curl_health_8000() -> ActionExecutionResult:
-    return await _run_http_get("curl_health_8000", _ACTION_ENDPOINTS["curl_health_8000"])
+    return await _run_http_get("curl_health_8000", _HTTP_ACTION_ENDPOINTS["curl_health_8000"])
 
 
 async def run_curl_ready_8000() -> ActionExecutionResult:
-    return await _run_http_get("curl_ready_8000", _ACTION_ENDPOINTS["curl_ready_8000"])
+    return await _run_http_get("curl_ready_8000", _HTTP_ACTION_ENDPOINTS["curl_ready_8000"])
 
 
 async def run_curl_health_8001() -> ActionExecutionResult:
-    return await _run_http_get("curl_health_8001", _ACTION_ENDPOINTS["curl_health_8001"])
+    return await _run_http_get("curl_health_8001", _HTTP_ACTION_ENDPOINTS["curl_health_8001"])
 
 
 async def run_curl_ready_8001() -> ActionExecutionResult:
-    return await _run_http_get("curl_ready_8001", _ACTION_ENDPOINTS["curl_ready_8001"])
+    return await _run_http_get("curl_ready_8001", _HTTP_ACTION_ENDPOINTS["curl_ready_8001"])
+
+
+async def run_git_status() -> ActionExecutionResult:
+    repo_root = resolve_action_repo_root()
+    settings = get_settings()
+    return await asyncio.to_thread(
+        _run_fixed_process,
+        action_id="git_status",
+        argv=["git", "status", "--short", "--branch"],
+        cwd=repo_root,
+        timeout_seconds=settings.run_timeout_seconds,
+    )
+
+
+async def run_docker_compose_config() -> ActionExecutionResult:
+    repo_root = resolve_action_repo_root()
+    settings = get_settings()
+    return await asyncio.to_thread(
+        _run_fixed_process,
+        action_id="docker_compose_config",
+        argv=["docker", "compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"],
+        cwd=repo_root,
+        timeout_seconds=settings.run_timeout_seconds,
+        success_message="docker compose config valid",
+    )
 
 
 _RUNNERS = {
@@ -119,6 +254,8 @@ _RUNNERS = {
     "curl_ready_8000": run_curl_ready_8000,
     "curl_health_8001": run_curl_health_8001,
     "curl_ready_8001": run_curl_ready_8001,
+    "git_status": run_git_status,
+    "docker_compose_config": run_docker_compose_config,
 }
 
 

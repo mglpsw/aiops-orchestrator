@@ -62,8 +62,9 @@ deploy (validado por `scripts/validate_actions_catalog.sh`).
 
 Exibe o estado atual da árvore de trabalho do repositório canônico.
 
-- **Comando:** `git -C /opt/aiops-orchestrator status`
+- **Comando interno fixo:** `git status --short --branch`
 - **Risk:** low | **Mode:** readonly | **Timeout:** 10s | **Approval:** false
+- **Execução:** função interna fixa; o catálogo não é fonte de comando executável.
 
 ### git_diff_stat
 
@@ -83,8 +84,9 @@ Exibe os 10 commits mais recentes em formato compacto.
 
 Valida e exibe a configuração final do docker-compose (sem iniciar nada).
 
-- **Comando:** `docker compose -f /opt/aiops-orchestrator/deploy/docker-compose.yml config`
+- **Comando interno fixo:** `docker compose -f deploy/docker-compose.yml config --quiet`
 - **Risk:** low | **Mode:** readonly | **Timeout:** 15s | **Approval:** false
+- **Execução:** função interna fixa; o catálogo não é fonte de comando executável.
 
 ### systemctl_status_aiops
 
@@ -222,6 +224,8 @@ para um plano estruturado e seguro, sem envolver LLM ou comando livre.
 | `GET` | `/v1/aiops/audit/recent` | Retorna os eventos auditados mais recentes |
 
 Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
+O runner read-only v1 usa funções internas fixas para `curl_*`, `git_status` e `docker_compose_config`;
+o catálogo apenas descreve a allowlist e não é fonte de comando executável.
 
 ### Contrato do planner
 
@@ -383,6 +387,19 @@ Nenhuma action é executada por criar, aprovar ou rejeitar uma solicitação.
 - `rejected` não pode ser aprovado
 - Nenhum `command`, segredo ou cabeçalho sensível é persistido
 - Cada transição gera evento auditável
+
+### Run history e inspeção local
+
+O histórico de runs (`GET /v1/aiops/runs/recent` e `GET /v1/aiops/runs/{run_id}`) é somente
+leitura e não permite reexecução.
+
+As ações read-only locais desta fase são fixas e allowlisted:
+
+- `git_status` usa o equivalente interno a `git status --short --branch`
+- `docker_compose_config` usa o equivalente interno a `docker compose -f deploy/docker-compose.yml config --quiet`
+
+O comando do catálogo continua sendo apenas documentação/allowlist. O runner nunca executa texto
+livre vindo do request ou do YAML.
 
 ---
 

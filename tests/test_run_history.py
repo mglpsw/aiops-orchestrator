@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -70,8 +71,29 @@ async def _fake_get_ok(self, url: str, *args, **kwargs) -> _FakeResponse:
     return _FakeResponse(200, '{"ready":true,"api_key":"sk-test-key"}')
 
 
+def _fake_subprocess_run(argv, **kwargs):
+    if list(argv) == ["git", "status", "--short", "--branch"]:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "## main\n"
+                " M config/actions.yaml\n"
+                " Authorization: Bearer super-secret-token\n"
+                " password=super-secret\n"
+                " api_key=sk-test-key\n"
+            ),
+            stderr="",
+        )
+    if list(argv) == ["docker", "compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"]:
+        return SimpleNamespace(returncode=0, stdout="services:\n  app:\n    image: aiops\n", stderr="")
+    return SimpleNamespace(returncode=1, stdout="", stderr="unexpected argv")
+
+
 def _create_approved_run(api_client: TestClient, monkeypatch: pytest.MonkeyPatch, action_id: str = "curl_health_8000", target: str = "agent-router") -> str:
-    monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_ok, raising=True)
+    if action_id.startswith("curl_"):
+        monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_ok, raising=True)
+    else:
+        monkeypatch.setattr("app.agent_router.services.action_runner.subprocess.run", _fake_subprocess_run, raising=True)
     approval = api_client.post(
         "/v1/aiops/actions/approvals",
         headers=_auth(),
@@ -127,6 +149,24 @@ def test_recent_filters_by_target_and_status(api_client: TestClient, monkeypatch
     assert response_status.status_code == 200
     assert [run["run_id"] for run in response_target.json()["runs"]] == [run_target_a]
     assert {run["run_id"] for run in response_status.json()["runs"]} == {run_target_a, run_target_b}
+
+
+def test_run_history_includes_local_inspection_runs(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = _create_approved_run(api_client, monkeypatch, action_id="git_status")
+
+    recent = api_client.get("/v1/aiops/runs/recent?limit=20", headers=_auth())
+    detail = api_client.get(f"/v1/aiops/runs/{run_id}", headers=_auth())
+
+    assert recent.status_code == 200
+    assert detail.status_code == 200
+    assert recent.json()["runs"][0]["run_id"] == run_id
+    assert recent.json()["runs"][0]["result_count"] == 1
+    assert detail.json()["results"][0]["action_id"] == "git_status"
+    detail_body = detail.json()
+    assert "command" not in json.dumps(detail_body)
+    assert "argv" not in json.dumps(detail_body)
+    assert "super-secret-token" not in json.dumps(detail_body)
+    assert "password" not in json.dumps(detail_body).lower()
 
 
 def test_get_run_returns_detail_and_missing_returns_404(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -186,4 +226,3 @@ def test_run_store_compaction_keeps_recent_records(api_client: TestClient, tmp_p
     assert third in run_ids
     assert second in run_ids or first in run_ids
     assert "command" not in json.dumps(records)
-

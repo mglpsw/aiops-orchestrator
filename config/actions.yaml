@@ -13,7 +13,7 @@ version: "1.0"
 catalog:
   - action_id: git_status
     description: "Exibe o estado atual da árvore de trabalho do repositório canônico"
-    command: "git -C /opt/aiops-orchestrator status"
+    command: "git status --short --branch"
     mode: readonly
     risk: low
     timeout_seconds: 10
@@ -40,7 +40,7 @@ catalog:
 
   - action_id: docker_compose_config
     description: "Valida e exibe a configuração final do docker-compose (sem iniciar nada)"
-    command: "docker compose -f /opt/aiops-orchestrator/deploy/docker-compose.yml config"
+    command: "docker compose -f deploy/docker-compose.yml config --quiet"
     mode: readonly
     risk: low
     timeout_seconds: 15
