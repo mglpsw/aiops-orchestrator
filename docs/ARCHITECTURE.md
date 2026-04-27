@@ -50,13 +50,13 @@ allowlisted, com aprovação humana obrigatória para ações de escrita).
 │          ┌───────────┴────────────┐                                │
 │          ▼                        ▼                                │
 │  ┌──────────────────┐  ┌──────────────────┐                       │
-│  │ Local Agent      │  │ Remote Agent     │                       │
-│  │ Bridge           │  │ Bridge           │                       │
+│  │ Local Read-Only  │  │ Future Bridges   │                       │
+│  │ Runner (v1)      │  │ (future only)    │                       │
 │  │                  │  │                  │                       │
-│  │ - Somente        │  │ - Somente        │                       │
-│  │   allowlist      │  │   allowlist      │                       │
-│  │ - Sem shell livre│  │ - Sem SSH livre  │                       │
-│  │ - ISOLADO (v1)   │  │ - ISOLADO (v1)   │                       │
+│  │ - Funções fixas   │  │ - GitHub Bridge  │                       │
+│  │ - Sem shell livre │  │ - Claude/Codex   │                       │
+│  │ - Sem subprocess  │  │ - Remote bridge  │                       │
+│  │ - Auditado        │  │ - Não ativo v1   │                       │
 │  └──────────────────┘  └──────────────────┘                       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -135,6 +135,17 @@ Persiste aprovações estruturadas para `plan_id` ou `dry_run_id`.
   `POST /v1/aiops/actions/approvals/{approval_id}/approve`,
   `POST /v1/aiops/actions/approvals/{approval_id}/reject`
 
+### Componente: Local Read-only Runner
+
+Executa apenas funções internas fixas, read-only e allowlisted, após approval válido.
+
+- **Implementado:** `app/agent_router/services/action_runner.py`
+- **Persistência:** `app/agent_router/services/run_store.py`
+- **Storage:** JSONL local configurável (`var/runs/aiops_runs.jsonl` por padrão)
+- **Endpoints associados:** `POST /v1/aiops/actions/run`
+- **Garantia:** não usa `command` do catálogo como comando executável
+- **Escopo v1:** apenas health/ready de `8000` e `8001`
+
 ---
 
 ## Fluxo de diagnóstico (v1 — caminho produtivo)
@@ -178,18 +189,24 @@ POST /v1/aiops/diagnose
     │      → Estados: pending, approved, rejected, expired
     │      → Não executa nada
     │
-    ├─ 8. Audit Log
+    ├─ 8. Read-only Run v1 (POST /v1/aiops/actions/run)
+    │      → Exige approval válido
+    │      → Executa apenas funções fixas allowlisted
+    │      → Sem shell, sem subprocess, sem SSH, sem docker exec
+    │      → Persiste metadados e registra auditoria
+    │
+    ├─ 9. Audit Log
     │      → Registra eventos estruturados de plan/dry-run
     │      → GET /v1/aiops/audit/recent retorna eventos recentes
     │
-    └─ 9. Retorna AIOpsDiagnoseResponse
+    └─ 10. Retorna AIOpsDiagnoseResponse
            → dry_run: true (sempre)
            → action_plan: ActionPlanResponse | null
            → sem execução real
            → nenhum command exposto
 ```
 
-## Fluxo do Action Planner (v1 — ativo, dry-run only)
+## Fluxo do Action Planner e execução read-only (v1)
 
 ```text
 POST /v1/aiops/actions/plan
@@ -254,7 +271,7 @@ POST /v1/aiops/actions/dry-run
            → nenhum command exposto
 ```
 
-## Fluxo de aprovação e execução (futuro — execução ainda não ativa)
+## Fluxo de aprovação e execução read-only
 
 ```text
 [ActionDryRunResponse ou ActionPlanResponse com status=ready]
@@ -263,10 +280,16 @@ POST /v1/aiops/actions/dry-run
     │      → Human review explícita para cada step
     │      → Sem auto-aprovação
     │
-    └─ Agent Bridge (Local ou Remote)
-           → Executa somente action_ids allowlisted
-           → Timeout, mascaramento de segredos, log de saída
-           → Não ativo até v2+
+    ├─ Read-only Run v1
+    │      → POST /v1/aiops/actions/run
+    │      → Executa apenas funções internas fixas allowlisted
+    │      → Somente health/ready 8000/8001 nesta fase
+    │      → Persistência e auditoria estruturadas
+    │
+    └─ Agent Bridges futuros
+           → GitHub Bridge, Claude/Codex Bridge, Remote Bridge
+           → Não fazem parte do runner v1
+           → Ativação apenas em fases posteriores
 ```
 
 ---

@@ -218,6 +218,7 @@ para um plano estruturado e seguro, sem envolver LLM ou comando livre.
 | `GET` | `/v1/aiops/actions/approvals/{approval_id}` | Consulta uma aprovação persistente |
 | `POST` | `/v1/aiops/actions/approvals/{approval_id}/approve` | Aprova uma solicitação pendente |
 | `POST` | `/v1/aiops/actions/approvals/{approval_id}/reject` | Rejeita uma solicitação pendente |
+| `POST` | `/v1/aiops/actions/run` | Executa ações read-only internas após aprovação válida |
 | `GET` | `/v1/aiops/audit/recent` | Retorna os eventos auditados mais recentes |
 
 Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
@@ -476,6 +477,77 @@ simulação explícita com `would_run`, `blocked_steps` e `warnings`.
 - Nenhuma execução real ocorre
 - Nenhum shell, SSH, Docker, `git`, `curl` real ou `systemctl` é chamado
 - O endpoint é autenticado por Bearer token como os demais endpoints sensíveis
+
+## Read-only run v1
+
+O endpoint `POST /v1/aiops/actions/run` é o primeiro executor real do projeto, mas nesta v1 ele
+continua restrito a funções internas fixas, read-only e allowlisted.
+
+### Escopo executável nesta v1
+
+- `curl_health_8000`
+- `curl_ready_8000`
+- `curl_health_8001`
+- `curl_ready_8001`
+
+### O que ele faz
+
+- Exige `approval_id` aprovado e correspondente ao `target`
+- Rejeita `command` no payload com HTTP 422
+- Usa cliente HTTP Python interno com timeout e output truncado
+- Redige tokens, segredos e cabeçalhos sensíveis do `output_preview`
+- Persiste metadados do run em JSONL local
+- Registra eventos auditáveis antes e depois da execução
+
+### O que ele não faz
+
+- Não executa comando livre
+- Não lê `command` do catálogo como comando executável
+- Não usa `subprocess`, `shell=True`, SSH, `docker exec`, `git push/pull`, `docker compose up/down` ou `systemctl restart`
+- Não implementa `GitHub Bridge`, `Claude Bridge` ou `Codex Bridge`
+
+### Request
+
+```json
+{
+  "target": "agent-router",
+  "approval_id": "approval_...",
+  "action_ids": ["curl_health_8000", "curl_ready_8000"],
+  "reason": "Coletar evidência read-only após diagnóstico degradado"
+}
+```
+
+### Response
+
+```json
+{
+  "run_id": "run_...",
+  "target": "agent-router",
+  "approval_id": "approval_...",
+  "status": "ok",
+  "started_at": "2026-04-27T00:00:00Z",
+  "finished_at": "2026-04-27T00:00:01Z",
+  "results": [
+    {
+      "action_id": "curl_health_8000",
+      "status": "ok",
+      "exit_code": 0,
+      "duration_ms": 12,
+      "output_preview": "{\"status\":\"healthy\"}",
+      "truncated": false
+    }
+  ],
+  "blocked_steps": [],
+  "warnings": []
+}
+```
+
+### Estados
+
+- `ok`: todas as actions executadas com sucesso
+- `partial`: ao menos uma action executou e ao menos uma falhou
+- `failed`: nenhuma action executou com sucesso
+- `blocked`: approval inválido, target divergente, action_id fora do subconjunto ou catálogo/action inválidos
 
 ---
 

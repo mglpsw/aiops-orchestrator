@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     approval_ttl_max_seconds: int = 3600
     approval_store_max_records: int = 1000
 
+    # --- Runs ---
+    run_store_path: str = "var/runs/aiops_runs.jsonl"
+    run_timeout_seconds: int = 5
+    run_output_max_bytes: int = 4000
+
     # --- WebAI ---
     webai_base_url: str = "http://open-webui:8080"
 

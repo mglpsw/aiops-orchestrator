@@ -96,9 +96,10 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - `GET /v1/aiops/actions/approvals/{approval_id}` — consulta uma aprovação persistente
 - `POST /v1/aiops/actions/approvals/{approval_id}/approve` — aprova uma solicitação pendente
 - `POST /v1/aiops/actions/approvals/{approval_id}/reject` — rejeita uma solicitação pendente
+- `POST /v1/aiops/actions/run` — executa apenas funções internas read-only allowlisted após aprovação válida
 - `GET /v1/aiops/audit/recent` — retorna os eventos auditados mais recentes
 - Somente `action_ids` presentes em `config/actions.yaml` são aceitos
-- Nenhum comando livre, shell, SSH ou remediação automática
+- Nenhum comando livre, shell, SSH, remediação automática ou bridge futura é aceita nesta fase
 - `action_ids` desconhecidos vão para `blocked_steps` (fail-closed)
 - O catálogo é validado no **startup** da aplicação; falha degrada `/ready` para `not_ready` antes da primeira requisição
 - Ver `docs/ACTIONS.md` para schema, regras, validação no startup e processo de adição futura
@@ -108,12 +109,11 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - O audit log v1 registra metadados estruturados de `plan` e `dry-run` em JSONL
 - Caminho padrão: `var/audit/aiops_audit.jsonl`
 - Variáveis:
-  - `AIOPS_AUDIT_LOG_PATH`
-  - `AIOPS_AUDIT_LOG_REQUIRED`
-  - `AIOPS_AUDIT_LOG_MAX_BYTES`
+- `AIOPS_AUDIT_LOG_PATH`
+- `AIOPS_AUDIT_LOG_REQUIRED`
+- `AIOPS_AUDIT_LOG_MAX_BYTES`
 - `AIOPS_AUDIT_LOG_BACKUP_COUNT`
 - `AIOPS_AUDIT_LOG_ROTATION_ENABLED`
-- `AIOPS_APPROVAL_STORE_PATH`
 - Nenhum `command`, segredo ou cabeçalho sensível é persistido
 - `GET /v1/aiops/audit/recent` permite inspeção autenticada dos eventos mais recentes
 
@@ -121,10 +121,23 @@ Ver `docs/OPERATIONS.md` para detalhes.
 
 - Aprovações são persistidas de forma estruturada e não executam ações
 - Caminho padrão: `var/approvals/aiops_approvals.jsonl`
+- Variável: `AIOPS_APPROVAL_STORE_PATH`
 - `ttl_seconds` padrão: `900`
 - TTL máximo seguro: `3600`
 - Estados: `pending`, `approved`, `rejected`, `expired`
 - Aprovações e decisões são auditadas
+
+### Read-only run v1
+
+- Endpoint: `POST /v1/aiops/actions/run`
+- Variáveis:
+  - `AIOPS_RUN_STORE_PATH`
+  - `AIOPS_RUN_TIMEOUT_SECONDS`
+  - `AIOPS_RUN_OUTPUT_MAX_BYTES`
+- Executa apenas funções internas fixas read-only e allowlisted
+- Nesta fase, o subconjunto executável é limitado a health/ready de `8000` e `8001`
+- Não aceita `command` no request e não expõe `command` na resposta
+- Requer approval válido e audit log ativo
 
 ---
 

@@ -222,12 +222,53 @@ class ActionDryRunResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class ActionRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = "agent-router"
+    approval_id: str
+    action_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def validate_action_run_request(self) -> "ActionRunRequest":
+        if not self.action_ids:
+            raise ValueError("action_ids must not be empty")
+        return self
+
+
+class ActionRunResult(BaseModel):
+    action_id: str
+    status: Literal["ok", "failed"]
+    exit_code: int
+    duration_ms: int
+    output_preview: str
+    truncated: bool = False
+
+
+class ActionRunResponse(BaseModel):
+    run_id: str
+    target: str
+    approval_id: str
+    status: Literal["ok", "partial", "failed", "blocked"]
+    started_at: str
+    finished_at: str
+    results: list[ActionRunResult] = Field(default_factory=list)
+    blocked_steps: list[ActionPlanBlockedStep] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AuditEvent(BaseModel):
     event_id: str
     timestamp: str
     event_type: Literal[
         "action_plan_created",
         "action_dry_run_created",
+        "action_run_requested",
+        "action_run_started",
+        "action_run_completed",
+        "action_run_blocked",
+        "action_run_failed",
         "diagnose_action_plan_attached",
         "approval_requested",
         "approval_approved",

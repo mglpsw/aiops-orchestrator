@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import perf_counter
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,10 @@ from app.agent_router.schemas import (
     ApprovalListResponse,
     ApprovalResponse,
     ApprovalStatus,
+    ActionPlanBlockedStep,
+    ActionRunRequest,
+    ActionRunResponse,
+    ActionRunResult,
     AuditRecentResponse,
     ActionDryRunRequest,
     ActionDryRunResponse,
@@ -32,6 +37,7 @@ from app.agent_router.services.audit_log import (
     AuditLogError,
     build_approval_audit_event,
     build_audit_event,
+    build_run_audit_event,
     read_recent_audit_events,
     write_audit_event,
 )
@@ -45,6 +51,8 @@ from app.agent_router.services.approval_store import (
     resolve_approval,
 )
 from app.agent_router.services.action_dry_run import simulate_action_dry_run
+from app.agent_router.services.action_runner import allowed_action_ids, execute_action
+from app.agent_router.services.run_store import write_run_record
 from app.core.config import get_settings
 from app.agent_router.services.action_mapper import map_findings_to_action_ids
 from app.agent_router.signals import collect_aiops_diagnostic_signals
@@ -454,6 +462,269 @@ async def reject_request(approval_id: str) -> ApprovalDecisionResponse:
     except AuditLogError as exc:
         raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
     return approval
+
+
+def _dedupe_action_ids(action_ids: list[str]) -> tuple[list[str], list[str]]:
+    normalized: list[str] = []
+    warnings: list[str] = []
+    seen: set[str] = set()
+    for raw_id in action_ids:
+        action_id = str(raw_id).strip()
+        if action_id in seen:
+            warnings.append(f"Duplicate action_id '{action_id}' ignored.")
+            continue
+        seen.add(action_id)
+        normalized.append(action_id)
+    return normalized, warnings
+
+
+def _build_run_response(
+    *,
+    run_id: str,
+    target: str,
+    approval_id: str,
+    status: str,
+    started_at: str,
+    finished_at: str,
+    results: list[ActionRunResult],
+    blocked_steps: list[ActionPlanBlockedStep],
+    warnings: list[str],
+) -> ActionRunResponse:
+    return ActionRunResponse(
+        run_id=run_id,
+        target=target,
+        approval_id=approval_id,
+        status=status,
+        started_at=started_at,
+        finished_at=finished_at,
+        results=results,
+        blocked_steps=blocked_steps,
+        warnings=warnings,
+    )
+
+
+@router.post("/v1/aiops/actions/run", response_model=ActionRunResponse)
+async def run_actions(request: ActionRunRequest) -> ActionRunResponse:
+    try:
+        catalog = _get_catalog()
+    except CatalogLoadError as exc:
+        raise HTTPException(status_code=503, detail=f"Action catalog unavailable: {exc}") from exc
+
+    approval, expired = resolve_approval(request.approval_id)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+
+    run_id = f"run_{uuid4().hex}"
+    started_at = datetime.now(timezone.utc).isoformat()
+    finished_at = started_at
+    requested_action_ids, request_warnings = _dedupe_action_ids(request.action_ids)
+    blocking_reasons: list[str] = []
+    audit_warnings: list[str] = []
+
+    requested_event = build_run_audit_event(
+        event_type="action_run_requested",
+        approval=approval,
+        run_id=run_id,
+        target=request.target,
+        source_endpoint="/v1/aiops/actions/run",
+        status="requested",
+        requested_action_ids=requested_action_ids,
+        warnings_count=len(request_warnings),
+    )
+    try:
+        wrote = write_audit_event(requested_event)
+    except AuditLogError as exc:
+        raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
+    if not wrote and not get_settings().audit_log_required:
+        audit_warnings.append("Audit log unavailable; event not persisted.")
+
+    if approval.target != request.target:
+        blocking_reasons.append("Approval target does not match requested target.")
+
+    if expired or approval.status == "expired":
+        expired_event = build_approval_audit_event(
+            event_type="approval_expired",
+            approval=approval,
+            source_endpoint="/v1/aiops/actions/run",
+        )
+        try:
+            write_audit_event(expired_event)
+        except AuditLogError as exc:
+            raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
+        blocking_reasons.append("Approval is expired.")
+    elif approval.status != "approved":
+        blocking_reasons.append(f"Approval status is '{approval.status}' and must be 'approved'.")
+
+    blocked_steps: list[ActionPlanBlockedStep] = []
+    executable_ids: list[str] = []
+    allowed_ids = allowed_action_ids()
+    for action_id in requested_action_ids:
+        entry = catalog.get(action_id)
+        if entry is None:
+            blocked_steps.append(
+                ActionPlanBlockedStep(
+                    action_id=action_id,
+                    reason=f"action_id '{action_id}' is not in the allowlisted catalog",
+                )
+            )
+            continue
+        if action_id not in allowed_ids:
+            blocked_steps.append(
+                ActionPlanBlockedStep(
+                    action_id=action_id,
+                    reason="action_id is not executable in run v1",
+                )
+            )
+            continue
+        if entry.mode != "readonly" or entry.risk != "low":
+            blocked_steps.append(
+                ActionPlanBlockedStep(
+                    action_id=action_id,
+                    reason="action_id is not allowed by the run v1 policy gate",
+                )
+            )
+            continue
+        executable_ids.append(action_id)
+
+    if blocking_reasons or blocked_steps:
+        blocked_response = _build_run_response(
+            run_id=run_id,
+            target=request.target,
+            approval_id=request.approval_id,
+            status="blocked",
+            started_at=started_at,
+            finished_at=finished_at,
+            results=[],
+            blocked_steps=blocked_steps,
+            warnings=[*request_warnings, *blocking_reasons, *audit_warnings],
+        )
+        blocked_event = build_run_audit_event(
+            event_type="action_run_blocked",
+            approval=approval,
+            run_id=run_id,
+            target=request.target,
+            source_endpoint="/v1/aiops/actions/run",
+            status="blocked",
+            requested_action_ids=requested_action_ids,
+            blocked_action_ids=[step.action_id for step in blocked_steps],
+            warnings_count=len(blocked_response.warnings),
+            blocked_steps_count=len(blocked_steps),
+        )
+        try:
+            wrote = write_audit_event(blocked_event)
+        except AuditLogError as exc:
+            raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
+        if not wrote and not get_settings().audit_log_required:
+            blocked_response = blocked_response.model_copy(
+                update={
+                    "warnings": [
+                        *blocked_response.warnings,
+                        "Audit log unavailable; event not persisted.",
+                    ]
+                }
+            )
+        persisted = write_run_record(blocked_response, requested_action_ids=requested_action_ids)
+        if not persisted:
+            blocked_response = blocked_response.model_copy(
+                update={
+                    "warnings": [
+                        *blocked_response.warnings,
+                        "Run metadata unavailable; event not persisted.",
+                    ]
+                }
+            )
+        return blocked_response
+
+    started_event = build_run_audit_event(
+        event_type="action_run_started",
+        approval=approval,
+        run_id=run_id,
+        target=request.target,
+        source_endpoint="/v1/aiops/actions/run",
+        status="started",
+        requested_action_ids=requested_action_ids,
+        warnings_count=len(request_warnings),
+    )
+    try:
+        wrote = write_audit_event(started_event)
+    except AuditLogError as exc:
+        raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
+    if not wrote and not get_settings().audit_log_required:
+        audit_warnings.append("Audit log unavailable; event not persisted.")
+
+    results: list[ActionRunResult] = []
+    for action_id in executable_ids:
+        execution = await execute_action(action_id)
+        results.append(
+            ActionRunResult(
+                action_id=execution.action_id,
+                status=execution.status,  # type: ignore[arg-type]
+                exit_code=execution.exit_code,
+                duration_ms=execution.duration_ms,
+                output_preview=execution.output_preview,
+                truncated=execution.truncated,
+            )
+        )
+
+    if results and all(result.status == "ok" for result in results):
+        final_status = "ok"
+        final_event_type = "action_run_completed"
+    elif any(result.status == "ok" for result in results):
+        final_status = "partial"
+        final_event_type = "action_run_completed"
+    else:
+        final_status = "failed"
+        final_event_type = "action_run_failed"
+
+    finished_at = datetime.now(timezone.utc).isoformat()
+    response = _build_run_response(
+        run_id=run_id,
+        target=request.target,
+        approval_id=request.approval_id,
+        status=final_status,
+        started_at=started_at,
+        finished_at=finished_at,
+        results=results,
+        blocked_steps=[],
+        warnings=[*request_warnings, *audit_warnings],
+    )
+
+    final_event = build_run_audit_event(
+        event_type=final_event_type,
+        approval=approval,
+        run_id=run_id,
+        target=request.target,
+        source_endpoint="/v1/aiops/actions/run",
+        status=final_status,
+        requested_action_ids=requested_action_ids,
+        warnings_count=len(response.warnings),
+    )
+    try:
+        wrote = write_audit_event(final_event)
+    except AuditLogError as exc:
+        raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
+    if not wrote and not get_settings().audit_log_required:
+        response = response.model_copy(
+            update={
+                "warnings": [
+                    *response.warnings,
+                    "Audit log unavailable; event not persisted.",
+                ]
+            }
+        )
+
+    persisted = write_run_record(response, requested_action_ids=requested_action_ids)
+    if not persisted:
+        response = response.model_copy(
+            update={
+                "warnings": [
+                    *response.warnings,
+                    "Run metadata unavailable; event not persisted.",
+                ]
+            }
+        )
+
+    return response
 
 
 # ---------------------------------------------------------------------------

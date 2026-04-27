@@ -27,6 +27,11 @@ class AuditLogError(RuntimeError):
 AuditEventType = Literal[
     "action_plan_created",
     "action_dry_run_created",
+    "action_run_requested",
+    "action_run_started",
+    "action_run_completed",
+    "action_run_blocked",
+    "action_run_failed",
     "diagnose_action_plan_attached",
     "approval_requested",
     "approval_approved",
@@ -156,6 +161,50 @@ def build_approval_audit_event(
         blocked_action_ids=[],
         warnings_count=0,
         blocked_steps_count=0,
+    )
+
+
+def build_run_audit_event(
+    *,
+    event_type: Literal[
+        "action_run_requested",
+        "action_run_started",
+        "action_run_completed",
+        "action_run_blocked",
+        "action_run_failed",
+    ],
+    approval: ApprovalResponse,
+    run_id: str,
+    target: str,
+    source_endpoint: str,
+    status: str,
+    requested_action_ids: list[str],
+    blocked_action_ids: list[str] | None = None,
+    warnings_count: int = 0,
+    blocked_steps_count: int = 0,
+    actor: str = "authenticated_user",
+) -> AuditEvent:
+    event_id = f"audit_{uuid4().hex}"
+    timestamp = datetime.now(timezone.utc).isoformat()
+    return AuditEvent(
+        event_id=event_id,
+        timestamp=timestamp,
+        event_type=event_type,
+        actor=actor,
+        target=target,
+        source_endpoint=source_endpoint,
+        approval_id=approval.approval_id,
+        correlation_id=run_id,
+        plan_id=approval.plan_id,
+        dry_run_id=approval.dry_run_id,
+        run_id=run_id,
+        risk=approval.risk,
+        requires_approval=approval.requires_approval,
+        status=status,
+        action_ids=requested_action_ids,
+        blocked_action_ids=blocked_action_ids or [],
+        warnings_count=warnings_count,
+        blocked_steps_count=blocked_steps_count,
     )
 
 

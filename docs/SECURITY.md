@@ -74,6 +74,17 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - Nenhum shell, SSH, Docker, `git`, `curl` real, `systemctl` ou processo externo é chamado
 - Catálogo inválido continua fail-closed com HTTP 503
 
+### `/v1/aiops/actions/run` — garantias de execução read-only
+
+- O endpoint executa apenas funções internas fixas e allowlisted
+- Nesta v1, apenas health/ready de `8000` e `8001` são executáveis
+- `command` no request é rejeitado e nunca é interpretado
+- Nenhum `command` do catálogo é executado diretamente
+- Nenhum shell livre, `subprocess` arbitrário, SSH ou `docker exec` é permitido
+- `GitHub Bridge`, `Claude Bridge` e `Codex Bridge` não fazem parte desta fase
+- Falhas de auditoria continuam fail-closed quando o audit log é obrigatório
+- Saída é truncada e segredos são redigidos antes da persistência
+
 ### Approval Model
 
 - Aprovações persistem apenas metadados seguros de `plan_id` ou `dry_run_id`
@@ -85,9 +96,9 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 
 ### Audit Log
 
-- O audit log grava apenas metadados estruturados de `plan` e `dry-run`
+- O audit log grava apenas metadados estruturados de `plan`, `dry-run` e `run`
 - O caminho padrão é `var/audit/aiops_audit.jsonl`
-- `AIOPS_AUDIT_LOG_REQUIRED=true` mantém `plan` e `dry-run` em fail-closed se a escrita falhar
+- `AIOPS_AUDIT_LOG_REQUIRED=true` mantém `plan`, `dry-run` e `run` em fail-closed se a escrita falhar
 - `AIOPS_AUDIT_LOG_ROTATION_ENABLED=true` ativa rotação simples por tamanho
 - `AIOPS_AUDIT_LOG_MAX_BYTES` e `AIOPS_AUDIT_LOG_BACKUP_COUNT` controlam retenção e quantidade de backups
 - Nenhum payload bruto completo, cabeçalho de autenticação, segredo ou `command` é persistido
