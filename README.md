@@ -151,6 +151,7 @@ Ver `docs/OPERATIONS.md` para detalhes.
   `systemctl_status_aiops`, `journalctl_aiops_recent` e `prometheus_query_allowlisted`
 - Também suporta inspeção local read-only via `git_status`, `git_diff_stat`, `docker_compose_config`,
   `docker_compose_bluegreen_config` e `systemctl_status_aiops`
+- As inspeções locais destacadas nesta sessão são `git_status` e `docker_compose_config`
 - `docker_compose_config` e `docker_compose_bluegreen_config` usam validação `docker compose ... config --quiet`
 - `git_diff_stat` usa somente `git diff --stat`
 - `systemctl_status_aiops` consulta apenas o estado read-only da unit `aiops-orchestrator.service`

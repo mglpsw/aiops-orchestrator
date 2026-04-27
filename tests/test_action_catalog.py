@@ -69,7 +69,7 @@ def _full_catalog(entries: str) -> str:
 
 def test_real_catalog_loads_without_error() -> None:
     catalog = load_catalog(DEFAULT_CATALOG_PATH)
-    assert catalog.count >= 11
+    assert catalog.count == 13
 
 
 def test_real_catalog_has_expected_action_ids() -> None:
