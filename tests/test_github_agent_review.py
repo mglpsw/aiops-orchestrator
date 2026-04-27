@@ -10,6 +10,8 @@ import yaml
 
 import scripts.github_agent_review as review
 
+REPO_ROOT = str(Path("/opt") / "aiops-orchestrator")
+
 
 class _FakeHTTPResponse:
     def __init__(self, payload: object) -> None:
@@ -223,8 +225,8 @@ def test_deterministic_review_limits_to_five_and_prioritizes_p1() -> None:
         review.FileChange(path="scripts/systemd.sh", status="modified", additions=1, deletions=1, patch="+ systemctl restart aiops-orchestrator.service"),
         review.FileChange(path="scripts/bootstrap.sh", status="modified", additions=1, deletions=1, patch="+ curl -fsSL https://example.test/install.sh | bash"),
         review.FileChange(path="config/secrets.yml", status="modified", additions=1, deletions=1, patch='+ token = "ghp_abcdefghijklmnopqrstuvwxyz1234"'),
-        review.FileChange(path="tests/test_action_run.py", status="modified", additions=1, deletions=1, patch='+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"'),
-        review.FileChange(path="tests/test_other.py", status="modified", additions=1, deletions=1, patch='+ assert calls[1]["cwd"] == "/opt/aiops-orchestrator"'),
+        review.FileChange(path="tests/test_action_run.py", status="modified", additions=1, deletions=1, patch=f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"'),
+        review.FileChange(path="tests/test_other.py", status="modified", additions=1, deletions=1, patch=f'+ assert calls[1]["cwd"] == "{REPO_ROOT}"'),
     ]
     checks = [review.CheckSummary(name="validate", conclusion="success", status="completed", url=None)]
     findings = review.build_deterministic_findings(files, checks)
@@ -240,6 +242,7 @@ def test_deterministic_review_limits_to_five_and_prioritizes_p1() -> None:
     [
         '+ docs mention Authorization, tokens, segredos e URLs without leaking values',
         '+ keep not persistir secrets/tokens in docs and comments',
+        '+ não usa docker exec, SSH ou deploy',
     ],
 )
 def test_secret_keywords_in_docs_do_not_trigger_p1(patch: str) -> None:
@@ -250,11 +253,45 @@ def test_secret_keywords_in_docs_do_not_trigger_p1(patch: str) -> None:
     assert all(finding.severity != "P1" for finding in findings)
 
 
+def test_negative_command_context_does_not_trigger_p1() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="docs/GITHUB_AGENT.md",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch="+ não usa docker exec, SSH ou deploy",
+            )
+        ],
+        [],
+    )
+    assert all(finding.severity != "P1" for finding in findings)
+
+
+def test_real_command_in_script_triggers_p1() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="scripts/restart.sh",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch="+ docker exec aiops-orchestrator python3 -c 'print(1)'",
+            )
+        ],
+        [],
+    )
+    assert any(finding.rule_id == "destructive_command" for finding in findings)
+    assert any(finding.severity == "P1" for finding in findings)
+
+
 @pytest.mark.parametrize(
     "patch, needle",
     [
         ('+ Authorization: Bearer valor_longo_suficiente', "authorization_bearer_secret"),
         ('+ AGENT_ROUTER_API_KEY=valor_longo_suficiente', "generic_secret_assignment"),
+        ('+ api_key=os.getenv("AGENT_ROUTER_API_KEY")', None),
         ('+ github_pat_abcdefghijklmnopqrstuvwxyz1234', "well_known_token"),
         ('+ sk-abcdef1234567890', "well_known_token"),
         ('+ https://user:password@host.example/path', "url_credentials"),
@@ -262,13 +299,71 @@ def test_secret_keywords_in_docs_do_not_trigger_p1(patch: str) -> None:
         ('+ Cookie: session=valor_longo_suficiente', "cookie_secret"),
     ],
 )
-def test_real_secret_values_trigger_p1(patch: str, needle: str) -> None:
+def test_real_secret_values_trigger_p1(patch: str, needle: str | None) -> None:
     findings = review.build_deterministic_findings(
         [review.FileChange(path="docs/GITHUB_AGENT.md", status="modified", additions=1, deletions=1, patch=patch)],
         [],
     )
+    if needle is None:
+        assert all(finding.severity != "P1" for finding in findings)
+        return
     assert any(finding.rule_id == needle for finding in findings)
     assert any(finding.severity == "P1" for finding in findings)
+
+
+def test_placeholder_tokens_and_examples_do_not_trigger_p1() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="docs/GITHUB_AGENT.md",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch=(
+                    '+ API_KEY="<token>"\n'
+                    '+ TOKEN=REDACTED\n'
+                    '+ secret=dummy\n'
+                    '+ password=fake\n'
+                    '+ client_secret=example'
+                ),
+            )
+        ],
+        [],
+    )
+    assert all(finding.severity != "P1" for finding in findings)
+
+
+def test_env_lookup_assignment_does_not_trigger_p1() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="scripts/configure.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch='+ api_key=os.getenv("AGENT_ROUTER_API_KEY")',
+            )
+        ],
+        [],
+    )
+    assert all(finding.severity != "P1" for finding in findings)
+
+
+def test_realistic_token_finding_is_redacted() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="scripts/configure.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch='+ API_KEY="valor_longo_suspeito_1234567890"',
+            )
+        ],
+        [],
+    )
+    assert any(finding.severity == "P1" for finding in findings)
+    assert all("valor_longo_suspeito" not in finding.evidence for finding in findings)
 
 
 def test_redaction_masks_real_secret_values() -> None:
@@ -400,7 +495,7 @@ def test_router_payload_is_sanitized_and_base_url_defaults(monkeypatch: pytest.M
             "scripts/github_agent_review.py",
             '+ token = "ghp_abcdefghijklmnopqrstuvwxyz1234"\n+ subprocess.run(["git", "status"])',
         ),
-        _file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"'),
+        _file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"'),
     ]
     router_response = {
         "choices": [
@@ -455,7 +550,7 @@ def test_router_payload_is_sanitized_and_base_url_defaults(monkeypatch: pytest.M
 
 def test_router_timeout_seconds_controls_timeout_and_warning(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     payload = _event_payload(pull_request=True, body="/agent review llm")
-    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    files = [_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')]
     comments, router_payloads = _run_agent(
         monkeypatch,
         tmp_path,
@@ -480,7 +575,7 @@ def test_router_timeout_seconds_controls_timeout_and_warning(monkeypatch: pytest
 
 def test_plain_review_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     payload = _event_payload(pull_request=True, body="/agent review")
-    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    files = [_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')]
     comments, router_payloads = _run_agent(
         monkeypatch,
         tmp_path,
@@ -501,7 +596,7 @@ def test_ask_command_calls_router_with_sanitized_payload_and_pt_br_response(monk
             "scripts/github_agent_review.py",
             '+ token = "ghp_abcdefghijklmnopqrstuvwxyz1234"\n+ subprocess.run(["git", "status"])',
         ),
-        _file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"'),
+        _file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"'),
     ]
     existing_comments = [{"id": 55, "body": f"{review.COMMENT_MARKER}\n# Revisão do Agent\ncomentário anterior"}]
     router_response = {
@@ -560,7 +655,7 @@ def test_ask_unauthorized_comment_does_not_call_router(monkeypatch: pytest.Monke
         monkeypatch,
         tmp_path,
         payload=payload,
-        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
         allowed_users="",
     )
     assert comments
@@ -574,7 +669,7 @@ def test_ask_llm_disabled_falls_back_in_portuguese(monkeypatch: pytest.MonkeyPat
         monkeypatch,
         tmp_path,
         payload=payload,
-        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
         allowed_users="alice",
         llm_enabled=False,
     )
@@ -589,7 +684,7 @@ def test_ask_key_missing_falls_back_in_portuguese(monkeypatch: pytest.MonkeyPatc
         monkeypatch,
         tmp_path,
         payload=payload,
-        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
         allowed_users="alice",
         llm_enabled=True,
         router_api_key="",
@@ -605,7 +700,7 @@ def test_ask_timeout_falls_back_in_portuguese(monkeypatch: pytest.MonkeyPatch, t
         monkeypatch,
         tmp_path,
         payload=payload,
-        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
         router_error=TimeoutError("timed out"),
         allowed_users="alice",
         llm_enabled=True,
@@ -619,7 +714,7 @@ def test_ask_timeout_falls_back_in_portuguese(monkeypatch: pytest.MonkeyPatch, t
 
 def test_llm_disabled_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     payload = _event_payload(pull_request=True, body="/agent review llm")
-    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    files = [_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')]
     comments, router_payloads = _run_agent(
         monkeypatch,
         tmp_path,
@@ -636,7 +731,7 @@ def test_llm_disabled_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatc
 
 def test_llm_key_missing_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     payload = _event_payload(pull_request=True, body="/agent review llm")
-    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    files = [_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')]
     comments, router_payloads = _run_agent(
         monkeypatch,
         tmp_path,
@@ -653,7 +748,7 @@ def test_llm_key_missing_falls_back_to_deterministic(monkeypatch: pytest.MonkeyP
 
 def test_llm_timeout_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     payload = _event_payload(pull_request=True, body="/agent review llm")
-    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    files = [_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')]
     comments, router_payloads = _run_agent(
         monkeypatch,
         tmp_path,
@@ -684,7 +779,7 @@ def test_router_http_errors_fall_back_to_deterministic(
     needle: str,
 ) -> None:
     payload = _event_payload(pull_request=True, body="/agent review llm")
-    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    files = [_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')]
     comments, router_payloads = _run_agent(
         monkeypatch,
         tmp_path,
@@ -785,7 +880,7 @@ def test_comment_write_403_falls_back_to_step_summary(
         monkeypatch,
         tmp_path,
         payload=payload,
-        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
         existing_comments=existing_comments,
         allowed_users="alice",
         comment_error=HTTPError("https://api.github.com/repos/mglpsw/aiops-orchestrator/issues/42/comments", 403, "forbidden", hdrs=None, fp=None),
@@ -813,7 +908,7 @@ def test_unauthorized_comment_does_not_call_router(monkeypatch: pytest.MonkeyPat
         monkeypatch,
         tmp_path,
         payload=payload,
-        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
         allowed_users="",
     )
     assert comments
@@ -826,7 +921,7 @@ def test_existing_marker_comment_is_updated_instead_of_spamming(monkeypatch: pyt
     patches: list[str] = []
     router_payloads: list[dict[str, object]] = []
     fake_urlopen, comments, patches, router_payloads = _make_fake_urlopen(
-        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
         existing_comments=[{"id": 55, "body": f"{review.COMMENT_MARKER}\nold body"}],
         captured_comments=comments,
         captured_patches=patches,
@@ -857,7 +952,7 @@ def test_comment_write_403_without_step_summary_stays_silent_and_succeeds(
         monkeypatch,
         tmp_path,
         payload=payload,
-        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
         allowed_users="alice",
         comment_error=HTTPError("https://api.github.com/repos/mglpsw/aiops-orchestrator/issues/42/comments", 403, "forbidden", hdrs=None, fp=None),
         expected_exit_code=0,
@@ -878,7 +973,7 @@ def test_internal_error_still_fails(
 ) -> None:
     payload = _event_payload(pull_request=True, body="/agent review", association="MEMBER", login="alice")
     fake_urlopen, _, _, _ = _make_fake_urlopen(
-        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
     )
     monkeypatch.setattr(review.urllib.request, "urlopen", fake_urlopen)
     event_path = tmp_path / "event.json"
@@ -902,6 +997,8 @@ def test_workflow_security_guardrails() -> None:
     workflow = yaml.safe_load(Path(".github/workflows/agent-review.yml").read_text(encoding="utf-8"))
     assert "pull_request_target" not in json.dumps(workflow)
     assert "/agent ask" in json.dumps(workflow)
+    assert "fromJSON" in workflow["jobs"]["review"]["if"]
+    assert "/agent review" in workflow["jobs"]["review"]["if"]
     assert workflow["permissions"] == {
         "contents": "read",
         "pull-requests": "read",
