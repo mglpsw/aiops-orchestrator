@@ -314,6 +314,16 @@ def test_plan_with_real_catalog_known_action_id(real_catalog: ActionCatalog) -> 
     assert response.steps[0].mode == "readonly"
 
 
+def test_plan_with_real_catalog_local_inspection_actions_succeed(real_catalog: ActionCatalog) -> None:
+    request = ActionPlanRequest(action_ids=["git_status", "docker_compose_config"])
+    response = plan_actions(request, real_catalog)
+
+    assert response.status == "ready"
+    assert [step.action_id for step in response.steps] == ["git_status", "docker_compose_config"]
+    assert response.blocked_steps == []
+    assert response.requires_approval is False
+
+
 def test_plan_with_real_catalog_all_known_ids_succeed(real_catalog: ActionCatalog) -> None:
     all_ids = list(real_catalog.action_ids())
     request = ActionPlanRequest(action_ids=all_ids)

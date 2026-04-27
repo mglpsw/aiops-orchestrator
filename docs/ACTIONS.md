@@ -417,8 +417,10 @@ leitura e não permite reexecução.
 As ações read-only locais desta fase são fixas e allowlisted:
 
 - `git_status` usa o equivalente interno a `git status --short --branch`
+- `git_status` é uma inspeção local sem shell livre, sem `checkout`, sem `reset` e sem qualquer mutação
 - `git_diff_stat` usa o equivalente interno a `git diff --stat`
 - `docker_compose_config` usa o equivalente interno a `docker compose -f deploy/docker-compose.yml config --quiet`
+- `docker_compose_config` é uma inspeção local sem `up`, `down`, `restart`, `pull` ou `build`
 - `docker_compose_bluegreen_config` usa o equivalente interno a `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config --quiet`
 - `systemctl_status_aiops` usa o equivalente interno a `systemctl show aiops-orchestrator.service --no-pager --property=Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,MainPID,ActiveEnterTimestamp,InactiveEnterTimestamp,NRestarts`
 
