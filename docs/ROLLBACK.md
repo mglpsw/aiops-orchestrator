@@ -4,14 +4,14 @@
 
 ### Parar serviço (sem perda de dados)
 ```bash
-pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose down"
+pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose stop aiops-orchestrator"
 ```
 Isso para o container mas preserva todos os dados no volume `aiops-data`.
 
 ### Remoção completa (reversível)
 ```bash
 # Parar serviço
-pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose down"
+pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose stop aiops-orchestrator"
 
 # Remove image (optional - saves disk)
 pct exec 102 -- docker rmi aiops-orchestrator 2>/dev/null || true

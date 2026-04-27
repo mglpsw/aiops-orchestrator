@@ -16,7 +16,7 @@ case "$ACTION" in
         ;;
     stop)
         echo "Parando o AIOps Orchestrator..."
-        pct exec $TARGET_CT -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose down"
+        pct exec $TARGET_CT -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose stop aiops-orchestrator"
         echo "Serviço parado. Volume de dados preservado."
         ;;
     restore)
@@ -28,7 +28,7 @@ case "$ACTION" in
             exit 1
         fi
         echo "Parando serviço..."
-        pct exec $TARGET_CT -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose down"
+        pct exec $TARGET_CT -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose stop aiops-orchestrator"
         echo "Restaurando banco de dados de $DB_BACKUP..."
         pct exec $TARGET_CT -- bash -c "
             docker run --rm -v aiops-data:/data -v '$BACKUP_DIR':/backup alpine \

@@ -135,7 +135,7 @@ pct exec 102 -- docker logs --since 1h aiops-orchestrator 2>&1 | grep ERROR
 bash scripts/backup.sh
 
 # Remove and recreate volume
-pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose down"
+pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose stop aiops-orchestrator"
 pct exec 102 -- docker volume rm aiops-data
 pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose up -d"
 ```
