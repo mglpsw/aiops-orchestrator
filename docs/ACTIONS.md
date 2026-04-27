@@ -236,6 +236,7 @@ Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
 O runner read-only v1 usa funções internas fixas para `curl_*`, `git_status`, `git_diff_stat`,
 `docker_compose_config` e `docker_compose_bluegreen_config`;
 o catálogo apenas descreve a allowlist e não é fonte de comando executável.
+Os adaptadores legados em `app/adapters/` não são usados pelo runner oficial.
 
 ### Contrato do planner
 

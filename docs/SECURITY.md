@@ -94,6 +94,14 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
   `docker_compose_bluegreen_config` vem somente de
   `AIOPS_ACTION_REPO_ROOT` (ou default seguro), nunca do request
 
+### Legacy adapters
+
+- `app/adapters/executor_local.py`, `app/adapters/docker.py` e `app/adapters/executor_ssh.py`
+  são considerados legado e não fazem parte do runner v1
+- O caminho oficial de execução read-only é apenas `app/agent_router/services/action_runner.py`
+- Esses adaptadores não devem ser conectados a `/v1/aiops/actions/run`
+- Qualquer reativação futura exige nova sessão de revisão, approval gate, policy gate, auditoria e testes
+
 ### `/v1/aiops/runs/recent` e `/v1/aiops/runs/{run_id}` — garantias de histórico
 
 - Os endpoints são somente leitura

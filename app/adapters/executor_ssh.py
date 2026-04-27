@@ -1,4 +1,9 @@
-"""SSH executor adapter - prepared for remote command execution via SSH.
+"""LEGACY / NOT USED BY AIOPS RUNNER V1.
+
+Do not wire this into /v1/aiops/actions/run. The official runner is
+app/agent_router/services/action_runner.py.
+
+SSH executor adapter - prepared for remote command execution via SSH.
 
 This adapter is configured but disabled by default.
 It requires SSH keys to be set up and targets to be allowlisted in policies.

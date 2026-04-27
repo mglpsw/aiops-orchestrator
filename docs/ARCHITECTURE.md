@@ -158,6 +158,27 @@ Consulta leituras seguras dos runs persistidos sem permitir reexecução.
 - **Garantia:** somente leitura; não amplia o conjunto de actions executáveis
 - **Uso futuro:** base para bridges futuras, mas não inclui bridges nesta sessão
 
+### Execution paths
+
+#### Official read-only runner
+
+- `app/agent_router/services/action_runner.py`
+- Único caminho oficial de execução para `/v1/aiops/actions/run`
+- Mapeia `action_id` para funções internas fixas e allowlisted
+
+#### Legacy adapters
+
+- `app/adapters/executor_local.py`
+- `app/adapters/docker.py`
+- `app/adapters/executor_ssh.py`
+- Mantidos apenas como compatibilidade histórica
+- Não devem ser ligados ao runner oficial
+
+#### Future Local Agent Bridge
+
+- Não implementado nesta fase
+- Qualquer reativação futura deve começar com nova sessão de desenho, approval, policy e testes
+
 ---
 
 ## Fluxo de diagnóstico (v1 — caminho produtivo)

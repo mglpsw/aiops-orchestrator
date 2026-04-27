@@ -1,4 +1,10 @@
-"""Secure local command executor with backup, timeout, and secret masking."""
+"""LEGACY / NOT USED BY AIOPS RUNNER V1.
+
+Do not wire this into /v1/aiops/actions/run. The official runner is
+app/agent_router/services/action_runner.py.
+
+Secure local command executor with backup, timeout, and secret masking.
+"""
 
 from __future__ import annotations
 

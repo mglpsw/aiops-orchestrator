@@ -1,4 +1,9 @@
-"""Docker adapter for container inspection and management.
+"""LEGACY / NOT USED BY AIOPS RUNNER V1.
+
+Do not wire this into /v1/aiops/actions/run. The official runner is
+app/agent_router/services/action_runner.py.
+
+Docker adapter for container inspection and management.
 
 Provides read-heavy operations by default. Destructive operations require approval.
 """

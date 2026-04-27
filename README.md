@@ -149,6 +149,8 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - O repositório alvo é fixo/allowlisted via `AIOPS_ACTION_REPO_ROOT`
 - Não aceita `command` ou `argv` no request e não expõe `command` ou `argv` na resposta
 - Requer approval válido e audit log ativo
+- O executor oficial atual é apenas `app/agent_router/services/action_runner.py`
+- `GitHub Bridge`, `Claude Bridge` e `Codex Bridge` continuam fora desta fase
 
 ---
 
@@ -166,6 +168,7 @@ pytest tests/ -v
 - [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md)
 - [`docs/SECURITY.md`](docs/SECURITY.md)
+- [`docs/LEGACY_ADAPTERS.md`](docs/LEGACY_ADAPTERS.md)
 - [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)
 - [`docs/ROLLBACK.md`](docs/ROLLBACK.md)
 - [`docs/aiops-bluegreen-operations.md`](docs/aiops-bluegreen-operations.md)
