@@ -191,6 +191,7 @@ def _run_agent(
 def test_parser_recognizes_review_commands() -> None:
     assert review.parse_agent_review_command("/agent review") == "review"
     assert review.parse_agent_review_command("hello\n/agent review llm\nthanks") == "review_llm"
+    assert review.parse_agent_review_command("/agent ask explica esse achado") == "ask"
     assert review.parse_agent_review_command("/agent review anything-else") == "unknown"
     assert review.parse_agent_review_command("/agent ci") == "unknown"
     assert review.parse_agent_review_command("plain text") == "none"
@@ -283,7 +284,7 @@ def test_redaction_masks_real_secret_values() -> None:
     assert "[REDACTED" in redacted
 
 
-def test_status_attention_needed_for_p2_only() -> None:
+def test_status_needs_review_for_p2_only() -> None:
     findings = [
         review.Finding(
             severity="P2",
@@ -294,11 +295,77 @@ def test_status_attention_needed_for_p2_only() -> None:
             rule_id="hardcoded_repo_root",
         )
     ]
-    assert review.review_status(findings) == "attention_needed"
+    assert review.review_status(findings) == "needs_review"
 
 
 def test_status_approved_when_no_p1_or_p2() -> None:
     assert review.review_status([]) == "approved"
+
+
+def test_structured_llm_p1_or_p2_updates_status_without_deterministic_blockers() -> None:
+    pr_context = review.ReviewContext(
+        owner="mglpsw",
+        repo="aiops-orchestrator",
+        issue_number=42,
+        author="alice",
+        association="MEMBER",
+        pr_number=42,
+        title="Minor change",
+        body="small tweak",
+        base_ref="master",
+        head_ref="feat",
+        head_sha="abc123",
+        html_url="https://github.com/mglpsw/aiops-orchestrator/pull/42",
+        files=[review.FileChange(path="docs/GITHUB_AGENT.md", status="modified", additions=1, deletions=1, patch="+ docs")],
+    )
+    structured_p2 = [
+        review.Finding(
+            severity="P2",
+            file="tests/test_action_run.py",
+            evidence="path hardcoded",
+            risk="risk",
+            recommendation="fix",
+            rule_id="llm::P2::tests/test_action_run.py",
+        )
+    ]
+    markdown = review.render_review([], [], pr_context, llm_mode=True, llm_notes="resumo", llm_findings=structured_p2)
+    assert "- Status: needs_review" in markdown
+    assert "## Achados do LLM" in markdown
+    assert "## Notas do LLM" in markdown
+
+    structured_p1 = [
+        review.Finding(
+            severity="P1",
+            file="scripts/github_agent_review.py",
+            evidence="execução perigosa",
+            risk="risk",
+            recommendation="fix",
+            rule_id="llm::P1::scripts/github_agent_review.py",
+        )
+    ]
+    markdown_p1 = review.render_review([], [], pr_context, llm_mode=True, llm_notes="resumo", llm_findings=structured_p1)
+    assert "- Status: changes_requested" in markdown_p1
+
+
+def test_unstructured_llm_text_with_p1_does_not_change_status() -> None:
+    pr_context = review.ReviewContext(
+        owner="mglpsw",
+        repo="aiops-orchestrator",
+        issue_number=42,
+        author="alice",
+        association="MEMBER",
+        pr_number=42,
+        title="Minor change",
+        body="small tweak",
+        base_ref="master",
+        head_ref="feat",
+        head_sha="abc123",
+        html_url="https://github.com/mglpsw/aiops-orchestrator/pull/42",
+        files=[review.FileChange(path="docs/GITHUB_AGENT.md", status="modified", additions=1, deletions=1, patch="+ docs")],
+    )
+    markdown = review.render_review([], [], pr_context, llm_mode=True, llm_notes="P1 talvez, mas não tenho certeza", llm_findings=[])
+    assert "- Status: approved" in markdown
+    assert "P1 talvez" in markdown
 
 
 def test_review_render_is_short_without_p1_p2() -> None:
@@ -319,9 +386,11 @@ def test_review_render_is_short_without_p1_p2() -> None:
     )
     markdown = review.render_review([], [], pr_context, llm_mode=False)
     assert markdown.startswith(review.COMMENT_MARKER)
+    assert "# Revisão do Agent" in markdown
+    assert "## Resumo" in markdown
     assert "Não encontrei P1/P2 determinísticos." in markdown
     assert "Código do PR executado: não" in markdown
-    assert "LLM" not in markdown
+    assert "Notas do LLM" not in markdown
 
 
 def test_router_payload_is_sanitized_and_base_url_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -376,10 +445,12 @@ def test_router_payload_is_sanitized_and_base_url_defaults(monkeypatch: pytest.M
     assert "router-secret" not in body
     assert "Authorization" not in body
     assert "ghp_abcdefghijklmnopqrstuvwxyz1234" not in body
+    assert "pt-BR" in body
     assert router_call["payload"]["model"] == "gpt-review"
     assert comments[0].startswith(review.COMMENT_MARKER)
-    assert "# Agent Review" in comments[0]
-    assert "LLM" not in comments[0] or "short" in comments[0]
+    assert "# Revisão do Agent" in comments[0]
+    assert "## Notas do LLM" in comments[0]
+    assert "## Resumo" in comments[0]
 
 
 def test_router_timeout_seconds_controls_timeout_and_warning(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -400,6 +471,7 @@ def test_router_timeout_seconds_controls_timeout_and_warning(monkeypatch: pytest
     assert comments
     assert router_payloads
     assert "timeout após 90s" in comments[0]
+    assert "use /agent review para review determinístico" in comments[0]
     assert "Agent Router timeout:" in captured.err
     assert "timeout=90s" in captured.err
     assert "router-secret" not in captured.err
@@ -419,7 +491,130 @@ def test_plain_review_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_
     assert comments
     assert not router_payloads
     assert comments[0].startswith(review.COMMENT_MARKER)
-    assert "deterministic review" in comments[0]
+    assert "revisão determinística" in comments[0]
+
+
+def test_ask_command_calls_router_with_sanitized_payload_and_pt_br_response(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent ask explique esse achado", association="MEMBER", login="alice")
+    files = [
+        _file(
+            "scripts/github_agent_review.py",
+            '+ token = "ghp_abcdefghijklmnopqrstuvwxyz1234"\n+ subprocess.run(["git", "status"])',
+        ),
+        _file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"'),
+    ]
+    existing_comments = [{"id": 55, "body": f"{review.COMMENT_MARKER}\n# Revisão do Agent\ncomentário anterior"}]
+    router_response = {
+        "choices": [
+            {
+                "message": {
+                    "content": "Claro, isso parece um falso positivo porque o diff não executa código nem altera permissões."
+                }
+            }
+        ]
+    }
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=files,
+        existing_comments=existing_comments,
+        router_response=router_response,
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="router-secret",
+        router_model="gpt-review",
+    )
+    assert len(comments) == 1
+    assert "falso positivo" in comments[0]
+    assert "secret-token" not in comments[0]
+    assert "router-secret" not in comments[0]
+    assert router_payloads
+    router_call = router_payloads[0]["payload"]
+    user_content = router_call["messages"][1]["content"]
+    assert "Pergunta do usuário: explique esse achado" in user_content
+    assert "Título do PR:" in user_content
+    assert "Descrição do PR:" in user_content
+    assert "Último comentário do bot:" in user_content
+    assert "Achados determinísticos recentes:" in user_content
+    assert "ghp_abcdefghijklmnopqrstuvwxyz1234" not in user_content
+    assert "pt-BR" in json.dumps(router_call)
+
+
+def test_ask_command_on_issue_does_not_execute(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=False, body="/agent ask explique esse achado", association="MEMBER", login="alice")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        allowed_users="",
+    )
+    assert comments
+    assert not router_payloads
+    assert "Pull Requests" in comments[0]
+
+
+def test_ask_unauthorized_comment_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent ask explique esse achado", association="NONE", login="outsider")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        allowed_users="",
+    )
+    assert comments
+    assert not router_payloads
+    assert "não está autorizado" in comments[0]
+
+
+def test_ask_llm_disabled_falls_back_in_portuguese(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent ask explique esse achado")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        allowed_users="alice",
+        llm_enabled=False,
+    )
+    assert comments
+    assert not router_payloads
+    assert comments[0] == "Agent ask requer LLM habilitado; use /agent review para review determinístico."
+
+
+def test_ask_key_missing_falls_back_in_portuguese(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent ask explique esse achado")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="",
+    )
+    assert comments
+    assert not router_payloads
+    assert comments[0] == "Agent ask requer LLM habilitado; use /agent review para review determinístico."
+
+
+def test_ask_timeout_falls_back_in_portuguese(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent ask explique esse achado")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        router_error=TimeoutError("timed out"),
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="router-secret",
+    )
+    assert comments
+    assert router_payloads
+    assert "Agent ask indisponível (timeout após 60s)" in comments[0]
+    assert "use /agent review para review determinístico" in comments[0]
 
 
 def test_llm_disabled_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -435,7 +630,8 @@ def test_llm_disabled_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatc
     )
     assert comments
     assert not router_payloads
-    assert "LLM review não está habilitado" in comments[0]
+    assert "LLM desabilitado" in comments[0]
+    assert "use /agent review para review determinístico" in comments[0]
 
 
 def test_llm_key_missing_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -452,7 +648,7 @@ def test_llm_key_missing_falls_back_to_deterministic(monkeypatch: pytest.MonkeyP
     )
     assert comments
     assert not router_payloads
-    assert "chave do router ausente" in comments[0]
+    assert "LLM desabilitado ou chave do router ausente" in comments[0]
 
 
 def test_llm_timeout_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -476,8 +672,8 @@ def test_llm_timeout_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch
 @pytest.mark.parametrize(
     ("error", "needle"),
     [
-        (HTTPError("https://api.ks-sm.net:9443/v1/chat/completions", 401, "unauthorized", hdrs=None, fp=None), "auth"),
-        (HTTPError("https://api.ks-sm.net:9443/v1/chat/completions", 429, "rate limited", hdrs=None, fp=None), "rate limited"),
+        (HTTPError("https://api.ks-sm.net:9443/v1/chat/completions", 401, "unauthorized", hdrs=None, fp=None), "autenticação falhou"),
+        (HTTPError("https://api.ks-sm.net:9443/v1/chat/completions", 429, "rate limited", hdrs=None, fp=None), "limite de taxa"),
         (HTTPError("https://api.ks-sm.net:9443/v1/chat/completions", 503, "unavailable", hdrs=None, fp=None), "router indisponível"),
     ],
 )
@@ -573,7 +769,7 @@ def test_issue_comment_on_issue_is_supported_and_does_not_call_router(monkeypatc
     )
     assert comments
     assert not router_payloads
-    assert "apenas Pull Requests" in comments[0]
+    assert "Pull Requests" in comments[0]
 
 
 @pytest.mark.parametrize("existing_comments", [[], [{"id": 55, "body": f"{review.COMMENT_MARKER}\nold body"}]])
@@ -606,7 +802,7 @@ def test_comment_write_403_falls_back_to_step_summary(
     assert step_summary.exists()
     summary = step_summary.read_text(encoding="utf-8")
     assert review.COMMENT_MARKER in summary
-    assert "# Agent Review" in summary
+    assert "# Revisão do Agent" in summary
     assert "secret-token" not in summary
     assert "AGENT_ROUTER_API_KEY" not in summary
 
@@ -622,7 +818,7 @@ def test_unauthorized_comment_does_not_call_router(monkeypatch: pytest.MonkeyPat
     )
     assert comments
     assert not router_payloads
-    assert "falta de autorização" in comments[0]
+    assert "não está autorizado" in comments[0]
 
 
 def test_existing_marker_comment_is_updated_instead_of_spamming(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -705,6 +901,7 @@ def test_internal_error_still_fails(
 def test_workflow_security_guardrails() -> None:
     workflow = yaml.safe_load(Path(".github/workflows/agent-review.yml").read_text(encoding="utf-8"))
     assert "pull_request_target" not in json.dumps(workflow)
+    assert "/agent ask" in json.dumps(workflow)
     assert workflow["permissions"] == {
         "contents": "read",
         "pull-requests": "read",
