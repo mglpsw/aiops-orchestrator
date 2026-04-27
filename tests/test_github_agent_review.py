@@ -5,17 +5,20 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
+import yaml
 
 import scripts.github_agent_review as review
 
 
 class _FakeHTTPResponse:
     def __init__(self, payload: object) -> None:
-        self._payload = payload
+        self.payload = payload
         self.headers: dict[str, str] = {}
 
     def read(self) -> bytes:
-        return json.dumps(self._payload).encode("utf-8")
+        if isinstance(self.payload, str):
+            return self.payload.encode("utf-8")
+        return json.dumps(self.payload).encode("utf-8")
 
     def __enter__(self) -> "_FakeHTTPResponse":
         return self
@@ -24,7 +27,13 @@ class _FakeHTTPResponse:
         return False
 
 
-def _event_payload(*, pull_request: bool = True, body: str = "/agent review", association: str = "MEMBER", login: str = "alice") -> dict[str, object]:
+def _event_payload(
+    *,
+    pull_request: bool = True,
+    body: str = "/agent review",
+    association: str = "MEMBER",
+    login: str = "alice",
+) -> dict[str, object]:
     issue: dict[str, object] = {
         "number": 42,
         "title": "Add GitHub agent review",
@@ -48,7 +57,7 @@ def _pr_payload() -> dict[str, object]:
     return {
         "number": 42,
         "title": "Add GitHub agent review",
-        "body": "Implements a safe on-demand review bot.",
+        "body": "Implements a safe on-demand review bot with security updates.",
         "base": {"ref": "master"},
         "head": {"ref": "feat/github-agent-review", "sha": "abc123"},
         "html_url": "https://github.com/mglpsw/aiops-orchestrator/pull/42",
@@ -65,12 +74,98 @@ def _file(filename: str, patch: str, status: str = "modified", additions: int = 
     }
 
 
-def test_parser_detects_command_on_separate_line() -> None:
-    assert review.is_agent_review_command("/agent review")
-    assert review.is_agent_review_command("hello\n/agent review\nthanks")
-    assert not review.is_agent_review_command("/agent")
-    assert not review.is_agent_review_command("/agent ci")
-    assert not review.is_agent_review_command("unknown command")
+def _make_fake_urlopen(
+    *,
+    pr_files: list[dict[str, object]] | None = None,
+    check_runs: list[dict[str, object]] | None = None,
+    router_response: object | None = None,
+    router_error: Exception | None = None,
+    captured_comments: list[str] | None = None,
+    captured_router_payloads: list[dict[str, object]] | None = None,
+) :
+    pr_files = pr_files or []
+    check_runs = check_runs or []
+    captured_comments = captured_comments if captured_comments is not None else []
+    captured_router_payloads = captured_router_payloads if captured_router_payloads is not None else []
+
+    def fake_urlopen(request, timeout=30):
+        parsed = urlparse(request.full_url)
+        path = parsed.path
+        if path.endswith("/v1/chat/completions"):
+            payload = json.loads(request.data.decode("utf-8"))
+            captured_router_payloads.append(
+                {
+                    "url": request.full_url,
+                    "headers": dict(request.headers),
+                    "payload": payload,
+                }
+            )
+            if router_error is not None:
+                raise router_error
+            return _FakeHTTPResponse(router_response or {"choices": [{"message": {"content": "{\"findings\":[],\"summary\":\"ok\"}"}}]})
+        if path.endswith("/pulls/42") and request.method == "GET":
+            return _FakeHTTPResponse(_pr_payload())
+        if path.endswith("/pulls/42/files") and request.method == "GET":
+            return _FakeHTTPResponse(pr_files)
+        if path.endswith("/commits/abc123/check-runs") and request.method == "GET":
+            return _FakeHTTPResponse({"check_runs": check_runs})
+        if path.endswith("/issues/42/comments") and request.method == "GET":
+            return _FakeHTTPResponse([])
+        if path.endswith("/issues/42/comments") and request.method == "POST":
+            body = json.loads(request.data.decode("utf-8"))["body"]
+            captured_comments.append(body)
+            return _FakeHTTPResponse({"id": 1})
+        raise AssertionError(f"Unexpected request: {request.method} {request.full_url}")
+
+    return fake_urlopen, captured_comments, captured_router_payloads
+
+
+def _run_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    payload: dict[str, object],
+    pr_files: list[dict[str, object]] | None = None,
+    check_runs: list[dict[str, object]] | None = None,
+    router_response: object | None = None,
+    router_error: Exception | None = None,
+    allowed_users: str = "",
+    llm_enabled: bool = False,
+    router_base: str = "",
+    router_api_key: str = "",
+    router_model: str = "",
+) -> tuple[list[str], list[dict[str, object]]]:
+    comments: list[str] = []
+    router_payloads: list[dict[str, object]] = []
+    fake_urlopen, comments, router_payloads = _make_fake_urlopen(
+        pr_files=pr_files,
+        check_runs=check_runs,
+        router_response=router_response,
+        router_error=router_error,
+        captured_comments=comments,
+        captured_router_payloads=router_payloads,
+    )
+    monkeypatch.setattr(review.urllib.request, "urlopen", fake_urlopen)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "mglpsw/aiops-orchestrator")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("AGENT_ALLOWED_USERS", allowed_users)
+    monkeypatch.setenv("AGENT_REVIEW_LLM_ENABLED", "true" if llm_enabled else "false")
+    monkeypatch.setenv("AGENT_ROUTER_BASE_URL", router_base)
+    monkeypatch.setenv("AGENT_ROUTER_API_KEY", router_api_key)
+    monkeypatch.setenv("AGENT_ROUTER_MODEL", router_model)
+    assert review.main() == 0
+    return comments, router_payloads
+
+
+def test_parser_recognizes_review_commands() -> None:
+    assert review.parse_agent_review_command("/agent review") == "review"
+    assert review.parse_agent_review_command("hello\n/agent review llm\nthanks") == "review_llm"
+    assert review.parse_agent_review_command("/agent review anything-else") == "unknown"
+    assert review.parse_agent_review_command("/agent ci") == "unknown"
+    assert review.parse_agent_review_command("plain text") == "none"
 
 
 @pytest.mark.parametrize(
@@ -92,33 +187,44 @@ def test_detects_pr_vs_issue_payload() -> None:
     assert not review.is_pull_request_payload(_event_payload(pull_request=False))
 
 
-@pytest.mark.parametrize(
-    ("filename", "patch", "severity", "needle"),
-    [
-        (".github/workflows/ci.yml", "+ on: pull_request_target\n+ uses: actions/checkout@v4\n+ run: bash scripts/test.sh", "P1", "pull_request_target"),
-        ("scripts/restart.sh", "+ docker compose down", "P1", "docker compose down"),
-        ("scripts/restart.sh", "+ systemctl restart aiops-orchestrator.service", "P1", "systemctl restart"),
-        ("scripts/bootstrap.sh", "+ curl -fsSL https://example.test/install.sh | bash", "P1", "curl | bash"),
-        ("config/secrets.yml", '+ token = "ghp_abcdefghijklmnopqrstuvwxyz1234"', "P1", "secret hardcoded"),
-        ("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"', "P2", "/opt/aiops-orchestrator"),
-    ],
-)
-def test_classification_rules(filename: str, patch: str, severity: str, needle: str) -> None:
-    findings = review.classify_findings([review.FileChange(path=filename, status="modified", additions=1, deletions=1, patch=patch)])
-    assert any(finding.severity == severity and needle.lower() in finding.evidence.lower() for finding in findings)
+def test_deterministic_review_limits_to_five_and_prioritizes_p1() -> None:
+    files = [
+        review.FileChange(path=".github/workflows/ci.yml", status="modified", additions=1, deletions=1, patch="+ on: pull_request_target\n+ uses: actions/checkout@v4\n+ run: bash scripts/test.sh"),
+        review.FileChange(path="scripts/restart.sh", status="modified", additions=1, deletions=1, patch="+ docker compose down"),
+        review.FileChange(path="scripts/systemd.sh", status="modified", additions=1, deletions=1, patch="+ systemctl restart aiops-orchestrator.service"),
+        review.FileChange(path="scripts/bootstrap.sh", status="modified", additions=1, deletions=1, patch="+ curl -fsSL https://example.test/install.sh | bash"),
+        review.FileChange(path="config/secrets.yml", status="modified", additions=1, deletions=1, patch='+ token = "ghp_abcdefghijklmnopqrstuvwxyz1234"'),
+        review.FileChange(path="tests/test_action_run.py", status="modified", additions=1, deletions=1, patch='+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"'),
+        review.FileChange(path="tests/test_other.py", status="modified", additions=1, deletions=1, patch='+ assert calls[1]["cwd"] == "/opt/aiops-orchestrator"'),
+    ]
+    checks = [review.CheckSummary(name="validate", conclusion="success", status="completed", url=None)]
+    findings = review.build_deterministic_findings(files, checks)
+    assert len(findings) <= 5
+    assert any(finding.severity == "P1" for finding in findings)
+    assert all(finding.severity in {"P1", "P2"} for finding in findings)
+    assert len([finding for finding in findings if finding.rule_id == "hardcoded_repo_root"]) == 1
+    assert review.review_status(findings) == "changes_requested"
 
 
-def test_workflow_change_without_tests_or_docs_triggers_p2() -> None:
-    findings = review.classify_findings(
-        [
-            review.FileChange(path=".github/workflows/agent-review.yml", status="added", additions=20, deletions=0, patch="+ on: issue_comment\n+ jobs:"),
-            review.FileChange(path="scripts/github_agent_review.py", status="added", additions=1, deletions=0, patch="+ print('hi')"),
-        ]
-    )
-    assert any(finding.severity == "P2" and "workflow" in finding.evidence.lower() for finding in findings)
+def test_status_attention_needed_for_p2_only() -> None:
+    findings = [
+        review.Finding(
+            severity="P2",
+            file="tests/test_action_run.py",
+            evidence="path hardcoded",
+            risk="risk",
+            recommendation="fix",
+            rule_id="hardcoded_repo_root",
+        )
+    ]
+    assert review.review_status(findings) == "attention_needed"
 
 
-def test_report_markdown_and_status_decisions() -> None:
+def test_status_approved_when_no_p1_or_p2() -> None:
+    assert review.review_status([]) == "approved"
+
+
+def test_review_render_is_short_without_p1_p2() -> None:
     pr_context = review.ReviewContext(
         owner="mglpsw",
         repo="aiops-orchestrator",
@@ -126,142 +232,209 @@ def test_report_markdown_and_status_decisions() -> None:
         author="alice",
         association="MEMBER",
         pr_number=42,
-        title="Add GitHub agent review",
-        body="Safe on-demand review",
+        title="Minor change",
+        body="small tweak",
         base_ref="master",
-        head_ref="feat/github-agent-review",
+        head_ref="feat",
         head_sha="abc123",
         html_url="https://github.com/mglpsw/aiops-orchestrator/pull/42",
-        files=[
-            review.FileChange(path=".github/workflows/agent-review.yml", status="added", additions=20, deletions=0, patch="+ on: issue_comment"),
-            review.FileChange(path="tests/test_github_agent_review.py", status="added", additions=1, deletions=0, patch="+ assert True"),
-        ],
-        checks=[review.CheckSummary(name="validate", conclusion="success", status="completed", url="https://github.com/check")],
+        files=[review.FileChange(path="docs/GITHUB_AGENT.md", status="modified", additions=1, deletions=1, patch="+ docs")],
     )
-
-    report = review.build_review_report(pr_context)
-    markdown = report.to_markdown()
-    assert report.status == "approved"
-    assert "## Resultado" in markdown
-    assert "### P1 — Bloqueadores" in markdown
-    assert "### P2 — Importantes" in markdown
-    assert "### P3 — Sugestões" in markdown
-    assert "## CI / Checks" in markdown
-    assert "## Arquivos analisados" in markdown
+    markdown = review.render_review([], [], pr_context, llm_mode=False)
+    assert "Não encontrei P1/P2 determinísticos." in markdown
     assert "Código do PR executado: não" in markdown
-    assert "GITHUB_TOKEN" not in markdown
+    assert "LLM" not in markdown
 
-    p1_context = review.ReviewContext(
-        owner="mglpsw",
-        repo="aiops-orchestrator",
-        issue_number=42,
-        author="alice",
-        association="MEMBER",
-        pr_number=42,
-        title="Dangerous change",
-        body="",
-        base_ref="master",
-        head_ref="feat/danger",
-        head_sha="abc123",
-        html_url="",
-        files=[review.FileChange(path="scripts/deploy.sh", status="modified", additions=1, deletions=1, patch="+ docker compose down")],
-        checks=[],
+
+def test_router_payload_is_sanitized_and_base_url_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review llm")
+    files = [
+        _file(
+            "scripts/github_agent_review.py",
+            '+ token = "ghp_abcdefghijklmnopqrstuvwxyz1234"\n+ subprocess.run(["git", "status"])',
+        ),
+        _file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"'),
+    ]
+    router_response = {
+        "choices": [
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "findings": [
+                                {
+                                    "severity": "P2",
+                                    "file": "tests/test_action_run.py",
+                                    "evidence": "cwd",
+                                    "risk": "path",
+                                    "recommendation": "use helper",
+                                }
+                            ],
+                            "summary": "short",
+                        }
+                    )
+                }
+            }
+        ]
+    }
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=files,
+        router_response=router_response,
+        allowed_users="alice",
+        llm_enabled=True,
+        router_base="",
+        router_api_key="router-secret",
+        router_model="gpt-review",
     )
-    assert review.build_review_report(p1_context).status == "changes_requested"
+    assert comments
+    assert router_payloads
+    router_call = router_payloads[0]
+    assert router_call["url"].startswith("https://api.ks-sm.net:9443/v1/chat/completions")
+    body = json.dumps(router_call["payload"])
+    assert "secret-token" not in body
+    assert "router-secret" not in body
+    assert "Authorization" not in body
+    assert "ghp_abcdefghijklmnopqrstuvwxyz1234" not in body
+    assert router_call["payload"]["model"] == "gpt-review"
+    assert comments[0].startswith("# Agent Review")
+    assert "LLM" not in comments[0] or "short" in comments[0]
 
-    p2_context = review.ReviewContext(
-        owner="mglpsw",
-        repo="aiops-orchestrator",
-        issue_number=42,
-        author="alice",
-        association="MEMBER",
-        pr_number=42,
-        title="Minor issue",
-        body="",
-        base_ref="master",
-        head_ref="feat/minor",
-        head_sha="abc123",
-        html_url="",
-        files=[review.FileChange(path="tests/test_action_run.py", status="modified", additions=1, deletions=1, patch='+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
-        checks=[],
+
+def test_plain_review_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review")
+    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=files,
+        allowed_users="alice",
     )
-    assert review.build_review_report(p2_context).status == "attention_needed"
-
-
-def test_github_client_uses_urllib_and_posts_comment(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[tuple[str, str, dict[str, str], bytes | None]] = []
-    posted_bodies: list[str] = []
-
-    def fake_urlopen(request, timeout=30):
-        calls.append((request.method, request.full_url, dict(request.headers), request.data))
-        parsed = urlparse(request.full_url)
-        if parsed.path.endswith("/pulls/42"):
-            return _FakeHTTPResponse(_pr_payload())
-        if parsed.path.endswith("/pulls/42/files"):
-            return _FakeHTTPResponse([_file("scripts/github_agent_review.py", "+ print('x')")])
-        if parsed.path.endswith("/commits/abc123/check-runs"):
-            return _FakeHTTPResponse({"check_runs": [{"name": "validate", "conclusion": "success", "status": "completed", "html_url": "https://check"}]})
-        if parsed.path.endswith("/issues/42/comments") and request.method == "GET":
-            return _FakeHTTPResponse([])
-        if parsed.path.endswith("/issues/42/comments") and request.method == "POST":
-            posted_bodies.append(json.loads(request.data.decode("utf-8"))["body"])
-            return _FakeHTTPResponse({"id": 1})
-        raise AssertionError(f"Unexpected request: {request.method} {request.full_url}")
-
-    monkeypatch.setattr(review.urllib.request, "urlopen", fake_urlopen)
-
-    client = review.GitHubClient(token="secret-token", repository="mglpsw/aiops-orchestrator")
-    context = review.fetch_review_context(client, _event_payload(pull_request=True, body="/agent review"))
-    report = review.build_review_report(context)
-    review._post_comment(client, context.issue_number, report.to_markdown())
-
-    assert any(method == "GET" and url.endswith("/pulls/42") for method, url, _, _ in calls)
-    assert any(method == "POST" and url.endswith("/issues/42/comments") for method, url, _, _ in calls)
-    assert posted_bodies and "secret-token" not in posted_bodies[0]
-
-
-def test_main_handles_unauthorized_and_issue_only(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    comments: list[dict[str, object]] = []
-
-    def fake_urlopen(request, timeout=30):
-        parsed = urlparse(request.full_url)
-        if parsed.path.endswith("/issues/42/comments") and request.method == "POST":
-            comments.append(json.loads(request.data.decode("utf-8")))
-            return _FakeHTTPResponse({"id": 1})
-        raise AssertionError(f"Unexpected request: {request.method} {request.full_url}")
-
-    monkeypatch.setattr(review.urllib.request, "urlopen", fake_urlopen)
-    event_path = tmp_path / "event.json"
-    event_path.write_text(json.dumps(_event_payload(pull_request=False, association="NONE", login="outsider")), encoding="utf-8")
-    monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
-    monkeypatch.setenv("GITHUB_REPOSITORY", "mglpsw/aiops-orchestrator")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
-    monkeypatch.setenv("AGENT_ALLOWED_USERS", "")
-
-    assert review.main() == 0
     assert comments
-    assert "falta de autorização" in comments[0]["body"]
-    assert "GITHUB_TOKEN" not in comments[0]["body"]
+    assert not router_payloads
+    assert "deterministic review" in comments[0]
 
 
-def test_main_handles_issue_only_comment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    comments: list[dict[str, object]] = []
-
-    def fake_urlopen(request, timeout=30):
-        parsed = urlparse(request.full_url)
-        if parsed.path.endswith("/issues/42/comments") and request.method == "POST":
-            comments.append(json.loads(request.data.decode("utf-8")))
-            return _FakeHTTPResponse({"id": 1})
-        raise AssertionError(f"Unexpected request: {request.method} {request.full_url}")
-
-    monkeypatch.setattr(review.urllib.request, "urlopen", fake_urlopen)
-    event_path = tmp_path / "event.json"
-    event_path.write_text(json.dumps(_event_payload(pull_request=False, association="MEMBER", login="alice")), encoding="utf-8")
-    monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
-    monkeypatch.setenv("GITHUB_REPOSITORY", "mglpsw/aiops-orchestrator")
-    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
-    monkeypatch.setenv("AGENT_ALLOWED_USERS", "")
-
-    assert review.main() == 0
+def test_llm_disabled_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review llm")
+    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=files,
+        allowed_users="alice",
+        llm_enabled=False,
+    )
     assert comments
-    assert "apenas Pull Requests" in comments[0]["body"]
+    assert not router_payloads
+    assert "LLM review não está habilitado" in comments[0]
+
+
+def test_llm_timeout_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review llm")
+    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=files,
+        router_error=TimeoutError("timed out"),
+        allowed_users="alice",
+        llm_enabled=True,
+    )
+    assert comments
+    assert router_payloads
+    assert "LLM review indisponível; review determinístico publicado." in comments[0]
+
+
+def test_router_json_response_is_normalized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    parsed = review.parse_agent_router_response(
+        json.dumps(
+            {
+                "findings": [
+                    {
+                        "severity": "p1",
+                        "file": "app/core/config.py",
+                        "evidence": "secret",
+                        "risk": "high",
+                        "recommendation": "fix",
+                    },
+                    {
+                        "severity": "P9",
+                        "file": "ignored",
+                        "evidence": "bad",
+                        "risk": "bad",
+                        "recommendation": "bad",
+                    },
+                ],
+                "summary": "short",
+            }
+        )
+    )
+    assert len(parsed.findings) == 1
+    assert parsed.findings[0].severity == "P1"
+    assert parsed.notes == "short"
+
+
+def test_router_text_response_becomes_llm_notes() -> None:
+    parsed = review.parse_agent_router_response("plain text response")
+    assert parsed.findings == []
+    assert parsed.notes == "plain text response"
+
+
+def test_router_invalid_response_does_not_break() -> None:
+    parsed = review.parse_agent_router_response("{not-json")
+    assert parsed.findings == []
+    assert "not-json" in (parsed.notes or "")
+
+
+def test_issue_comment_on_issue_is_supported_and_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=False, body="/agent review", association="MEMBER", login="alice")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        allowed_users="",
+    )
+    assert comments
+    assert not router_payloads
+    assert "apenas Pull Requests" in comments[0]
+
+
+def test_unauthorized_comment_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review", association="NONE", login="outsider")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        allowed_users="",
+    )
+    assert comments
+    assert not router_payloads
+    assert "falta de autorização" in comments[0]
+
+
+def test_workflow_security_guardrails() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/agent-review.yml").read_text(encoding="utf-8"))
+    assert "pull_request_target" not in json.dumps(workflow)
+    assert workflow["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+        "issues": "write",
+        "checks": "read",
+        "actions": "read",
+    }
+    env = workflow["jobs"]["review"]["steps"][-1]["env"]
+    assert env["GITHUB_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+    assert env["GITHUB_REPOSITORY"] == "${{ github.repository }}"
+    assert env["GITHUB_EVENT_PATH"] == "${{ github.event_path }}"
+    assert env["AGENT_ALLOWED_USERS"] == "${{ vars.AGENT_ALLOWED_USERS }}"
+    assert env["AGENT_REVIEW_LLM_ENABLED"] == "${{ vars.AGENT_REVIEW_LLM_ENABLED }}"
+    assert env["AGENT_ROUTER_BASE_URL"] == "${{ vars.AGENT_ROUTER_BASE_URL }}"
+    assert env["AGENT_ROUTER_API_KEY"] == "${{ secrets.AGENT_ROUTER_API_KEY }}"
+    assert env["AGENT_ROUTER_MODEL"] == "${{ vars.AGENT_ROUTER_MODEL }}"
