@@ -54,6 +54,7 @@ Se não houver P1/P2 determinísticos, o comentário fica curto e diz exatamente
 - `AGENT_ROUTER_BASE_URL=https://api.ks-sm.net:9443`
 - `AGENT_ROUTER_API_KEY`
 - `AGENT_ROUTER_MODEL` opcional
+- `AGENT_ROUTER_TIMEOUT_SECONDS` opcional, recomendado `60` para o caminho via Ollama
 
 ### Como configurar
 
@@ -62,6 +63,7 @@ Se não houver P1/P2 determinísticos, o comentário fica curto e diz exatamente
 3. Adicione `AGENT_REVIEW_LLM_ENABLED` como Variable com valor `true`.
 4. Adicione `AGENT_ROUTER_BASE_URL` como Variable se quiser sobrescrever o padrão.
 5. Adicione `AGENT_ROUTER_MODEL` como Variable se quiser fixar um modelo.
+6. Adicione `AGENT_ROUTER_TIMEOUT_SECONDS` como Variable se quiser ajustar o timeout do router.
 
 ### Segurança do LLM
 
@@ -71,6 +73,7 @@ Se não houver P1/P2 determinísticos, o comentário fica curto e diz exatamente
 - O review nunca envia `env`, logs completos, secrets ou arquivos inteiros grandes.
 - Se o router falhar, o workflow publica apenas o review determinístico e avisa que o LLM ficou indisponível.
 - Se o token do GitHub não puder criar ou atualizar comentários no PR, o review é escrito no `GITHUB_STEP_SUMMARY` do workflow em vez de falhar.
+- O timeout padrão do router é `60s`; aumente só se o caminho até o Ollama exigir mais latência.
 
 ### Garantias
 
@@ -95,7 +98,9 @@ O ideal continua sendo configurar `Settings -> Actions -> General -> Workflow pe
 - Se `/agent review llm` publicar só o review determinístico, verifique `AGENT_REVIEW_LLM_ENABLED` e `AGENT_ROUTER_API_KEY`.
 - Se houver `401` ou `403`, confirme o secret `AGENT_ROUTER_API_KEY`.
 - Se houver `429`, o router está limitando a taxa e o fallback determinístico continua seguro.
-- Se houver timeout ou falha de DNS/TLS, o review determinístico segue normalmente.
+- Se houver timeout, verifique o endpoint `/health` do router, o modelo configurado e a latência do Ollama antes de aumentar `AGENT_ROUTER_TIMEOUT_SECONDS`.
+- Se houver falha de DNS/TLS, o review determinístico segue normalmente.
+- Modelos recomendados: `chat:raciocinio` ou `chat:codigo`.
 - Se o comentário anterior não atualizar, verifique se o bot tem permissão de `issues: write` e se o comentário contém o marcador HTML estável.
 - Se o bot não puder comentar no PR, procure o review completo no Step Summary da execução do workflow.
 

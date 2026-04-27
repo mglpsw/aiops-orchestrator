@@ -150,6 +150,7 @@ def _run_agent(
     router_base: str = "",
     router_api_key: str = "",
     router_model: str = "",
+    router_timeout_seconds: str = "",
     step_summary_path: Path | None = None,
     expected_exit_code: int = 0,
 ) -> tuple[list[str], list[dict[str, object]]]:
@@ -178,6 +179,7 @@ def _run_agent(
     monkeypatch.setenv("AGENT_ROUTER_BASE_URL", router_base)
     monkeypatch.setenv("AGENT_ROUTER_API_KEY", router_api_key)
     monkeypatch.setenv("AGENT_ROUTER_MODEL", router_model)
+    monkeypatch.setenv("AGENT_ROUTER_TIMEOUT_SECONDS", router_timeout_seconds)
     if step_summary_path is not None:
         monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(step_summary_path))
     else:
@@ -230,6 +232,55 @@ def test_deterministic_review_limits_to_five_and_prioritizes_p1() -> None:
     assert all(finding.severity in {"P1", "P2"} for finding in findings)
     assert len([finding for finding in findings if finding.rule_id == "hardcoded_repo_root"]) == 1
     assert review.review_status(findings) == "changes_requested"
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        '+ docs mention Authorization, tokens, segredos e URLs without leaking values',
+        '+ keep not persistir secrets/tokens in docs and comments',
+    ],
+)
+def test_secret_keywords_in_docs_do_not_trigger_p1(patch: str) -> None:
+    findings = review.build_deterministic_findings(
+        [review.FileChange(path="docs/GITHUB_AGENT.md", status="modified", additions=1, deletions=1, patch=patch)],
+        [],
+    )
+    assert all(finding.severity != "P1" for finding in findings)
+
+
+@pytest.mark.parametrize(
+    "patch, needle",
+    [
+        ('+ Authorization: Bearer valor_longo_suficiente', "authorization_bearer_secret"),
+        ('+ AGENT_ROUTER_API_KEY=valor_longo_suficiente', "generic_secret_assignment"),
+        ('+ github_pat_abcdefghijklmnopqrstuvwxyz1234', "well_known_token"),
+        ('+ sk-abcdef1234567890', "well_known_token"),
+        ('+ https://user:password@host.example/path', "url_credentials"),
+        ('+ -----BEGIN PRIVATE KEY-----\n+ abc123\n+ -----END PRIVATE KEY-----', "private_key_block"),
+        ('+ Cookie: session=valor_longo_suficiente', "cookie_secret"),
+    ],
+)
+def test_real_secret_values_trigger_p1(patch: str, needle: str) -> None:
+    findings = review.build_deterministic_findings(
+        [review.FileChange(path="docs/GITHUB_AGENT.md", status="modified", additions=1, deletions=1, patch=patch)],
+        [],
+    )
+    assert any(finding.rule_id == needle for finding in findings)
+    assert any(finding.severity == "P1" for finding in findings)
+
+
+def test_redaction_masks_real_secret_values() -> None:
+    text = (
+        "Authorization: Bearer valor_longo_suficiente "
+        "AGENT_ROUTER_API_KEY=valor_longo_suficiente "
+        "https://user:password@host.example/path "
+        "-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----"
+    )
+    redacted = review._redact_sensitive_text(text)
+    assert "valor_longo_suficiente" not in redacted
+    assert "password@" not in redacted
+    assert "[REDACTED" in redacted
 
 
 def test_status_attention_needed_for_p2_only() -> None:
@@ -331,6 +382,30 @@ def test_router_payload_is_sanitized_and_base_url_defaults(monkeypatch: pytest.M
     assert "LLM" not in comments[0] or "short" in comments[0]
 
 
+def test_router_timeout_seconds_controls_timeout_and_warning(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review llm")
+    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=files,
+        router_error=TimeoutError("timed out"),
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="router-secret",
+        router_timeout_seconds="90",
+    )
+    captured = capsys.readouterr()
+    assert comments
+    assert router_payloads
+    assert "timeout após 90s" in comments[0]
+    assert "Agent Router timeout:" in captured.err
+    assert "timeout=90s" in captured.err
+    assert "router-secret" not in captured.err
+    assert "secret-token" not in captured.err
+
+
 def test_plain_review_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     payload = _event_payload(pull_request=True, body="/agent review")
     files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
@@ -395,7 +470,7 @@ def test_llm_timeout_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch
     )
     assert comments
     assert router_payloads
-    assert "timeout" in comments[0]
+    assert "timeout após 60s" in comments[0]
 
 
 @pytest.mark.parametrize(
@@ -427,6 +502,24 @@ def test_router_http_errors_fall_back_to_deterministic(
     assert comments
     assert router_payloads
     assert needle in comments[0]
+
+
+@pytest.mark.parametrize(
+    ("router_response", "expected_note"),
+    [
+        ({"choices": [{"message": {"content": json.dumps({"findings": [], "summary": "short"})}}]}, "short"),
+        ({"choices": [{"text": json.dumps({"findings": [], "summary": "text choice"})}]}, "text choice"),
+        ({"output_text": json.dumps({"findings": [], "summary": "output"})}, "output"),
+        ({"content": json.dumps({"findings": [], "summary": "content"})}, "content"),
+        ({"review": json.dumps({"findings": [], "summary": "review"})}, "review"),
+    ],
+)
+def test_router_response_formats_are_normalized(
+    router_response: object,
+    expected_note: str,
+) -> None:
+    parsed = review.parse_agent_router_response(json.dumps(router_response))
+    assert parsed.notes == expected_note
 
 
 def test_router_json_response_is_normalized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -627,4 +720,5 @@ def test_workflow_security_guardrails() -> None:
     assert env["AGENT_ROUTER_BASE_URL"] == "${{ vars.AGENT_ROUTER_BASE_URL }}"
     assert env["AGENT_ROUTER_API_KEY"] == "${{ secrets.AGENT_ROUTER_API_KEY }}"
     assert env["AGENT_ROUTER_MODEL"] == "${{ vars.AGENT_ROUTER_MODEL }}"
+    assert env["AGENT_ROUTER_TIMEOUT_SECONDS"] == "${{ vars.AGENT_ROUTER_TIMEOUT_SECONDS }}"
     assert "actions" not in workflow["permissions"]
