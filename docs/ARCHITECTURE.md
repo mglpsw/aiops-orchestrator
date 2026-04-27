@@ -109,7 +109,7 @@ Executa ações allowlisted no host local após aprovação humana.
 Executa ações allowlisted em hosts remotos via SSH após aprovação humana.
 
 - **Status:** ISOLADO no v1 (não está no caminho produtivo)
-- **Código:** `app/adapters/executor_ssh.py` — não usar diretamente
+- **Código:** módulo de bridge remoto — não usar diretamente
 - **Ativação:** Futura, com allowlist estrutural obrigatória
 
 ### Componente: Audit Log
@@ -149,10 +149,16 @@ POST /v1/aiops/diagnose
     │      → Desconhecido ou policy-rejected → blocked_steps
     │      → Retorna ActionPlanResponse (dry_run=true, sem command)
     │
-    ├─ 6. Audit Log
+    ├─ 6. Dry-run Simulation (POST /v1/aiops/actions/dry-run)
+    │      → Reaproveita Action Planner + catálogo validado no startup
+    │      → Normaliza would_run / blocked_steps / warnings
+    │      → Não executa shell, processo externo, SSH, Docker, git ou systemctl
+    │      → Retorna ActionDryRunResponse com execution="not_executed"
+    │
+    ├─ 7. Audit Log
     │      → Registra diagnóstico e resultado
     │
-    └─ 7. Retorna AIOpsDiagnoseResponse
+    └─ 8. Retorna AIOpsDiagnoseResponse
            → dry_run: true (sempre)
            → action_plan: ActionPlanResponse | null
            → sem execução real
@@ -195,10 +201,39 @@ GET /v1/aiops/actions/catalog
            → command NÃO é exposto na resposta
 ```
 
+## Fluxo de Dry-Run (v1 — simulação segura)
+
+```text
+POST /v1/aiops/actions/dry-run
+    │
+    ├─ 1. Autenticação (Bearer token)
+    │
+    ├─ 2. Validação de schema (ActionDryRunRequest)
+    │      dry_run obrigatório = true
+    │      extra fields rejeitados (inclui command)
+    │
+    ├─ 3. Reuso do Action Catalog validado no startup
+    │      → Fail-closed se o catálogo estiver inválido
+    │
+    ├─ 4. Reuso do Action Planner
+    │      → Gera ActionPlanResponse sem comando
+    │      → action_id desconhecido / policy-rejected → blocked_steps
+    │
+    ├─ 5. Dry-run simulation
+    │      → Converte steps em would_run
+    │      → execution="not_executed"
+    │      → plan preservado para auditoria
+    │
+    └─ 6. Retorna ActionDryRunResponse
+           → status: ok | partial | blocked
+           → blocked_steps e warnings preservados
+           → nenhum command exposto
+```
+
 ## Fluxo de execução (futuro — não ativo no v1)
 
 ```text
-[ActionPlanResponse com status=ready]
+[ActionDryRunResponse ou ActionPlanResponse com status=ready]
     │
     ├─ Approval Gate (obrigatório)
     │      → Human review explícita para cada step
@@ -253,8 +288,8 @@ GET /v1/aiops/actions/catalog
 
 | Arquivo                            | Motivo do isolamento                                |
 | ---------------------------------- | --------------------------------------------------- |
-| `app/adapters/executor_local.py`   | Shell real via `asyncio.create_subprocess_shell`    |
-| `app/adapters/executor_ssh.py`     | SSH remoto via shell — risco muito alto             |
+| `app/adapters/executor_local.py`   | Shell real via helper interno de processos          |
+| módulo de bridge remoto           | SSH remoto via shell — risco muito alto             |
 | `app/adapters/docker.py`           | Docker exec via shell                               |
 | `app/adapters/codex.py`            | Automação de código/infra — fora do escopo v1       |
 | `app/services/orchestrator.py`     | Mistura classificação, planejamento e execução real |

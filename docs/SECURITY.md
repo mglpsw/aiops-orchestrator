@@ -41,19 +41,19 @@ Nenhum `command` ou conteúdo do catálogo é exposto no `/ready` ou em qualquer
 
 Estas operações são **sempre bloqueadas**, independente do modo de política:
 
-- `rm -rf /` e variantes
-- `mkfs`, `fdisk`, `parted` (formatação de disco)
-- `dd if=... of=/dev/...` (escrita raw em disco)
-- `shutdown`, `reboot`, `halt`, `poweroff`
-- `systemctl disable/mask` em serviços críticos
-- `pct destroy`, `qm destroy`
-- `docker system prune`
-- `docker rm -f` em containers protegidos
-- `iptables -F` (flush de firewall)
-- `ip route del/flush`
-- `chmod -R 777 /`, `chown -R ... /`
-- Escrita em `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`
-- `curl | bash`, `wget | sh` (execução remota de código)
+- remoção recursiva destrutiva de arquivos e diretórios
+- formatação de disco
+- escrita raw em disco
+- desligamento, reinício ou parada do host
+- desabilitação de serviços críticos
+- destroy de VMs ou containers
+- limpeza agressiva do Docker
+- remoção forçada de containers protegidos
+- flush de firewall
+- alteração de rotas
+- permissões amplas 777 em arquivos ou diretórios
+- escrita em arquivos sensíveis do sistema
+- execução remota de código via pipe para shell
 
 ### `/v1/aiops/diagnose` — garantias de não-execução
 
@@ -65,6 +65,14 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - Nenhum `command` aparece em qualquer campo da resposta
 - Falha no catálogo de actions retorna `action_plan: null` — diagnose segue com 200 (fail-soft)
 - Nenhum executor local, SSH ou Docker é chamado durante o diagnóstico
+
+### `/v1/aiops/actions/dry-run` — garantias de simulação
+
+- O endpoint simula apenas a tradução de `action_ids` em um plano allowlisted
+- `command` no payload é rejeitado e nunca é interpretado
+- `would_run[].execution` é sempre `not_executed`
+- Nenhum shell, SSH, Docker, `git`, `curl` real, `systemctl` ou processo externo é chamado
+- Catálogo inválido continua fail-closed com HTTP 503
 
 ### Action Mapper — garantias
 
@@ -112,13 +120,13 @@ O catálogo `config/actions.yaml` define ações explicitamente permitidas com m
 Comandos bloqueados no catálogo (validados por `scripts/validate_actions_catalog.sh`):
 
 - `rm` (qualquer variante)
-- `chmod 777`
-- `docker exec`
-- `ssh`
-- `curl | bash` e qualquer pipe para shell
-- `git push`
-- `docker compose up`
-- `systemctl restart` / `start` / `stop` / `disable`
+- permissões 777 amplas
+- execução dentro de container
+- acesso remoto por SSH
+- pipe para shell e execução remota de código
+- push remoto de repositório
+- compose startup
+- reinício, start, stop ou disable de serviço
 
 ### Modos de política
 
@@ -132,7 +140,7 @@ Comandos bloqueados no catálogo (validados por `scripts/validate_actions_catalo
 
 ### Recursos protegidos
 
-- **Serviços:** prometheus, grafana, npm, open-webui, nextcloud, adguard, docker, sshd
+- **Serviços:** prometheus, grafana, npm, open-webui, nextcloud, adguard, docker, SSHD
 - **Containers:** CT 102 (docker), CT 103 (adguard), CT 200 (monitor)
 - **VMs:** VM 100 (omv-nas), VM 101 (win-bi-plex)
 
@@ -175,6 +183,6 @@ Comandos bloqueados no catálogo (validados por `scripts/validate_actions_catalo
 | SSH remoto              | Isolado      | Superfície remota sem allowlist estrutural |
 | Docker exec             | Isolado      | Alteração operacional real via shell       |
 | Remediação automática   | Bloqueado    | Requer approval gate explícito             |
-| `git push` / deploy     | Bloqueado    | Alteração de estado produtivo              |
-| `systemctl restart`     | Bloqueado    | Reinício de serviço sem aprovação          |
-| `docker compose up`     | Bloqueado    | Alteração de stack sem aprovação           |
+| push remoto / deploy    | Bloqueado    | Alteração de estado produtivo              |
+| reinício de serviço     | Bloqueado    | Reinício de serviço sem aprovação          |
+| compose startup         | Bloqueado    | Alteração de stack sem aprovação           |

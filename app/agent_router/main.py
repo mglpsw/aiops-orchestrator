@@ -14,12 +14,15 @@ from app.agent_router.metrics import record_aiops_diagnose
 from app.agent_router.schemas import (
     AIOpsDiagnoseRequest,
     AIOpsDiagnoseResponse,
+    ActionDryRunRequest,
+    ActionDryRunResponse,
     ActionPlanRequest,
     ActionPlanResponse,
     CatalogActionEntry,
     CatalogResponse,
 )
 from app.agent_router.services.aiops_diagnostic import diagnose_aiops
+from app.agent_router.services.action_dry_run import simulate_action_dry_run
 from app.agent_router.services.action_mapper import map_findings_to_action_ids
 from app.agent_router.signals import collect_aiops_diagnostic_signals
 from app.models.database import get_db
@@ -190,3 +193,23 @@ async def create_plan(request: ActionPlanRequest) -> ActionPlanResponse:
         raise HTTPException(status_code=503, detail=f"Action catalog unavailable: {exc}") from exc
 
     return plan_actions(request, catalog)
+
+
+# ---------------------------------------------------------------------------
+# Action Dry-Run endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.post("/v1/aiops/actions/dry-run", response_model=ActionDryRunResponse)
+async def dry_run_actions(request: ActionDryRunRequest) -> ActionDryRunResponse:
+    """Simulate a catalog-backed plan without executing anything.
+
+    The request is dry-run only, authenticated by the router dependency, and
+    rejects any extra fields such as `command`.
+    """
+    try:
+        catalog = _get_catalog()
+    except CatalogLoadError as exc:
+        raise HTTPException(status_code=503, detail=f"Action catalog unavailable: {exc}") from exc
+
+    return simulate_action_dry_run(request, catalog)

@@ -6,9 +6,9 @@ Nao carregam comando executavel nem habilitam remediacao.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class AIOpsSignal(BaseModel):
@@ -179,6 +179,47 @@ class ActionPlanResponse(BaseModel):
     dry_run: bool = True
 
 
+class ActionDryRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = "agent-router"
+    action_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+    dry_run: bool = True
+
+    @model_validator(mode="after")
+    def validate_dry_run_request(self) -> "ActionDryRunRequest":
+        if self.dry_run is not True:
+            raise ValueError("dry_run must be True in AIOps Action Dry-Run v1")
+        return self
+
+
+class ActionDryRunStep(BaseModel):
+    action_id: str
+    title: str
+    mode: str
+    risk: str
+    requires_approval: bool
+    execution: Literal["not_executed"] = "not_executed"
+    reason: str
+
+
 # ActionPlanResponse is defined after AIOpsDiagnoseResponse in this file,
 # so rebuild is required to resolve the forward reference on action_plan.
 AIOpsDiagnoseResponse.model_rebuild()
+ActionDryRunRequest.model_rebuild()
+
+
+class ActionDryRunResponse(BaseModel):
+    dry_run_id: str
+    target: str
+    status: str  # ok | blocked | partial
+    risk: str
+    requires_approval: bool
+    plan: ActionPlanResponse
+    would_run: list[ActionDryRunStep] = Field(default_factory=list)
+    blocked_steps: list[ActionPlanBlockedStep] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+ActionDryRunResponse.model_rebuild()

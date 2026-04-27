@@ -44,7 +44,8 @@ O orchestrator compartilha a network Docker `aiops-net`. Deploy o
 # No agent-router-api repo:
 cd /opt/aiops-orchestrator && docker compose -f deploy/docker-compose.yml up -d
 # No aiops-orchestrator repo:
-cd deploy && docker compose up -d
+cd /opt/aiops-orchestrator
+# siga o fluxo de deploy validado para este ambiente
 ```
 
 O router então encaminha `@aiops` para `http://aiops-orchestrator:8000`.
@@ -90,6 +91,7 @@ Ver `docs/OPERATIONS.md` para detalhes.
 
 - `GET /v1/aiops/actions/catalog` — lista o catálogo de ações allowlisted (autenticado, sem expor comandos)
 - `POST /v1/aiops/actions/plan` — gera plano determinístico a partir de `action_ids` explícitos (autenticado, `dry_run` sempre `true`)
+- `POST /v1/aiops/actions/dry-run` — simula um plano allowlisted sem executar nada (autenticado, `dry_run` sempre `true`)
 - Somente `action_ids` presentes em `config/actions.yaml` são aceitos
 - Nenhum comando livre, shell, SSH ou remediação automática
 - `action_ids` desconhecidos vão para `blocked_steps` (fail-closed)

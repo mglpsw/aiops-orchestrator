@@ -38,21 +38,21 @@ deploy (validado por `scripts/validate_actions_catalog.sh`).
 
 ### Padrões de comando bloqueados (validados automaticamente)
 
-| Padrão           | Motivo do bloqueio                    |
-| ---------------- | ------------------------------------- |
-| `rm `            | Remoção de arquivos/diretórios        |
-| `chmod 777`      | Permissão irrestrita                  |
-| `docker exec`    | Execução dentro de container          |
-| `ssh`            | Acesso remoto sem allowlist           |
-| `curl \| bash`   | Execução remota de código (RCE)       |
-| `\| bash`        | Pipe para shell (RCE)                 |
-| `\| sh`          | Pipe para shell (RCE)                 |
-| `git push`       | Alteração de repositório remoto       |
-| `docker compose up` | Alteração de stack Docker          |
-| `systemctl restart` | Reinício de serviço               |
-| `systemctl start`   | Início de serviço                 |
-| `systemctl stop`    | Parada de serviço                 |
-| `systemctl disable` | Desabilitação de serviço          |
+| Categoria                        | Motivo do bloqueio                    |
+| -------------------------------- | ------------------------------------- |
+| remoção destrutiva               | Remoção de arquivos/diretórios        |
+| permissão 777                    | Permissão irrestrita                  |
+| execução dentro de container     | Execução dentro de container          |
+| acesso remoto por SSH            | Acesso remoto sem allowlist           |
+| pipe para shell                  | Execução remota de código (RCE)       |
+| pipeline para shell              | Pipe para shell (RCE)                 |
+| pipeline para shell secundário   | Pipe para shell (RCE)                 |
+| push remoto de repositório       | Alteração de repositório remoto       |
+| compose startup                  | Alteração de stack Docker             |
+| reinício de serviço              | Reinício de serviço                   |
+| início de serviço                | Início de serviço                     |
+| parada de serviço                | Parada de serviço                     |
+| desabilitação de serviço         | Desabilitação de serviço              |
 
 ---
 
@@ -213,6 +213,7 @@ para um plano estruturado e seguro, sem envolver LLM ou comando livre.
 | ------ | ---- | --------- |
 | `GET` | `/v1/aiops/actions/catalog` | Lista o catálogo allowlisted (sem expor comandos) |
 | `POST` | `/v1/aiops/actions/plan` | Gera um plano determinístico a partir de `action_ids` |
+| `POST` | `/v1/aiops/actions/dry-run` | Simula um plano allowlisted sem executar nada |
 
 Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
 
@@ -276,6 +277,100 @@ Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
 - `dry_run` é sempre `true` na resposta
 - `plan_id` é único por chamada (UUID v4)
 - O planner é determinístico e testável sem LLM
+
+---
+
+## Dry-run simulation
+
+O endpoint `POST /v1/aiops/actions/dry-run` simula um plano allowlisted sem executar comandos.
+Ele reutiliza o Action Planner e o catálogo validado no startup, mas converte a saída em uma
+simulação explícita com `would_run`, `blocked_steps` e `warnings`.
+
+### Endpoint
+
+| Método | Path | Descrição |
+| ------ | ---- | --------- |
+| `POST` | `/v1/aiops/actions/dry-run` | Simula um plano allowlisted sem executar nada |
+
+### Request
+
+```json
+{
+  "target": "agent-router",
+  "action_ids": ["curl_health_8000", "curl_ready_8000"],
+  "reason": "Investigate degraded health score",
+  "dry_run": true
+}
+```
+
+### Response
+
+```json
+{
+  "dry_run_id": "dryrun_5e7c4e1f0b7d4c0a",
+  "target": "agent-router",
+  "status": "ok",
+  "risk": "low",
+  "requires_approval": false,
+  "plan": {
+    "plan_id": "<uuid>",
+    "target": "agent-router",
+    "status": "ready",
+    "risk": "low",
+    "requires_approval": false,
+    "steps": [
+      {
+        "action_id": "curl_health_8000",
+        "title": "Verifica o endpoint /health da produção estável (porta 8000)",
+        "risk": "low",
+        "mode": "readonly",
+        "requires_approval": false,
+        "reason": "Selected from validated read-only action catalog",
+        "evidence_source": "Investigate degraded health score",
+        "finding_id": null
+      }
+    ],
+    "blocked_steps": [],
+    "warnings": [],
+    "dry_run": true
+  },
+  "would_run": [
+    {
+      "action_id": "curl_health_8000",
+      "title": "Verifica o endpoint /health da produção estável (porta 8000)",
+      "mode": "readonly",
+      "risk": "low",
+      "requires_approval": false,
+      "execution": "not_executed",
+      "reason": "Dry-run simulation only"
+    }
+  ],
+  "blocked_steps": [],
+  "warnings": [
+    "Dry-run simulation only; no commands were executed."
+  ]
+}
+```
+
+### Regras
+
+- `dry_run` é obrigatório e deve ser `true`
+- `command` no payload é rejeitado com HTTP 422
+- `would_run[].execution` é sempre `not_executed`
+- `would_run` é derivado do `ActionPlanResponse`, sem executar nada
+- `blocked_steps` preserva action_id desconhecido, inválido ou fora do catálogo
+- Catálogo indisponível retorna HTTP 503, assim como `/catalog` e `/plan`
+- `status`:
+  - `ok`: todos os passos válidos e nenhum `blocked_step`
+  - `partial`: há passos válidos e `blocked_steps`
+  - `blocked`: nenhum passo válido ou catálogo indisponível
+
+### Garantias
+
+- Nenhum `command` é incluído na resposta
+- Nenhuma execução real ocorre
+- Nenhum shell, SSH, Docker, `git`, `curl` real ou `systemctl` é chamado
+- O endpoint é autenticado por Bearer token como os demais endpoints sensíveis
 
 ---
 
