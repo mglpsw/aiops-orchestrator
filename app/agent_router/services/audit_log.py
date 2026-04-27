@@ -10,8 +10,8 @@ import json
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
 from typing import Literal
+from uuid import uuid4
 
 from app.agent_router.schemas import AuditEvent, AuditRecentResponse, ActionPlanResponse
 from app.core.config import BASE_DIR, get_settings
@@ -37,6 +37,56 @@ def resolve_audit_log_path() -> Path:
     if not path.is_absolute():
         path = BASE_DIR / path
     return path
+
+
+def should_rotate_audit_log(path: Path, incoming_bytes: int, max_bytes: int) -> bool:
+    if max_bytes <= 0:
+        return False
+    if incoming_bytes <= 0:
+        return False
+    if not path.exists():
+        return False
+    try:
+        current_size = path.stat().st_size
+    except FileNotFoundError:
+        return False
+    return current_size + incoming_bytes > max_bytes
+
+
+def rotate_audit_log(path: Path, backup_count: int) -> None:
+    backup_count = max(0, backup_count)
+    if backup_count == 0:
+        if path.exists():
+            path.unlink()
+        return
+
+    oldest = path.with_name(f"{path.name}.{backup_count}")
+    if oldest.exists():
+        oldest.unlink()
+
+    for index in range(backup_count - 1, 0, -1):
+        source = path.with_name(f"{path.name}.{index}")
+        if source.exists():
+            source.replace(path.with_name(f"{path.name}.{index + 1}"))
+
+    if path.exists():
+        path.replace(path.with_name(f"{path.name}.1"))
+
+
+def enforce_audit_retention(path: Path, backup_count: int) -> None:
+    backup_count = max(0, backup_count)
+    if backup_count == 0:
+        for candidate in path.parent.glob(f"{path.name}.*"):
+            if candidate.is_file():
+                candidate.unlink()
+        return
+
+    for candidate in path.parent.glob(f"{path.name}.*"):
+        suffix = candidate.name.removeprefix(f"{path.name}.")
+        if not suffix.isdigit():
+            continue
+        if int(suffix) > backup_count:
+            candidate.unlink()
 
 
 def build_audit_event(
@@ -80,9 +130,18 @@ def write_audit_event(event: AuditEvent, *, required: bool | None = None) -> boo
     if required is None:
         required = get_settings().audit_log_required
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        settings = get_settings()
         payload = json.dumps(event.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+        payload_bytes = payload.encode("utf-8") + b"\n"
+        path.parent.mkdir(parents=True, exist_ok=True)
         with _AUDIT_LOCK:
+            if settings.audit_log_rotation_enabled and settings.audit_log_max_bytes > 0:
+                if settings.audit_log_backup_count == 0:
+                    enforce_audit_retention(path, 0)
+                if should_rotate_audit_log(path, len(payload_bytes), settings.audit_log_max_bytes):
+                    rotate_audit_log(path, settings.audit_log_backup_count)
+                    enforce_audit_retention(path, settings.audit_log_backup_count)
+
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(payload)
                 handle.write("\n")

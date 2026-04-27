@@ -77,8 +77,10 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 ### Audit Log
 
 - O audit log grava apenas metadados estruturados de `plan` e `dry-run`
-- O caminho padrão é `logs/aiops_audit.jsonl`
+- O caminho padrão é `var/audit/aiops_audit.jsonl`
 - `AIOPS_AUDIT_LOG_REQUIRED=true` mantém `plan` e `dry-run` em fail-closed se a escrita falhar
+- `AIOPS_AUDIT_LOG_ROTATION_ENABLED=true` ativa rotação simples por tamanho
+- `AIOPS_AUDIT_LOG_MAX_BYTES` e `AIOPS_AUDIT_LOG_BACKUP_COUNT` controlam retenção e quantidade de backups
 - Nenhum payload bruto completo, cabeçalho de autenticação, segredo ou `command` é persistido
 - `GET /v1/aiops/audit/recent` expõe apenas eventos recentes e continua autenticado
 

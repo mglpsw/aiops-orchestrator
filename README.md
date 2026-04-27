@@ -102,10 +102,13 @@ Ver `docs/OPERATIONS.md` para detalhes.
 ### Audit log
 
 - O audit log v1 registra metadados estruturados de `plan` e `dry-run` em JSONL
-- Caminho padrão: `logs/aiops_audit.jsonl`
+- Caminho padrão: `var/audit/aiops_audit.jsonl`
 - Variáveis:
   - `AIOPS_AUDIT_LOG_PATH`
   - `AIOPS_AUDIT_LOG_REQUIRED`
+  - `AIOPS_AUDIT_LOG_MAX_BYTES`
+  - `AIOPS_AUDIT_LOG_BACKUP_COUNT`
+  - `AIOPS_AUDIT_LOG_ROTATION_ENABLED`
 - Nenhum `command`, segredo ou cabeçalho sensível é persistido
 - `GET /v1/aiops/audit/recent` permite inspeção autenticada dos eventos mais recentes
 

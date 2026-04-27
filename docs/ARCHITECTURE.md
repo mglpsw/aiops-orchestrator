@@ -117,7 +117,8 @@ Executa ações allowlisted em hosts remotos via SSH após aprovação humana.
 Registra cada plano e simulação em formato estruturado, sem comandos ou segredos.
 
 - **Implementado:** `app/agent_router/services/audit_log.py`
-- **Storage:** JSONL local configurável (`logs/aiops_audit.jsonl` por padrão)
+- **Storage:** JSONL local configurável (`var/audit/aiops_audit.jsonl` por padrão)
+- **Retenção:** rotação simples por tamanho com backups numerados e limite configurável
 - **Endpoints associados:** `POST /v1/aiops/actions/plan`, `POST /v1/aiops/actions/dry-run`,
   `GET /v1/aiops/audit/recent`
 

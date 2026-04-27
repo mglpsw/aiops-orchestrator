@@ -28,3 +28,4 @@ auth.json
 # Logs
 *.log
 logs/
+var/

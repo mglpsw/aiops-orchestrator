@@ -283,10 +283,13 @@ Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
 
 As operações de planejamento e simulação escrevem eventos estruturados em JSONL.
 
-- Caminho padrão: `logs/aiops_audit.jsonl`
+- Caminho padrão: `var/audit/aiops_audit.jsonl`
 - Configuração:
   - `AIOPS_AUDIT_LOG_PATH`
   - `AIOPS_AUDIT_LOG_REQUIRED=true|false`
+  - `AIOPS_AUDIT_LOG_MAX_BYTES`
+  - `AIOPS_AUDIT_LOG_BACKUP_COUNT`
+  - `AIOPS_AUDIT_LOG_ROTATION_ENABLED=true|false`
 - Eventos registrados:
   - `action_plan_created`
   - `action_dry_run_created`
@@ -306,6 +309,7 @@ As operações de planejamento e simulação escrevem eventos estruturados em JS
   - `blocked_steps_count`
 - Nenhum comando, segredo ou cabeçalho sensível é persistido
 - `GET /v1/aiops/audit/recent` expõe apenas os eventos mais recentes, com limite máximo de 100
+- A retenção é por rotação simples do arquivo ativo, com backups numerados e limite configurável
 
 ---
 

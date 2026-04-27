@@ -77,8 +77,11 @@ class Settings(BaseSettings):
     allow_admin_role: bool = True
 
     # --- Audit log ---
-    audit_log_path: str = "logs/aiops_audit.jsonl"
+    audit_log_path: str = "var/audit/aiops_audit.jsonl"
     audit_log_required: bool = True
+    audit_log_max_bytes: int = 5_000_000
+    audit_log_backup_count: int = 5
+    audit_log_rotation_enabled: bool = True
 
     # --- WebAI ---
     webai_base_url: str = "http://open-webui:8080"

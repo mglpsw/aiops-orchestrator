@@ -25,6 +25,7 @@ from app.agent_router.schemas import (
 from app.agent_router.services.aiops_diagnostic import diagnose_aiops
 from app.agent_router.services.audit_log import AuditLogError, build_audit_event, read_recent_audit_events, write_audit_event
 from app.agent_router.services.action_dry_run import simulate_action_dry_run
+from app.core.config import get_settings
 from app.agent_router.services.action_mapper import map_findings_to_action_ids
 from app.agent_router.signals import collect_aiops_diagnostic_signals
 from app.models.database import get_db
@@ -215,9 +216,18 @@ async def create_plan(request: ActionPlanRequest) -> ActionPlanResponse:
         correlation_id=response.plan_id,
     )
     try:
-        write_audit_event(audit_event)
+        wrote = write_audit_event(audit_event)
     except AuditLogError as exc:
         raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
+    if not wrote and not get_settings().audit_log_required:
+        response = response.model_copy(
+            update={
+                "warnings": [
+                    *response.warnings,
+                    "Audit log unavailable; event not persisted.",
+                ]
+            }
+        )
     return response
 
 
@@ -248,9 +258,18 @@ async def dry_run_actions(request: ActionDryRunRequest) -> ActionDryRunResponse:
         dry_run_id=response.dry_run_id,
     )
     try:
-        write_audit_event(audit_event)
+        wrote = write_audit_event(audit_event)
     except AuditLogError as exc:
         raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
+    if not wrote and not get_settings().audit_log_required:
+        response = response.model_copy(
+            update={
+                "warnings": [
+                    *response.warnings,
+                    "Audit log unavailable; event not persisted.",
+                ]
+            }
+        )
     return response
 
 
