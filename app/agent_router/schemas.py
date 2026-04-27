@@ -256,6 +256,9 @@ class AuditRecentResponse(BaseModel):
     events: list[AuditEvent] = Field(default_factory=list)
 
 
+ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
+
+
 class ApprovalCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -279,7 +282,7 @@ class ApprovalResponse(BaseModel):
     target: str
     plan_id: str | None = None
     dry_run_id: str | None = None
-    status: Literal["pending", "approved", "rejected", "expired"]
+    status: ApprovalStatus
     risk: str
     requires_approval: bool
     created_at: str
@@ -294,6 +297,10 @@ class ApprovalResponse(BaseModel):
 
 class ApprovalDecisionResponse(ApprovalResponse):
     pass
+
+
+class ApprovalListResponse(BaseModel):
+    approvals: list[ApprovalResponse] = Field(default_factory=list)
 
 
 ActionDryRunResponse.model_rebuild()

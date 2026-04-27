@@ -16,7 +16,9 @@ from app.agent_router.schemas import (
     AIOpsDiagnoseResponse,
     ApprovalCreateRequest,
     ApprovalDecisionResponse,
+    ApprovalListResponse,
     ApprovalResponse,
+    ApprovalStatus,
     AuditRecentResponse,
     ActionDryRunRequest,
     ActionDryRunResponse,
@@ -37,8 +39,10 @@ from app.agent_router.services.approval_store import (
     ApprovalExpiredError,
     ApprovalStoreError,
     create_approval,
+    expire_pending_approvals,
     decide_approval,
-    get_approval,
+    list_approvals,
+    resolve_approval,
 )
 from app.agent_router.services.action_dry_run import simulate_action_dry_run
 from app.core.config import get_settings
@@ -315,17 +319,62 @@ async def request_approval(request: ApprovalCreateRequest) -> ApprovalResponse:
     return approval
 
 
+@router.get("/v1/aiops/actions/approvals", response_model=ApprovalListResponse)
+async def list_approvals_endpoint(
+    limit: int = Query(default=20, ge=1, le=100),
+    status: ApprovalStatus | None = Query(default=None),
+) -> ApprovalListResponse:
+    expired = expire_pending_approvals()
+    for approval in expired:
+        audit_event = build_approval_audit_event(
+            event_type="approval_expired",
+            approval=approval,
+            source_endpoint="/v1/aiops/actions/approvals",
+        )
+        try:
+            write_audit_event(audit_event)
+        except AuditLogError as exc:
+            raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
+
+    approvals = list_approvals(limit=limit, status=status)
+    return ApprovalListResponse(approvals=approvals)
+
+
 @router.get("/v1/aiops/actions/approvals/{approval_id}", response_model=ApprovalResponse)
 async def get_approval_by_id(approval_id: str) -> ApprovalResponse:
-    approval = get_approval(approval_id)
+    approval, expired = resolve_approval(approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="Approval not found")
+    if expired:
+        audit_event = build_approval_audit_event(
+            event_type="approval_expired",
+            approval=approval,
+            source_endpoint=f"/v1/aiops/actions/approvals/{approval_id}",
+        )
+        try:
+            write_audit_event(audit_event)
+        except AuditLogError as exc:
+            raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
     return approval
 
 
 @router.post("/v1/aiops/actions/approvals/{approval_id}/approve", response_model=ApprovalDecisionResponse)
 async def approve_request(approval_id: str) -> ApprovalDecisionResponse:
     try:
+        approval, expired = resolve_approval(approval_id)
+        if approval is None:
+            raise KeyError(approval_id)
+        if expired:
+            audit_event = build_approval_audit_event(
+                event_type="approval_expired",
+                approval=approval,
+                source_endpoint=f"/v1/aiops/actions/approvals/{approval_id}/approve",
+            )
+            try:
+                write_audit_event(audit_event)
+            except AuditLogError as audit_exc:
+                raise HTTPException(status_code=500, detail="Audit log unavailable") from audit_exc
+            raise HTTPException(status_code=409, detail="Approval expired")
         approval = decide_approval(approval_id, decision="approve")
     except ApprovalExpiredError as exc:
         approval = exc.approval
@@ -361,6 +410,20 @@ async def approve_request(approval_id: str) -> ApprovalDecisionResponse:
 @router.post("/v1/aiops/actions/approvals/{approval_id}/reject", response_model=ApprovalDecisionResponse)
 async def reject_request(approval_id: str) -> ApprovalDecisionResponse:
     try:
+        approval, expired = resolve_approval(approval_id)
+        if approval is None:
+            raise KeyError(approval_id)
+        if expired:
+            audit_event = build_approval_audit_event(
+                event_type="approval_expired",
+                approval=approval,
+                source_endpoint=f"/v1/aiops/actions/approvals/{approval_id}/reject",
+            )
+            try:
+                write_audit_event(audit_event)
+            except AuditLogError as audit_exc:
+                raise HTTPException(status_code=500, detail="Audit log unavailable") from audit_exc
+            raise HTTPException(status_code=409, detail="Approval expired")
         approval = decide_approval(approval_id, decision="reject")
     except ApprovalExpiredError as exc:
         approval = exc.approval

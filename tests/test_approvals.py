@@ -145,6 +145,51 @@ def test_approval_requires_auth(api_client: TestClient) -> None:
     assert response.status_code in {401, 403}
 
 
+def test_list_approvals_returns_recent_and_respects_default_limit(api_client: TestClient) -> None:
+    for idx in range(25):
+        response = api_client.post(
+            "/v1/aiops/actions/approvals",
+            headers=_auth(),
+            json={"plan_id": f"plan_{idx}"},
+        )
+        assert response.status_code == 200
+
+    response = api_client.get("/v1/aiops/actions/approvals", headers=_auth())
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["approvals"]) == 20
+    assert "command" not in json.dumps(body)
+    assert "test-token" not in json.dumps(body)
+
+
+def test_list_approvals_respects_status_filter_and_max_limit(api_client: TestClient) -> None:
+    created = []
+    for status_name in ("pending", "approved", "rejected"):
+        response = api_client.post(
+            "/v1/aiops/actions/approvals",
+            headers=_auth(),
+            json={"plan_id": f"plan_{status_name}"},
+        )
+        created.append(response.json()["approval_id"])
+
+    api_client.post(f"/v1/aiops/actions/approvals/{created[1]}/approve", headers=_auth())
+    api_client.post(f"/v1/aiops/actions/approvals/{created[2]}/reject", headers=_auth())
+
+    pending = api_client.get("/v1/aiops/actions/approvals?status=pending", headers=_auth())
+    approved = api_client.get("/v1/aiops/actions/approvals?status=approved", headers=_auth())
+    rejected = api_client.get("/v1/aiops/actions/approvals?status=rejected", headers=_auth())
+
+    assert pending.status_code == 200
+    assert approved.status_code == 200
+    assert rejected.status_code == 200
+    assert len(pending.json()["approvals"]) == 1
+    assert len(approved.json()["approvals"]) == 1
+    assert len(rejected.json()["approvals"]) == 1
+
+    over_limit = api_client.get("/v1/aiops/actions/approvals?limit=101", headers=_auth())
+    assert over_limit.status_code == 422
+
+
 def test_approve_pending_changes_status_and_audits(api_client: TestClient, tmp_path: Path) -> None:
     create = api_client.post(
         "/v1/aiops/actions/approvals",
@@ -163,6 +208,39 @@ def test_approve_pending_changes_status_and_audits(api_client: TestClient, tmp_p
     audit_events = _read_jsonl(_audit_log_path(tmp_path))
     assert audit_events[-1]["event_type"] == "approval_approved"
     assert audit_events[-1]["approval_id"] == approval_id
+
+
+def test_get_expired_approval_marks_expired_once_and_audits_once(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    create = api_client.post(
+        "/v1/aiops/actions/approvals",
+        headers=_auth(),
+        json={"plan_id": "plan_expire_lookup", "ttl_seconds": 1},
+    )
+    approval_id = create.json()["approval_id"]
+
+    import app.agent_router.services.approval_store as approval_module
+
+    monkeypatch.setattr(
+        approval_module,
+        "utcnow",
+        lambda: datetime.now(timezone.utc) + timedelta(hours=2),
+    )
+
+    first = api_client.get(f"/v1/aiops/actions/approvals/{approval_id}", headers=_auth())
+    second = api_client.get(f"/v1/aiops/actions/approvals/{approval_id}", headers=_auth())
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "expired"
+    assert second.status_code == 200
+    assert second.json()["status"] == "expired"
+
+    audit_events = [event for event in _read_jsonl(_audit_log_path(tmp_path)) if event["event_type"] == "approval_expired"]
+    assert len(audit_events) == 1
+    assert audit_events[0]["approval_id"] == approval_id
 
 
 def test_reject_pending_changes_status_and_audits(api_client: TestClient, tmp_path: Path) -> None:
@@ -241,6 +319,42 @@ def test_expired_cannot_be_approved(
     assert audit_events[-1]["approval_id"] == approval_id
 
 
+def test_list_expired_pending_approvals_marks_expired_once_and_filters(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    create = api_client.post(
+        "/v1/aiops/actions/approvals",
+        headers=_auth(),
+        json={"plan_id": "plan_expire_list", "ttl_seconds": 1},
+    )
+    approval_id = create.json()["approval_id"]
+
+    import app.agent_router.services.approval_store as approval_module
+
+    monkeypatch.setattr(
+        approval_module,
+        "utcnow",
+        lambda: datetime.now(timezone.utc) + timedelta(hours=2),
+    )
+
+    response = api_client.get("/v1/aiops/actions/approvals?status=expired", headers=_auth())
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["approvals"]) == 1
+    assert body["approvals"][0]["approval_id"] == approval_id
+    assert body["approvals"][0]["status"] == "expired"
+
+    repeat = api_client.get("/v1/aiops/actions/approvals?status=expired", headers=_auth())
+    assert repeat.status_code == 200
+    assert len(repeat.json()["approvals"]) == 1
+
+    audit_events = [event for event in _read_jsonl(_audit_log_path(tmp_path)) if event["event_type"] == "approval_expired"]
+    assert len(audit_events) == 1
+    assert audit_events[0]["approval_id"] == approval_id
+
+
 
 def test_store_unavailable_returns_controlled_error(
     api_client: TestClient,
@@ -257,6 +371,42 @@ def test_store_unavailable_returns_controlled_error(
     )
 
     assert response.status_code == 500
+
+
+def test_compaction_keeps_latest_state_per_approval_id(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("AIOPS_APPROVAL_STORE_MAX_RECORDS", "3")
+    get_settings.cache_clear()
+
+    import app.agent_router.services.approval_store as approval_module
+
+    approval_module.resolve_approval_store_path().parent.mkdir(parents=True, exist_ok=True)
+
+    create = api_client.post(
+        "/v1/aiops/actions/approvals",
+        headers=_auth(),
+        json={"plan_id": "plan_compact"},
+    )
+    approval_id = create.json()["approval_id"]
+    api_client.post(f"/v1/aiops/actions/approvals/{approval_id}/approve", headers=_auth())
+    api_client.post(
+        "/v1/aiops/actions/approvals",
+        headers=_auth(),
+        json={"plan_id": "plan_compact_2"},
+    )
+    api_client.post(
+        "/v1/aiops/actions/approvals",
+        headers=_auth(),
+        json={"plan_id": "plan_compact_3"},
+    )
+
+    records = _read_jsonl(_approval_store_path(tmp_path))
+    assert len(records) <= 3
+    latest = {record["approval_id"]: record for record in records}
+    assert latest[approval_id]["status"] == "approved"
 
 
 def test_approval_lookup_missing_returns_404(api_client: TestClient) -> None:

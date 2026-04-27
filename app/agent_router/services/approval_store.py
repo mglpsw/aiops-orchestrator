@@ -15,7 +15,7 @@ from uuid import uuid4
 from app.agent_router.schemas import ApprovalCreateRequest, ApprovalResponse
 from app.core.config import BASE_DIR, get_settings
 
-_APPROVAL_LOCK = threading.Lock()
+_APPROVAL_LOCK = threading.RLock()
 _MAX_TTL_SECONDS = 3600
 
 
@@ -81,6 +81,24 @@ def _load_latest(path: Path) -> dict[str, ApprovalResponse]:
     return latest
 
 
+def _read_all_records(path: Path | None = None) -> list[ApprovalResponse]:
+    path = path or resolve_approval_store_path()
+    if not path.exists():
+        return []
+
+    records: list[ApprovalResponse] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            approval = _parse(line)
+            if approval is None:
+                continue
+            records.append(approval)
+    return records
+
+
 def _persist_snapshot(approval: ApprovalResponse) -> None:
     path = resolve_approval_store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,6 +106,10 @@ def _persist_snapshot(approval: ApprovalResponse) -> None:
     with path.open("a", encoding="utf-8") as handle:
         handle.write(payload)
         handle.write("\n")
+
+    settings = get_settings()
+    if settings.approval_store_max_records > 0 and len(_read_all_records(path)) > settings.approval_store_max_records:
+        compact_approval_store(settings.approval_store_max_records)
 
 
 def create_approval(request: ApprovalCreateRequest, *, actor: str = "authenticated_user") -> ApprovalResponse:
@@ -126,7 +148,28 @@ def get_approval(approval_id: str) -> ApprovalResponse | None:
     approval = latest.get(approval_id)
     if approval is None:
         return None
-    return _apply_expiration(approval)
+    return approval
+
+
+def resolve_approval(approval_id: str, now: datetime | None = None) -> tuple[ApprovalResponse | None, bool]:
+    now = now or utcnow()
+    path = resolve_approval_store_path()
+    with _APPROVAL_LOCK:
+        latest = _load_latest(path)
+        approval = latest.get(approval_id)
+        if approval is None:
+            return None, False
+        if approval.status != "pending":
+            return approval, False
+        expires_at = datetime.fromisoformat(approval.expires_at)
+        if now <= expires_at:
+            return approval, False
+        expired_approval = approval.model_copy(update={"status": "expired"})
+        try:
+            _persist_snapshot(expired_approval)
+        except Exception as exc:
+            raise ApprovalStoreError("Failed to persist expired approval state") from exc
+        return expired_approval, True
 
 
 def _apply_expiration(approval: ApprovalResponse) -> ApprovalResponse:
@@ -136,6 +179,64 @@ def _apply_expiration(approval: ApprovalResponse) -> ApprovalResponse:
     if utcnow() <= expires_at:
         return approval
     return approval.model_copy(update={"status": "expired"})
+
+
+def _sort_key(approval: ApprovalResponse) -> datetime:
+    try:
+        return datetime.fromisoformat(approval.created_at)
+    except Exception:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def compact_approval_store(max_records: int) -> int:
+    if max_records <= 0:
+        return 0
+
+    path = resolve_approval_store_path()
+    with _APPROVAL_LOCK:
+        records = _read_all_records(path)
+        if not records:
+            return 0
+
+        latest_by_id: dict[str, ApprovalResponse] = {}
+        for approval in records:
+            latest_by_id[approval.approval_id] = approval
+
+        ordered = sorted(latest_by_id.values(), key=_sort_key, reverse=True)
+        if len(ordered) > max_records:
+            ordered = ordered[:max_records]
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(f"{path.name}.tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            for approval in ordered:
+                handle.write(_serialize(approval))
+                handle.write("\n")
+        tmp_path.replace(path)
+        return len(ordered)
+
+
+def expire_pending_approvals(now: datetime | None = None) -> list[ApprovalResponse]:
+    now = now or utcnow()
+    path = resolve_approval_store_path()
+    expired: list[ApprovalResponse] = []
+
+    with _APPROVAL_LOCK:
+        latest = _load_latest(path)
+        for approval in latest.values():
+            if approval.status != "pending":
+                continue
+            expires_at = datetime.fromisoformat(approval.expires_at)
+            if now <= expires_at:
+                continue
+            expired_approval = approval.model_copy(update={"status": "expired"})
+            try:
+                _persist_snapshot(expired_approval)
+            except Exception as exc:
+                raise ApprovalStoreError("Failed to persist expired approval state") from exc
+            expired.append(expired_approval)
+
+    return expired
 
 
 def decide_approval(approval_id: str, *, decision: str, actor: str = "authenticated_user") -> ApprovalResponse:
@@ -191,3 +292,23 @@ def list_latest_approvals() -> list[ApprovalResponse]:
     with _APPROVAL_LOCK:
         latest = _load_latest(path)
     return list(latest.values())
+
+
+def list_approvals(
+    *,
+    limit: int = 20,
+    status: str | None = None,
+    now: datetime | None = None,
+) -> list[ApprovalResponse]:
+    path = resolve_approval_store_path()
+    with _APPROVAL_LOCK:
+        latest = _load_latest(path)
+
+    approvals = list(latest.values())
+    if status is not None:
+        approvals = [approval for approval in approvals if approval.status == status]
+
+    approvals = sorted(approvals, key=_sort_key, reverse=True)
+    if limit > 0:
+        approvals = approvals[:limit]
+    return approvals

@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     # --- Approvals ---
     approval_store_path: str = "var/approvals/aiops_approvals.jsonl"
     approval_ttl_max_seconds: int = 3600
+    approval_store_max_records: int = 1000
 
     # --- WebAI ---
     webai_base_url: str = "http://open-webui:8080"
