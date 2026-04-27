@@ -71,6 +71,10 @@ def _run_store_path(tmp_path: Path) -> Path:
     return tmp_path / "runs" / "aiops_runs.jsonl"
 
 
+def _expected_action_repo_root() -> str:
+    return str(Path(get_settings().action_repo_root).resolve())
+
+
 def _create_approved_approval(api_client: TestClient, target: str = "agent-router") -> str:
     create = api_client.post(
         "/v1/aiops/actions/approvals",
@@ -463,10 +467,10 @@ def test_run_executes_systemctl_status_aiops_with_fixed_process(
     ]
     assert calls[0]["shell"] is False
     assert calls[0]["timeout"] == 5
-    assert calls[0]["cwd"] == str(Path("/opt/aiops-orchestrator").resolve())
+    assert calls[0]["cwd"] == _expected_action_repo_root()
     env = calls[0]["env"]
     assert env["PATH"] == "/usr/bin:/bin"
-    assert env["HOME"] == str(Path("/opt/aiops-orchestrator").resolve())
+    assert env["HOME"] == _expected_action_repo_root()
     assert "AGENT_ROUTER_API_TOKEN" not in env
     assert "OPENAI_API_KEY" not in env
     assert "ANTHROPIC_API_KEY" not in env
@@ -521,10 +525,10 @@ def test_run_executes_journalctl_aiops_recent_with_fixed_process(
     ]
     assert calls[0]["shell"] is False
     assert calls[0]["timeout"] == 5
-    assert calls[0]["cwd"] == str(Path("/opt/aiops-orchestrator").resolve())
+    assert calls[0]["cwd"] == _expected_action_repo_root()
     env = calls[0]["env"]
     assert env["PATH"] == "/usr/bin:/bin"
-    assert env["HOME"] == str(Path("/opt/aiops-orchestrator").resolve())
+    assert env["HOME"] == _expected_action_repo_root()
     assert "AGENT_ROUTER_API_TOKEN" not in env
     assert "OPENAI_API_KEY" not in env
     assert "ANTHROPIC_API_KEY" not in env
@@ -721,13 +725,13 @@ def test_run_executes_git_status_and_docker_compose_config_with_fixed_process(
     for call in calls:
         assert call["shell"] is False
         assert call["timeout"] == 5
-        assert call["cwd"] == str(Path("/opt/aiops-orchestrator").resolve())
+        assert call["cwd"] == _expected_action_repo_root()
         env = call["env"]
         assert env["PATH"] == "/usr/bin:/bin"
         assert "AGENT_ROUTER_API_TOKEN" not in env
         assert "OPENAI_API_KEY" not in env
         assert "ANTHROPIC_API_KEY" not in env
-        assert env["HOME"] == str(Path("/opt/aiops-orchestrator").resolve())
+        assert env["HOME"] == _expected_action_repo_root()
 
     audit_events = _read_jsonl(_audit_log_path(tmp_path))
     event_types = [event["event_type"] for event in audit_events]
@@ -789,10 +793,10 @@ def test_run_executes_git_diff_stat_and_bluegreen_compose_config_with_fixed_proc
     for call in calls:
         assert call["shell"] is False
         assert call["timeout"] == 5
-        assert call["cwd"] == str(Path("/opt/aiops-orchestrator").resolve())
+        assert call["cwd"] == _expected_action_repo_root()
         env = call["env"]
         assert env["PATH"] == "/usr/bin:/bin"
-        assert env["HOME"] == str(Path("/opt/aiops-orchestrator").resolve())
+        assert env["HOME"] == _expected_action_repo_root()
         assert "AGENT_ROUTER_API_TOKEN" not in env
         assert "OPENAI_API_KEY" not in env
         assert "ANTHROPIC_API_KEY" not in env
