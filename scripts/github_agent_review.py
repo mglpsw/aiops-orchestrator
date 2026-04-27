@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -16,14 +18,22 @@ from urllib.parse import urlparse
 DEFAULT_AGENT_ROUTER_BASE_URL = "https://api.ks-sm.net:9443"
 ALLOWED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 MAX_FINDINGS = 5
-MAX_RECENT_COMMENTS = 5
+MAX_RECENT_COMMENTS = 20
+MAX_FILES_ANALYZED = 8
 MAX_PATCH_SNIPPET_CHARS = 180
-MAX_BUNDLE_CHARS = 7000
+MAX_BUNDLE_CHARS = 6000
+MAX_COMMENT_CHARS = 5000
+MAX_LLM_NOTE_CHARS = 320
+COMMENT_MARKER = "<!-- aiops-agent-review:v2 -->"
 
 _COMMAND_REVIEW = "/agent review"
 _COMMAND_REVIEW_LLM = "/agent review llm"
-_SENSITIVE_LINE_RE = re.compile(r"(?i)\b(?:authorization|api[_-]?key|token|secret|password|passwd|pwd|client_secret)\b")
-_SECRET_VALUE_RE = re.compile(r"(?i)\bgh[pousr]_[A-Za-z0-9_]{16,}\b|\bgithub_pat_[A-Za-z0-9_]{16,}\b|\bsk-[A-Za-z0-9-]{8,}\b")
+_SENSITIVE_LINE_RE = re.compile(r"(?i)\b(?:authorization|bearer|api[_-]?key|token|secret|password|passwd|pwd|client_secret|cookie|set-cookie)\b")
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)\bgh[pousr]_[A-Za-z0-9_]{16,}\b|\bgithub_pat_[A-Za-z0-9_]{16,}\b|\bsk-[A-Za-z0-9-]{8,}\b|\bopenai[_-]?key\b|\bAGENT_ROUTER_API_KEY\b"
+)
+_PRIVATE_KEY_RE = re.compile(r"(?i)-----BEGIN [A-Z0-9 ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]+PRIVATE KEY-----")
+_ENV_BLOCK_RE = re.compile(r"(?i)\b\.env\b")
 _P1_DESTRUCTIVE_RE = re.compile(
     r"(?i)\b(?:docker\s+compose\s+(?:-f\s+\S+\s+)*down|docker\s+stop|docker\s+rm|docker\s+kill|docker\s+exec|systemctl\s+restart|service\s+docker|git\s+push|git\s+pull|rm\s+-rf|chmod\s+777|curl\b.*\|\s*(?:bash|sh|zsh)\b|ssh\s+root)\b"
 )
@@ -90,6 +100,34 @@ class LLMReview:
     warning: str | None = None
 
 
+class AgentRouterError(RuntimeError):
+    """Base error for Agent Router calls."""
+
+
+class AgentRouterDisabledError(AgentRouterError):
+    """Raised when the LLM path is not enabled or not fully configured."""
+
+
+class AgentRouterTimeoutError(AgentRouterError):
+    """Raised when the Agent Router call times out."""
+
+
+class AgentRouterUnavailableError(AgentRouterError):
+    """Raised for DNS/TLS/connection failures and 5xx responses."""
+
+
+class AgentRouterAuthError(AgentRouterError):
+    """Raised for 401/403 responses."""
+
+
+class AgentRouterRateLimitError(AgentRouterError):
+    """Raised for 429 responses."""
+
+
+class AgentRouterResponseError(AgentRouterError):
+    """Raised when the router response cannot be normalized."""
+
+
 class GitHubClient:
     def __init__(self, token: str, repository: str, api_base_url: str | None = None) -> None:
         self.token = token
@@ -101,6 +139,9 @@ class GitHubClient:
 
     def post_json(self, path: str, payload: dict[str, Any]) -> Any:
         return self._request_json("POST", path, payload)
+
+    def patch_json(self, path: str, payload: dict[str, Any]) -> Any:
+        return self._request_json("PATCH", path, payload)
 
     def _request_json(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
         url = f"{self.api_base_url}{path}"
@@ -119,17 +160,30 @@ class GitHubClient:
             with urllib.request.urlopen(request, timeout=30) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
-            raise RuntimeError(f"GitHub API request failed: {method} {path} -> {exc.code} {raw}") from exc
+            raise GitHubAPIError(method=method, path=path, code=exc.code) from exc
         return json.loads(raw) if raw else {}
+
+
+class GitHubAPIError(RuntimeError):
+    """Raised when a GitHub API call fails."""
+
+    def __init__(self, *, method: str, path: str, code: int) -> None:
+        super().__init__(f"GitHub API request failed: {method} {path} -> {code}")
+        self.method = method
+        self.path = path
+        self.code = code
 
 
 def _redact_sensitive_text(text: str) -> str:
     redacted = text
     redacted = _SECRET_VALUE_RE.sub("[REDACTED]", redacted)
+    redacted = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", redacted)
+    redacted = _ENV_BLOCK_RE.sub("[REDACTED ENV]", redacted)
     redacted = re.sub(r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+", r"\1[REDACTED]", redacted)
     redacted = re.sub(r"(?i)(x-api-key\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", redacted)
+    redacted = re.sub(r"(?i)(cookie\s*[:=]\s*)[^;\n]+", r"\1[REDACTED]", redacted)
     redacted = re.sub(r'(?i)"(?:authorization|api[_-]?key|token|secret|password)"\s*:\s*"[^"]*"', '"[REDACTED]":"[REDACTED]"', redacted)
+    redacted = re.sub(r"(?i)\b(?:openai[_-]?api[_-]?key|agent_router_api_key)\b\s*[:=]\s*['\"][^'\"]+['\"]", "[REDACTED]", redacted)
     return redacted
 
 
@@ -149,6 +203,10 @@ def _normalize_patch_text(patch: str | None) -> list[str]:
             continue
         lines.append(stripped)
     return lines
+
+
+def _looks_like_review_command_line(line: str) -> bool:
+    return line == _COMMAND_REVIEW or line == _COMMAND_REVIEW_LLM or line.startswith("/agent review")
 
 
 def parse_agent_review_command(body: str) -> str:
@@ -333,7 +391,7 @@ def scan_patch_for_findings(file: FileChange) -> list[Finding]:
             recommendation="Replace it with a read-only check or remove it entirely.",
         )
 
-    if _SENSITIVE_LINE_RE.search(patch) or _SECRET_VALUE_RE.search(patch):
+    if _SENSITIVE_LINE_RE.search(patch) or _SECRET_VALUE_RE.search(patch) or _PRIVATE_KEY_RE.search(patch) or "secrets." in patch_lower:
         _emit(
             findings,
             severity="P1",
@@ -564,6 +622,8 @@ def render_review(
 ) -> str:
     status = review_status(findings)
     lines = [
+        COMMENT_MARKER,
+        "",
         "# Agent Review",
         "",
         "## Resultado",
@@ -599,7 +659,7 @@ def render_review(
     if llm_warning:
         lines.extend(["", "## LLM", f"- {llm_warning}"])
     if llm_notes:
-        lines.extend(["", "## LLM notes", f"- {_truncate_text(_redact_sensitive_text(llm_notes), 320)}"])
+        lines.extend(["", "## LLM notes", f"- {_truncate_text(_redact_sensitive_text(llm_notes), MAX_LLM_NOTE_CHARS)}"])
     lines.extend(
         [
             "",
@@ -607,7 +667,10 @@ def render_review(
             "Este agent analisou metadados e diff via GitHub API. Ele não executou código do PR, não fez checkout da branch do PR para execução e não teve permissão de deploy.",
         ]
     )
-    return "\n".join(lines).rstrip() + "\n"
+    rendered = "\n".join(lines).rstrip() + "\n"
+    if len(rendered) > MAX_COMMENT_CHARS:
+        rendered = _truncate_text(rendered, MAX_COMMENT_CHARS - 80) + "\n\n> Comentário truncado por limite de tamanho."
+    return rendered
 
 
 def _load_event_payload(path: str | Path) -> dict[str, Any]:
@@ -698,7 +761,7 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
         f"Scope: {summarize_pr_scope(pr_context.files)}",
         "Files:",
     ]
-    for file in pr_context.files[:12]:
+    for file in pr_context.files[:MAX_FILES_ANALYZED]:
         snippet = _short_patch_for_bundle(file.patch)
         lines.append(
             f"- {file.path} [{file.status}] +{file.additions} -{file.deletions}: {_redact_sensitive_text(snippet)}"
@@ -763,11 +826,23 @@ def call_agent_router_review(
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    if not api_key:
+        raise AgentRouterDisabledError("Agent Router API key is missing.")
+    headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return response.read().decode("utf-8")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise AgentRouterAuthError(f"router auth failed: {exc.code}") from exc
+        if exc.code == 429:
+            raise AgentRouterRateLimitError("router rate limited") from exc
+        if 500 <= exc.code < 600:
+            raise AgentRouterUnavailableError(f"router unavailable: {exc.code}") from exc
+        raise AgentRouterResponseError(f"router unexpected response: {exc.code}") from exc
+    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+        raise AgentRouterTimeoutError(str(exc)) from exc
 
 
 def _normalize_llm_findings(raw_findings: Any) -> list[Finding]:
@@ -811,9 +886,13 @@ def parse_agent_router_response(raw_response: str) -> LLMReview:
 
     def _parse_content(content: Any) -> LLMReview:
         if isinstance(content, dict):
+            findings = _normalize_llm_findings(content.get("findings"))
+            notes = _redact_sensitive_text(_truncate_text(str(content.get("summary") or content.get("notes") or ""), 300)) or None
+            warning = None if findings or notes else "LLM response inválida"
             return LLMReview(
-                findings=_normalize_llm_findings(content.get("findings")),
-                notes=_redact_sensitive_text(_truncate_text(str(content.get("summary") or content.get("notes") or ""), 300)) or None,
+                findings=findings,
+                notes=notes,
+                warning=warning,
             )
         if isinstance(content, str):
             text = _redact_sensitive_text(content.strip())
@@ -831,6 +910,8 @@ def parse_agent_router_response(raw_response: str) -> LLMReview:
     try:
         outer = json.loads(sanitized)
     except Exception:
+        if sanitized.lstrip().startswith(("{", "[")):
+            return LLMReview(notes=sanitized, warning="LLM response inválida")
         return LLMReview(notes=sanitized)
 
     if isinstance(outer, dict):
@@ -873,9 +954,32 @@ def _build_issue_message() -> str:
     return "Esta primeira versão suporta apenas Pull Requests. Futuramente, podemos adicionar `/agent summarize` para issues comuns."
 
 
+def _build_llm_disabled_message() -> str:
+    return "LLM review não está habilitado; review determinístico publicado."
+
+
+def _build_llm_key_missing_message() -> str:
+    return "LLM review indisponível; chave do router ausente."
+
+
+def _build_llm_router_warning(reason: str) -> str:
+    return f"LLM review indisponível ({reason}); review determinístico publicado."
+
+
 def _issue_comment_path(client: GitHubClient, issue_number: int) -> str:
     owner, repo = _repo_parts(client.repository)
     return f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
+
+
+def _publish_comment(client: GitHubClient, path: str, body: str) -> bool:
+    try:
+        client.post_json(path, {"body": body})
+        return True
+    except GitHubAPIError as exc:
+        if exc.code == 403:
+            print("GitHub token cannot write PR comments; check workflow permissions: issues: write", file=sys.stderr)
+            return False
+        raise
 
 
 def _short_patch_for_bundle(patch: str | None) -> str:
@@ -886,6 +990,33 @@ def _short_patch_for_bundle(patch: str | None) -> str:
         return _truncate_text(_redact_sensitive_text(patch.replace("\n", " ")), MAX_PATCH_SNIPPET_CHARS)
     snippet = " | ".join(lines[:6])
     return _truncate_text(_redact_sensitive_text(snippet), MAX_PATCH_SNIPPET_CHARS)
+
+
+def _find_existing_review_comment(recent_comments: list[dict[str, Any]]) -> int | None:
+    for comment in recent_comments:
+        body = str(comment.get("body") or "")
+        if COMMENT_MARKER in body and "id" in comment:
+            try:
+                return int(comment["id"])
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _publish_review_comment(client: GitHubClient, pr_context: ReviewContext, body: str) -> bool:
+    payload = {"body": body}
+    existing_comment_id = _find_existing_review_comment(pr_context.recent_comments)
+    try:
+        if existing_comment_id is not None:
+            owner, repo = _repo_parts(client.repository)
+            client.patch_json(f"/repos/{owner}/{repo}/issues/comments/{existing_comment_id}", payload)
+            return True
+    except GitHubAPIError as exc:
+        if exc.code == 403:
+            print("GitHub token cannot write PR comments; check workflow permissions: issues: write", file=sys.stderr)
+            return False
+        raise
+    return _publish_comment(client, _issue_comment_path(client, pr_context.issue_number), body)
 
 
 def main() -> int:
@@ -916,11 +1047,13 @@ def main() -> int:
     client = GitHubClient(token=token, repository=repository)
 
     if not is_authorized(association, login, allowed_users):
-        client.post_json(_issue_comment_path(client, issue_number), {"body": _build_unauthorized_message()})
+        if not _publish_comment(client, _issue_comment_path(client, issue_number), _build_unauthorized_message()):
+            return 1
         return 0
 
     if not is_pull_request_payload(payload):
-        client.post_json(_issue_comment_path(client, issue_number), {"body": _build_issue_message()})
+        if not _publish_comment(client, _issue_comment_path(client, issue_number), _build_issue_message()):
+            return 1
         return 0
 
     pr_context = fetch_review_context(client, payload, command_mode)
@@ -928,15 +1061,27 @@ def main() -> int:
     llm_review: LLMReview | None = None
     llm_warning: str | None = None
     if command_mode == "review_llm":
-        if llm_enabled:
+        if not llm_enabled:
+            llm_warning = _build_llm_disabled_message()
+        elif not router_api_key:
+            llm_warning = _build_llm_key_missing_message()
+        else:
             router_payload = build_agent_router_payload(pr_context, deterministic_findings, model=router_model)
             try:
                 raw_router = call_agent_router_review(router_payload, base_url=router_base_url, api_key=router_api_key or None)
                 llm_review = parse_agent_router_response(raw_router)
+            except AgentRouterTimeoutError:
+                llm_warning = _build_llm_router_warning("timeout")
+            except AgentRouterAuthError:
+                llm_warning = _build_llm_router_warning("auth")
+            except AgentRouterRateLimitError:
+                llm_warning = _build_llm_router_warning("rate limited")
+            except AgentRouterUnavailableError:
+                llm_warning = _build_llm_router_warning("router indisponível")
+            except AgentRouterResponseError:
+                llm_warning = _build_llm_router_warning("resposta inválida")
             except Exception:
-                llm_warning = "LLM review indisponível; review determinístico publicado."
-        else:
-            llm_warning = "LLM review não está habilitado; review determinístico publicado."
+                llm_warning = _build_llm_router_warning("erro inesperado")
 
     merged_findings, llm_notes = merge_deterministic_and_llm_findings(deterministic_findings, llm_review)
     markdown = render_review(
@@ -947,7 +1092,8 @@ def main() -> int:
         llm_warning=llm_warning,
         llm_notes=llm_notes,
     )
-    client.post_json(_issue_comment_path(client, issue_number), {"body": markdown})
+    if not _publish_review_comment(client, pr_context, markdown):
+        return 1
     return 0
 
 
