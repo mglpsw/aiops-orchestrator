@@ -29,9 +29,9 @@ allowlisted, com aprovação humana obrigatória para ações de escrita).
 │  │ Diagnostic      │ │  Policy    │ │  Audit Log       │          │
 │  │ Engine          │ │  Engine    │ │                  │          │
 │  │                 │ │            │ │ - Cada decisão   │          │
-│  │ - Coleta sinais │ │ - Denylist │ │ - Cada diagnóst. │          │
-│  │ - Calcula       │ │ - Risk eval│ │ - Cada approval  │          │
-│  │   severity      │ │ - Approval │ │ - SQLite aiops.db│          │
+│  │ - Coleta sinais │ │ - Denylist │ │ - Cada plano     │          │
+│  │ - Calcula       │ │ - Risk eval│ │ - Cada simulação │          │
+│  │   severity      │ │ - Approval │ │ - JSONL local    │          │
 │  │ - Gera findings │ │   rules    │ │                  │          │
 │  │ - dry_run only  │ │            │ │                  │          │
 │  └─────────────────┘ └────────────┘ └──────────────────┘          │
@@ -114,10 +114,12 @@ Executa ações allowlisted em hosts remotos via SSH após aprovação humana.
 
 ### Componente: Audit Log
 
-Registra cada evento: criação de tarefa, diagnóstico, decisão de política, aprovação, execução.
+Registra cada plano e simulação em formato estruturado, sem comandos ou segredos.
 
-- **Implementado:** `app/models/database.py`, `app/services/task_service.py`
-- **Storage:** SQLite em volume persistente (`aiops-data:/app/data/aiops.db`)
+- **Implementado:** `app/agent_router/services/audit_log.py`
+- **Storage:** JSONL local configurável (`logs/aiops_audit.jsonl` por padrão)
+- **Endpoints associados:** `POST /v1/aiops/actions/plan`, `POST /v1/aiops/actions/dry-run`,
+  `GET /v1/aiops/audit/recent`
 
 ---
 
@@ -148,15 +150,18 @@ POST /v1/aiops/diagnose
     │      → Policy gate: mode=readonly, risk=low
     │      → Desconhecido ou policy-rejected → blocked_steps
     │      → Retorna ActionPlanResponse (dry_run=true, sem command)
+    │      → Gera evento de auditoria action_plan_created
     │
     ├─ 6. Dry-run Simulation (POST /v1/aiops/actions/dry-run)
     │      → Reaproveita Action Planner + catálogo validado no startup
     │      → Normaliza would_run / blocked_steps / warnings
     │      → Não executa shell, processo externo, SSH, Docker, git ou systemctl
     │      → Retorna ActionDryRunResponse com execution="not_executed"
+    │      → Gera evento de auditoria action_dry_run_created
     │
     ├─ 7. Audit Log
-    │      → Registra diagnóstico e resultado
+    │      → Registra eventos estruturados de plan/dry-run
+    │      → GET /v1/aiops/audit/recent retorna eventos recentes
     │
     └─ 8. Retorna AIOpsDiagnoseResponse
            → dry_run: true (sempre)

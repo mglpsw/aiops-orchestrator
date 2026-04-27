@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from time import perf_counter
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import require_api_token
@@ -14,6 +14,7 @@ from app.agent_router.metrics import record_aiops_diagnose
 from app.agent_router.schemas import (
     AIOpsDiagnoseRequest,
     AIOpsDiagnoseResponse,
+    AuditRecentResponse,
     ActionDryRunRequest,
     ActionDryRunResponse,
     ActionPlanRequest,
@@ -22,6 +23,7 @@ from app.agent_router.schemas import (
     CatalogResponse,
 )
 from app.agent_router.services.aiops_diagnostic import diagnose_aiops
+from app.agent_router.services.audit_log import AuditLogError, build_audit_event, read_recent_audit_events, write_audit_event
 from app.agent_router.services.action_dry_run import simulate_action_dry_run
 from app.agent_router.services.action_mapper import map_findings_to_action_ids
 from app.agent_router.signals import collect_aiops_diagnostic_signals
@@ -136,7 +138,19 @@ async def diagnose(
                 # Catalog unavailable: return diagnose without a plan.
                 action_plan = None
 
-    return response.model_copy(update={"action_plan": action_plan})
+    response = response.model_copy(update={"action_plan": action_plan})
+
+    if action_plan is not None:
+        audit_event = build_audit_event(
+            event_type="diagnose_action_plan_attached",
+            target=request.target,
+            source_endpoint="/v1/aiops/diagnose",
+            plan=action_plan,
+            correlation_id=action_plan.plan_id,
+        )
+        write_audit_event(audit_event, required=False)
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +206,19 @@ async def create_plan(request: ActionPlanRequest) -> ActionPlanResponse:
     except CatalogLoadError as exc:
         raise HTTPException(status_code=503, detail=f"Action catalog unavailable: {exc}") from exc
 
-    return plan_actions(request, catalog)
+    response = plan_actions(request, catalog)
+    audit_event = build_audit_event(
+        event_type="action_plan_created",
+        target=request.target,
+        source_endpoint="/v1/aiops/actions/plan",
+        plan=response,
+        correlation_id=response.plan_id,
+    )
+    try:
+        write_audit_event(audit_event)
+    except AuditLogError as exc:
+        raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -212,4 +238,27 @@ async def dry_run_actions(request: ActionDryRunRequest) -> ActionDryRunResponse:
     except CatalogLoadError as exc:
         raise HTTPException(status_code=503, detail=f"Action catalog unavailable: {exc}") from exc
 
-    return simulate_action_dry_run(request, catalog)
+    response = simulate_action_dry_run(request, catalog)
+    audit_event = build_audit_event(
+        event_type="action_dry_run_created",
+        target=request.target,
+        source_endpoint="/v1/aiops/actions/dry-run",
+        plan=response.plan,
+        correlation_id=response.dry_run_id,
+        dry_run_id=response.dry_run_id,
+    )
+    try:
+        write_audit_event(audit_event)
+    except AuditLogError as exc:
+        raise HTTPException(status_code=500, detail="Audit log unavailable") from exc
+    return response
+
+
+# ---------------------------------------------------------------------------
+# Audit log endpoint
+# ---------------------------------------------------------------------------
+
+
+@router.get("/v1/aiops/audit/recent", response_model=AuditRecentResponse)
+async def recent_audit_events(limit: int = Query(default=20, ge=1)) -> AuditRecentResponse:
+    return read_recent_audit_events(limit=limit)

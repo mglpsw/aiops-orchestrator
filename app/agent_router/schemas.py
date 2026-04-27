@@ -222,4 +222,33 @@ class ActionDryRunResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class AuditEvent(BaseModel):
+    event_id: str
+    timestamp: str
+    event_type: Literal[
+        "action_plan_created",
+        "action_dry_run_created",
+        "diagnose_action_plan_attached",
+    ]
+    actor: str
+    target: str
+    source_endpoint: str
+    correlation_id: str | None = None
+    plan_id: str | None = None
+    dry_run_id: str | None = None
+    run_id: str | None = None
+    risk: str
+    requires_approval: bool
+    status: str
+    action_ids: list[str] = Field(default_factory=list)
+    blocked_action_ids: list[str] = Field(default_factory=list)
+    warnings_count: int = 0
+    blocked_steps_count: int = 0
+    metadata: dict[str, Any] = Field(default_factory=lambda: {"schema_version": "audit.v1"})
+
+
+class AuditRecentResponse(BaseModel):
+    events: list[AuditEvent] = Field(default_factory=list)
+
+
 ActionDryRunResponse.model_rebuild()

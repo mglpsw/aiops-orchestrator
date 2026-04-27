@@ -92,11 +92,22 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - `GET /v1/aiops/actions/catalog` — lista o catálogo de ações allowlisted (autenticado, sem expor comandos)
 - `POST /v1/aiops/actions/plan` — gera plano determinístico a partir de `action_ids` explícitos (autenticado, `dry_run` sempre `true`)
 - `POST /v1/aiops/actions/dry-run` — simula um plano allowlisted sem executar nada (autenticado, `dry_run` sempre `true`)
+- `GET /v1/aiops/audit/recent` — retorna os eventos auditados mais recentes
 - Somente `action_ids` presentes em `config/actions.yaml` são aceitos
 - Nenhum comando livre, shell, SSH ou remediação automática
 - `action_ids` desconhecidos vão para `blocked_steps` (fail-closed)
 - O catálogo é validado no **startup** da aplicação; falha degrada `/ready` para `not_ready` antes da primeira requisição
 - Ver `docs/ACTIONS.md` para schema, regras, validação no startup e processo de adição futura
+
+### Audit log
+
+- O audit log v1 registra metadados estruturados de `plan` e `dry-run` em JSONL
+- Caminho padrão: `logs/aiops_audit.jsonl`
+- Variáveis:
+  - `AIOPS_AUDIT_LOG_PATH`
+  - `AIOPS_AUDIT_LOG_REQUIRED`
+- Nenhum `command`, segredo ou cabeçalho sensível é persistido
+- `GET /v1/aiops/audit/recent` permite inspeção autenticada dos eventos mais recentes
 
 ---
 

@@ -214,6 +214,7 @@ para um plano estruturado e seguro, sem envolver LLM ou comando livre.
 | `GET` | `/v1/aiops/actions/catalog` | Lista o catálogo allowlisted (sem expor comandos) |
 | `POST` | `/v1/aiops/actions/plan` | Gera um plano determinístico a partir de `action_ids` |
 | `POST` | `/v1/aiops/actions/dry-run` | Simula um plano allowlisted sem executar nada |
+| `GET` | `/v1/aiops/audit/recent` | Retorna os eventos auditados mais recentes |
 
 Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
 
@@ -277,6 +278,34 @@ Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
 - `dry_run` é sempre `true` na resposta
 - `plan_id` é único por chamada (UUID v4)
 - O planner é determinístico e testável sem LLM
+
+### Audit Log
+
+As operações de planejamento e simulação escrevem eventos estruturados em JSONL.
+
+- Caminho padrão: `logs/aiops_audit.jsonl`
+- Configuração:
+  - `AIOPS_AUDIT_LOG_PATH`
+  - `AIOPS_AUDIT_LOG_REQUIRED=true|false`
+- Eventos registrados:
+  - `action_plan_created`
+  - `action_dry_run_created`
+  - `diagnose_action_plan_attached`
+- Campos gravados:
+  - `event_id`
+  - `timestamp`
+  - `target`
+  - `source_endpoint`
+  - `plan_id`
+  - `dry_run_id`
+  - `risk`
+  - `status`
+  - `action_ids`
+  - `blocked_action_ids`
+  - `warnings_count`
+  - `blocked_steps_count`
+- Nenhum comando, segredo ou cabeçalho sensível é persistido
+- `GET /v1/aiops/audit/recent` expõe apenas os eventos mais recentes, com limite máximo de 100
 
 ---
 

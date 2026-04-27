@@ -76,6 +76,10 @@ class Settings(BaseSettings):
     allowed_exec_users: str = ""
     allow_admin_role: bool = True
 
+    # --- Audit log ---
+    audit_log_path: str = "logs/aiops_audit.jsonl"
+    audit_log_required: bool = True
+
     # --- WebAI ---
     webai_base_url: str = "http://open-webui:8080"
 

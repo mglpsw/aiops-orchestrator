@@ -74,6 +74,14 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - Nenhum shell, SSH, Docker, `git`, `curl` real, `systemctl` ou processo externo é chamado
 - Catálogo inválido continua fail-closed com HTTP 503
 
+### Audit Log
+
+- O audit log grava apenas metadados estruturados de `plan` e `dry-run`
+- O caminho padrão é `logs/aiops_audit.jsonl`
+- `AIOPS_AUDIT_LOG_REQUIRED=true` mantém `plan` e `dry-run` em fail-closed se a escrita falhar
+- Nenhum payload bruto completo, cabeçalho de autenticação, segredo ou `command` é persistido
+- `GET /v1/aiops/audit/recent` expõe apenas eventos recentes e continua autenticado
+
 ### Action Mapper — garantias
 
 O mapeador (`app/agent_router/services/action_mapper.py`) converte findings em `action_ids`:
