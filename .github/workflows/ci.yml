@@ -46,7 +46,7 @@ jobs:
           docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config
 
       - name: Run tests
-        run: python -m pytest -q
+        run: bash scripts/test.sh
 
       - name: Check diff formatting
         run: git diff --check

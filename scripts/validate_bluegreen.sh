@@ -1,4 +1,14 @@
 #!/usr/bin/env bash
+# validate_bluegreen.sh — Validação do runtime blue/green
+#
+# ATENÇÃO: Este script pode iniciar o container aiops-orchestrator-next
+# (blue/green) se ele não estiver rodando. Isso é uma operação mutável.
+#
+# Pré-requisito: defina AIOPS_BLUEGREEN_ALLOWED=1 para confirmar que você
+# sabe que este script pode iniciar containers.
+#
+# Para validação puramente read-only (sem iniciar nada):
+#   AIOPS_BLUEGREEN_READONLY=1 bash scripts/validate_bluegreen.sh
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -76,12 +86,27 @@ next_container_running() {
   docker ps --format '{{.Names}}' | grep -qx 'aiops-orchestrator-next'
 }
 
-echo "Validating compose configuration..."
+echo "Validating compose configuration (read-only)..."
 compose config >/dev/null
+
+READONLY_MODE="${AIOPS_BLUEGREEN_READONLY:-0}"
 
 if next_container_running; then
   echo "Using existing aiops-orchestrator-next container on port 8001."
+elif [ "$READONLY_MODE" = "1" ]; then
+  echo "SKIP: aiops-orchestrator-next não está rodando."
+  echo "      Em modo read-only, o script não inicia containers."
+  echo "      Para iniciar, use: AIOPS_BLUEGREEN_ALLOWED=1 bash $0"
+  exit 0
 else
+  ALLOWED="${AIOPS_BLUEGREEN_ALLOWED:-0}"
+  if [ "$ALLOWED" != "1" ]; then
+    echo "ERRO: aiops-orchestrator-next não está rodando e AIOPS_BLUEGREEN_ALLOWED não está definido." >&2
+    echo "      Este script pode iniciar containers. Confirme com:" >&2
+    echo "        AIOPS_BLUEGREEN_ALLOWED=1 bash $0" >&2
+    echo "      Para validação read-only (sem iniciar): AIOPS_BLUEGREEN_READONLY=1 bash $0" >&2
+    exit 1
+  fi
   echo "Building and starting aiops-orchestrator-next on port 8001..."
   compose up -d --build aiops-orchestrator
 fi

@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# AIOps Orchestrator - Script de Validação
-# Valida configuração, sintaxe e saúde do serviço
+# AIOps Orchestrator — Validação local (read-only)
+#
+# Execute DENTRO do CT 102, não no host Proxmox.
+# Não inicia, para ou reinicia nenhum serviço.
 set -euo pipefail
 
-TARGET_CT=102
-BASE_URL="http://192.168.3.155:8000"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BASE_URL="http://127.0.0.1:8000"
 ERRORS=0
 
-echo "=== Validação do AIOps Orchestrator ==="
+echo "=== Validação do AIOps Orchestrator (local, read-only) ==="
+echo "Executando em: $(hostname) — $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo ""
 
-# Função auxiliar: executa um comando e reporta OK ou FALHA
 check() {
     local desc="$1"
     shift
@@ -22,40 +24,43 @@ check() {
     fi
 }
 
-echo "[1] Verificando status da CT 102..."
-check "CT 102 is running" pct status 102
+echo "[1] Docker daemon..."
+check "Docker daemon acessível" docker info
 
-echo "[2] Verificando serviço Docker..."
-check "Docker daemon running" pct exec $TARGET_CT -- docker info
+echo "[2] Container AIOps..."
+check "aiops-orchestrator em execução" \
+    bash -c "docker ps --filter name='^aiops-orchestrator$' --filter status=running -q | grep -q ."
+check "Project name é aiops-orchestrator (não 'deploy')" \
+    bash -c "docker inspect aiops-orchestrator --format '{{index .Config.Labels \"com.docker.compose.project\"}}' 2>/dev/null | grep -qx 'aiops-orchestrator'"
 
-echo "[3] Verificando status do container..."
-check "aiops-orchestrator container running" pct exec $TARGET_CT -- docker ps --filter name=aiops-orchestrator --filter status=running -q
+echo "[3] Endpoints HTTP..."
+check "Health endpoint" curl -sf --max-time 5 "$BASE_URL/health"
+check "Ready endpoint" curl -sf --max-time 5 "$BASE_URL/ready"
+check "Metrics endpoint" curl -sf --max-time 5 "$BASE_URL/metrics"
 
-echo "[4] Verificando endpoints..."
-check "Health endpoint" curl -sf "$BASE_URL/health"
-check "Ready endpoint" curl -sf "$BASE_URL/ready"
-check "Metrics endpoint" curl -sf "$BASE_URL/metrics"
+echo "[4] Arquivos de configuração..."
+check "config/actions.yaml existe" test -f "$ROOT_DIR/config/actions.yaml"
+check "config/providers.yml existe" test -f "$ROOT_DIR/config/providers.yml"
+check "config/policies.yml existe" test -f "$ROOT_DIR/config/policies.yml"
+check ".env existe" test -f "$ROOT_DIR/.env"
 
-echo "[5] Verificando arquivos de configuração..."
-check "providers.yml exists" pct exec $TARGET_CT -- test -f /opt/aiops-orchestrator/config/providers.yml
-check "policies.yml exists" pct exec $TARGET_CT -- test -f /opt/aiops-orchestrator/config/policies.yml
-check "routes.yml exists" pct exec $TARGET_CT -- test -f /opt/aiops-orchestrator/config/routes.yml
-check ".env exists" pct exec $TARGET_CT -- test -f /opt/aiops-orchestrator/.env
+echo "[5] Compose config (sem iniciar nada)..."
+check "docker-compose.yml válido" \
+    docker compose -p aiops-orchestrator -f "$ROOT_DIR/deploy/docker-compose.yml" config --quiet
+check "docker-compose.yml tem name: aiops-orchestrator" \
+    bash -c "docker compose -p aiops-orchestrator -f '$ROOT_DIR/deploy/docker-compose.yml' config 2>/dev/null | grep -q 'name: aiops-orchestrator'"
 
-echo "[6] Verificando persistência de dados..."
-check "Data volume exists" pct exec $TARGET_CT -- docker volume inspect aiops-data
+echo "[6] Persistência..."
+check "Volume aiops-data existe" docker volume inspect aiops-data
 
-echo "[7] Verificando conflitos de porta..."
-check "Port 8000 only used by aiops" pct exec $TARGET_CT -- bash -c "ss -tlnp | grep ':8000' | grep -q docker-proxy"
+echo "[7] docker-compose.maintenance.yml não montado em produção..."
+check "docker.sock NÃO montado no container de produção" \
+    bash -c "! docker inspect aiops-orchestrator --format '{{json .Mounts}}' 2>/dev/null | grep -q 'docker.sock'"
 
-echo "[8] Verificando se os serviços existentes não foram afetados..."
-check "NPM running" pct exec $TARGET_CT -- docker ps --filter name=npm --filter status=running -q
-check "Nextcloud running" pct exec $TARGET_CT -- docker ps --filter name=nextcloud_app --filter status=running -q
-
-echo "[9] Verificando catálogo de actions..."
-CATALOG_SCRIPT="$(dirname "$0")/validate_actions_catalog.sh"
+echo "[8] Catálogo de actions (read-only)..."
+CATALOG_SCRIPT="$ROOT_DIR/scripts/validate_actions_catalog.sh"
 if [ -f "$CATALOG_SCRIPT" ]; then
-    if bash "$CATALOG_SCRIPT"; then
+    if bash "$CATALOG_SCRIPT" &>/dev/null; then
         echo "  [OK] Catálogo de actions válido"
     else
         echo "  [FALHA] Catálogo de actions inválido"
@@ -67,8 +72,9 @@ fi
 
 echo ""
 if [ $ERRORS -eq 0 ]; then
-    echo "=== Todas as verificações passaram! ==="
+    echo "=== Todas as verificações passaram ==="
+    exit 0
 else
-    echo "=== $ERRORS verificação(es) falharam ==="
+    echo "=== $ERRORS verificação(ões) falharam ==="
     exit 1
 fi

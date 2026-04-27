@@ -1,3 +1,24 @@
+# ATENÇÃO — ARQUIVO DE MANUTENÇÃO COM ACESSO AO DOCKER SOCKET
+#
+# Este override monta /var/run/docker.sock dentro do container.
+# Com este mount, o container tem acesso irrestrito ao Docker host
+# e pode parar, iniciar ou deletar QUALQUER container da máquina.
+#
+# REGRAS OBRIGATÓRIAS:
+#   1. NUNCA use em produção como configuração permanente.
+#   2. NUNCA combine com docker compose up -d sem supervisão explícita.
+#   3. Use SOMENTE para diagnóstico pontual, com sessão monitorada.
+#   4. Após o uso, pare o container imediatamente.
+#   5. O AIOps v1 NÃO precisa deste arquivo para funcionar normalmente.
+#
+# Uso correto (somente leitura de diagnóstico, com operador presente):
+#   docker compose -p aiops-orchestrator \
+#     -f deploy/docker-compose.yml \
+#     -f deploy/docker-compose.maintenance.yml \
+#     run --rm aiops-orchestrator docker ps
+#
+# PROIBIDO em caminho automático, CI, action runner ou systemd.
+
 services:
   aiops-orchestrator:
     volumes:

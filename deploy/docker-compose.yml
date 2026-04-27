@@ -1,3 +1,5 @@
+name: aiops-orchestrator
+
 services:
   aiops-orchestrator:
     build:
