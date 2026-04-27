@@ -92,6 +92,10 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - `GET /v1/aiops/actions/catalog` — lista o catálogo de ações allowlisted (autenticado, sem expor comandos)
 - `POST /v1/aiops/actions/plan` — gera plano determinístico a partir de `action_ids` explícitos (autenticado, `dry_run` sempre `true`)
 - `POST /v1/aiops/actions/dry-run` — simula um plano allowlisted sem executar nada (autenticado, `dry_run` sempre `true`)
+- `POST /v1/aiops/actions/approvals` — cria uma aprovação persistente para `plan_id` ou `dry_run_id`
+- `GET /v1/aiops/actions/approvals/{approval_id}` — consulta uma aprovação persistente
+- `POST /v1/aiops/actions/approvals/{approval_id}/approve` — aprova uma solicitação pendente
+- `POST /v1/aiops/actions/approvals/{approval_id}/reject` — rejeita uma solicitação pendente
 - `GET /v1/aiops/audit/recent` — retorna os eventos auditados mais recentes
 - Somente `action_ids` presentes em `config/actions.yaml` são aceitos
 - Nenhum comando livre, shell, SSH ou remediação automática
@@ -107,10 +111,20 @@ Ver `docs/OPERATIONS.md` para detalhes.
   - `AIOPS_AUDIT_LOG_PATH`
   - `AIOPS_AUDIT_LOG_REQUIRED`
   - `AIOPS_AUDIT_LOG_MAX_BYTES`
-  - `AIOPS_AUDIT_LOG_BACKUP_COUNT`
-  - `AIOPS_AUDIT_LOG_ROTATION_ENABLED`
+- `AIOPS_AUDIT_LOG_BACKUP_COUNT`
+- `AIOPS_AUDIT_LOG_ROTATION_ENABLED`
+- `AIOPS_APPROVAL_STORE_PATH`
 - Nenhum `command`, segredo ou cabeçalho sensível é persistido
 - `GET /v1/aiops/audit/recent` permite inspeção autenticada dos eventos mais recentes
+
+### Approval model
+
+- Aprovações são persistidas de forma estruturada e não executam ações
+- Caminho padrão: `var/approvals/aiops_approvals.jsonl`
+- `ttl_seconds` padrão: `900`
+- TTL máximo seguro: `3600`
+- Estados: `pending`, `approved`, `rejected`, `expired`
+- Aprovações e decisões são auditadas
 
 ---
 

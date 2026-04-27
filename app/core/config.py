@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     audit_log_backup_count: int = 5
     audit_log_rotation_enabled: bool = True
 
+    # --- Approvals ---
+    approval_store_path: str = "var/approvals/aiops_approvals.jsonl"
+    approval_ttl_max_seconds: int = 3600
+
     # --- WebAI ---
     webai_base_url: str = "http://open-webui:8080"
 

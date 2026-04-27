@@ -74,6 +74,15 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - Nenhum shell, SSH, Docker, `git`, `curl` real, `systemctl` ou processo externo é chamado
 - Catálogo inválido continua fail-closed com HTTP 503
 
+### Approval Model
+
+- Aprovações persistem apenas metadados seguros de `plan_id` ou `dry_run_id`
+- Criar, aprovar ou rejeitar uma solicitação não executa nenhuma action
+- `ttl_seconds` é validado e limitado por configuração
+- `expired` não pode ser aprovado ou reativado
+- Nenhum `command`, segredo ou cabeçalho de autenticação é persistido
+- Os eventos de aprovação são auditados
+
 ### Audit Log
 
 - O audit log grava apenas metadados estruturados de `plan` e `dry-run`

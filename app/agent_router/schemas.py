@@ -229,10 +229,15 @@ class AuditEvent(BaseModel):
         "action_plan_created",
         "action_dry_run_created",
         "diagnose_action_plan_attached",
+        "approval_requested",
+        "approval_approved",
+        "approval_rejected",
+        "approval_expired",
     ]
     actor: str
     target: str
     source_endpoint: str
+    approval_id: str | None = None
     correlation_id: str | None = None
     plan_id: str | None = None
     dry_run_id: str | None = None
@@ -249,6 +254,46 @@ class AuditEvent(BaseModel):
 
 class AuditRecentResponse(BaseModel):
     events: list[AuditEvent] = Field(default_factory=list)
+
+
+class ApprovalCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = "agent-router"
+    plan_id: str | None = None
+    dry_run_id: str | None = None
+    reason: str = ""
+    ttl_seconds: int = 900
+
+    @model_validator(mode="after")
+    def validate_approval_create_request(self) -> "ApprovalCreateRequest":
+        if not self.plan_id and not self.dry_run_id:
+            raise ValueError("plan_id or dry_run_id is required")
+        if self.plan_id and self.dry_run_id:
+            return self
+        return self
+
+
+class ApprovalResponse(BaseModel):
+    approval_id: str
+    target: str
+    plan_id: str | None = None
+    dry_run_id: str | None = None
+    status: Literal["pending", "approved", "rejected", "expired"]
+    risk: str
+    requires_approval: bool
+    created_at: str
+    expires_at: str
+    approved_at: str | None = None
+    rejected_at: str | None = None
+    actor: str
+    approved_by: str | None = None
+    rejected_by: str | None = None
+    reason: str = ""
+
+
+class ApprovalDecisionResponse(ApprovalResponse):
+    pass
 
 
 ActionDryRunResponse.model_rebuild()

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from app.agent_router.schemas import AuditEvent, AuditRecentResponse, ActionPlanResponse
+from app.agent_router.schemas import ApprovalResponse, AuditEvent, AuditRecentResponse, ActionPlanResponse
 from app.core.config import BASE_DIR, get_settings
 
 _AUDIT_LOCK = threading.Lock()
@@ -28,6 +28,10 @@ AuditEventType = Literal[
     "action_plan_created",
     "action_dry_run_created",
     "diagnose_action_plan_attached",
+    "approval_requested",
+    "approval_approved",
+    "approval_rejected",
+    "approval_expired",
 ]
 
 
@@ -122,6 +126,36 @@ def build_audit_event(
         blocked_action_ids=blocked_action_ids,
         warnings_count=len(plan.warnings),
         blocked_steps_count=len(plan.blocked_steps),
+    )
+
+
+def build_approval_audit_event(
+    *,
+    event_type: Literal["approval_requested", "approval_approved", "approval_rejected", "approval_expired"],
+    approval: ApprovalResponse,
+    source_endpoint: str,
+    actor: str = "authenticated_user",
+) -> AuditEvent:
+    event_id = f"audit_{uuid4().hex}"
+    timestamp = datetime.now(timezone.utc).isoformat()
+    return AuditEvent(
+        event_id=event_id,
+        timestamp=timestamp,
+        event_type=event_type,
+        actor=actor,
+        target=approval.target,
+        source_endpoint=source_endpoint,
+        approval_id=approval.approval_id,
+        correlation_id=approval.approval_id,
+        plan_id=approval.plan_id,
+        dry_run_id=approval.dry_run_id,
+        risk=approval.risk,
+        requires_approval=approval.requires_approval,
+        status=approval.status,
+        action_ids=[],
+        blocked_action_ids=[],
+        warnings_count=0,
+        blocked_steps_count=0,
     )
 
 

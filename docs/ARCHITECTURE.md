@@ -21,6 +21,8 @@ allowlisted, com aprovação humana obrigatória para ações de escrita).
 │  │                      API Layer                               │   │
 │  │  GET  /health   GET  /ready   GET  /metrics                  │   │
 │  │  POST /v1/aiops/diagnose  (autenticado, dry-run only)        │   │
+│  │  POST /v1/aiops/actions/approvals (persistência)             │   │
+│  │  GET/POST /v1/aiops/actions/approvals/...                    │   │
 │  └──────────────────────────┬───────────────────────────────────┘   │
 │                             │                                       │
 │           ┌─────────────────┼─────────────────┐                    │
@@ -44,7 +46,7 @@ allowlisted, com aprovação humana obrigatória para ações de escrita).
 │           │  - Saída: action_id + justificativa     │              │
 │           │  - Aprovação humana obrigatória         │              │
 │           └──────────┬──────────────────────────────┘              │
-│                      │  (futuro — não ativo no v1)                 │
+│                      │  (aprovação estruturada e futuro run)       │
 │          ┌───────────┴────────────┐                                │
 │          ▼                        ▼                                │
 │  ┌──────────────────┐  ┌──────────────────┐                       │
@@ -122,6 +124,17 @@ Registra cada plano e simulação em formato estruturado, sem comandos ou segred
 - **Endpoints associados:** `POST /v1/aiops/actions/plan`, `POST /v1/aiops/actions/dry-run`,
   `GET /v1/aiops/audit/recent`
 
+### Componente: Approval Store
+
+Persiste aprovações estruturadas para `plan_id` ou `dry_run_id`.
+
+- **Implementado:** `app/agent_router/services/approval_store.py`
+- **Storage:** JSONL local configurável (`var/approvals/aiops_approvals.jsonl` por padrão)
+- **Endpoints associados:** `POST /v1/aiops/actions/approvals`,
+  `GET /v1/aiops/actions/approvals/{approval_id}`,
+  `POST /v1/aiops/actions/approvals/{approval_id}/approve`,
+  `POST /v1/aiops/actions/approvals/{approval_id}/reject`
+
 ---
 
 ## Fluxo de diagnóstico (v1 — caminho produtivo)
@@ -160,11 +173,16 @@ POST /v1/aiops/diagnose
     │      → Retorna ActionDryRunResponse com execution="not_executed"
     │      → Gera evento de auditoria action_dry_run_created
     │
-    ├─ 7. Audit Log
+    ├─ 7. Approval Store (POST/GET /v1/aiops/actions/approvals)
+    │      → Persiste autorização futura
+    │      → Estados: pending, approved, rejected, expired
+    │      → Não executa nada
+    │
+    ├─ 8. Audit Log
     │      → Registra eventos estruturados de plan/dry-run
     │      → GET /v1/aiops/audit/recent retorna eventos recentes
     │
-    └─ 8. Retorna AIOpsDiagnoseResponse
+    └─ 9. Retorna AIOpsDiagnoseResponse
            → dry_run: true (sempre)
            → action_plan: ActionPlanResponse | null
            → sem execução real
@@ -236,7 +254,7 @@ POST /v1/aiops/actions/dry-run
            → nenhum command exposto
 ```
 
-## Fluxo de execução (futuro — não ativo no v1)
+## Fluxo de aprovação e execução (futuro — execução ainda não ativa)
 
 ```text
 [ActionDryRunResponse ou ActionPlanResponse com status=ready]

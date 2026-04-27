@@ -214,6 +214,10 @@ para um plano estruturado e seguro, sem envolver LLM ou comando livre.
 | `GET` | `/v1/aiops/actions/catalog` | Lista o catálogo allowlisted (sem expor comandos) |
 | `POST` | `/v1/aiops/actions/plan` | Gera um plano determinístico a partir de `action_ids` |
 | `POST` | `/v1/aiops/actions/dry-run` | Simula um plano allowlisted sem executar nada |
+| `POST` | `/v1/aiops/actions/approvals` | Cria uma aprovação persistente para `plan_id` ou `dry_run_id` |
+| `GET` | `/v1/aiops/actions/approvals/{approval_id}` | Consulta uma aprovação persistente |
+| `POST` | `/v1/aiops/actions/approvals/{approval_id}/approve` | Aprova uma solicitação pendente |
+| `POST` | `/v1/aiops/actions/approvals/{approval_id}/reject` | Rejeita uma solicitação pendente |
 | `GET` | `/v1/aiops/audit/recent` | Retorna os eventos auditados mais recentes |
 
 Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
@@ -294,6 +298,10 @@ As operações de planejamento e simulação escrevem eventos estruturados em JS
   - `action_plan_created`
   - `action_dry_run_created`
   - `diagnose_action_plan_attached`
+  - `approval_requested`
+  - `approval_approved`
+  - `approval_rejected`
+  - `approval_expired`
 - Campos gravados:
   - `event_id`
   - `timestamp`
@@ -310,6 +318,70 @@ As operações de planejamento e simulação escrevem eventos estruturados em JS
 - Nenhum comando, segredo ou cabeçalho sensível é persistido
 - `GET /v1/aiops/audit/recent` expõe apenas os eventos mais recentes, com limite máximo de 100
 - A retenção é por rotação simples do arquivo ativo, com backups numerados e limite configurável
+
+---
+
+## Approval model
+
+As aprovações são persistidas em JSONL e representam apenas autorização futura.
+Nenhuma action é executada por criar, aprovar ou rejeitar uma solicitação.
+
+### Store
+
+- Caminho padrão: `var/approvals/aiops_approvals.jsonl`
+- Configuração:
+  - `AIOPS_APPROVAL_STORE_PATH`
+- TTL:
+  - padrão: `900`
+  - máximo seguro: `3600`
+- Estados permitidos:
+  - `pending`
+  - `approved`
+  - `rejected`
+  - `expired`
+
+### Request
+
+```json
+{
+  "target": "agent-router",
+  "plan_id": "plan_...",
+  "dry_run_id": "dryrun_...",
+  "reason": "Aprovar coleta read-only futura",
+  "ttl_seconds": 900
+}
+```
+
+### Response
+
+```json
+{
+  "approval_id": "approval_...",
+  "target": "agent-router",
+  "plan_id": "plan_...",
+  "dry_run_id": "dryrun_...",
+  "status": "pending",
+  "risk": "low",
+  "requires_approval": true,
+  "created_at": "2026-04-27T00:00:00Z",
+  "expires_at": "2026-04-27T00:15:00Z",
+  "approved_at": null,
+  "rejected_at": null,
+  "actor": "authenticated_user",
+  "approved_by": null,
+  "rejected_by": null,
+  "reason": "Aprovar coleta read-only futura"
+}
+```
+
+### Regras
+
+- Só `pending` pode ser aprovado ou rejeitado
+- `expired` não pode ser aprovado
+- `approved` não pode ser rejeitado
+- `rejected` não pode ser aprovado
+- Nenhum `command`, segredo ou cabeçalho sensível é persistido
+- Cada transição gera evento auditável
 
 ---
 
