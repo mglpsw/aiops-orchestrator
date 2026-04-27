@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     run_timeout_seconds: int = 5
     run_output_max_bytes: int = 4000
     run_store_max_records: int = 1000
-    action_repo_root: str = "/opt/aiops-orchestrator"
+    action_repo_root: str = str(BASE_DIR)
     prometheus_base_url: str = Field(
         default="http://127.0.0.1:9090",
         validation_alias=AliasChoices("PROMETHEUS_BASE_URL", "AIOPS_PROMETHEUS_BASE_URL"),
