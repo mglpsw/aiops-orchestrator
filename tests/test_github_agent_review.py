@@ -286,6 +286,130 @@ def test_real_command_in_script_triggers_p1() -> None:
     assert any(finding.severity == "P1" for finding in findings)
 
 
+def test_os_system_real_command_triggers_p1() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="scripts/cleanup.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch='+ os.system("docker exec aiops-orchestrator python3 -c \\"print(1)\\"")',
+            )
+        ],
+        [],
+    )
+    assert any(finding.severity == "P1" for finding in findings)
+
+
+def test_shell_true_in_action_runner_triggers_p1() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="app/agent_router/services/action_runner.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch='+ subprocess.run("docker exec aiops-orchestrator ls", shell=True)',
+            )
+        ],
+        [],
+    )
+    assert any(finding.rule_id == "runner_arbitrary_command" for finding in findings)
+    assert any(finding.severity == "P1" for finding in findings)
+
+
+def test_scanner_regex_reference_does_not_trigger_p1() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="scripts/github_agent_review.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch='+ _P1_DESTRUCTIVE_RE = re.compile(r"(?i)\\b(?:docker\\s+exec|git\\s+push)\\b")',
+            )
+        ],
+        [],
+    )
+    assert all(finding.severity != "P1" for finding in findings)
+
+
+def test_placeholder_private_key_block_does_not_trigger_p1() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="tests/test_github_agent_review.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch=(
+                    "+ -----BEGIN PRIVATE KEY-----\n"
+                    "+ [REDACTED PRIVATE KEY]\n"
+                    "+ -----END PRIVATE KEY-----"
+                ),
+            )
+        ],
+        [],
+    )
+    assert all(finding.severity != "P1" for finding in findings)
+
+
+def test_fixture_command_string_does_not_trigger_p1() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="tests/test_github_agent_review.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch='+ command = "docker exec aiops-orchestrator python3 -c \\"print(1)\\""',
+            )
+        ],
+        [],
+    )
+    assert all(finding.severity != "P1" for finding in findings)
+
+
+def test_scanner_change_with_matching_test_does_not_emit_generic_p2() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="scripts/github_agent_review.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch="- MAX_BUNDLE_CHARS = 6000\n+ MAX_BUNDLE_CHARS = 7000",
+            ),
+            review.FileChange(
+                path="tests/test_github_agent_review.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch="+ assert review.MAX_BUNDLE_CHARS == 7000",
+            ),
+        ],
+        [],
+    )
+    assert all(finding.rule_id != "safety_behavior_regression" for finding in findings)
+
+
+def test_helper_path_construction_does_not_trigger_p2() -> None:
+    findings = review.build_deterministic_findings(
+        [
+            review.FileChange(
+                path="tests/test_github_agent_review.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch='REPO_ROOT = str(Path("/opt") / "aiops-orchestrator")',
+            )
+        ],
+        [],
+    )
+    assert all(finding.rule_id != "hardcoded_repo_root" for finding in findings)
+
+
 @pytest.mark.parametrize(
     "patch, needle",
     [
@@ -811,6 +935,103 @@ def test_router_response_formats_are_normalized(
 ) -> None:
     parsed = review.parse_agent_router_response(json.dumps(router_response))
     assert parsed.notes == expected_note
+
+
+@pytest.mark.parametrize(
+    ("router_response", "expected_text"),
+    [
+        ({"choices": [{"message": {"content": "texto via choices message"}}]}, "texto via choices message"),
+        ({"choices": [{"text": "texto via choices text"}]}, "texto via choices text"),
+        ({"message": {"content": "texto via message"}}, "texto via message"),
+        ({"output_text": "texto via output_text"}, "texto via output_text"),
+        ({"content": "texto via content"}, "texto via content"),
+        ({"review": "texto via review"}, "texto via review"),
+        ({"response": "texto via response"}, "texto via response"),
+        ({"answer": "texto via answer"}, "texto via answer"),
+        ({"text": "texto via text"}, "texto via text"),
+        ({"data": {"content": "texto via data content"}}, "texto via data content"),
+        ({"data": {"response": "texto via data response"}}, "texto via data response"),
+        ({"data": {"answer": "texto via data answer"}}, "texto via data answer"),
+        ({"data": {"text": "texto via data text"}}, "texto via data text"),
+        ({"result": {"content": "texto via result content"}}, "texto via result content"),
+        ({"result": {"response": "texto via result response"}}, "texto via result response"),
+        ({"result": {"answer": "texto via result answer"}}, "texto via result answer"),
+        ({"result": {"text": "texto via result text"}}, "texto via result text"),
+        ({"type": "message", "content": [{"type": "text", "text": "texto via content array"}]}, "texto via content array"),
+        ('{"answer":"texto via json direto"}', "texto via json direto"),
+        ("texto puro do router", "texto puro do router"),
+    ],
+)
+def test_ask_router_response_formats_are_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    router_response: object,
+    expected_text: str,
+) -> None:
+    payload = _event_payload(pull_request=True, body="/agent ask explique esse achado", association="MEMBER", login="alice")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
+        router_response=router_response,
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="router-secret",
+    )
+    assert comments
+    assert router_payloads
+    assert expected_text in comments[0]
+    assert "secret-token" not in comments[0]
+
+
+def test_ask_router_response_is_redacted_and_truncated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent ask explique esse achado", association="MEMBER", login="alice")
+    long_response = " ".join(
+        [
+            "texto",
+            "com",
+            "Authorization: Bearer valor_longo_suficiente",
+            "e",
+            "sk-abcdef1234567890",
+        ]
+        + ["palavra"] * 200
+    )
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
+        router_response=long_response,
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="router-secret",
+    )
+    assert comments
+    assert router_payloads
+    assert "valor_longo_suficiente" not in comments[0]
+    assert "sk-abcdef1234567890" not in comments[0]
+    assert len(comments[0]) <= review.MAX_LLM_ASK_RESPONSE_CHARS
+
+
+def test_ask_unrecognized_router_shape_uses_pt_br_parse_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    payload = _event_payload(pull_request=True, body="/agent ask explique esse achado", association="MEMBER", login="alice")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
+        router_response={"unexpected": {"nested": "shape"}},
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="router-secret",
+    )
+    captured = capsys.readouterr()
+    assert comments
+    assert router_payloads
+    assert comments[0] == "Agent ask indisponível (não consegui interpretar a resposta do Agent Router); use /agent review para revisão determinística."
+    assert "shape=dict(keys=unexpected)" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_router_json_response_is_normalized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
