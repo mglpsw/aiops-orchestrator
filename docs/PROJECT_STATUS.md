@@ -126,6 +126,11 @@ Nesta Session 14, o contrato que estamos fechando de forma mais explícita é o 
 com `shell=False`, `argv` fixo, `cwd` canônico, timeout obrigatório, redaction e
 output truncado.
 
+Nesta Session 15, o contrato que estamos fechando de forma mais explícita é o de
+`systemctl_status_aiops` e `journalctl_aiops_recent`: o primeiro é só leitura do
+estado da unit permitida; o segundo é logs bounded, sem filtros livres, sem
+follow e com janela fixa.
+
 Garantias principais:
 
 - `shell=False`

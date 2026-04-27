@@ -425,6 +425,9 @@ As ações read-only locais desta fase são fixas e allowlisted:
 - `docker_compose_bluegreen_config` usa o equivalente interno a `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config --quiet`
 - `docker_compose_bluegreen_config` segue contrato fixo de inspeção local, com `shell=False`, `cwd` canônico e timeout
 - `systemctl_status_aiops` usa o equivalente interno a `systemctl show aiops-orchestrator.service --no-pager --property=Id,LoadState,ActiveState,SubState,Result,ExecMainStatus,MainPID,ActiveEnterTimestamp,InactiveEnterTimestamp,NRestarts`
+- `systemctl_status_aiops` não aceita `restart`, `stop`, `start` ou `reload`; ele só lê o estado do serviço
+- `journalctl_aiops_recent` usa o equivalente interno a `journalctl -u aiops-orchestrator.service --no-pager --since -15 minutes -n 100 -o short-iso`
+- `journalctl_aiops_recent` não aceita filtros livres, `-f`/`--follow` ou janela ilimitada
 
 O comando do catálogo continua sendo apenas documentação/allowlist. O runner nunca executa texto
 livre vindo do request ou do YAML.

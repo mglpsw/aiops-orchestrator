@@ -455,8 +455,14 @@ def test_run_executes_systemctl_status_aiops_with_fixed_process(
     assert body["status"] == "ok"
     assert body["results"][0]["action_id"] == "systemctl_status_aiops"
     assert body["results"][0]["truncated"] is True
-    assert "super-secret-token" not in body["results"][0]["output_preview"]
-    assert "[REDACTED]" in body["results"][0]["output_preview"]
+    preview = body["results"][0]["output_preview"]
+    assert "super-secret-token" not in preview
+    lower_preview = preview.lower()
+    assert "systemctl restart" not in lower_preview
+    assert "systemctl stop" not in lower_preview
+    assert "systemctl start" not in lower_preview
+    assert "systemctl reload" not in lower_preview
+    assert "[REDACTED]" in preview
     assert len(calls) == 1
     assert calls[0]["argv"] == [
         "systemctl",
@@ -509,6 +515,8 @@ def test_run_executes_journalctl_aiops_recent_with_fixed_process(
     preview = body["results"][0]["output_preview"]
     assert "super-secret-token" not in preview
     assert "super-secret" not in preview
+    assert "follow" not in preview.lower()
+    assert "restart" not in preview.lower()
     assert "[REDACTED]" in preview
     assert len(calls) == 1
     assert calls[0]["argv"] == [
