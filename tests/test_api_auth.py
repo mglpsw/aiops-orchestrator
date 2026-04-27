@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.main import create_app
+from app.api.legacy_usage import reset_legacy_usage_metrics
 
 
 @pytest.fixture()
@@ -20,6 +21,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("app.main.init_db", noop_init_db)
     monkeypatch.setattr("app.main.get_registry", lambda: object())
+    reset_legacy_usage_metrics()
 
     app = create_app()
 
@@ -34,6 +36,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         yield test_client
 
     get_settings.cache_clear()
+    reset_legacy_usage_metrics()
 
 
 def _bearer_headers(token: str) -> dict[str, str]:
@@ -129,3 +132,77 @@ def test_health_ready_and_metrics_remain_public(
     assert healthz_response.status_code == 200
     assert ready_response.status_code == 200
     assert metrics_response.status_code == 200
+
+
+def test_legacy_chat_endpoint_is_marked_deprecated(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_ingest(self, request):  # noqa: ANN001
+        return {
+            "task_id": "task-legacy-chat",
+            "status": "pending",
+            "summary": "queued",
+            "message": "ok",
+        }
+
+    monkeypatch.setattr("app.api.routes.Orchestrator.ingest_chat", fake_ingest)
+
+    response = client.post("/v1/chat", headers=_bearer_headers("test-token"), json={"message": "hello"})
+
+    assert response.status_code == 200
+    assert response.headers["Deprecation"] == "true"
+    assert "Legacy AIOps endpoint" in response.headers["Warning"]
+
+
+def test_legacy_providers_status_marks_headers_and_updates_metrics(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeRegistry:
+        async def check_all_health(self):  # noqa: ANN001
+            return [{"name": "ollama", "enabled": True, "healthy": True}]
+
+    monkeypatch.setattr("app.api.routes.get_registry", lambda: _FakeRegistry())
+
+    response = client.get("/v1/providers/status", headers=_bearer_headers("test-token"))
+
+    assert response.status_code == 200
+    assert response.headers["Deprecation"] == "true"
+    assert "Legacy AIOps endpoint" in response.headers["Warning"]
+
+    async def fake_get_metrics(self):  # noqa: ANN001
+        return {
+            "tasks_total": 0,
+            "tasks_by_status": {},
+            "provider_calls_total": 0,
+            "provider_failures_total": 0,
+            "approvals_pending": 0,
+            "blocked_actions_total": 0,
+        }
+
+    monkeypatch.setattr("app.api.metrics.TaskService.get_metrics", fake_get_metrics)
+    metrics_response = client.get("/metrics")
+
+    assert metrics_response.status_code == 200
+    assert 'aiops_legacy_endpoint_hits_total{endpoint="providers_status"} 1' in metrics_response.text
+
+
+def test_legacy_error_responses_are_also_marked_deprecated(
+    client: TestClient,
+) -> None:
+    response = client.get("/v1/providers/status")
+
+    assert response.status_code == 401
+    assert response.headers["Deprecation"] == "true"
+    assert "Legacy AIOps endpoint" in response.headers["Warning"]
+
+
+def test_canonical_aiops_routes_do_not_emit_legacy_headers(
+    client: TestClient,
+) -> None:
+    response = client.get("/v1/aiops/actions/catalog", headers=_bearer_headers("test-token"))
+
+    assert response.status_code in {200, 503}
+    assert "Deprecation" not in response.headers
+    assert "Warning" not in response.headers

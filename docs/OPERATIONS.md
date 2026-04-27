@@ -45,6 +45,10 @@ bash /opt/aiops-orchestrator/scripts/validate.sh
 GitHub Actions CI mirrors these validations on push and pull request, but it never deploys.
 Deployments stay manual and approved.
 
+Legacy chat/task/provider surfaces remain compatible for now, but they are deprecated and emit
+deprecation headers plus lightweight usage metrics. New work should target the canonical
+`/v1/aiops/*` APIs.
+
 ### Teste de fumaça
 ```bash
 bash /opt/aiops-orchestrator/scripts/smoke_test.sh

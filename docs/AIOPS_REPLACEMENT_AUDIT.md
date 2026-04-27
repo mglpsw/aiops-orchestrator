@@ -160,6 +160,9 @@ Remover o legado agora seria arriscado porque:
 - manter o runner novo como caminho oficial para AIOps v1
 - manter o legado em compatibilidade histórica
 - documentar explicitamente o legado como deprecated
+- adicionar headers `Deprecation` e `Warning` às surfaces legadas
+- registrar uso das rotas antigas em logs e métricas leves
+- manter a compatibilidade funcional enquanto a migração acontece
 
 ### Fase 2 — Medir uso
 
@@ -249,4 +252,3 @@ Validações executadas:
 - O AIOps antigo ainda existe e continua vivo em surfaces clássicas e no provider registry
 - A substituição é real, mas ainda parcial
 - A remoção completa do legado ainda não é segura
-

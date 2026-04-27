@@ -6,11 +6,12 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router as api_router
 from app.api.metrics import router as metrics_router
+from app.api.legacy_usage import LEGACY_DEPRECATION_WARNING, legacy_endpoint_label, record_legacy_endpoint_use
 from app.agent_router.main import router as aiops_router, init_catalog_on_startup, get_catalog_readiness
 from app.core.config import get_settings
 from app.models.database import init_db
@@ -59,6 +60,7 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    app_logger = get_logger("main")
 
     app = FastAPI(
         title="AIOps Orchestrator",
@@ -87,6 +89,22 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
     app.include_router(aiops_router)
     app.include_router(metrics_router)
+
+    @app.middleware("http")
+    async def legacy_deprecation_middleware(request: Request, call_next):
+        response = await call_next(request)
+        legacy_label = legacy_endpoint_label(request.url.path)
+        if legacy_label:
+            response.headers.setdefault("Deprecation", "true")
+            response.headers.setdefault("Warning", LEGACY_DEPRECATION_WARNING)
+            record_legacy_endpoint_use(legacy_label)
+            app_logger.warning(
+                "Legacy AIOps endpoint used: %s %s",
+                request.method,
+                request.url.path,
+                extra={"legacy_endpoint": legacy_label},
+            )
+        return response
 
     # Health endpoints (public, no auth needed)
     @app.get("/health")

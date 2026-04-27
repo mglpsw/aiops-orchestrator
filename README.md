@@ -9,6 +9,8 @@ Integra-se com o [`agent-router-api`](https://github.com/mglpsw/agent-router-api
 através da rota `@aiops` do router.
 
 Repo canônico da CT 102: `/opt/aiops-orchestrator`.
+As surfaces legadas continuam compatíveis, mas estão marcadas como deprecated e devem migrar
+para as APIs canônicas `/v1/aiops/*`.
 
 ---
 
