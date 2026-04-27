@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 DEFAULT_AGENT_ROUTER_BASE_URL = "https://api.ks-sm.net:9443"
+DEFAULT_AGENT_ROUTER_TIMEOUT_SECONDS = 60
 ALLOWED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 MAX_FINDINGS = 5
 MAX_RECENT_COMMENTS = 20
@@ -29,12 +30,30 @@ _COMMENT_403_LOG_MESSAGE = "GitHub token cannot write PR comments; wrote review 
 
 _COMMAND_REVIEW = "/agent review"
 _COMMAND_REVIEW_LLM = "/agent review llm"
-_SENSITIVE_LINE_RE = re.compile(r"(?i)\b(?:authorization|bearer|api[_-]?key|token|secret|password|passwd|pwd|client_secret|cookie|set-cookie)\b")
-_SECRET_VALUE_RE = re.compile(
-    r"(?i)\bgh[pousr]_[A-Za-z0-9_]{16,}\b|\bgithub_pat_[A-Za-z0-9_]{16,}\b|\bsk-[A-Za-z0-9-]{8,}\b|\bopenai[_-]?key\b|\bAGENT_ROUTER_API_KEY\b"
-)
-_PRIVATE_KEY_RE = re.compile(r"(?i)-----BEGIN [A-Z0-9 ]+PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]+PRIVATE KEY-----")
+_PRIVATE_KEY_RE = re.compile(r"(?i)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----")
 _ENV_BLOCK_RE = re.compile(r"(?i)\b\.env\b")
+_GITHUB_TOKEN_VALUE_RE = re.compile(r"(?i)\bgh[pousr]_[A-Za-z0-9_]{16,}\b|\bgithub_pat_[A-Za-z0-9_]{16,}\b|\bsk-[A-Za-z0-9-]{8,}\b")
+_AUTH_BEARER_VALUE_RE = re.compile(r"(?i)(authorization\s*:\s*bearer\s+)([^\s\"'`<>;,#]{8,})")
+_GENERIC_SECRET_ASSIGNMENT_RE = re.compile(
+    r'(?i)(\b(?:AGENT_ROUTER_API_KEY|OPENAI_API_KEY|API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CLIENT_SECRET)\b\s*[:=]\s*(?:["\']?))([^\s"\'`<>;,#]{8,})(["\']?)'
+)
+_JSON_SECRET_ASSIGNMENT_RE = re.compile(
+    r'(?i)("(?:authorization|api[_-]?key|token|secret|password|client_secret)"\s*:\s*")([^"]{8,})(")'
+)
+_COOKIE_SECRET_RE = re.compile(r"(?i)\b(?:cookie|set-cookie)\b\s*[:=]\s*[^=\s;]+=[^;\s]{8,}")
+_URL_CREDENTIALS_RE = re.compile(r"(?i)\bhttps?://[^/\s:@]+:[^/\s@]+@[^/\s]+")
+_PLACEHOLDER_SECRET_VALUES = {
+    "example",
+    "example-value",
+    "placeholder",
+    "redacted",
+    "sample",
+    "secret",
+    "token",
+    "value",
+    "changeme",
+    "dummy",
+}
 _P1_DESTRUCTIVE_RE = re.compile(
     r"(?i)\b(?:docker\s+compose\s+(?:-f\s+\S+\s+)*down|docker\s+stop|docker\s+rm|docker\s+kill|docker\s+exec|systemctl\s+restart|service\s+docker|git\s+push|git\s+pull|rm\s+-rf|chmod\s+777|curl\b.*\|\s*(?:bash|sh|zsh)\b|ssh\s+root)\b"
 )
@@ -44,6 +63,7 @@ _P1_RUNNER_RE = re.compile(r"(?i)\bshell\s*=\s*True\b|\bcreate_subprocess_shell\
 _P2_PATH_RE = re.compile(r"/opt/aiops-orchestrator")
 _P2_TIMEOUT_RE = re.compile(r"(?i)\bsubprocess\.(?:run|call|check_output|popen)\(")
 _P2_NEW_DEP_RE = re.compile(r"(?i)^\+\s*[A-Za-z0-9_.-]+(?:==|>=|<=|~=|!=|>|<)?[A-Za-z0-9*._-]*$")
+_ROUTER_TIMEOUT_ENV = "AGENT_ROUTER_TIMEOUT_SECONDS"
 
 
 @dataclass(frozen=True)
@@ -177,15 +197,93 @@ class GitHubAPIError(RuntimeError):
 
 def _redact_sensitive_text(text: str) -> str:
     redacted = text
-    redacted = _SECRET_VALUE_RE.sub("[REDACTED]", redacted)
+    redacted = _GITHUB_TOKEN_VALUE_RE.sub("[REDACTED]", redacted)
     redacted = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", redacted)
     redacted = _ENV_BLOCK_RE.sub("[REDACTED ENV]", redacted)
-    redacted = re.sub(r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+", r"\1[REDACTED]", redacted)
+    redacted = _AUTH_BEARER_VALUE_RE.sub(r"\1[REDACTED]", redacted)
+    redacted = _JSON_SECRET_ASSIGNMENT_RE.sub(r"\1[REDACTED]\3", redacted)
+    redacted = _GENERIC_SECRET_ASSIGNMENT_RE.sub(r"\1[REDACTED]\3", redacted)
+    redacted = _COOKIE_SECRET_RE.sub("[REDACTED COOKIE]", redacted)
+    redacted = _URL_CREDENTIALS_RE.sub(lambda match: re.sub(r"://[^/\s:@]+:[^/\s@]+@", "://[REDACTED]@", match.group(0)), redacted)
     redacted = re.sub(r"(?i)(x-api-key\s*[:=]\s*)[^\s,;]+", r"\1[REDACTED]", redacted)
-    redacted = re.sub(r"(?i)(cookie\s*[:=]\s*)[^;\n]+", r"\1[REDACTED]", redacted)
-    redacted = re.sub(r'(?i)"(?:authorization|api[_-]?key|token|secret|password)"\s*:\s*"[^"]*"', '"[REDACTED]":"[REDACTED]"', redacted)
-    redacted = re.sub(r"(?i)\b(?:openai[_-]?api[_-]?key|agent_router_api_key)\b\s*[:=]\s*['\"][^'\"]+['\"]", "[REDACTED]", redacted)
+    redacted = re.sub(r'(?i)"(?:authorization|api[_-]?key|token|secret|password|client_secret)"\s*:\s*"[^"]*"', '"[REDACTED]":"[REDACTED]"', redacted)
     return redacted
+
+
+def _strip_diff_prefix(line: str) -> str:
+    if not line:
+        return line
+    if line[0] in "+- ":
+        return line[1:].lstrip()
+    return line.lstrip()
+
+
+def _placeholder_secret_value(value: str) -> bool:
+    normalized = value.strip().strip('"\'`<>')
+    return not normalized or normalized.lower() in _PLACEHOLDER_SECRET_VALUES
+
+
+def _secret_finding_for_line(file: FileChange, line: str) -> Finding | None:
+    body = _strip_diff_prefix(line)
+    if not body:
+        return None
+    for rule_id, pattern, risk, recommendation in (
+        (
+            "authorization_bearer_secret",
+            _AUTH_BEARER_VALUE_RE,
+            "Authorization header contains a bearer token-like value.",
+            "Move the credential to a secret store and keep it out of docs or code.",
+        ),
+        (
+            "generic_secret_assignment",
+            _GENERIC_SECRET_ASSIGNMENT_RE,
+            "A secret-like assignment contains a real value.",
+            "Move the value to a secret manager or GitHub secret and redact it from code.",
+        ),
+        (
+            "json_secret_assignment",
+            _JSON_SECRET_ASSIGNMENT_RE,
+            "A JSON secret field contains a real value.",
+            "Move the value to a secret manager or GitHub secret and redact it from code.",
+        ),
+        (
+            "cookie_secret",
+            _COOKIE_SECRET_RE,
+            "A cookie-like header contains a real value.",
+            "Remove the cookie from the diff or replace it with a redacted placeholder.",
+        ),
+        (
+            "url_credentials",
+            _URL_CREDENTIALS_RE,
+            "A URL with embedded credentials appears in the patch.",
+            "Remove embedded credentials and use a secret-managed credential flow.",
+        ),
+    ):
+        match = pattern.search(body)
+        if not match:
+            continue
+        value = match.group(2) if match.lastindex and match.lastindex >= 2 else match.group(match.lastindex or 0)
+        if _placeholder_secret_value(value):
+            continue
+        return Finding(
+            severity="P1",
+            file=file.path,
+            evidence=_redact_sensitive_text(_truncate_text(match.group(0), 200)),
+            risk=risk,
+            recommendation=recommendation,
+            rule_id=rule_id,
+        )
+    token_match = _GITHUB_TOKEN_VALUE_RE.search(body)
+    if token_match:
+        return Finding(
+            severity="P1",
+            file=file.path,
+            evidence=_redact_sensitive_text(_truncate_text(token_match.group(0), 200)),
+            risk="A well-known token format appears in the patch.",
+            recommendation="Rotate the token and keep it out of source control.",
+            rule_id="well_known_token",
+        )
+    return None
 
 
 def _truncate_text(text: str, max_chars: int) -> str:
@@ -319,6 +417,7 @@ def scan_patch_for_findings(file: FileChange) -> list[Finding]:
     findings: list[Finding] = []
     patch = file.patch or ""
     lines = _normalize_patch_text(file.patch)
+    normalized_patch = "\n".join(_strip_diff_prefix(line) for line in lines)
     patch_lower = patch.lower()
     risk = classify_file_risk(file)
 
@@ -392,15 +491,31 @@ def scan_patch_for_findings(file: FileChange) -> list[Finding]:
             recommendation="Replace it with a read-only check or remove it entirely.",
         )
 
-    if _SENSITIVE_LINE_RE.search(patch) or _SECRET_VALUE_RE.search(patch) or _PRIVATE_KEY_RE.search(patch) or "secrets." in patch_lower:
+    secret_finding: Finding | None = None
+    private_key_match = _PRIVATE_KEY_RE.search(normalized_patch) if normalized_patch else None
+    if private_key_match:
+        secret_finding = Finding(
+            severity="P1",
+            file=file.path,
+            evidence=_redact_sensitive_text(_truncate_text(private_key_match.group(0), 200)),
+            risk="A private key block appears in the patch.",
+            recommendation="Remove the key from the diff and rotate it immediately.",
+            rule_id="private_key_block",
+        )
+    else:
+        for line in lines:
+            secret_finding = _secret_finding_for_line(file, line)
+            if secret_finding:
+                break
+    if secret_finding:
         _emit(
             findings,
             severity="P1",
             file=file,
-            rule_id="hardcoded_secret",
-            evidence=_patch_snippet(file, _SECRET_VALUE_RE if _SECRET_VALUE_RE.search(patch) else _SENSITIVE_LINE_RE),
-            risk="Likely secret or credential material appears in the patch.",
-            recommendation="Move the value to a secret manager or GitHub secret and redact it from code.",
+            rule_id=secret_finding.rule_id,
+            evidence=secret_finding.evidence,
+            risk=secret_finding.risk,
+            recommendation=secret_finding.recommendation,
         )
 
     if file.path.startswith(("tests/", ".github/workflows/")) and _P2_PATH_RE.search(patch):
@@ -821,6 +936,7 @@ def call_agent_router_review(
     *,
     base_url: str = DEFAULT_AGENT_ROUTER_BASE_URL,
     api_key: str | None = None,
+    timeout_seconds: int = DEFAULT_AGENT_ROUTER_TIMEOUT_SECONDS,
 ) -> str:
     url = f"{base_url.rstrip('/')}/v1/chat/completions"
     headers = {
@@ -832,7 +948,7 @@ def call_agent_router_review(
     headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             return response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
@@ -926,6 +1042,10 @@ def parse_agent_router_response(raw_response: str) -> LLMReview:
                     return _parse_content(choice["text"])
         if "output_text" in outer:
             return _parse_content(outer["output_text"])
+        if "content" in outer:
+            return _parse_content(outer["content"])
+        if "review" in outer:
+            return _parse_content(outer["review"])
         return _parse_content(outer)
     return _parse_content(outer)
 
@@ -965,6 +1085,41 @@ def _build_llm_key_missing_message() -> str:
 
 def _build_llm_router_warning(reason: str) -> str:
     return f"LLM review indisponível ({reason}); review determinístico publicado."
+
+
+def _build_llm_timeout_warning(timeout_seconds: int) -> str:
+    return f"LLM review indisponível (timeout após {timeout_seconds}s); review determinístico publicado."
+
+
+def _sanitize_router_base_url(base_url: str) -> str:
+    parsed = urlparse(base_url.strip() or DEFAULT_AGENT_ROUTER_BASE_URL)
+    if not parsed.scheme or not parsed.netloc:
+        return DEFAULT_AGENT_ROUTER_BASE_URL
+    sanitized = f"{parsed.scheme}://{parsed.hostname or ''}"
+    if parsed.port:
+        sanitized += f":{parsed.port}"
+    if parsed.path and parsed.path != "/":
+        sanitized += parsed.path.rstrip("/")
+    return sanitized.rstrip("/")
+
+
+def _parse_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _log_agent_router_failure(reason: str, *, base_url: str, model: str | None, timeout_seconds: int) -> None:
+    model_text = model or "n/a"
+    print(
+        f"Agent Router {reason}: {_sanitize_router_base_url(base_url)} (model={model_text}, timeout={timeout_seconds}s)",
+        file=sys.stderr,
+    )
 
 
 def _issue_comment_path(client: GitHubClient, issue_number: int) -> str:
@@ -1063,6 +1218,7 @@ def main() -> int:
     router_base_url = os.getenv("AGENT_ROUTER_BASE_URL", "").strip() or DEFAULT_AGENT_ROUTER_BASE_URL
     router_api_key = os.getenv("AGENT_ROUTER_API_KEY", "").strip()
     router_model = os.getenv("AGENT_ROUTER_MODEL", "").strip() or None
+    router_timeout_seconds = _parse_positive_int_env(_ROUTER_TIMEOUT_ENV, DEFAULT_AGENT_ROUTER_TIMEOUT_SECONDS)
 
     if not token or not repository or not event_path:
         raise SystemExit("Missing required GitHub environment variables.")
@@ -1103,20 +1259,31 @@ def main() -> int:
         else:
             router_payload = build_agent_router_payload(pr_context, deterministic_findings, model=router_model)
             try:
-                raw_router = call_agent_router_review(router_payload, base_url=router_base_url, api_key=router_api_key or None)
+                raw_router = call_agent_router_review(
+                    router_payload,
+                    base_url=router_base_url,
+                    api_key=router_api_key or None,
+                    timeout_seconds=router_timeout_seconds,
+                )
                 llm_review = parse_agent_router_response(raw_router)
             except AgentRouterTimeoutError:
-                llm_warning = _build_llm_router_warning("timeout")
+                llm_warning = _build_llm_timeout_warning(router_timeout_seconds)
+                _log_agent_router_failure("timeout", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
             except AgentRouterAuthError:
                 llm_warning = _build_llm_router_warning("auth")
+                _log_agent_router_failure("auth", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
             except AgentRouterRateLimitError:
                 llm_warning = _build_llm_router_warning("rate limited")
+                _log_agent_router_failure("rate limited", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
             except AgentRouterUnavailableError:
                 llm_warning = _build_llm_router_warning("router indisponível")
+                _log_agent_router_failure("router indisponível", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
             except AgentRouterResponseError:
                 llm_warning = _build_llm_router_warning("resposta inválida")
+                _log_agent_router_failure("resposta inválida", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
             except Exception:
                 llm_warning = _build_llm_router_warning("erro inesperado")
+                _log_agent_router_failure("erro inesperado", base_url=router_base_url, model=router_model, timeout_seconds=router_timeout_seconds)
 
     merged_findings, llm_notes = merge_deterministic_and_llm_findings(deterministic_findings, llm_review)
     markdown = render_review(

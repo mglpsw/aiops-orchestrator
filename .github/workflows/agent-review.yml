@@ -52,4 +52,5 @@ jobs:
           AGENT_ROUTER_BASE_URL: ${{ vars.AGENT_ROUTER_BASE_URL }}
           AGENT_ROUTER_API_KEY: ${{ secrets.AGENT_ROUTER_API_KEY }}
           AGENT_ROUTER_MODEL: ${{ vars.AGENT_ROUTER_MODEL }}
+          AGENT_ROUTER_TIMEOUT_SECONDS: ${{ vars.AGENT_ROUTER_TIMEOUT_SECONDS }}
         run: python scripts/github_agent_review.py
