@@ -85,6 +85,7 @@ def test_real_catalog_has_expected_action_ids() -> None:
         "curl_ready_8001",
         "journalctl_aiops_recent",
         "prometheus_query",
+        "prometheus_query_allowlisted",
     }
     assert expected <= catalog.action_ids()
 

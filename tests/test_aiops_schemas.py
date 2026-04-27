@@ -108,7 +108,7 @@ def test_aiops_diagnose_response_serializes_correctly() -> None:
                 confidence=0.91,
                 probable_cause="Recent traffic has increased latency.",
                 next_validation="Inspect the allowlisted latency metric trend.",
-                recommended_action_ids=["prometheus_query"],
+                recommended_action_ids=["prometheus_query_allowlisted"],
             )
         ],
         recommended_actions=[
@@ -127,6 +127,6 @@ def test_aiops_diagnose_response_serializes_correctly() -> None:
     assert data["health_score"] == 75
     assert data["signals"][0]["name"] == "latency_p95"
     assert data["findings"][0]["check"] == "latency_p95"
-    assert data["findings"][0]["recommended_action_ids"] == ["prometheus_query"]
+    assert data["findings"][0]["recommended_action_ids"] == ["prometheus_query_allowlisted"]
     assert data["findings"][0]["evidence"][0]["source"] == "metrics"
     assert data["recommended_actions"][0]["action_type"] == "dry_run"

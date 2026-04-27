@@ -142,9 +142,9 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - Executa apenas funções internas fixas read-only e allowlisted
 - Nesta fase, o subconjunto executável inclui health/ready de `8000` e `8001`,
   `git_status`, `git_diff_stat`, `docker_compose_config`, `docker_compose_bluegreen_config`,
-  `systemctl_status_aiops` e `journalctl_aiops_recent`
+  `systemctl_status_aiops`, `journalctl_aiops_recent` e `prometheus_query_allowlisted`
 - Também suporta inspeção local read-only via `git_status`, `git_diff_stat`, `docker_compose_config`,
-  `docker_compose_bluegreen_config`, `systemctl_status_aiops` e `journalctl_aiops_recent`
+  `docker_compose_bluegreen_config` e `systemctl_status_aiops`
 - `docker_compose_config` e `docker_compose_bluegreen_config` usam validação `docker compose ... config --quiet`
 - `git_diff_stat` usa somente `git diff --stat`
 - `systemctl_status_aiops` consulta apenas o estado read-only da unit `aiops-orchestrator.service`
@@ -152,6 +152,10 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - `journalctl_aiops_recent` consulta apenas logs recentes e limitados do serviço,
   com janela fixa de 15 minutos, limite fixo de 100 linhas, `--no-pager` e sem follow
 - `journalctl_aiops_recent` pode conter segredos em logs, então a redaction é forte e obrigatória
+- `prometheus_query_allowlisted` consulta um bundle fixo de métricas do Prometheus sem aceitar
+  PromQL livre; a URL base é `AIOPS_PROMETHEUS_BASE_URL` (default `http://127.0.0.1:9090`)
+- O bundle Prometheus v1 usa apenas queries internas allowlisted e não aceita `query`, `args`,
+  `target` ou `URL` vindos do request
 - O repositório alvo é fixo/allowlisted via `AIOPS_ACTION_REPO_ROOT`
 - Não aceita `command` ou `argv` no request e não expõe `command` ou `argv` na resposta
 - Requer approval válido e audit log ativo

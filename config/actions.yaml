@@ -118,3 +118,12 @@ catalog:
     timeout_seconds: 15
     requires_approval: false
     tags: [prometheus, diagnostic, metrics]
+
+  - action_id: prometheus_query_allowlisted
+    description: "Consulta um bundle allowlisted e fixo de métricas do Prometheus"
+    command: "curl -fsS 'http://127.0.0.1:9090/api/v1/query?query=up'"
+    mode: readonly
+    risk: low
+    timeout_seconds: 15
+    requires_approval: false
+    tags: [prometheus, diagnostic, metrics]

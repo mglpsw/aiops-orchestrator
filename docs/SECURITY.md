@@ -146,6 +146,18 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - Logs podem conter segredos, então o preview e o histórico passam por redaction forte
 - Nenhuma ação de restart/start/stop/reload/enable/disable/daemon-reload é acionada
 
+### Prometheus allowlisted queries
+
+- `prometheus_query_allowlisted` consulta apenas um bundle fixo e allowlisted de métricas
+- Não existe PromQL livre, `query_id` livre, URL livre ou header livre nesta fase
+- O base URL vem apenas de `AIOPS_PROMETHEUS_BASE_URL` (default seguro local) e nunca do request
+- O bundle v1 usa consultas fixas para `up`, `scrape_duration_seconds`, `scrape_samples_scraped`,
+  `aiops_tasks_total` e `aiops_provider_failures_total`
+- Respostas, erros e histórico passam por redaction forte, incluindo `Authorization`, tokens,
+  segredos, cookies e URLs sensíveis conhecidas
+- Falha de Prometheus retorna `failed` sem executar qualquer remediação
+- Não há `prometheus_query` livre nem bridge associada nesta fase
+
 ### Run Store
 
 - O run store guarda apenas metadados operacionais seguros dos runs read-only

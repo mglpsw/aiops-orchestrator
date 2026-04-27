@@ -90,7 +90,69 @@ class _FakeResponse:
         self.text = text
 
 
+class _FakePrometheusResponse:
+    def __init__(self, status_code: int, payload: dict[str, object], text: str | None = None) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text or json.dumps(payload)
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
 async def _fake_get_ok(self, url: str, *args, **kwargs) -> _FakeResponse:
+    params = kwargs.get("params") or {}
+    query = params.get("query") if isinstance(params, dict) else None
+    if "/api/v1/query" in url:
+        if query == "up":
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {
+                        "resultType": "vector",
+                        "result": [
+                            {"metric": {"job": "aiops-orchestrator"}, "value": [1710000000.0, "1"]},
+                        ],
+                    },
+                },
+            )
+        if query == "scrape_duration_seconds":
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1710000001.0, "0.12"]}]},
+                },
+            )
+        if query == "scrape_samples_scraped":
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1710000002.0, "42"]}]},
+                },
+            )
+        if query == "aiops_tasks_total":
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1710000003.0, "7"]}]},
+                },
+            )
+        if query == "aiops_provider_failures_total":
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1710000004.0, "0"]}]},
+                },
+            )
+        return _FakePrometheusResponse(
+            200,
+            {"status": "success", "data": {"resultType": "vector", "result": []}},
+        )
     if url.endswith("/health"):
         return _FakeResponse(200, '{"status":"healthy","token":"sk-test-token"}')
     if url.endswith("/ready"):
@@ -509,6 +571,109 @@ def test_run_marks_journalctl_failure_as_failed(
     assert body["results"][0]["exit_code"] == 3
 
 
+def test_run_executes_prometheus_query_allowlisted_with_fixed_bundle(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_id = _create_approved_approval(api_client)
+    monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_ok, raising=True)
+    monkeypatch.setenv("AIOPS_PROMETHEUS_BASE_URL", "http://127.0.0.1:9090")
+    get_settings.cache_clear()
+
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["prometheus_query_allowlisted"],
+            "reason": "Inspect allowlisted Prometheus bundle",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["results"][0]["action_id"] == "prometheus_query_allowlisted"
+    assert body["results"][0]["truncated"] is False
+    preview = body["results"][0]["output_preview"]
+    assert "up:" in preview
+    assert "scrape_duration_seconds" in preview
+    assert "scrape_samples_scraped" in preview
+    assert "aiops_tasks_total" in preview
+    assert "aiops_provider_failures_total" in preview
+    assert "command" not in json.dumps(body)
+    assert "argv" not in json.dumps(body)
+
+
+def test_run_marks_prometheus_http_error_as_failed(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_id = _create_approved_approval(api_client)
+
+    async def failing_get(self, url: str, *args, **kwargs):
+        if "/api/v1/query" in url:
+            return _FakePrometheusResponse(
+                500,
+                {"status": "error"},
+                text="Authorization: Bearer super-secret-token x-api-key=abc",
+            )
+        return await _fake_get_ok(self, url, *args, **kwargs)
+
+    monkeypatch.setattr("httpx.AsyncClient.get", failing_get, raising=True)
+    monkeypatch.setenv("AIOPS_PROMETHEUS_BASE_URL", "http://127.0.0.1:9090")
+    get_settings.cache_clear()
+
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["prometheus_query_allowlisted"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["results"][0]["status"] == "failed"
+    assert body["results"][0]["exit_code"] == 500
+    assert "[REDACTED]" in body["results"][0]["output_preview"]
+
+
+def test_run_marks_prometheus_timeout_as_failed(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_id = _create_approved_approval(api_client)
+
+    async def timeout_get(self, url: str, *args, **kwargs):
+        if "/api/v1/query" in url:
+            raise httpx.ReadTimeout("timed out")
+        return await _fake_get_ok(self, url, *args, **kwargs)
+
+    monkeypatch.setattr("httpx.AsyncClient.get", timeout_get, raising=True)
+    monkeypatch.setenv("AIOPS_PROMETHEUS_BASE_URL", "http://127.0.0.1:9090")
+    get_settings.cache_clear()
+
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["prometheus_query_allowlisted"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["results"][0]["status"] == "failed"
+
+
 def test_run_executes_git_status_and_docker_compose_config_with_fixed_process(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -664,6 +829,7 @@ def test_run_rejects_extra_fields(api_client: TestClient) -> None:
             "approval_id": approval_id,
             "action_ids": ["curl_health_8000"],
             "argv": ["git", "status"],
+            "query": "up",
         },
     )
     assert response.status_code == 422

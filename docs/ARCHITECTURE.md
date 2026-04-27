@@ -24,6 +24,7 @@ allowlisted, com aprovação humana obrigatória para ações de escrita).
 │  │  POST /v1/aiops/actions/approvals (persistência)             │   │
 │  │  GET/POST /v1/aiops/actions/approvals/...                    │   │
 │  │  GET  /v1/aiops/runs/recent   GET /v1/aiops/runs/{run_id}    │   │
+│  │  GET  /v1/aiops/audit/recent                                 │   │
 │  └──────────────────────────┬───────────────────────────────────┘   │
 │                             │                                       │
 │           ┌─────────────────┼─────────────────┐                    │
@@ -59,6 +60,13 @@ allowlisted, com aprovação humana obrigatória para ações de escrita).
 │  │ - Sem subprocess  │  │ - Remote bridge  │                       │
 │  │ - Auditado        │  │ - Não ativo v1   │                       │
 │  └──────────────────┘  └──────────────────┘                       │
+│           ┌──────────────────────────────┐                        │
+│           │ Prometheus Allowlisted Runner │                        │
+│           │ - Bundle fixo                 │                        │
+│           │ - Sem PromQL livre            │                        │
+│           │ - Base URL allowlisted         │                        │
+│           │ - Redaction forte             │                        │
+│           └──────────────────────────────┘                        │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -146,9 +154,10 @@ Executa apenas funções internas fixas, read-only e allowlisted, após approval
 - **Endpoints associados:** `POST /v1/aiops/actions/run`
 - **Ações fixas v1:** `curl_health_8000`, `curl_ready_8000`, `curl_health_8001`, `curl_ready_8001`,
   `git_status`, `git_diff_stat`, `docker_compose_config`, `docker_compose_bluegreen_config`,
-  `systemctl_status_aiops`, `journalctl_aiops_recent`
+  `systemctl_status_aiops`, `journalctl_aiops_recent`, `prometheus_query_allowlisted`
 - **Garantia:** não usa `command` do catálogo como comando executável
 - **Escopo v1:** health/ready de `8000` e `8001` + inspeção local read-only fixa
+- **Prometheus allowlisted:** bundle fixo sem PromQL livre, com base URL allowlisted e redaction forte
 
 ### Componente: Run History
 
@@ -190,6 +199,7 @@ Diagnose
 → Run read-only health checks
 → Run read-only Git/Compose inspection
 → Run read-only systemd status
+→ Run read-only allowlisted Prometheus queries
 → Run read-only bounded logs
 → Run history
 → Audit log
@@ -244,7 +254,8 @@ POST /v1/aiops/diagnose
     │      → Sem shell, sem subprocess, sem SSH, sem docker exec
     │      → Inclui inspeção local fixa (`git_status`, `git_diff_stat`,
     │         `docker_compose_config`, `docker_compose_bluegreen_config`,
-    │         `systemctl_status_aiops`, `journalctl_aiops_recent`)
+    │         `systemctl_status_aiops`, `journalctl_aiops_recent`,
+    │         `prometheus_query_allowlisted`)
     │      → Persiste metadados e registra auditoria
     │
     ├─ 9. Run History

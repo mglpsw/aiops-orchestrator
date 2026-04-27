@@ -174,7 +174,7 @@ def test_prometheus_scrape_staleness_returns_safe_unavailable_finding() -> None:
     assert response.findings
     assert response.findings[0].check == "prometheus_scrape_staleness"
     assert response.findings[0].status in {"skipped", "unavailable"}
-    assert response.findings[0].recommended_action_ids == ["prometheus_query"]
+    assert response.findings[0].recommended_action_ids == ["prometheus_query_allowlisted"]
 
 
 def test_multiple_findings_accumulate_and_clamp_to_zero() -> None:

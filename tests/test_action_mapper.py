@@ -101,12 +101,12 @@ def test_backend_up_problem_maps_to_health_ready() -> None:
 def test_error_rate_problem_maps_to_journalctl_prometheus() -> None:
     result = map_findings_to_action_ids([_finding("error_rate", status="warning")], ["error_rate"])
     assert "journalctl_aiops_recent" in result
-    assert "prometheus_query" in result
+    assert "prometheus_query_allowlisted" in result
 
 
 def test_latency_p95_problem_maps_to_prometheus_journalctl() -> None:
     result = map_findings_to_action_ids([_finding("latency_p95", status="warning")], ["latency_p95"])
-    assert "prometheus_query" in result
+    assert "prometheus_query_allowlisted" in result
     assert "journalctl_aiops_recent" in result
 
 

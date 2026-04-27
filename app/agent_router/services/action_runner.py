@@ -26,6 +26,8 @@ _HTTP_ACTION_ENDPOINTS: dict[str, str] = {
     "curl_ready_8001": "http://127.0.0.1:8001/ready",
 }
 
+_PROMETHEUS_ACTIONS = frozenset({"prometheus_query_allowlisted"})
+
 _PROCESS_ACTIONS = frozenset(
     {
         "git_status",
@@ -37,6 +39,13 @@ _PROCESS_ACTIONS = frozenset(
     }
 )
 _FIXED_PATH = "/usr/bin:/bin"
+_PROMETHEUS_QUERY_BUNDLE: tuple[tuple[str, str], ...] = (
+    ("up", "up"),
+    ("scrape_duration_seconds", "scrape_duration_seconds"),
+    ("scrape_samples_scraped", "scrape_samples_scraped"),
+    ("aiops_tasks_total", "aiops_tasks_total"),
+    ("aiops_provider_failures_total", "aiops_provider_failures_total"),
+)
 
 _SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)authorization\s*:\s*bearer\s+[^\s\"']+"), "[REDACTED]"),
@@ -82,7 +91,7 @@ def resolve_action_repo_root() -> Path:
 
 
 def allowed_action_ids() -> frozenset[str]:
-    return frozenset(_HTTP_ACTION_ENDPOINTS) | _PROCESS_ACTIONS
+    return frozenset(_HTTP_ACTION_ENDPOINTS) | _PROCESS_ACTIONS | _PROMETHEUS_ACTIONS
 
 
 def _redact_sensitive_text(text: str) -> str:
@@ -122,6 +131,46 @@ def _format_success_preview(action_id: str, stdout: str, stderr: str, success_me
         return success_message
     parts = [part for part in (stdout.strip(), stderr.strip()) if part]
     return "\n".join(parts)
+
+
+def _format_prometheus_value(value: object) -> str:
+    if isinstance(value, (int, float)):
+        return f"{value}"
+    if value is None:
+        return "unknown"
+    return str(value)
+
+
+def _summarize_prometheus_payload(query_id: str, payload: object) -> str:
+    if not isinstance(payload, dict):
+        return f"{query_id}: invalid payload"
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return f"{query_id}: missing data"
+
+    result_type = str(data.get("resultType") or "unknown")
+    result = data.get("result")
+    if not isinstance(result, list) or not result:
+        return f"{query_id}: {result_type} empty"
+
+    first = result[0]
+    if not isinstance(first, dict):
+        return f"{query_id}: {result_type} unavailable"
+
+    sample: object | None = None
+    if result_type in {"vector", "scalar"}:
+        value = first.get("value")
+        if isinstance(value, list) and len(value) >= 2:
+            sample = value[1]
+    elif result_type == "matrix":
+        values = first.get("values")
+        if isinstance(values, list) and values:
+            last = values[-1]
+            if isinstance(last, list) and len(last) >= 2:
+                sample = last[1]
+
+    return f"{query_id}: {result_type} sample={_format_prometheus_value(sample)}"
 
 
 def _run_fixed_process(
@@ -335,6 +384,71 @@ async def run_journalctl_aiops_recent() -> ActionExecutionResult:
     )
 
 
+async def run_prometheus_query_allowlisted() -> ActionExecutionResult:
+    settings = get_settings()
+    base_url = settings.prometheus_base_url.rstrip("/")
+    started = perf_counter()
+    timeout = httpx.Timeout(settings.run_timeout_seconds)
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            lines: list[str] = []
+            for query_id, promql in _PROMETHEUS_QUERY_BUNDLE:
+                response = await client.get(f"{base_url}/api/v1/query", params={"query": promql})
+                if response.status_code != 200:
+                    preview, truncated = _truncate_text(
+                        _redact_sensitive_text(response.text or f"HTTP {response.status_code}"),
+                        settings.run_output_max_bytes,
+                    )
+                    return ActionExecutionResult(
+                        action_id="prometheus_query_allowlisted",
+                        status="failed",
+                        exit_code=response.status_code,
+                        duration_ms=max(1, int((perf_counter() - started) * 1000)),
+                        output_preview=preview,
+                        truncated=truncated,
+                    )
+                payload = response.json()
+                lines.append(_summarize_prometheus_payload(query_id, payload))
+            preview, truncated = _truncate_text(
+                _redact_sensitive_text("\n".join(lines)),
+                settings.run_output_max_bytes,
+            )
+            return ActionExecutionResult(
+                action_id="prometheus_query_allowlisted",
+                status="ok",
+                exit_code=0,
+                duration_ms=max(1, int((perf_counter() - started) * 1000)),
+                output_preview=preview,
+                truncated=truncated,
+            )
+    except httpx.TimeoutException:
+        preview, truncated = _truncate_text(
+            _redact_sensitive_text("prometheus_query_allowlisted timed out"),
+            settings.run_output_max_bytes,
+        )
+        return ActionExecutionResult(
+            action_id="prometheus_query_allowlisted",
+            status="failed",
+            exit_code=124,
+            duration_ms=max(1, int((perf_counter() - started) * 1000)),
+            output_preview=preview,
+            truncated=truncated,
+        )
+    except (ActionRunError, httpx.HTTPError, ValueError, TypeError, KeyError):
+        preview, truncated = _truncate_text(
+            _redact_sensitive_text("prometheus_query_allowlisted failed"),
+            settings.run_output_max_bytes,
+        )
+        return ActionExecutionResult(
+            action_id="prometheus_query_allowlisted",
+            status="failed",
+            exit_code=1,
+            duration_ms=max(1, int((perf_counter() - started) * 1000)),
+            output_preview=preview,
+            truncated=truncated,
+        )
+
+
 _RUNNERS = {
     "curl_health_8000": run_curl_health_8000,
     "curl_ready_8000": run_curl_ready_8000,
@@ -346,6 +460,7 @@ _RUNNERS = {
     "docker_compose_bluegreen_config": run_docker_compose_bluegreen_config,
     "systemctl_status_aiops": run_systemctl_status_aiops,
     "journalctl_aiops_recent": run_journalctl_aiops_recent,
+    "prometheus_query_allowlisted": run_prometheus_query_allowlisted,
 }
 
 

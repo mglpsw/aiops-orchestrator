@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     run_output_max_bytes: int = 4000
     run_store_max_records: int = 1000
     action_repo_root: str = "/opt/aiops-orchestrator"
+    prometheus_base_url: str = Field(
+        default="http://127.0.0.1:9090",
+        validation_alias=AliasChoices("PROMETHEUS_BASE_URL", "AIOPS_PROMETHEUS_BASE_URL"),
+    )
 
     # --- WebAI ---
     webai_base_url: str = "http://open-webui:8080"

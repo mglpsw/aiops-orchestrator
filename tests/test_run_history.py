@@ -65,7 +65,69 @@ class _FakeResponse:
         self.text = text
 
 
+class _FakePrometheusResponse:
+    def __init__(self, status_code: int, payload: dict[str, object], text: str | None = None) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = text or json.dumps(payload)
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
 async def _fake_get_ok(self, url: str, *args, **kwargs) -> _FakeResponse:
+    params = kwargs.get("params") or {}
+    query = params.get("query") if isinstance(params, dict) else None
+    if "/api/v1/query" in url:
+        if query == "up":
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {
+                        "resultType": "vector",
+                        "result": [
+                            {"metric": {"job": "aiops-orchestrator"}, "value": [1710000000.0, "1"]},
+                        ],
+                    },
+                },
+            )
+        if query == "scrape_duration_seconds":
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1710000001.0, "0.12"]}]},
+                },
+            )
+        if query == "scrape_samples_scraped":
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1710000002.0, "42"]}]},
+                },
+            )
+        if query == "aiops_tasks_total":
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1710000003.0, "7"]}]},
+                },
+            )
+        if query == "aiops_provider_failures_total":
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1710000004.0, "0"]}]},
+                },
+            )
+        return _FakePrometheusResponse(
+            200,
+            {"status": "success", "data": {"resultType": "vector", "result": []}},
+        )
     if url.endswith("/health"):
         return _FakeResponse(200, '{"status":"healthy","token":"sk-test-token","password":"secret"}')
     return _FakeResponse(200, '{"ready":true,"api_key":"sk-test-key"}')
@@ -156,6 +218,8 @@ def _fake_subprocess_run(argv, **kwargs):
 
 def _create_approved_run(api_client: TestClient, monkeypatch: pytest.MonkeyPatch, action_id: str = "curl_health_8000", target: str = "agent-router") -> str:
     if action_id.startswith("curl_"):
+        monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_ok, raising=True)
+    elif action_id == "prometheus_query_allowlisted":
         monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_ok, raising=True)
     else:
         monkeypatch.setattr("app.agent_router.services.action_runner.subprocess.run", _fake_subprocess_run, raising=True)
@@ -306,6 +370,21 @@ def test_run_history_includes_journalctl_runs(api_client: TestClient, monkeypatc
     assert "password" not in json.dumps(detail_body).lower()
     assert "api_key" not in json.dumps(detail_body).lower()
     assert "postgres://" not in json.dumps(detail_body).lower()
+
+
+def test_run_history_includes_prometheus_allowlisted_runs(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = _create_approved_run(api_client, monkeypatch, action_id="prometheus_query_allowlisted")
+
+    recent = api_client.get("/v1/aiops/runs/recent?limit=20", headers=_auth())
+    detail = api_client.get(f"/v1/aiops/runs/{run_id}", headers=_auth())
+
+    assert recent.status_code == 200
+    assert detail.status_code == 200
+    assert recent.json()["runs"][0]["run_id"] == run_id
+    assert detail.json()["results"][0]["action_id"] == "prometheus_query_allowlisted"
+    detail_body = detail.json()
+    assert "command" not in json.dumps(detail_body)
+    assert "argv" not in json.dumps(detail_body)
 
 
 def test_get_run_returns_detail_and_missing_returns_404(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

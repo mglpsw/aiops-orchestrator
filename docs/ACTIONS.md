@@ -114,6 +114,19 @@ Exibe logs recentes e limitados da unit systemd do aiops-orchestrator.
 - **Execução:** função interna fixa; o catálogo não é fonte de comando executável.
 - **Redaction:** obrigatória, porque logs podem conter segredos, tokens e URLs sensíveis.
 
+### prometheus_query_allowlisted
+
+Consulta um bundle fixo e allowlisted de métricas do Prometheus sem aceitar PromQL livre.
+
+- **Comando interno fixo:** bundle interno no runner oficial, com base URL
+  `AIOPS_PROMETHEUS_BASE_URL` (default `http://127.0.0.1:9090`)
+- **Risk:** low | **Mode:** readonly | **Timeout:** 15s | **Approval:** false
+- **Execução:** função interna fixa; o catálogo não é fonte de comando executável.
+- **Bundle fixo v1:** `up`, `scrape_duration_seconds`, `scrape_samples_scraped`,
+  `aiops_tasks_total` e `aiops_provider_failures_total`
+- **Segurança:** nenhum PromQL livre vem do request; `Authorization`, tokens, segredos e URLs
+  sensíveis são redigidos no output_preview e no histórico.
+
 ### curl_health_8000
 
 Verifica o endpoint `/health` da produção estável (porta 8000).
@@ -141,20 +154,6 @@ Verifica o endpoint `/ready` do runtime next/observe (porta 8001).
 
 - **Comando:** `curl -fsS http://127.0.0.1:8001/ready`
 - **Risk:** low | **Mode:** readonly | **Timeout:** 10s | **Approval:** false
-
-### journalctl_aiops_recent
-
-Exibe as últimas 50 linhas do journal do aiops-orchestrator.
-
-- **Comando:** `journalctl -u aiops-orchestrator -n 50 --no-pager`
-- **Risk:** low | **Mode:** readonly | **Timeout:** 10s | **Approval:** false
-
-### prometheus_query
-
-Consulta o endpoint de query do Prometheus para a métrica `up` (health check básico).
-
-- **Comando:** `curl -fsS 'http://192.168.3.200:9090/api/v1/query?query=up'`
-- **Risk:** low | **Mode:** readonly | **Timeout:** 15s | **Approval:** false
 
 ---
 
@@ -244,7 +243,8 @@ para um plano estruturado e seguro, sem envolver LLM ou comando livre.
 
 Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
 O runner read-only v1 usa funções internas fixas para `curl_*`, `git_status`, `git_diff_stat`,
-`docker_compose_config` e `docker_compose_bluegreen_config`;
+`docker_compose_config`, `docker_compose_bluegreen_config`, `systemctl_status_aiops`,
+`journalctl_aiops_recent` e `prometheus_query_allowlisted`;
 o catálogo apenas descreve a allowlist e não é fonte de comando executável.
 Os adaptadores legados em `app/adapters/` não são usados pelo runner oficial.
 
@@ -536,6 +536,7 @@ continua restrito a funções internas fixas, read-only e allowlisted.
 - `docker_compose_bluegreen_config`
 - `systemctl_status_aiops`
 - `journalctl_aiops_recent`
+- `prometheus_query_allowlisted`
 
 ### O que ele faz
 
@@ -620,8 +621,9 @@ para `action_ids`. Sem LLM, sem texto livre, sem interpolação.
 | -------------- | -------------------- |
 | `readiness` | `curl_health_8000`, `curl_ready_8000`, `systemctl_status_aiops` |
 | `backend_up` | `curl_health_8000`, `curl_ready_8000` |
-| `error_rate` | `journalctl_aiops_recent`, `prometheus_query` |
-| `latency_p95` | `prometheus_query`, `journalctl_aiops_recent` |
+| `error_rate` | `journalctl_aiops_recent`, `prometheus_query_allowlisted` |
+| `latency_p95` | `prometheus_query_allowlisted`, `journalctl_aiops_recent` |
+| `prometheus_scrape_staleness` | `prometheus_query_allowlisted` |
 | `blocked_tasks` | `journalctl_aiops_recent` |
 | `model_selection` | `journalctl_aiops_recent` |
 | `ollama_models_count` | `journalctl_aiops_recent` |
