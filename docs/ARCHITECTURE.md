@@ -85,9 +85,11 @@ Sempre opera em `dry_run=true`. Nunca chama executores.
 - **Implementado:** `app/agent_router/services/aiops_diagnostic.py`, `app/agent_router/schemas.py`
 - **Camada adicional:** `app/agent_router/services/health_score.py`
 - **Schemas:** `AIOpsDiagnoseRequest`, `AIOpsDiagnoseResponse`, `AIOpsSignal`, `AIOpsFinding`, `AIOpsRecommendedAction`
-- **Health score:** valor determinístico de `0` a `100`, derivado dos findings/checks, sem LLM e sem execução
+- **Health score:** valor determinístico de `0` a `100`, severity-aware, derivado dos findings/checks, sem LLM e sem execução
 - **Finding enrichment:** `check`, `summary`, `impact`, `confidence`, `probable_cause`, `next_validation`, `recommended_action_ids`
+- **Temporal baseline:** aceita um snapshot opcional em `metadata.baseline` para comparar sinais numéricos de forma simples e segura
 - **Leitura de estado:** inclui sinais read-only existentes e checks degradados/safe-skipped quando uma fonte não está disponível
+- **Checks enriquecidos:** `chat_error_spike`, `backend_fallback_spike` e `router_uptime_reset` adicionam diagnóstico contextual sem criar ações novas
 
 ### Componente: Policy Engine
 

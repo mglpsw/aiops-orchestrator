@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
-from app.agent_router.schemas import AIOpsDiagnoseRequest, AIOpsSignal
+from app.agent_router.schemas import AIOpsDiagnoseRequest, AIOpsFinding, AIOpsSignal
 from app.agent_router.services.aiops_diagnostic import diagnose_aiops
+from app.agent_router.services.health_score import calculate_health_score
+from app.agent_router.signals import collect_aiops_diagnostic_signals
+from app.services.action_catalog import load_catalog
 
 
 def test_without_signals_returns_unknown_and_dry_run_true() -> None:
@@ -131,6 +137,66 @@ def test_normal_signals_generate_ok_low() -> None:
     assert response.recommended_actions == []
 
 
+def test_baseline_temporal_data_is_reflected_in_signal_description(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeDB:
+        async def execute(self, *args, **kwargs):  # noqa: ANN001
+            return None
+
+    async def fake_metrics(self):  # noqa: ANN001
+        return {
+            "tasks_total": 10,
+            "tasks_by_status": {"failed": 3},
+            "provider_calls_total": 4,
+            "provider_failures_total": 2,
+            "blocked_actions_total": 1,
+        }
+
+    monkeypatch.setattr("app.services.task_service.TaskService.get_metrics", fake_metrics)
+    monkeypatch.setattr(
+        "app.agent_router.signals.get_registry",
+        lambda: SimpleNamespace(llm_providers={"ollama": SimpleNamespace(enabled=True)}, executor_providers={}),
+    )
+
+    request = AIOpsDiagnoseRequest(
+        checks=["chat_error_spike"],
+        metadata={"baseline": {"chat_error_spike": 0.05}},
+    )
+
+    signals = asyncio.run(collect_aiops_diagnostic_signals(request, FakeDB()))
+    signal = next(item for item in signals if item.name == "chat_error_spike")
+
+    assert signal.status == "degraded"
+    assert "Baseline" in signal.description
+
+
+def test_health_score_increases_with_severity() -> None:
+    healthy = calculate_health_score([])
+    degraded = calculate_health_score(
+        [
+            AIOpsFinding(
+                title="Warning signal",
+                severity="medium",
+                status="warning",
+                description="degraded",
+            ),
+        ]
+    )
+    critical = calculate_health_score(
+        [
+            AIOpsFinding(
+                title="Critical signal",
+                severity="high",
+                status="critical",
+                description="down",
+            ),
+        ]
+    )
+
+    assert healthy.score == 100
+    assert degraded.score < healthy.score
+    assert critical.score < degraded.score
+
+
 def test_recommended_actions_never_have_command() -> None:
     request = AIOpsDiagnoseRequest(checks=["readiness", "backend_up"])
     signals = [
@@ -143,6 +209,26 @@ def test_recommended_actions_never_have_command() -> None:
     assert response.recommended_actions
     assert all(action.command is None for action in response.recommended_actions)
     assert all(action.action_type == "dry_run" for action in response.recommended_actions)
+
+
+def test_recommended_action_ids_exist_in_catalog() -> None:
+    request = AIOpsDiagnoseRequest(checks=["router_uptime_reset"])
+    signals = [
+        AIOpsSignal(
+            name="router_uptime_reset",
+            status="warning",
+            value=120,
+            source="mock",
+            description="Router uptime is 120 seconds. Baseline 600s -> current 120s (lower, worse by 480s).",
+        )
+    ]
+
+    response = diagnose_aiops(request, signals=signals)
+    catalog_ids = load_catalog().action_ids()
+
+    assert response.findings
+    assert set(response.findings[0].recommended_action_ids).issubset(catalog_ids)
+    assert set(response.findings[0].recommended_action_ids) == {"systemctl_status_aiops", "journalctl_aiops_recent"}
 
 
 def test_diagnostic_service_does_not_call_legacy_executors(monkeypatch: pytest.MonkeyPatch) -> None:

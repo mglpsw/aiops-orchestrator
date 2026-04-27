@@ -340,7 +340,7 @@ def _assess_signal(signal: AIOpsSignal) -> _Assessment:
             recommended_action_ids=[],
         )
 
-    if name in {"error_rate", "error_rate_high"}:
+    if name in {"error_rate", "error_rate_high", "chat_error_spike"}:
         numeric = _coerce_number(value)
         if numeric is None:
             if status in _UNKNOWN:
@@ -372,14 +372,15 @@ def _assess_signal(signal: AIOpsSignal) -> _Assessment:
                 next_validation="No immediate validation required.",
                 recommended_action_ids=[],
             )
-        if numeric >= _ERROR_RATE_WARNING:
+        warning_threshold = _ERROR_RATE_WARNING
+        if numeric >= warning_threshold:
             return _Assessment(
                 check=name,
                 status="warning",
                 severity="medium",
                 is_problem=True,
                 emit_finding=True,
-                message=f"Error rate is elevated at {numeric}.",
+                message=f"{'Chat error spike' if name == 'chat_error_spike' else 'Error rate'} is elevated at {numeric}.",
                 summary="Error rate is elevated.",
                 impact="Requests or chat turns are failing more often than expected.",
                 confidence=0.92,
@@ -393,7 +394,7 @@ def _assess_signal(signal: AIOpsSignal) -> _Assessment:
             severity="low",
             is_problem=False,
             emit_finding=False,
-            message=f"Error rate is within range at {numeric}.",
+            message=f"{'Chat error spike' if name == 'chat_error_spike' else 'Error rate'} is within range at {numeric}.",
             summary="Error rate is healthy.",
             impact="No error-rate impact detected.",
             confidence=0.99,
@@ -460,6 +461,130 @@ def _assess_signal(signal: AIOpsSignal) -> _Assessment:
             impact="No blocked-task impact detected.",
             confidence=0.99,
             probable_cause="Blocked-task counts are below the warning threshold.",
+            next_validation="No immediate validation required.",
+            recommended_action_ids=[],
+        )
+
+    if name == "backend_fallback_spike":
+        numeric = _coerce_number(value)
+        if numeric is None:
+            if status in _UNKNOWN:
+                return _Assessment(
+                    check=name,
+                    status="unavailable",
+                    severity="low",
+                    is_problem=False,
+                    emit_finding=True,
+                    message="Backend fallback telemetry is unavailable.",
+                    summary="Backend fallback telemetry is unavailable.",
+                    impact="The runtime cannot quantify backend fallback safely.",
+                    confidence=0.3,
+                    probable_cause="Provider failure telemetry is not exposed in this context.",
+                    next_validation="Inspect provider health and fallback metrics if available.",
+                    recommended_action_ids=action_ids,
+                )
+            return _Assessment(
+                check=name,
+                status="ok",
+                severity="low",
+                is_problem=False,
+                emit_finding=False,
+                message="Backend fallback telemetry is present but not numeric.",
+                summary="Backend fallback telemetry is present.",
+                impact="Backend fallback signal exists but does not require a finding.",
+                confidence=0.5,
+                probable_cause="The provider-failure value is non-numeric but not alarming.",
+                next_validation="No immediate validation required.",
+                recommended_action_ids=[],
+            )
+        if numeric >= 0.05:
+            return _Assessment(
+                check=name,
+                status="warning",
+                severity="medium",
+                is_problem=True,
+                emit_finding=True,
+                message=f"Backend fallback spike is elevated at {numeric}.",
+                summary="Backend fallback spike is elevated.",
+                impact="The runtime is falling back or failing over more often than expected.",
+                confidence=0.9,
+                probable_cause="Provider failures are happening more often than normal.",
+                next_validation="Inspect provider health and allowlisted diagnostic metrics.",
+                recommended_action_ids=action_ids,
+            )
+        return _Assessment(
+            check=name,
+            status="ok",
+            severity="low",
+            is_problem=False,
+            emit_finding=False,
+            message=f"Backend fallback spike is within range at {numeric}.",
+            summary="Backend fallback spike is healthy.",
+            impact="No backend fallback impact detected.",
+            confidence=0.99,
+            probable_cause="Current provider failures are below the warning threshold.",
+            next_validation="No immediate validation required.",
+            recommended_action_ids=[],
+        )
+
+    if name == "router_uptime_reset":
+        numeric = _coerce_number(value)
+        if numeric is None:
+            if status in _UNKNOWN:
+                return _Assessment(
+                    check=name,
+                    status="unavailable",
+                    severity="low",
+                    is_problem=False,
+                    emit_finding=True,
+                    message="Router uptime telemetry is unavailable.",
+                    summary="Router uptime telemetry is unavailable.",
+                    impact="The runtime cannot confirm uptime reset safely.",
+                    confidence=0.3,
+                    probable_cause="No uptime signal was provided.",
+                    next_validation="Provide a current uptime sample and compare it against a baseline.",
+                    recommended_action_ids=action_ids,
+                )
+            return _Assessment(
+                check=name,
+                status="ok",
+                severity="low",
+                is_problem=False,
+                emit_finding=False,
+                message="Router uptime telemetry is present but not numeric.",
+                summary="Router uptime telemetry is present.",
+                impact="Uptime signal exists but does not require a finding.",
+                confidence=0.5,
+                probable_cause="The uptime value is non-numeric but not alarming.",
+                next_validation="No immediate validation required.",
+                recommended_action_ids=[],
+            )
+        if status in {"degraded", "warning"}:
+            return _Assessment(
+                check=name,
+                status="warning",
+                severity="medium",
+                is_problem=True,
+                emit_finding=True,
+                message=f"Router uptime appears to have reset to {numeric}.",
+                summary="Router uptime reset is suspected.",
+                impact="A router restart or reset may have interrupted continuity.",
+                confidence=0.85,
+                probable_cause="Current uptime is lower than the provided baseline.",
+                next_validation="Check service status and recent logs for a restart event.",
+                recommended_action_ids=action_ids,
+            )
+        return _Assessment(
+            check=name,
+            status="ok",
+            severity="low",
+            is_problem=False,
+            emit_finding=False,
+            message=f"Router uptime is stable at {numeric}.",
+            summary="Router uptime is stable.",
+            impact="No uptime reset impact detected.",
+            confidence=0.95,
+            probable_cause="Current uptime is not lower than the baseline.",
             next_validation="No immediate validation required.",
             recommended_action_ids=[],
         )
@@ -821,13 +946,16 @@ def _build_summary(
 
 
 def _build_finding(signal: AIOpsSignal, assessment: _Assessment) -> AIOpsFinding:
+    description = assessment.message
+    if signal.description:
+        description = f"{description} {signal.description}".strip()
     return AIOpsFinding(
         check=assessment.check,
         title=_finding_title(signal.name),
         severity=assessment.severity,
         status=assessment.status,
         summary=assessment.summary,
-        description=assessment.message,
+        description=description,
         evidence=[signal],
         impact=assessment.impact,
         confidence=assessment.confidence,

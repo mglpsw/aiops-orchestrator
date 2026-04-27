@@ -104,6 +104,12 @@ def test_error_rate_problem_maps_to_journalctl_prometheus() -> None:
     assert "prometheus_query_allowlisted" in result
 
 
+def test_chat_error_spike_problem_maps_to_journalctl_prometheus() -> None:
+    result = map_findings_to_action_ids([_finding("chat_error_spike", status="warning")], ["chat_error_spike"])
+    assert "journalctl_aiops_recent" in result
+    assert "prometheus_query_allowlisted" in result
+
+
 def test_latency_p95_problem_maps_to_prometheus_journalctl() -> None:
     result = map_findings_to_action_ids([_finding("latency_p95", status="warning")], ["latency_p95"])
     assert "prometheus_query_allowlisted" in result
@@ -112,6 +118,24 @@ def test_latency_p95_problem_maps_to_prometheus_journalctl() -> None:
 
 def test_blocked_tasks_problem_maps_to_journalctl() -> None:
     result = map_findings_to_action_ids([_finding("blocked_tasks", status="warning")], ["blocked_tasks"])
+    assert "journalctl_aiops_recent" in result
+
+
+def test_backend_fallback_spike_problem_maps_to_journalctl_prometheus() -> None:
+    result = map_findings_to_action_ids(
+        [_finding("backend_fallback_spike", status="warning")],
+        ["backend_fallback_spike"],
+    )
+    assert "journalctl_aiops_recent" in result
+    assert "prometheus_query_allowlisted" in result
+
+
+def test_router_uptime_reset_problem_maps_to_systemctl_and_journalctl() -> None:
+    result = map_findings_to_action_ids(
+        [_finding("router_uptime_reset", status="warning")],
+        ["router_uptime_reset"],
+    )
+    assert "systemctl_status_aiops" in result
     assert "journalctl_aiops_recent" in result
 
 
