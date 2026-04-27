@@ -56,8 +56,15 @@ _PLACEHOLDER_SECRET_VALUES = {
     "changeme",
     "dummy",
 }
+_PLACEHOLDER_SECRET_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:os\.getenv|os\.environ\.get|os\.environ\s*\[|getenv)\s*\("
+)
+_PLACEHOLDER_SECRET_TOKEN_RE = re.compile(r"(?i)<[^>]+>")
 _P1_DESTRUCTIVE_RE = re.compile(
-    r"(?i)\b(?:docker\s+compose\s+(?:-f\s+\S+\s+)*down|docker\s+stop|docker\s+rm|docker\s+kill|docker\s+exec|systemctl\s+restart|service\s+docker|git\s+push|git\s+pull|rm\s+-rf|chmod\s+777|curl\b.*\|\s*(?:bash|sh|zsh)\b|ssh\s+root)\b"
+    r"(?i)\b(?:docker\s+exec|docker\s+compose\s+(?:-f\s+\S+\s+)*(?:up|down|restart|pull|build)\b|systemctl\s+(?:restart|stop|start|reload)\b|git\s+(?:push|pull|checkout|reset|clean)\b|ssh\b|rm\s+-rf|chmod\s+777|curl\b.*\|\s*(?:bash|sh|zsh)\b)\b"
+)
+_P1_NEGATED_COMMAND_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:não|sem|proibido|proibida|proibidos|proibidas|evite|evitar|não adicionar|não usar|não usa|não executar|do not|don't)\b[\s\S]{0,80}\b(?:docker\s+exec|docker\s+compose|systemctl|git\s+(?:push|pull|checkout|reset|clean)|ssh|deploy)\b"
 )
 _P1_GUARD_RE = re.compile(r"(?i)\b(?:approval|audit|redact|fail-closed|allowlist)\b")
 _P1_WORKFLOW_RE = re.compile(r"(?i)\bpull_request_target\b|\bpermissions:\s*[\s\S]*\bwrite-all\b|\bcontents:\s*write\b|\bactions:\s*write\b|\bpull-requests:\s*write\b")
@@ -222,12 +229,34 @@ def _strip_diff_prefix(line: str) -> str:
 
 def _placeholder_secret_value(value: str) -> bool:
     normalized = value.strip().strip('"\'`<>')
-    return not normalized or normalized.lower() in _PLACEHOLDER_SECRET_VALUES
+    lowered = normalized.lower()
+    if not lowered:
+        return True
+    if lowered in _PLACEHOLDER_SECRET_VALUES:
+        return True
+    if _PLACEHOLDER_SECRET_CONTEXT_RE.search(normalized):
+        return True
+    if _PLACEHOLDER_SECRET_TOKEN_RE.fullmatch(normalized):
+        return True
+    return False
+
+
+def _is_negated_command_context(text: str) -> bool:
+    return bool(_P1_NEGATED_COMMAND_CONTEXT_RE.search(text))
+
+
+def _is_real_destructive_command(text: str) -> bool:
+    lowered = text.lstrip().lower()
+    if not lowered or lowered.startswith("#"):
+        return False
+    return bool(_P1_DESTRUCTIVE_RE.search(text))
 
 
 def _secret_finding_for_line(file: FileChange, line: str) -> Finding | None:
     body = _strip_diff_prefix(line)
     if not body:
+        return None
+    if _placeholder_secret_value(body):
         return None
     for rule_id, pattern, risk, recommendation in (
         (
@@ -277,6 +306,8 @@ def _secret_finding_for_line(file: FileChange, line: str) -> Finding | None:
         )
     token_match = _GITHUB_TOKEN_VALUE_RE.search(body)
     if token_match:
+        if _placeholder_secret_value(body):
+            return None
         return Finding(
             severity="P1",
             file=file.path,
@@ -494,16 +525,22 @@ def scan_patch_for_findings(file: FileChange) -> list[Finding]:
             recommendation="Keep approval, audit, redaction, and allowlist guarantees intact.",
         )
 
-    if _P1_DESTRUCTIVE_RE.search(patch):
-        _emit(
-            findings,
-            severity="P1",
-            file=file,
-            rule_id="destructive_command",
-            evidence=_patch_snippet(file, _P1_DESTRUCTIVE_RE),
-            risk="Destructive command detected in the diff.",
-            recommendation="Replace it with a read-only check or remove it entirely.",
-        )
+    if risk["area"] in {"workflow", "scripts", "deploy", "security-critical"}:
+        for line in lines:
+            if not line.startswith("+"):
+                continue
+            body = _strip_diff_prefix(line)
+            if _is_real_destructive_command(body) and not _is_negated_command_context(body):
+                _emit(
+                    findings,
+                    severity="P1",
+                    file=file,
+                    rule_id="destructive_command",
+                    evidence=_truncate_text(_redact_sensitive_text(body), MAX_PATCH_SNIPPET_CHARS),
+                    risk="Destructive command detected in the diff.",
+                    recommendation="Replace it with a read-only check or remove it entirely.",
+                )
+                break
 
     secret_finding: Finding | None = None
     private_key_match = _PRIVATE_KEY_RE.search(normalized_patch) if normalized_patch else None
@@ -936,6 +973,7 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
             "- Max 5 achados.",
             "- Priorize P1 e P2.",
             "- Não faça elogios nem resumo longo.",
+            "- Não trate ajuste isolado de MAX_BUNDLE_CHARS como P2; só sinalize se houver regressão de truncamento sem teste.",
             "- Não invente arquivos ou linhas.",
         ]
     )
@@ -997,7 +1035,8 @@ def build_agent_router_payload(
         "Você é um reviewer de Pull Request. Responda sempre em pt-BR. Encontre apenas bugs reais, "
         "regressões de segurança, quebras de CI/runtime e violações de contrato. Retorne no máximo "
         "5 achados P1/P2/P3 em formato estruturado com severity, file, evidence, risk e recommendation. "
-        "Não elogie. Não faça resumo longo. Não invente arquivos ou linhas. Se não houver P1/P2, diga isso claramente."
+        "Não elogie. Não faça resumo longo. Não invente arquivos ou linhas. Não trate ajuste isolado de MAX_BUNDLE_CHARS como P2; "
+        "só sinalize se houver regressão de truncamento sem teste. Se não houver P1/P2, diga isso claramente."
     )
     payload: dict[str, Any] = {
         "messages": [
