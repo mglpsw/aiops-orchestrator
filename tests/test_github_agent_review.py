@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 
 import pytest
@@ -78,14 +79,18 @@ def _make_fake_urlopen(
     *,
     pr_files: list[dict[str, object]] | None = None,
     check_runs: list[dict[str, object]] | None = None,
+    existing_comments: list[dict[str, object]] | None = None,
     router_response: object | None = None,
     router_error: Exception | None = None,
     captured_comments: list[str] | None = None,
+    captured_patches: list[str] | None = None,
     captured_router_payloads: list[dict[str, object]] | None = None,
 ) :
     pr_files = pr_files or []
     check_runs = check_runs or []
+    existing_comments = existing_comments or []
     captured_comments = captured_comments if captured_comments is not None else []
+    captured_patches = captured_patches if captured_patches is not None else []
     captured_router_payloads = captured_router_payloads if captured_router_payloads is not None else []
 
     def fake_urlopen(request, timeout=30):
@@ -110,14 +115,18 @@ def _make_fake_urlopen(
         if path.endswith("/commits/abc123/check-runs") and request.method == "GET":
             return _FakeHTTPResponse({"check_runs": check_runs})
         if path.endswith("/issues/42/comments") and request.method == "GET":
-            return _FakeHTTPResponse([])
+            return _FakeHTTPResponse(existing_comments)
         if path.endswith("/issues/42/comments") and request.method == "POST":
             body = json.loads(request.data.decode("utf-8"))["body"]
             captured_comments.append(body)
             return _FakeHTTPResponse({"id": 1})
+        if path.startswith("/repos/mglpsw/aiops-orchestrator/issues/comments/") and request.method == "PATCH":
+            body = json.loads(request.data.decode("utf-8"))["body"]
+            captured_patches.append(body)
+            return _FakeHTTPResponse({"id": 1})
         raise AssertionError(f"Unexpected request: {request.method} {request.full_url}")
 
-    return fake_urlopen, captured_comments, captured_router_payloads
+    return fake_urlopen, captured_comments, captured_patches, captured_router_payloads
 
 
 def _run_agent(
@@ -127,6 +136,7 @@ def _run_agent(
     payload: dict[str, object],
     pr_files: list[dict[str, object]] | None = None,
     check_runs: list[dict[str, object]] | None = None,
+    existing_comments: list[dict[str, object]] | None = None,
     router_response: object | None = None,
     router_error: Exception | None = None,
     allowed_users: str = "",
@@ -136,13 +146,16 @@ def _run_agent(
     router_model: str = "",
 ) -> tuple[list[str], list[dict[str, object]]]:
     comments: list[str] = []
+    patches: list[str] = []
     router_payloads: list[dict[str, object]] = []
-    fake_urlopen, comments, router_payloads = _make_fake_urlopen(
+    fake_urlopen, comments, patches, router_payloads = _make_fake_urlopen(
         pr_files=pr_files,
         check_runs=check_runs,
+        existing_comments=existing_comments,
         router_response=router_response,
         router_error=router_error,
         captured_comments=comments,
+        captured_patches=patches,
         captured_router_payloads=router_payloads,
     )
     monkeypatch.setattr(review.urllib.request, "urlopen", fake_urlopen)
@@ -241,6 +254,7 @@ def test_review_render_is_short_without_p1_p2() -> None:
         files=[review.FileChange(path="docs/GITHUB_AGENT.md", status="modified", additions=1, deletions=1, patch="+ docs")],
     )
     markdown = review.render_review([], [], pr_context, llm_mode=False)
+    assert markdown.startswith(review.COMMENT_MARKER)
     assert "Não encontrei P1/P2 determinísticos." in markdown
     assert "Código do PR executado: não" in markdown
     assert "LLM" not in markdown
@@ -299,7 +313,8 @@ def test_router_payload_is_sanitized_and_base_url_defaults(monkeypatch: pytest.M
     assert "Authorization" not in body
     assert "ghp_abcdefghijklmnopqrstuvwxyz1234" not in body
     assert router_call["payload"]["model"] == "gpt-review"
-    assert comments[0].startswith("# Agent Review")
+    assert comments[0].startswith(review.COMMENT_MARKER)
+    assert "# Agent Review" in comments[0]
     assert "LLM" not in comments[0] or "short" in comments[0]
 
 
@@ -315,6 +330,7 @@ def test_plain_review_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_
     )
     assert comments
     assert not router_payloads
+    assert comments[0].startswith(review.COMMENT_MARKER)
     assert "deterministic review" in comments[0]
 
 
@@ -334,6 +350,23 @@ def test_llm_disabled_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatc
     assert "LLM review não está habilitado" in comments[0]
 
 
+def test_llm_key_missing_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review llm")
+    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=files,
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="",
+    )
+    assert comments
+    assert not router_payloads
+    assert "chave do router ausente" in comments[0]
+
+
 def test_llm_timeout_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     payload = _event_payload(pull_request=True, body="/agent review llm")
     files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
@@ -345,10 +378,42 @@ def test_llm_timeout_falls_back_to_deterministic(monkeypatch: pytest.MonkeyPatch
         router_error=TimeoutError("timed out"),
         allowed_users="alice",
         llm_enabled=True,
+        router_api_key="router-secret",
     )
     assert comments
     assert router_payloads
-    assert "LLM review indisponível; review determinístico publicado." in comments[0]
+    assert "timeout" in comments[0]
+
+
+@pytest.mark.parametrize(
+    ("error", "needle"),
+    [
+        (HTTPError("https://api.ks-sm.net:9443/v1/chat/completions", 401, "unauthorized", hdrs=None, fp=None), "auth"),
+        (HTTPError("https://api.ks-sm.net:9443/v1/chat/completions", 429, "rate limited", hdrs=None, fp=None), "rate limited"),
+        (HTTPError("https://api.ks-sm.net:9443/v1/chat/completions", 503, "unavailable", hdrs=None, fp=None), "router indisponível"),
+    ],
+)
+def test_router_http_errors_fall_back_to_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    error: Exception,
+    needle: str,
+) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review llm")
+    files = [_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')]
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=files,
+        router_error=error,
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="router-secret",
+    )
+    assert comments
+    assert router_payloads
+    assert needle in comments[0]
 
 
 def test_router_json_response_is_normalized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -417,6 +482,32 @@ def test_unauthorized_comment_does_not_call_router(monkeypatch: pytest.MonkeyPat
     assert comments
     assert not router_payloads
     assert "falta de autorização" in comments[0]
+
+
+def test_existing_marker_comment_is_updated_instead_of_spamming(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    comments: list[str] = []
+    patches: list[str] = []
+    router_payloads: list[dict[str, object]] = []
+    fake_urlopen, comments, patches, router_payloads = _make_fake_urlopen(
+        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        existing_comments=[{"id": 55, "body": f"{review.COMMENT_MARKER}\nold body"}],
+        captured_comments=comments,
+        captured_patches=patches,
+        captured_router_payloads=router_payloads,
+    )
+    monkeypatch.setattr(review.urllib.request, "urlopen", fake_urlopen)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(_event_payload(pull_request=True, body="/agent review", association="MEMBER", login="alice")), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "mglpsw/aiops-orchestrator")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("AGENT_ALLOWED_USERS", "")
+    monkeypatch.setenv("AGENT_REVIEW_LLM_ENABLED", "false")
+    assert review.main() == 0
+    assert not comments
+    assert len(patches) == 1
+    assert patches[0].startswith(review.COMMENT_MARKER)
+    assert router_payloads == []
 
 
 def test_workflow_security_guardrails() -> None:

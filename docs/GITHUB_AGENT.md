@@ -71,11 +71,35 @@ Se não houver P1/P2 determinísticos, o comentário fica curto e diz exatamente
 - O review nunca envia `env`, logs completos, secrets ou arquivos inteiros grandes.
 - Se o router falhar, o workflow publica apenas o review determinístico e avisa que o LLM ficou indisponível.
 
+### Garantias
+
+- O workflow não executa código do PR.
+- O workflow não faz `pull_request_target`.
+- O workflow não usa `docker exec`, SSH ou deploy.
+- O review final usa um marcador HTML estável para atualizar o comentário anterior e evitar spam.
+- O comentário final é curto, prioriza P1/P2 e limita achados a no máximo 5.
+
 ## Exemplo de saída boa
 
 - `P1`: `workflow usa pull_request_target com checkout/run`
 - `P2`: `tests/test_action_run.py usa /opt/aiops-orchestrator hardcoded`
 - `P3`: `docs podem explicar melhor o contrato`
+
+## Troubleshooting
+
+- Se `/agent review llm` publicar só o review determinístico, verifique `AGENT_REVIEW_LLM_ENABLED` e `AGENT_ROUTER_API_KEY`.
+- Se houver `401` ou `403`, confirme o secret `AGENT_ROUTER_API_KEY`.
+- Se houver `429`, o router está limitando a taxa e o fallback determinístico continua seguro.
+- Se houver timeout ou falha de DNS/TLS, o review determinístico segue normalmente.
+- Se o comentário anterior não atualizar, verifique se o bot tem permissão de `issues: write` e se o comentário contém o marcador HTML estável.
+
+## Como testar depois do merge
+
+1. Abra um PR de teste na `main`.
+2. Comente `/agent review`.
+3. Comente `/agent review llm`.
+4. Observe se o comentário do bot é atualizado em vez de criar duplicatas.
+5. Verifique no Actions se o workflow `agent-review` executou sem chamar código do PR.
 
 ## Limitações
 
