@@ -12,6 +12,17 @@ Repo canônico da CT 102: `/opt/aiops-orchestrator`.
 As surfaces legadas continuam compatíveis, mas estão marcadas como deprecated e devem migrar
 para as APIs canônicas `/v1/aiops/*`.
 
+## Release v0.18.0
+
+O checkpoint final da fase AIOps readonly/chat consolida:
+
+- diagnóstico severity-aware com findings enriquecidos
+- runner read-only allowlisted e fail-closed
+- chat/OpenWebUI com intents determinísticas
+- GitHub Agent Review com `/agent review`, `/agent review llm` e `/agent ask`
+- respostas públicas em pt-BR por padrão e fallback seguro via `GITHUB_STEP_SUMMARY`
+- foco imediato na próxima fase `agent-router-api`
+
 ---
 
 ## Funcionalidades
@@ -176,6 +187,7 @@ runs e approvals, com resposta curta, segura e sem execução de actions. Veja
 ### GitHub Agent Review on-demand
 
 - Comentários em PR com `/agent review` ou `/agent review llm` acionam o workflow `agent-review`
+- `/agent ask <pergunta>` publica uma resposta separada e contextual, sem sobrescrever o review principal
 - Veja [`docs/GITHUB_AGENT.md`](docs/GITHUB_AGENT.md) para o contrato, autorização e modo LLM opcional
 
 ### Project Status

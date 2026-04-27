@@ -6,7 +6,9 @@ O AIOps Orchestrator é um sistema seguro e modular de orquestração orientado 
 **observar** (coletar sinais, diagnosticar) de **planejar** (sugerir ações) de **executar** (ações
 allowlisted, com aprovação humana obrigatória para ações de escrita).
 
-**Fase atual: Diagnostic-only (v1).** Nenhum executor real está ativo no caminho produtivo.
+**Fase atual: Diagnostic-only + readonly/chat checkpoint (v0.18.0).** Nenhum executor real está
+ativo no caminho produtivo e o foco imediato é manter diagnóstico, chat e review on-demand
+seguros, curtos e read-only.
 
 ---
 
@@ -99,6 +101,24 @@ se uma ação requer aprovação humana.
 - **Implementado:** `app/policies/engine.py`, `config/policies.yml`
 - **Denylist:** ver `docs/SECURITY.md`
 
+### Componente: GitHub Agent Review
+
+Reage a comentários de PR com `/agent review`, `/agent review llm` e `/agent ask`.
+
+- **Implementado:** `scripts/github_agent_review.py`, `.github/workflows/agent-review.yml`
+- **Garantias:** não executa código do PR, não usa `pull_request_target`, não publica segredos e
+  publica respostas em pt-BR por padrão
+- **Fallbacks:** respostas separadas para `/agent ask`, com fallback para `GITHUB_STEP_SUMMARY`
+  quando o comentário do PR não puder ser criado
+
+### Componente: Chat / OpenWebUI Intents
+
+Detecta intents AIOps determinísticas no chat e roteia para diagnose, runs, approvals e status.
+
+- **Implementado:** `app/services/aiops_chat_router.py`, `app/api/routes.py`
+- **Garantias:** não executa actions pelo chat, não aceita shell livre e responde curto em pt-BR
+- **Intents:** diagnose/status/runs/approvals e diagnósticos de Agent Router
+
 ### Componente: Action Planner
 
 Sugere ações do catálogo (`config/actions.yaml`) com base nos findings do Diagnostic Engine.
@@ -157,6 +177,8 @@ Executa apenas funções internas fixas, read-only e allowlisted, após approval
 - **Ações fixas v1:** `curl_health_8000`, `curl_ready_8000`, `curl_health_8001`, `curl_ready_8001`,
   `git_status`, `git_diff_stat`, `docker_compose_config`, `docker_compose_bluegreen_config`,
   `systemctl_status_aiops`, `journalctl_aiops_recent`, `prometheus_query_allowlisted`
+- **Sessão 18 / v0.18.0:** o contrato final desta fase mantém o runner sem shell livre, sem SSH,
+  sem `docker exec` e sem PromQL livre
 - **Garantia:** não usa `command` do catálogo como comando executável
 - **Escopo v1:** health/ready de `8000` e `8001` + inspeção local read-only fixa
 - **Prometheus allowlisted:** bundle fixo sem PromQL livre, com base URL allowlisted e redaction forte
