@@ -17,12 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: >
-      github.event.issue.pull_request &&
-      (
-        startsWith(github.event.comment.body, '/agent review') ||
-        contains(github.event.comment.body, '\n/agent review') ||
-        contains(github.event.comment.body, '\r\n/agent review')
-      )
+      startsWith(github.event.comment.body, '/agent review') ||
+      contains(github.event.comment.body, '\n/agent review') ||
+      contains(github.event.comment.body, '\r\n/agent review')
 
     steps:
       - name: Checkout base repository
@@ -52,4 +49,8 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           AGENT_ALLOWED_USERS: ${{ vars.AGENT_ALLOWED_USERS }}
+          AGENT_REVIEW_LLM_ENABLED: ${{ vars.AGENT_REVIEW_LLM_ENABLED }}
+          AGENT_ROUTER_BASE_URL: ${{ vars.AGENT_ROUTER_BASE_URL }}
+          AGENT_ROUTER_API_KEY: ${{ secrets.AGENT_ROUTER_API_KEY }}
+          AGENT_ROUTER_MODEL: ${{ vars.AGENT_ROUTER_MODEL }}
         run: python scripts/github_agent_review.py

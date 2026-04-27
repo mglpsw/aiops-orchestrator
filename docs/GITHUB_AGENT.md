@@ -1,49 +1,86 @@
 # GitHub Agent Review
 
-Esta é a primeira versão do review on-demand acionado por comentário no PR.
+Esta primeira versão suporta dois modos:
+
+- `/agent review` para revisão determinística
+- `/agent review llm` para revisão determinística com apoio opcional do Agent Router
 
 ## Uso
 
-Comente em um Pull Request uma linha que comece com:
+Comente em um Pull Request uma linha que comece com um dos comandos acima.
 
-```text
-/agent review
-```
-
-O workflow lê o evento do GitHub, consulta metadados e diff via API e comenta de volta
-uma revisão determinística no próprio PR.
+O workflow lê o evento do GitHub, consulta metadados e diff via API e publica uma revisão no próprio PR.
 
 ## Autorização
 
-O agente só executa quando o autor do comentário tem uma destas permissões:
+O agent só executa quando o autor do comentário tem uma destas permissões:
 
 - `OWNER`
 - `MEMBER`
 - `COLLABORATOR`
 - ou está listado em `AGENT_ALLOWED_USERS`
 
-`AGENT_ALLOWED_USERS` aceita uma lista separada por vírgulas.
+`AGENT_ALLOWED_USERS` aceita uma lista separada por vírgulas em `Settings -> Secrets and variables -> Actions`.
 
-Se a pessoa não estiver autorizada, o bot responde com uma mensagem curta e não prossegue com a revisão.
+Se a pessoa não estiver autorizada, o bot responde com uma mensagem curta e encerra.
 
-## Escopo de análise
+## Modo determinístico
 
-- Metadados do PR
-- Arquivos alterados
-- Patch/diff dos arquivos
-- Check runs do commit analisado
-- Comentários recentes do PR, quando disponíveis
+O review determinístico:
 
-## Classificação
+- não executa código do PR
+- não faz checkout da branch do PR para execução
+- não faz deploy
+- não opera containers
+- não chama o Agent Router
 
-- `P1` bloqueador: gatilhos e comandos perigosos, secrets hardcoded, perda de gates de segurança e falhas de CI
-- `P2` importante: lacunas de cobertura, paths hardcoded em testes/CI, timeout ausente e documentação desalinhada
-- `P3` sugestão: melhorias de clareza, organização e pequenas refatorações
+Ele prioriza achados P1 e P2, limita a saída a no máximo 5 achados principais e evita comentários longos.
 
-## Segurança
+### Interpretação
 
-O agente não faz checkout da branch do PR para executar código, não roda scripts do PR, não faz deploy e não mexe em containers.
+- `P1` bloqueador: risco de segurança, execução perigosa, perda de gates, CI quebrado
+- `P2` importante: lacuna de cobertura, path hardcoded, timeout ausente, docs ou config desalinhados
+- `P3` sugestão: melhorias de clareza e pequenos ajustes
 
-## Evolução futura
+Se não houver P1/P2 determinísticos, o comentário fica curto e diz exatamente isso.
 
-O design foi mantido determinístico para facilitar a adição futura de um provider LLM sem mudar o contrato atual.
+## Modo LLM
+
+`/agent review llm` usa o Agent Router apenas como API de análise/revisão.
+
+### Variáveis e secrets
+
+- `AGENT_REVIEW_LLM_ENABLED=true`
+- `AGENT_ROUTER_BASE_URL=https://api.ks-sm.net:9443`
+- `AGENT_ROUTER_API_KEY`
+- `AGENT_ROUTER_MODEL` opcional
+
+### Como configurar
+
+1. Abra `Settings -> Secrets and variables -> Actions` no repositório.
+2. Adicione `AGENT_ROUTER_API_KEY` como Secret.
+3. Adicione `AGENT_REVIEW_LLM_ENABLED` como Variable com valor `true`.
+4. Adicione `AGENT_ROUTER_BASE_URL` como Variable se quiser sobrescrever o padrão.
+5. Adicione `AGENT_ROUTER_MODEL` como Variable se quiser fixar um modelo.
+
+### Segurança do LLM
+
+- O token do GitHub nunca é enviado ao Agent Router.
+- O `AGENT_ROUTER_API_KEY` fica apenas no header `Authorization` da chamada ao router.
+- O payload enviado ao router é sanitizado e truncado.
+- O review nunca envia `env`, logs completos, secrets ou arquivos inteiros grandes.
+- Se o router falhar, o workflow publica apenas o review determinístico e avisa que o LLM ficou indisponível.
+
+## Exemplo de saída boa
+
+- `P1`: `workflow usa pull_request_target com checkout/run`
+- `P2`: `tests/test_action_run.py usa /opt/aiops-orchestrator hardcoded`
+- `P3`: `docs podem explicar melhor o contrato`
+
+## Limitações
+
+- O agent não faz merge.
+- O agent não faz push.
+- O agent não executa scripts do PR.
+- O agent não faz SSH nem usa `docker exec`.
+- O agent nunca opera o CT 102.
