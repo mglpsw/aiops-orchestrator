@@ -42,6 +42,9 @@ pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose up 
 bash /opt/aiops-orchestrator/scripts/validate.sh
 ```
 
+GitHub Actions CI mirrors these validations on push and pull request, but it never deploys.
+Deployments stay manual and approved.
+
 ### Teste de fumaça
 ```bash
 bash /opt/aiops-orchestrator/scripts/smoke_test.sh

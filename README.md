@@ -170,6 +170,10 @@ Ver `docs/OPERATIONS.md` para detalhes.
 pytest tests/ -v
 ```
 
+GitHub Actions CI validates the action catalog, scripts, compose configs, and tests on
+`push` and `pull_request` to `main` and `master`. It does not deploy anything; deploy remains
+manual and approved.
+
 ---
 
 ## Docs

@@ -1,0 +1,57 @@
+name: aiops-ci
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+
+jobs:
+  validate:
+    name: Validate repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Prepare env for compose validation
+        run: cp .env.example .env
+
+      - name: Bash syntax check
+        run: find scripts -name '*.sh' -print0 | xargs -0 -n1 bash -n
+
+      - name: Validate action catalog
+        run: bash scripts/validate_actions_catalog.sh
+
+      - name: Validate docker compose config
+        run: |
+          docker compose -f deploy/docker-compose.yml config
+          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Check diff formatting
+        run: git diff --check
+
+      - name: Dangerous patterns grep (informational)
+        run: |
+          grep -RInE 'shell=True|create_subprocess_shell|docker exec|ssh |git push|git pull|docker compose up|docker compose down|docker compose restart|systemctl restart|systemctl start|systemctl stop|systemctl reload' \
+            app docs tests config scripts README.md || true
