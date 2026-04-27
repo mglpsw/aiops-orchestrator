@@ -131,6 +131,10 @@ Nesta Session 15, o contrato que estamos fechando de forma mais explícita é o 
 estado da unit permitida; o segundo é logs bounded, sem filtros livres, sem
 follow e com janela fixa.
 
+Nesta Session 16, o contrato que estamos fechando de forma mais explícita é o de
+`prometheus_query_allowlisted`: ele aceita somente queries IDs allowlisted, usa
+base URL segura existente, mantém timeout obrigatório e redige respostas e erros.
+
 Garantias principais:
 
 - `shell=False`

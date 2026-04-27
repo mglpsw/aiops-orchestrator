@@ -686,6 +686,73 @@ def test_run_marks_prometheus_timeout_as_failed(
     assert body["results"][0]["status"] == "failed"
 
 
+def test_run_keeps_prometheus_contract_allowlisted_and_bounded(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    approval_id = _create_approved_approval(api_client)
+    monkeypatch.setattr("httpx.AsyncClient.get", _fake_get_ok, raising=True)
+    monkeypatch.setenv("AIOPS_PROMETHEUS_BASE_URL", "http://127.0.0.1:9090")
+    get_settings.cache_clear()
+
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["prometheus_query_allowlisted"],
+            "reason": "Inspect allowlisted Prometheus bundle",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"][0]["action_id"] == "prometheus_query_allowlisted"
+    assert "command" not in json.dumps(body)
+    assert "argv" not in json.dumps(body)
+    assert "Authorization" not in json.dumps(body)
+    assert "sk-test-key" not in json.dumps(body)
+    assert "super-secret-token" not in json.dumps(body)
+
+
+def test_run_prometheus_output_is_redacted_and_bounded(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    approval_id = _create_approved_approval(api_client)
+
+    async def noisy_get(self, url: str, *args, **kwargs):
+        if "/api/v1/query" in url:
+            return _FakePrometheusResponse(
+                200,
+                {
+                    "status": "success",
+                    "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1710000005.0, "1"]}]},
+                },
+                text="Authorization: Bearer super-secret-token api_key=sk-test-key " + ("x" * 8000),
+            )
+        return await _fake_get_ok(self, url, *args, **kwargs)
+
+    monkeypatch.setattr("httpx.AsyncClient.get", noisy_get, raising=True)
+    monkeypatch.setenv("AIOPS_PROMETHEUS_BASE_URL", "http://127.0.0.1:9090")
+    monkeypatch.setenv("AIOPS_RUN_OUTPUT_MAX_BYTES", "120")
+    get_settings.cache_clear()
+
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["prometheus_query_allowlisted"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["results"][0]["truncated"] is True
+    preview = body["results"][0]["output_preview"]
+    assert "super-secret-token" not in preview
+    assert "sk-test-key" not in preview
+    assert preview
+    assert len(preview) <= 120
+
+
 def test_run_executes_git_status_and_docker_compose_config_with_fixed_process(
     api_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

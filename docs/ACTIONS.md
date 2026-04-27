@@ -126,6 +126,9 @@ Consulta um bundle fixo e allowlisted de métricas do Prometheus sem aceitar Pro
   `aiops_tasks_total` e `aiops_provider_failures_total`
 - **Segurança:** nenhum PromQL livre vem do request; `Authorization`, tokens, segredos e URLs
   sensíveis são redigidos no output_preview e no histórico.
+- **Contrato Session 16:** a action só aceita o bundle allowlisted e falha de forma bounded
+  quando o Prometheus estiver indisponível, responder HTTP 4xx/5xx, retornar JSON inválido ou
+  atingir timeout.
 
 ### curl_health_8000
 
