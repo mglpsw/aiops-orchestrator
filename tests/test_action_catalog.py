@@ -91,6 +91,12 @@ def test_real_catalog_has_expected_action_ids() -> None:
     assert expected <= catalog.action_ids()
 
 
+def test_real_catalog_includes_session_14_readonly_actions() -> None:
+    catalog = load_catalog(DEFAULT_CATALOG_PATH)
+    expected = {"git_diff_stat", "docker_compose_bluegreen_config"}
+    assert expected <= catalog.action_ids()
+
+
 def test_real_catalog_entries_are_readonly_and_low_risk() -> None:
     catalog = load_catalog(DEFAULT_CATALOG_PATH)
     for entry in catalog.all_entries():
