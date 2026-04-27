@@ -25,6 +25,7 @@ MAX_BUNDLE_CHARS = 6000
 MAX_COMMENT_CHARS = 5000
 MAX_LLM_NOTE_CHARS = 320
 COMMENT_MARKER = "<!-- aiops-agent-review:v2 -->"
+_COMMENT_403_LOG_MESSAGE = "GitHub token cannot write PR comments; wrote review to step summary instead"
 
 _COMMAND_REVIEW = "/agent review"
 _COMMAND_REVIEW_LLM = "/agent review llm"
@@ -971,14 +972,49 @@ def _issue_comment_path(client: GitHubClient, issue_number: int) -> str:
     return f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
 
 
+def _step_summary_path() -> str | None:
+    path = os.getenv("GITHUB_STEP_SUMMARY", "").strip()
+    return path or None
+
+
+def _short_summary_for_log(body: str) -> str:
+    short = _redact_sensitive_text(body.replace("\n", " "))
+    return _truncate_text(short, 240)
+
+
+def _write_step_summary(body: str) -> bool:
+    path = _step_summary_path()
+    if not path:
+        return False
+    try:
+        summary_path = Path(path)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        with summary_path.open("a", encoding="utf-8") as handle:
+            handle.write(body.rstrip() + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def _log_comment_write_fallback(body: str, *, wrote_summary: bool) -> None:
+    print(_COMMENT_403_LOG_MESSAGE, file=sys.stderr)
+    if not wrote_summary:
+        print(f"Step summary unavailable; short review: {_short_summary_for_log(body)}", file=sys.stderr)
+
+
+def _handle_comment_write_403(body: str) -> bool:
+    wrote_summary = _write_step_summary(body)
+    _log_comment_write_fallback(body, wrote_summary=wrote_summary)
+    return True
+
+
 def _publish_comment(client: GitHubClient, path: str, body: str) -> bool:
     try:
         client.post_json(path, {"body": body})
         return True
     except GitHubAPIError as exc:
         if exc.code == 403:
-            print("GitHub token cannot write PR comments; check workflow permissions: issues: write", file=sys.stderr)
-            return False
+            return _handle_comment_write_403(body)
         raise
 
 
@@ -1013,8 +1049,7 @@ def _publish_review_comment(client: GitHubClient, pr_context: ReviewContext, bod
             return True
     except GitHubAPIError as exc:
         if exc.code == 403:
-            print("GitHub token cannot write PR comments; check workflow permissions: issues: write", file=sys.stderr)
-            return False
+            return _handle_comment_write_403(body)
         raise
     return _publish_comment(client, _issue_comment_path(client, pr_context.issue_number), body)
 

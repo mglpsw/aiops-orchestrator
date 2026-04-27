@@ -70,6 +70,7 @@ Se não houver P1/P2 determinísticos, o comentário fica curto e diz exatamente
 - O payload enviado ao router é sanitizado e truncado.
 - O review nunca envia `env`, logs completos, secrets ou arquivos inteiros grandes.
 - Se o router falhar, o workflow publica apenas o review determinístico e avisa que o LLM ficou indisponível.
+- Se o token do GitHub não puder criar ou atualizar comentários no PR, o review é escrito no `GITHUB_STEP_SUMMARY` do workflow em vez de falhar.
 
 ### Garantias
 
@@ -78,6 +79,10 @@ Se não houver P1/P2 determinísticos, o comentário fica curto e diz exatamente
 - O workflow não usa `docker exec`, SSH ou deploy.
 - O review final usa um marcador HTML estável para atualizar o comentário anterior e evitar spam.
 - O comentário final é curto, prioriza P1/P2 e limita achados a no máximo 5.
+
+### Permissões recomendadas
+
+O ideal continua sendo configurar `Settings -> Actions -> General -> Workflow permissions -> Read and write permissions` para que o bot consiga comentar no PR.
 
 ## Exemplo de saída boa
 
@@ -92,6 +97,7 @@ Se não houver P1/P2 determinísticos, o comentário fica curto e diz exatamente
 - Se houver `429`, o router está limitando a taxa e o fallback determinístico continua seguro.
 - Se houver timeout ou falha de DNS/TLS, o review determinístico segue normalmente.
 - Se o comentário anterior não atualizar, verifique se o bot tem permissão de `issues: write` e se o comentário contém o marcador HTML estável.
+- Se o bot não puder comentar no PR, procure o review completo no Step Summary da execução do workflow.
 
 ## Como testar depois do merge
 
