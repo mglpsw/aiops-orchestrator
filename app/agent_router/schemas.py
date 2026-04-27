@@ -79,3 +79,83 @@ class AIOpsDiagnoseResponse(BaseModel):
     findings: list[AIOpsFinding] = Field(default_factory=list)
     recommended_actions: list[AIOpsRecommendedAction] = Field(default_factory=list)
     dry_run: bool = True
+
+
+# ---------------------------------------------------------------------------
+# Action Catalog schemas
+# ---------------------------------------------------------------------------
+
+
+class CatalogActionEntry(BaseModel):
+    """API representation of one allowlisted action. Command is intentionally omitted."""
+
+    action_id: str
+    description: str
+    mode: str
+    risk: str
+    timeout_seconds: int
+    requires_approval: bool
+    tags: list[str] = Field(default_factory=list)
+
+
+class CatalogResponse(BaseModel):
+    version: str
+    count: int
+    actions: list[CatalogActionEntry]
+
+
+# ---------------------------------------------------------------------------
+# Action Planner schemas
+# ---------------------------------------------------------------------------
+
+_ALLOWED_RISKS = {"low", "medium", "high"}
+_ALLOWED_MODES = {"readonly", "readwrite"}
+
+
+class ActionPlanRequest(BaseModel):
+    """Request to build a safe, deterministic action plan from the catalog."""
+
+    target: str = "agent-router"
+    action_ids: list[str] = Field(default_factory=list)
+    context: str = ""
+    dry_run: bool = True
+
+    @model_validator(mode="after")
+    def validate_plan_request(self) -> "ActionPlanRequest":
+        if self.dry_run is not True:
+            raise ValueError("dry_run must be True in AIOps Action Planner v1")
+        return self
+
+
+class ActionPlanStep(BaseModel):
+    """A single planned step resolved from the action catalog."""
+
+    action_id: str
+    title: str
+    risk: str
+    mode: str
+    requires_approval: bool
+    reason: str
+    evidence_source: str | None = None
+    finding_id: str | None = None
+
+
+class ActionPlanBlockedStep(BaseModel):
+    """A step that could not be planned because it is unknown or policy-rejected."""
+
+    action_id: str
+    reason: str
+
+
+class ActionPlanResponse(BaseModel):
+    """Structured, dry-run-only plan produced by the Action Planner."""
+
+    plan_id: str
+    target: str
+    status: str  # ready | blocked | empty
+    risk: str
+    requires_approval: bool
+    steps: list[ActionPlanStep] = Field(default_factory=list)
+    blocked_steps: list[ActionPlanBlockedStep] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    dry_run: bool = True

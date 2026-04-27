@@ -139,26 +139,55 @@ POST /v1/aiops/diagnose
            → sem execução real
 ```
 
-## Fluxo de ação planejada (futuro — não ativo no v1)
+## Fluxo do Action Planner (v1 — ativo, dry-run only)
 
 ```text
-[Findings do Diagnostic Engine]
+POST /v1/aiops/actions/plan
     │
-    ├─ Action Planner
-    │      → Seleciona action_id do catálogo (config/actions.yaml)
-    │      → Nenhum comando livre permitido
+    ├─ 1. Autenticação (Bearer token)
     │
-    ├─ Policy Engine
-    │      → Avalia risco da ação
-    │      → Bloqueada? → rejeitar
+    ├─ 2. Validação de schema (ActionPlanRequest)
+    │      dry_run obrigatório = true
+    │      action_ids = lista explícita de IDs do catálogo
+    │
+    ├─ 3. Action Catalog (app/services/action_catalog.py)
+    │      → Carrega config/actions.yaml (fail-closed se ausente ou inválido)
+    │      → Busca cada action_id no índice
+    │      → Desconhecido? → blocked_steps
+    │
+    ├─ 4. Policy Gate (app/services/action_planner.py)
+    │      → mode != readonly? → blocked_steps
+    │      → risk != low?     → blocked_steps
+    │      → Nenhum comando livre, nenhum shell, nenhuma interpolação
+    │
+    └─ 5. Retorna ActionPlanResponse
+           → plan_id (UUID único por chamada)
+           → steps: action_id, title, risk, mode, requires_approval, reason
+           → blocked_steps: action_id + motivo
+           → dry_run: true (sempre)
+           → sem comando no output, sem execução real
+
+GET /v1/aiops/actions/catalog
+    │
+    └─ Retorna CatalogResponse
+           → action_id, description, mode, risk, timeout_seconds,
+             requires_approval, tags
+           → command NÃO é exposto na resposta
+```
+
+## Fluxo de execução (futuro — não ativo no v1)
+
+```text
+[ActionPlanResponse com status=ready]
     │
     ├─ Approval Gate (obrigatório)
-    │      → Human review sempre para ações do catálogo
-    │      → Sem auto-aprovação no v1+
+    │      → Human review explícita para cada step
+    │      → Sem auto-aprovação
     │
     └─ Agent Bridge (Local ou Remote)
-           → Executa somente ações allowlisted
+           → Executa somente action_ids allowlisted
            → Timeout, mascaramento de segredos, log de saída
+           → Não ativo até v2+
 ```
 
 ---

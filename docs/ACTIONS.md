@@ -166,3 +166,80 @@ O script verifica:
 
 **Não adicionar actions de escrita, restart, deploy ou remediação sem aprovação explícita
 do owner do repositório e atualização da fase (v1 → v2+).**
+
+---
+
+## Action Planner
+
+O Action Planner (`app/services/action_planner.py`) é a camada que mapeia `action_ids` explícitos
+para um plano estruturado e seguro, sem envolver LLM ou comando livre.
+
+### Endpoints
+
+| Método | Path | Descrição |
+| ------ | ---- | --------- |
+| `GET` | `/v1/aiops/actions/catalog` | Lista o catálogo allowlisted (sem expor comandos) |
+| `POST` | `/v1/aiops/actions/plan` | Gera um plano determinístico a partir de `action_ids` |
+
+Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
+
+### Contrato do planner
+
+**Request (`POST /v1/aiops/actions/plan`):**
+
+```json
+{
+  "target": "agent-router",
+  "action_ids": ["git_status", "curl_health_8000"],
+  "context": "Diagnóstico de readiness falhou",
+  "dry_run": true
+}
+```
+
+**Response:**
+
+```json
+{
+  "plan_id": "<uuid>",
+  "target": "agent-router",
+  "status": "ready",
+  "risk": "low",
+  "requires_approval": false,
+  "steps": [
+    {
+      "action_id": "git_status",
+      "title": "Exibe o estado atual da árvore de trabalho do repositório canônico",
+      "risk": "low",
+      "mode": "readonly",
+      "requires_approval": false,
+      "reason": "Selected from validated read-only action catalog",
+      "evidence_source": "Diagnóstico de readiness falhou",
+      "finding_id": null
+    }
+  ],
+  "blocked_steps": [],
+  "warnings": [],
+  "dry_run": true
+}
+```
+
+### Comportamento fail-closed
+
+| Situação | Resultado |
+| -------- | --------- |
+| `action_id` não existe no catálogo | `blocked_steps` |
+| `action_id` com `mode != readonly` | `blocked_steps` (policy gate) |
+| `action_id` com `risk != low` | `blocked_steps` (policy gate) |
+| `action_ids` vazio | `status: empty` |
+| Todos bloqueados | `status: blocked` |
+| Catálogo ausente ou inválido | HTTP 503 |
+| `dry_run: false` na request | HTTP 422 |
+
+### Garantias do planner
+
+- Nenhum `command` é incluído na resposta do plano
+- Nenhuma string livre é aceita como `action_id` — apenas IDs do catálogo
+- O plano não dispara execução real
+- `dry_run` é sempre `true` na resposta
+- `plan_id` é único por chamada (UUID v4)
+- O planner é determinístico e testável sem LLM

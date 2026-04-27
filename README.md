@@ -84,6 +84,15 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - Sem execução, remediação ou `command`
 - Checks suportados: `readiness`, `backend_up`, `error_rate`, `latency_p95`, `blocked_tasks`, `model_selection`, `ollama_models_count`
 
+### Action Catalog e Action Planner (v1)
+
+- `GET /v1/aiops/actions/catalog` — lista o catálogo de ações allowlisted (autenticado, sem expor comandos)
+- `POST /v1/aiops/actions/plan` — gera plano determinístico a partir de `action_ids` explícitos (autenticado, `dry_run` sempre `true`)
+- Somente `action_ids` presentes em `config/actions.yaml` são aceitos
+- Nenhum comando livre, shell, SSH ou remediação automática
+- `action_ids` desconhecidos vão para `blocked_steps` (fail-closed)
+- Ver `docs/ACTIONS.md` para schema, regras e processo de adição futura
+
 ---
 
 ## Tests

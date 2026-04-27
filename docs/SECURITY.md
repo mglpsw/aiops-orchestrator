@@ -41,6 +41,19 @@ Estas operações são **sempre bloqueadas**, independente do modo de política:
 - Escrita em `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`
 - `curl | bash`, `wget | sh` (execução remota de código)
 
+### Action Planner — garantias de segurança
+
+O Action Planner (`app/services/action_planner.py`) seleciona ações **somente** do catálogo
+allowlisted. É determinístico, sem LLM e sem comando livre:
+
+- Aceita apenas `action_ids` explícitos — nenhuma string livre é interpretada como comando
+- Cada `action_id` é verificado contra o índice em memória carregado de `config/actions.yaml`
+- `action_ids` desconhecidos vão para `blocked_steps` (fail-closed)
+- Aplica policy gate independente: `mode != readonly` ou `risk != low` → `blocked_steps`
+- Nenhum `command` aparece na resposta do plano
+- `dry_run: true` é invariante na resposta
+- Catálogo ausente ou inválido retorna HTTP 503 (fail-closed)
+
 ### Catálogo de actions (allowlist estrutural)
 
 O catálogo `config/actions.yaml` define ações explicitamente permitidas com metadados obrigatórios:
