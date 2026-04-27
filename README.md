@@ -1,8 +1,9 @@
 # AIOps Orchestrator
 
-Serviço de orquestração de automações de infraestrutura via LLM. Executa comandos
-em hosts (local, SSH, Docker) a partir de instruções em linguagem natural
-validadas contra policies YAML.
+Serviço de orquestração de automações de infraestrutura via LLM. O caminho canônico atual é
+diagnóstico, planejamento, dry-run, aprovação, execução read-only allowlisted e histórico
+auditável. Os adaptadores legados de shell/SSH/Docker continuam no repositório por compatibilidade
+histórica, mas não são o caminho oficial do runner novo.
 
 Integra-se com o [`agent-router-api`](https://github.com/mglpsw/agent-router-api)
 através da rota `@aiops` do router.
@@ -15,7 +16,7 @@ Repo canônico da CT 102: `/opt/aiops-orchestrator`.
 
 - **API REST FastAPI** na porta 8000
 - **Adaptadores LLM**: Ollama, Claude, OpenAI/Codex
-- **Adaptadores executor**: local shell, SSH, Docker
+- **Adaptadores executor legados**: local shell, SSH, Docker (quarentenados; não são o caminho oficial)
 - **Policy engine**: YAML-based rules (allow/deny por pattern)
 - **Provider registry**: abstração para múltiplos LLMs
 - **Autenticação por token** (`AGENT_ROUTER_API_TOKEN` ou `AIOPS_API_TOKEN`)
