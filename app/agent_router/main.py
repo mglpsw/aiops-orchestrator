@@ -18,6 +18,7 @@ from app.agent_router.schemas import (
     CatalogResponse,
 )
 from app.agent_router.services.aiops_diagnostic import diagnose_aiops
+from app.agent_router.services.action_mapper import map_findings_to_action_ids
 from app.agent_router.signals import collect_aiops_diagnostic_signals
 from app.models.database import get_db
 from app.services.action_catalog import ActionCatalog, CatalogLoadError, load_catalog
@@ -53,12 +54,38 @@ async def diagnose(
     request: AIOpsDiagnoseRequest,
     db: AsyncSession = Depends(get_db),
 ) -> AIOpsDiagnoseResponse:
-    """Diagnostic-only endpoint for AIOps state inspection."""
+    """Diagnostic-only endpoint for AIOps state inspection.
+
+    When problem findings are present, attaches an action_plan built from the
+    allowlisted catalog. The plan is always dry_run=True and never contains
+    commands. If the catalog is unavailable, action_plan is None (fail-soft).
+    """
     started_at = perf_counter()
     signals = await collect_aiops_diagnostic_signals(request, db)
     response = diagnose_aiops(request, signals)
     record_aiops_diagnose(response, perf_counter() - started_at)
-    return response
+
+    # --- Attach action plan (fail-soft: catalog failure does not break diagnose) ---
+    action_plan: ActionPlanResponse | None = None
+    if response.findings:
+        suggested_ids = map_findings_to_action_ids(response.findings, request.checks)
+        if suggested_ids:
+            try:
+                catalog = _get_catalog()
+                action_plan = plan_actions(
+                    ActionPlanRequest(
+                        target=request.target,
+                        action_ids=suggested_ids,
+                        context=f"diagnose status={response.status} severity={response.severity}",
+                        dry_run=True,
+                    ),
+                    catalog,
+                )
+            except CatalogLoadError:
+                # Catalog unavailable: return diagnose without a plan.
+                action_plan = None
+
+    return response.model_copy(update={"action_plan": action_plan})
 
 
 # ---------------------------------------------------------------------------

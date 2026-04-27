@@ -41,6 +41,25 @@ Estas operações são **sempre bloqueadas**, independente do modo de política:
 - Escrita em `/etc/passwd`, `/etc/shadow`, `/etc/sudoers`
 - `curl | bash`, `wget | sh` (execução remota de código)
 
+### `/v1/aiops/diagnose` — garantias de não-execução
+
+O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída são informativos:
+
+- `recommended_actions`: texto descritivo com `command: null` — nenhum comando executável
+- `action_plan`: plano estruturado com `action_ids` do catálogo allowlisted, sempre `dry_run: true`
+- Nenhum `command` aparece em qualquer campo da resposta
+- Falha no catálogo de actions retorna `action_plan: null` — diagnose segue com 200 (fail-soft)
+- Nenhum executor local, SSH ou Docker é chamado durante o diagnóstico
+
+### Action Mapper — garantias
+
+O mapeador (`app/agent_router/services/action_mapper.py`) converte findings em `action_ids`:
+
+- Tabela estática (`_CHECK_ACTION_MAP`) — sem LLM, sem texto livre, sem interpolação
+- Saída são apenas strings `action_id` — nenhum campo `command` ou shell string
+- Nomes de sinais / checks desconhecidos são ignorados silenciosamente
+- Deduplicação: mesmo `action_id` aparece no máximo uma vez na saída
+
 ### Action Planner — garantias de segurança
 
 O Action Planner (`app/services/action_planner.py`) seleciona ações **somente** do catálogo
@@ -52,7 +71,7 @@ allowlisted. É determinístico, sem LLM e sem comando livre:
 - Aplica policy gate independente: `mode != readonly` ou `risk != low` → `blocked_steps`
 - Nenhum `command` aparece na resposta do plano
 - `dry_run: true` é invariante na resposta
-- Catálogo ausente ou inválido retorna HTTP 503 (fail-closed)
+- Catálogo ausente ou inválido retorna HTTP 503 (fail-closed nos endpoints standalone)
 
 ### Catálogo de actions (allowlist estrutural)
 

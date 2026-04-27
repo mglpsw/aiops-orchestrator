@@ -131,12 +131,26 @@ POST /v1/aiops/diagnose
     │      → Calcula severity: ok | warning | critical | unknown
     │      → Gera findings e recommended_actions (texto, sem comando)
     │
-    ├─ 4. Audit Log
+    ├─ 4. Action Mapper (somente se há findings com problema)
+    │      → app/agent_router/services/action_mapper.py
+    │      → Mapeia signal names / check names → action_ids (tabela estática)
+    │      → Sem LLM, sem texto livre, sem interpolação
+    │      → action_ids gerais (git_status, git_log_recent) sempre adicionados
+    │
+    ├─ 5. Action Planner (fail-soft: catálogo ausente → action_plan = null)
+    │      → Verifica cada action_id contra config/actions.yaml
+    │      → Policy gate: mode=readonly, risk=low
+    │      → Desconhecido ou policy-rejected → blocked_steps
+    │      → Retorna ActionPlanResponse (dry_run=true, sem command)
+    │
+    ├─ 6. Audit Log
     │      → Registra diagnóstico e resultado
     │
-    └─ 5. Retorna AIOpsDiagnoseResponse
+    └─ 7. Retorna AIOpsDiagnoseResponse
            → dry_run: true (sempre)
+           → action_plan: ActionPlanResponse | null
            → sem execução real
+           → nenhum command exposto
 ```
 
 ## Fluxo do Action Planner (v1 — ativo, dry-run only)

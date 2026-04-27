@@ -83,6 +83,7 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - `dry_run` obrigatório e sempre `true`
 - Sem execução, remediação ou `command`
 - Checks suportados: `readiness`, `backend_up`, `error_rate`, `latency_p95`, `blocked_tasks`, `model_selection`, `ollama_models_count`
+- Campo `action_plan` (opcional): quando há findings com problema, o response inclui um `ActionPlanResponse` com `action_ids` sugeridos do catálogo allowlisted (`dry_run: true`, sem `command`). Retorna `null` quando status é `ok` ou o catálogo não está disponível.
 
 ### Action Catalog e Action Planner (v1)
 

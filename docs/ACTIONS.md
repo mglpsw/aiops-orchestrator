@@ -243,3 +243,83 @@ Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
 - `dry_run` é sempre `true` na resposta
 - `plan_id` é único por chamada (UUID v4)
 - O planner é determinístico e testável sem LLM
+
+---
+
+## Integração com Diagnose
+
+O endpoint `POST /v1/aiops/diagnose` passa a incluir um campo `action_plan` no response quando o
+diagnóstico detecta problemas (findings com status `critical`, `warning`, `degraded`, `not_ready`
+ou `down`).
+
+### Módulo de mapeamento
+
+`app/agent_router/services/action_mapper.py` é o único lugar que mapeia check names / signal names
+para `action_ids`. Sem LLM, sem texto livre, sem interpolação.
+
+**Tabela de mapeamento:**
+
+| Check / Signal | action_ids sugeridos |
+| -------------- | -------------------- |
+| `readiness` | `curl_health_8000`, `curl_ready_8000`, `systemctl_status_aiops` |
+| `backend_up` | `curl_health_8000`, `curl_ready_8000` |
+| `error_rate` | `journalctl_aiops_recent`, `prometheus_query` |
+| `latency_p95` | `prometheus_query`, `journalctl_aiops_recent` |
+| `blocked_tasks` | `journalctl_aiops_recent` |
+| `model_selection` | `journalctl_aiops_recent` |
+| `ollama_models_count` | `journalctl_aiops_recent` |
+| *(qualquer problema)* | + `git_status`, `git_log_recent` (gerais) |
+
+### Contrato do campo `action_plan` no diagnose response
+
+```json
+{
+  "status": "critical",
+  "severity": "high",
+  "summary": "...",
+  "signals": [...],
+  "findings": [...],
+  "recommended_actions": [...],
+  "dry_run": true,
+  "action_plan": {
+    "plan_id": "<uuid>",
+    "target": "agent-router",
+    "status": "ready",
+    "risk": "low",
+    "requires_approval": false,
+    "steps": [
+      {
+        "action_id": "curl_health_8000",
+        "title": "Verifica o endpoint /health da produção estável (porta 8000)",
+        "risk": "low",
+        "mode": "readonly",
+        "requires_approval": false,
+        "reason": "Selected from validated read-only action catalog",
+        "evidence_source": "diagnose status=critical severity=high",
+        "finding_id": null
+      }
+    ],
+    "blocked_steps": [],
+    "warnings": [],
+    "dry_run": true
+  }
+}
+```
+
+### Comportamento fail-soft
+
+| Situação | Resultado no diagnose |
+| -------- | --------------------- |
+| Nenhum finding com problema | `action_plan: null` |
+| Status `ok` | `action_plan: null` |
+| Catálogo ausente / inválido | `action_plan: null` (diagnose retorna 200) |
+| Finding sem signal em evidence | fallback para check names do request |
+| action_id mapeado não está no catálogo | vai para `blocked_steps` (planner fail-closed) |
+
+### Garantias da integração
+
+- `action_plan` nunca contém campo `command`
+- `action_plan.dry_run` é sempre `true`
+- Falha no catálogo não retorna HTTP 5xx ao cliente (fail-soft no diagnose)
+- Todos os campos originais do diagnose são preservados
+- O mapeamento é determinístico e não usa LLM

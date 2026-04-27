@@ -79,6 +79,9 @@ class AIOpsDiagnoseResponse(BaseModel):
     findings: list[AIOpsFinding] = Field(default_factory=list)
     recommended_actions: list[AIOpsRecommendedAction] = Field(default_factory=list)
     dry_run: bool = True
+    # Attached by the endpoint after the diagnostic pass; None when no problems found
+    # or when the catalog is unavailable (fail-soft). Never contains command fields.
+    action_plan: "ActionPlanResponse | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -159,3 +162,8 @@ class ActionPlanResponse(BaseModel):
     blocked_steps: list[ActionPlanBlockedStep] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     dry_run: bool = True
+
+
+# ActionPlanResponse is defined after AIOpsDiagnoseResponse in this file,
+# so rebuild is required to resolve the forward reference on action_plan.
+AIOpsDiagnoseResponse.model_rebuild()
