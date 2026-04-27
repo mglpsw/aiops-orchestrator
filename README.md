@@ -173,6 +173,10 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - Comentários em PR com `/agent review` ou `/agent review llm` acionam o workflow `agent-review`
 - Veja [`docs/GITHUB_AGENT.md`](docs/GITHUB_AGENT.md) para o contrato, autorização e modo LLM opcional
 
+### Project Status
+
+- Veja [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) para o checkpoint canônico atual e o roadmap imediato
+
 ---
 
 ## Tests
