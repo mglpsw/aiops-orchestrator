@@ -75,6 +75,10 @@ O router então encaminha `@aiops` para `http://aiops-orchestrator:8000`.
 
 Ver `docs/OPERATIONS.md` para detalhes.
 
+Os endpoints de chat também reconhecem intents AIOps em pt-BR, incluindo diagnóstico, status,
+runs e approvals, com resposta curta, segura e sem execução de actions. Veja
+[`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) para o fluxo OpenWebUI.
+
 ### Autenticação
 
 - Envie `Authorization: Bearer <token>` ou `X-Agent-Router-Token: <token>`.

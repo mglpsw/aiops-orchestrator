@@ -25,6 +25,7 @@ Esta é a fotografia canônica do projeto antes da próxima fase:
 - o health score passou a ser severity-aware e a aceitar baseline temporal simples via `metadata` quando há dados;
 - o GitHub Agent Review está disponível para revisão on-demand de PRs;
 - o Agent Router pode ser usado opcionalmente apenas como API de revisão LLM, nunca como executor.
+- o chat compatível com OpenWebUI detecta intents AIOps determinísticas e roteia para diagnóstico, runs, approvals e status sem executar actions;
 
 ## Arquitetura atual
 
@@ -221,11 +222,16 @@ docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.y
 
 ### Session 18
 
-- limpar documentação e consolidar o checkpoint final da fase
-- preparar a próxima fase com fronteiras explícitas de segurança
+- integrar o fluxo de chat/OpenWebUI ao AIOps determinístico
+- atualizar docs, release notes e checkpoint final da fase
+- preparar a próxima fase com fronteiras explícitas de segurança e foco em `agent-router-api`
 
 ## Resumo
 
 O projeto está em um estado canônico de diagnóstico + planejamento + execução read-only
 allowlisted, com auditoria, histórico e integração opcional com GitHub Agent Review.
 O que não fizer parte desse contrato permanece fora da fase atual.
+
+O checkpoint da Session 18 fecha a ponte de chat/OpenWebUI em modo seguro e read-only,
+com intents AIOps determinísticas, respostas curtas em pt-BR e fallback para o fluxo normal
+quando a mensagem não for um pedido operacional.
