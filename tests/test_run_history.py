@@ -129,6 +129,28 @@ def _fake_subprocess_run(argv, **kwargs):
             ),
             stderr="",
         )
+    if list(argv) == [
+        "journalctl",
+        "-u",
+        "aiops-orchestrator.service",
+        "--no-pager",
+        "--since",
+        "-15 minutes",
+        "-n",
+        "100",
+        "-o",
+        "short-iso",
+    ]:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "2026-04-27T03:00:00+00:00 aiops-orchestrator[1234]: Authorization: Bearer super-secret-token\n"
+                "2026-04-27T03:00:01+00:00 aiops-orchestrator[1234]: password=super-secret\n"
+                "2026-04-27T03:00:02+00:00 aiops-orchestrator[1234]: api_key=sk-test-key\n"
+                "2026-04-27T03:00:03+00:00 aiops-orchestrator[1234]: postgres://user:pass@db:5432/aiops\n"
+            ),
+            stderr="",
+        )
     return SimpleNamespace(returncode=1, stdout="", stderr="unexpected argv")
 
 
@@ -265,6 +287,25 @@ def test_run_history_includes_systemctl_status_runs(api_client: TestClient, monk
     assert "argv" not in json.dumps(detail_body)
     assert "super-secret-token" not in json.dumps(detail_body)
     assert "password" not in json.dumps(detail_body).lower()
+
+
+def test_run_history_includes_journalctl_runs(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = _create_approved_run(api_client, monkeypatch, action_id="journalctl_aiops_recent")
+
+    recent = api_client.get("/v1/aiops/runs/recent?limit=20", headers=_auth())
+    detail = api_client.get(f"/v1/aiops/runs/{run_id}", headers=_auth())
+
+    assert recent.status_code == 200
+    assert detail.status_code == 200
+    assert recent.json()["runs"][0]["run_id"] == run_id
+    assert detail.json()["results"][0]["action_id"] == "journalctl_aiops_recent"
+    detail_body = detail.json()
+    assert "command" not in json.dumps(detail_body)
+    assert "argv" not in json.dumps(detail_body)
+    assert "super-secret-token" not in json.dumps(detail_body)
+    assert "password" not in json.dumps(detail_body).lower()
+    assert "api_key" not in json.dumps(detail_body).lower()
+    assert "postgres://" not in json.dumps(detail_body).lower()
 
 
 def test_get_run_returns_detail_and_missing_returns_404(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

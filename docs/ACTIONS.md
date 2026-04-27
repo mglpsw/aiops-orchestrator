@@ -105,6 +105,15 @@ Consulta o estado read-only da unit systemd do aiops-orchestrator.
 - **Risk:** low | **Mode:** readonly | **Timeout:** 10s | **Approval:** false
 - **Execução:** função interna fixa; o catálogo não é fonte de comando executável.
 
+### journalctl_aiops_recent
+
+Exibe logs recentes e limitados da unit systemd do aiops-orchestrator.
+
+- **Comando interno fixo:** `journalctl -u aiops-orchestrator.service --no-pager --since -15 minutes -n 100 -o short-iso`
+- **Risk:** low | **Mode:** readonly | **Timeout:** 10s | **Approval:** false
+- **Execução:** função interna fixa; o catálogo não é fonte de comando executável.
+- **Redaction:** obrigatória, porque logs podem conter segredos, tokens e URLs sensíveis.
+
 ### curl_health_8000
 
 Verifica o endpoint `/health` da produção estável (porta 8000).
@@ -526,14 +535,15 @@ continua restrito a funções internas fixas, read-only e allowlisted.
 - `docker_compose_config`
 - `docker_compose_bluegreen_config`
 - `systemctl_status_aiops`
+- `journalctl_aiops_recent`
 
 ### O que ele faz
 
 - Exige `approval_id` aprovado e correspondente ao `target`
 - Rejeita `command` no payload com HTTP 422
 - Usa cliente HTTP Python interno para as ações `curl_*` e subprocess restrito para as
-  inspeções locais read-only fixas, sempre com timeout e output truncado
-- Redige tokens, segredos e cabeçalhos sensíveis do `output_preview`
+  inspeções locais read-only fixas e logs limitados, sempre com timeout e output truncado
+- Redige tokens, segredos, URLs e cabeçalhos sensíveis do `output_preview`
 - Persiste metadados do run em JSONL local
 - Registra eventos auditáveis antes e depois da execução
 
@@ -541,7 +551,7 @@ continua restrito a funções internas fixas, read-only e allowlisted.
 
 - Não executa comando livre
 - Não lê `command` do catálogo como comando executável
-- Não usa `subprocess` livre, `shell=True`, SSH, `docker exec`, `git push/pull`, `docker compose up/down`, `systemctl restart`, `systemctl start`, `systemctl stop`, `systemctl reload`, `systemctl enable` ou `systemctl disable`
+- Não usa `subprocess` livre, `shell=True`, SSH, `docker exec`, `git push/pull`, `docker compose up/down`, `systemctl restart`, `systemctl start`, `systemctl stop`, `systemctl reload`, `systemctl enable`, `systemctl disable`, `daemon-reload` ou `journalctl -f`
 - Não implementa `GitHub Bridge`, `Claude Bridge` ou `Codex Bridge`
 
 ### Request

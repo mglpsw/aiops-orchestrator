@@ -35,6 +35,8 @@ The following adapters exist in `app/adapters/`:
   strings.
 - The current `systemctl_status_aiops` action is also handled by the official runner and does not
   depend on these legacy adapters.
+- The current `journalctl_aiops_recent` action is also handled by the official runner and does not
+  depend on these legacy adapters.
 
 ### Future reintroduction
 

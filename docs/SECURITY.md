@@ -79,9 +79,10 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - O endpoint executa apenas funções internas fixas e allowlisted
 - Nesta v1, health/ready de `8000` e `8001` e as inspeções locais read-only fixas
   (`git_status`, `git_diff_stat`, `docker_compose_config`, `docker_compose_bluegreen_config`,
-  `systemctl_status_aiops`) são executáveis
+  `systemctl_status_aiops`, `journalctl_aiops_recent`) são executáveis
 - Nesta sessão, `git_status`, `git_diff_stat`, `docker_compose_config`,
-  `docker_compose_bluegreen_config` e `systemctl_status_aiops` também entram como funções internas fixas
+  `docker_compose_bluegreen_config`, `systemctl_status_aiops` e `journalctl_aiops_recent`
+  também entram como funções internas fixas
 - `command` no request é rejeitado e nunca é interpretado
 - Nenhum `command` do catálogo é executado diretamente
 - O único `subprocess` permitido fica encapsulado no runner e usa `shell=False`, `argv` fixo,
@@ -91,11 +92,14 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - Falhas de auditoria continuam fail-closed quando o audit log é obrigatório
 - Saída é truncada e segredos são redigidos antes da persistência
 - O repositório usado por `git_status`, `git_diff_stat`, `docker_compose_config`,
-  `docker_compose_bluegreen_config` e `systemctl_status_aiops` vem somente de
+  `docker_compose_bluegreen_config`, `systemctl_status_aiops` e `journalctl_aiops_recent` vem somente de
   `AIOPS_ACTION_REPO_ROOT` (ou default seguro), nunca do request
 - `systemctl_status_aiops` usa somente `systemctl show` read-only com o service name fixo
-  `aiops-orchestrator.service`; `restart`, `reload`, `start`, `stop`, `enable`, `disable`,
-  `daemon-reload` e `journalctl` não fazem parte desta sessão
+  `aiops-orchestrator.service`; `restart`, `reload`, `start`, `stop`, `enable`, `disable`
+  e `daemon-reload` não fazem parte desta sessão
+- `journalctl_aiops_recent` usa somente `journalctl -u aiops-orchestrator.service --no-pager --since -15 minutes -n 100 -o short-iso`
+  com janela fixa, limite fixo e redaction forte; `journalctl` livre, `journalctl -f` e `--follow`
+  são bloqueados
 
 ### Legacy adapters
 
@@ -132,6 +136,15 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - `AIOPS_AUDIT_LOG_MAX_BYTES` e `AIOPS_AUDIT_LOG_BACKUP_COUNT` controlam retenção e quantidade de backups
 - Nenhum payload bruto completo, cabeçalho de autenticação, segredo ou `command` é persistido
 - `GET /v1/aiops/audit/recent` expõe apenas eventos recentes e continua autenticado
+
+### Logs read-only bounded
+
+- `journalctl_aiops_recent` lê somente logs recentes e limitados da unit fixa
+  `aiops-orchestrator.service`
+- A janela é fixa em 15 minutos e o limite é fixo em 100 linhas
+- `--no-pager` é obrigatório e `follow` não faz parte do caminho permitido
+- Logs podem conter segredos, então o preview e o histórico passam por redaction forte
+- Nenhuma ação de restart/start/stop/reload/enable/disable/daemon-reload é acionada
 
 ### Run Store
 

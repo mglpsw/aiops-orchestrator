@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.main import create_app
+from app.agent_router.services.action_runner import redact_sensitive_text
 
 
 @pytest.fixture()
@@ -170,6 +171,29 @@ def _fake_subprocess_run_factory(calls: list[dict[str, object]]):
                 ),
                 stderr="",
             )
+        if list(argv) == [
+            "journalctl",
+            "-u",
+            "aiops-orchestrator.service",
+            "--no-pager",
+            "--since",
+            "-15 minutes",
+            "-n",
+            "100",
+            "-o",
+            "short-iso",
+        ]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "2026-04-27T03:00:00+00:00 aiops-orchestrator[1234]: Authorization: Bearer super-secret-token\n"
+                    "2026-04-27T03:00:01+00:00 aiops-orchestrator[1234]: password=super-secret\n"
+                    "2026-04-27T03:00:02+00:00 aiops-orchestrator[1234]: api_key=sk-test-key\n"
+                    "2026-04-27T03:00:03+00:00 aiops-orchestrator[1234]: postgres://user:pass@db:5432/aiops\n"
+                    + ("j" * 8000)
+                ),
+                stderr="",
+            )
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected argv")
 
     return _fake_run
@@ -323,7 +347,7 @@ def test_run_blocks_unknown_and_non_executable_actions(api_client: TestClient) -
         json={
             "target": "agent-router",
             "approval_id": approval_id,
-            "action_ids": ["journalctl_aiops_recent"],
+            "action_ids": ["prometheus_query"],
         },
     )
 
@@ -332,7 +356,7 @@ def test_run_blocks_unknown_and_non_executable_actions(api_client: TestClient) -
     assert unknown.json()["blocked_steps"][0]["action_id"] == "does_not_exist"
     assert non_executable.status_code == 200
     assert non_executable.json()["status"] == "blocked"
-    assert non_executable.json()["blocked_steps"][0]["action_id"] == "journalctl_aiops_recent"
+    assert non_executable.json()["blocked_steps"][0]["action_id"] == "prometheus_query"
 
 
 def test_run_executes_systemctl_status_aiops_with_fixed_process(
@@ -384,6 +408,105 @@ def test_run_executes_systemctl_status_aiops_with_fixed_process(
     assert "AGENT_ROUTER_API_TOKEN" not in env
     assert "OPENAI_API_KEY" not in env
     assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_run_executes_journalctl_aiops_recent_with_fixed_process(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_id = _create_approved_approval(api_client)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.agent_router.services.action_runner.subprocess.run",
+        _fake_subprocess_run_factory(calls),
+        raising=True,
+    )
+    monkeypatch.setenv("PATH", "/tmp/malicious")
+    get_settings.cache_clear()
+
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["journalctl_aiops_recent"],
+            "reason": "Inspect recent logs",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["results"][0]["action_id"] == "journalctl_aiops_recent"
+    assert body["results"][0]["truncated"] is True
+    preview = body["results"][0]["output_preview"]
+    assert "super-secret-token" not in preview
+    assert "super-secret" not in preview
+    assert "[REDACTED]" in preview
+    assert len(calls) == 1
+    assert calls[0]["argv"] == [
+        "journalctl",
+        "-u",
+        "aiops-orchestrator.service",
+        "--no-pager",
+        "--since",
+        "-15 minutes",
+        "-n",
+        "100",
+        "-o",
+        "short-iso",
+    ]
+    assert calls[0]["shell"] is False
+    assert calls[0]["timeout"] == 5
+    assert calls[0]["cwd"] == str(Path("/opt/aiops-orchestrator").resolve())
+    env = calls[0]["env"]
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["HOME"] == str(Path("/opt/aiops-orchestrator").resolve())
+    assert "AGENT_ROUTER_API_TOKEN" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+
+
+def test_run_marks_journalctl_failure_as_failed(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approval_id = _create_approved_approval(api_client)
+
+    def failing_run(argv, **kwargs):
+        assert list(argv) == [
+            "journalctl",
+            "-u",
+            "aiops-orchestrator.service",
+            "--no-pager",
+            "--since",
+            "-15 minutes",
+            "-n",
+            "100",
+            "-o",
+            "short-iso",
+        ]
+        return SimpleNamespace(returncode=3, stdout="", stderr="journalctl failed")
+
+    monkeypatch.setattr("app.agent_router.services.action_runner.subprocess.run", failing_run, raising=True)
+    get_settings.cache_clear()
+
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["journalctl_aiops_recent"],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "failed"
+    assert body["results"][0]["status"] == "failed"
+    assert body["results"][0]["exit_code"] == 3
 
 
 def test_run_executes_git_status_and_docker_compose_config_with_fixed_process(
@@ -616,6 +739,38 @@ def test_run_catalog_unavailable_returns_503(api_client: TestClient, monkeypatch
         },
     )
     assert response.status_code == 503
+
+
+def test_redact_sensitive_text_covers_common_secrets() -> None:
+    text = (
+        "Authorization: Bearer abcdef123456\n"
+        "token=abc\n"
+        "secret=def\n"
+        "password=ghi\n"
+        "passwd=jkl\n"
+        "pwd=mno\n"
+        "private_key=pqr\n"
+        "access_key=stu\n"
+        "refresh_token=vwz\n"
+        "session=xyz\n"
+        "cookie=crumb\n"
+        "set-cookie=crumb2\n"
+        "x-api-key=key123\n"
+        "client_secret=ccc\n"
+        "database_url=postgres://user:pass@db:5432/app\n"
+        "postgres://user:pass@db:5432/app\n"
+        "mysql://user:pass@db:3306/app\n"
+        "redis://user:pass@db:6379/0\n"
+        "sk-test-secret\n"
+    )
+    redacted = redact_sensitive_text(text)
+    assert "abcdef123456" not in redacted
+    assert "abc" not in redacted
+    assert "postgres://" not in redacted.lower()
+    assert "mysql://" not in redacted.lower()
+    assert "redis://" not in redacted.lower()
+    assert "sk-test-secret" not in redacted
+    assert "[REDACTED]" in redacted
 
 
 def test_run_store_persists_metadata(api_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

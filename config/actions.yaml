@@ -102,8 +102,8 @@ catalog:
     tags: [http, diagnostic, next]
 
   - action_id: journalctl_aiops_recent
-    description: "Exibe as últimas 50 linhas do journal do aiops-orchestrator"
-    command: "journalctl -u aiops-orchestrator -n 50 --no-pager"
+    description: "Exibe logs recentes e limitados do aiops-orchestrator"
+    command: "journalctl -u aiops-orchestrator.service --no-pager --since -15 minutes -n 100 -o short-iso"
     mode: readonly
     risk: low
     timeout_seconds: 10

@@ -33,6 +33,7 @@ _PROCESS_ACTIONS = frozenset(
         "git_diff_stat",
         "docker_compose_bluegreen_config",
         "systemctl_status_aiops",
+        "journalctl_aiops_recent",
     }
 )
 _FIXED_PATH = "/usr/bin:/bin"
@@ -41,11 +42,13 @@ _SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)authorization\s*:\s*bearer\s+[^\s\"']+"), "[REDACTED]"),
     (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-+/=]+"), "[REDACTED]"),
     (re.compile(r"(?i)\bsk-[A-Za-z0-9-]{8,}\b"), "[REDACTED]"),
+    (re.compile(r"(?i)\bx-api-key\s*[:=]\s*([^\s,;]+)"), "[REDACTED]"),
     (
         re.compile(r'(?i)"(?:authorization|api[_-]?key|token|secret|password)"\s*:\s*"[^"]*"'),
         '"[REDACTED]":"[REDACTED]"',
     ),
-    (re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password)\b\s*[:=]\s*([^\s,;]+)"), "[REDACTED]"),
+    (re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password|passwd|pwd|private_key|access_key|refresh_token|session|cookie|set-cookie|client_secret|database_url)\b\s*[:=]\s*([^\s,;]+)"), "[REDACTED]"),
+    (re.compile(r"(?i)\b(?:postgres|mysql|redis)://[^\s\"']+"), "[REDACTED]"),
 )
 
 
@@ -309,6 +312,29 @@ async def run_systemctl_status_aiops() -> ActionExecutionResult:
     )
 
 
+async def run_journalctl_aiops_recent() -> ActionExecutionResult:
+    repo_root = resolve_action_repo_root()
+    settings = get_settings()
+    return await asyncio.to_thread(
+        _run_fixed_process,
+        action_id="journalctl_aiops_recent",
+        argv=[
+            "journalctl",
+            "-u",
+            "aiops-orchestrator.service",
+            "--no-pager",
+            "--since",
+            "-15 minutes",
+            "-n",
+            "100",
+            "-o",
+            "short-iso",
+        ],
+        cwd=repo_root,
+        timeout_seconds=settings.run_timeout_seconds,
+    )
+
+
 _RUNNERS = {
     "curl_health_8000": run_curl_health_8000,
     "curl_ready_8000": run_curl_ready_8000,
@@ -319,6 +345,7 @@ _RUNNERS = {
     "git_diff_stat": run_git_diff_stat,
     "docker_compose_bluegreen_config": run_docker_compose_bluegreen_config,
     "systemctl_status_aiops": run_systemctl_status_aiops,
+    "journalctl_aiops_recent": run_journalctl_aiops_recent,
 }
 
 
