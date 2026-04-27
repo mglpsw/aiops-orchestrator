@@ -29,6 +29,8 @@ from app.agent_router.schemas import (
     ActionDryRunResponse,
     ActionPlanRequest,
     ActionPlanResponse,
+    RunDetailResponse,
+    RunRecentResponse,
     CatalogActionEntry,
     CatalogResponse,
 )
@@ -52,7 +54,7 @@ from app.agent_router.services.approval_store import (
 )
 from app.agent_router.services.action_dry_run import simulate_action_dry_run
 from app.agent_router.services.action_runner import allowed_action_ids, execute_action
-from app.agent_router.services.run_store import write_run_record
+from app.agent_router.services.run_store import get_run, list_recent_runs, write_run_record
 from app.core.config import get_settings
 from app.agent_router.services.action_mapper import map_findings_to_action_ids
 from app.agent_router.signals import collect_aiops_diagnostic_signals
@@ -724,6 +726,28 @@ async def run_actions(request: ActionRunRequest) -> ActionRunResponse:
             }
         )
 
+    return response
+
+
+@router.get("/v1/aiops/runs/recent", response_model=RunRecentResponse)
+async def recent_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    target: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+) -> RunRecentResponse:
+    response, warnings = list_recent_runs(limit=limit, target=target, status=status)
+    if warnings:
+        return response.model_copy(update={"warnings": warnings})
+    return response
+
+
+@router.get("/v1/aiops/runs/{run_id}", response_model=RunDetailResponse)
+async def get_run_by_id(run_id: str) -> RunDetailResponse:
+    response, warnings = get_run(run_id)
+    if response is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if warnings:
+        response = response.model_copy(update={"warnings": warnings})
     return response
 
 

@@ -633,3 +633,75 @@ para `action_ids`. Sem LLM, sem texto livre, sem interpolação.
 - Todos os campos originais do diagnose são preservados
 - O mapeamento é determinístico e não usa LLM
 - `recommended_action_ids` não executam nada; apenas alimentam o planner
+
+## Run history
+
+O histórico de runs permite consultar o que já foi executado pelo runner read-only sem oferecer
+nenhuma capacidade de reexecução.
+
+### Endpoints
+
+| Método | Path | Descrição |
+| ------ | ---- | --------- |
+| `GET` | `/v1/aiops/runs/recent` | Lista runs persistidos com filtros seguros |
+| `GET` | `/v1/aiops/runs/{run_id}` | Consulta o detalhe de um run persistido |
+
+### `run_store` x `audit_log`
+
+- `run_store` guarda a evidência operacional do run: `requested_action_ids`, resultados, bloqueios e warnings
+- `audit_log` guarda o trilho de auditoria: evento, actor, target, approval, status e contadores
+- `run_store` é para consulta operacional
+- `audit_log` é para trilha auditável e retenção de eventos
+
+### Consulta segura
+
+- Ambos os endpoints exigem Bearer auth
+- Nenhum `command` é exposto
+- Nenhum token, password, API key ou secret é exposto
+- JSONL inválido é ignorado com warning seguro
+- `limit` em `/v1/aiops/runs/recent` é limitado a `100`
+- Filtros seguros: `target` e `status`
+- `AIOPS_RUN_STORE_MAX_RECORDS` controla retenção simples do JSONL de runs
+
+### Response de `recent`
+
+Campos principais:
+
+- `runs`
+- `count`
+- `warnings`
+
+Cada item de `runs` inclui:
+
+- `run_id`
+- `target`
+- `approval_id`
+- `status`
+- `started_at`
+- `finished_at`
+- `requested_action_ids`
+- `result_count`
+- `blocked_count`
+- `warning_count`
+
+### Response de `run_id`
+
+Campos principais:
+
+- `run_id`
+- `target`
+- `approval_id`
+- `status`
+- `started_at`
+- `finished_at`
+- `requested_action_ids`
+- `results`
+- `blocked_steps`
+- `warnings`
+
+### Garantias
+
+- O histórico é somente leitura
+- O histórico não permite reexecução
+- O histórico não amplia o conjunto de actions executáveis
+- O histórico será a base para bridges futuras, mas nenhuma bridge faz parte desta sessão

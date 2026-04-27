@@ -22,11 +22,11 @@ _ACTION_ENDPOINTS: dict[str, str] = {
 }
 
 _SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s\"']+"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-+/=]+"), r"\1[REDACTED]"),
-    (re.compile(r"(?i)(sk-[A-Za-z0-9-]{8,})"), "[REDACTED]"),
-    (re.compile(r'(?i)("(?:api[_-]?key|token|secret|password)"\s*:\s*")([^"]+)("?)'), r"\1[REDACTED]\3"),
-    (re.compile(r"(?i)\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*([^\s,;]+)"), r"\1=[REDACTED]"),
+    (re.compile(r"(?i)authorization\s*:\s*bearer\s+[^\s\"']+"), "[REDACTED]"),
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-+/=]+"), "[REDACTED]"),
+    (re.compile(r"(?i)\bsk-[A-Za-z0-9-]{8,}\b"), "[REDACTED]"),
+    (re.compile(r'(?i)"(?:authorization|api[_-]?key|token|secret|password)"\s*:\s*"[^"]*"'), '"[REDACTED]":"[REDACTED]"'),
+    (re.compile(r"(?i)\b(?:api[_-]?key|token|secret|password)\b\s*[:=]\s*([^\s,;]+)"), "[REDACTED]"),
 )
 
 
@@ -53,6 +53,9 @@ def _redact_sensitive_text(text: str) -> str:
     for pattern, replacement in _SENSITIVE_PATTERNS:
         redacted = pattern.sub(replacement, redacted)
     return redacted
+
+
+redact_sensitive_text = _redact_sensitive_text
 
 
 def _truncate_text(text: str, max_bytes: int) -> tuple[str, bool]:
@@ -124,4 +127,3 @@ async def execute_action(action_id: str) -> ActionExecutionResult:
     if runner is None:
         raise ActionRunError(f"action_id '{action_id}' is not executable in run v1")
     return await runner()
-

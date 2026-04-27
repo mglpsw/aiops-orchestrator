@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     run_store_path: str = "var/runs/aiops_runs.jsonl"
     run_timeout_seconds: int = 5
     run_output_max_bytes: int = 4000
+    run_store_max_records: int = 1000
 
     # --- WebAI ---
     webai_base_url: str = "http://open-webui:8080"

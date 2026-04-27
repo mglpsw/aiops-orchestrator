@@ -85,6 +85,15 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - Falhas de auditoria continuam fail-closed quando o audit log é obrigatório
 - Saída é truncada e segredos são redigidos antes da persistência
 
+### `/v1/aiops/runs/recent` e `/v1/aiops/runs/{run_id}` — garantias de histórico
+
+- Os endpoints são somente leitura
+- O histórico não permite reexecução
+- O histórico não amplia o conjunto de actions executáveis
+- Nenhum `command`, token, password, API key ou secret é exposto
+- JSONL inválido é ignorado com warning seguro ou tratado de forma fail-closed sem vazar conteúdo
+- O histórico é a base para bridges futuras, mas nenhuma bridge é ativada nesta fase
+
 ### Approval Model
 
 - Aprovações persistem apenas metadados seguros de `plan_id` ou `dry_run_id`
@@ -103,6 +112,14 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - `AIOPS_AUDIT_LOG_MAX_BYTES` e `AIOPS_AUDIT_LOG_BACKUP_COUNT` controlam retenção e quantidade de backups
 - Nenhum payload bruto completo, cabeçalho de autenticação, segredo ou `command` é persistido
 - `GET /v1/aiops/audit/recent` expõe apenas eventos recentes e continua autenticado
+
+### Run Store
+
+- O run store guarda apenas metadados operacionais seguros dos runs read-only
+- O caminho padrão é `var/runs/aiops_runs.jsonl`
+- `GET /v1/aiops/runs/recent` e `GET /v1/aiops/runs/{run_id}` são leitura somente
+- O store não expõe `command`, segredos ou cabeçalhos de autenticação
+- O histórico não executa ações e não permite reexecução
 
 ### Action Mapper — garantias
 

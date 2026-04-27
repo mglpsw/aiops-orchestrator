@@ -23,6 +23,7 @@ allowlisted, com aprovação humana obrigatória para ações de escrita).
 │  │  POST /v1/aiops/diagnose  (autenticado, dry-run only)        │   │
 │  │  POST /v1/aiops/actions/approvals (persistência)             │   │
 │  │  GET/POST /v1/aiops/actions/approvals/...                    │   │
+│  │  GET  /v1/aiops/runs/recent   GET /v1/aiops/runs/{run_id}    │   │
 │  └──────────────────────────┬───────────────────────────────────┘   │
 │                             │                                       │
 │           ┌─────────────────┼─────────────────┐                    │
@@ -146,6 +147,15 @@ Executa apenas funções internas fixas, read-only e allowlisted, após approval
 - **Garantia:** não usa `command` do catálogo como comando executável
 - **Escopo v1:** apenas health/ready de `8000` e `8001`
 
+### Componente: Run History
+
+Consulta leituras seguras dos runs persistidos sem permitir reexecução.
+
+- **Implementado:** `app/agent_router/services/run_store.py`
+- **Endpoints associados:** `GET /v1/aiops/runs/recent`, `GET /v1/aiops/runs/{run_id}`
+- **Garantia:** somente leitura; não amplia o conjunto de actions executáveis
+- **Uso futuro:** base para bridges futuras, mas não inclui bridges nesta sessão
+
 ---
 
 ## Fluxo de diagnóstico (v1 — caminho produtivo)
@@ -195,11 +205,15 @@ POST /v1/aiops/diagnose
     │      → Sem shell, sem subprocess, sem SSH, sem docker exec
     │      → Persiste metadados e registra auditoria
     │
-    ├─ 9. Audit Log
+    ├─ 9. Run History
+    │      → Consulta seguro dos runs persistidos
+    │      → Sem reexecução, sem mutation, sem bridge
+    │
+    ├─ 10. Audit Log
     │      → Registra eventos estruturados de plan/dry-run
     │      → GET /v1/aiops/audit/recent retorna eventos recentes
     │
-    └─ 10. Retorna AIOpsDiagnoseResponse
+    └─ 11. Retorna AIOpsDiagnoseResponse
            → dry_run: true (sempre)
            → action_plan: ActionPlanResponse | null
            → sem execução real
@@ -290,6 +304,19 @@ POST /v1/aiops/actions/dry-run
            → GitHub Bridge, Claude/Codex Bridge, Remote Bridge
            → Não fazem parte do runner v1
            → Ativação apenas em fases posteriores
+```
+
+## Fluxo de run history
+
+```text
+GET /v1/aiops/runs/recent
+GET /v1/aiops/runs/{run_id}
+    │
+    ├─ Leitura somente do run_store JSONL
+    ├─ Filtros seguros: limit, target, status
+    ├─ Ignora linhas inválidas com warning seguro
+    ├─ Não permite reexecução
+    └─ Serve como base para bridges futuras, sem ativá-las
 ```
 
 ---

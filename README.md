@@ -134,6 +134,10 @@ Ver `docs/OPERATIONS.md` para detalhes.
   - `AIOPS_RUN_STORE_PATH`
   - `AIOPS_RUN_TIMEOUT_SECONDS`
   - `AIOPS_RUN_OUTPUT_MAX_BYTES`
+  - `AIOPS_RUN_STORE_MAX_RECORDS`
+- Histórico:
+  - `GET /v1/aiops/runs/recent`
+  - `GET /v1/aiops/runs/{run_id}`
 - Executa apenas funções internas fixas read-only e allowlisted
 - Nesta fase, o subconjunto executável é limitado a health/ready de `8000` e `8001`
 - Não aceita `command` no request e não expõe `command` na resposta

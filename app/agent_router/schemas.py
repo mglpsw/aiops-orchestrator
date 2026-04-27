@@ -258,6 +258,38 @@ class ActionRunResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class RunSummary(BaseModel):
+    run_id: str
+    target: str
+    approval_id: str
+    status: Literal["ok", "partial", "failed", "blocked"]
+    started_at: str
+    finished_at: str
+    requested_action_ids: list[str] = Field(default_factory=list)
+    result_count: int = 0
+    blocked_count: int = 0
+    warning_count: int = 0
+
+
+class RunDetailResponse(BaseModel):
+    run_id: str
+    target: str
+    approval_id: str
+    status: Literal["ok", "partial", "failed", "blocked"]
+    started_at: str
+    finished_at: str
+    requested_action_ids: list[str] = Field(default_factory=list)
+    results: list[ActionRunResult] = Field(default_factory=list)
+    blocked_steps: list[ActionPlanBlockedStep] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class RunRecentResponse(BaseModel):
+    runs: list[RunSummary] = Field(default_factory=list)
+    count: int = 0
+    warnings: list[str] = Field(default_factory=list)
+
+
 class AuditEvent(BaseModel):
     event_id: str
     timestamp: str
