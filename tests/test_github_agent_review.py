@@ -439,22 +439,59 @@ def test_placeholder_tokens_and_examples_do_not_trigger_p1() -> None:
     findings = review.build_deterministic_findings(
         [
             review.FileChange(
-                path="docs/GITHUB_AGENT.md",
+                path="tests/test_aiops_chat_router.py",
                 status="modified",
                 additions=1,
                 deletions=1,
                 patch=(
+                    '+ monkeypatch.setenv("AGENT_ROUTER_API_TOKEN", "test-token")\n'
+                    '+ JSON = {"token":"test-token"}\n'
+                    '+ JSON_REDACTED = {"token":"[REDACTED]"}\n'
                     '+ API_KEY="<token>"\n'
                     '+ TOKEN=REDACTED\n'
                     '+ secret=dummy\n'
                     '+ password=fake\n'
-                    '+ client_secret=example'
+                    '+ client_secret=example\n'
+                    '+ session_id=fake-token\n'
+                    '+ local_flag=local-only'
                 ),
             )
         ],
         [],
     )
     assert all(finding.severity != "P1" for finding in findings)
+
+
+def test_placeholder_based_llm_findings_do_not_promote_status() -> None:
+    llm_findings = [
+        review.Finding(
+            severity="P1",
+            file="tests/test_aiops_chat_router.py",
+            evidence='JSON {"token":"test-token"}',
+            risk="placeholder de teste",
+            recommendation="ignorar",
+            rule_id="llm::P1::placeholder",
+        )
+    ]
+    pr_context = review.ReviewContext(
+        owner="mglpsw",
+        repo="aiops-orchestrator",
+        issue_number=42,
+        author="alice",
+        association="MEMBER",
+        pr_number=42,
+        title="Minor change",
+        body="small tweak",
+        base_ref="master",
+        head_ref="feat",
+        head_sha="abc123",
+        html_url="https://github.com/mglpsw/aiops-orchestrator/pull/42",
+        files=[review.FileChange(path="tests/test_aiops_chat_router.py", status="modified", additions=1, deletions=1, patch='+ monkeypatch.setenv("AGENT_ROUTER_API_TOKEN", "test-token")')],
+    )
+    assert review.review_status([], llm_findings=llm_findings) == "approved"
+    markdown = review.render_review([], [], pr_context, llm_mode=True, llm_findings=llm_findings)
+    assert "changes_requested" not in markdown
+    assert "placeholder" not in markdown.lower()
 
 
 def test_env_lookup_assignment_does_not_trigger_p1() -> None:
@@ -748,6 +785,9 @@ def test_ask_command_calls_router_with_sanitized_payload_and_pt_br_response(monk
     assert "falso positivo" in comments[0]
     assert "secret-token" not in comments[0]
     assert "router-secret" not in comments[0]
+    assert comments[0].startswith("Resposta para @alice sobre `/agent ask`.")
+    assert "Pergunta: explique esse achado" in comments[0]
+    assert "Comentário separado da revisão principal." in comments[0]
     assert router_payloads
     router_call = router_payloads[0]["payload"]
     user_content = router_call["messages"][1]["content"]
@@ -758,6 +798,40 @@ def test_ask_command_calls_router_with_sanitized_payload_and_pt_br_response(monk
     assert "Achados determinísticos recentes:" in user_content
     assert "ghp_abcdefghijklmnopqrstuvwxyz1234" not in user_content
     assert "pt-BR" in json.dumps(router_call)
+
+
+def test_ask_command_writes_separate_comment_without_upserting_review(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payload = _event_payload(pull_request=True, body="/agent ask explique esse achado", association="MEMBER", login="alice")
+    comments: list[str] = []
+    patches: list[str] = []
+    router_payloads: list[dict[str, object]] = []
+    fake_urlopen, comments, patches, router_payloads = _make_fake_urlopen(
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
+        existing_comments=[{"id": 55, "body": f"{review.COMMENT_MARKER}\n# Revisão do Agent\ncomentário anterior"}],
+        router_response={"choices": [{"message": {"content": "Resposta contextual para a pergunta."}}]},
+        captured_comments=comments,
+        captured_patches=patches,
+        captured_router_payloads=router_payloads,
+    )
+    monkeypatch.setattr(review.urllib.request, "urlopen", fake_urlopen)
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "mglpsw/aiops-orchestrator")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+    monkeypatch.setenv("AGENT_ALLOWED_USERS", "alice")
+    monkeypatch.setenv("AGENT_REVIEW_LLM_ENABLED", "true")
+    monkeypatch.setenv("AGENT_ROUTER_API_KEY", "router-secret")
+    monkeypatch.setenv("AGENT_ROUTER_MODEL", "gpt-review")
+    assert review.main() == 0
+    assert len(comments) == 1
+    assert not patches
+    assert comments[0].startswith("Resposta para @alice sobre `/agent ask`.")
+    assert "comentário anterior" not in comments[0]
+    assert "Resposta contextual para a pergunta." in comments[0]
 
 
 def test_ask_command_on_issue_does_not_execute(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1012,6 +1086,34 @@ def test_ask_router_response_is_redacted_and_truncated(monkeypatch: pytest.Monke
     assert "valor_longo_suficiente" not in comments[0]
     assert "sk-abcdef1234567890" not in comments[0]
     assert len(comments[0]) <= review.MAX_LLM_ASK_RESPONSE_CHARS
+
+
+def test_ask_comment_write_403_falls_back_to_step_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payload = _event_payload(pull_request=True, body="/agent ask explique esse achado", association="MEMBER", login="alice")
+    step_summary = tmp_path / "step-summary.md"
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", f'+ assert calls[0]["cwd"] == "{REPO_ROOT}"')],
+        router_response={"choices": [{"message": {"content": "Resposta contextual para a pergunta."}}]},
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="router-secret",
+        comment_error=HTTPError("https://api.github.com/repos/mglpsw/aiops-orchestrator/issues/42/comments", 403, "forbidden", hdrs=None, fp=None),
+        step_summary_path=step_summary,
+    )
+    assert not comments
+    assert router_payloads
+    assert step_summary.exists()
+    summary = step_summary.read_text(encoding="utf-8")
+    assert "Resposta para @alice sobre `/agent ask`." in summary
+    assert "Resposta contextual para a pergunta." in summary
+    assert "secret-token" not in summary
+    assert "AGENT_ROUTER_API_KEY" not in summary
 
 
 def test_ask_unrecognized_router_shape_uses_pt_br_parse_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

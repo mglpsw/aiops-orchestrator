@@ -53,9 +53,18 @@ _PLACEHOLDER_SECRET_VALUES = {
     "secret",
     "token",
     "value",
+    "test-token",
+    "test_token",
+    "fake-token",
+    "fake_token",
+    "dummy-token",
     "changeme",
     "dummy",
+    "example",
+    "placeholder",
+    "local-only",
 }
+_PLACEHOLDER_SECRET_BRACKET_RE = re.compile(r"(?i)^\[(?:redacted|placeholder|secret|token)\]$")
 _PLACEHOLDER_SECRET_CONTEXT_RE = re.compile(
     r"(?i)\b(?:os\.getenv|os\.environ\.get|os\.environ\s*\[|getenv)\s*\("
 )
@@ -237,6 +246,8 @@ def _placeholder_secret_value(value: str) -> bool:
     normalized = value.strip().strip('"\'`<>')
     lowered = normalized.lower()
     if not lowered:
+        return True
+    if _PLACEHOLDER_SECRET_BRACKET_RE.fullmatch(normalized):
         return True
     if lowered in _PLACEHOLDER_SECRET_VALUES:
         return True
@@ -809,10 +820,11 @@ def review_status(deterministic_findings: list[Finding], llm_findings: list[Find
         return "changes_requested"
     if any(finding.severity == "P2" for finding in deterministic_findings):
         return "needs_review"
-    if llm_findings:
-        if any(finding.severity == "P1" for finding in llm_findings):
+    filtered_llm_findings = _filter_placeholder_llm_findings(llm_findings or [])
+    if filtered_llm_findings:
+        if any(finding.severity == "P1" for finding in filtered_llm_findings):
             return "changes_requested"
-        if any(finding.severity == "P2" for finding in llm_findings):
+        if any(finding.severity == "P2" for finding in filtered_llm_findings):
             return "needs_review"
     return "approved"
 
@@ -847,7 +859,7 @@ def render_review(
     llm_notes: str | None = None,
     llm_findings: list[Finding] | None = None,
 ) -> str:
-    llm_findings = llm_findings or []
+    llm_findings = _filter_placeholder_llm_findings(llm_findings or [])
     status = review_status(findings, llm_findings=llm_findings)
     lines = [
         COMMENT_MARKER,
@@ -1027,6 +1039,7 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
             "- Max 5 achados.",
             "- Priorize P1 e P2.",
             "- Não faça elogios nem resumo longo.",
+            "- Falsos positivos baseados em placeholders de teste como test-token, test_token, fake-token, fake_token, dummy-token, dummy, example, placeholder, redacted, [REDACTED], <token>, <secret>, changeme e local-only não são segredos reais.",
             "- Não trate ajuste isolado de MAX_BUNDLE_CHARS como P2; só sinalize se houver regressão de truncamento sem teste.",
             "- Não invente arquivos ou linhas.",
         ]
@@ -1073,10 +1086,34 @@ def _build_ask_bundle(pr_context: ReviewContext, deterministic_findings: list[Fi
             "- Não invente arquivos, linhas, logs ou fatos fora do payload.",
             "- Se houver incerteza, diga isso explicitamente.",
             "- Se o usuário pedir falso positivo, explique com base no diff/contexto.",
+            "- Falsos positivos baseados em placeholders de teste como test-token, test_token, fake-token, fake_token, dummy-token, dummy, example, placeholder, redacted, [REDACTED], <token>, <secret>, changeme e local-only não são segredos reais.",
         ]
     )
     bundle = "\n".join(lines)
     return _truncate_text(_redact_sensitive_text(bundle), MAX_BUNDLE_CHARS)
+
+
+def _llm_finding_uses_obvious_placeholder(finding: Finding) -> bool:
+    haystack = " ".join((finding.file, finding.evidence, finding.risk, finding.recommendation)).lower()
+    return any(
+        marker in haystack
+        for marker in (
+            "test-token",
+            "test_token",
+            "fake-token",
+            "fake_token",
+            "dummy-token",
+            "dummy",
+            "example",
+            "placeholder",
+            "changeme",
+            "local-only",
+        )
+    )
+
+
+def _filter_placeholder_llm_findings(findings: list[Finding]) -> list[Finding]:
+    return [finding for finding in findings if not _llm_finding_uses_obvious_placeholder(finding)]
 
 
 def build_agent_router_payload(
@@ -1318,7 +1355,7 @@ def merge_deterministic_and_llm_findings(
     combined = list(deterministic_findings)
     llm_notes = None
     if llm_review:
-        combined.extend(llm_review.findings)
+        combined.extend(_filter_placeholder_llm_findings(llm_review.findings))
         llm_notes = llm_review.notes
         if llm_review.warning:
             llm_notes = f"{llm_review.warning}" if not llm_notes else f"{llm_review.warning} {llm_notes}"
@@ -1362,6 +1399,19 @@ def _build_ask_router_warning(reason: str) -> str:
 
 def _build_ask_router_parse_warning() -> str:
     return "Agent ask indisponível (não consegui interpretar a resposta do Agent Router); use /agent review para revisão determinística."
+
+
+def _build_ask_reply_body(pr_context: ReviewContext, question: str, answer: str) -> str:
+    lines = [
+        f"Resposta para @{pr_context.author} sobre `/agent ask`.",
+        "",
+        f"Pergunta: {_truncate_text(_redact_sensitive_text(question), 240)}",
+        "",
+        _truncate_text(_redact_sensitive_text(answer), MAX_LLM_ASK_RESPONSE_CHARS).strip(),
+        "",
+        "Comentário separado da revisão principal.",
+    ]
+    return _truncate_text("\n".join(lines).strip(), MAX_LLM_ASK_RESPONSE_CHARS)
 
 
 def _sanitize_router_base_url(base_url: str) -> str:
@@ -1574,7 +1624,8 @@ def main() -> int:
             answer = _truncate_text(_redact_sensitive_text(extract_router_response_text(raw_router)), MAX_LLM_ASK_RESPONSE_CHARS).strip()
             if not answer:
                 raise AgentRouterResponseError(_describe_router_response_shape(raw_router))
-            if not _publish_comment(client, _issue_comment_path(client, pr_context.issue_number), answer):
+            reply_body = _build_ask_reply_body(pr_context, question, answer)
+            if not _publish_comment(client, _issue_comment_path(client, pr_context.issue_number), reply_body):
                 return 1
             return 0
         except AgentRouterTimeoutError:
