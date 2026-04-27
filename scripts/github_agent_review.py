@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -159,9 +160,18 @@ class GitHubClient:
             with urllib.request.urlopen(request, timeout=30) as response:
                 raw = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
-            raw = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
-            raise RuntimeError(f"GitHub API request failed: {method} {path} -> {exc.code} {raw}") from exc
+            raise GitHubAPIError(method=method, path=path, code=exc.code) from exc
         return json.loads(raw) if raw else {}
+
+
+class GitHubAPIError(RuntimeError):
+    """Raised when a GitHub API call fails."""
+
+    def __init__(self, *, method: str, path: str, code: int) -> None:
+        super().__init__(f"GitHub API request failed: {method} {path} -> {code}")
+        self.method = method
+        self.path = path
+        self.code = code
 
 
 def _redact_sensitive_text(text: str) -> str:
@@ -961,6 +971,17 @@ def _issue_comment_path(client: GitHubClient, issue_number: int) -> str:
     return f"/repos/{owner}/{repo}/issues/{issue_number}/comments"
 
 
+def _publish_comment(client: GitHubClient, path: str, body: str) -> bool:
+    try:
+        client.post_json(path, {"body": body})
+        return True
+    except GitHubAPIError as exc:
+        if exc.code == 403:
+            print("GitHub token cannot write PR comments; check workflow permissions: issues: write", file=sys.stderr)
+            return False
+        raise
+
+
 def _short_patch_for_bundle(patch: str | None) -> str:
     if not patch:
         return "sem patch"
@@ -982,14 +1003,20 @@ def _find_existing_review_comment(recent_comments: list[dict[str, Any]]) -> int 
     return None
 
 
-def _publish_review_comment(client: GitHubClient, pr_context: ReviewContext, body: str) -> None:
+def _publish_review_comment(client: GitHubClient, pr_context: ReviewContext, body: str) -> bool:
     payload = {"body": body}
     existing_comment_id = _find_existing_review_comment(pr_context.recent_comments)
-    if existing_comment_id is not None:
-        owner, repo = _repo_parts(client.repository)
-        client.patch_json(f"/repos/{owner}/{repo}/issues/comments/{existing_comment_id}", payload)
-        return
-    client.post_json(_issue_comment_path(client, pr_context.issue_number), payload)
+    try:
+        if existing_comment_id is not None:
+            owner, repo = _repo_parts(client.repository)
+            client.patch_json(f"/repos/{owner}/{repo}/issues/comments/{existing_comment_id}", payload)
+            return True
+    except GitHubAPIError as exc:
+        if exc.code == 403:
+            print("GitHub token cannot write PR comments; check workflow permissions: issues: write", file=sys.stderr)
+            return False
+        raise
+    return _publish_comment(client, _issue_comment_path(client, pr_context.issue_number), body)
 
 
 def main() -> int:
@@ -1020,11 +1047,13 @@ def main() -> int:
     client = GitHubClient(token=token, repository=repository)
 
     if not is_authorized(association, login, allowed_users):
-        client.post_json(_issue_comment_path(client, issue_number), {"body": _build_unauthorized_message()})
+        if not _publish_comment(client, _issue_comment_path(client, issue_number), _build_unauthorized_message()):
+            return 1
         return 0
 
     if not is_pull_request_payload(payload):
-        client.post_json(_issue_comment_path(client, issue_number), {"body": _build_issue_message()})
+        if not _publish_comment(client, _issue_comment_path(client, issue_number), _build_issue_message()):
+            return 1
         return 0
 
     pr_context = fetch_review_context(client, payload, command_mode)
@@ -1063,7 +1092,8 @@ def main() -> int:
         llm_warning=llm_warning,
         llm_notes=llm_notes,
     )
-    _publish_review_comment(client, pr_context, markdown)
+    if not _publish_review_comment(client, pr_context, markdown):
+        return 1
     return 0
 
 

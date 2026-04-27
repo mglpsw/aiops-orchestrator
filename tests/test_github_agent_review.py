@@ -80,6 +80,7 @@ def _make_fake_urlopen(
     pr_files: list[dict[str, object]] | None = None,
     check_runs: list[dict[str, object]] | None = None,
     existing_comments: list[dict[str, object]] | None = None,
+    comment_error: Exception | None = None,
     router_response: object | None = None,
     router_error: Exception | None = None,
     captured_comments: list[str] | None = None,
@@ -117,10 +118,14 @@ def _make_fake_urlopen(
         if path.endswith("/issues/42/comments") and request.method == "GET":
             return _FakeHTTPResponse(existing_comments)
         if path.endswith("/issues/42/comments") and request.method == "POST":
+            if comment_error is not None:
+                raise comment_error
             body = json.loads(request.data.decode("utf-8"))["body"]
             captured_comments.append(body)
             return _FakeHTTPResponse({"id": 1})
         if path.startswith("/repos/mglpsw/aiops-orchestrator/issues/comments/") and request.method == "PATCH":
+            if comment_error is not None:
+                raise comment_error
             body = json.loads(request.data.decode("utf-8"))["body"]
             captured_patches.append(body)
             return _FakeHTTPResponse({"id": 1})
@@ -139,11 +144,13 @@ def _run_agent(
     existing_comments: list[dict[str, object]] | None = None,
     router_response: object | None = None,
     router_error: Exception | None = None,
+    comment_error: Exception | None = None,
     allowed_users: str = "",
     llm_enabled: bool = False,
     router_base: str = "",
     router_api_key: str = "",
     router_model: str = "",
+    expected_exit_code: int = 0,
 ) -> tuple[list[str], list[dict[str, object]]]:
     comments: list[str] = []
     patches: list[str] = []
@@ -152,6 +159,7 @@ def _run_agent(
         pr_files=pr_files,
         check_runs=check_runs,
         existing_comments=existing_comments,
+        comment_error=comment_error,
         router_response=router_response,
         router_error=router_error,
         captured_comments=comments,
@@ -169,7 +177,7 @@ def _run_agent(
     monkeypatch.setenv("AGENT_ROUTER_BASE_URL", router_base)
     monkeypatch.setenv("AGENT_ROUTER_API_KEY", router_api_key)
     monkeypatch.setenv("AGENT_ROUTER_MODEL", router_model)
-    assert review.main() == 0
+    assert review.main() == expected_exit_code
     return comments, router_payloads
 
 
@@ -470,6 +478,25 @@ def test_issue_comment_on_issue_is_supported_and_does_not_call_router(monkeypatc
     assert "apenas Pull Requests" in comments[0]
 
 
+def test_comment_write_403_is_sanitized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review", association="MEMBER", login="alice")
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=[_file("tests/test_action_run.py", '+ assert calls[0]["cwd"] == "/opt/aiops-orchestrator"')],
+        allowed_users="alice",
+        comment_error=HTTPError("https://api.github.com/repos/mglpsw/aiops-orchestrator/issues/42/comments", 403, "forbidden", hdrs=None, fp=None),
+        expected_exit_code=1,
+    )
+    captured = capsys.readouterr()
+    assert not comments
+    assert not router_payloads
+    assert "GitHub token cannot write PR comments; check workflow permissions: issues: write" in captured.err
+    assert "Traceback" not in captured.err
+    assert "secret-token" not in captured.err
+
+
 def test_unauthorized_comment_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     payload = _event_payload(pull_request=True, body="/agent review", association="NONE", login="outsider")
     comments, router_payloads = _run_agent(
@@ -518,7 +545,6 @@ def test_workflow_security_guardrails() -> None:
         "pull-requests": "read",
         "issues": "write",
         "checks": "read",
-        "actions": "read",
     }
     env = workflow["jobs"]["review"]["steps"][-1]["env"]
     assert env["GITHUB_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
@@ -529,3 +555,4 @@ def test_workflow_security_guardrails() -> None:
     assert env["AGENT_ROUTER_BASE_URL"] == "${{ vars.AGENT_ROUTER_BASE_URL }}"
     assert env["AGENT_ROUTER_API_KEY"] == "${{ secrets.AGENT_ROUTER_API_KEY }}"
     assert env["AGENT_ROUTER_MODEL"] == "${{ vars.AGENT_ROUTER_MODEL }}"
+    assert "actions" not in workflow["permissions"]

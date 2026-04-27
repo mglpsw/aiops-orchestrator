@@ -9,7 +9,6 @@ permissions:
   pull-requests: read
   issues: write
   checks: read
-  actions: read
 
 jobs:
   review:
