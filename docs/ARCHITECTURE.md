@@ -72,7 +72,11 @@ Coleta sinais internos (readiness, métricas, estado do serviço), calcula sever
 Sempre opera em `dry_run=true`. Nunca chama executores.
 
 - **Implementado:** `app/agent_router/services/aiops_diagnostic.py`, `app/agent_router/schemas.py`
+- **Camada adicional:** `app/agent_router/services/health_score.py`
 - **Schemas:** `AIOpsDiagnoseRequest`, `AIOpsDiagnoseResponse`, `AIOpsSignal`, `AIOpsFinding`, `AIOpsRecommendedAction`
+- **Health score:** valor determinístico de `0` a `100`, derivado dos findings/checks, sem LLM e sem execução
+- **Finding enrichment:** `check`, `summary`, `impact`, `confidence`, `probable_cause`, `next_validation`, `recommended_action_ids`
+- **Leitura de estado:** inclui sinais read-only existentes e checks degradados/safe-skipped quando uma fonte não está disponível
 
 ### Componente: Policy Engine
 
@@ -129,8 +133,9 @@ POST /v1/aiops/diagnose
     │
     ├─ 3. Diagnostic Engine
     │      → Coleta sinais: readiness, métricas, estado
-    │      → Calcula severity: ok | warning | critical | unknown
-    │      → Gera findings e recommended_actions (texto, sem comando)
+    │      → Calcula findings, recommended_actions e health_score
+    │      → Health score (0-100) deriva apenas de findings/checks
+    │      → Gera findings enriquecidos e recommended_actions (texto, sem comando)
     │
     ├─ 4. Action Mapper (somente se há findings com problema)
     │      → app/agent_router/services/action_mapper.py

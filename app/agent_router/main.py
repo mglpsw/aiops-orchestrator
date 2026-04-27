@@ -110,7 +110,7 @@ async def diagnose(
     """
     started_at = perf_counter()
     signals = await collect_aiops_diagnostic_signals(request, db)
-    response = diagnose_aiops(request, signals)
+    response = diagnose_aiops(request, signals, catalog_readiness=get_catalog_readiness())
     record_aiops_diagnose(response, perf_counter() - started_at)
 
     # --- Attach action plan (fail-soft: catalog failure does not break diagnose) ---

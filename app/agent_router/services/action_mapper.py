@@ -28,10 +28,17 @@ from app.agent_router.schemas import AIOpsFinding
 # Order within each list matters: the planner preserves it.
 _CHECK_ACTION_MAP: dict[str, list[str]] = {
     "readiness": ["curl_health_8000", "curl_ready_8000", "systemctl_status_aiops"],
+    "readiness_status": ["curl_health_8000", "curl_ready_8000", "systemctl_status_aiops"],
     "backend_up": ["curl_health_8000", "curl_ready_8000"],
     "error_rate": ["journalctl_aiops_recent", "prometheus_query"],
+    "error_rate_high": ["journalctl_aiops_recent", "prometheus_query"],
     "latency_p95": ["prometheus_query", "journalctl_aiops_recent"],
+    "latency_p95_high": ["prometheus_query", "journalctl_aiops_recent"],
     "blocked_tasks": ["journalctl_aiops_recent"],
+    "route_block_spike": ["journalctl_aiops_recent"],
+    "rate_limit_spike": ["prometheus_query", "journalctl_aiops_recent"],
+    "prometheus_scrape_staleness": ["prometheus_query"],
+    "aiops_catalog_not_ready": ["git_status", "git_diff_stat"],
     "model_selection": ["journalctl_aiops_recent"],
     "ollama_models_count": ["journalctl_aiops_recent"],
 }
@@ -90,3 +97,8 @@ def map_findings_to_action_ids(
         _add(_GENERAL_INVESTIGATION_IDS)
 
     return result
+
+
+def recommended_action_ids_for_check(check_name: str) -> list[str]:
+    """Return the deterministic allowlisted action_ids for one check name."""
+    return list(_CHECK_ACTION_MAP.get(check_name.lower(), []))

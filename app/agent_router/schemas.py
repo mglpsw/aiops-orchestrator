@@ -21,11 +21,18 @@ class AIOpsSignal(BaseModel):
 
 
 class AIOpsFinding(BaseModel):
+    check: str | None = None
     title: str
     severity: str
     status: str
+    summary: str | None = None
     description: str
     evidence: list[AIOpsSignal] = Field(default_factory=list)
+    impact: str | None = None
+    confidence: float | None = None
+    probable_cause: str | None = None
+    next_validation: str | None = None
+    recommended_action_ids: list[str] = Field(default_factory=list)
 
 
 class AIOpsRecommendedAction(BaseModel):
@@ -47,10 +54,17 @@ class AIOpsRecommendedAction(BaseModel):
 class AIOpsDiagnoseRequest(BaseModel):
     allowed_checks: ClassVar[set[str]] = {
         "readiness",
+        "readiness_status",
         "backend_up",
         "error_rate",
+        "error_rate_high",
         "latency_p95",
+        "latency_p95_high",
         "blocked_tasks",
+        "route_block_spike",
+        "rate_limit_spike",
+        "prometheus_scrape_staleness",
+        "aiops_catalog_not_ready",
         "model_selection",
         "ollama_models_count",
     }
@@ -74,6 +88,7 @@ class AIOpsDiagnoseRequest(BaseModel):
 class AIOpsDiagnoseResponse(BaseModel):
     status: str
     severity: str
+    health_score: int = 100
     summary: str
     signals: list[AIOpsSignal] = Field(default_factory=list)
     findings: list[AIOpsFinding] = Field(default_factory=list)

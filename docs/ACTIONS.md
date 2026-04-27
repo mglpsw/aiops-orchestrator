@@ -285,6 +285,10 @@ O endpoint `POST /v1/aiops/diagnose` passa a incluir um campo `action_plan` no r
 diagnóstico detecta problemas (findings com status `critical`, `warning`, `degraded`, `not_ready`
 ou `down`).
 
+O `health_score` do diagnose é calculado antes do planner e não executa ações. Ele apenas
+acompanha o estado operacional do diagnóstico. Já `recommended_action_ids` nos findings continuam
+sendo apenas insumos determinísticos para o Action Planner transformar em `action_plan`.
+
 ### Módulo de mapeamento
 
 `app/agent_router/services/action_mapper.py` é o único lugar que mapeia check names / signal names
@@ -356,3 +360,4 @@ para `action_ids`. Sem LLM, sem texto livre, sem interpolação.
 - Falha no catálogo não retorna HTTP 5xx ao cliente (fail-soft no diagnose)
 - Todos os campos originais do diagnose são preservados
 - O mapeamento é determinístico e não usa LLM
+- `recommended_action_ids` não executam nada; apenas alimentam o planner

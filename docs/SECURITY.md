@@ -60,6 +60,7 @@ Estas operações são **sempre bloqueadas**, independente do modo de política:
 O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída são informativos:
 
 - `recommended_actions`: texto descritivo com `command: null` — nenhum comando executável
+- `health_score`: número determinístico de `0` a `100` calculado apenas a partir de findings/checks
 - `action_plan`: plano estruturado com `action_ids` do catálogo allowlisted, sempre `dry_run: true`
 - Nenhum `command` aparece em qualquer campo da resposta
 - Falha no catálogo de actions retorna `action_plan: null` — diagnose segue com 200 (fail-soft)
@@ -73,6 +74,13 @@ O mapeador (`app/agent_router/services/action_mapper.py`) converte findings em `
 - Saída são apenas strings `action_id` — nenhum campo `command` ou shell string
 - Nomes de sinais / checks desconhecidos são ignorados silenciosamente
 - Deduplicação: mesmo `action_id` aparece no máximo uma vez na saída
+
+### Health Score — garantias
+
+- O `health_score` é calculado sem LLM, sem execução e sem invocações de processos externos
+- O score não chama shell, SSH, Docker ou qualquer remediação
+- Campos como `recommended_action_ids` continuam apenas como sugestões para o Action Planner
+- Checks sem telemetria suficiente são tratados de forma read-only, com findings `unknown`, `unavailable` ou `skipped`
 
 ### Action Planner — garantias de segurança
 

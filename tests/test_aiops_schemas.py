@@ -35,6 +35,24 @@ def test_aiops_diagnose_request_rejects_unknown_check() -> None:
         AIOpsDiagnoseRequest(checks=["readiness", "unknown_check"])
 
 
+def test_aiops_diagnose_request_accepts_new_health_checks() -> None:
+    request = AIOpsDiagnoseRequest(
+        checks=[
+            "readiness_status",
+            "error_rate_high",
+            "latency_p95_high",
+            "prometheus_scrape_staleness",
+        ]
+    )
+
+    assert request.checks == [
+        "readiness_status",
+        "error_rate_high",
+        "latency_p95_high",
+        "prometheus_scrape_staleness",
+    ]
+
+
 def test_aiops_recommended_action_rejects_command() -> None:
     with pytest.raises(ValidationError, match="command must be None"):
         AIOpsRecommendedAction(
@@ -57,6 +75,7 @@ def test_aiops_diagnose_response_serializes_correctly() -> None:
     response = AIOpsDiagnoseResponse(
         status="warning",
         severity="medium",
+        health_score=75,
         summary="Backend latency is elevated.",
         signals=[
             AIOpsSignal(
@@ -70,9 +89,11 @@ def test_aiops_diagnose_response_serializes_correctly() -> None:
         ],
         findings=[
             AIOpsFinding(
+                check="latency_p95",
                 title="Latency elevated",
                 severity="medium",
                 status="degraded",
+                summary="Latency is elevated.",
                 description="Observed higher-than-normal p95 latency.",
                 evidence=[
                     AIOpsSignal(
@@ -83,6 +104,11 @@ def test_aiops_diagnose_response_serializes_correctly() -> None:
                         source="metrics",
                     )
                 ],
+                impact="Requests may feel slower than expected.",
+                confidence=0.91,
+                probable_cause="Recent traffic has increased latency.",
+                next_validation="Inspect the allowlisted latency metric trend.",
+                recommended_action_ids=["prometheus_query"],
             )
         ],
         recommended_actions=[
@@ -98,6 +124,9 @@ def test_aiops_diagnose_response_serializes_correctly() -> None:
     assert data["dry_run"] is True
     assert data["status"] == "warning"
     assert data["severity"] == "medium"
+    assert data["health_score"] == 75
     assert data["signals"][0]["name"] == "latency_p95"
+    assert data["findings"][0]["check"] == "latency_p95"
+    assert data["findings"][0]["recommended_action_ids"] == ["prometheus_query"]
     assert data["findings"][0]["evidence"][0]["source"] == "metrics"
     assert data["recommended_actions"][0]["action_type"] == "dry_run"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -63,6 +64,7 @@ def test_aiops_diagnose_valid_request_returns_200(client: TestClient, monkeypatc
     assert body["dry_run"] is True
     assert body["status"] == "ok"
     assert body["severity"] == "low"
+    assert body["health_score"] == 100
 
 
 def test_aiops_diagnose_rejects_dry_run_false(client: TestClient) -> None:
@@ -151,6 +153,36 @@ def test_aiops_diagnose_readiness_not_ready_generates_critical_high(
     body = response.json()
     assert body["status"] == "critical"
     assert body["severity"] == "high"
+    assert body["health_score"] < 40
+
+
+def test_aiops_diagnose_catalog_failure_affects_score_without_breaking(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_collect(request: AIOpsDiagnoseRequest, db):  # noqa: ANN001
+        return [AIOpsSignal(name="readiness", status="ready", value="ready", source="mock")]
+
+    monkeypatch.setattr("app.agent_router.main.collect_aiops_diagnostic_signals", fake_collect)
+
+    from app.services.action_catalog import CatalogLoadError
+    import app.agent_router.main as router_module
+
+    router_module._reset_catalog_cache()
+    with patch.object(router_module, "_get_catalog", side_effect=CatalogLoadError("missing")):
+        with patch.object(router_module, "get_catalog_readiness", return_value={"status": "error", "actions_count": 0}):
+            response = client.post(
+                "/v1/aiops/diagnose",
+                headers=_auth_headers(),
+                json={"checks": ["readiness"], "dry_run": True},
+            )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["health_score"] < 100
+    assert body["action_plan"] is None
+    assert any(finding["check"] == "aiops_catalog_not_ready" for finding in body["findings"])
+    router_module._reset_catalog_cache()
 
 
 def test_aiops_diagnose_does_not_call_legacy_executors(
@@ -264,8 +296,10 @@ def test_diagnose_action_plan_contains_relevant_action_ids_for_readiness(
     body = response.json()
     plan = body["action_plan"]
     step_ids = [s["action_id"] for s in plan["steps"]]
+    finding_ids = body["findings"][0]["recommended_action_ids"]
     # Readiness problem → health/ready/systemctl + general investigation
     assert "curl_health_8000" in step_ids or len(plan["steps"]) >= 1
+    assert "curl_health_8000" in finding_ids
 
 
 def test_diagnose_action_plan_is_none_when_all_ok(

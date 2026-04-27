@@ -13,11 +13,14 @@ from app.services.provider_registry import get_registry
 from app.services.task_service import TaskService
 
 SUPPORTED_DIAGNOSTIC_CHECKS: tuple[str, ...] = (
-    "readiness",
+    "readiness_status",
     "backend_up",
-    "error_rate",
-    "latency_p95",
+    "error_rate_high",
+    "latency_p95_high",
     "blocked_tasks",
+    "route_block_spike",
+    "rate_limit_spike",
+    "prometheus_scrape_staleness",
     "model_selection",
     "ollama_models_count",
 )
@@ -37,25 +40,44 @@ async def collect_aiops_diagnostic_signals(
     ollama_models = _safe_ollama_models_count()
 
     for check in requested_checks:
-        if check == "readiness":
-            results.append(_build_readiness_signal(db_metrics["database_ok"], backend_up))
+        if check in {"readiness", "readiness_status"}:
+            results.append(_build_readiness_signal(db_metrics["database_ok"], backend_up, check))
         elif check == "backend_up":
             results.append(backend_up)
-        elif check == "error_rate":
-            results.append(_build_error_rate_signal(db_metrics))
-        elif check == "latency_p95":
+        elif check in {"error_rate", "error_rate_high"}:
+            results.append(_build_error_rate_signal(db_metrics, check))
+        elif check in {"latency_p95", "latency_p95_high"}:
+            results.append(_build_latency_signal(check))
+        elif check in {"blocked_tasks", "route_block_spike"}:
+            results.append(_build_blocked_tasks_signal(db_metrics, check))
+        elif check == "rate_limit_spike":
+            results.append(_build_unavailable_signal(
+                name=check,
+                unit="count",
+                source="internal",
+                description="Rate-limit telemetry is not exposed in v1 diagnostic-only mode.",
+            ))
+        elif check == "prometheus_scrape_staleness":
+            results.append(_build_unavailable_signal(
+                name=check,
+                unit="seconds",
+                source="prometheus",
+                description="Scrape freshness is not queried directly in v1 diagnostic-only mode.",
+            ))
+        elif check == "aiops_catalog_not_ready":
+            from app.agent_router.main import get_catalog_readiness
+
+            catalog_info = get_catalog_readiness()
             results.append(
                 AIOpsSignal(
-                    name="latency_p95",
-                    status="unknown",
-                    value=None,
-                    unit="ms",
-                    source="internal",
-                    description="No safe local latency sample is available.",
+                    name=check,
+                    status=str(catalog_info.get("status", "unknown")).lower(),
+                    value=catalog_info.get("actions_count"),
+                    unit="count",
+                    source="startup",
+                    description="Action catalog readiness snapshot from startup validation.",
                 )
             )
-        elif check == "blocked_tasks":
-            results.append(_build_blocked_tasks_signal(db_metrics))
         elif check == "model_selection":
             results.append(model_selection)
         elif check == "ollama_models_count":
@@ -125,7 +147,7 @@ def _safe_backend_status() -> AIOpsSignal:
         )
 
 
-def _build_readiness_signal(database_ok: bool, backend_up: AIOpsSignal) -> AIOpsSignal:
+def _build_readiness_signal(database_ok: bool, backend_up: AIOpsSignal, name: str) -> AIOpsSignal:
     if backend_up.status == "unknown":
         status = "unknown"
         value: str | None = None
@@ -137,7 +159,7 @@ def _build_readiness_signal(database_ok: bool, backend_up: AIOpsSignal) -> AIOps
         description = "Database and backend are ready." if ready else "Database or backend is not ready."
 
     return AIOpsSignal(
-        name="readiness",
+        name=name,
         status=status,
         value=value,
         unit=None,
@@ -146,12 +168,12 @@ def _build_readiness_signal(database_ok: bool, backend_up: AIOpsSignal) -> AIOps
     )
 
 
-def _build_error_rate_signal(metrics: dict[str, Any]) -> AIOpsSignal:
+def _build_error_rate_signal(metrics: dict[str, Any], name: str) -> AIOpsSignal:
     tasks_total = metrics.get("tasks_total")
     failed_tasks = metrics.get("failed_tasks")
     if not isinstance(tasks_total, int) or tasks_total <= 0:
         return AIOpsSignal(
-            name="error_rate",
+            name=name,
             status="unknown",
             value=None,
             unit="ratio",
@@ -164,7 +186,7 @@ def _build_error_rate_signal(metrics: dict[str, Any]) -> AIOpsSignal:
     status = "degraded" if rate >= 0.05 else "ok"
     description = f"Computed error rate from local task history: {rate:.4f}."
     return AIOpsSignal(
-        name="error_rate",
+        name=name,
         status=status,
         value=rate,
         unit="ratio",
@@ -173,11 +195,22 @@ def _build_error_rate_signal(metrics: dict[str, Any]) -> AIOpsSignal:
     )
 
 
-def _build_blocked_tasks_signal(metrics: dict[str, Any]) -> AIOpsSignal:
+def _build_latency_signal(name: str) -> AIOpsSignal:
+    return AIOpsSignal(
+        name=name,
+        status="unknown",
+        value=None,
+        unit="ms",
+        source="internal",
+        description="No safe local latency sample is available.",
+    )
+
+
+def _build_blocked_tasks_signal(metrics: dict[str, Any], name: str) -> AIOpsSignal:
     blocked = metrics.get("blocked_actions_total")
     if not isinstance(blocked, int):
         return AIOpsSignal(
-            name="blocked_tasks",
+            name=name,
             status="unknown",
             value=None,
             unit="count",
@@ -188,11 +221,22 @@ def _build_blocked_tasks_signal(metrics: dict[str, Any]) -> AIOpsSignal:
     status = "degraded" if blocked >= 1 else "ok"
     description = f"Local blocked task count is {blocked}."
     return AIOpsSignal(
-        name="blocked_tasks",
+        name=name,
         status=status,
         value=blocked,
         unit="count",
         source="task_service",
+        description=description,
+    )
+
+
+def _build_unavailable_signal(name: str, unit: str, source: str, description: str) -> AIOpsSignal:
+    return AIOpsSignal(
+        name=name,
+        status="unavailable",
+        value=None,
+        unit=unit,
+        source=source,
         description=description,
     )
 
