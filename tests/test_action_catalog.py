@@ -97,6 +97,12 @@ def test_real_catalog_includes_session_14_readonly_actions() -> None:
     assert expected <= catalog.action_ids()
 
 
+def test_real_catalog_includes_session_15_service_inspection_actions() -> None:
+    catalog = load_catalog(DEFAULT_CATALOG_PATH)
+    expected = {"systemctl_status_aiops", "journalctl_aiops_recent"}
+    assert expected <= catalog.action_ids()
+
+
 def test_real_catalog_entries_are_readonly_and_low_risk() -> None:
     catalog = load_catalog(DEFAULT_CATALOG_PATH)
     for entry in catalog.all_entries():
