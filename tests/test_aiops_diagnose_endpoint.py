@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -154,6 +155,41 @@ def test_aiops_diagnose_readiness_not_ready_generates_critical_high(
     assert body["status"] == "critical"
     assert body["severity"] == "high"
     assert body["health_score"] < 40
+
+
+def test_aiops_diagnose_returns_enriched_findings_without_commands(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_collect(request: AIOpsDiagnoseRequest, db):  # noqa: ANN001
+        return [
+            AIOpsSignal(
+                name="chat_error_spike",
+                status="degraded",
+                value=0.18,
+                unit="ratio",
+                source="task_service",
+                description="Computed chat error spike from local task history. Baseline 0.05 -> current 0.18 (higher, worse by 0.13).",
+            )
+        ]
+
+    monkeypatch.setattr("app.agent_router.main.collect_aiops_diagnostic_signals", fake_collect)
+
+    response = client.post(
+        "/v1/aiops/diagnose",
+        headers=_auth_headers(),
+        json={"checks": ["chat_error_spike"], "dry_run": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    finding = body["findings"][0]
+    assert {"severity", "check", "summary", "impact", "confidence", "probable_cause", "next_validation", "recommended_action_ids"} <= set(finding)
+    assert finding["severity"] == "medium"
+    assert finding["recommended_action_ids"]
+    assert "command" not in json.dumps(body["findings"])
+    assert "argv" not in json.dumps(body["findings"])
+    assert "Authorization" not in json.dumps(body["findings"])
 
 
 def test_aiops_diagnose_catalog_failure_affects_score_without_breaking(

@@ -21,6 +21,8 @@ Esta é a fotografia canônica do projeto antes da próxima fase:
 - o runner oficial não aceita shell livre;
 - o catálogo é estrutural e validado no startup;
 - o histórico de runs e o audit log já existem;
+- o diagnóstico agora retorna findings enriquecidos com `impact`, `probable_cause`, `confidence`, `next_validation` e `recommended_action_ids`;
+- o health score passou a ser severity-aware e a aceitar baseline temporal simples via `metadata` quando há dados;
 - o GitHub Agent Review está disponível para revisão on-demand de PRs;
 - o Agent Router pode ser usado opcionalmente apenas como API de revisão LLM, nunca como executor.
 

@@ -42,6 +42,9 @@ def test_aiops_diagnose_request_accepts_new_health_checks() -> None:
             "error_rate_high",
             "latency_p95_high",
             "prometheus_scrape_staleness",
+            "chat_error_spike",
+            "backend_fallback_spike",
+            "router_uptime_reset",
         ]
     )
 
@@ -50,6 +53,9 @@ def test_aiops_diagnose_request_accepts_new_health_checks() -> None:
         "error_rate_high",
         "latency_p95_high",
         "prometheus_scrape_staleness",
+        "chat_error_spike",
+        "backend_fallback_spike",
+        "router_uptime_reset",
     ]
 
 

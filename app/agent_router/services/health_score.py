@@ -14,6 +14,7 @@ from app.agent_router.schemas import AIOpsFinding
 _CRITICAL_STATUSES = {"critical", "down", "not_ready", "failed", "fail"}
 _WARNING_STATUSES = {"warning", "degraded", "partial"}
 _UNKNOWN_STATUSES = {"unknown", "unavailable", "skipped", "n/a", "na", "none", ""}
+_SEVERITY_PENALTIES = {"high": 10, "medium": 5, "low": 0}
 
 
 @dataclass(frozen=True)
@@ -59,77 +60,79 @@ def classify_health_score(score: int, *, unknown_only: bool = False) -> tuple[st
 def _finding_penalty(finding: AIOpsFinding) -> int:
     check = _normalize_token(finding.check or finding.title)
     status = _normalize_token(finding.status)
+    severity = _normalize_token(finding.severity)
+    severity_penalty = _SEVERITY_PENALTIES.get(severity, 0)
 
     if check in {"readiness", "readiness_status"}:
         if status in _CRITICAL_STATUSES:
-            return 70
+            return 70 + severity_penalty
         if status in _WARNING_STATUSES:
-            return 35
+            return 35 + severity_penalty
         if status in _UNKNOWN_STATUSES:
-            return 10
-        return 5
+            return 10 + severity_penalty
+        return 5 + severity_penalty
 
     if check == "backend_up":
         if status in _CRITICAL_STATUSES:
-            return 65
+            return 65 + severity_penalty
         if status in _WARNING_STATUSES:
-            return 30
+            return 30 + severity_penalty
         if status in _UNKNOWN_STATUSES:
-            return 10
-        return 5
+            return 10 + severity_penalty
+        return 5 + severity_penalty
 
-    if check in {"error_rate", "error_rate_high", "latency_p95", "latency_p95_high"}:
+    if check in {"error_rate", "error_rate_high", "chat_error_spike", "latency_p95", "latency_p95_high"}:
         if status in _CRITICAL_STATUSES:
-            return 40
+            return 40 + severity_penalty
         if status in _WARNING_STATUSES:
-            return 25
+            return 25 + severity_penalty
         if status in _UNKNOWN_STATUSES:
-            return 10
-        return 5
+            return 10 + severity_penalty
+        return 5 + severity_penalty
 
-    if check in {"blocked_tasks", "route_block_spike"}:
+    if check in {"blocked_tasks", "route_block_spike", "backend_fallback_spike"}:
         if status in _CRITICAL_STATUSES:
-            return 15
+            return 15 + severity_penalty
         if status in _WARNING_STATUSES:
-            return 10
+            return 10 + severity_penalty
         if status in _UNKNOWN_STATUSES:
-            return 5
-        return 3
+            return 5 + severity_penalty
+        return 3 + severity_penalty
 
     if check == "rate_limit_spike":
         if status in _CRITICAL_STATUSES:
-            return 10
+            return 10 + severity_penalty
         if status in _WARNING_STATUSES:
-            return 5
+            return 5 + severity_penalty
         if status in _UNKNOWN_STATUSES:
-            return 5
-        return 3
+            return 5 + severity_penalty
+        return 3 + severity_penalty
 
     if check == "prometheus_scrape_staleness":
         if status in _CRITICAL_STATUSES:
-            return 20
+            return 20 + severity_penalty
         if status in _WARNING_STATUSES:
-            return 15
+            return 15 + severity_penalty
         if status in _UNKNOWN_STATUSES:
-            return 10
-        return 5
+            return 10 + severity_penalty
+        return 5 + severity_penalty
 
     if check == "aiops_catalog_not_ready":
         if status in _CRITICAL_STATUSES:
-            return 20
+            return 20 + severity_penalty
         if status in _WARNING_STATUSES:
-            return 10
+            return 10 + severity_penalty
         if status in _UNKNOWN_STATUSES:
-            return 5
-        return 5
+            return 5 + severity_penalty
+        return 5 + severity_penalty
 
     if status in _CRITICAL_STATUSES:
-        return 50
+        return 50 + severity_penalty
     if status in _WARNING_STATUSES:
-        return 20
+        return 20 + severity_penalty
     if status in _UNKNOWN_STATUSES:
-        return 5
-    return 0
+        return 5 + severity_penalty
+    return 0 + severity_penalty
 
 
 def _is_unknown_like(finding: AIOpsFinding) -> bool:
