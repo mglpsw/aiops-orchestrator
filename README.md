@@ -168,6 +168,12 @@ Ver `docs/OPERATIONS.md` para detalhes.
 - O executor oficial atual é apenas `app/agent_router/services/action_runner.py`
 - `GitHub Bridge`, `Claude Bridge` e `Codex Bridge` continuam fora desta fase
 
+### GitHub Agent Review on-demand
+
+- Comentários em PR com uma linha iniciando com `/agent review` acionam o workflow `agent-review`
+- A primeira versão é determinística, consulta apenas a GitHub API e comenta de volta uma revisão classificada em P1, P2 e P3
+- Veja [`docs/GITHUB_AGENT.md`](docs/GITHUB_AGENT.md) para uso, autorização e regras de segurança
+
 ---
 
 ## Tests

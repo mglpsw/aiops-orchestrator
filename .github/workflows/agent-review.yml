@@ -1,0 +1,55 @@
+name: agent-review
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+  checks: read
+  actions: read
+
+jobs:
+  review:
+    name: Agent Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >
+      github.event.issue.pull_request &&
+      (
+        startsWith(github.event.comment.body, '/agent review') ||
+        contains(github.event.comment.body, '\n/agent review') ||
+        contains(github.event.comment.body, '\r\n/agent review')
+      )
+
+    steps:
+      - name: Checkout base repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements-dev.txt ]; then
+            python -m pip install -r requirements-dev.txt
+          else
+            python -m pip install -r requirements.txt
+          fi
+
+      - name: Run GitHub agent review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          AGENT_ALLOWED_USERS: ${{ vars.AGENT_ALLOWED_USERS }}
+        run: python scripts/github_agent_review.py
