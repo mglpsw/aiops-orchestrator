@@ -1,7 +1,7 @@
 """Tests for action catalog startup validation and /ready integration.
 
 Covers:
-  1.  Startup with valid catalog → state ok, 11 actions
+  1.  Startup with valid catalog → state ok, 12 actions
   2.  Startup with valid catalog → actions_count matches real catalog
   3.  Startup with broken catalog → state error, actions_count 0
   4.  /ready returns not_ready when catalog invalid
@@ -81,12 +81,12 @@ def test_startup_valid_catalog_sets_state_ok() -> None:
 
 
 def test_startup_valid_catalog_loads_eleven_actions() -> None:
-    """init_catalog_on_startup loads exactly 11 actions from config/actions.yaml."""
+    """init_catalog_on_startup loads exactly 12 actions from config/actions.yaml."""
     router_module._reset_catalog_cache()
     try:
         router_module.init_catalog_on_startup()
         info = router_module.get_catalog_readiness()
-        assert info["actions_count"] == 11
+        assert info["actions_count"] == 12
     finally:
         router_module._reset_catalog_cache()
 
@@ -129,7 +129,7 @@ def test_ready_includes_action_catalog_when_valid(
     body = response.json()
     assert "dependencies" in body
     assert body["dependencies"]["action_catalog"]["status"] == "ok"
-    assert body["dependencies"]["action_catalog"]["actions_count"] == 11
+    assert body["dependencies"]["action_catalog"]["actions_count"] == 12
     assert body["checks"]["action_catalog"] is True
     router_module._reset_catalog_cache()
 
@@ -196,8 +196,8 @@ def test_catalog_endpoint_returns_catalog_after_startup(
         response = client.get("/v1/aiops/actions/catalog", headers=_auth())
     assert response.status_code == 200
     body = response.json()
-    assert body["count"] == 11
-    assert len(body["actions"]) == 11
+    assert body["count"] == 12
+    assert len(body["actions"]) == 12
     for entry in body["actions"]:
         assert "command" not in entry
     router_module._reset_catalog_cache()

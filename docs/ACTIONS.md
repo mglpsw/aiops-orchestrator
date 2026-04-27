@@ -70,8 +70,9 @@ Exibe o estado atual da árvore de trabalho do repositório canônico.
 
 Exibe estatísticas de diff em relação ao HEAD (sem patch completo).
 
-- **Comando:** `git -C /opt/aiops-orchestrator diff --stat HEAD`
+- **Comando interno fixo:** `git diff --stat`
 - **Risk:** low | **Mode:** readonly | **Timeout:** 10s | **Approval:** false
+- **Execução:** função interna fixa; o catálogo não é fonte de comando executável.
 
 ### git_log_recent
 
@@ -85,6 +86,14 @@ Exibe os 10 commits mais recentes em formato compacto.
 Valida e exibe a configuração final do docker-compose (sem iniciar nada).
 
 - **Comando interno fixo:** `docker compose -f deploy/docker-compose.yml config --quiet`
+- **Risk:** low | **Mode:** readonly | **Timeout:** 15s | **Approval:** false
+- **Execução:** função interna fixa; o catálogo não é fonte de comando executável.
+
+### docker_compose_bluegreen_config
+
+Valida a configuração base + blue/green sem iniciar nada.
+
+- **Comando interno fixo:** `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config --quiet`
 - **Risk:** low | **Mode:** readonly | **Timeout:** 15s | **Approval:** false
 - **Execução:** função interna fixa; o catálogo não é fonte de comando executável.
 
@@ -224,7 +233,8 @@ para um plano estruturado e seguro, sem envolver LLM ou comando livre.
 | `GET` | `/v1/aiops/audit/recent` | Retorna os eventos auditados mais recentes |
 
 Ambos os endpoints requerem autenticação Bearer e retornam `dry_run: true`.
-O runner read-only v1 usa funções internas fixas para `curl_*`, `git_status` e `docker_compose_config`;
+O runner read-only v1 usa funções internas fixas para `curl_*`, `git_status`, `git_diff_stat`,
+`docker_compose_config` e `docker_compose_bluegreen_config`;
 o catálogo apenas descreve a allowlist e não é fonte de comando executável.
 
 ### Contrato do planner
@@ -396,7 +406,9 @@ leitura e não permite reexecução.
 As ações read-only locais desta fase são fixas e allowlisted:
 
 - `git_status` usa o equivalente interno a `git status --short --branch`
+- `git_diff_stat` usa o equivalente interno a `git diff --stat`
 - `docker_compose_config` usa o equivalente interno a `docker compose -f deploy/docker-compose.yml config --quiet`
+- `docker_compose_bluegreen_config` usa o equivalente interno a `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config --quiet`
 
 O comando do catálogo continua sendo apenas documentação/allowlist. O runner nunca executa texto
 livre vindo do request ou do YAML.

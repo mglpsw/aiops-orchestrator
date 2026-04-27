@@ -126,6 +126,23 @@ def _fake_subprocess_run_factory(calls: list[dict[str, object]]):
             )
         if list(argv) == ["docker", "compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"]:
             return SimpleNamespace(returncode=0, stdout="services:\n  app:\n    image: aiops\n", stderr="")
+        if list(argv) == ["git", "diff", "--stat"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=" config/actions.yaml | 4 ++--\n secret=password\n" + ("y" * 7000),
+                stderr="",
+            )
+        if list(argv) == [
+            "docker",
+            "compose",
+            "-f",
+            "deploy/docker-compose.yml",
+            "-f",
+            "deploy/docker-compose.bluegreen.yml",
+            "config",
+            "--quiet",
+        ]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=1, stdout="", stderr="unexpected argv")
 
     return _fake_run
@@ -279,7 +296,7 @@ def test_run_blocks_unknown_and_non_executable_actions(api_client: TestClient) -
         json={
             "target": "agent-router",
             "approval_id": approval_id,
-            "action_ids": ["git_diff_stat"],
+            "action_ids": ["systemctl_status_aiops"],
         },
     )
 
@@ -288,7 +305,7 @@ def test_run_blocks_unknown_and_non_executable_actions(api_client: TestClient) -
     assert unknown.json()["blocked_steps"][0]["action_id"] == "does_not_exist"
     assert non_executable.status_code == 200
     assert non_executable.json()["status"] == "blocked"
-    assert non_executable.json()["blocked_steps"][0]["action_id"] == "git_diff_stat"
+    assert non_executable.json()["blocked_steps"][0]["action_id"] == "systemctl_status_aiops"
 
 
 def test_run_executes_git_status_and_docker_compose_config_with_fixed_process(
@@ -345,6 +362,74 @@ def test_run_executes_git_status_and_docker_compose_config_with_fixed_process(
         assert "OPENAI_API_KEY" not in env
         assert "ANTHROPIC_API_KEY" not in env
         assert env["HOME"] == str(Path("/opt/aiops-orchestrator").resolve())
+
+    audit_events = _read_jsonl(_audit_log_path(tmp_path))
+    event_types = [event["event_type"] for event in audit_events]
+    assert "action_run_requested" in event_types
+    assert "action_run_started" in event_types
+    assert "action_run_completed" in event_types
+
+
+def test_run_executes_git_diff_stat_and_bluegreen_compose_config_with_fixed_process(
+    api_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    approval_id = _create_approved_approval(api_client)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.agent_router.services.action_runner.subprocess.run",
+        _fake_subprocess_run_factory(calls),
+        raising=True,
+    )
+    get_settings.cache_clear()
+
+    response = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["git_diff_stat", "docker_compose_bluegreen_config"],
+            "reason": "Validate diff and bluegreen compose",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert [result["action_id"] for result in body["results"]] == [
+        "git_diff_stat",
+        "docker_compose_bluegreen_config",
+    ]
+    assert body["results"][0]["output_preview"].startswith("config/actions.yaml | 4 ++--")
+    assert body["results"][0]["truncated"] is True
+    assert "password" not in body["results"][0]["output_preview"].lower()
+    assert "[REDACTED]" in body["results"][0]["output_preview"]
+    assert body["results"][1]["output_preview"] == "docker compose bluegreen config valid"
+
+    assert len(calls) == 2
+    assert calls[0]["argv"] == ["git", "diff", "--stat"]
+    assert calls[1]["argv"] == [
+        "docker",
+        "compose",
+        "-f",
+        "deploy/docker-compose.yml",
+        "-f",
+        "deploy/docker-compose.bluegreen.yml",
+        "config",
+        "--quiet",
+    ]
+    for call in calls:
+        assert call["shell"] is False
+        assert call["timeout"] == 5
+        assert call["cwd"] == str(Path("/opt/aiops-orchestrator").resolve())
+        env = call["env"]
+        assert env["PATH"] == "/usr/bin:/bin"
+        assert env["HOME"] == str(Path("/opt/aiops-orchestrator").resolve())
+        assert "AGENT_ROUTER_API_TOKEN" not in env
+        assert "OPENAI_API_KEY" not in env
+        assert "ANTHROPIC_API_KEY" not in env
 
     audit_events = _read_jsonl(_audit_log_path(tmp_path))
     event_types = [event["event_type"] for event in audit_events]

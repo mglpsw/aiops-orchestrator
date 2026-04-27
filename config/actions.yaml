@@ -22,12 +22,21 @@ catalog:
 
   - action_id: git_diff_stat
     description: "Exibe estatísticas de diff em relação ao HEAD (sem patch completo)"
-    command: "git -C /opt/aiops-orchestrator diff --stat HEAD"
+    command: "git diff --stat"
     mode: readonly
     risk: low
     timeout_seconds: 10
     requires_approval: false
     tags: [git, diagnostic]
+
+  - action_id: docker_compose_bluegreen_config
+    description: "Valida a configuração base + blue/green sem iniciar nada"
+    command: "docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config --quiet"
+    mode: readonly
+    risk: low
+    timeout_seconds: 15
+    requires_approval: false
+    tags: [docker, diagnostic, bluegreen]
 
   - action_id: git_log_recent
     description: "Exibe os 10 commits mais recentes em formato compacto"

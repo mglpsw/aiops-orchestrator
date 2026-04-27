@@ -26,7 +26,7 @@ _HTTP_ACTION_ENDPOINTS: dict[str, str] = {
     "curl_ready_8001": "http://127.0.0.1:8001/ready",
 }
 
-_PROCESS_ACTIONS = frozenset({"git_status", "docker_compose_config"})
+_PROCESS_ACTIONS = frozenset({"git_status", "docker_compose_config", "git_diff_stat", "docker_compose_bluegreen_config"})
 _FIXED_PATH = "/usr/bin:/bin"
 
 _SENSITIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -249,6 +249,40 @@ async def run_docker_compose_config() -> ActionExecutionResult:
     )
 
 
+async def run_git_diff_stat() -> ActionExecutionResult:
+    repo_root = resolve_action_repo_root()
+    settings = get_settings()
+    return await asyncio.to_thread(
+        _run_fixed_process,
+        action_id="git_diff_stat",
+        argv=["git", "diff", "--stat"],
+        cwd=repo_root,
+        timeout_seconds=settings.run_timeout_seconds,
+    )
+
+
+async def run_docker_compose_bluegreen_config() -> ActionExecutionResult:
+    repo_root = resolve_action_repo_root()
+    settings = get_settings()
+    return await asyncio.to_thread(
+        _run_fixed_process,
+        action_id="docker_compose_bluegreen_config",
+        argv=[
+            "docker",
+            "compose",
+            "-f",
+            "deploy/docker-compose.yml",
+            "-f",
+            "deploy/docker-compose.bluegreen.yml",
+            "config",
+            "--quiet",
+        ],
+        cwd=repo_root,
+        timeout_seconds=settings.run_timeout_seconds,
+        success_message="docker compose bluegreen config valid",
+    )
+
+
 _RUNNERS = {
     "curl_health_8000": run_curl_health_8000,
     "curl_ready_8000": run_curl_ready_8000,
@@ -256,6 +290,8 @@ _RUNNERS = {
     "curl_ready_8001": run_curl_ready_8001,
     "git_status": run_git_status,
     "docker_compose_config": run_docker_compose_config,
+    "git_diff_stat": run_git_diff_stat,
+    "docker_compose_bluegreen_config": run_docker_compose_bluegreen_config,
 }
 
 

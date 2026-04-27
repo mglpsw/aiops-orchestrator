@@ -84,8 +84,25 @@ def _fake_subprocess_run(argv, **kwargs):
             ),
             stderr="",
         )
+    if list(argv) == ["git", "diff", "--stat"]:
+        return SimpleNamespace(
+            returncode=0,
+            stdout=" config/actions.yaml | 4 ++--\n secret=password\n",
+            stderr="",
+        )
     if list(argv) == ["docker", "compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"]:
         return SimpleNamespace(returncode=0, stdout="services:\n  app:\n    image: aiops\n", stderr="")
+    if list(argv) == [
+        "docker",
+        "compose",
+        "-f",
+        "deploy/docker-compose.yml",
+        "-f",
+        "deploy/docker-compose.bluegreen.yml",
+        "config",
+        "--quiet",
+    ]:
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
     return SimpleNamespace(returncode=1, stdout="", stderr="unexpected argv")
 
 
@@ -167,6 +184,44 @@ def test_run_history_includes_local_inspection_runs(api_client: TestClient, monk
     assert "argv" not in json.dumps(detail_body)
     assert "super-secret-token" not in json.dumps(detail_body)
     assert "password" not in json.dumps(detail_body).lower()
+
+
+def test_run_history_includes_git_diff_and_bluegreen_compose_runs(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = _create_approved_run(api_client, monkeypatch, action_id="git_diff_stat")
+    monkeypatch.setattr("app.agent_router.services.action_runner.subprocess.run", _fake_subprocess_run, raising=True)
+    approval = api_client.post(
+        "/v1/aiops/actions/approvals",
+        headers=_auth(),
+        json={"target": "agent-router", "plan_id": "plan_run_history_bluegreen"},
+    )
+    approval_id = approval.json()["approval_id"]
+    api_client.post(f"/v1/aiops/actions/approvals/{approval_id}/approve", headers=_auth())
+    bluegreen_run = api_client.post(
+        "/v1/aiops/actions/run",
+        headers=_auth(),
+        json={
+            "target": "agent-router",
+            "approval_id": approval_id,
+            "action_ids": ["docker_compose_bluegreen_config"],
+        },
+    )
+    assert bluegreen_run.status_code == 200
+
+    recent = api_client.get("/v1/aiops/runs/recent?limit=20", headers=_auth())
+    detail = api_client.get(f"/v1/aiops/runs/{run_id}", headers=_auth())
+    bluegreen_detail = api_client.get(f"/v1/aiops/runs/{bluegreen_run.json()['run_id']}", headers=_auth())
+
+    assert recent.status_code == 200
+    assert detail.status_code == 200
+    assert bluegreen_detail.status_code == 200
+    recent_ids = {run["run_id"] for run in recent.json()["runs"]}
+    assert run_id in recent_ids
+    assert bluegreen_run.json()["run_id"] in recent_ids
+    assert detail.json()["results"][0]["action_id"] == "git_diff_stat"
+    assert bluegreen_detail.json()["results"][0]["action_id"] == "docker_compose_bluegreen_config"
+    bluegreen_body = bluegreen_detail.json()
+    assert "command" not in json.dumps(bluegreen_body)
+    assert "argv" not in json.dumps(bluegreen_body)
 
 
 def test_get_run_returns_detail_and_missing_returns_404(api_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
