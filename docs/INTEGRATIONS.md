@@ -4,6 +4,24 @@
 
 O Open WebUI suporta **Funções** (anteriormente Pipelines) que podem encaminhar requisições para APIs externas.
 
+### Fluxo canônico de chat AIOps
+
+Nesta fase, o endpoint `POST /v1/chat/ingest` também reconhece intents AIOps em pt-BR e responde
+de forma determinística, curta e segura. Os intents suportados incluem:
+
+- diagnostique o agent router
+- diagnostique o aiops
+- o agent router está saudável?
+- por que o ollama está lento?
+- o blue/green está consistente?
+- quais approvals estão pendentes?
+- resuma os últimos runs
+- o último run falhou por quê?
+
+Essas mensagens são roteadas para diagnósticos, runs, approvals e status já existentes. O chat
+não executa actions, não aceita shell livre e cai no fluxo normal quando a mensagem não é um
+pedido operacional AIOps.
+
 ### Opção A: Função do Open WebUI (recomendada)
 
 O Open WebUI v0.8+ suporta funções Python customizadas que podem interceptar mensagens e chamar APIs externas.
@@ -86,6 +104,10 @@ class Filter:
 ```
 
 3. Enable the function and assign it to your model
+
+Se preferir, o Open WebUI também pode chamar diretamente o endpoint `/v1/chat/ingest`. Nesse caso,
+o roteamento determinístico de intents AIOps já acontece no lado do orquestrador e a função
+customizada pode ficar só como ponte de transporte.
 
 ### Opção B: Chamada direta à API from Chat
 

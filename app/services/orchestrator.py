@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.schemas import (
     TaskStatus, RiskLevel, ChatIngestRequest, ChatIngestResponse,
 )
+from app.agent_router.main import get_catalog_readiness
+from app.services.aiops_chat_router import route_aiops_chat
 from app.policies.engine import PolicyEngine
 from app.services.provider_registry import get_registry
 from app.services.task_service import TaskService
@@ -47,6 +49,26 @@ class Orchestrator:
         logger.info("Task created: %s (user=%s role=%s)", task.id, user_id, user_role, extra={"task_id": task.id})
 
         try:
+            aiops_response = await route_aiops_chat(
+                request.message,
+                db=self.db,
+                catalog_readiness=get_catalog_readiness(),
+            )
+            if aiops_response is not None:
+                aiops_response = aiops_response.model_copy(update={"task_id": task.id})
+                await self.task_service.set_result(
+                    task.id,
+                    {
+                        "intent": "aiops_chat",
+                        "summary": aiops_response.summary,
+                        "message": aiops_response.message,
+                        "findings": aiops_response.findings,
+                        "recommended_action_ids": aiops_response.recommended_action_ids,
+                    },
+                    TaskStatus.failed if aiops_response.status == TaskStatus.failed else TaskStatus.completed,
+                )
+                return aiops_response
+
             # 1.5. Pre-screen message for dangerous keywords (before LLM)
             pre_screen = self.policy.pre_screen_message(request.message)
             if pre_screen and not pre_screen["allowed"]:

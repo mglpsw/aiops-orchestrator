@@ -62,6 +62,8 @@ class ChatIngestResponse(BaseModel):
     risk_level: RiskLevel | None = None
     requires_approval: bool = False
     message: str = ""
+    findings: list[str] = Field(default_factory=list)
+    recommended_action_ids: list[str] = Field(default_factory=list)
 
 
 # --- Plan ---
