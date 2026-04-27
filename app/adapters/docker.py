@@ -11,12 +11,14 @@ Provides read-heavy operations by default. Destructive operations require approv
 from __future__ import annotations
 
 import asyncio
+import shlex
 import time
 from datetime import datetime
 from typing import Any
 
 from app.adapters.base import BaseExecutorAdapter
 from app.models.schemas import ProviderStatus
+from app.policies.engine import PolicyEngine
 from app.utils.logging import get_logger
 from app.utils.secrets import mask_secrets, truncate
 
@@ -34,7 +36,8 @@ class DockerAdapter(BaseExecutorAdapter):
     name = "docker"
 
     def __init__(self):
-        self.enabled = True
+        self.enabled = False
+        self._policy = PolicyEngine()
 
     def _is_safe_command(self, command: str) -> bool:
         """Check if a docker subcommand is in the safe list."""
@@ -56,17 +59,36 @@ class DockerAdapter(BaseExecutorAdapter):
         dry_run: bool = False,
         env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        if not self.enabled:
+            return {
+                "stdout": "",
+                "stderr": "Docker adapter is disabled",
+                "exit_code": -3,
+                "duration_ms": 0,
+                "dry_run": False,
+                "command": mask_secrets(command),
+            }
+
         # Prefix with docker if not already
         if not command.startswith("docker"):
             docker_cmd = f"docker {command}"
         else:
             docker_cmd = command
 
-        # Extract the subcommand part for safety check
-        sub = docker_cmd.replace("docker ", "", 1).strip()
+        policy_result = self._policy.evaluate_command(docker_cmd)
+
+        if not policy_result["allowed"]:
+            return {
+                "stdout": "",
+                "stderr": policy_result["reason"],
+                "exit_code": 126,
+                "duration_ms": 0,
+                "dry_run": dry_run,
+                "command": mask_secrets(docker_cmd),
+            }
 
         if dry_run:
-            safe = self._is_safe_command(sub)
+            safe = policy_result["allowed"] and policy_result["risk_level"].value == "low"
             return {
                 "stdout": f"[DRY RUN] Would execute: {mask_secrets(docker_cmd)} (safe={safe})",
                 "stderr": "",
@@ -78,8 +100,9 @@ class DockerAdapter(BaseExecutorAdapter):
 
         start = time.monotonic()
         try:
-            proc = await asyncio.create_subprocess_shell(
-                docker_cmd,
+            argv = shlex.split(docker_cmd)
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
@@ -103,6 +126,16 @@ class DockerAdapter(BaseExecutorAdapter):
                 "stdout": "",
                 "stderr": f"Docker command timed out after {timeout}s",
                 "exit_code": -1,
+                "duration_ms": duration,
+                "dry_run": False,
+                "command": mask_secrets(docker_cmd),
+            }
+        except ValueError as e:
+            duration = (time.monotonic() - start) * 1000
+            return {
+                "stdout": "",
+                "stderr": f"Docker command parsing failed: {e}",
+                "exit_code": -2,
                 "duration_ms": duration,
                 "dry_run": False,
                 "command": mask_secrets(docker_cmd),

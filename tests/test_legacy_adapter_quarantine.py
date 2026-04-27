@@ -91,3 +91,9 @@ def test_run_path_does_not_use_legacy_adapters(api_client: TestClient, monkeypat
     assert body["status"] in {"ok", "failed"}
     assert "command" not in body
     assert "argv" not in body
+
+
+def test_docker_adapter_starts_disabled_by_default() -> None:
+    from app.adapters.docker import DockerAdapter
+
+    assert DockerAdapter().enabled is False

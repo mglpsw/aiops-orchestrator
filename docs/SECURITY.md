@@ -109,6 +109,14 @@ O endpoint de diagnóstico **nunca executa** nada. Todos os campos de saída sã
 - Esses adaptadores não devem ser conectados a `/v1/aiops/actions/run`
 - Qualquer reativação futura exige nova sessão de revisão, approval gate, policy gate, auditoria e testes
 
+### Docker socket e blast radius
+
+- A imagem/compose principal de produção não deve montar `/var/run/docker.sock`
+- Quando o socket for realmente necessário para diagnóstico de manutenção, use
+  `deploy/docker-compose.maintenance.yml` de forma explícita e temporária
+- `docker compose down`, `stop`, `restart`, `rm`, `kill` e `prune` não fazem parte do caminho automático
+- AIOps não deve operar em outros stacks do CT 102; ações destrutivas exigem intervenção humana fora do orquestrador
+
 ### `/v1/aiops/runs/recent` e `/v1/aiops/runs/{run_id}` — garantias de histórico
 
 - Os endpoints são somente leitura

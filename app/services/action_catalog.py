@@ -21,10 +21,10 @@ from typing import Any
 import yaml
 
 from app.core.config import BASE_DIR
+from app.policies.command_guardrails import find_blocked_command_reason
 
 DEFAULT_CATALOG_PATH: Path = BASE_DIR / "config" / "actions.yaml"
 
-# Blocked command patterns (mirrors validate_actions_catalog.sh)
 _BLOCKED_COMMAND_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\brm\s"),
     re.compile(r"chmod\s+777"),
@@ -183,6 +183,11 @@ def _validate_entry(
 
     # Blocked command patterns
     command = str(item["command"]).strip()
+    blocked_reason = find_blocked_command_reason(command)
+    if blocked_reason:
+        errors.append(f"'{action_id}': {blocked_reason}")
+        return
+
     for pattern in _BLOCKED_COMMAND_PATTERNS:
         if pattern.search(command):
             errors.append(f"'{action_id}': blocked pattern '{pattern.pattern}' in command")

@@ -46,6 +46,69 @@ class PolicyEngineCommandTests(unittest.TestCase):
         self.assertEqual(result["risk_level"], RiskLevel.high)
         self.assertTrue(result["requires_approval"])
 
+    def test_safe_docker_diagnostics_are_allowed(self) -> None:
+        commands = [
+            "docker version --format '{{.Server.Version}}'",
+            "docker info",
+            "docker ps",
+            "docker inspect aiops-orchestrator",
+            "docker logs aiops-orchestrator",
+            "docker events --since 1m",
+            "docker compose -f deploy/docker-compose.yml config --quiet",
+            "docker-compose -f deploy/docker-compose.yml config --quiet",
+        ]
+
+        for command in commands:
+            with self.subTest(command=command):
+                result = self.policy.evaluate_command(command)
+                self.assertTrue(result["allowed"])
+                self.assertEqual(result["risk_level"], RiskLevel.low)
+                self.assertFalse(result["requires_approval"])
+
+    def test_destructive_docker_commands_are_blocked(self) -> None:
+        commands = [
+            "docker compose down",
+            "docker compose stop",
+            "docker compose restart",
+            "docker compose rm -f",
+            "docker-compose down",
+            "docker-compose stop",
+            "docker-compose restart",
+            "docker-compose rm -f",
+            "docker stop aiops-orchestrator",
+            "docker kill aiops-orchestrator",
+            "docker rm -f aiops-orchestrator",
+            "docker restart aiops-orchestrator",
+            "docker update --restart=no aiops-orchestrator",
+            "docker system prune -f",
+            "docker container prune -f",
+            "docker network prune -f",
+            "docker volume prune -f",
+        ]
+
+        for command in commands:
+            with self.subTest(command=command):
+                result = self.policy.evaluate_command(command)
+                self.assertFalse(result["allowed"])
+                self.assertEqual(result["risk_level"], RiskLevel.blocked)
+                self.assertFalse(result["requires_approval"])
+
+    def test_shell_wrappers_used_to_hide_docker_commands_are_blocked(self) -> None:
+        commands = [
+            "sudo docker compose down",
+            "env docker compose stop",
+            "nohup docker compose restart",
+            "sh -c 'docker compose rm -f'",
+            "bash -c 'docker-compose down'",
+        ]
+
+        for command in commands:
+            with self.subTest(command=command):
+                result = self.policy.evaluate_command(command)
+                self.assertFalse(result["allowed"])
+                self.assertEqual(result["risk_level"], RiskLevel.blocked)
+                self.assertFalse(result["requires_approval"])
+
 
 if __name__ == "__main__":
     unittest.main()

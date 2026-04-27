@@ -9,8 +9,9 @@ Type=simple
 User=root
 WorkingDirectory=/opt/aiops-orchestrator
 EnvironmentFile=/opt/aiops-orchestrator/.env
-ExecStart=docker compose -f /opt/aiops-orchestrator/deploy/docker-compose.yml up aiops-orchestrator
-ExecStop=docker compose -f /opt/aiops-orchestrator/deploy/docker-compose.yml stop aiops-orchestrator
+Environment=COMPOSE_PROJECT_NAME=aiops-orchestrator
+ExecStart=docker compose -p aiops-orchestrator -f /opt/aiops-orchestrator/deploy/docker-compose.yml up aiops-orchestrator
+ExecStop=docker compose -p aiops-orchestrator -f /opt/aiops-orchestrator/deploy/docker-compose.yml stop aiops-orchestrator
 Restart=on-failure
 RestartSec=10s
 StandardOutput=journal

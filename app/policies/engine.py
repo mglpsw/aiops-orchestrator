@@ -8,6 +8,7 @@ from typing import Any
 
 from app.core.config import get_policies_config, get_settings
 from app.models.schemas import RiskLevel
+from app.policies.command_guardrails import find_blocked_command_reason, is_safe_command
 from app.utils.logging import get_logger
 
 logger = get_logger("policies.engine")
@@ -59,6 +60,7 @@ MEDIUM_RISK_PATTERNS: list[re.Pattern] = [
     re.compile(r"\bpip\s+install\b"),
     re.compile(r"\bsystemctl\s+reload\b"),
     re.compile(r"\bdocker\s+exec\b"),
+    re.compile(r"\bdocker(?:-compose|\s+compose)\s+up\b"),
     re.compile(r"\bdocker-compose\s+up\b"),
     re.compile(r"\bcp\s+-r\b"),
     re.compile(r"\bmv\s+"),
@@ -72,9 +74,7 @@ MEDIUM_RISK_PATTERNS: list[re.Pattern] = [
 # --- Operações seguras (sempre permitidas em modo seguro/supervisionado) ---
 SAFE_COMMAND_PREFIXES = frozenset({
     "cat", "ls", "df", "du", "free", "uptime", "whoami", "hostname",
-    "date", "uname", "id", "ps", "top", "htop", "docker ps", "docker logs",
-    "docker inspect", "docker stats", "docker images", "docker volume ls",
-    "docker network ls", "docker-compose ps", "docker-compose logs",
+    "date", "uname", "id", "ps", "top", "htop",
     "systemctl status", "journalctl", "tail", "head", "grep", "find",
     "wc", "sort", "curl -s", "wget -q", "ping -c", "dig", "nslookup",
     "ss", "netstat", "ip addr", "ip route show", "pct list", "qm list",
@@ -156,6 +156,16 @@ class PolicyEngine:
         """
         command_stripped = command.strip()
 
+        blocked_reason = find_blocked_command_reason(command_stripped)
+        if blocked_reason:
+            logger.warning("Command BLOCKED by shared guardrails: %s", command_stripped[:100])
+            return {
+                "allowed": False,
+                "risk_level": RiskLevel.blocked,
+                "reason": blocked_reason,
+                "requires_approval": False,
+            }
+
         # Check hardcoded denylist first
         for pattern in ALWAYS_BLOCKED_PATTERNS:
             if pattern.search(command_stripped):
@@ -210,14 +220,15 @@ class PolicyEngine:
                 }
 
         # Check safe commands
-        for prefix in SAFE_COMMAND_PREFIXES:
-            if command_stripped.startswith(prefix):
-                return {
-                    "allowed": True,
-                    "risk_level": RiskLevel.low,
-                    "reason": "Safe read-only operation",
-                    "requires_approval": False,
-                }
+        if is_safe_command(command_stripped) or any(
+            command_stripped.startswith(prefix) for prefix in SAFE_COMMAND_PREFIXES
+        ):
+            return {
+                "allowed": True,
+                "risk_level": RiskLevel.low,
+                "reason": "Safe read-only operation",
+                "requires_approval": False,
+            }
 
         # Default: unknown commands are medium-risk
         return {

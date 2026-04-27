@@ -38,6 +38,9 @@ docker compose -f deploy/docker-compose.yml up -d aiops-orchestrator
 curl -H "Authorization: Bearer $AGENT_ROUTER_API_TOKEN" http://localhost:8000/health
 ```
 
+O compose principal de produção não monta `/var/run/docker.sock`. Para manutenção
+explícita, use o override `deploy/docker-compose.maintenance.yml`.
+
 ### Integração com agent-router-api
 
 O orchestrator compartilha a network Docker `aiops-net`. Deploy o

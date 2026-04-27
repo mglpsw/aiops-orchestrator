@@ -13,9 +13,6 @@ services:
     volumes:
       - aiops-data:/app/data
       - ../config:/app/config:ro
-      - /var/run/docker.sock:/var/run/docker.sock
-    group_add:
-      - "${DOCKER_GID:-999}"
     healthcheck:
       test: ["CMD", "python", "-c", "import httpx; r = httpx.get('http://localhost:8000/health', timeout=5); assert r.status_code == 200"]
       interval: 30s

@@ -25,16 +25,16 @@ pct exec 102 -- docker logs -f aiops-orchestrator
 ### Start / Stop / Restart
 ```bash
 # Start
-pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose up -d"
+pct exec 102 -- docker compose -p aiops-orchestrator -f /opt/aiops-orchestrator/deploy/docker-compose.yml up -d aiops-orchestrator
 
-# Stop (preserves data)
-pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose down"
+# Stop only the aiops-orchestrator service
+pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker compose -p aiops-orchestrator -f /opt/aiops-orchestrator/deploy/docker-compose.yml stop aiops-orchestrator"
 
-# Restart
-pct exec 102 -- docker restart aiops-orchestrator
+# Restart the service by stopping and starting only the local unit, never the full stack
+pct exec 102 -- systemctl restart aiops-orchestrator
 
 # Rebuild and restart (after code changes)
-pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker-compose up -d --build"
+pct exec 102 -- docker compose -p aiops-orchestrator -f /opt/aiops-orchestrator/deploy/docker-compose.yml up -d --build aiops-orchestrator
 ```
 
 ### Validate
@@ -76,20 +76,32 @@ bash /opt/aiops-orchestrator/scripts/rollback.sh restore aiops-20260411_120000.d
 ### Edit Environment
 ```bash
 pct exec 102 -- nano /opt/aiops-orchestrator/.env
-pct exec 102 -- docker restart aiops-orchestrator
+pct exec 102 -- systemctl restart aiops-orchestrator
 ```
 
 ### Edit Policies
 ```bash
 pct exec 102 -- nano /opt/aiops-orchestrator/config/policies.yml
-pct exec 102 -- docker restart aiops-orchestrator
+pct exec 102 -- systemctl restart aiops-orchestrator
 ```
 
 ### Edit Provider Routes
 ```bash
 pct exec 102 -- nano /opt/aiops-orchestrator/config/routes.yml
-pct exec 102 -- docker restart aiops-orchestrator
+pct exec 102 -- systemctl restart aiops-orchestrator
 ```
+
+### Maintenance socket override
+
+When Docker diagnostics are explicitly needed, use the maintenance override:
+
+```bash
+pct exec 102 -- bash -c "cd /opt/aiops-orchestrator/deploy && docker compose -f docker-compose.yml -f docker-compose.maintenance.yml config"
+```
+
+Never use `docker compose down`, `docker compose stop`, `docker compose restart`, `docker stop`,
+`docker kill`, `docker rm`, or `docker system/container/network/volume prune` against unrelated
+stacks from CT 102.
 
 ## Monitoramento
 

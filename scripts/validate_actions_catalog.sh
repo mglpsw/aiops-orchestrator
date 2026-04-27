@@ -28,12 +28,15 @@ import re
 
 catalog_path = pathlib.Path(sys.argv[1])
 errors = 0
+sys.path.insert(0, str(catalog_path.parent.parent))
 
 try:
     import yaml
 except ImportError:
     print("  [ERRO] PyYAML não disponível — execute: pip install pyyaml")
     sys.exit(1)
+
+from app.policies.command_guardrails import find_blocked_command_reason
 
 def err(msg):
     global errors
@@ -93,7 +96,13 @@ blocked_patterns = [
     (r'\|\s*sh\b',           "pipe para sh (RCE)"),
     (r'curl\s.*\|\s*\w*sh',  "curl pipe shell (RCE)"),
     (r'git\s+push\b',        "git push (alteração remota)"),
-    (r'docker[\s-]compose\s+up\b', "docker compose up (alteração de stack)"),
+    (r'docker(?:-compose|\s+compose)\b(?:\s+\S+)*\s+up\b', "docker compose up (alteração de stack)"),
+    (r'docker(?:-compose|\s+compose)\b(?:\s+\S+)*\s+(down|stop|restart|rm)\b', "docker compose destructive"),
+    (r'docker\b(?:\s+\S+)*\s+(stop|kill|rm|restart|update)\b', "docker destructive"),
+    (r'docker\s+system\s+prune\b', "docker system prune"),
+    (r'docker\s+container\s+prune\b', "docker container prune"),
+    (r'docker\s+network\s+prune\b', "docker network prune"),
+    (r'docker\s+volume\s+prune\b', "docker volume prune"),
     (r'systemctl\s+restart\b',     "systemctl restart"),
     (r'systemctl\s+start\b',       "systemctl start"),
     (r'systemctl\s+stop\b',        "systemctl stop"),
@@ -104,6 +113,10 @@ for i, action in enumerate(catalog):
     action_id = action.get("action_id", f"<item {i}>")
     command = action.get("command", "")
     if not command:
+        continue
+    reason = find_blocked_command_reason(command)
+    if reason:
+        err(f"'{action_id}': {reason} in: {command!r}")
         continue
     for pattern, label in blocked_patterns:
         if re.search(pattern, command):

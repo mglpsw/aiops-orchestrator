@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import shlex
 import time
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,7 @@ from typing import Any
 from app.adapters.base import BaseExecutorAdapter
 from app.core.config import get_settings
 from app.models.schemas import ProviderStatus
+from app.policies.engine import PolicyEngine
 from app.utils.logging import get_logger
 from app.utils.secrets import mask_secrets, truncate
 
@@ -33,6 +35,7 @@ class LocalExecutorAdapter(BaseExecutorAdapter):
         self.timeout_default = settings.executor_timeout_seconds
         self.max_output = settings.executor_max_output_bytes
         self.enabled = True
+        self._policy = PolicyEngine()
 
     async def execute(
         self,
@@ -50,6 +53,19 @@ class LocalExecutorAdapter(BaseExecutorAdapter):
             extra={"provider": self.name},
         )
 
+        policy_result = self._policy.evaluate_command(command)
+        if not policy_result["allowed"]:
+            blocked_message = f"{policy_result['reason']}"
+            return {
+                "stdout": "" if not dry_run else f"[DRY RUN] Blocked by policy: {blocked_message}",
+                "stderr": blocked_message,
+                "exit_code": 126,
+                "duration_ms": 0,
+                "dry_run": dry_run,
+                "command": mask_secrets(command),
+                "cwd": cwd or "/tmp",
+            }
+
         if dry_run:
             return {
                 "stdout": f"[DRY RUN] Would execute: {mask_secrets(command)}",
@@ -65,8 +81,9 @@ class LocalExecutorAdapter(BaseExecutorAdapter):
         merged_env = {**os.environ, **(env or {})}
 
         try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
+            argv = shlex.split(command)
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
@@ -100,6 +117,18 @@ class LocalExecutorAdapter(BaseExecutorAdapter):
                 "stdout": "",
                 "stderr": f"Command timed out after {timeout}s",
                 "exit_code": -1,
+                "duration_ms": duration,
+                "dry_run": False,
+                "command": mask_secrets(command),
+                "cwd": cwd,
+            }
+        except ValueError as e:
+            duration = (time.monotonic() - start) * 1000
+            logger.error("Command parsing failed: %s", e)
+            return {
+                "stdout": "",
+                "stderr": f"Command parsing failed: {e}",
+                "exit_code": -2,
                 "duration_ms": duration,
                 "dry_run": False,
                 "command": mask_secrets(command),
