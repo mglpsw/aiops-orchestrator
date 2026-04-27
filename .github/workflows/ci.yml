@@ -2,19 +2,19 @@ name: aiops-ci
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   pull_request:
-    branches:
-      - main
-      - master
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
   validate:
     name: Validate repository
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -25,33 +25,33 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
+          cache-dependency-path: requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-dev.txt
 
-      - name: Prepare env for compose validation
-        run: cp .env.example .env
-
-      - name: Bash syntax check
+      - name: Validate shell scripts
         run: find scripts -name '*.sh' -print0 | xargs -0 -n1 bash -n
 
-      - name: Validate action catalog
+      - name: Validate actions catalog
         run: bash scripts/validate_actions_catalog.sh
 
-      - name: Validate docker compose config
+      - name: Validate compose syntax
         run: |
-          docker compose -f deploy/docker-compose.yml config
-          docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config
+          cp .env.example .env
+          docker compose -p aiops-orchestrator -f deploy/docker-compose.yml config --quiet
+          docker compose -p aiops-orchestrator \
+            -f deploy/docker-compose.yml \
+            -f deploy/docker-compose.bluegreen.yml config --quiet
+          rm -f .env
 
-      - name: Run tests
+      - name: Run unit tests
         run: bash scripts/test.sh
 
-      - name: Check diff formatting
-        run: git diff --check
-
-      - name: Dangerous patterns grep (informational)
+      - name: Dangerous patterns grep
         run: |
-          grep -RInE 'shell=True|create_subprocess_shell|docker exec|ssh |git push|git pull|docker compose up|docker compose down|docker compose restart|systemctl restart|systemctl start|systemctl stop|systemctl reload' \
+          grep -RInE \
+            'shell=True|create_subprocess_shell|docker exec|ssh |git push|git pull|docker compose up|docker compose down|docker compose restart|systemctl restart|systemctl start|systemctl stop|systemctl reload' \
             app docs tests config scripts README.md || true

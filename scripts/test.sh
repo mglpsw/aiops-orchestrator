@@ -19,7 +19,7 @@ INTEGRATION="${AIOPS_INTEGRATION:-0}"
 PYTEST_ARGS=(-q --tb=short)
 
 if [ "$INTEGRATION" != "1" ]; then
-    PYTEST_ARGS+=(-m "not integration and not requires_docker and not requires_prometheus and not requires_network")
+    PYTEST_ARGS+=(-m "not integration and not requires_runtime and not requires_docker and not requires_prometheus and not requires_network")
 fi
 
 PYTEST_ARGS+=("$@")

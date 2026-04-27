@@ -1,62 +1,52 @@
 # Testes — AIOps Orchestrator
 
-## Comando canônico
+## Contrato de scripts
 
-```bash
-bash scripts/test.sh
-```
-
-Funciona dentro do CT 102, sem Docker, Prometheus, Ollama ou secrets reais.
-É o mesmo comando usado pelo CI (GitHub Actions).
+| Script | Onde roda | O que valida |
+|---|---|---|
+| `scripts/test.sh` | Em qualquer lugar | Testes Python unitários (offline) |
+| `scripts/ci_validate.sh` | GitHub Actions / agents | Repo: scripts, catalog, compose syntax, testes |
+| `scripts/validate.sh` | Dentro do CT 102 | Runtime: container, project name, health, endpoints |
 
 ---
 
-## Requisitos
-
-| Componente | Versão mínima |
-|---|---|
-| Python | 3.11 |
-| pip packages | `requirements.txt` |
-
-### Instalar dependências
+## Instalação de dependências
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
-Não é necessário criar venv se já estiver em ambiente isolado (CT/container).
+`requirements-dev.txt` inclui `requirements.txt` + `pytest`.
+
 Para desenvolvimento local fora do CT:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 ---
 
-## Tipos de testes
+## Rodar testes
 
-### Unit (padrão, offline)
-
-Não exigem Docker, rede, Prometheus, Ollama ou secrets reais.
-Variáveis de ambiente são configuradas com valores fake nos fixtures.
+### Comando canônico (offline, funciona em qualquer lugar)
 
 ```bash
 bash scripts/test.sh
-# ou
-python3 -m pytest -q
 ```
 
-### Integration (opt-in)
+Não exige Docker, Prometheus, Ollama, secrets reais ou CT 102.
 
-Exigem serviços externos ativos (Prometheus em `192.168.3.200:9090`, etc.).
+### Testes de integração (opt-in)
 
 ```bash
 AIOPS_INTEGRATION=1 bash scripts/test.sh
 ```
 
-### Filtros por nome ou módulo
+Requer serviços externos ativos.
+
+### Filtros
 
 ```bash
 bash scripts/test.sh -k test_action_catalog
@@ -66,67 +56,58 @@ bash scripts/test.sh --co   # só collect, sem executar
 
 ---
 
-## Variáveis de ambiente para testes
-
-Os testes unitários **não precisam** de variáveis reais. Valores fake são
-injetados via `conftest.py` ou defaults seguros nas configurações.
-
-Se um teste específico precisar de variável real, ele deve ser marcado com
-`@pytest.mark.integration` e excluído do CI padrão.
-
-### `.env.example` como referência
-
-O arquivo `.env.example` documenta todas as variáveis suportadas com valores
-padrão seguros. Nunca copie secrets reais para `.env.example`.
-
----
-
 ## CI (GitHub Actions)
 
-O workflow em [.github/workflows/ci.yml](../.github/workflows/ci.yml)
-executa exatamente:
+O workflow instala `requirements-dev.txt` e executa:
 
 ```bash
 bash scripts/test.sh
 ```
 
-Para reproduzir o CI localmente:
+Para reproduzir o CI localmente exatamente:
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 bash scripts/test.sh
 ```
 
 ---
 
-## Verificações de segurança (além dos testes)
+## Validação de repositório (CI-safe)
+
+Roda bash syntax check, catálogo de actions, compose config e testes:
 
 ```bash
-# Sintaxe de todos os scripts
-bash -n scripts/*.sh
+bash scripts/ci_validate.sh
+```
 
-# Catálogo de actions (sem Docker)
-bash scripts/validate_actions_catalog.sh
+---
 
-# Compose config (sem iniciar nada)
-docker compose -p aiops-orchestrator -f deploy/docker-compose.yml config
+## Validação de runtime (somente CT 102)
 
-# Validação local completa (read-only, dentro do CT 102)
+Verifica container em produção, project name, health/ready:
+
+```bash
 bash scripts/validate.sh
 ```
+
+Este script **não roda no GitHub Actions** — depende do CT 102 em execução.
 
 ---
 
 ## Marcadores pytest
 
+Registrados em `pytest.ini`:
+
 | Marcador | Significado |
 |---|---|
 | `integration` | Requer serviços externos |
-| `requires_docker` | Requer Docker acessível |
+| `requires_runtime` | Requer runtime em produção (CT 102) |
+| `requires_docker` | Requer Docker daemon acessível |
 | `requires_prometheus` | Requer Prometheus em `PROMETHEUS_URL` |
-| `requires_network` | Requer acesso a rede externa |
+| `requires_network` | Requer acesso à rede externa |
 
-Para adicionar a um teste:
+Uso:
 
 ```python
 @pytest.mark.integration
@@ -139,23 +120,32 @@ def test_prometheus_query_live():
 
 ## Troubleshooting
 
-### `ModuleNotFoundError`
+### `No module named pytest`
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
-### `AIOPS_*` env var ausente
+### `ModuleNotFoundError` para outros módulos
+
+```bash
+pip install -r requirements-dev.txt
+```
+
+### `AIOPS_*` env var ausente em testes
 
 Os testes unitários não precisam de variáveis reais. Se um teste falhar por
-variável ausente, ele deveria ser marcado como `integration`.
+variável ausente, marque com `@pytest.mark.requires_runtime`.
 
 ### Porta 8000 ocupada durante testes
 
-Os testes usam `TestClient` do FastAPI (in-process), não iniciam servidor
-real. Porta 8000 não é necessária.
+Os testes usam `TestClient` do FastAPI (in-process), não abrem a porta 8000.
+
+### PytestUnknownMarkWarning
+
+Se aparecer warning sobre markers desconhecidos, verifique se `pytest.ini`
+contém o marker em questão na seção `markers`.
 
 ### Testes de guardrail falhando
 
-Verifique se `app/policies/command_guardrails.py` e `app/policies/engine.py`
-estão atualizados com os padrões esperados pelos testes.
+Verifique `app/policies/command_guardrails.py` e `app/policies/engine.py`.
