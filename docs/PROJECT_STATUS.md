@@ -121,6 +121,11 @@ O runner oficial executa apenas as funções internas fixas abaixo:
 - `journalctl_aiops_recent`
 - `prometheus_query_allowlisted`
 
+Nesta Session 14, o contrato que estamos fechando de forma mais explícita é o de
+`git_diff_stat` e `docker_compose_bluegreen_config`: ambos permanecem read-only,
+com `shell=False`, `argv` fixo, `cwd` canônico, timeout obrigatório, redaction e
+output truncado.
+
 Garantias principais:
 
 - `shell=False`
