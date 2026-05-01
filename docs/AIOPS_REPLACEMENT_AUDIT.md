@@ -88,6 +88,28 @@ Todos os testes passam. ✓
 2. Revise logs estruturados para `legacy_endpoint` field
 3. Defina data de removação para endpoints legados (ex: v0.20.0)
 
+### Checkpoint runtime — 2026-05-01
+
+Status: validado em produção/runtime.
+
+- Commit aplicado: `807faa3`
+- Container recriado com Compose project `deploy`
+- Runtime principal: `aiops-orchestrator` em `8000`
+- `/health`: OK
+- `/ready`: OK
+- Headers legacy validados em respostas 401:
+  - `Deprecation: true`
+  - `Warning: 299 - "Legacy AIOps endpoint; use canonical /v1/aiops/* APIs"`
+- Rotas testadas:
+  - `GET /v1/providers/status`
+  - `GET /v1/tasks`
+- Métricas Prometheus confirmadas:
+  - `aiops_legacy_endpoint_hits_total{endpoint="providers_status"} 2`
+  - `aiops_legacy_endpoint_hits_total{endpoint="tasks_collection"} 2`
+
+Conclusão:
+Session L1 concluída, aplicada no runtime e pronta para observação. Não avançar para L2 até medir uso real dos endpoints legados por um período operacional.
+
 ## Mapa do AIOps novo
 
 O caminho canônico atual fica em `app/agent_router/` e nas rotas novas expostas pelo FastAPI:

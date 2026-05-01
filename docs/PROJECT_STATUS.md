@@ -198,6 +198,15 @@ find scripts -name '*.sh' -print0 | xargs -0 -n1 bash -n
 bash scripts/validate_actions_catalog.sh
 docker compose -f deploy/docker-compose.yml config
 docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config
+
+## Checkpoint pós-v0.18.0 — Session L1
+
+- Commit: `807faa3`
+- Session L1 concluída e aplicada no runtime `8000`
+- Endpoints legados agora retornam headers `Deprecation` e `Warning`
+- Uso legacy exposto em `aiops_legacy_endpoint_hits_total`
+- Próximo passo do AIOps: observar uso real antes da Session L2
+- Foco imediato pode voltar para `agent-router-api`
 ```
 
 ## Roadmap imediato
