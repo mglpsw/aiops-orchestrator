@@ -6,6 +6,88 @@
 
 O AIOps novo já substitui o caminho canônico de diagnóstico, planejamento, dry-run, aprovação, run read-only, histórico e auditoria. No entanto, o repositório ainda mantém surfaces legadas ativas para chat, tarefas, approvals e provider health, além de adapters antigos e do `provider_registry` histórico. Isso significa que a substituição **ocorreu parcialmente**, mas **não está completa**.
 
+## Session L1 — Observabilidade de endpoints legados (Depreciação)
+
+**Status:** ✓ Implementado
+
+A Session L1 fornece visibilidade sobre o uso de endpoints legados sem alterar sua funcionalidade:
+
+### Headers de depreciação
+
+Todas as rotas legadas retornam headers padrão:
+
+```
+Deprecation: true
+Warning: 299 - "Legacy AIOps endpoint; use canonical /v1/aiops/* APIs"
+```
+
+Rotas legadas cobertas:
+- `POST /v1/chat`
+- `POST /v1/chat/ingest`
+- `GET /v1/tasks`
+- `GET /v1/tasks/{id}`
+- `GET /v1/approvals`
+- `POST /v1/approvals/{task_id}`
+- `GET /v1/providers/status`
+
+Rotas canônicas (`/v1/aiops/*`) **não** recebem headers de depreciação.
+
+### Logging estruturado
+
+O middleware da aplicação registra uso de endpoints legados com campo estruturado:
+
+```json
+{
+  "timestamp": "2026-05-01T21:54:51.044454Z",
+  "level": "WARNING",
+  "logger": "aiops.main",
+  "message": "Legacy AIOps endpoint used: POST /v1/chat",
+  "legacy_endpoint": "chat_ingest"
+}
+```
+
+Campos de logging:
+- `legacy_endpoint`: label com cardinality baixa (chat_ingest, tasks_collection, tasks_item, approvals_collection, approvals_item, providers_status)
+- `method` e `path`: informações da requisição
+- **Segurança:** Authorization, tokens, body e headers sensíveis **não** são registrados
+
+### Métricas Prometheus
+
+Cada hit em endpoint legado incrementa:
+
+```prometheus
+aiops_legacy_endpoint_hits_total{endpoint="chat_ingest"} 1
+aiops_legacy_endpoint_hits_total{endpoint="tasks_collection"} 5
+aiops_legacy_endpoint_hits_total{endpoint="approvals_item"} 2
+aiops_legacy_endpoint_hits_total{endpoint="providers_status"} 12
+```
+
+Exposto em `/metrics` em formato Prometheus.
+
+### Cobertura de testes
+
+A Session L1 inclui testes obrigatórios (5 testes):
+
+1. `test_legacy_chat_endpoint_is_marked_deprecated` — verifica headers
+2. `test_legacy_providers_status_marks_headers_and_updates_metrics` — verifica métricas
+3. `test_legacy_error_responses_are_also_marked_deprecated` — headers mesmo em erro (4xx)
+4. `test_canonical_aiops_routes_do_not_emit_legacy_headers` — garante rotas novas não têm headers
+5. `test_legacy_endpoint_logging_does_not_expose_sensitive_data` — valida segurança de logging
+
+Todos os testes passam. ✓
+
+### Uso recomendado
+
+**Para clientes legados:**
+1. Observe o header `Deprecation: true` nas respostas
+2. Monitore sua integração nas métricas Prometheus
+3. Comece a migrar para `/v1/aiops/*` — operações read-only equivalentes estão disponíveis
+
+**Para operadores:**
+1. Configure alertas em `/metrics` para `aiops_legacy_endpoint_hits_total`
+2. Revise logs estruturados para `legacy_endpoint` field
+3. Defina data de removação para endpoints legados (ex: v0.20.0)
+
 ## Mapa do AIOps novo
 
 O caminho canônico atual fica em `app/agent_router/` e nas rotas novas expostas pelo FastAPI:

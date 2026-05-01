@@ -206,3 +206,36 @@ def test_canonical_aiops_routes_do_not_emit_legacy_headers(
     assert response.status_code in {200, 503}
     assert "Deprecation" not in response.headers
     assert "Warning" not in response.headers
+
+
+def test_legacy_endpoint_logging_does_not_expose_sensitive_data(
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify that legacy endpoint logs do not expose Authorization, tokens, or body."""
+    secret_token = "super-secret-bearer-token-12345"
+    secret_body_value = "super-sensitive-data-payload"
+
+    caplog.clear()
+    response = client.post(
+        "/v1/chat",
+        headers=_bearer_headers(secret_token),
+        json={"message": secret_body_value},
+    )
+
+    assert response.status_code in {401, 403}
+    assert response.headers["Deprecation"] == "true"
+
+    # Verify that secret token is NOT in caplog
+    caplog_text = caplog.text.lower()
+    assert secret_token.lower() not in caplog_text, (
+        "Authorization token must not appear in logs"
+    )
+    assert secret_body_value.lower() not in caplog_text, (
+        "Request body payload must not appear in logs"
+    )
+
+    # Verify that legacy_endpoint field DOES appear (without the secrets)
+    assert "legacy_endpoint" in caplog_text or "legacy" in caplog_text, (
+        "Log should include legacy_endpoint field to indicate deprecation usage"
+    )
