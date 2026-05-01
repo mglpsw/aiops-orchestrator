@@ -1,5 +1,23 @@
 # Release Notes
 
+## v0.18.0-hotfix.1 - Docker build project name alignment
+
+### Fixed
+
+- Docker Compose build now uses consistent project name `-p deploy` for both build and up commands
+- **Problem:** Previous build generated `aiops-orchestrator-aiops-orchestrator` image but production container used `deploy-aiops-orchestrator`, causing stale code in runtime
+- **Impact:** Session L1 legacy deprecation observability (headers, logging, metrics) now properly active in container
+- **Verification:** `/health` ✓, `/ready` ✓, Deprecation headers ✓, Warning headers ✓, `aiops_legacy_endpoint_hits_total` metrics ✓
+
+### Build Command (Corrected)
+
+```bash
+docker compose -p deploy -f deploy/docker-compose.yml build --no-cache aiops-orchestrator
+docker compose -p deploy -f deploy/docker-compose.yml up -d --force-recreate --no-deps aiops-orchestrator
+```
+
+---
+
 ## v0.18.0 - AIOps readonly/chat checkpoint
 
 ### Added
