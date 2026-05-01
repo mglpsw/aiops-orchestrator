@@ -1339,3 +1339,430 @@ def test_workflow_security_guardrails() -> None:
     assert env["AGENT_ROUTER_MODEL"] == "${{ vars.AGENT_ROUTER_MODEL }}"
     assert env["AGENT_ROUTER_TIMEOUT_SECONDS"] == "${{ vars.AGENT_ROUTER_TIMEOUT_SECONDS }}"
     assert "actions" not in workflow["permissions"]
+
+
+# ---------------------------------------------------------------------------
+# Tests for evidence-based check reporting (docs-only, status labels, etc.)
+# ---------------------------------------------------------------------------
+
+def _check(name: str, conclusion: str | None, status: str | None = "completed", url: str | None = None) -> review.CheckSummary:
+    return review.CheckSummary(name=name, conclusion=conclusion, status=status, url=url)
+
+
+class TestIsDocsOnly:
+    def test_all_docs_files_returns_true(self) -> None:
+        assert review.is_docs_only(["docs/ARCHITECTURE.md", "CHANGELOG.md", "README.md"])
+
+    def test_mixed_docs_and_code_returns_false(self) -> None:
+        assert not review.is_docs_only(["docs/ARCHITECTURE.md", "app/main.py"])
+
+    def test_single_md_file_returns_true(self) -> None:
+        assert review.is_docs_only(["README.md"])
+
+    def test_changelog_alone_returns_true(self) -> None:
+        assert review.is_docs_only(["CHANGELOG.md"])
+
+    def test_empty_list_returns_false(self) -> None:
+        assert not review.is_docs_only([])
+
+    def test_docs_slash_prefix_returns_true(self) -> None:
+        assert review.is_docs_only(["docs/TESTING.md", "docs/OPERATIONS.md"])
+
+
+class TestCheckStatusLabel:
+    def test_success_is_passed(self) -> None:
+        assert review._check_status_label(_check("Pytest", "success")) == "passed"
+
+    def test_neutral_is_passed(self) -> None:
+        assert review._check_status_label(_check("Build", "neutral")) == "passed"
+
+    def test_failure_is_failed(self) -> None:
+        assert review._check_status_label(_check("Pytest", "failure")) == "failed"
+
+    def test_timed_out_is_timeout(self) -> None:
+        assert review._check_status_label(_check("Vitest", "timed_out")) == "timeout"
+
+    def test_cancelled_is_not_run(self) -> None:
+        assert review._check_status_label(_check("ESLint", "cancelled")) == "not_run"
+
+    def test_action_required_is_environment_error(self) -> None:
+        assert review._check_status_label(_check("Setup", "action_required")) == "environment_error"
+
+    def test_startup_failure_is_environment_error(self) -> None:
+        assert review._check_status_label(_check("Runner", "startup_failure")) == "environment_error"
+
+    def test_skipped_conclusion_is_skipped(self) -> None:
+        assert review._check_status_label(_check("Optional", "skipped")) == "skipped"
+
+    def test_queued_status_is_not_run(self) -> None:
+        assert review._check_status_label(_check("Pytest", None, status="queued")) == "not_run"
+
+    def test_in_progress_status_is_not_run(self) -> None:
+        assert review._check_status_label(_check("Pytest", None, status="in_progress")) == "not_run"
+
+
+class TestScanChecksForFindings:
+    def test_failure_conclusion_emits_p1(self) -> None:
+        checks = [_check("Pytest", "failure", url="https://ci.example.com/1")]
+        findings = review.scan_checks_for_findings(checks)
+        assert len(findings) == 1
+        assert findings[0].severity == "P1"
+        assert "conclusion=failure" in findings[0].evidence
+        assert "https://ci.example.com/1" in findings[0].evidence
+
+    def test_cancelled_does_not_emit_p1(self) -> None:
+        checks = [_check("Pytest", "cancelled")]
+        findings = review.scan_checks_for_findings(checks)
+        assert findings == []
+
+    def test_timed_out_does_not_emit_p1(self) -> None:
+        checks = [_check("Vitest", "timed_out")]
+        findings = review.scan_checks_for_findings(checks)
+        assert findings == []
+
+    def test_action_required_does_not_emit_p1(self) -> None:
+        checks = [_check("Setup", "action_required")]
+        findings = review.scan_checks_for_findings(checks)
+        assert findings == []
+
+    def test_startup_failure_does_not_emit_p1(self) -> None:
+        checks = [_check("Runner", "startup_failure")]
+        findings = review.scan_checks_for_findings(checks)
+        assert findings == []
+
+    def test_docs_only_pr_skips_functional_test_failure(self) -> None:
+        checks = [_check("Pytest", "failure"), _check("Vitest", "failure"), _check("ESLint", "failure")]
+        findings = review.scan_checks_for_findings(checks, docs_only=True)
+        assert findings == [], "docs-only PR must not generate P1 for functional test failures"
+
+    def test_docs_only_pr_still_reports_non_functional_failure(self) -> None:
+        checks = [_check("Security-Scan", "failure")]
+        findings = review.scan_checks_for_findings(checks, docs_only=True)
+        assert len(findings) == 1
+        assert findings[0].severity == "P1"
+
+    def test_non_docs_pr_still_reports_pytest_failure(self) -> None:
+        checks = [_check("Pytest", "failure")]
+        findings = review.scan_checks_for_findings(checks, docs_only=False)
+        assert len(findings) == 1
+        assert findings[0].severity == "P1"
+
+    def test_evidence_never_says_falhou(self) -> None:
+        checks = [_check("Pytest", "failure"), _check("ESLint", "timed_out")]
+        for docs_only in (True, False):
+            findings = review.scan_checks_for_findings(checks, docs_only=docs_only)
+            for f in findings:
+                assert "FALHOU" not in f.evidence, "evidence must not contain 'FALHOU'"
+                assert "FALHOU" not in f.risk
+                assert "FALHOU" not in f.recommendation
+
+
+class TestRenderChecksTable:
+    def test_empty_checks_returns_empty(self) -> None:
+        assert review._render_checks_table([]) == []
+
+    def test_passed_check_shows_passed(self) -> None:
+        rows = review._render_checks_table([_check("Pytest", "success")])
+        table = "\n".join(rows)
+        assert "Pytest" in table
+        assert "passed" in table
+
+    def test_failed_check_shows_conclusion_failure(self) -> None:
+        rows = review._render_checks_table([_check("Pytest", "failure", url="https://ci/1")])
+        table = "\n".join(rows)
+        assert "**failed**" in table
+        assert "conclusion=failure" in table
+        assert "https://ci/1" in table
+
+    def test_timeout_check_shows_timeout_label(self) -> None:
+        rows = review._render_checks_table([_check("Vitest", "timed_out")])
+        table = "\n".join(rows)
+        assert "timeout" in table
+        assert "timed_out" in table
+
+    def test_cancelled_check_shows_not_run(self) -> None:
+        rows = review._render_checks_table([_check("ESLint", "cancelled")])
+        table = "\n".join(rows)
+        assert "not_run" in table
+
+    def test_docs_only_skips_functional_test_failure(self) -> None:
+        rows = review._render_checks_table(
+            [_check("Pytest", "failure"), _check("Vitest", "failure")],
+            docs_only=True,
+        )
+        table = "\n".join(rows)
+        assert "**failed**" not in table, "docs-only table must not show '**failed**' for functional tests"
+        assert "skipped" in table
+
+    def test_table_never_contains_falhou(self) -> None:
+        checks = [
+            _check("Pytest", "failure"),
+            _check("ESLint", "timed_out"),
+            _check("Build", "cancelled"),
+            _check("Setup", "action_required"),
+        ]
+        for docs_only in (True, False):
+            rows = review._render_checks_table(checks, docs_only=docs_only)
+            table = "\n".join(rows)
+            assert "FALHOU" not in table
+
+
+class TestBuildDeterministicFindingsDocsOnly:
+    def test_docs_only_pr_with_failing_checks_has_no_p1(self) -> None:
+        files = [
+            review.FileChange("CHANGELOG.md", "modified", 5, 0),
+            review.FileChange("docs/ARCHITECTURE.md", "modified", 3, 1),
+        ]
+        checks = [
+            _check("Pytest", "failure"),
+            _check("Vitest", "failure"),
+            _check("ESLint", "failure"),
+        ]
+        findings = review.build_deterministic_findings(files, checks)
+        p1 = [f for f in findings if f.severity == "P1"]
+        assert p1 == [], "docs-only PR with failing functional checks must not produce P1 findings"
+
+    def test_code_pr_with_failing_pytest_has_p1(self) -> None:
+        files = [review.FileChange("app/main.py", "modified", 10, 2)]
+        checks = [_check("Pytest", "failure", url="https://ci/2")]
+        findings = review.build_deterministic_findings(files, checks)
+        p1 = [f for f in findings if f.severity == "P1"]
+        assert any("check_failed::Pytest" in f.rule_id for f in p1)
+
+
+class TestRenderReviewNoFalhou:
+    """The rendered comment must never say 'FALHOU' unless backed by evidence."""
+
+    def _make_ctx(self, files: list[review.FileChange]) -> review.ReviewContext:
+        return review.ReviewContext(
+            owner="org",
+            repo="repo",
+            issue_number=1,
+            author="alice",
+            association="MEMBER",
+            pr_number=1,
+            title="Test PR",
+            body="body",
+            base_ref="master",
+            head_ref="feat/x",
+            head_sha="abc123",
+            html_url="https://github.com/org/repo/pull/1",
+            files=files,
+            checks=[],
+        )
+
+    def test_comment_without_logs_does_not_contain_falhou(self) -> None:
+        ctx = self._make_ctx([review.FileChange("CHANGELOG.md", "modified", 1, 0)])
+        rendered = review.render_review([], [], ctx, llm_mode=False)
+        assert "FALHOU" not in rendered
+
+    def test_docs_only_pr_shows_documental_flag(self) -> None:
+        ctx = self._make_ctx([review.FileChange("docs/TESTING.md", "modified", 1, 0)])
+        rendered = review.render_review([], [], ctx, llm_mode=False)
+        assert "PR documental: sim" in rendered
+
+    def test_code_pr_does_not_show_documental_flag(self) -> None:
+        ctx = self._make_ctx([review.FileChange("app/main.py", "modified", 1, 0)])
+        rendered = review.render_review([], [], ctx, llm_mode=False)
+        assert "PR documental: não" in rendered
+
+    def test_checks_table_rendered_not_plain_list(self) -> None:
+        ctx = self._make_ctx([review.FileChange("app/main.py", "modified", 1, 0)])
+        ctx.checks.append(_check("Pytest", "success"))
+        rendered = review.render_review([], ctx.checks, ctx, llm_mode=False)
+        assert "## Validações de CI" in rendered
+        assert "| Check | Status | Evidência |" in rendered
+
+    def test_failed_check_shows_conclusion_failure_in_comment(self) -> None:
+        ctx = self._make_ctx([review.FileChange("app/main.py", "modified", 1, 0)])
+        ctx.checks.append(_check("Pytest", "failure", url="https://ci/99"))
+        findings = review.build_deterministic_findings(ctx.files, ctx.checks)
+        rendered = review.render_review(findings, ctx.checks, ctx, llm_mode=False)
+        assert "conclusion=failure" in rendered
+        assert "FALHOU" not in rendered
+
+    def test_docs_only_checks_table_shows_skipped_not_failed(self) -> None:
+        ctx = self._make_ctx([review.FileChange("CHANGELOG.md", "modified", 2, 0)])
+        ctx.checks.extend([_check("Pytest", "failure"), _check("Vitest", "failure")])
+        rendered = review.render_review([], ctx.checks, ctx, llm_mode=False)
+        assert "**failed**" not in rendered
+        assert "skipped" in rendered
+        assert "FALHOU" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# Tests for CheckResult / run_check  (step 7 of the task)
+# ---------------------------------------------------------------------------
+
+class TestCheckResult:
+    """CheckResult fields must be set according to the strict status rules."""
+
+    def test_status_literals_are_valid(self) -> None:
+        """CheckResult accepts all valid status strings."""
+        valid = ("passed", "failed", "skipped", "not_run", "timeout", "missing_command", "environment_error")
+        for status in valid:
+            cr = review.CheckResult(name="x", command=["x"], cwd="/", status=status)  # type: ignore[arg-type]
+            assert cr.status == status
+
+    def test_failed_requires_nonzero_exit_code(self) -> None:
+        """status=failed must carry a non-zero exit_code, never None."""
+        cr = review.CheckResult(name="pytest", command=["pytest"], cwd="/", status="failed", exit_code=1)
+        assert cr.exit_code is not None
+        assert cr.exit_code != 0
+
+    def test_passed_carries_zero_exit_code(self) -> None:
+        cr = review.CheckResult(name="pytest", command=["pytest"], cwd="/", status="passed", exit_code=0)
+        assert cr.exit_code == 0
+
+    def test_missing_command_has_no_exit_code(self) -> None:
+        cr = review.CheckResult(name="vitest", command=["vitest"], cwd="/", status="missing_command")
+        assert cr.exit_code is None
+
+    def test_timeout_has_no_exit_code(self) -> None:
+        cr = review.CheckResult(name="eslint", command=["eslint", "."], cwd="/", status="timeout")
+        assert cr.exit_code is None
+
+    def test_not_run_has_no_exit_code(self) -> None:
+        cr = review.CheckResult(name="pytest", command=["pytest"], cwd="/", status="not_run")
+        assert cr.exit_code is None
+
+
+class TestRunCheck:
+    """run_check() must classify outcomes strictly and never invent failure."""
+
+    # --- true command, exit_code=0 ----------------------------------------
+
+    def test_exit_code_zero_yields_passed(self) -> None:
+        result = review.run_check("true", ["true"], cwd="/")
+        assert result.status == "passed"
+        assert result.exit_code == 0
+
+    # --- command that exits non-zero --------------------------------------
+
+    def test_nonzero_exit_code_yields_failed_with_log(self) -> None:
+        result = review.run_check("false", ["false"], cwd="/")
+        assert result.status == "failed"
+        assert result.exit_code is not None
+        assert result.exit_code != 0
+
+    def test_failed_result_carries_exit_code(self) -> None:
+        """exit_code must be set when status=failed (never None for failed)."""
+        result = review.run_check("sh_exit1", ["sh", "-c", "exit 1"], cwd="/")
+        assert result.status == "failed"
+        assert result.exit_code == 1
+
+    # --- missing command --------------------------------------------------
+
+    def test_missing_command_yields_missing_command_not_failed(self) -> None:
+        result = review.run_check(
+            "no-such-binary-xyzzy",
+            ["no-such-binary-xyzzy", "--version"],
+            cwd="/",
+        )
+        assert result.status == "missing_command", (
+            f"missing binary must yield 'missing_command', got '{result.status}'"
+        )
+        assert result.exit_code is None
+        assert result.status != "failed"
+
+    def test_missing_command_has_reason(self) -> None:
+        result = review.run_check("phantom", ["phantom-999", "--help"], cwd="/")
+        assert result.status == "missing_command"
+        assert result.reason  # must not be empty
+
+    # --- timeout ----------------------------------------------------------
+
+    def test_timeout_yields_timeout_not_failed(self) -> None:
+        result = review.run_check(
+            "sleep",
+            ["sh", "-c", "sleep 10"],
+            cwd="/",
+            timeout=1,
+        )
+        assert result.status == "timeout", (
+            f"timed-out command must yield 'timeout', got '{result.status}'"
+        )
+        assert result.exit_code is None
+
+    def test_timeout_has_reason(self) -> None:
+        result = review.run_check("sleep", ["sh", "-c", "sleep 10"], cwd="/", timeout=1)
+        assert result.status == "timeout"
+        assert "1s" in result.reason or "timeout" in result.reason.lower()
+
+    # --- environment error ------------------------------------------------
+
+    def test_missing_env_var_yields_environment_error(self) -> None:
+        import uuid
+        unique_var = f"_TEST_MISSING_{uuid.uuid4().hex.upper()}"
+        result = review.run_check("echo", ["echo", "hello"], cwd="/", env_vars=[unique_var])
+        assert result.status == "environment_error"
+        assert result.exit_code is None
+
+    def test_environment_error_has_reason(self) -> None:
+        import uuid
+        unique_var = f"_TEST_MISSING_{uuid.uuid4().hex.upper()}"
+        result = review.run_check("echo", ["echo", "hello"], cwd="/", env_vars=[unique_var])
+        assert result.reason
+        assert unique_var in result.reason
+
+    # --- no false FALHOU generation ---------------------------------------
+
+    def test_missing_command_result_does_not_contain_falhou(self) -> None:
+        result = review.run_check("no-binary-abc", ["no-binary-abc"], cwd="/")
+        haystack = " ".join([result.status, result.reason, result.stdout_tail, result.stderr_tail])
+        assert "FALHOU" not in haystack
+
+    def test_timeout_result_does_not_contain_falhou(self) -> None:
+        result = review.run_check("sleep", ["sh", "-c", "sleep 10"], cwd="/", timeout=1)
+        haystack = " ".join([result.status, result.reason, result.stdout_tail, result.stderr_tail])
+        assert "FALHOU" not in haystack
+
+
+class TestNoGenericRecommendationsWithoutEvidence:
+    """render_review must not produce generic security/performance recs without diff evidence."""
+
+    def _make_ctx(self, files: list[review.FileChange]) -> review.ReviewContext:
+        return review.ReviewContext(
+            owner="org", repo="repo", issue_number=1, author="alice",
+            association="MEMBER", pr_number=1, title="PR", body="body",
+            base_ref="master", head_ref="feat/x", head_sha="abc",
+            html_url="https://github.com/org/repo/pull/1",
+            files=files, checks=[],
+        )
+
+    def test_docs_only_pr_no_generic_security_recommendation(self) -> None:
+        """A docs-only PR with no findings must not contain generic security text."""
+        ctx = self._make_ctx([review.FileChange("docs/SECURITY.md", "modified", 2, 0)])
+        rendered = review.render_review([], [], ctx, llm_mode=False)
+        generic_phrases = [
+            "validar autenticação",
+            "otimizar SQL",
+            "revisar regras ESLint",
+            "adicionar rate-limit",
+            "sanitizar input",
+        ]
+        for phrase in generic_phrases:
+            assert phrase.lower() not in rendered.lower(), (
+                f"Generic phrase '{phrase}' must not appear without evidence"
+            )
+
+    def test_no_p1_p2_findings_renders_clean_summary(self) -> None:
+        ctx = self._make_ctx([review.FileChange("README.md", "modified", 1, 0)])
+        rendered = review.render_review([], [], ctx, llm_mode=False)
+        assert "Não encontrei P1/P2 determinísticos." in rendered
+        assert "FALHOU" not in rendered
+
+    def test_check_without_failure_conclusion_produces_no_p1(self) -> None:
+        """Checks that are timeout/cancelled/queued/in_progress must not produce P1 findings."""
+        non_failure_checks = [
+            review.CheckSummary("Pytest", conclusion="timed_out", status="completed"),
+            review.CheckSummary("ESLint", conclusion="cancelled", status="completed"),
+            review.CheckSummary("Vitest", conclusion=None, status="queued"),
+            review.CheckSummary("Build", conclusion="action_required", status="completed"),
+        ]
+        files = [review.FileChange("app/main.py", "modified", 5, 1)]
+        findings = review.build_deterministic_findings(files, non_failure_checks)
+        p1 = [f for f in findings if f.severity == "P1" and "check_failed" in f.rule_id]
+        assert p1 == [], (
+            "Non-failure check conclusions must not produce check_failed P1 findings"
+        )

@@ -6,13 +6,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import socket
+import subprocess
 import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 DEFAULT_AGENT_ROUTER_BASE_URL = "https://api.ks-sm.net:9443"
@@ -116,6 +118,143 @@ class Finding:
     recommendation: str
     rule_id: str
     related_files: tuple[str, ...] = ()
+
+
+_CheckStatus = Literal[
+    "passed",
+    "failed",
+    "skipped",
+    "not_run",
+    "timeout",
+    "missing_command",
+    "environment_error",
+]
+
+_DEFAULT_CHECK_TIMEOUT = 120
+
+
+@dataclass
+class CheckResult:
+    """Result of a locally-executed validation command.
+
+    Rules:
+    - ``failed``            only when exit_code is non-zero.
+    - ``missing_command``   when the executable is not found on PATH.
+    - ``not_run``           when the check was never invoked (e.g. out of scope).
+    - ``skipped``           when a docs-only PR makes a functional test irrelevant.
+    - ``environment_error`` when a required env-var or dependency is absent.
+    - ``timeout``           when the process exceeded the allotted time.
+    """
+
+    name: str
+    command: list[str]
+    cwd: str
+    status: _CheckStatus
+    exit_code: int | None = None
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+    reason: str = ""
+
+
+def run_check(
+    name: str,
+    command: list[str],
+    *,
+    cwd: str | None = None,
+    timeout: int = _DEFAULT_CHECK_TIMEOUT,
+    env_vars: list[str] | None = None,
+) -> CheckResult:
+    """Execute *command* and return a :class:`CheckResult` with evidence.
+
+    Missing environment variables listed in *env_vars* yield
+    ``environment_error`` without attempting to run the command.
+    A missing executable yields ``missing_command``.
+    A process timeout yields ``timeout``.
+    Any non-zero exit code yields ``failed`` with captured output.
+    """
+    resolved_cwd = cwd or os.getcwd()
+
+    # --- environment guard -------------------------------------------------
+    if env_vars:
+        missing = [v for v in env_vars if not os.getenv(v)]
+        if missing:
+            return CheckResult(
+                name=name,
+                command=command,
+                cwd=resolved_cwd,
+                status="environment_error",
+                reason=f"missing env vars: {', '.join(missing)}",
+            )
+
+    # --- command availability guard ----------------------------------------
+    executable = command[0] if command else ""
+    if executable and not shutil.which(executable):
+        return CheckResult(
+            name=name,
+            command=command,
+            cwd=resolved_cwd,
+            status="missing_command",
+            reason=f"command not found on PATH: {executable}",
+        )
+
+    # --- execution ---------------------------------------------------------
+    try:
+        proc = subprocess.run(  # noqa: S603
+            command,
+            capture_output=True,
+            text=True,
+            cwd=resolved_cwd,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout_raw = (exc.stdout or b"")
+        stderr_raw = (exc.stderr or b"")
+        stdout_text = stdout_raw.decode("utf-8", errors="replace") if isinstance(stdout_raw, bytes) else str(stdout_raw)
+        stderr_text = stderr_raw.decode("utf-8", errors="replace") if isinstance(stderr_raw, bytes) else str(stderr_raw)
+        return CheckResult(
+            name=name,
+            command=command,
+            cwd=resolved_cwd,
+            status="timeout",
+            stdout_tail=_tail_lines(stdout_text, 20),
+            stderr_tail=_tail_lines(stderr_text, 20),
+            reason=f"timed out after {timeout}s",
+        )
+    except FileNotFoundError:
+        return CheckResult(
+            name=name,
+            command=command,
+            cwd=resolved_cwd,
+            status="missing_command",
+            reason=f"command not found: {executable}",
+        )
+    except OSError as exc:
+        return CheckResult(
+            name=name,
+            command=command,
+            cwd=resolved_cwd,
+            status="environment_error",
+            reason=str(exc),
+        )
+
+    status: _CheckStatus = "passed" if proc.returncode == 0 else "failed"
+    return CheckResult(
+        name=name,
+        command=command,
+        cwd=resolved_cwd,
+        status=status,
+        exit_code=proc.returncode,
+        stdout_tail=_tail_lines(proc.stdout, 40),
+        stderr_tail=_tail_lines(proc.stderr, 40),
+    )
+
+
+def _tail_lines(text: str, n: int) -> str:
+    """Return the last *n* lines of *text*, stripped of leading blank lines."""
+    if not text:
+        return ""
+    lines = text.splitlines()
+    return "\n".join(lines[-n:])
 
 
 @dataclass
@@ -685,21 +824,82 @@ def scan_patch_for_findings(file: FileChange, *, scanner_meta_test_coverage: boo
     return findings
 
 
-def scan_checks_for_findings(checks: list[CheckSummary]) -> list[Finding]:
+_FUNCTIONAL_TEST_CHECK_RE = re.compile(
+    r"(?i)\b(pytest|vitest|jest|eslint|mypy|flake8|ruff|build|test|lint|check)\b"
+)
+
+
+def is_docs_only(changed_files: list[str]) -> bool:
+    """Return True when every changed file is documentation or changelog only."""
+    if not changed_files:
+        return False
+    return all(
+        path.startswith("docs/")
+        or path.endswith(".md")
+        or path == "CHANGELOG.md"
+        for path in changed_files
+    )
+
+
+def _check_is_functional_test(name: str) -> bool:
+    """Return True when a check name looks like a functional test or linter."""
+    return bool(_FUNCTIONAL_TEST_CHECK_RE.search(name))
+
+
+def _check_status_label(check: CheckSummary) -> str:
+    """Map a GitHub check conclusion/status to a normalised label.
+
+    Labels: passed | failed | skipped | not_run | timeout | environment_error
+    """
+    conclusion = (check.conclusion or "").lower()
+    status = (check.status or "").lower()
+    if conclusion in {"success", "neutral"}:
+        return "passed"
+    if conclusion == "skipped":
+        return "skipped"
+    if conclusion == "failure":
+        return "failed"
+    if conclusion == "timed_out":
+        return "timeout"
+    if conclusion == "cancelled":
+        return "not_run"
+    if conclusion in {"action_required", "startup_failure"}:
+        return "environment_error"
+    if status in {"queued", "in_progress"}:
+        return "not_run"
+    return "not_run"
+
+
+def scan_checks_for_findings(checks: list[CheckSummary], *, docs_only: bool = False) -> list[Finding]:
+    """Emit a P1 only when a check has conclusion=failure.
+
+    Cancelled, timed-out, and environment checks are NOT the same as failure:
+    they must not be reported as "FALHOU" in the review comment.
+    For docs-only PRs, functional-test failures are skipped — the tests were
+    not meant to catch documentation changes.
+    """
     findings: list[Finding] = []
     for check in checks:
-        status = (check.conclusion or check.status or "").lower()
-        if status in {"failure", "cancelled", "timed_out", "action_required", "startup_failure"}:
-            _emit(
-                findings,
-                severity="P1",
-                file=FileChange(path="CI / Checks", status=status, additions=0, deletions=0, patch=None),
-                rule_id=f"check_failed::{check.name}",
-                evidence=f"{check.name}: {status}",
-                risk="Required CI/check appears to be failing.",
-                recommendation="Fix the failing check before merging.",
-            )
-            break
+        label = _check_status_label(check)
+        if label != "failed":
+            continue
+        if docs_only and _check_is_functional_test(check.name):
+            # Docs-only PR: a functional test failure is not evidence of a bug
+            # introduced by this PR — mark as not_run in the table, not P1.
+            continue
+        evidence = f"{check.name}: conclusion=failure"
+        if check.url:
+            evidence += f" — {check.url}"
+        _emit(
+            findings,
+            severity="P1",
+            file=FileChange(path="CI / Checks", status="failure", additions=0, deletions=0, patch=None),
+            rule_id=f"check_failed::{check.name}",
+            evidence=evidence,
+            risk=f"CI check '{check.name}' retornou conclusion=failure.",
+            recommendation=f"Verifique os logs do check '{check.name}' ({check.url or 'sem URL'}) antes de fazer merge.",
+        )
+        break
     return findings
 
 
@@ -808,9 +1008,10 @@ def rank_findings(findings: list[Finding]) -> list[Finding]:
 def build_deterministic_findings(files: list[FileChange], checks: list[CheckSummary]) -> list[Finding]:
     candidates: list[Finding] = []
     scanner_meta_test_coverage = any(file.path == "tests/test_github_agent_review.py" for file in files)
+    docs_only = is_docs_only([f.path for f in files])
     for file in files:
         candidates.extend(scan_patch_for_findings(file, scanner_meta_test_coverage=scanner_meta_test_coverage))
-    candidates.extend(scan_checks_for_findings(checks))
+    candidates.extend(scan_checks_for_findings(checks, docs_only=docs_only))
     candidates.extend(scan_pr_level_gaps(files))
     return rank_findings(candidates)
 
@@ -827,6 +1028,52 @@ def review_status(deterministic_findings: list[Finding], llm_findings: list[Find
         if any(finding.severity == "P2" for finding in filtered_llm_findings):
             return "needs_review"
     return "approved"
+
+
+def _render_checks_table(checks: list[CheckSummary], *, docs_only: bool = False) -> list[str]:
+    """Render a markdown table of CI checks with normalised status labels.
+
+    Rules:
+    - failed    → only when conclusion=failure
+    - timeout   → conclusion=timed_out
+    - not_run   → cancelled / queued / in_progress or no conclusion
+    - skipped   → conclusion=skipped OR docs-only PR + functional test
+    - environment_error → action_required / startup_failure
+    - passed    → success / neutral
+    """
+    if not checks:
+        return []
+    lines: list[str] = ["", "## Validações de CI", ""]
+    lines.append("| Check | Status | Evidência |")
+    lines.append("|---|---|---|")
+    for check in checks[:10]:
+        label = _check_status_label(check)
+        if docs_only and _check_is_functional_test(check.name) and label == "failed":
+            display = "skipped"
+            evidence = "PR documental — não computado como falha"
+        elif label == "failed":
+            url_part = f" — [{check.url}]({check.url})" if check.url else ""
+            display = "**failed**"
+            evidence = f"conclusion=failure{url_part}"
+        elif label == "timeout":
+            url_part = f" — [{check.url}]({check.url})" if check.url else ""
+            display = "timeout"
+            evidence = f"conclusion=timed_out{url_part}"
+        elif label == "environment_error":
+            url_part = f" — [{check.url}]({check.url})" if check.url else ""
+            display = "environment_error"
+            evidence = f"conclusion={check.conclusion or 'startup_failure'}{url_part}"
+        elif label == "not_run":
+            display = "not_run"
+            evidence = f"status={check.status or 'cancelled'}"
+        elif label == "skipped":
+            display = "skipped"
+            evidence = "conclusion=skipped"
+        else:
+            display = label
+            evidence = "—"
+        lines.append(f"| {check.name} | {display} | {evidence} |")
+    return lines
 
 
 def _render_findings_block(title: str, findings: list[Finding]) -> list[str]:
@@ -876,6 +1123,7 @@ def render_review(
         f"- Modo: {'revisão determinística + Agent Router' if llm_mode else 'revisão determinística'}",
         "- Código do PR executado: não",
         f"- Escopo: {summarize_pr_scope(pr_context.files)}",
+        f"- PR documental: {'sim' if is_docs_only([f.path for f in pr_context.files]) else 'não'}",
         "",
         "## Achados críticos",
     ]
@@ -900,13 +1148,9 @@ def render_review(
             lines.extend(_render_findings_block("P2 — Importantes", llm_p2))
         if llm_p3:
             lines.extend(_render_findings_block("P3 — Sugestões", llm_p3))
+    _pr_docs_only = is_docs_only([f.path for f in pr_context.files])
     if checks:
-        failing = [check for check in checks if (check.conclusion or check.status or "").lower() not in {"success", "neutral", "skipped"}]
-        if failing:
-            lines.extend(["", "## Verificações de CI"])
-            for check in failing[:3]:
-                state = check.conclusion or check.status or "unknown"
-                lines.append(f"- {check.name}: {state}{f' ({check.url})' if check.url else ''}")
+        lines.extend(_render_checks_table(checks, docs_only=_pr_docs_only))
     llm_note_lines: list[str] = []
     if llm_warning:
         llm_note_lines.append(f"- {llm_warning}")
@@ -1009,10 +1253,12 @@ def fetch_review_context(client: GitHubClient, payload: dict[str, Any], command_
 
 
 def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: list[Finding]) -> str:
+    _docs_only = is_docs_only([f.path for f in pr_context.files[:MAX_FILES_ANALYZED]])
     lines = [
         f"Título do PR: {_redact_sensitive_text(pr_context.title or '')}",
         f"Descrição do PR: {_redact_sensitive_text(_truncate_text(pr_context.body or '', 600))}",
         f"Escopo: {summarize_pr_scope(pr_context.files)}",
+        f"PR documental: {'sim — apenas docs/ e .md alterados' if _docs_only else 'não'}",
         "Arquivos alterados:",
     ]
     for file in pr_context.files[:MAX_FILES_ANALYZED]:
@@ -1021,10 +1267,12 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
             f"- {file.path} [{file.status}] +{file.additions} -{file.deletions}: {_redact_sensitive_text(snippet)}"
         )
     if pr_context.checks:
-        lines.append("Checks:")
+        lines.append("Checks (status real do GitHub API):")
         for check in pr_context.checks[:10]:
-            state = check.conclusion or check.status or "unknown"
-            lines.append(f"- {check.name}: {state}")
+            label = _check_status_label(check)
+            if _docs_only and _check_is_functional_test(check.name) and label == "failed":
+                label = "skipped"
+            lines.append(f"- {check.name}: {label}")
     if deterministic_findings:
         lines.append("Achados determinísticos:")
         for finding in deterministic_findings[:MAX_FINDINGS]:
@@ -1042,6 +1290,9 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
             "- Falsos positivos baseados em placeholders de teste como test-token, test_token, fake-token, fake_token, dummy-token, dummy, example, placeholder, redacted, [REDACTED], <token>, <secret>, changeme e local-only não são segredos reais.",
             "- Não trate ajuste isolado de MAX_BUNDLE_CHARS como P2; só sinalize se houver regressão de truncamento sem teste.",
             "- Não invente arquivos ou linhas.",
+            "- NUNCA diga que um check 'FALHOU' se o status não for 'failed' (conclusion=failure).",
+            "- Para PR documental, checks funcionais são 'skipped', não 'falhou'.",
+            "- Não adicione recomendações genéricas de segurança/performance sem evidência no diff.",
         ]
     )
     bundle = "\n".join(lines)
@@ -1127,7 +1378,14 @@ def build_agent_router_payload(
         "regressões de segurança, quebras de CI/runtime e violações de contrato. Retorne no máximo "
         "5 achados P1/P2/P3 em formato estruturado com severity, file, evidence, risk e recommendation. "
         "Não elogie. Não faça resumo longo. Não invente arquivos ou linhas. Não trate ajuste isolado de MAX_BUNDLE_CHARS como P2; "
-        "só sinalize se houver regressão de truncamento sem teste. Se não houver P1/P2, diga isso claramente."
+        "só sinalize se houver regressão de truncamento sem teste. Se não houver P1/P2, diga isso claramente. "
+        "REGRAS OBRIGATÓRIAS DE EVIDÊNCIA: "
+        "(1) Nunca diga que uma verificação 'falhou' (FALHOU, failed, falhando) a menos que o payload mostre conclusion=failure. "
+        "(2) Checks com conclusion=timed_out devem ser descritos como 'timeout', não como falha. "
+        "(3) Checks com cancelled/action_required/startup_failure devem ser descritos pelo status real. "
+        "(4) Em PRs documentais (apenas docs/ e .md), não reporte checks funcionais como falha. "
+        "(5) Não adicione recomendações genéricas de segurança ou performance sem evidência no diff. "
+        "(6) Se uma validação não foi executada, diga 'não executado', nunca 'falhou'."
     )
     payload: dict[str, Any] = {
         "messages": [
