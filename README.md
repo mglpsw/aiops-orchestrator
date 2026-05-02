@@ -219,3 +219,18 @@ manual and approved.
 - [`docs/ROLLBACK.md`](docs/ROLLBACK.md)
 - [`docs/aiops-bluegreen-operations.md`](docs/aiops-bluegreen-operations.md)
 - [`docs/bluegreen-deployment.md`](docs/bluegreen-deployment.md)
+
+---
+
+## KS-SM Labs
+
+Este repositório faz parte do ecossistema KS-SM Labs
+([github.com/homelab-mglpsw](https://github.com/homelab-mglpsw)), que
+centraliza projetos de homelab, AIOps, observabilidade e agentes inteligentes.
+
+O `aiops-orchestrator` concentra a camada de orquestração AIOps: diagnóstico assistido,
+automações operacionais e integração com métricas reais do homelab. Por poder evoluir para
+executar ações operacionais, é tratado com cautela especial dentro da organização.
+
+Consulte [`docs/repo-metadata.md`](docs/repo-metadata.md) para metadados, permissões e
+diretrizes de branch protection recomendadas para este repositório.
