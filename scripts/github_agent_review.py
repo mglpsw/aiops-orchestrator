@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 
 DEFAULT_AGENT_ROUTER_BASE_URL = "https://api.ks-sm.net:9443"
 DEFAULT_AGENT_ROUTER_TIMEOUT_SECONDS = 60
+DEFAULT_AGENT_REVIEW_MODEL = "code"
 ALLOWED_ASSOCIATIONS = {"OWNER", "MEMBER", "COLLABORATOR"}
 MAX_FINDINGS = 5
 MAX_RECENT_COMMENTS = 20
@@ -29,6 +30,7 @@ MAX_COMMENT_CHARS = 5000
 MAX_LLM_NOTE_CHARS = 320
 MAX_LLM_ASK_RESPONSE_CHARS = 420
 COMMENT_MARKER = "<!-- aiops-agent-review:v2 -->"
+NO_BLOCKING_FINDINGS_RESPONSE = "Não encontrei problema bloqueante no diff analisado."
 _COMMENT_403_LOG_MESSAGE = "GitHub token cannot write PR comments; wrote review to step summary instead"
 
 _COMMAND_REVIEW = "/agent review"
@@ -275,6 +277,14 @@ class ReviewContext:
     checks: list[CheckSummary] = field(default_factory=list)
     recent_comments: list[dict[str, Any]] = field(default_factory=list)
     command_mode: str = "none"
+
+
+@dataclass(frozen=True)
+class ReviewBundle:
+    content: str
+    diff_chars: int
+    files_count: int
+    truncated: bool
 
 
 @dataclass(frozen=True)
@@ -967,7 +977,7 @@ def summarize_pr_scope(files: list[FileChange]) -> str:
 
 
 def _severity_rank(severity: str) -> int:
-    return {"P1": 0, "P2": 1, "P3": 2}.get(severity, 9)
+    return {"P0": 0, "P1": 1, "P2": 2, "P3": 3}.get(severity, 9)
 
 
 def _finding_key(finding: Finding) -> tuple[str, str, str]:
@@ -1017,13 +1027,13 @@ def build_deterministic_findings(files: list[FileChange], checks: list[CheckSumm
 
 
 def review_status(deterministic_findings: list[Finding], llm_findings: list[Finding] | None = None) -> str:
-    if any(finding.severity == "P1" for finding in deterministic_findings):
+    if any(finding.severity in {"P0", "P1"} for finding in deterministic_findings):
         return "changes_requested"
     if any(finding.severity == "P2" for finding in deterministic_findings):
         return "needs_review"
     filtered_llm_findings = _filter_placeholder_llm_findings(llm_findings or [])
     if filtered_llm_findings:
-        if any(finding.severity == "P1" for finding in filtered_llm_findings):
+        if any(finding.severity in {"P0", "P1"} for finding in filtered_llm_findings):
             return "changes_requested"
         if any(finding.severity == "P2" for finding in filtered_llm_findings):
             return "needs_review"
@@ -1127,21 +1137,27 @@ def render_review(
         "",
         "## Achados críticos",
     ]
+    p0 = [finding for finding in findings if finding.severity == "P0"]
     p1 = [finding for finding in findings if finding.severity == "P1"]
     p2 = [finding for finding in findings if finding.severity == "P2"]
     p3 = [finding for finding in findings if finding.severity == "P3"]
-    if not (p1 or p2):
+    if not (p0 or p1 or p2):
         lines.append("- Não encontrei P1/P2 determinísticos.")
         if p3:
             lines.extend(_render_findings_block("P3 — Sugestões", p3))
     else:
+        if p0:
+            lines.extend(_render_findings_block("P0 — Bloqueadores críticos", p0))
         lines.extend(_render_findings_block("P1 — Bloqueadores", p1))
         lines.extend(_render_findings_block("P2 — Importantes", p2))
     if llm_findings:
         lines.extend(["", "## Achados do LLM"])
+        llm_p0 = [finding for finding in llm_findings if finding.severity == "P0"]
         llm_p1 = [finding for finding in llm_findings if finding.severity == "P1"]
         llm_p2 = [finding for finding in llm_findings if finding.severity == "P2"]
         llm_p3 = [finding for finding in llm_findings if finding.severity == "P3"]
+        if llm_p0:
+            lines.extend(_render_findings_block("P0 — Bloqueadores críticos", llm_p0))
         if llm_p1:
             lines.extend(_render_findings_block("P1 — Bloqueadores", llm_p1))
         if llm_p2:
@@ -1252,13 +1268,28 @@ def fetch_review_context(client: GitHubClient, payload: dict[str, Any], command_
     )
 
 
-def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: list[Finding]) -> str:
+def _is_patch_snippet_truncated(patch: str | None) -> bool:
+    if not patch:
+        return False
+    normalized_lines = _normalize_patch_text(patch)
+    if len(normalized_lines) > 6:
+        return True
+    snippet = " | ".join(normalized_lines[:6]) if normalized_lines else patch.replace("\n", " ")
+    return len(_redact_sensitive_text(snippet)) > MAX_PATCH_SNIPPET_CHARS
+
+
+def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: list[Finding]) -> ReviewBundle:
     _docs_only = is_docs_only([f.path for f in pr_context.files[:MAX_FILES_ANALYZED]])
+    diff_chars = sum(len(file.patch or "") for file in pr_context.files)
+    truncated = len(pr_context.files) > MAX_FILES_ANALYZED or any(_is_patch_snippet_truncated(file.patch) for file in pr_context.files)
     lines = [
         f"Título do PR: {_redact_sensitive_text(pr_context.title or '')}",
         f"Descrição do PR: {_redact_sensitive_text(_truncate_text(pr_context.body or '', 600))}",
         f"Escopo: {summarize_pr_scope(pr_context.files)}",
         f"PR documental: {'sim — apenas docs/ e .md alterados' if _docs_only else 'não'}",
+        f"Metadados do diff: diff_chars={diff_chars}, files_count={len(pr_context.files)}, truncated={'true' if truncated else 'false'}",
+        "Se o diff estiver incompleto ou truncado, diga isso explicitamente.",
+        "Se faltar contexto de arquivo, diga qual contexto falta.",
         "Arquivos alterados:",
     ]
     for file in pr_context.files[:MAX_FILES_ANALYZED]:
@@ -1283,10 +1314,25 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
         [
             "Contrato de revisão:",
             "- Responda em pt-BR.",
-            "- Seja curto, objetivo e acionável.",
+            "- Você é reviewer sênior de código.",
+            "- Revise o diff abaixo procurando apenas problemas concretos.",
+            "- Não dê comentários genéricos.",
+            "- Não sugira melhorias cosméticas.",
+            "- Não elogie o código.",
+            "- Não invente problemas sem evidência no diff.",
             "- Max 5 achados.",
-            "- Priorize P1 e P2.",
-            "- Não faça elogios nem resumo longo.",
+            "- Priorize: bug funcional, regressão, quebra de contrato/API, métrica Prometheus incorreta, risco de segurança, teste ausente para comportamento alterado, risco de deploy/runtime e inconsistência com documentação/contrato existente.",
+            "- Para cada achado, responda exatamente neste formato:",
+            "  - Severidade: P0/P1/P2/P3",
+            "  - Arquivo/linha ou trecho: ...",
+            "  - Problema concreto: ...",
+            "  - Por que isso quebra algo: ...",
+            "  - Correção sugerida: ...",
+            f"- Se não encontrar problema real, responda exatamente: \"{NO_BLOCKING_FINDINGS_RESPONSE}\"",
+            "- Depois liste no máximo 5 itens verificados.",
+            "- Não retornar checklist genérico.",
+            "- Não retornar recomendações sem relação direta com o diff.",
+            "- Preferir poucos achados bons a muitos achados fracos.",
             "- Falsos positivos baseados em placeholders de teste como test-token, test_token, fake-token, fake_token, dummy-token, dummy, example, placeholder, redacted, [REDACTED], <token>, <secret>, changeme e local-only não são segredos reais.",
             "- Não trate ajuste isolado de MAX_BUNDLE_CHARS como P2; só sinalize se houver regressão de truncamento sem teste.",
             "- Não invente arquivos ou linhas.",
@@ -1296,7 +1342,15 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
         ]
     )
     bundle = "\n".join(lines)
-    return _truncate_text(_redact_sensitive_text(bundle), MAX_BUNDLE_CHARS)
+    sanitized_bundle = _redact_sensitive_text(bundle)
+    if len(sanitized_bundle) > MAX_BUNDLE_CHARS:
+        truncated = True
+    return ReviewBundle(
+        content=_truncate_text(sanitized_bundle, MAX_BUNDLE_CHARS),
+        diff_chars=diff_chars,
+        files_count=len(pr_context.files),
+        truncated=truncated,
+    )
 
 
 def _last_bot_comment(pr_context: ReviewContext) -> str | None:
@@ -1373,12 +1427,22 @@ def build_agent_router_payload(
     *,
     model: str | None,
 ) -> dict[str, Any]:
+    review_bundle = _build_sanitized_bundle(pr_context, deterministic_findings)
     system_prompt = (
-        "Você é um reviewer de Pull Request. Responda sempre em pt-BR. Encontre apenas bugs reais, "
-        "regressões de segurança, quebras de CI/runtime e violações de contrato. Retorne no máximo "
-        "5 achados P1/P2/P3 em formato estruturado com severity, file, evidence, risk e recommendation. "
-        "Não elogie. Não faça resumo longo. Não invente arquivos ou linhas. Não trate ajuste isolado de MAX_BUNDLE_CHARS como P2; "
-        "só sinalize se houver regressão de truncamento sem teste. Se não houver P1/P2, diga isso claramente. "
+        "Você é reviewer sênior de código. Responda sempre em pt-BR. "
+        "Revise o diff enviado procurando apenas problemas concretos. "
+        "Não dê comentários genéricos. Não sugira melhorias cosméticas. Não elogie o código. "
+        "Não invente problemas sem evidência no diff. "
+        "Priorize, nesta ordem: bug funcional, regressão, quebra de contrato/API, métrica Prometheus incorreta, risco de segurança, "
+        "teste ausente para comportamento alterado, risco de deploy/runtime e inconsistência com documentação ou contrato existente. "
+        "Para cada achado, responda exatamente neste formato textual: "
+        "'- Severidade: P0/P1/P2/P3', '- Arquivo/linha ou trecho: ...', '- Problema concreto: ...', '- Por que isso quebra algo: ...', '- Correção sugerida: ...'. "
+        f"Se não encontrar problema real, responda exatamente: '{NO_BLOCKING_FINDINGS_RESPONSE}'. "
+        "Depois liste no máximo 5 itens verificados. "
+        "Não retornar checklist genérico. Não retornar recomendações sem relação direta com o diff. "
+        "Preferir poucos achados bons a muitos achados fracos. "
+        "Se o diff estiver incompleto ou truncado, diga isso explicitamente. Se faltar contexto de arquivo, diga qual contexto falta. "
+        "Não trate ajuste isolado de MAX_BUNDLE_CHARS como P2; só sinalize se houver regressão de truncamento sem teste. "
         "REGRAS OBRIGATÓRIAS DE EVIDÊNCIA: "
         "(1) Nunca diga que uma verificação 'falhou' (FALHOU, failed, falhando) a menos que o payload mostre conclusion=failure. "
         "(2) Checks com conclusion=timed_out devem ser descritos como 'timeout', não como falha. "
@@ -1390,13 +1454,13 @@ def build_agent_router_payload(
     payload: dict[str, Any] = {
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": _build_sanitized_bundle(pr_context, deterministic_findings)},
+            {"role": "user", "content": review_bundle.content},
         ],
         "temperature": 0.1,
+        "stream": False,
         "max_tokens": 1200,
     }
-    if model:
-        payload["model"] = model
+    payload["model"] = (model or "").strip() or DEFAULT_AGENT_REVIEW_MODEL
     return payload
 
 
@@ -1418,10 +1482,10 @@ def build_agent_router_ask_payload(
             {"role": "user", "content": _build_ask_bundle(pr_context, deterministic_findings, question)},
         ],
         "temperature": 0.1,
+        "stream": False,
         "max_tokens": 300,
     }
-    if model:
-        payload["model"] = model
+    payload["model"] = (model or "").strip() or DEFAULT_AGENT_REVIEW_MODEL
     return payload
 
 
@@ -1465,7 +1529,7 @@ def _normalize_llm_findings(raw_findings: Any) -> list[Finding]:
         if not isinstance(item, dict):
             continue
         severity = str(item.get("severity") or "").upper().strip()
-        if severity not in {"P1", "P2", "P3"}:
+        if severity not in {"P0", "P1", "P2", "P3"}:
             continue
         file = _redact_sensitive_text(str(item.get("file") or "n/a").strip() or "n/a")
         evidence = _redact_sensitive_text(_truncate_text(str(item.get("evidence") or "").strip() or "sem evidência", 200))
@@ -1488,6 +1552,78 @@ def _normalize_llm_findings(raw_findings: Any) -> list[Finding]:
         if len(findings) >= MAX_FINDINGS:
             break
     return findings
+
+
+def _parse_textual_llm_review(raw_text: str) -> LLMReview:
+    text = _redact_sensitive_text(raw_text.strip())
+    if not text:
+        return LLMReview()
+
+    current: dict[str, str] = {}
+    findings: list[Finding] = []
+    checked_items: list[str] = []
+    collecting_checked_items = False
+
+    def _flush_current() -> None:
+        nonlocal current
+        if not current:
+            return
+        severity = current.get("severidade", "").upper()
+        file_text = current.get("arquivo/linha ou trecho", "")
+        problem = current.get("problema concreto", "")
+        risk = current.get("por que isso quebra algo", "")
+        recommendation = current.get("correção sugerida", "")
+        if severity in {"P0", "P1", "P2", "P3"} and file_text and problem and risk and recommendation:
+            findings.append(
+                Finding(
+                    severity=severity,
+                    file=file_text,
+                    evidence=problem,
+                    risk=risk,
+                    recommendation=recommendation,
+                    rule_id=f"llm::{severity}::{file_text}",
+                )
+            )
+        current = {}
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("Itens verificados"):
+            _flush_current()
+            collecting_checked_items = True
+            continue
+        normalized_line = line[2:].strip() if line.startswith("- ") else line
+        if collecting_checked_items and line.startswith("- "):
+            checked_items.append(line)
+            continue
+        if ":" not in normalized_line:
+            continue
+        key, value = normalized_line.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key == "severidade":
+            _flush_current()
+            collecting_checked_items = False
+            current = {"severidade": value}
+            continue
+        if key in {"arquivo/linha ou trecho", "problema concreto", "por que isso quebra algo", "correção sugerida"} and current:
+            current[key] = value
+
+    _flush_current()
+
+    if findings:
+        notes = "\n".join(checked_items[:MAX_FINDINGS]) if checked_items else None
+        return LLMReview(findings=findings[:MAX_FINDINGS], notes=notes)
+
+    if NO_BLOCKING_FINDINGS_RESPONSE in text:
+        notes = NO_BLOCKING_FINDINGS_RESPONSE
+        if checked_items:
+            notes = f"{notes}\n" + "\n".join(checked_items[:MAX_FINDINGS])
+        return LLMReview(notes=notes)
+
+    return LLMReview(warning="LLM response inválida")
 
 
 def parse_agent_router_response(raw_response: str) -> LLMReview:
@@ -1523,19 +1659,27 @@ def parse_agent_router_response(raw_response: str) -> LLMReview:
             text = _redact_sensitive_text(content.strip())
             if not text:
                 return LLMReview()
-            try:
-                inner = json.loads(text)
-            except Exception:
-                return LLMReview(notes=text)
-            return _parse_content(inner)
+            if text.lstrip().startswith(("{", "[")):
+                try:
+                    inner = json.loads(text)
+                except Exception:
+                    return LLMReview(warning="LLM response inválida")
+                return _parse_content(inner)
+            textual_review = _parse_textual_llm_review(text)
+            if textual_review.findings or textual_review.notes or textual_review.warning:
+                return textual_review
+            return LLMReview(warning="LLM response inválida")
         return LLMReview(notes=_redact_sensitive_text(str(content)))
 
     try:
         outer = json.loads(sanitized)
     except Exception:
+        textual_review = _parse_textual_llm_review(sanitized)
+        if textual_review.findings or textual_review.notes or textual_review.warning:
+            return textual_review
         if sanitized.lstrip().startswith(("{", "[")):
             return LLMReview(notes=sanitized, warning="LLM response inválida")
-        return LLMReview(notes=sanitized)
+        return LLMReview(warning="LLM response inválida")
 
     if isinstance(outer, dict):
         for key in ("choices", "output_text", "content", "answer", "response", "review", "data", "result", "message", "text"):
@@ -1699,6 +1843,14 @@ def _log_agent_router_failure(reason: str, *, base_url: str, model: str | None, 
     model_text = model or "n/a"
     print(
         f"Agent Router {reason}: {_sanitize_router_base_url(base_url)} (model={model_text}, timeout={timeout_seconds}s)",
+        file=sys.stderr,
+    )
+
+
+def _log_review_bundle_metadata(bundle: ReviewBundle, *, model: str | None) -> None:
+    model_text = (model or "").strip() or DEFAULT_AGENT_REVIEW_MODEL
+    print(
+        f"Agent Router review metadata: model={model_text}, diff_chars={bundle.diff_chars}, files_count={bundle.files_count}, truncated={'true' if bundle.truncated else 'false'}",
         file=sys.stderr,
     )
 
@@ -1921,6 +2073,8 @@ def main() -> int:
         elif not router_api_key:
             llm_warning = _build_llm_key_missing_message()
         else:
+            review_bundle = _build_sanitized_bundle(pr_context, deterministic_findings)
+            _log_review_bundle_metadata(review_bundle, model=router_model)
             router_payload = build_agent_router_payload(pr_context, deterministic_findings, model=router_model)
             try:
                 raw_router = call_agent_router_review(

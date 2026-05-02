@@ -697,12 +697,17 @@ def test_router_payload_is_sanitized_and_base_url_defaults(monkeypatch: pytest.M
     router_call = router_payloads[0]
     assert router_call["url"].startswith("https://api.ks-sm.net:9443/v1/chat/completions")
     body = json.dumps(router_call["payload"])
+    system_prompt = router_call["payload"]["messages"][0]["content"]
     assert "secret-token" not in body
     assert "router-secret" not in body
     assert "Authorization" not in body
     assert "ghp_abcdefghijklmnopqrstuvwxyz1234" not in body
     assert "pt-BR" in body
+    assert "Não dê comentários genéricos" in system_prompt
+    assert "Arquivo/linha ou trecho" in system_prompt
+    assert "Se não encontrar problema real" in system_prompt
     assert router_call["payload"]["model"] == "gpt-review"
+    assert router_call["payload"]["stream"] is False
     assert comments[0].startswith(review.COMMENT_MARKER)
     assert "# Revisão do Agent" in comments[0]
     assert "## Notas do LLM" in comments[0]
@@ -732,6 +737,68 @@ def test_router_timeout_seconds_controls_timeout_and_warning(monkeypatch: pytest
     assert "timeout=90s" in captured.err
     assert "router-secret" not in captured.err
     assert "secret-token" not in captured.err
+
+
+def test_review_payload_defaults_to_code_model_and_logs_truncation_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    payload = _event_payload(pull_request=True, body="/agent review llm")
+    long_patch = "+ line 1\n+ line 2\n+ line 3\n+ line 4\n+ line 5\n+ line 6\n+ line 7\n+ secret-token-should-not-appear"
+    files = [_file(f"app/module_{index}.py", long_patch, additions=7, deletions=0) for index in range(10)]
+    comments, router_payloads = _run_agent(
+        monkeypatch,
+        tmp_path,
+        payload=payload,
+        pr_files=files,
+        router_response={"choices": [{"message": {"content": review.NO_BLOCKING_FINDINGS_RESPONSE}}]},
+        allowed_users="alice",
+        llm_enabled=True,
+        router_api_key="router-secret",
+        router_model="",
+    )
+    captured = capsys.readouterr()
+    assert comments
+    assert router_payloads
+    assert router_payloads[0]["payload"]["model"] == "code"
+    assert router_payloads[0]["payload"]["stream"] is False
+    user_content = router_payloads[0]["payload"]["messages"][1]["content"]
+    assert "diff_chars=" in user_content
+    assert "files_count=10" in user_content
+    assert "truncated=true" in user_content
+    assert "secret-token-should-not-appear" not in captured.err
+    assert "diff_chars=" in captured.err
+    assert "files_count=10" in captured.err
+    assert "truncated=true" in captured.err
+
+
+def test_parse_textual_llm_review_blocks_into_findings() -> None:
+    parsed = review.parse_agent_router_response(
+        """
+- Severidade: P1
+- Arquivo/linha ou trecho: app/api/routes.py:42
+- Problema concreto: o handler passou a retornar 500 quando `detail` vem ausente.
+- Por que isso quebra algo: clientes que enviam payload válido sem esse campo agora quebram em runtime.
+- Correção sugerida: manter fallback para `detail` ausente ou validar antes de acessar.
+
+Itens verificados:
+- contrato HTTP do endpoint
+- cobertura de teste para payload mínimo
+"""
+    )
+    assert len(parsed.findings) == 1
+    assert parsed.findings[0].severity == "P1"
+    assert parsed.findings[0].file == "app/api/routes.py:42"
+    assert "handler passou a retornar 500" in parsed.findings[0].evidence
+    assert "Itens verificados" not in (parsed.notes or "")
+    assert "contrato HTTP do endpoint" in (parsed.notes or "")
+
+
+def test_generic_llm_review_text_is_rejected() -> None:
+    parsed = review.parse_agent_router_response("Parece bom no geral, só recomendo melhorar a clareza e adicionar testes.")
+    assert not parsed.findings
+    assert parsed.warning == "LLM response inválida"
 
 
 def test_plain_review_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -996,11 +1063,11 @@ def test_router_http_errors_fall_back_to_deterministic(
 @pytest.mark.parametrize(
     ("router_response", "expected_note"),
     [
-        ({"choices": [{"message": {"content": json.dumps({"findings": [], "summary": "short"})}}]}, "short"),
-        ({"choices": [{"text": json.dumps({"findings": [], "summary": "text choice"})}]}, "text choice"),
-        ({"output_text": json.dumps({"findings": [], "summary": "output"})}, "output"),
-        ({"content": json.dumps({"findings": [], "summary": "content"})}, "content"),
-        ({"review": json.dumps({"findings": [], "summary": "review"})}, "review"),
+        ({"choices": [{"message": {"content": json.dumps({"findings": [], "summary": review.NO_BLOCKING_FINDINGS_RESPONSE})}}]}, review.NO_BLOCKING_FINDINGS_RESPONSE),
+        ({"choices": [{"text": json.dumps({"findings": [], "summary": review.NO_BLOCKING_FINDINGS_RESPONSE})}]}, review.NO_BLOCKING_FINDINGS_RESPONSE),
+        ({"output_text": json.dumps({"findings": [], "summary": review.NO_BLOCKING_FINDINGS_RESPONSE})}, review.NO_BLOCKING_FINDINGS_RESPONSE),
+        ({"content": json.dumps({"findings": [], "summary": review.NO_BLOCKING_FINDINGS_RESPONSE})}, review.NO_BLOCKING_FINDINGS_RESPONSE),
+        ({"review": json.dumps({"findings": [], "summary": review.NO_BLOCKING_FINDINGS_RESPONSE})}, review.NO_BLOCKING_FINDINGS_RESPONSE),
     ],
 )
 def test_router_response_formats_are_normalized(
@@ -1156,25 +1223,25 @@ def test_router_json_response_is_normalized(monkeypatch: pytest.MonkeyPatch, tmp
                         "recommendation": "bad",
                     },
                 ],
-                "summary": "short",
+                "summary": review.NO_BLOCKING_FINDINGS_RESPONSE,
             }
         )
     )
     assert len(parsed.findings) == 1
     assert parsed.findings[0].severity == "P1"
-    assert parsed.notes == "short"
+    assert parsed.notes == review.NO_BLOCKING_FINDINGS_RESPONSE
 
 
-def test_router_text_response_becomes_llm_notes() -> None:
-    parsed = review.parse_agent_router_response("plain text response")
+def test_router_text_response_accepts_explicit_no_blocking_result() -> None:
+    parsed = review.parse_agent_router_response(review.NO_BLOCKING_FINDINGS_RESPONSE)
     assert parsed.findings == []
-    assert parsed.notes == "plain text response"
+    assert parsed.notes == review.NO_BLOCKING_FINDINGS_RESPONSE
 
 
 def test_router_invalid_response_does_not_break() -> None:
     parsed = review.parse_agent_router_response("{not-json")
     assert parsed.findings == []
-    assert "not-json" in (parsed.notes or "")
+    assert parsed.warning == "LLM response inválida"
 
 
 def test_issue_comment_on_issue_is_supported_and_does_not_call_router(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
