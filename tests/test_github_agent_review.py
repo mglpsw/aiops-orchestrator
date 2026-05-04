@@ -2270,3 +2270,95 @@ class TestSessionR3BundleCharBudgetRecompute:
         assert "bundle_char_budget_exceeded" not in result.truncation_reasons
         assert "bundle_truncated=false" in result.content
         assert "bundle_char_budget_exceeded" not in result.content
+
+
+class TestSessionR3LLMBundleLimit:
+    """Session R3 – MAX_LLM_BUNDLE_CHARS fixes small-PR truncation in LLM mode."""
+
+    def _make_ctx(self, *, diff_chars: int, files_count: int = 2) -> review.ReviewContext:
+        patch_per_file = diff_chars // max(files_count, 1)
+        files = [
+            review.FileChange(
+                path=f"src/Component{i}.tsx",
+                patch="+" + "x" * (patch_per_file - 1),
+                status="modified",
+                additions=5,
+                deletions=1,
+            )
+            for i in range(files_count)
+        ]
+        return review.ReviewContext(
+            owner="mglpsw",
+            repo="AgentEscala",
+            issue_number=99,
+            author="alice",
+            association="MEMBER",
+            pr_number=99,
+            title="feat: small PR",
+            body="",
+            base_ref="master",
+            head_ref="feat/test",
+            head_sha="head",
+            html_url="https://github.com/mglpsw/AgentEscala/pull/99",
+            files=files,
+            checks=[],
+        )
+
+    def test_small_pr_21k_llm_mode_not_truncated(self):
+        """2-file ~21k diff fits in MAX_LLM_BUNDLE_CHARS=32000 → bundle_truncated=false."""
+        ctx = self._make_ctx(diff_chars=21_600, files_count=2)
+        bundle = review._build_sanitized_bundle(
+            ctx, [], max_bundle_chars=review.MAX_LLM_BUNDLE_CHARS
+        )
+        assert bundle.truncated is False, f"Expected not truncated; reasons={bundle.truncation_reasons}"
+        assert bundle.bundle_max_chars == review.MAX_LLM_BUNDLE_CHARS
+        assert "bundle_truncated=false" in bundle.content
+        assert "bundle_char_budget_exceeded" not in bundle.truncation_reasons
+        assert f"bundle_max_chars={review.MAX_LLM_BUNDLE_CHARS}" in bundle.content
+
+    def test_bundle_max_chars_in_metadata_line(self):
+        """bundle_max_chars is embedded in the metadata line."""
+        ctx = self._make_ctx(diff_chars=500)
+        bundle = review._build_sanitized_bundle(
+            ctx, [], max_bundle_chars=review.MAX_LLM_BUNDLE_CHARS
+        )
+        assert f"bundle_max_chars={review.MAX_LLM_BUNDLE_CHARS}" in bundle.content
+
+    def test_bundle_exceeding_llm_limit_is_truncated(self):
+        """Bundle that genuinely exceeds MAX_LLM_BUNDLE_CHARS → bundle_truncated=true."""
+        # Sentinel first so metadata line survives truncation; padding after pushes over limit
+        padding = "x" * (review.MAX_LLM_BUNDLE_CHARS + 500)
+        synthetic = f"{review._BUNDLE_METADATA_SENTINEL}\n{padding}"
+        result = review._finalize_review_bundle(
+            synthetic,
+            diff_chars=50_000,
+            files_count=5,
+            truncated=False,
+            reasons=[],
+            final_file_context_count=0,
+            final_file_source="none",
+            max_bundle_chars=review.MAX_LLM_BUNDLE_CHARS,
+        )
+        assert result.truncated is True
+        assert "bundle_char_budget_exceeded" in result.truncation_reasons
+        assert "bundle_truncated=true" in result.content
+
+    def test_old_max_bundle_chars_not_used_for_llm_mode(self):
+        """A 21k diff should NOT be truncated by old MAX_BUNDLE_CHARS=6000."""
+        ctx = self._make_ctx(diff_chars=21_600, files_count=2)
+        # Build with LLM limit; if it were using old 6000, it would be truncated
+        bundle = review._build_sanitized_bundle(
+            ctx, [], max_bundle_chars=review.MAX_LLM_BUNDLE_CHARS
+        )
+        # 21600 chars of patch < MAX_LLM_BUNDLE_CHARS=32000 → should not be truncated
+        assert bundle.bundle_max_chars != review.MAX_BUNDLE_CHARS
+        assert bundle.bundle_max_chars == review.MAX_LLM_BUNDLE_CHARS
+        assert bundle.truncated is False
+
+    def test_diff_received_true_always_present(self):
+        """diff_received=true must always be in the metadata line."""
+        ctx = self._make_ctx(diff_chars=500)
+        bundle = review._build_sanitized_bundle(
+            ctx, [], max_bundle_chars=review.MAX_LLM_BUNDLE_CHARS
+        )
+        assert "diff_received=true" in bundle.content

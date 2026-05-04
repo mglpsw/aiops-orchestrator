@@ -26,6 +26,7 @@ MAX_RECENT_COMMENTS = 20
 MAX_FILES_ANALYZED = 8
 MAX_PATCH_SNIPPET_CHARS = 180
 MAX_BUNDLE_CHARS = 6000
+MAX_LLM_BUNDLE_CHARS = 32_000
 MAX_SMALL_DIFF_FILES = 3
 MAX_SMALL_DIFF_CHARS = 30_000
 _BUNDLE_METADATA_SENTINEL = "__BUNDLE_DIFF_META__"
@@ -315,6 +316,7 @@ class ReviewBundle:
     truncated: bool
     truncation_reasons: tuple[str, ...] = ()
     final_file_context_count: int = 0
+    bundle_max_chars: int = MAX_BUNDLE_CHARS
 
 
 @dataclass(frozen=True)
@@ -1337,6 +1339,7 @@ def _build_sanitized_bundle(
     deterministic_findings: list[Finding],
     *,
     client: "GitHubClient | None" = None,
+    max_bundle_chars: int = MAX_LLM_BUNDLE_CHARS,
 ) -> ReviewBundle:
     _docs_only = is_docs_only([f.path for f in pr_context.files[:MAX_FILES_ANALYZED]])
     diff_chars = sum(len(file.patch or "") for file in pr_context.files)
@@ -1483,6 +1486,7 @@ def _build_sanitized_bundle(
         reasons=_unique_reasons,
         final_file_context_count=final_file_context_count,
         final_file_source=final_file_source,
+        max_bundle_chars=max_bundle_chars,
     )
 
 
@@ -1493,6 +1497,7 @@ def _render_bundle_metadata(
     reasons: list[str],
     final_file_context_count: int,
     final_file_source: str,
+    bundle_max_chars: int = MAX_BUNDLE_CHARS,
 ) -> str:
     reasons_str = ",".join(reasons) if reasons else "none"
     return (
@@ -1501,6 +1506,7 @@ def _render_bundle_metadata(
         f"truncation_reasons=[{reasons_str}], "
         f"max_files_analyzed={MAX_FILES_ANALYZED}, "
         f"max_patch_chars_per_file={MAX_PATCH_SNIPPET_CHARS}, "
+        f"bundle_max_chars={bundle_max_chars}, "
         f"final_file_context_count={final_file_context_count}, "
         f"final_file_context_source={final_file_source}"
     )
@@ -1515,6 +1521,7 @@ def _finalize_review_bundle(
     reasons: list[str],
     final_file_context_count: int,
     final_file_source: str,
+    max_bundle_chars: int = MAX_BUNDLE_CHARS,
 ) -> ReviewBundle:
     """Replace the metadata sentinel and recompute truncation AFTER expansion.
 
@@ -1522,30 +1529,31 @@ def _finalize_review_bundle(
     must happen on the *final* string (post-replacement), not on the sentinel
     version.  We do two passes:
       1. Replace sentinel with first-pass metadata; measure final size.
-      2. If the final size exceeds MAX_BUNDLE_CHARS, add bundle_char_budget_exceeded,
+      2. If the final size exceeds max_bundle_chars, add bundle_char_budget_exceeded,
          rebuild the metadata line to reflect the new reason, replace again.
       3. Truncate and return a coherent ReviewBundle.
     """
     # Pass 1 — substitute sentinel with current metadata
-    meta1 = _render_bundle_metadata(diff_chars, files_count, truncated, reasons, final_file_context_count, final_file_source)
+    meta1 = _render_bundle_metadata(diff_chars, files_count, truncated, reasons, final_file_context_count, final_file_source, max_bundle_chars)
     candidate = sanitized_bundle_with_sentinel.replace(_BUNDLE_METADATA_SENTINEL, meta1, 1)
 
     # Pass 2 — check whether expansion pushed us over the limit
-    if len(candidate) > MAX_BUNDLE_CHARS:
+    if len(candidate) > max_bundle_chars:
         truncated = True
         if "bundle_char_budget_exceeded" not in reasons:
             reasons = list(reasons) + ["bundle_char_budget_exceeded"]
-        meta2 = _render_bundle_metadata(diff_chars, files_count, truncated, reasons, final_file_context_count, final_file_source)
+        meta2 = _render_bundle_metadata(diff_chars, files_count, truncated, reasons, final_file_context_count, final_file_source, max_bundle_chars)
         # Replace the already-substituted metadata line with the updated one
         candidate = candidate.replace(meta1, meta2, 1)
 
     return ReviewBundle(
-        content=_truncate_text(candidate, MAX_BUNDLE_CHARS),
+        content=_truncate_text(candidate, max_bundle_chars),
         diff_chars=diff_chars,
         files_count=files_count,
         truncated=truncated,
         truncation_reasons=tuple(reasons),
         final_file_context_count=final_file_context_count,
+        bundle_max_chars=max_bundle_chars,
     )
 
 
@@ -2123,8 +2131,11 @@ def _log_agent_router_failure(reason: str, *, base_url: str, model: str | None, 
 
 def _log_review_bundle_metadata(bundle: ReviewBundle, *, model: str | None) -> None:
     model_text = (model or "").strip() or DEFAULT_AGENT_REVIEW_MODEL
+    reasons_text = ",".join(bundle.truncation_reasons) if bundle.truncation_reasons else "none"
     print(
-        f"Agent Router review metadata: model={model_text}, diff_chars={bundle.diff_chars}, files_count={bundle.files_count}, truncated={'true' if bundle.truncated else 'false'}",
+        f"Agent Router review metadata: model={model_text}, diff_chars={bundle.diff_chars}, "
+        f"files_count={bundle.files_count}, truncated={'true' if bundle.truncated else 'false'}, "
+        f"bundle_max_chars={bundle.bundle_max_chars}, truncation_reasons=[{reasons_text}]",
         file=sys.stderr,
     )
 
