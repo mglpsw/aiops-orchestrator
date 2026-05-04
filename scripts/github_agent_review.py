@@ -1318,7 +1318,12 @@ def _is_patch_snippet_truncated(patch: str | None) -> bool:
     return len(_redact_sensitive_text(snippet)) > MAX_PATCH_SNIPPET_CHARS
 
 
-def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: list[Finding]) -> ReviewBundle:
+def _build_sanitized_bundle(
+    pr_context: ReviewContext,
+    deterministic_findings: list[Finding],
+    *,
+    client: "GitHubClient | None" = None,
+) -> ReviewBundle:
     _docs_only = is_docs_only([f.path for f in pr_context.files[:MAX_FILES_ANALYZED]])
     diff_chars = sum(len(file.patch or "") for file in pr_context.files)
     truncated = len(pr_context.files) > MAX_FILES_ANALYZED or any(_is_patch_snippet_truncated(file.patch) for file in pr_context.files)
@@ -1348,14 +1353,25 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
             f"- {file.path} [{file.status}] +{file.additions} -{file.deletions}: {_redact_sensitive_text(snippet)}"
         )
     # Attach final-file context for frontend files with suspected import changes.
-    # This prevents false-positive unused-import findings from truncated diffs.
+    # Content is fetched at head_sha via GitHub API so it reflects the PR head,
+    # not the base-checkout state (the workflow only checks out the base).
     _final_file_budget = MAX_FINAL_FILE_CHARS * 3
+    _ref = pr_context.head_sha or pr_context.head_ref or ""
     for file in pr_context.files[:MAX_FILES_ANALYZED]:
         if _final_file_budget <= 200:
             break
         if not _is_frontend_file(file.path) or not _diff_has_import_lines(file.patch):
             continue
-        ctx = _read_final_file_context(file.path, min(MAX_FINAL_FILE_CHARS, _final_file_budget - 100))
+        if client is None or not _ref:
+            break
+        ctx = _fetch_file_at_ref(
+            client,
+            pr_context.owner,
+            pr_context.repo,
+            file.path,
+            _ref,
+            min(MAX_FINAL_FILE_CHARS, _final_file_budget - 100),
+        )
         if ctx:
             lines.append(ctx)
             _final_file_budget -= len(ctx)
@@ -1520,23 +1536,39 @@ def _diff_has_import_lines(patch: str | None) -> bool:
     return False
 
 
-def _read_final_file_context(path: str, max_chars: int = MAX_FINAL_FILE_CHARS) -> str | None:
-    """Read the final content of a local file for unused import/symbol verification.
+def _fetch_file_at_ref(
+    client: "GitHubClient",
+    owner: str,
+    repo: str,
+    path: str,
+    ref: str,
+    max_chars: int = MAX_FINAL_FILE_CHARS,
+) -> str | None:
+    """Fetch a file's content at a specific git ref via GitHub API.
 
-    Returns sanitized content up to max_chars with a source marker, or None if
-    unavailable.  Never reads very large files; never returns raw secrets.
+    Uses GET /repos/{owner}/{repo}/contents/{path}?ref={ref}.
+    Returns sanitized content (up to max_chars) with a source marker, or None
+    on any error.  Never returns raw secrets.
     """
+    import base64
+
     try:
-        file_path = Path(path)
-        if not file_path.exists() or not file_path.is_file():
+        api_path = f"/repos/{owner}/{repo}/contents/{path}?ref={ref}"
+        data = client.get_json(api_path)
+        if not isinstance(data, dict):
             return None
-        if file_path.stat().st_size > 200_000:
+        encoding = data.get("encoding", "")
+        raw_content = data.get("content", "")
+        if encoding == "base64":
+            decoded = base64.b64decode(raw_content.replace("\n", "")).decode("utf-8", errors="replace")
+        elif encoding == "utf-8" or encoding == "":
+            decoded = str(raw_content)
+        else:
             return None
-        content = file_path.read_text(encoding="utf-8", errors="replace")
-        sanitized = _redact_sensitive_text(content)
+        sanitized = _redact_sensitive_text(decoded)
         truncated_content = _truncate_text(sanitized, max_chars)
-        return f"[final_file_context: {path}]\n{truncated_content}"
-    except (OSError, PermissionError, UnicodeDecodeError):
+        return f"[final_file_context: {path} @ {ref[:8]}]\n{truncated_content}"
+    except (GitHubAPIError, OSError, UnicodeDecodeError, Exception):
         return None
 
 
@@ -1545,8 +1577,9 @@ def build_agent_router_payload(
     deterministic_findings: list[Finding],
     *,
     model: str | None,
+    client: "GitHubClient | None" = None,
 ) -> dict[str, Any]:
-    review_bundle = _build_sanitized_bundle(pr_context, deterministic_findings)
+    review_bundle = _build_sanitized_bundle(pr_context, deterministic_findings, client=client)
     _agentescala_suffix = ""
     if _is_agentescala_repo(pr_context.owner, pr_context.repo):
         _agentescala_suffix = " " + " ".join(_AGENTESCALA_CONTEXT_LINES)
@@ -2207,9 +2240,9 @@ def main() -> int:
         elif not router_api_key:
             llm_warning = _build_llm_key_missing_message()
         else:
-            review_bundle = _build_sanitized_bundle(pr_context, deterministic_findings)
+            review_bundle = _build_sanitized_bundle(pr_context, deterministic_findings, client=client)
             _log_review_bundle_metadata(review_bundle, model=router_model)
-            router_payload = build_agent_router_payload(pr_context, deterministic_findings, model=router_model)
+            router_payload = build_agent_router_payload(pr_context, deterministic_findings, model=router_model, client=client)
             try:
                 raw_router = call_agent_router_review(
                     router_payload,

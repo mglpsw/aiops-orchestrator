@@ -1923,21 +1923,36 @@ class TestSessionR2AgentEscala:
 
     # ---- test 5: final-file context showing symbol usage prevents unused-import finding ----
 
-    def test_final_file_showing_usage_prevents_unused_import_finding(
-        self, tmp_path: Path
-    ) -> None:
-        final_file = tmp_path / "Calendar.tsx"
-        final_file.write_text(
+    def test_final_file_showing_usage_prevents_unused_import_finding(self) -> None:
+        """_fetch_file_at_ref returns content from GitHub API (base64) with source marker."""
+        import base64
+        import json as _json
+        from urllib.parse import urlparse
+
+        file_content = (
             "import { ShellIcon } from './icons';\n"
-            "export function App() { return <ShellIcon size={24} />; }\n",
-            encoding="utf-8",
+            "export function App() { return <ShellIcon size={24} />; }\n"
         )
-        ctx = review._read_final_file_context(str(final_file), 2000)
+        encoded = base64.b64encode(file_content.encode()).decode()
+
+        class _FakeClient:
+            def get_json(self, path: str):
+                return {"encoding": "base64", "content": encoded}
+
+        ctx = review._fetch_file_at_ref(
+            _FakeClient(),  # type: ignore[arg-type]
+            "mglpsw",
+            "AgentEscala",
+            "frontend/Calendar.tsx",
+            "abc1234",
+            2000,
+        )
         assert ctx is not None
         assert "final_file_context" in ctx
         assert "ShellIcon" in ctx
-        # An LLM seeing this would know the symbol IS used
         assert "<ShellIcon" in ctx
+        # ref slug must appear in the marker
+        assert "abc1234"[:8] in ctx
 
     # ---- test 6: speculative P1 does not promote to request_changes ---------
 
