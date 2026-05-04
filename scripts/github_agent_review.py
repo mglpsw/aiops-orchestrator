@@ -1118,55 +1118,61 @@ def render_review(
 ) -> str:
     llm_findings = _filter_placeholder_llm_findings(llm_findings or [])
     status = review_status(findings, llm_findings=llm_findings)
+    _pr_docs_only = is_docs_only([f.path for f in pr_context.files])
+
+    all_findings = list(findings) + list(llm_findings)
+    p0_all = [f for f in all_findings if f.severity == "P0"]
+    p1_all = [f for f in all_findings if f.severity == "P1"]
+    p2_all = [f for f in all_findings if f.severity == "P2"]
+    p3_all = [f for f in all_findings if f.severity == "P3"]
+
     lines = [
         COMMENT_MARKER,
         "",
-        "# Revisão do Agent",
+        "## 🤖 Agent Review",
         "",
-        "## Resumo",
+        "### Veredito",
         f"- Status: {status}",
+        "",
+        "### Escopo entendido",
         f"- PR: {f'#{pr_context.pr_number}' if pr_context.pr_number is not None else 'n/a'}",
         f"- Autor: {pr_context.author}",
-        f"- Base: {pr_context.base_ref or 'n/a'}",
-        f"- Head: {pr_context.head_ref or 'n/a'}",
+        f"- Base: {pr_context.base_ref or 'n/a'} → Head: {pr_context.head_ref or 'n/a'}",
         f"- Commit analisado: {pr_context.head_sha or 'n/a'}",
         f"- Modo: {'revisão determinística + Agent Router' if llm_mode else 'revisão determinística'}",
-        "- Código do PR executado: não",
         f"- Escopo: {summarize_pr_scope(pr_context.files)}",
-        f"- PR documental: {'sim' if is_docs_only([f.path for f in pr_context.files]) else 'não'}",
+        f"- PR documental: {'sim' if _pr_docs_only else 'não'}",
+        "- Código do PR executado: não",
         "",
-        "## Achados críticos",
+        "### Achados confirmados",
     ]
-    p0 = [finding for finding in findings if finding.severity == "P0"]
-    p1 = [finding for finding in findings if finding.severity == "P1"]
-    p2 = [finding for finding in findings if finding.severity == "P2"]
-    p3 = [finding for finding in findings if finding.severity == "P3"]
-    if not (p0 or p1 or p2):
-        lines.append("- Não encontrei P1/P2 determinísticos.")
-        if p3:
-            lines.extend(_render_findings_block("P3 — Sugestões", p3))
+
+    confirmed = p0_all + p1_all
+    if confirmed:
+        if p0_all:
+            lines.extend(_render_findings_block("P0 — Bloqueadores críticos", p0_all))
+        if p1_all:
+            lines.extend(_render_findings_block("P1 — Bloqueadores", p1_all))
     else:
-        if p0:
-            lines.extend(_render_findings_block("P0 — Bloqueadores críticos", p0))
-        lines.extend(_render_findings_block("P1 — Bloqueadores", p1))
-        lines.extend(_render_findings_block("P2 — Importantes", p2))
-    if llm_findings:
-        lines.extend(["", "## Achados do LLM"])
-        llm_p0 = [finding for finding in llm_findings if finding.severity == "P0"]
-        llm_p1 = [finding for finding in llm_findings if finding.severity == "P1"]
-        llm_p2 = [finding for finding in llm_findings if finding.severity == "P2"]
-        llm_p3 = [finding for finding in llm_findings if finding.severity == "P3"]
-        if llm_p0:
-            lines.extend(_render_findings_block("P0 — Bloqueadores críticos", llm_p0))
-        if llm_p1:
-            lines.extend(_render_findings_block("P1 — Bloqueadores", llm_p1))
-        if llm_p2:
-            lines.extend(_render_findings_block("P2 — Importantes", llm_p2))
-        if llm_p3:
-            lines.extend(_render_findings_block("P3 — Sugestões", llm_p3))
-    _pr_docs_only = is_docs_only([f.path for f in pr_context.files])
+        lines.append("Nenhum achado confirmado.")
+
+    lines.extend(["", "### Riscos não confirmados"])
+    if p2_all:
+        lines.extend(_render_findings_block("P2 — Riscos prováveis", p2_all))
+    else:
+        lines.append("Nenhum risco identificado.")
+
+    if p3_all:
+        lines.extend(["", "### Sugestões"])
+        lines.extend(_render_findings_block("P3 — Sugestões", p3_all))
+
+    lines.append("")
+    lines.append("### Testes/checks observados")
     if checks:
         lines.extend(_render_checks_table(checks, docs_only=_pr_docs_only))
+    else:
+        lines.append("- Nenhum check reportado.")
+
     llm_note_lines: list[str] = []
     if llm_warning:
         llm_note_lines.append(f"- {llm_warning}")
@@ -1174,11 +1180,12 @@ def render_review(
         llm_note_lines.append(f"- {_truncate_text(_redact_sensitive_text(llm_notes), MAX_LLM_NOTE_CHARS)}")
     if llm_note_lines:
         lines.extend(["", "## Notas do LLM", *llm_note_lines])
+
     lines.extend(
         [
             "",
-            "## Observação de segurança",
-            "Este agent analisou metadados e diff via GitHub API. Ele não executou código do PR, não fez checkout da branch do PR para execução e não teve permissão de deploy.",
+            "### O que NÃO deve mudar",
+            "- Este agente analisou metadados e diff via GitHub API. Ele não executou código do PR, não fez checkout da branch do PR para execução e não teve permissão de deploy.",
         ]
     )
     rendered = "\n".join(lines).rstrip() + "\n"
@@ -1322,6 +1329,11 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
             "- Não invente problemas sem evidência no diff.",
             "- Max 5 achados.",
             "- Priorize: bug funcional, regressão, quebra de contrato/API, métrica Prometheus incorreta, risco de segurança, teste ausente para comportamento alterado, risco de deploy/runtime e inconsistência com documentação/contrato existente.",
+            "- TAXONOMIA DE SEVERIDADE OBRIGATÓRIA:",
+            "  P0 = segredo real, produção crítica, comando destrutivo, perda de dados ou bypass de autenticação.",
+            "  P1 = bug confirmado por arquivo final, check/teste falhando ou contrato quebrado — NUNCA hipóteses.",
+            "  P2 = risco provável mas não confirmado; use quando há indício concreto sem prova definitiva.",
+            "  P3 = melhoria, refactoring ou sugestão sem impacto direto em produção.",
             "- Para cada achado, responda exatamente neste formato:",
             "  - Severidade: P0/P1/P2/P3",
             "  - Arquivo/linha ou trecho: ...",
@@ -1339,6 +1351,13 @@ def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: l
             "- NUNCA diga que um check 'FALHOU' se o status não for 'failed' (conclusion=failure).",
             "- Para PR documental, checks funcionais são 'skipped', não 'falhou'.",
             "- Não adicione recomendações genéricas de segurança/performance sem evidência no diff.",
+            "- REGRAS DE EVIDÊNCIA ANTI-FALSO-POSITIVO:",
+            "  (A) Diff truncado NÃO gera P1; só promova P1 se a parte visível do diff contém prova suficiente.",
+            "  (B) Import ou variável não usada só é P1/P2 se confirmado por lint/check ou pelo arquivo final completo — NUNCA por diff parcial.",
+            "  (C) Problemas descritos com 'possivelmente', 'talvez' ou 'pode ser' são no máximo P2 — são riscos, não bugs confirmados.",
+            "  (D) Se o corpo da PR ou os checks reportam testes verdes, NÃO escreva 'sem garantias de testes'; escreva no máximo 'não validei localmente'.",
+            "  (E) Não sugira mudanças de backend ou migrations em PR exclusivamente frontend sem evidência direta no diff.",
+            "  (F) Nunca finja ter executado testes, lint ou checagens locais.",
         ]
     )
     bundle = "\n".join(lines)
@@ -1435,6 +1454,11 @@ def build_agent_router_payload(
         "Não invente problemas sem evidência no diff. "
         "Priorize, nesta ordem: bug funcional, regressão, quebra de contrato/API, métrica Prometheus incorreta, risco de segurança, "
         "teste ausente para comportamento alterado, risco de deploy/runtime e inconsistência com documentação ou contrato existente. "
+        "TAXONOMIA DE SEVERIDADE OBRIGATÓRIA: "
+        "P0 = segredo real, produção crítica, comando destrutivo, perda de dados ou bypass de autenticação. "
+        "P1 = bug confirmado por arquivo final, check/teste falhando ou contrato quebrado — NUNCA hipóteses. "
+        "P2 = risco provável mas não confirmado; use quando há indício concreto sem prova definitiva. "
+        "P3 = melhoria, refactoring ou sugestão sem impacto direto em produção. "
         "Para cada achado, responda exatamente neste formato textual: "
         "'- Severidade: P0/P1/P2/P3', '- Arquivo/linha ou trecho: ...', '- Problema concreto: ...', '- Por que isso quebra algo: ...', '- Correção sugerida: ...'. "
         f"Se não encontrar problema real, responda exatamente: '{NO_BLOCKING_FINDINGS_RESPONSE}'. "
@@ -1449,7 +1473,14 @@ def build_agent_router_payload(
         "(3) Checks com cancelled/action_required/startup_failure devem ser descritos pelo status real. "
         "(4) Em PRs documentais (apenas docs/ e .md), não reporte checks funcionais como falha. "
         "(5) Não adicione recomendações genéricas de segurança ou performance sem evidência no diff. "
-        "(6) Se uma validação não foi executada, diga 'não executado', nunca 'falhou'."
+        "(6) Se uma validação não foi executada, diga 'não executado', nunca 'falhou'. "
+        "REGRAS ANTI-FALSO-POSITIVO: "
+        "(7) Diff truncado NÃO gera P1; só promova P1 se a parte visível do diff contém prova suficiente. "
+        "(8) Import ou variável não usada só é P1/P2 se confirmado por lint/check ou pelo arquivo final completo — NUNCA por diff parcial. "
+        "(9) Problemas descritos com 'possivelmente', 'talvez' ou 'pode ser' são no máximo P2 — riscos não confirmados, não bloqueadores. "
+        "(10) Se o corpo da PR ou os checks reportam testes verdes, NÃO escreva 'sem garantias de testes'; escreva no máximo 'não validei localmente'. "
+        "(11) Não sugira mudanças de backend ou migrations em PR exclusivamente frontend sem evidência direta no diff. "
+        "(12) Nunca finja ter executado testes, lint ou checagens locais."
     )
     payload: dict[str, Any] = {
         "messages": [

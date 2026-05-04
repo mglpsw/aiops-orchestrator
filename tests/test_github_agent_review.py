@@ -586,7 +586,7 @@ def test_structured_llm_p1_or_p2_updates_status_without_deterministic_blockers()
     ]
     markdown = review.render_review([], [], pr_context, llm_mode=True, llm_notes="resumo", llm_findings=structured_p2)
     assert "- Status: needs_review" in markdown
-    assert "## Achados do LLM" in markdown
+    assert "### Riscos não confirmados" in markdown
     assert "## Notas do LLM" in markdown
 
     structured_p1 = [
@@ -642,9 +642,9 @@ def test_review_render_is_short_without_p1_p2() -> None:
     )
     markdown = review.render_review([], [], pr_context, llm_mode=False)
     assert markdown.startswith(review.COMMENT_MARKER)
-    assert "# Revisão do Agent" in markdown
-    assert "## Resumo" in markdown
-    assert "Não encontrei P1/P2 determinísticos." in markdown
+    assert "## 🤖 Agent Review" in markdown
+    assert "### Escopo entendido" in markdown
+    assert "Nenhum achado confirmado." in markdown
     assert "Código do PR executado: não" in markdown
     assert "Notas do LLM" not in markdown
 
@@ -709,9 +709,9 @@ def test_router_payload_is_sanitized_and_base_url_defaults(monkeypatch: pytest.M
     assert router_call["payload"]["model"] == "gpt-review"
     assert router_call["payload"]["stream"] is False
     assert comments[0].startswith(review.COMMENT_MARKER)
-    assert "# Revisão do Agent" in comments[0]
+    assert "## 🤖 Agent Review" in comments[0]
     assert "## Notas do LLM" in comments[0]
-    assert "## Resumo" in comments[0]
+    assert "### Escopo entendido" in comments[0]
 
 
 def test_router_timeout_seconds_controls_timeout_and_warning(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1287,7 +1287,7 @@ def test_comment_write_403_falls_back_to_step_summary(
     assert step_summary.exists()
     summary = step_summary.read_text(encoding="utf-8")
     assert review.COMMENT_MARKER in summary
-    assert "# Revisão do Agent" in summary
+    assert "## 🤖 Agent Review" in summary
     assert "secret-token" not in summary
     assert "AGENT_ROUTER_API_KEY" not in summary
 
@@ -1816,7 +1816,7 @@ class TestNoGenericRecommendationsWithoutEvidence:
     def test_no_p1_p2_findings_renders_clean_summary(self) -> None:
         ctx = self._make_ctx([review.FileChange("README.md", "modified", 1, 0)])
         rendered = review.render_review([], [], ctx, llm_mode=False)
-        assert "Não encontrei P1/P2 determinísticos." in rendered
+        assert "Nenhum achado confirmado." in rendered
         assert "FALHOU" not in rendered
 
     def test_check_without_failure_conclusion_produces_no_p1(self) -> None:
