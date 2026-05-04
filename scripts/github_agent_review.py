@@ -93,6 +93,31 @@ _META_COMMAND_REFERENCE_RE = re.compile(
 )
 _ROUTER_TIMEOUT_ENV = "AGENT_ROUTER_TIMEOUT_SECONDS"
 
+AGENTESCALA_REPO = "mglpsw/AgentEscala"
+MAX_FINAL_FILE_CHARS = 2000
+
+_AGENTESCALA_CONTEXT_LINES = [
+    "=== Contexto obrigatório do AgentEscala ===",
+    "- AgentEscala é sistema de escala médica.",
+    "- Calendário é a interface operacional principal.",
+    "- Backend mantém a regra canônica; frontend apenas agrupa visualmente.",
+    "- CT104 é ambiente dev/staging. CT102 é produção e NÃO deve ser usado como staging.",
+    "- 10-22H é sempre independente.",
+    "- 12H DIA independente nunca some por causa de 24H.",
+    "- 24H ocupado cobre sua própria metade DIA/NOITE.",
+    "- 24H não cria VAGO 12H NOITE falso.",
+    "- 10-22H nunca deve ser covered_by_24h.",
+    "- Notificações consomem audit_events e não alteram a regra da escala.",
+    "- PR frontend-only não deve sugerir mudanças de backend ou migration sem bug real.",
+    "- PR de notificação não deve alterar coverage/swap/fill/exportação.",
+    "- Não tocar CT102/produção.",
+    "=== Fim do Contexto obrigatório do AgentEscala ===",
+]
+
+_SPECULATIVE_LANGUAGE_RE = re.compile(
+    r"(?i)\b(?:possivelmente|talvez|pode\s+ser|não\s+está\s+claro|não\s+consegui\s+confirmar|parece)\b"
+)
+
 
 @dataclass(frozen=True)
 class FileChange:
@@ -1034,7 +1059,15 @@ def review_status(deterministic_findings: list[Finding], llm_findings: list[Find
     filtered_llm_findings = _filter_placeholder_llm_findings(llm_findings or [])
     if filtered_llm_findings:
         if any(finding.severity in {"P0", "P1"} for finding in filtered_llm_findings):
-            return "changes_requested"
+            # Only promote to changes_requested if at least one P0/P1 uses non-speculative language.
+            has_confirmed = any(
+                finding.severity in {"P0", "P1"}
+                and not _has_speculative_language(
+                    f"{finding.evidence} {finding.risk} {finding.recommendation}"
+                )
+                for finding in filtered_llm_findings
+            )
+            return "changes_requested" if has_confirmed else "needs_review"
         if any(finding.severity == "P2" for finding in filtered_llm_findings):
             return "needs_review"
     return "approved"
@@ -1285,25 +1318,63 @@ def _is_patch_snippet_truncated(patch: str | None) -> bool:
     return len(_redact_sensitive_text(snippet)) > MAX_PATCH_SNIPPET_CHARS
 
 
-def _build_sanitized_bundle(pr_context: ReviewContext, deterministic_findings: list[Finding]) -> ReviewBundle:
+def _build_sanitized_bundle(
+    pr_context: ReviewContext,
+    deterministic_findings: list[Finding],
+    *,
+    client: "GitHubClient | None" = None,
+) -> ReviewBundle:
     _docs_only = is_docs_only([f.path for f in pr_context.files[:MAX_FILES_ANALYZED]])
     diff_chars = sum(len(file.patch or "") for file in pr_context.files)
     truncated = len(pr_context.files) > MAX_FILES_ANALYZED or any(_is_patch_snippet_truncated(file.patch) for file in pr_context.files)
+    _agentescala = _is_agentescala_repo(pr_context.owner, pr_context.repo)
     lines = [
         f"Título do PR: {_redact_sensitive_text(pr_context.title or '')}",
         f"Descrição do PR: {_redact_sensitive_text(_truncate_text(pr_context.body or '', 600))}",
         f"Escopo: {summarize_pr_scope(pr_context.files)}",
         f"PR documental: {'sim — apenas docs/ e .md alterados' if _docs_only else 'não'}",
         f"Metadados do diff: diff_chars={diff_chars}, files_count={len(pr_context.files)}, truncated={'true' if truncated else 'false'}",
+    ]
+    if truncated:
+        lines.extend([
+            "ATENÇÃO DIFF TRUNCADO: O diff/contexto disponível está truncado; não classifique como P0/P1 achados que dependem de arquivo final completo, lint, build ou checks.",
+            "ATENÇÃO DIFF TRUNCADO: Não confirme import não utilizado, variável não usada ou call site ausente com base apenas em diff truncado.",
+        ])
+    if _agentescala:
+        lines.extend(_AGENTESCALA_CONTEXT_LINES)
+    lines.extend([
         "Se o diff estiver incompleto ou truncado, diga isso explicitamente.",
         "Se faltar contexto de arquivo, diga qual contexto falta.",
         "Arquivos alterados:",
-    ]
+    ])
     for file in pr_context.files[:MAX_FILES_ANALYZED]:
         snippet = _short_patch_for_bundle(file.patch)
         lines.append(
             f"- {file.path} [{file.status}] +{file.additions} -{file.deletions}: {_redact_sensitive_text(snippet)}"
         )
+    # Attach final-file context for frontend files with suspected import changes.
+    # Content is fetched at head_sha via GitHub API so it reflects the PR head,
+    # not the base-checkout state (the workflow only checks out the base).
+    _final_file_budget = MAX_FINAL_FILE_CHARS * 3
+    _ref = pr_context.head_sha or pr_context.head_ref or ""
+    for file in pr_context.files[:MAX_FILES_ANALYZED]:
+        if _final_file_budget <= 200:
+            break
+        if not _is_frontend_file(file.path) or not _diff_has_import_lines(file.patch):
+            continue
+        if client is None or not _ref:
+            break
+        ctx = _fetch_file_at_ref(
+            client,
+            pr_context.owner,
+            pr_context.repo,
+            file.path,
+            _ref,
+            min(MAX_FINAL_FILE_CHARS, _final_file_budget - 100),
+        )
+        if ctx:
+            lines.append(ctx)
+            _final_file_budget -= len(ctx)
     if pr_context.checks:
         lines.append("Checks (status real do GitHub API):")
         for check in pr_context.checks[:10]:
@@ -1440,13 +1511,78 @@ def _filter_placeholder_llm_findings(findings: list[Finding]) -> list[Finding]:
     return [finding for finding in findings if not _llm_finding_uses_obvious_placeholder(finding)]
 
 
+def _is_agentescala_repo(owner: str, repo: str) -> bool:
+    return f"{owner}/{repo}" == AGENTESCALA_REPO
+
+
+def _has_speculative_language(text: str) -> bool:
+    return bool(_SPECULATIVE_LANGUAGE_RE.search(text))
+
+
+def _is_frontend_file(path: str) -> bool:
+    return path.lower().endswith((".tsx", ".ts", ".jsx", ".js", ".vue", ".svelte"))
+
+
+def _diff_has_import_lines(patch: str | None) -> bool:
+    """Return True if the diff adds import statements (Python or JS/TS)."""
+    if not patch:
+        return False
+    for line in patch.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("+") and not stripped.startswith("+++"):
+            content = stripped[1:].lstrip()
+            if content.startswith("import ") or content.startswith("from "):
+                return True
+    return False
+
+
+def _fetch_file_at_ref(
+    client: "GitHubClient",
+    owner: str,
+    repo: str,
+    path: str,
+    ref: str,
+    max_chars: int = MAX_FINAL_FILE_CHARS,
+) -> str | None:
+    """Fetch a file's content at a specific git ref via GitHub API.
+
+    Uses GET /repos/{owner}/{repo}/contents/{path}?ref={ref}.
+    Returns sanitized content (up to max_chars) with a source marker, or None
+    on any error.  Never returns raw secrets.
+    """
+    import base64
+
+    try:
+        api_path = f"/repos/{owner}/{repo}/contents/{path}?ref={ref}"
+        data = client.get_json(api_path)
+        if not isinstance(data, dict):
+            return None
+        encoding = data.get("encoding", "")
+        raw_content = data.get("content", "")
+        if encoding == "base64":
+            decoded = base64.b64decode(raw_content.replace("\n", "")).decode("utf-8", errors="replace")
+        elif encoding == "utf-8" or encoding == "":
+            decoded = str(raw_content)
+        else:
+            return None
+        sanitized = _redact_sensitive_text(decoded)
+        truncated_content = _truncate_text(sanitized, max_chars)
+        return f"[final_file_context: {path} @ {ref[:8]}]\n{truncated_content}"
+    except (GitHubAPIError, OSError, UnicodeDecodeError, Exception):
+        return None
+
+
 def build_agent_router_payload(
     pr_context: ReviewContext,
     deterministic_findings: list[Finding],
     *,
     model: str | None,
+    client: "GitHubClient | None" = None,
 ) -> dict[str, Any]:
-    review_bundle = _build_sanitized_bundle(pr_context, deterministic_findings)
+    review_bundle = _build_sanitized_bundle(pr_context, deterministic_findings, client=client)
+    _agentescala_suffix = ""
+    if _is_agentescala_repo(pr_context.owner, pr_context.repo):
+        _agentescala_suffix = " " + " ".join(_AGENTESCALA_CONTEXT_LINES)
     system_prompt = (
         "Você é reviewer sênior de código. Responda sempre em pt-BR. "
         "Revise o diff enviado procurando apenas problemas concretos. "
@@ -1481,7 +1617,7 @@ def build_agent_router_payload(
         "(10) Se o corpo da PR ou os checks reportam testes verdes, NÃO escreva 'sem garantias de testes'; escreva no máximo 'não validei localmente'. "
         "(11) Não sugira mudanças de backend ou migrations em PR exclusivamente frontend sem evidência direta no diff. "
         "(12) Nunca finja ter executado testes, lint ou checagens locais."
-    )
+    ) + _agentescala_suffix
     payload: dict[str, Any] = {
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -2104,9 +2240,9 @@ def main() -> int:
         elif not router_api_key:
             llm_warning = _build_llm_key_missing_message()
         else:
-            review_bundle = _build_sanitized_bundle(pr_context, deterministic_findings)
+            review_bundle = _build_sanitized_bundle(pr_context, deterministic_findings, client=client)
             _log_review_bundle_metadata(review_bundle, model=router_model)
-            router_payload = build_agent_router_payload(pr_context, deterministic_findings, model=router_model)
+            router_payload = build_agent_router_payload(pr_context, deterministic_findings, model=router_model, client=client)
             try:
                 raw_router = call_agent_router_review(
                     router_payload,

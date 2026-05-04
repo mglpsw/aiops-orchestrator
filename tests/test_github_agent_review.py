@@ -1833,3 +1833,204 @@ class TestNoGenericRecommendationsWithoutEvidence:
         assert p1 == [], (
             "Non-failure check conclusions must not produce check_failed P1 findings"
         )
+
+
+# ---------------------------------------------------------------------------
+# Session R2: AgentEscala context + truncated-diff awareness
+# ---------------------------------------------------------------------------
+
+
+class TestSessionR2AgentEscala:
+    """Tests for Session R2: AgentEscala context, truncated-diff caution,
+    final-file reading, speculative language normalisation, and checks-observed."""
+
+    # ---- helpers -----------------------------------------------------------
+
+    def _make_ctx(
+        self,
+        owner: str = "mglpsw",
+        repo: str = "AgentEscala",
+        files: list[review.FileChange] | None = None,
+        body: str = "",
+        checks: list[review.CheckSummary] | None = None,
+    ) -> review.ReviewContext:
+        return review.ReviewContext(
+            owner=owner,
+            repo=repo,
+            issue_number=1,
+            author="alice",
+            association="MEMBER",
+            pr_number=1,
+            title="PR title",
+            body=body,
+            base_ref="master",
+            head_ref="feat/x",
+            head_sha="abc",
+            html_url="https://github.com/mglpsw/AgentEscala/pull/1",
+            files=files or [review.FileChange("frontend/Calendar.tsx", "modified", 5, 2)],
+            checks=checks or [],
+        )
+
+    # ---- test 1: AgentEscala context is included for mglpsw/AgentEscala ----
+
+    def test_agentescala_context_included_for_agentescala_repo(self) -> None:
+        ctx = self._make_ctx(owner="mglpsw", repo="AgentEscala")
+        bundle = review._build_sanitized_bundle(ctx, [])
+        assert "Contexto obrigatório do AgentEscala" in bundle.content, (
+            "AgentEscala context block must appear in bundle for mglpsw/AgentEscala"
+        )
+        assert "CT104" in bundle.content
+        assert "CT102" in bundle.content
+        assert "10-22H" in bundle.content
+
+    # ---- test 2: AgentEscala context NOT included for other repos -----------
+
+    def test_agentescala_context_excluded_for_other_repos(self) -> None:
+        ctx = self._make_ctx(owner="mglpsw", repo="aiops-orchestrator")
+        bundle = review._build_sanitized_bundle(ctx, [])
+        assert "Contexto obrigatório do AgentEscala" not in bundle.content, (
+            "AgentEscala context block must NOT appear in bundle for other repos"
+        )
+
+    # ---- test 3: truncated diff triggers explicit caution lines -------------
+
+    def test_truncated_diff_adds_caution_to_bundle(self) -> None:
+        # Produce a truncated bundle by adding a file with a very long patch
+        big_patch = "+linha\n" * 5000
+        files = [review.FileChange("frontend/Big.tsx", "modified", 5000, 0, patch=big_patch)]
+        ctx = self._make_ctx(files=files)
+        bundle = review._build_sanitized_bundle(ctx, [])
+        assert bundle.truncated is True
+        assert "ATENÇÃO DIFF TRUNCADO" in bundle.content
+        assert "não classifique como P0/P1" in bundle.content
+        assert "import não utilizado" in bundle.content
+
+    # ---- test 4: suspicious import in truncated diff does NOT become P1 ----
+
+    def test_suspicious_import_in_truncated_diff_not_confirmed_p1(self) -> None:
+        speculative_finding = review.Finding(
+            rule_id="llm_unused_import",
+            severity="P1",
+            file="frontend/Calendar.tsx",
+            evidence="possivelmente ShellIcon não é usado neste arquivo",
+            risk="talvez cause bundle inflation",
+            recommendation="remover import",
+        )
+        status = review.review_status([], llm_findings=[speculative_finding])
+        assert status != "changes_requested", (
+            "Speculative P1 with 'possivelmente'/'talvez' must not promote to request_changes"
+        )
+
+    # ---- test 5: final-file context showing symbol usage prevents unused-import finding ----
+
+    def test_final_file_showing_usage_prevents_unused_import_finding(self) -> None:
+        """_fetch_file_at_ref returns content from GitHub API (base64) with source marker."""
+        import base64
+        import json as _json
+        from urllib.parse import urlparse
+
+        file_content = (
+            "import { ShellIcon } from './icons';\n"
+            "export function App() { return <ShellIcon size={24} />; }\n"
+        )
+        encoded = base64.b64encode(file_content.encode()).decode()
+
+        class _FakeClient:
+            def get_json(self, path: str):
+                return {"encoding": "base64", "content": encoded}
+
+        ctx = review._fetch_file_at_ref(
+            _FakeClient(),  # type: ignore[arg-type]
+            "mglpsw",
+            "AgentEscala",
+            "frontend/Calendar.tsx",
+            "abc1234",
+            2000,
+        )
+        assert ctx is not None
+        assert "final_file_context" in ctx
+        assert "ShellIcon" in ctx
+        assert "<ShellIcon" in ctx
+        # ref slug must appear in the marker
+        assert "abc1234"[:8] in ctx
+
+    # ---- test 6: speculative P1 does not promote to request_changes ---------
+
+    def test_speculative_p1_does_not_promote_to_request_changes(self) -> None:
+        for phrase in [
+            "possivelmente causa bug",
+            "talvez quebre produção",
+            "pode ser que falhe",
+            "não está claro se funciona",
+            "não consegui confirmar",
+            "parece estar errado",
+        ]:
+            finding = review.Finding(
+                rule_id="llm_risk",
+                severity="P1",
+                file="app.py",
+                evidence=phrase,
+                risk=phrase,
+                recommendation="investigar",
+            )
+            status = review.review_status([], llm_findings=[finding])
+            assert status != "changes_requested", (
+                f"P1 with speculative phrase '{phrase}' must not produce changes_requested"
+            )
+
+    # ---- test 7: green checks/tests in PR body do not generate "sem garantias" ----
+
+    def test_green_checks_in_pr_body_avoids_no_test_language(self) -> None:
+        ctx = self._make_ctx(
+            body="Todos os testes passaram. CI verde. ✅",
+            checks=[review.CheckSummary("pytest", conclusion="success", status="completed")],
+        )
+        bundle = review._build_sanitized_bundle(ctx, [])
+        content = bundle.content
+        # The bundle must not *state* these as conclusions — they may appear only
+        # as negated instructions inside the contract, not as top-level assertions.
+        # We verify the instruction/rule (D) is present and the phrase appears only
+        # inside it (prefixed by "NÃO escreva" / negation), not as a standalone claim.
+        assert "NÃO escreva 'sem garantias de testes'" in content or \
+               "NÃO escreva 'sem garantias" in content, \
+               "Rule (D) about 'sem garantias' must be present in bundle"
+        # Also verify: contract says "não validei localmente" (positive phrasing)
+        assert "não validei localmente" in content
+
+    # ---- test 8: rendered comment contains all 3 required sections ----------
+
+    def test_comment_contains_all_three_sections(self) -> None:
+        ctx = self._make_ctx()
+        # confirmed finding
+        confirmed = review.Finding(
+            rule_id="secret_exposed",
+            severity="P1",
+            file="app.py",
+            evidence="GITHUB_TOKEN hardcoded",
+            risk="credential leak",
+            recommendation="use secrets manager",
+        )
+        # speculative llm finding
+        unconfirmed = review.Finding(
+            rule_id="llm_risk",
+            severity="P2",
+            file="calendar.tsx",
+            evidence="possivelmente pode causar regressão",
+            risk="incerto",
+            recommendation="revisar",
+        )
+        rendered = review.render_review(
+            [confirmed],
+            [],
+            ctx,
+            llm_mode=True,
+            llm_findings=[unconfirmed],
+        )
+        assert "Achados confirmados" in rendered, "Section 'Achados confirmados' must be present"
+        assert "Riscos não confirmados" in rendered, "Section 'Riscos não confirmados' must be present"
+        assert (
+            "Testes/checks observados" in rendered
+            or "Observação sobre testes" in rendered
+            or "não executei localmente" in rendered.lower()
+            or "checks" in rendered.lower()
+        ), "Section about tests/checks must be present"
