@@ -1473,18 +1473,30 @@ def _build_sanitized_bundle(
     bundle = "\n".join(lines)
     sanitized_bundle = _redact_sensitive_text(bundle)
 
-    # Post-build: check character budget
-    if len(sanitized_bundle) > MAX_BUNDLE_CHARS:
-        truncated = True
-        if "bundle_char_budget_exceeded" not in truncation_reasons:
-            truncation_reasons.append("bundle_char_budget_exceeded")
-
-    # Build the accurate metadata line and substitute the sentinel placeholder
     _unique_reasons = list(dict.fromkeys(truncation_reasons))
-    reasons_str = ",".join(_unique_reasons) if _unique_reasons else "none"
     final_file_source = "github_contents_api" if final_file_context_count > 0 else "none"
-    metadata_line = (
-        f"diff_received=true, diff_chars={diff_chars}, files_count={len(pr_context.files)}, "
+    return _finalize_review_bundle(
+        sanitized_bundle,
+        diff_chars=diff_chars,
+        files_count=len(pr_context.files),
+        truncated=truncated,
+        reasons=_unique_reasons,
+        final_file_context_count=final_file_context_count,
+        final_file_source=final_file_source,
+    )
+
+
+def _render_bundle_metadata(
+    diff_chars: int,
+    files_count: int,
+    truncated: bool,
+    reasons: list[str],
+    final_file_context_count: int,
+    final_file_source: str,
+) -> str:
+    reasons_str = ",".join(reasons) if reasons else "none"
+    return (
+        f"diff_received=true, diff_chars={diff_chars}, files_count={files_count}, "
         f"bundle_truncated={'true' if truncated else 'false'}, "
         f"truncation_reasons=[{reasons_str}], "
         f"max_files_analyzed={MAX_FILES_ANALYZED}, "
@@ -1492,13 +1504,47 @@ def _build_sanitized_bundle(
         f"final_file_context_count={final_file_context_count}, "
         f"final_file_context_source={final_file_source}"
     )
-    final_bundle = sanitized_bundle.replace(_BUNDLE_METADATA_SENTINEL, metadata_line, 1)
+
+
+def _finalize_review_bundle(
+    sanitized_bundle_with_sentinel: str,
+    *,
+    diff_chars: int,
+    files_count: int,
+    truncated: bool,
+    reasons: list[str],
+    final_file_context_count: int,
+    final_file_source: str,
+) -> ReviewBundle:
+    """Replace the metadata sentinel and recompute truncation AFTER expansion.
+
+    The sentinel is much shorter than the real metadata line, so the size check
+    must happen on the *final* string (post-replacement), not on the sentinel
+    version.  We do two passes:
+      1. Replace sentinel with first-pass metadata; measure final size.
+      2. If the final size exceeds MAX_BUNDLE_CHARS, add bundle_char_budget_exceeded,
+         rebuild the metadata line to reflect the new reason, replace again.
+      3. Truncate and return a coherent ReviewBundle.
+    """
+    # Pass 1 — substitute sentinel with current metadata
+    meta1 = _render_bundle_metadata(diff_chars, files_count, truncated, reasons, final_file_context_count, final_file_source)
+    candidate = sanitized_bundle_with_sentinel.replace(_BUNDLE_METADATA_SENTINEL, meta1, 1)
+
+    # Pass 2 — check whether expansion pushed us over the limit
+    if len(candidate) > MAX_BUNDLE_CHARS:
+        truncated = True
+        if "bundle_char_budget_exceeded" not in reasons:
+            reasons = list(reasons) + ["bundle_char_budget_exceeded"]
+        meta2 = _render_bundle_metadata(diff_chars, files_count, truncated, reasons, final_file_context_count, final_file_source)
+        # Replace the already-substituted metadata line with the updated one
+        candidate = candidate.replace(meta1, meta2, 1)
+
     return ReviewBundle(
-        content=_truncate_text(final_bundle, MAX_BUNDLE_CHARS),
+        content=_truncate_text(candidate, MAX_BUNDLE_CHARS),
         diff_chars=diff_chars,
-        files_count=len(pr_context.files),
+        files_count=files_count,
         truncated=truncated,
-        truncation_reasons=tuple(_unique_reasons),
+        truncation_reasons=tuple(reasons),
         final_file_context_count=final_file_context_count,
     )
 

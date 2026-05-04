@@ -2203,3 +2203,70 @@ class TestSessionR3TruncationMetadata:
         assert bundle.final_file_context_count == 1
         assert "final_file_context_source=github_contents_api" in bundle.content
         assert "final_file_context_count=1" in bundle.content
+
+
+class TestSessionR3BundleCharBudgetRecompute:
+    """P1 fix: truncation must be recomputed AFTER sentinel replacement.
+
+    The sentinel __BUNDLE_DIFF_META__ is ~25 chars; the real metadata line is
+    ~200+ chars.  A bundle that fits inside MAX_BUNDLE_CHARS with the sentinel
+    may exceed it after the replacement.  _finalize_review_bundle() must detect
+    this in a second pass and set bundle_truncated=true + bundle_char_budget_exceeded.
+    """
+
+    def test_bundle_char_budget_exceeded_detected_after_sentinel_replacement(self):
+        """Bundle OK with sentinel but over limit after metadata expansion → truncated=True."""
+        # Craft a sanitized_bundle_with_sentinel whose len is just below MAX_BUNDLE_CHARS
+        # so that replacing the sentinel (~25 chars) with the real metadata line (~220 chars)
+        # pushes it over the limit.
+        meta_example = review._render_bundle_metadata(
+            diff_chars=100, files_count=1, truncated=False,
+            reasons=[], final_file_context_count=0, final_file_source="none",
+        )
+        sentinel_len = len(review._BUNDLE_METADATA_SENTINEL)
+        meta_len = len(meta_example)
+        # Sentinel placed FIRST (mirrors real bundle layout) so truncation from the
+        # tail doesn't cut it off.  Padding fills the rest up to just under the limit.
+        padding = review.MAX_BUNDLE_CHARS - 1 - sentinel_len - len("\npad=\n")
+        assert padding > 0, "padding must be positive for this test to be meaningful"
+        fake_bundle = f"{review._BUNDLE_METADATA_SENTINEL}\npad={'x' * padding}\n"
+        assert len(fake_bundle) < review.MAX_BUNDLE_CHARS, "sentinel version must be under limit"
+        # After replacement the bundle grows by (meta_len - sentinel_len) bytes → over limit
+        assert len(fake_bundle) - sentinel_len + meta_len > review.MAX_BUNDLE_CHARS, (
+            "test invariant: post-replacement bundle must exceed MAX_BUNDLE_CHARS"
+        )
+
+        result = review._finalize_review_bundle(
+            fake_bundle,
+            diff_chars=100,
+            files_count=1,
+            truncated=False,
+            reasons=[],
+            final_file_context_count=0,
+            final_file_source="none",
+        )
+
+        assert result.truncated is True
+        assert "bundle_char_budget_exceeded" in result.truncation_reasons
+        assert "bundle_truncated=true" in result.content
+        assert "bundle_char_budget_exceeded" in result.content
+
+    def test_bundle_well_under_limit_stays_not_truncated(self):
+        """Bundle comfortably under MAX_BUNDLE_CHARS stays truncated=False."""
+        tiny_bundle = f"short content\n{review._BUNDLE_METADATA_SENTINEL}"
+        assert len(tiny_bundle) < review.MAX_BUNDLE_CHARS
+
+        result = review._finalize_review_bundle(
+            tiny_bundle,
+            diff_chars=50,
+            files_count=1,
+            truncated=False,
+            reasons=[],
+            final_file_context_count=0,
+            final_file_source="none",
+        )
+
+        assert result.truncated is False
+        assert "bundle_char_budget_exceeded" not in result.truncation_reasons
+        assert "bundle_truncated=false" in result.content
+        assert "bundle_char_budget_exceeded" not in result.content
