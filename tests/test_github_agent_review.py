@@ -2034,3 +2034,239 @@ class TestSessionR2AgentEscala:
             or "não executei localmente" in rendered.lower()
             or "checks" in rendered.lower()
         ), "Section about tests/checks must be present"
+
+
+class TestSessionR3TruncationMetadata:
+    """Tests for Session R3: accurate truncation metadata, small-PR full-patch,
+    corrected bundle/comment language about diff receipt."""
+
+    MAX_SMALL = review.MAX_SMALL_DIFF_FILES  # 3
+    MAX_SMALL_CHARS = review.MAX_SMALL_DIFF_CHARS  # 30_000
+
+    def _make_ctx(
+        self,
+        owner: str = "mglpsw",
+        repo: str = "SomeRepo",
+        files: list[review.FileChange] | None = None,
+        body: str = "",
+        checks: list[review.CheckSummary] | None = None,
+        title: str = "PR title",
+    ) -> review.ReviewContext:
+        return review.ReviewContext(
+            owner=owner,
+            repo=repo,
+            issue_number=1,
+            author="alice",
+            association="MEMBER",
+            pr_number=1,
+            title=title,
+            body=body,
+            base_ref="master",
+            head_ref="feat/x",
+            head_sha="sha123",
+            html_url="https://github.com/mglpsw/SomeRepo/pull/1",
+            files=files or [review.FileChange("src/index.ts", "modified", 5, 2)],
+            checks=checks or [],
+        )
+
+    # 1. bundle always contains diff_received=true
+    def test_bundle_always_has_diff_received_true(self):
+        ctx = self._make_ctx()
+        bundle = review._build_sanitized_bundle(ctx, [])
+        assert "diff_received=true" in bundle.content
+
+    # 2. small PR (2 files, ~2k chars) → bundle_truncated=false
+    def test_bundle_has_bundle_truncated_false_for_small_pr(self):
+        patch = "+" + "x" * 1000
+        files = [
+            review.FileChange("src/a.ts", "modified", 10, 2, patch=patch),
+            review.FileChange("src/b.ts", "modified", 10, 2, patch=patch),
+        ]
+        ctx = self._make_ctx(files=files)
+        bundle = review._build_sanitized_bundle(ctx, [])
+        assert bundle.files_count == 2
+        diff_chars = sum(len(f.patch or "") for f in files)
+        assert diff_chars <= self.MAX_SMALL_CHARS
+        assert bundle.truncated is False
+        assert "bundle_truncated=false" in bundle.content
+
+    # 3. large PR (>MAX_FILES) → bundle_truncated=true
+    def test_bundle_has_bundle_truncated_true_for_large_pr(self):
+        files = [
+            review.FileChange(f"src/file{i}.ts", "modified", 1, 1, patch="+x")
+            for i in range(review.MAX_FILES_ANALYZED + 2)
+        ]
+        ctx = self._make_ctx(files=files)
+        bundle = review._build_sanitized_bundle(ctx, [])
+        assert bundle.truncated is True
+        assert "bundle_truncated=true" in bundle.content
+
+    # 4. truncation_reasons includes too_many_files when files exceed MAX_FILES_ANALYZED
+    def test_truncation_reasons_include_too_many_files(self):
+        files = [
+            review.FileChange(f"src/file{i}.ts", "modified", 1, 1, patch="+x")
+            for i in range(review.MAX_FILES_ANALYZED + 1)
+        ]
+        ctx = self._make_ctx(files=files)
+        bundle = review._build_sanitized_bundle(ctx, [])
+        assert "too_many_files" in bundle.truncation_reasons
+        assert "too_many_files" in bundle.content
+
+    # 5. truncation_reasons includes patch_snippet_truncated for large-PR long patch
+    def test_truncation_reasons_include_patch_snippet_truncated(self):
+        # More than MAX_SMALL_DIFF_FILES so small-PR path is not taken
+        big_patch = "+line\n" * 50
+        files = [
+            review.FileChange(f"src/file{i}.ts", "modified", 50, 5, patch=big_patch)
+            for i in range(review.MAX_SMALL_DIFF_FILES + 1)
+        ]
+        ctx = self._make_ctx(files=files)
+        bundle = review._build_sanitized_bundle(ctx, [])
+        assert "patch_snippet_truncated" in bundle.truncation_reasons
+
+    # 6. small PR uses full patch block (no patch_snippet_truncated)
+    def test_small_pr_uses_full_patch_no_truncation(self):
+        patch = "+line1\n+line2\n+line3\n"
+        files = [
+            review.FileChange("src/a.ts", "modified", 3, 0, patch=patch),
+        ]
+        ctx = self._make_ctx(files=files)
+        bundle = review._build_sanitized_bundle(ctx, [])
+        assert bundle.truncated is False
+        assert "patch_snippet_truncated" not in bundle.truncation_reasons
+        # Full patch content should be in the bundle (not just a snippet)
+        assert "line1" in bundle.content
+
+    # 7. render_review uses "Diff recebido, mas parte do patch" when truncated
+    def test_comment_uses_diff_received_phrasing_when_truncated(self):
+        from dataclasses import replace as dc_replace
+        truncated_bundle = review.ReviewBundle(
+            content="x",
+            diff_chars=50000,
+            files_count=10,
+            truncated=True,
+            truncation_reasons=("too_many_files",),
+            final_file_context_count=0,
+        )
+        ctx = self._make_ctx()
+        rendered = review.render_review(
+            [],
+            [],
+            ctx,
+            llm_mode=False,
+            review_bundle=truncated_bundle,
+        )
+        assert "Diff recebido, mas parte do patch foi resumida" in rendered
+
+    # 8. render_review does NOT say "não recebi o diff" or "sem diff"
+    def test_comment_does_not_say_diff_not_received(self):
+        from dataclasses import replace as dc_replace
+        truncated_bundle = review.ReviewBundle(
+            content="x",
+            diff_chars=50000,
+            files_count=10,
+            truncated=True,
+            truncation_reasons=("too_many_files",),
+            final_file_context_count=0,
+        )
+        ctx = self._make_ctx()
+        rendered = review.render_review(
+            [],
+            [],
+            ctx,
+            llm_mode=False,
+            review_bundle=truncated_bundle,
+        )
+        lower = rendered.lower()
+        assert "não recebi o diff" not in lower
+        assert "não tenho o diff" not in lower
+        assert "sem diff" not in lower
+
+    # 9. final_file_context via GitHub API: final_file_context_count reflects injections
+    def test_final_file_context_count_reflects_injection(self):
+        class _FakeClient:
+            def get_json(self, path, *, params=None):
+                import base64
+                content = base64.b64encode(b"import ShellIcon from './icons';\nShellIcon();\n").decode()
+                return {"content": content, "encoding": "base64"}
+
+        import_patch = "+import ShellIcon from './icons';\n+ShellIcon();\n"
+        files = [
+            review.FileChange("src/Calendar.tsx", "modified", 2, 0, patch=import_patch),
+        ]
+        ctx = self._make_ctx(
+            owner="mglpsw",
+            repo="AgentEscala",
+            files=files,
+        )
+        bundle = review._build_sanitized_bundle(ctx, [], client=_FakeClient())
+        assert bundle.final_file_context_count == 1
+        assert "final_file_context_source=github_contents_api" in bundle.content
+        assert "final_file_context_count=1" in bundle.content
+
+
+class TestSessionR3BundleCharBudgetRecompute:
+    """P1 fix: truncation must be recomputed AFTER sentinel replacement.
+
+    The sentinel __BUNDLE_DIFF_META__ is ~25 chars; the real metadata line is
+    ~200+ chars.  A bundle that fits inside MAX_BUNDLE_CHARS with the sentinel
+    may exceed it after the replacement.  _finalize_review_bundle() must detect
+    this in a second pass and set bundle_truncated=true + bundle_char_budget_exceeded.
+    """
+
+    def test_bundle_char_budget_exceeded_detected_after_sentinel_replacement(self):
+        """Bundle OK with sentinel but over limit after metadata expansion → truncated=True."""
+        # Craft a sanitized_bundle_with_sentinel whose len is just below MAX_BUNDLE_CHARS
+        # so that replacing the sentinel (~25 chars) with the real metadata line (~220 chars)
+        # pushes it over the limit.
+        meta_example = review._render_bundle_metadata(
+            diff_chars=100, files_count=1, truncated=False,
+            reasons=[], final_file_context_count=0, final_file_source="none",
+        )
+        sentinel_len = len(review._BUNDLE_METADATA_SENTINEL)
+        meta_len = len(meta_example)
+        # Sentinel placed FIRST (mirrors real bundle layout) so truncation from the
+        # tail doesn't cut it off.  Padding fills the rest up to just under the limit.
+        padding = review.MAX_BUNDLE_CHARS - 1 - sentinel_len - len("\npad=\n")
+        assert padding > 0, "padding must be positive for this test to be meaningful"
+        fake_bundle = f"{review._BUNDLE_METADATA_SENTINEL}\npad={'x' * padding}\n"
+        assert len(fake_bundle) < review.MAX_BUNDLE_CHARS, "sentinel version must be under limit"
+        # After replacement the bundle grows by (meta_len - sentinel_len) bytes → over limit
+        assert len(fake_bundle) - sentinel_len + meta_len > review.MAX_BUNDLE_CHARS, (
+            "test invariant: post-replacement bundle must exceed MAX_BUNDLE_CHARS"
+        )
+
+        result = review._finalize_review_bundle(
+            fake_bundle,
+            diff_chars=100,
+            files_count=1,
+            truncated=False,
+            reasons=[],
+            final_file_context_count=0,
+            final_file_source="none",
+        )
+
+        assert result.truncated is True
+        assert "bundle_char_budget_exceeded" in result.truncation_reasons
+        assert "bundle_truncated=true" in result.content
+        assert "bundle_char_budget_exceeded" in result.content
+
+    def test_bundle_well_under_limit_stays_not_truncated(self):
+        """Bundle comfortably under MAX_BUNDLE_CHARS stays truncated=False."""
+        tiny_bundle = f"short content\n{review._BUNDLE_METADATA_SENTINEL}"
+        assert len(tiny_bundle) < review.MAX_BUNDLE_CHARS
+
+        result = review._finalize_review_bundle(
+            tiny_bundle,
+            diff_chars=50,
+            files_count=1,
+            truncated=False,
+            reasons=[],
+            final_file_context_count=0,
+            final_file_source="none",
+        )
+
+        assert result.truncated is False
+        assert "bundle_char_budget_exceeded" not in result.truncation_reasons
+        assert "bundle_truncated=false" in result.content
+        assert "bundle_char_budget_exceeded" not in result.content

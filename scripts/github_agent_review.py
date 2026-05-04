@@ -26,6 +26,9 @@ MAX_RECENT_COMMENTS = 20
 MAX_FILES_ANALYZED = 8
 MAX_PATCH_SNIPPET_CHARS = 180
 MAX_BUNDLE_CHARS = 6000
+MAX_SMALL_DIFF_FILES = 3
+MAX_SMALL_DIFF_CHARS = 30_000
+_BUNDLE_METADATA_SENTINEL = "__BUNDLE_DIFF_META__"
 MAX_COMMENT_CHARS = 5000
 MAX_LLM_NOTE_CHARS = 320
 MAX_LLM_ASK_RESPONSE_CHARS = 420
@@ -310,6 +313,8 @@ class ReviewBundle:
     diff_chars: int
     files_count: int
     truncated: bool
+    truncation_reasons: tuple[str, ...] = ()
+    final_file_context_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -1148,6 +1153,7 @@ def render_review(
     llm_warning: str | None = None,
     llm_notes: str | None = None,
     llm_findings: list[Finding] | None = None,
+    review_bundle: "ReviewBundle | None" = None,
 ) -> str:
     llm_findings = _filter_placeholder_llm_findings(llm_findings or [])
     status = review_status(findings, llm_findings=llm_findings)
@@ -1176,9 +1182,17 @@ def render_review(
         f"- Escopo: {summarize_pr_scope(pr_context.files)}",
         f"- PR documental: {'sim' if _pr_docs_only else 'não'}",
         "- Código do PR executado: não",
+    ]
+    if review_bundle is not None and review_bundle.truncated:
+        reasons_str = ",".join(review_bundle.truncation_reasons) if review_bundle.truncation_reasons else "unknown"
+        lines.append(
+            f"- Diff recebido, mas parte do patch foi resumida pelo limite interno do bundle: "
+            f"diff_chars={review_bundle.diff_chars}, files_count={review_bundle.files_count}, razões=[{reasons_str}]."
+        )
+    lines.extend([
         "",
         "### Achados confirmados",
-    ]
+    ])
 
     confirmed = p0_all + p1_all
     if confirmed:
@@ -1326,14 +1340,27 @@ def _build_sanitized_bundle(
 ) -> ReviewBundle:
     _docs_only = is_docs_only([f.path for f in pr_context.files[:MAX_FILES_ANALYZED]])
     diff_chars = sum(len(file.patch or "") for file in pr_context.files)
-    truncated = len(pr_context.files) > MAX_FILES_ANALYZED or any(_is_patch_snippet_truncated(file.patch) for file in pr_context.files)
+
+    # --- Compute early truncation reasons (before building bundle) ---
+    truncation_reasons: list[str] = []
+    _too_many_files = len(pr_context.files) > MAX_FILES_ANALYZED
+    if _too_many_files:
+        truncation_reasons.append("too_many_files")
+    # Small/medium PRs get full patch; snippet truncation only applies to large ones
+    _small_pr = len(pr_context.files) <= MAX_SMALL_DIFF_FILES and diff_chars <= MAX_SMALL_DIFF_CHARS
+    if not _small_pr and any(_is_patch_snippet_truncated(file.patch) for file in pr_context.files):
+        truncation_reasons.append("patch_snippet_truncated")
+    truncated = bool(truncation_reasons)
+
     _agentescala = _is_agentescala_repo(pr_context.owner, pr_context.repo)
+
+    # _BUNDLE_METADATA_SENTINEL is replaced at the end with the fully-accurate metadata line
     lines = [
         f"Título do PR: {_redact_sensitive_text(pr_context.title or '')}",
         f"Descrição do PR: {_redact_sensitive_text(_truncate_text(pr_context.body or '', 600))}",
         f"Escopo: {summarize_pr_scope(pr_context.files)}",
         f"PR documental: {'sim — apenas docs/ e .md alterados' if _docs_only else 'não'}",
-        f"Metadados do diff: diff_chars={diff_chars}, files_count={len(pr_context.files)}, truncated={'true' if truncated else 'false'}",
+        _BUNDLE_METADATA_SENTINEL,
     ]
     if truncated:
         lines.extend([
@@ -1343,24 +1370,35 @@ def _build_sanitized_bundle(
     if _agentescala:
         lines.extend(_AGENTESCALA_CONTEXT_LINES)
     lines.extend([
-        "Se o diff estiver incompleto ou truncado, diga isso explicitamente.",
-        "Se faltar contexto de arquivo, diga qual contexto falta.",
+        "Você recebeu o diff/metadados da PR. Se bundle_truncated=true no contexto, diga que o diff foi recebido, mas parte do patch foi resumida pelo limite interno do bundle. Não diga que o diff não foi recebido.",
+        "Se faltar contexto de arquivo específico, diga qual contexto falta.",
         "Arquivos alterados:",
     ])
     for file in pr_context.files[:MAX_FILES_ANALYZED]:
-        snippet = _short_patch_for_bundle(file.patch)
-        lines.append(
-            f"- {file.path} [{file.status}] +{file.additions} -{file.deletions}: {_redact_sensitive_text(snippet)}"
-        )
+        if _small_pr:
+            # Full patch for small/medium PRs — redaction applied at bundle-level below
+            patch_text = file.patch or ""
+            lines.append(f"- {file.path} [{file.status}] +{file.additions} -{file.deletions}:")
+            if patch_text:
+                lines.append(f"```diff\n{patch_text}\n```")
+        else:
+            snippet = _short_patch_for_bundle(file.patch)
+            lines.append(
+                f"- {file.path} [{file.status}] +{file.additions} -{file.deletions}: {_redact_sensitive_text(snippet)}"
+            )
     # Attach final-file context for frontend files with suspected import changes.
     # Content is fetched at head_sha via GitHub API so it reflects the PR head,
     # not the base-checkout state (the workflow only checks out the base).
+    final_file_context_count = 0
     _final_file_budget = MAX_FINAL_FILE_CHARS * 3
     _ref = pr_context.head_sha or pr_context.head_ref or ""
     for file in pr_context.files[:MAX_FILES_ANALYZED]:
         if _final_file_budget <= 200:
+            truncation_reasons.append("final_file_context_unavailable")
             break
-        if not _is_frontend_file(file.path) or not _diff_has_import_lines(file.patch):
+        if not _is_frontend_file(file.path):
+            continue
+        if not _diff_has_import_lines(file.patch):
             continue
         if client is None or not _ref:
             break
@@ -1375,6 +1413,7 @@ def _build_sanitized_bundle(
         if ctx:
             lines.append(ctx)
             _final_file_budget -= len(ctx)
+            final_file_context_count += 1
     if pr_context.checks:
         lines.append("Checks (status real do GitHub API):")
         for check in pr_context.checks[:10]:
@@ -1433,13 +1472,80 @@ def _build_sanitized_bundle(
     )
     bundle = "\n".join(lines)
     sanitized_bundle = _redact_sensitive_text(bundle)
-    if len(sanitized_bundle) > MAX_BUNDLE_CHARS:
-        truncated = True
-    return ReviewBundle(
-        content=_truncate_text(sanitized_bundle, MAX_BUNDLE_CHARS),
+
+    _unique_reasons = list(dict.fromkeys(truncation_reasons))
+    final_file_source = "github_contents_api" if final_file_context_count > 0 else "none"
+    return _finalize_review_bundle(
+        sanitized_bundle,
         diff_chars=diff_chars,
         files_count=len(pr_context.files),
         truncated=truncated,
+        reasons=_unique_reasons,
+        final_file_context_count=final_file_context_count,
+        final_file_source=final_file_source,
+    )
+
+
+def _render_bundle_metadata(
+    diff_chars: int,
+    files_count: int,
+    truncated: bool,
+    reasons: list[str],
+    final_file_context_count: int,
+    final_file_source: str,
+) -> str:
+    reasons_str = ",".join(reasons) if reasons else "none"
+    return (
+        f"diff_received=true, diff_chars={diff_chars}, files_count={files_count}, "
+        f"bundle_truncated={'true' if truncated else 'false'}, "
+        f"truncation_reasons=[{reasons_str}], "
+        f"max_files_analyzed={MAX_FILES_ANALYZED}, "
+        f"max_patch_chars_per_file={MAX_PATCH_SNIPPET_CHARS}, "
+        f"final_file_context_count={final_file_context_count}, "
+        f"final_file_context_source={final_file_source}"
+    )
+
+
+def _finalize_review_bundle(
+    sanitized_bundle_with_sentinel: str,
+    *,
+    diff_chars: int,
+    files_count: int,
+    truncated: bool,
+    reasons: list[str],
+    final_file_context_count: int,
+    final_file_source: str,
+) -> ReviewBundle:
+    """Replace the metadata sentinel and recompute truncation AFTER expansion.
+
+    The sentinel is much shorter than the real metadata line, so the size check
+    must happen on the *final* string (post-replacement), not on the sentinel
+    version.  We do two passes:
+      1. Replace sentinel with first-pass metadata; measure final size.
+      2. If the final size exceeds MAX_BUNDLE_CHARS, add bundle_char_budget_exceeded,
+         rebuild the metadata line to reflect the new reason, replace again.
+      3. Truncate and return a coherent ReviewBundle.
+    """
+    # Pass 1 — substitute sentinel with current metadata
+    meta1 = _render_bundle_metadata(diff_chars, files_count, truncated, reasons, final_file_context_count, final_file_source)
+    candidate = sanitized_bundle_with_sentinel.replace(_BUNDLE_METADATA_SENTINEL, meta1, 1)
+
+    # Pass 2 — check whether expansion pushed us over the limit
+    if len(candidate) > MAX_BUNDLE_CHARS:
+        truncated = True
+        if "bundle_char_budget_exceeded" not in reasons:
+            reasons = list(reasons) + ["bundle_char_budget_exceeded"]
+        meta2 = _render_bundle_metadata(diff_chars, files_count, truncated, reasons, final_file_context_count, final_file_source)
+        # Replace the already-substituted metadata line with the updated one
+        candidate = candidate.replace(meta1, meta2, 1)
+
+    return ReviewBundle(
+        content=_truncate_text(candidate, MAX_BUNDLE_CHARS),
+        diff_chars=diff_chars,
+        files_count=files_count,
+        truncated=truncated,
+        truncation_reasons=tuple(reasons),
+        final_file_context_count=final_file_context_count,
     )
 
 
@@ -1602,6 +1708,7 @@ def build_agent_router_payload(
         "Não retornar checklist genérico. Não retornar recomendações sem relação direta com o diff. "
         "Preferir poucos achados bons a muitos achados fracos. "
         "Se o diff estiver incompleto ou truncado, diga isso explicitamente. Se faltar contexto de arquivo, diga qual contexto falta. "
+        "Você recebeu o diff/metadados da PR. Se bundle_truncated=true no contexto, diga que o diff foi recebido, mas parte do patch foi resumida pelo limite interno do bundle. Não diga que o diff não foi recebido. "
         "Não trate ajuste isolado de MAX_BUNDLE_CHARS como P2; só sinalize se houver regressão de truncamento sem teste. "
         "REGRAS OBRIGATÓRIAS DE EVIDÊNCIA: "
         "(1) Nunca diga que uma verificação 'falhou' (FALHOU, failed, falhando) a menos que o payload mostre conclusion=failure. "
@@ -2234,6 +2341,7 @@ def main() -> int:
 
     llm_review: LLMReview | None = None
     llm_warning: str | None = None
+    review_bundle: ReviewBundle | None = None
     if command_mode == "review_llm":
         if not llm_enabled:
             llm_warning = _build_llm_disabled_message()
@@ -2279,6 +2387,7 @@ def main() -> int:
         llm_warning=llm_warning,
         llm_notes=llm_review.notes if llm_review else None,
         llm_findings=llm_review.findings if llm_review else None,
+        review_bundle=review_bundle,
     )
     if not _publish_review_comment(client, pr_context, markdown):
         return 1
