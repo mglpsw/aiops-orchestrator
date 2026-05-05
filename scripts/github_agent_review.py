@@ -118,6 +118,26 @@ _AGENTESCALA_CONTEXT_LINES = [
     "=== Fim do Contexto obrigatório do AgentEscala ===",
 ]
 
+_AGENTESCALA_ADMIN_NOTIFICATION_TEMPLATE = [
+    "=== Template obrigatório para PR de Admin/Notificações ===",
+    "Sua resposta DEVE seguir exatamente esta estrutura:",
+    "1. Veredito: (approved/needs_review/changes_requested baseado em evidências concretas)",
+    "2. Escopo entendido: (resumo do que foi alterado)",
+    "3. Segurança backend: (validações de entrada, autorização, rate limiting observados ou ausentes)",
+    "4. Semântica: (lógica de notificação/admin condiz com regras ou há inconsistência?)",
+    "5. Readiness: (tratamento de erro, logs, retry, circuit-breaker, timeout)",
+    "6. Frontend: (se aplicável: UX, validação, mensagens de erro)",
+    "7. Fora de escopo: (o que NÃO foi alterado e NÃO deve ser sugerido sem bug real)",
+    "8. Validações observadas: (checks verdes, testes passando, lint ok)",
+    "9. Achados confirmados: (P0/P1 com evidência concreta — NUNCA especulação)",
+    "10. Riscos não confirmados: (P2 com indícios mas sem prova definitiva)",
+    "11. Risco residual: (o que pode dar errado mesmo após merge, baseado em evidência)",
+    "12. Próximo hardening recomendado: (melhorias P3 opcionais)",
+    "Se diff truncado ou ausente: declare explicitamente 'Diff não disponível' e 'Não validei localmente' nas seções aplicáveis.",
+    "Não invente endpoints, schemas, migrations ou bugs sem evidência direta no diff.",
+    "=== Fim do Template ===",
+]
+
 _SPECULATIVE_LANGUAGE_RE = re.compile(
     r"(?i)\b(?:possivelmente|talvez|pode\s+ser|não\s+está\s+claro|não\s+consegui\s+confirmar|parece)\b"
 )
@@ -1356,6 +1376,7 @@ def _build_sanitized_bundle(
     truncated = bool(truncation_reasons)
 
     _agentescala = _is_agentescala_repo(pr_context.owner, pr_context.repo)
+    _agentescala_admin_notif = _is_agentescala_admin_or_notification_pr(pr_context)
 
     # _BUNDLE_METADATA_SENTINEL is replaced at the end with the fully-accurate metadata line
     lines = [
@@ -1372,6 +1393,8 @@ def _build_sanitized_bundle(
         ])
     if _agentescala:
         lines.extend(_AGENTESCALA_CONTEXT_LINES)
+    if _agentescala_admin_notif:
+        lines.extend(_AGENTESCALA_ADMIN_NOTIFICATION_TEMPLATE)
     lines.extend([
         "Você recebeu o diff/metadados da PR. Se bundle_truncated=true no contexto, diga que o diff foi recebido, mas parte do patch foi resumida pelo limite interno do bundle. Não diga que o diff não foi recebido.",
         "Se faltar contexto de arquivo específico, diga qual contexto falta.",
@@ -1625,8 +1648,156 @@ def _filter_placeholder_llm_findings(findings: list[Finding]) -> list[Finding]:
     return [finding for finding in findings if not _llm_finding_uses_obvious_placeholder(finding)]
 
 
+def _postprocess_llm_findings(
+    findings: list[Finding],
+    checks: list[CheckSummary] | None = None,
+    truncated: bool = False
+) -> list[Finding]:
+    """
+    Deterministic post-processing to prevent false positives from LLM.
+
+    Rules enforced:
+    1. Downgrade P0/P1 findings with speculative language to P2
+    2. Downgrade P0/P1 findings claiming test failures without check evidence
+    3. Downgrade P0/P1 findings when diff is truncated (unless check failure exists)
+    4. Filter out findings that claim invented endpoints/schemas/migrations without evidence
+    """
+    if not findings:
+        return findings
+
+    checks = checks or []
+    failed_check_names = {
+        check.name.lower() for check in checks
+        if check.conclusion == "failure"
+    }
+
+    # Patterns that indicate claimed test failures
+    test_failure_patterns = [
+        r'pytest.*falhou',
+        r'pytest.*failed',
+        r'pytest.*falhando',
+        r'eslint.*falhou',
+        r'eslint.*failed',
+        r'eslint.*falhando',
+        r'vitest.*falhou',
+        r'vitest.*failed',
+        r'vitest.*falhando',
+        r'jest.*falhou',
+        r'jest.*failed',
+        r'mypy.*falhou',
+        r'flake8.*falhou',
+        r'ruff.*falhou',
+        r'build.*falhou',
+        r'build.*failed',
+        r'lint.*falhou',
+        r'lint.*failed',
+        r'test.*falhou',
+        r'test.*failed',
+    ]
+    test_failure_re = re.compile('|'.join(test_failure_patterns), re.IGNORECASE)
+
+    # Patterns that indicate invented technical details without evidence
+    invention_patterns = [
+        r'endpoint.*não.*exist',
+        r'schema.*ausente',
+        r'migration.*faltando',
+        r'migration.*necessária',
+        r'api.*quebr',
+        r'contrato.*quebr',
+    ]
+    invention_re = re.compile('|'.join(invention_patterns), re.IGNORECASE)
+
+    processed = []
+    for finding in findings:
+        severity = finding.severity
+        combined_text = f"{finding.evidence} {finding.risk} {finding.recommendation}"
+
+        # Rule 1: Downgrade P0/P1 with speculative language
+        if severity in {"P0", "P1"} and _has_speculative_language(combined_text):
+            finding = Finding(
+                severity="P2",
+                file=finding.file,
+                evidence=f"[Rebaixado de {severity} por linguagem especulativa] {finding.evidence}",
+                risk=finding.risk,
+                recommendation=finding.recommendation,
+                rule_id=finding.rule_id,
+            )
+            severity = "P2"
+
+        # Rule 2: Downgrade P0/P1 claiming test failures without check evidence
+        if severity in {"P0", "P1"} and test_failure_re.search(combined_text):
+            # Check if there's actually a failed check mentioned
+            has_failed_check = any(
+                tool in combined_text.lower()
+                for tool in failed_check_names
+            )
+            if not has_failed_check:
+                finding = Finding(
+                    severity="P2",
+                    file=finding.file,
+                    evidence=f"[Rebaixado de {severity} - falha de teste não comprovada] {finding.evidence}",
+                    risk=finding.risk,
+                    recommendation=finding.recommendation,
+                    rule_id=finding.rule_id,
+                )
+                severity = "P2"
+
+        # Rule 3: Downgrade P0/P1 when diff truncated (unless check failure exists)
+        if severity in {"P0", "P1"} and truncated and not failed_check_names:
+            finding = Finding(
+                severity="P2",
+                file=finding.file,
+                evidence=f"[Rebaixado de {severity} - diff truncado sem check falho] {finding.evidence}",
+                risk=finding.risk,
+                recommendation=finding.recommendation,
+                rule_id=finding.rule_id,
+            )
+            severity = "P2"
+
+        # Rule 4: Downgrade P0/P1 with invented technical details (endpoints, schemas, migrations)
+        # unless there's concrete evidence (like a failed check or complete file)
+        if severity in {"P0", "P1"} and invention_re.search(combined_text):
+            # Check if there's concrete evidence
+            has_concrete_evidence = bool(failed_check_names) or "arquivo final completo" in combined_text.lower()
+            if not has_concrete_evidence:
+                finding = Finding(
+                    severity="P2",
+                    file=finding.file,
+                    evidence=f"[Rebaixado de {severity} - detalhes técnicos não verificados] {finding.evidence}",
+                    risk=finding.risk,
+                    recommendation=finding.recommendation,
+                    rule_id=finding.rule_id,
+                )
+                severity = "P2"
+
+        processed.append(finding)
+
+    return processed
+
+
 def _is_agentescala_repo(owner: str, repo: str) -> bool:
     return f"{owner}/{repo}" == AGENTESCALA_REPO
+
+
+def _is_agentescala_admin_or_notification_pr(pr_context: ReviewContext) -> bool:
+    """Check if PR is for admin, notifications, WhatsApp, Pushover, preferences or operational panels."""
+    if not _is_agentescala_repo(pr_context.owner, pr_context.repo):
+        return False
+    title_lower = (pr_context.title or "").lower()
+    body_lower = (pr_context.body or "").lower()
+    keywords = [
+        "admin", "notifica", "whatsapp", "pushover", "preferência", "preferencia",
+        "painel", "operacional", "audit_event", "notif", "push", "alert"
+    ]
+    # Check title/body for keywords
+    if any(kw in title_lower or kw in body_lower for kw in keywords):
+        return True
+    # Check file paths for notification/admin-related changes
+    for file in pr_context.files:
+        path_lower = file.path.lower()
+        if any(kw in path_lower for kw in ["notification", "admin", "whatsapp", "pushover", "preference", "audit"]):
+            return True
+    return False
 
 
 def _has_speculative_language(text: str) -> bool:
@@ -1705,10 +1876,17 @@ def build_agent_router_payload(
         "Priorize, nesta ordem: bug funcional, regressão, quebra de contrato/API, métrica Prometheus incorreta, risco de segurança, "
         "teste ausente para comportamento alterado, risco de deploy/runtime e inconsistência com documentação ou contrato existente. "
         "TAXONOMIA DE SEVERIDADE OBRIGATÓRIA: "
-        "P0 = segredo real, produção crítica, comando destrutivo, perda de dados ou bypass de autenticação. "
-        "P1 = bug confirmado por arquivo final, check/teste falhando ou contrato quebrado — NUNCA hipóteses. "
-        "P2 = risco provável mas não confirmado; use quando há indício concreto sem prova definitiva. "
+        "P0 = segredo real verificável, produção crítica, comando destrutivo concreto, perda de dados comprovada ou bypass de autenticação confirmado. "
+        "P1 = bug confirmado por arquivo final COMPLETO, check/teste com conclusion=failure OBSERVADO, ou contrato quebrado DOCUMENTADO — NUNCA NUNCA hipóteses, especulações ou suposições. "
+        "P2 = risco provável mas não confirmado; use quando há indício concreto sem prova definitiva. Frases como 'possível', 'potencial', 'sugerido', 'sem diff', 'não é possível confirmar' SEMPRE são P2, NUNCA P0/P1. "
         "P3 = melhoria, refactoring ou sugestão sem impacto direto em produção. "
+        "REGRAS IMPERATIVAS DE EVIDÊNCIA (violação = falso positivo grave): "
+        "(A) P0/P1 SÓ PODEM EXISTIR com evidência concreta: arquivo final completo, teste/check falho observado (conclusion=failure), contrato documentado quebrado, lint/build falho comprovado, regressão clara e reproduzível. "
+        "(B) Se diff ausente, vazio ou truncado sem evidência suficiente: NÃO gerar Achados críticos; NÃO inventar endpoints, schemas, migrations, segurança ou bugs; usar veredito needs_review salvo check falho comprovado; declarar 'não validei localmente' quando aplicável. "
+        "(C) NUNCA escrever 'pytest: FALHOU', 'eslint: FALHOU', 'vitest: FALHOU' sem check/log/execução local real mostrando conclusion=failure. "
+        "(D) Nunca transformar hipótese em bloqueador. "
+        "(E) Se o LLM gerar P0/P1 especulativo, será automaticamente rebaixado para 'Riscos não confirmados'. "
+        "(F) Sem P0/P1 confirmado, o veredito NÃO PODE ser request_changes. "
         "Para cada achado, responda exatamente neste formato textual: "
         "'- Severidade: P0/P1/P2/P3', '- Arquivo/linha ou trecho: ...', '- Problema concreto: ...', '- Por que isso quebra algo: ...', '- Correção sugerida: ...'. "
         f"Se não encontrar problema real, responda exatamente: '{NO_BLOCKING_FINDINGS_RESPONSE}'. "
@@ -1718,14 +1896,13 @@ def build_agent_router_payload(
         "Se o diff estiver incompleto ou truncado, diga isso explicitamente. Se faltar contexto de arquivo, diga qual contexto falta. "
         "Você recebeu o diff/metadados da PR. Se bundle_truncated=true no contexto, diga que o diff foi recebido, mas parte do patch foi resumida pelo limite interno do bundle. Não diga que o diff não foi recebido. "
         "Não trate ajuste isolado de MAX_BUNDLE_CHARS como P2; só sinalize se houver regressão de truncamento sem teste. "
-        "REGRAS OBRIGATÓRIAS DE EVIDÊNCIA: "
+        "REGRAS ADICIONAIS OBRIGATÓRIAS: "
         "(1) Nunca diga que uma verificação 'falhou' (FALHOU, failed, falhando) a menos que o payload mostre conclusion=failure. "
         "(2) Checks com conclusion=timed_out devem ser descritos como 'timeout', não como falha. "
         "(3) Checks com cancelled/action_required/startup_failure devem ser descritos pelo status real. "
         "(4) Em PRs documentais (apenas docs/ e .md), não reporte checks funcionais como falha. "
         "(5) Não adicione recomendações genéricas de segurança ou performance sem evidência no diff. "
         "(6) Se uma validação não foi executada, diga 'não executado', nunca 'falhou'. "
-        "REGRAS ANTI-FALSO-POSITIVO: "
         "(7) Diff truncado NÃO gera P1; só promova P1 se a parte visível do diff contém prova suficiente. "
         "(8) Import ou variável não usada só é P1/P2 se confirmado por lint/check ou pelo arquivo final completo — NUNCA por diff parcial. "
         "(9) Problemas descritos com 'possivelmente', 'talvez' ou 'pode ser' são no máximo P2 — riscos não confirmados, não bloqueadores. "
@@ -2370,6 +2547,17 @@ def main() -> int:
                     timeout_seconds=router_timeout_seconds,
                 )
                 llm_review = parse_agent_router_response(raw_router)
+                # Apply deterministic post-processing to prevent false positives
+                if llm_review and llm_review.findings:
+                    llm_review = LLMReview(
+                        findings=_postprocess_llm_findings(
+                            llm_review.findings,
+                            checks=pr_context.checks,
+                            truncated=review_bundle.truncated if review_bundle else False
+                        ),
+                        notes=llm_review.notes,
+                        warning=llm_review.warning,
+                    )
                 llm_warning = llm_review.warning
             except AgentRouterTimeoutError:
                 llm_warning = _build_llm_timeout_warning(router_timeout_seconds)
