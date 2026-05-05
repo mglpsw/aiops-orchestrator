@@ -686,6 +686,8 @@ def _file_area(path: str) -> str:
         return "tests"
     if lowered.startswith("docs/"):
         return "docs"
+    if lowered in {"app/core/config.py", "app/agent_router/services/action_runner.py", "config/actions.yaml"}:
+        return "security-critical"
     if lowered.startswith("frontend/") or lowered.endswith((".jsx", ".tsx", ".css", ".scss", ".html")):
         return "frontend"
     if lowered.startswith("backend/") or lowered.startswith("app/") or lowered.endswith(".py"):
@@ -2841,6 +2843,17 @@ def main() -> int:
         llm_notes=llm_review.notes if llm_review else None,
         llm_findings=llm_review.findings if llm_review else None,
         review_bundle=review_bundle,
+    )
+    # Log telemetry after review is rendered
+    review_mode = "llm" if command_mode == "review_llm" else "deterministic"
+    _log_review_telemetry(
+        mode=review_mode,
+        deterministic_findings=deterministic_findings,
+        llm_findings=llm_review.findings if llm_review else None,
+        verdict="approved" if not deterministic_findings or all(f.severity not in ("P0", "P1") for f in deterministic_findings) else "changes_requested",
+        is_agentescala=_is_agentescala_repo(pr_context.owner, pr_context.repo),
+        bundle_size_chars=review_bundle.diff_chars if review_bundle else 0,
+        redaction_applied=True,
     )
     if not _publish_review_comment(client, pr_context, markdown):
         return 1
