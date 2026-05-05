@@ -1648,6 +1648,81 @@ def _filter_placeholder_llm_findings(findings: list[Finding]) -> list[Finding]:
     return [finding for finding in findings if not _llm_finding_uses_obvious_placeholder(finding)]
 
 
+def _has_concrete_critical_evidence(text: str, failed_check_names: set[str]) -> bool:
+    """
+    Detect if text contains concrete critical security evidence that should preserve P0/P1
+    even when diff is truncated.
+
+    Returns True if ANY of these concrete critical issues are present:
+    - Real secret/token (GitHub tokens, API keys, etc.)
+    - Private key
+    - Destructive command (docker exec, systemctl, rm -rf, etc.)
+    - Workflow vulnerability (pull_request_target + dangerous permissions/checkout)
+    - Shell injection risk (shell=True, subprocess shell)
+    - Failed check mention matching actual failed check
+
+    Returns False for speculative language or generic claims.
+    """
+    if not text:
+        return False
+
+    text_lower = text.lower()
+
+    # Check for failed check evidence
+    if failed_check_names:
+        for check_name in failed_check_names:
+            if check_name in text_lower:
+                return True
+
+    # Check for real secrets/tokens (not placeholders)
+    # GitHub tokens: gh[pousr]_, github_pat_, sk-
+    if _GITHUB_TOKEN_VALUE_RE.search(text):
+        # Verify it's not a placeholder
+        token_match = _GITHUB_TOKEN_VALUE_RE.search(text)
+        if token_match and not _placeholder_secret_value(token_match.group(0)):
+            return True
+
+    # Check for private keys
+    if _PRIVATE_KEY_RE.search(text):
+        # Verify it's not a placeholder
+        if not _looks_like_private_key_placeholder(text):
+            return True
+
+    # Check for Bearer tokens in Authorization headers
+    if _AUTH_BEARER_VALUE_RE.search(text):
+        bearer_match = _AUTH_BEARER_VALUE_RE.search(text)
+        if bearer_match and len(bearer_match.group(2)) > 20:  # Real tokens are typically longer
+            return True
+
+    # Check for API key assignments with real-looking values
+    if _GENERIC_SECRET_ASSIGNMENT_RE.search(text):
+        secret_match = _GENERIC_SECRET_ASSIGNMENT_RE.search(text)
+        if secret_match and not _placeholder_secret_value(secret_match.group(2)):
+            return True
+
+    # Check for destructive commands in executable context
+    if _P1_DESTRUCTIVE_RE.search(text):
+        # Make sure it's not in a negated/prohibitive context
+        if not _P1_NEGATED_COMMAND_CONTEXT_RE.search(text):
+            # Make sure it's not just in test/example context
+            if not _META_COMMAND_REFERENCE_RE.search(text):
+                return True
+
+    # Check for workflow vulnerabilities (pull_request_target, dangerous permissions)
+    if _P1_WORKFLOW_RE.search(text):
+        return True
+
+    # Check for shell injection patterns
+    if _P1_RUNNER_RE.search(text):
+        return True
+
+    # Check for URL credentials
+    if _URL_CREDENTIALS_RE.search(text):
+        return True
+
+    return False
+
+
 def _postprocess_llm_findings(
     findings: list[Finding],
     checks: list[CheckSummary] | None = None,
@@ -1659,8 +1734,10 @@ def _postprocess_llm_findings(
     Rules enforced:
     1. Downgrade P0/P1 findings with speculative language to P2
     2. Downgrade P0/P1 findings claiming test failures without check evidence
-    3. Downgrade P0/P1 findings when diff is truncated (unless check failure exists)
-    4. Filter out findings that claim invented endpoints/schemas/migrations without evidence
+    3. Downgrade P0/P1 findings when diff is truncated UNLESS the finding contains
+       concrete critical evidence visible in the text (real secrets, destructive commands,
+       workflow vulnerabilities, shell injection, or failed checks)
+    4. Downgrade P0/P1 findings claiming invented endpoints/schemas/migrations without evidence
     """
     if not findings:
         return findings
@@ -1742,17 +1819,21 @@ def _postprocess_llm_findings(
                 )
                 severity = "P2"
 
-        # Rule 3: Downgrade P0/P1 when diff truncated (unless check failure exists)
-        if severity in {"P0", "P1"} and truncated and not failed_check_names:
-            finding = Finding(
-                severity="P2",
-                file=finding.file,
-                evidence=f"[Rebaixado de {severity} - diff truncado sem check falho] {finding.evidence}",
-                risk=finding.risk,
-                recommendation=finding.recommendation,
-                rule_id=finding.rule_id,
-            )
-            severity = "P2"
+        # Rule 3: Downgrade P0/P1 when diff truncated UNLESS there's concrete critical evidence
+        # visible in the finding itself or a real failed check exists
+        if severity in {"P0", "P1"} and truncated:
+            # Check if the finding contains concrete critical evidence despite truncation
+            has_critical_evidence = _has_concrete_critical_evidence(combined_text, failed_check_names)
+            if not has_critical_evidence:
+                finding = Finding(
+                    severity="P2",
+                    file=finding.file,
+                    evidence=f"[Rebaixado de {severity} - diff truncado sem evidência crítica visível] {finding.evidence}",
+                    risk=finding.risk,
+                    recommendation=finding.recommendation,
+                    rule_id=finding.rule_id,
+                )
+                severity = "P2"
 
         # Rule 4: Downgrade P0/P1 with invented technical details (endpoints, schemas, migrations)
         # unless there's concrete evidence (like a failed check or complete file)

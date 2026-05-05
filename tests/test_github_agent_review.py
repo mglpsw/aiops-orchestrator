@@ -2368,8 +2368,12 @@ class TestFalsePositivePrevention:
     """Tests to prevent false positives in LLM reviews, especially for AgentEscala PRs."""
 
     def test_diff_absent_does_not_generate_critical_findings(self):
-        """When diff is absent/truncated, LLM should not generate P0/P1 without evidence."""
-        # Simulate truncated diff scenario
+        """When diff is truncated, speculative P0/P1 (without concrete evidence) should be downgraded.
+
+        This test covers hypothetical/speculative claims, NOT visible critical evidence.
+        For real secrets/destructive commands visible in truncated diff, see dedicated tests below.
+        """
+        # Simulate truncated diff scenario with SPECULATIVE finding (no concrete evidence)
         findings = [
             review.Finding(
                 severity="P1",
@@ -2382,7 +2386,7 @@ class TestFalsePositivePrevention:
         ]
         # Post-process with truncated=True and no checks
         processed = review._postprocess_llm_findings(findings, checks=[], truncated=True)
-        # Should downgrade to P2
+        # Should downgrade to P2 because it's speculative
         assert len(processed) == 1
         assert processed[0].severity == "P2"
         assert "[Rebaixado de P1" in processed[0].evidence
@@ -2720,3 +2724,121 @@ class TestFalsePositivePrevention:
         # Verdict should be needs_review, not changes_requested
         status = review.review_status([], processed)
         assert status == "needs_review", f"Expected needs_review, got {status}"
+
+    def test_truncated_diff_keeps_p0_for_visible_real_secret(self):
+        """Even with truncated diff, P0 should stay if finding contains real secret visible in evidence."""
+        findings = [
+            review.Finding(
+                severity="P0",
+                file=".env",
+                evidence="OPENAI_API_KEY=sk-proj-abcdef1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+                risk="secret real exposto pode permitir acesso não autorizado",
+                recommendation="remover chave da .env e usar variável de ambiente",
+                rule_id="llm::P0::.env",
+            )
+        ]
+        # Post-process with truncated=True
+        processed = review._postprocess_llm_findings(findings, checks=[], truncated=True)
+        # Should KEEP P0 because real secret is visible
+        assert len(processed) == 1
+        assert processed[0].severity == "P0", f"Expected P0, got {processed[0].severity}"
+        assert "[Rebaixado" not in processed[0].evidence
+
+    def test_truncated_diff_keeps_p1_for_visible_destructive_command(self):
+        """Even with truncated diff, P1 should stay if finding contains real destructive command."""
+        findings = [
+            review.Finding(
+                severity="P1",
+                file="deploy.sh",
+                evidence="script executa 'docker compose -f prod.yml down' sem aprovação",
+                risk="pode derrubar produção",
+                recommendation="adicionar approval gate",
+                rule_id="llm::P1::deploy.sh",
+            )
+        ]
+        # Post-process with truncated=True
+        processed = review._postprocess_llm_findings(findings, checks=[], truncated=True)
+        # Should KEEP P1 because destructive command is visible
+        assert len(processed) == 1
+        assert processed[0].severity == "P1", f"Expected P1, got {processed[0].severity}"
+        assert "[Rebaixado" not in processed[0].evidence
+
+    def test_truncated_diff_keeps_p1_for_visible_workflow_pull_request_target_exec(self):
+        """Even with truncated diff, P1 should stay for pull_request_target with dangerous checkout/run."""
+        findings = [
+            review.Finding(
+                severity="P1",
+                file=".github/workflows/ci.yml",
+                evidence="workflow usa pull_request_target com actions/checkout e executa código do PR",
+                risk="permite execução de código arbitrário no contexto do repositório base",
+                recommendation="usar pull_request ou adicionar validação de origem",
+                rule_id="llm::P1::.github/workflows/ci.yml",
+            )
+        ]
+        # Post-process with truncated=True
+        processed = review._postprocess_llm_findings(findings, checks=[], truncated=True)
+        # Should KEEP P1 because workflow vulnerability is visible
+        assert len(processed) == 1
+        assert processed[0].severity == "P1", f"Expected P1, got {processed[0].severity}"
+        assert "[Rebaixado" not in processed[0].evidence
+
+    def test_truncated_diff_downgrades_speculative_security_claim(self):
+        """Truncated diff should downgrade speculative security claims without concrete evidence."""
+        findings = [
+            review.Finding(
+                severity="P1",
+                file="backend/api.py",
+                evidence="possivelmente vulnerável a XSS",
+                risk="pode permitir injeção de script",
+                recommendation="adicionar sanitização",
+                rule_id="llm::P1::backend/api.py",
+            )
+        ]
+        # Post-process with truncated=True
+        processed = review._postprocess_llm_findings(findings, checks=[], truncated=True)
+        # Should downgrade to P2 because it's speculative
+        assert len(processed) == 1
+        assert processed[0].severity == "P2"
+        assert "[Rebaixado de P1 por linguagem especulativa]" in processed[0].evidence
+
+    def test_truncated_diff_downgrades_invented_contract_claim(self):
+        """Truncated diff should downgrade claims about broken contracts without evidence."""
+        findings = [
+            review.Finding(
+                severity="P1",
+                file="backend/routes.py",
+                evidence="endpoint /api/users pode não existir mais",
+                risk="contrato quebrado pode afetar clientes",
+                recommendation="verificar documentação da API",
+                rule_id="llm::P1::backend/routes.py",
+            )
+        ]
+        # Post-process with truncated=True
+        processed = review._postprocess_llm_findings(findings, checks=[], truncated=True)
+        # Should downgrade because no concrete evidence
+        assert len(processed) == 1
+        assert processed[0].severity == "P2"
+        assert "[Rebaixado" in processed[0].evidence
+
+    def test_failed_check_still_keeps_p1_even_when_truncated(self):
+        """Failed check evidence should preserve P1 even with truncated diff."""
+        findings = [
+            review.Finding(
+                severity="P1",
+                file="backend/api.py",
+                evidence="mypy reportou erro de tipo no handler authenticate",
+                risk="tipo incorreto pode causar runtime error",
+                recommendation="corrigir anotação de tipo",
+                rule_id="llm::P1::backend/api.py",
+            )
+        ]
+        # Real failed check
+        checks = [
+            review.CheckSummary(name="mypy", conclusion="failure", status="completed", url="http://example.com")
+        ]
+        # Post-process with truncated=True
+        processed = review._postprocess_llm_findings(findings, checks=checks, truncated=True)
+        # Should KEEP P1 because failed check provides concrete evidence
+        assert len(processed) == 1
+        assert processed[0].severity == "P1", f"Expected P1, got {processed[0].severity}"
+        assert "[Rebaixado" not in processed[0].evidence
