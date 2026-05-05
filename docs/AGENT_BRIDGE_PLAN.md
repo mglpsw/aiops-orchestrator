@@ -1,5 +1,7 @@
 # GitHub Agent Bridge - Supervised Actions Plan
 
+**DESIGN ONLY:** Este documento descreve apenas o design futuro. Nenhuma ação real de bridge é implementada nesta PR. Qualquer BridgeAction real requer issue/RFC separada com aprovação formal.
+
 ## Contexto
 
 Este documento descreve o design futuro para GitHub Agent Bridge supervisionado, preparando a infraestrutura sem implementar execução mutável agora.
