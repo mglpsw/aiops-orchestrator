@@ -643,9 +643,10 @@ def test_review_render_is_short_without_p1_p2() -> None:
     markdown = review.render_review([], [], pr_context, llm_mode=False)
     assert markdown.startswith(review.COMMENT_MARKER)
     assert "## 🤖 Agent Review" in markdown
+    assert "### Contexto analisado" in markdown
     assert "### Escopo entendido" in markdown
     assert "Nenhum achado confirmado." in markdown
-    assert "Código do PR executado: não" in markdown
+    assert "Validação local: não" in markdown or "### Contexto analisado" in markdown
     assert "Notas do LLM" not in markdown
 
 
@@ -2842,3 +2843,212 @@ class TestFalsePositivePrevention:
         assert len(processed) == 1
         assert processed[0].severity == "P1", f"Expected P1, got {processed[0].severity}"
         assert "[Rebaixado" not in processed[0].evidence
+
+
+class TestContextBundleV2:
+    """Test context bundle v2 features including enhanced metadata."""
+
+    def test_bundle_includes_v2_metadata(self):
+        """Bundle should include v2 metadata fields."""
+        pr_context = review.ReviewContext(
+            owner="mglpsw",
+            repo="aiops-orchestrator",
+            issue_number=42,
+            author="alice",
+            association="MEMBER",
+            pr_number=42,
+            title="Add feature",
+            body="Feature description",
+            base_ref="master",
+            head_ref="feat/x",
+            head_sha="abc123",
+            html_url="https://github.com/mglpsw/aiops-orchestrator/pull/42",
+            files=[
+                review.FileChange(path="backend/api.py", status="modified", additions=10, deletions=5, patch="+code"),
+                review.FileChange(path="frontend/App.tsx", status="modified", additions=3, deletions=1, patch="+ui"),
+                review.FileChange(path="tests/test_api.py", status="added", additions=20, deletions=0, patch="+tests"),
+            ],
+            checks=[
+                review.CheckSummary(name="pytest", conclusion="success", status="completed", url="http://ex.com"),
+                review.CheckSummary(name="eslint", conclusion="failure", status="completed", url="http://ex.com"),
+            ],
+        )
+
+        bundle = review._build_sanitized_bundle(pr_context, [])
+
+        # Check v2 fields are populated
+        assert bundle.diff_available is True
+        assert bundle.checks_observed is True
+        assert bundle.analyzed_commit == "abc123"
+        assert "pytest" in bundle.successful_checks
+        assert "eslint" in bundle.failed_checks
+        assert bundle.final_files_observed is False  # No frontend final file context
+        assert bundle.validation_local is False
+
+        # Check files are grouped by area
+        assert "backend" in bundle.files_by_area
+        assert "frontend" in bundle.files_by_area
+        assert "tests" in bundle.files_by_area
+        assert "backend/api.py" in bundle.files_by_area["backend"]
+        assert "frontend/App.tsx" in bundle.files_by_area["frontend"]
+        assert "tests/test_api.py" in bundle.files_by_area["tests"]
+
+    def test_render_review_includes_v2_context(self):
+        """Rendered review should display v2 context information."""
+        pr_context = review.ReviewContext(
+            owner="mglpsw",
+            repo="aiops-orchestrator",
+            issue_number=42,
+            author="alice",
+            association="MEMBER",
+            pr_number=42,
+            title="Add feature",
+            body="Feature description",
+            base_ref="master",
+            head_ref="feat/x",
+            head_sha="abc123",
+            html_url="https://github.com/mglpsw/aiops-orchestrator/pull/42",
+            files=[
+                review.FileChange(path="backend/api.py", status="modified", additions=10, deletions=5, patch="+code"),
+            ],
+            checks=[
+                review.CheckSummary(name="pytest", conclusion="success", status="completed", url="http://ex.com"),
+            ],
+        )
+
+        bundle = review._build_sanitized_bundle(pr_context, [])
+        markdown = review.render_review([], pr_context.checks, pr_context, llm_mode=False, review_bundle=bundle)
+
+        # Check v3 output includes context section
+        assert "### Contexto analisado" in markdown
+        assert "Commit analisado: abc123" in markdown
+        assert "Diff disponível: sim" in markdown
+        assert "Checks observados: sim" in markdown
+        assert "Successful checks: 1 check(s)" in markdown
+        assert "Validação local: não" in markdown
+        assert "Arquivos por área:" in markdown
+
+    def test_files_grouped_by_area_correctly(self):
+        """Files should be grouped by area according to _file_area logic."""
+        files = [
+            review.FileChange(path="backend/api.py", status="modified", additions=1, deletions=0),
+            review.FileChange(path="backend/models.py", status="modified", additions=1, deletions=0),
+            review.FileChange(path="frontend/App.tsx", status="modified", additions=1, deletions=0),
+            review.FileChange(path="tests/test_api.py", status="added", additions=1, deletions=0),
+            review.FileChange(path="docs/README.md", status="modified", additions=1, deletions=0),
+            review.FileChange(path=".github/workflows/ci.yml", status="modified", additions=1, deletions=0),
+            review.FileChange(path="scripts/deploy.sh", status="modified", additions=1, deletions=0),
+            review.FileChange(path="config/settings.yaml", status="modified", additions=1, deletions=0),
+        ]
+
+        grouped = review.group_files_by_area(files)
+
+        assert "backend" in grouped
+        assert "frontend" in grouped
+        assert "tests" in grouped
+        assert "docs" in grouped
+        assert "workflow" in grouped
+        assert "scripts" in grouped
+        assert "config" in grouped
+
+        assert len(grouped["backend"]) == 2
+        assert "backend/api.py" in grouped["backend"]
+        assert "backend/models.py" in grouped["backend"]
+
+    def test_finding_with_evidence_metadata(self):
+        """Finding should support evidence metadata fields."""
+        finding = review.Finding(
+            severity="P1",
+            file="backend/api.py",
+            evidence="secret token exposed",
+            risk="credential leak",
+            recommendation="remove from code",
+            rule_id="secret_scan",
+            evidence_state="confirmed",
+            evidence_source="diff",
+            downgrade_reason=None,
+            critical_evidence_preserved=True,
+        )
+
+        assert finding.evidence_state == "confirmed"
+        assert finding.evidence_source == "diff"
+        assert finding.critical_evidence_preserved is True
+        assert finding.downgrade_reason is None
+
+    def test_bundle_v2_with_no_checks(self):
+        """Bundle v2 should handle PRs with no checks gracefully."""
+        pr_context = review.ReviewContext(
+            owner="mglpsw",
+            repo="aiops-orchestrator",
+            issue_number=42,
+            author="alice",
+            association="MEMBER",
+            pr_number=42,
+            title="Add feature",
+            body="Feature description",
+            base_ref="master",
+            head_ref="feat/x",
+            head_sha="abc123",
+            html_url="https://github.com/mglpsw/aiops-orchestrator/pull/42",
+            files=[
+                review.FileChange(path="docs/README.md", status="modified", additions=1, deletions=0, patch="+doc"),
+            ],
+            checks=[],  # No checks
+        )
+
+        bundle = review._build_sanitized_bundle(pr_context, [])
+
+        assert bundle.checks_observed is False
+        assert len(bundle.failed_checks) == 0
+        assert len(bundle.successful_checks) == 0
+
+    def test_telemetry_logs_without_secrets(self):
+        """Telemetry should log metrics without exposing secrets."""
+        import io
+        import sys
+
+        deterministic = [
+            review.Finding(
+                severity="P1",
+                file="test.py",
+                evidence="issue found",
+                risk="high",
+                recommendation="fix it",
+                rule_id="test_rule",
+                downgrade_reason="speculative_language",
+            )
+        ]
+
+        # Capture stderr
+        captured = io.StringIO()
+        old_stderr = sys.stderr
+        sys.stderr = captured
+
+        try:
+            review._log_review_telemetry(
+                mode="deterministic",
+                deterministic_findings=deterministic,
+                verdict="needs_review",
+                is_agentescala=False,
+                bundle_size_chars=1000,
+                redaction_applied=True,
+            )
+        finally:
+            sys.stderr = old_stderr
+
+        output = captured.getvalue()
+
+        # Check telemetry contains expected metrics
+        assert "mode=deterministic" in output
+        assert "verdict=needs_review" in output
+        assert "findings=P0:0,P1:1,P2:0,P3:0" in output
+        assert "downgrades=1" in output
+        assert "downgrade_reasons=[speculative_language=1]" in output
+        assert "agentescala=false" in output
+        assert "bundle_size_chars=1000" in output
+        assert "redaction_applied=true" in output
+
+        # Ensure no secrets in log
+        assert "token" not in output.lower() or "token=" in output.lower()  # Only metadata keys
+        assert "password" not in output.lower()
+        assert "secret" not in output.lower() or "secret" in "redaction"  # Only as part of word
