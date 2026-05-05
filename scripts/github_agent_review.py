@@ -169,6 +169,11 @@ class Finding:
     recommendation: str
     rule_id: str
     related_files: tuple[str, ...] = ()
+    # Evidence metadata for v2 (optional for backward compatibility)
+    evidence_state: str | None = None  # "confirmed" | "probable" | "unconfirmed_truncated" | "question" | "suggestion"
+    evidence_source: str | None = None  # "diff" | "final_file" | "check" | "pr_body" | "comment" | "deterministic_scan" | "llm"
+    downgrade_reason: str | None = None  # Reason if P0/P1 was downgraded
+    critical_evidence_preserved: bool | None = None  # True if diff truncated but critical evidence visible
 
 
 _CheckStatus = Literal[
@@ -337,6 +342,16 @@ class ReviewBundle:
     truncation_reasons: tuple[str, ...] = ()
     final_file_context_count: int = 0
     bundle_max_chars: int = MAX_BUNDLE_CHARS
+    # Context bundle v2 fields
+    diff_available: bool = True
+    diff_truncated: bool = False
+    checks_observed: bool = False
+    failed_checks: tuple[str, ...] = ()
+    successful_checks: tuple[str, ...] = ()
+    final_files_observed: bool = False
+    analyzed_commit: str | None = None
+    files_by_area: dict[str, list[str]] = field(default_factory=dict)  # area -> list of file paths
+    validation_local: bool = False  # True if local validation was run
 
 
 @dataclass(frozen=True)
@@ -669,10 +684,16 @@ def _file_area(path: str) -> str:
         return "deploy"
     if lowered.startswith("tests/"):
         return "tests"
-    if lowered.startswith("docs/security") or lowered.startswith("docs/actions") or lowered.startswith("docs/github"):
+    if lowered.startswith("docs/"):
         return "docs"
     if lowered in {"app/core/config.py", "app/agent_router/services/action_runner.py", "config/actions.yaml"}:
         return "security-critical"
+    if lowered.startswith("frontend/") or lowered.endswith((".jsx", ".tsx", ".css", ".scss", ".html")):
+        return "frontend"
+    if lowered.startswith("backend/") or lowered.startswith("app/") or lowered.endswith(".py"):
+        return "backend"
+    if lowered.startswith("config/") or lowered.endswith((".yaml", ".yml", ".json", ".toml", ".ini", ".env")):
+        return "config"
     if lowered.startswith("requirements") or lowered.endswith("pyproject.toml"):
         return "dependencies"
     return "other"
@@ -1028,6 +1049,17 @@ def summarize_pr_scope(files: list[FileChange]) -> str:
     return ", ".join(areas[:5])
 
 
+def group_files_by_area(files: list[FileChange]) -> dict[str, list[str]]:
+    """Group file paths by their area classification for context bundle v2."""
+    groups: dict[str, list[str]] = {}
+    for file in files:
+        area = _file_area(file.path)
+        if area not in groups:
+            groups[area] = []
+        groups[area].append(file.path)
+    return groups
+
+
 def _severity_rank(severity: str) -> int:
     return {"P0": 0, "P1": 1, "P2": 2, "P3": 3}.get(severity, 9)
 
@@ -1190,27 +1222,53 @@ def render_review(
     lines = [
         COMMENT_MARKER,
         "",
-        "## 🤖 Agent Review",
+        "## 🤖 Agent Review (AIOps)",
         "",
         "### Veredito",
         f"- Status: {status}",
+        "",
+        "### Contexto analisado",
+        f"- Commit analisado: {pr_context.head_sha or 'n/a'}",
+    ]
+
+    # Context bundle v2 information
+    if review_bundle is not None:
+        lines.extend([
+            f"- Diff disponível: {'sim' if review_bundle.diff_available else 'não'}",
+            f"- Diff truncado: {'sim' if review_bundle.diff_truncated else 'não'}",
+            f"- Checks observados: {'sim' if review_bundle.checks_observed else 'não'}",
+        ])
+        if review_bundle.failed_checks:
+            lines.append(f"- Failed checks: {', '.join(review_bundle.failed_checks[:5])}")
+        if review_bundle.successful_checks:
+            count = len(review_bundle.successful_checks)
+            lines.append(f"- Successful checks: {count} check(s)")
+        lines.extend([
+            f"- Arquivos finais observados: {'sim' if review_bundle.final_files_observed else 'não'}",
+            f"- Validação local: {'sim' if review_bundle.validation_local else 'não — apenas análise estática via API'}",
+        ])
+        if review_bundle.files_by_area:
+            area_summary = ", ".join(f"{area}({len(files)})" for area, files in sorted(review_bundle.files_by_area.items()))
+            lines.append(f"- Arquivos por área: {area_summary}")
+
+    lines.extend([
         "",
         "### Escopo entendido",
         f"- PR: {f'#{pr_context.pr_number}' if pr_context.pr_number is not None else 'n/a'}",
         f"- Autor: {pr_context.author}",
         f"- Base: {pr_context.base_ref or 'n/a'} → Head: {pr_context.head_ref or 'n/a'}",
-        f"- Commit analisado: {pr_context.head_sha or 'n/a'}",
         f"- Modo: {'revisão determinística + Agent Router' if llm_mode else 'revisão determinística'}",
         f"- Escopo: {summarize_pr_scope(pr_context.files)}",
         f"- PR documental: {'sim' if _pr_docs_only else 'não'}",
-        "- Código do PR executado: não",
-    ]
+    ])
+
     if review_bundle is not None and review_bundle.truncated:
         reasons_str = ",".join(review_bundle.truncation_reasons) if review_bundle.truncation_reasons else "unknown"
         lines.append(
-            f"- Diff recebido, mas parte do patch foi resumida pelo limite interno do bundle: "
+            f"- ATENÇÃO: Diff recebido, mas parte do patch foi resumida pelo limite interno do bundle: "
             f"diff_chars={review_bundle.diff_chars}, files_count={review_bundle.files_count}, razões=[{reasons_str}]."
         )
+
     lines.extend([
         "",
         "### Achados confirmados",
@@ -1501,6 +1559,14 @@ def _build_sanitized_bundle(
 
     _unique_reasons = list(dict.fromkeys(truncation_reasons))
     final_file_source = "github_contents_api" if final_file_context_count > 0 else "none"
+
+    # Context bundle v2: collect check information
+    _failed_checks = tuple(check.name for check in pr_context.checks if check.conclusion == "failure")
+    _successful_checks = tuple(check.name for check in pr_context.checks if check.conclusion == "success")
+    _checks_observed = len(pr_context.checks) > 0
+    _files_by_area = group_files_by_area(pr_context.files)
+    _final_files_observed = final_file_context_count > 0
+
     return _finalize_review_bundle(
         sanitized_bundle,
         diff_chars=diff_chars,
@@ -1510,6 +1576,16 @@ def _build_sanitized_bundle(
         final_file_context_count=final_file_context_count,
         final_file_source=final_file_source,
         max_bundle_chars=max_bundle_chars,
+        # Context bundle v2 fields
+        diff_available=diff_chars > 0,
+        diff_truncated=truncated,
+        checks_observed=_checks_observed,
+        failed_checks=_failed_checks,
+        successful_checks=_successful_checks,
+        final_files_observed=_final_files_observed,
+        analyzed_commit=pr_context.head_sha,
+        files_by_area=_files_by_area,
+        validation_local=False,  # TODO: set to True when local validation is run
     )
 
 
@@ -1545,6 +1621,16 @@ def _finalize_review_bundle(
     final_file_context_count: int,
     final_file_source: str,
     max_bundle_chars: int = MAX_BUNDLE_CHARS,
+    # Context bundle v2 parameters
+    diff_available: bool = True,
+    diff_truncated: bool = False,
+    checks_observed: bool = False,
+    failed_checks: tuple[str, ...] = (),
+    successful_checks: tuple[str, ...] = (),
+    final_files_observed: bool = False,
+    analyzed_commit: str | None = None,
+    files_by_area: dict[str, list[str]] | None = None,
+    validation_local: bool = False,
 ) -> ReviewBundle:
     """Replace the metadata sentinel and recompute truncation AFTER expansion.
 
@@ -1577,6 +1663,16 @@ def _finalize_review_bundle(
         truncation_reasons=tuple(reasons),
         final_file_context_count=final_file_context_count,
         bundle_max_chars=max_bundle_chars,
+        # Context bundle v2 fields
+        diff_available=diff_available,
+        diff_truncated=diff_truncated,
+        checks_observed=checks_observed,
+        failed_checks=failed_checks,
+        successful_checks=successful_checks,
+        final_files_observed=final_files_observed,
+        analyzed_commit=analyzed_commit,
+        files_by_area=files_by_area or {},
+        validation_local=validation_local,
     )
 
 
@@ -2390,10 +2486,22 @@ def _log_agent_router_failure(reason: str, *, base_url: str, model: str | None, 
 def _log_review_bundle_metadata(bundle: ReviewBundle, *, model: str | None) -> None:
     model_text = (model or "").strip() or DEFAULT_AGENT_REVIEW_MODEL
     reasons_text = ",".join(bundle.truncation_reasons) if bundle.truncation_reasons else "none"
+    # Context bundle v2 metadata
+    failed_checks_text = ",".join(bundle.failed_checks[:3]) if bundle.failed_checks else "none"
+    successful_checks_count = len(bundle.successful_checks)
+    areas_text = ",".join(sorted(bundle.files_by_area.keys())) if bundle.files_by_area else "none"
+
     print(
         f"Agent Router review metadata: model={model_text}, diff_chars={bundle.diff_chars}, "
         f"files_count={bundle.files_count}, truncated={'true' if bundle.truncated else 'false'}, "
-        f"bundle_max_chars={bundle.bundle_max_chars}, truncation_reasons=[{reasons_text}]",
+        f"bundle_max_chars={bundle.bundle_max_chars}, truncation_reasons=[{reasons_text}], "
+        f"diff_available={'true' if bundle.diff_available else 'false'}, "
+        f"diff_truncated={'true' if bundle.diff_truncated else 'false'}, "
+        f"checks_observed={'true' if bundle.checks_observed else 'false'}, "
+        f"failed_checks=[{failed_checks_text}], successful_checks_count={successful_checks_count}, "
+        f"final_files_observed={'true' if bundle.final_files_observed else 'false'}, "
+        f"validation_local={'true' if bundle.validation_local else 'false'}, "
+        f"areas=[{areas_text}]",
         file=sys.stderr,
     )
 
@@ -2423,6 +2531,73 @@ def _describe_router_response_shape(raw_response: str) -> str:
     if isinstance(parsed, list):
         return _shape(parsed)
     return _shape(parsed)
+
+
+def _log_review_telemetry(
+    *,
+    mode: str,  # "deterministic" | "llm" | "fallback" | "ask"
+    deterministic_findings: list[Finding],
+    llm_findings: list[Finding] | None = None,
+    verdict: str | None = None,
+    is_agentescala: bool = False,
+    router_call_duration_ms: int | None = None,
+    router_error: str | None = None,
+    bundle_size_chars: int = 0,
+    redaction_applied: bool = False,
+) -> None:
+    """Log review telemetry without exposing secrets.
+
+    Telemetry includes:
+    - Total reviews executed
+    - Mode (deterministic, llm, fallback, ask)
+    - Findings by severity
+    - Downgrade reasons
+    - AgentEscala flag
+    - Router call duration and errors
+    - Bundle size
+    - Redaction flag
+    """
+    all_findings = list(deterministic_findings) + (llm_findings or [])
+
+    # Count findings by severity
+    severity_counts = {
+        "P0": sum(1 for f in all_findings if f.severity == "P0"),
+        "P1": sum(1 for f in all_findings if f.severity == "P1"),
+        "P2": sum(1 for f in all_findings if f.severity == "P2"),
+        "P3": sum(1 for f in all_findings if f.severity == "P3"),
+    }
+
+    # Count downgrades (findings with downgrade_reason set)
+    downgraded_count = sum(1 for f in all_findings if f.downgrade_reason is not None)
+    downgrade_reasons = {}
+    for finding in all_findings:
+        if finding.downgrade_reason:
+            reason = finding.downgrade_reason
+            downgrade_reasons[reason] = downgrade_reasons.get(reason, 0) + 1
+
+    downgrade_summary = ",".join(f"{k}={v}" for k, v in sorted(downgrade_reasons.items())) if downgrade_reasons else "none"
+
+    # Router metrics
+    router_text = "n/a"
+    if mode in {"llm", "ask"}:
+        if router_error:
+            router_text = f"error={router_error}"
+        elif router_call_duration_ms is not None:
+            router_text = f"ok,duration_ms={router_call_duration_ms}"
+        else:
+            router_text = "not_called"
+
+    print(
+        f"Review telemetry: mode={mode}, "
+        f"verdict={verdict or 'n/a'}, "
+        f"findings=P0:{severity_counts['P0']},P1:{severity_counts['P1']},P2:{severity_counts['P2']},P3:{severity_counts['P3']}, "
+        f"downgrades={downgraded_count}, downgrade_reasons=[{downgrade_summary}], "
+        f"agentescala={'true' if is_agentescala else 'false'}, "
+        f"router={router_text}, "
+        f"bundle_size_chars={bundle_size_chars}, "
+        f"redaction_applied={'true' if redaction_applied else 'false'}",
+        file=sys.stderr,
+    )
 
 
 def _issue_comment_path(client: GitHubClient, issue_number: int) -> str:
@@ -2668,6 +2843,17 @@ def main() -> int:
         llm_notes=llm_review.notes if llm_review else None,
         llm_findings=llm_review.findings if llm_review else None,
         review_bundle=review_bundle,
+    )
+    # Log telemetry after review is rendered
+    review_mode = "llm" if command_mode == "review_llm" else "deterministic"
+    _log_review_telemetry(
+        mode=review_mode,
+        deterministic_findings=deterministic_findings,
+        llm_findings=llm_review.findings if llm_review else None,
+        verdict="approved" if not deterministic_findings or all(f.severity not in ("P0", "P1") for f in deterministic_findings) else "changes_requested",
+        is_agentescala=_is_agentescala_repo(pr_context.owner, pr_context.repo),
+        bundle_size_chars=review_bundle.diff_chars if review_bundle else 0,
+        redaction_applied=True,
     )
     if not _publish_review_comment(client, pr_context, markdown):
         return 1
