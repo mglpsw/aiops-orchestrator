@@ -1,0 +1,5 @@
+schema_version: agent-review.review-packs.v1
+packs:
+  - id: agentescala-minimal
+    description: Minimal offline review pack for AgentEscala fixtures.
+

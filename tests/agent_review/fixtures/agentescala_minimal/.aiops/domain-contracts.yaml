@@ -1,0 +1,8 @@
+schema_version: agent-review.domain-contracts.v1
+domain: medical-scheduling
+rules:
+  - id: escala_requires_professional
+    description: Schedule entries must preserve the assigned professional.
+  - id: no_auto_contract_fix
+    description: AgentReview may suggest but must not apply contract fixes.
+

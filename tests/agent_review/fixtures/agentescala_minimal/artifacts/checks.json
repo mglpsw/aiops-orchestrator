@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "summary": "unit tests failed",
+  "authorization": "Bearer AGENTESCALA_FIXTURE_AUTH_SECRET_123456",
+  "safe_key": "safe-value",
+  "nested": {
+    "api_key": "sk-agentreviewfixture1234567890",
+    "token_count": 3
+  }
+}
+

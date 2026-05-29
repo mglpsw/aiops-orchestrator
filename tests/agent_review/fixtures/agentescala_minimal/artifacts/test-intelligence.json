@@ -1,0 +1,6 @@
+{
+  "framework": "pytest",
+  "notes": "token=AGENTESCALA_FIXTURE_TOKEN_SECRET",
+  "placeholder": "fake-token"
+}
+
