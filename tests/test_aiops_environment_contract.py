@@ -127,6 +127,29 @@ def test_guard_agent_review_tooling_passes_in_dev_toolrepo() -> None:
     assert result.stdout.strip() == "Allowed: agent_review_tooling environment confirmed."
 
 
+def test_guard_agent_review_tooling_fails_closed_on_invalid_production_runtime() -> None:
+    result = _run_script(
+        GUARD,
+        "--require-mode",
+        "agent_review_tooling",
+        "--json",
+        env=_clean_env(
+            AIOPS_ENVIRONMENT="dev",
+            AIOPS_NODE_ROLE="toolrepo",
+            AIOPS_REPO_MODE="agent_review_tooling",
+            AIOPS_PRODUCTION_RUNTIME="definitely",
+        ),
+    )
+
+    assert result.returncode == 1
+    payload = _json_stdout(result)
+    assert payload["ok"] is False
+    assert payload["message"] == "Blocked: production runtime flag is invalid."
+    assert payload["context"]["production_runtime"] is False
+    assert payload["context"]["agent_review_tooling_allowed"] is False
+    assert "invalid_production_runtime" in payload["context"]["limitations"]
+
+
 def test_guard_deny_production_runtime_fails_when_true() -> None:
     result = _run_script(
         GUARD,
