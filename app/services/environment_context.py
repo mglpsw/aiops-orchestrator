@@ -69,7 +69,8 @@ def build_environment_context(
         _add_limitation(limitations, "environment_not_declared")
 
     agent_review_tooling_allowed = (
-        environment in {"dev", "test"}
+        "invalid_production_runtime" not in limitations
+        and environment in {"dev", "test"}
         and node_role == "toolrepo"
         and repo_mode == "agent_review_tooling"
         and production_runtime is False

@@ -53,6 +53,9 @@ def evaluate_guard(
     if _has_invalid_config(context) and not has_complete_valid_env_override(env):
         return False, "Blocked: environment config is invalid and no complete environment override was provided."
 
+    if _has_invalid_production_runtime(context):
+        return False, "Blocked: production runtime flag is invalid."
+
     if deny_production_runtime and context["production_runtime"] is True:
         return False, "Blocked: production runtime is denied for this operation."
 
@@ -102,6 +105,10 @@ def _is_production_runtime(context: dict[str, Any]) -> bool:
 
 def _has_invalid_config(context: dict[str, Any]) -> bool:
     return "environment_config_invalid" in context.get("limitations", [])
+
+
+def _has_invalid_production_runtime(context: dict[str, Any]) -> bool:
+    return "invalid_production_runtime" in context.get("limitations", [])
 
 
 def _emit_json(ok: bool, message: str, context: dict[str, Any]) -> None:
