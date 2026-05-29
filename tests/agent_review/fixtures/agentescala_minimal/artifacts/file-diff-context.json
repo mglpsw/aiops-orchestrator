@@ -1,0 +1,9 @@
+{
+  "files": [
+    {
+      "path": "app/schedule.py",
+      "patch": "+ Authorization: Bearer AGENTESCALA_FIXTURE_DIFF_SECRET"
+    }
+  ]
+}
+

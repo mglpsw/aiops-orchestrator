@@ -1,0 +1,6 @@
+{
+  "database": "DATABASE_URL=postgres://agent:AGENTESCALA_FIXTURE_DB_SECRET@db.local/agent",
+  "url": "https://agent:AGENTESCALA_FIXTURE_URL_SECRET@example.local/path",
+  "result": "degraded"
+}
+
