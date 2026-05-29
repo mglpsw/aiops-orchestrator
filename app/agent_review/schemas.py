@@ -11,10 +11,23 @@ from pydantic import BaseModel, Field
 TARGET_PROFILE_SCHEMA = "agent-review.target-profile.v1"
 INTAKE_SCHEMA = "agent-review.intake.v1"
 REDACTION_REPORT_SCHEMA = "agent-review.redaction-report.v1"
+SEMANTIC_CHUNK_PLAN_SCHEMA = "agent-review.semantic-chunk-plan.v1"
 
 ArtifactKind = Literal["json", "yaml", "text", "markdown", "diff"]
 ArtifactState = Literal["available", "missing", "invalid", "degraded"]
 IntakeState = Literal["complete", "degraded", "failed"]
+SemanticGroup = Literal[
+    "primary_backend_logic",
+    "api_schema_contract",
+    "frontend_ui",
+    "tests",
+    "workflow_aiops",
+    "docs_changelog",
+    "suspicious_out_of_scope",
+    "unknown",
+]
+ChunkCoverage = Literal["complete", "partial", "degraded"]
+ChunkPlanState = Literal["complete", "partial", "degraded", "failed"]
 
 
 def utc_now_iso() -> str:
@@ -83,3 +96,31 @@ class ReviewIntake(BaseModel):
     status: IntakeState
     error_class: str | None = None
 
+
+class SemanticChunk(BaseModel):
+    chunk_id: str
+    semantic_group: SemanticGroup
+    order_index: int
+    files: list[str] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+    contracts: list[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+    coverage: ChunkCoverage
+    prompt_budget_chars: int
+    estimated_chars: int
+    limitations: list[str] = Field(default_factory=list)
+
+
+class SemanticChunkPlan(BaseModel):
+    schema_version: int = 1
+    schema_id: str = SEMANTIC_CHUNK_PLAN_SCHEMA
+    source: str = "aiops-semantic-chunk-planner"
+    target_repo: str
+    max_parallel_blocks: int
+    chunks: list[SemanticChunk] = Field(default_factory=list)
+    files_covered: list[str] = Field(default_factory=list)
+    files_partially_covered: list[str] = Field(default_factory=list)
+    files_not_covered: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    status: ChunkPlanState
+    created_at: str = Field(default_factory=utc_now_iso)

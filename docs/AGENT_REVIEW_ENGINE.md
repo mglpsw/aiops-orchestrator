@@ -1,7 +1,8 @@
 # AgentReview Engine
 
 AgentReview Engine is the future generic review engine in `aiops-orchestrator`.
-Phase 1 is limited to offline intake and deterministic redaction.
+Phase 1 is limited to offline intake and deterministic redaction. Phase 2 adds
+deterministic semantic chunk planning over the sanitized intake.
 
 ## Runtime Boundary
 
@@ -56,9 +57,31 @@ original secret values.
 This phase also does not apply contract fixes, generate findings, classify
 severity, call an LLM, call Agent Router, or modify AgentEscala.
 
+## Semantic Chunk Planning
+
+`scripts/aiops-review-plan-chunks.py` reads only sanitized `aiops-intake.json`
+from Phase 1 and writes a `semantic-chunk-plan.json` file.
+
+Example:
+
+```text
+python scripts/aiops-review-plan-chunks.py \
+  --intake /path/to/aiops-intake.json \
+  --output /path/to/semantic-chunk-plan.json \
+  --max-blocks 6
+```
+
+The planner groups changed files into deterministic semantic review roles such
+as backend logic, API/schema contracts, frontend UI, tests, workflow/AIOps,
+docs/changelog, suspicious out-of-scope, and unknown. It tracks covered,
+partially covered, and uncovered files without reading the target repository or
+raw artifacts.
+
+Phase 2 does not generate prompts, findings, severity, recommendations, parser
+output, final synthesis, quality gates, telemetry, or LLM calls.
+
 ## Roadmap
 
-This implements the local intake/redaction foundation for issue #46. The next
-phase is semantic chunk planning, parser, and synthesizer work. That is
-intentionally outside this PR.
-
+This implements the local intake/redaction and semantic chunk planning
+foundation for issue #46. Parser, synthesizer, quality gate, telemetry, and
+LLM-backed review remain future work.
