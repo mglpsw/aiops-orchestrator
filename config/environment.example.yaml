@@ -1,0 +1,26 @@
+schema_version: 1
+environment:
+  name: "dev"
+  node_role: "toolrepo"
+  host_role: "ct104"
+  repo_mode: "agent_review_tooling"
+  production_runtime: false
+
+allowed_modes:
+  - dev_toolrepo
+  - prod_runtime
+
+rules:
+  ct102:
+    environment: prod
+    node_role: runtime
+    repo_mode: aiops_runtime
+    production_runtime: true
+    agent_review_tooling_allowed: false
+
+  ct104:
+    environment: dev
+    node_role: toolrepo
+    repo_mode: agent_review_tooling
+    production_runtime: false
+    agent_review_tooling_allowed: true
