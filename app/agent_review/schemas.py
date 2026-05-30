@@ -12,6 +12,7 @@ TARGET_PROFILE_SCHEMA = "agent-review.target-profile.v1"
 INTAKE_SCHEMA = "agent-review.intake.v1"
 REDACTION_REPORT_SCHEMA = "agent-review.redaction-report.v1"
 SEMANTIC_CHUNK_PLAN_SCHEMA = "agent-review.semantic-chunk-plan.v1"
+CHUNK_RESULTS_SCHEMA = "agent-review.chunk-results.v1"
 
 ArtifactKind = Literal["json", "yaml", "text", "markdown", "diff"]
 ArtifactState = Literal["available", "missing", "invalid", "degraded"]
@@ -28,6 +29,20 @@ SemanticGroup = Literal[
 ]
 ChunkCoverage = Literal["complete", "partial", "degraded"]
 ChunkPlanState = Literal["complete", "partial", "degraded", "failed"]
+FindingSeverity = Literal["P0", "P1", "P2", "P3"]
+FindingConfidence = Literal["high", "medium", "low"]
+ChunkResultState = Literal["complete", "partial", "degraded", "failed"]
+RiskSource = Literal["chunk_risk", "downgraded_finding"]
+RejectedFindingReason = Literal[
+    "missing_required_evidence",
+    "missing_file_path",
+    "file_not_in_chunk",
+    "redacted_or_placeholder_only_evidence",
+    "speculative_language",
+    "unsupported_test_failure_source",
+    "duplicate_dedupe_key",
+    "invalid_finding",
+]
 
 
 def utc_now_iso() -> str:
@@ -123,4 +138,116 @@ class SemanticChunkPlan(BaseModel):
     files_not_covered: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     status: ChunkPlanState
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class ChunkResponseFinding(BaseModel):
+    severity: str | None = None
+    title: str | None = None
+    file_path: str | None = None
+    line_or_hunk: str | None = None
+    evidence: str | None = None
+    source_artifact: str | None = None
+    contract_id: str | None = None
+    impact: str | None = None
+    confidence: str | None = None
+    dedupe_key: str | None = None
+
+
+class ChunkResponseRisk(BaseModel):
+    title: str | None = None
+    reason: str | None = None
+    missing_evidence: str | None = None
+    suggested_validation: str | None = None
+
+
+class ChunkResponseLimitation(BaseModel):
+    type: str | None = None
+    detail: str | None = None
+
+
+class ChunkCoverageNotes(BaseModel):
+    files_reviewed: list[str] = Field(default_factory=list)
+    files_partial: list[str] = Field(default_factory=list)
+    files_not_reviewed: list[str] = Field(default_factory=list)
+
+
+class ChunkResponse(BaseModel):
+    schema_version: int
+    chunk_id: str
+    semantic_group: SemanticGroup
+    confirmed_findings: list[ChunkResponseFinding] = Field(default_factory=list)
+    risks: list[ChunkResponseRisk] = Field(default_factory=list)
+    limitations: list[ChunkResponseLimitation] = Field(default_factory=list)
+    coverage_notes: ChunkCoverageNotes = Field(default_factory=ChunkCoverageNotes)
+
+
+class NormalizedFinding(BaseModel):
+    chunk_id: str
+    semantic_group: SemanticGroup
+    severity: FindingSeverity
+    title: str
+    file_path: str
+    line_or_hunk: str | None = None
+    evidence: str
+    source_artifact: str | None = None
+    contract_id: str | None = None
+    impact: str
+    confidence: FindingConfidence | None = None
+    dedupe_key: str | None = None
+
+
+class NormalizedRisk(BaseModel):
+    chunk_id: str
+    semantic_group: SemanticGroup
+    source: RiskSource
+    title: str
+    reason: str
+    missing_evidence: str | None = None
+    suggested_validation: str | None = None
+    severity: str | None = None
+    file_path: str | None = None
+    evidence: str | None = None
+    impact: str | None = None
+    dedupe_key: str | None = None
+
+
+class RejectedFinding(BaseModel):
+    chunk_id: str
+    semantic_group: SemanticGroup
+    reason: RejectedFindingReason
+    title: str | None = None
+    severity: str | None = None
+    file_path: str | None = None
+    evidence: str | None = None
+    dedupe_key: str | None = None
+
+
+class ChunkParseFailure(BaseModel):
+    chunk_id: str
+    semantic_group: SemanticGroup
+    error_class: str
+    message: str
+
+
+class ChunkResultsCoverage(BaseModel):
+    files_reviewed: list[str] = Field(default_factory=list)
+    files_partial: list[str] = Field(default_factory=list)
+    files_not_reviewed: list[str] = Field(default_factory=list)
+
+
+class ChunkResults(BaseModel):
+    schema_version: int = 1
+    schema_id: str = CHUNK_RESULTS_SCHEMA
+    source: str = "aiops-review-parse-chunks"
+    target_repo: str
+    chunk_plan_ref: dict[str, Any]
+    chunks_parsed: list[str] = Field(default_factory=list)
+    chunks_failed: list[ChunkParseFailure] = Field(default_factory=list)
+    confirmed_findings: list[NormalizedFinding] = Field(default_factory=list)
+    risks: list[NormalizedRisk] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    rejected_findings: list[RejectedFinding] = Field(default_factory=list)
+    coverage: ChunkResultsCoverage = Field(default_factory=ChunkResultsCoverage)
+    status: ChunkResultState
     created_at: str = Field(default_factory=utc_now_iso)

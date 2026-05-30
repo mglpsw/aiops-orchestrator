@@ -2,7 +2,8 @@
 
 AgentReview Engine is the future generic review engine in `aiops-orchestrator`.
 Phase 1 is limited to offline intake and deterministic redaction. Phase 2 adds
-deterministic semantic chunk planning over the sanitized intake.
+deterministic semantic chunk planning over the sanitized intake. Phase 3 parses
+structured simulated chunk responses into normalized chunk results.
 
 ## Runtime Boundary
 
@@ -80,8 +81,59 @@ raw artifacts.
 Phase 2 does not generate prompts, findings, severity, recommendations, parser
 output, final synthesis, quality gates, telemetry, or LLM calls.
 
+## Structured Chunk Result Parsing
+
+`scripts/aiops-review-parse-chunks.py` reads the Phase 2
+`semantic-chunk-plan.json` and one structured JSON response per chunk from a
+local responses directory:
+
+```text
+python scripts/aiops-review-parse-chunks.py \
+  --chunk-plan /path/to/semantic-chunk-plan.json \
+  --responses-dir /path/to/chunk-responses \
+  --output /path/to/chunk-results.json
+```
+
+An optional sanitized intake file can be provided when the parser should also
+enforce known target repository output path boundaries:
+
+```text
+python scripts/aiops-review-parse-chunks.py \
+  --chunk-plan /path/to/semantic-chunk-plan.json \
+  --responses-dir /path/to/chunk-responses \
+  --intake /path/to/aiops-intake.json \
+  --output /path/to/chunk-results.json
+```
+
+For each semantic chunk, the parser reads only:
+
+```text
+<responses-dir>/<chunk_id>.json
+```
+
+It does not recurse through the responses directory, and extra files are
+ignored. Missing or invalid responses are recorded as chunk parse failures.
+
+The parser writes `chunk-results.json` with schema
+`agent-review.chunk-results.v1`. The output separates confirmed findings,
+risks, limitations, rejected findings, coverage, parsed chunks, failed chunks,
+and parser status. `chunk_plan_ref` contains schema/status/count metadata only;
+it does not include local absolute paths.
+
+Confirmed findings remain confirmed only when they include concrete evidence,
+file path, title, impact, and either source artifact or line/hunk context.
+Findings without concrete evidence, speculative language, unsupported test
+failure sources, or placeholder-only evidence are downgraded to risks or
+rejected. Findings outside their semantic chunk are rejected with
+`file_not_in_chunk`. The parser never creates new findings, invents lines or
+contracts, raises severity, applies fixes, or produces a final PR verdict.
+
+Phase 3 still does not call an LLM, Agent Router, providers, network, CT102,
+FastAPI runtime, Docker, SSH, deploy/restart commands, final synthesis, quality
+gates, or telemetry.
+
 ## Roadmap
 
-This implements the local intake/redaction and semantic chunk planning
-foundation for issue #46. Parser, synthesizer, quality gate, telemetry, and
-LLM-backed review remain future work.
+This implements the local intake/redaction, semantic chunk planning, and
+structured chunk result parsing foundation for issue #46. Final synthesizer,
+quality gate, telemetry, and LLM-backed review remain future work.
