@@ -13,6 +13,7 @@ INTAKE_SCHEMA = "agent-review.intake.v1"
 REDACTION_REPORT_SCHEMA = "agent-review.redaction-report.v1"
 SEMANTIC_CHUNK_PLAN_SCHEMA = "agent-review.semantic-chunk-plan.v1"
 CHUNK_RESULTS_SCHEMA = "agent-review.chunk-results.v1"
+FINAL_REVIEW_SCHEMA = "agent-review.final-review.v1"
 
 ArtifactKind = Literal["json", "yaml", "text", "markdown", "diff"]
 ArtifactState = Literal["available", "missing", "invalid", "degraded"]
@@ -32,6 +33,15 @@ ChunkPlanState = Literal["complete", "partial", "degraded", "failed"]
 FindingSeverity = Literal["P0", "P1", "P2", "P3"]
 FindingConfidence = Literal["high", "medium", "low"]
 ChunkResultState = Literal["complete", "partial", "degraded", "failed"]
+FinalReviewStatus = Literal["complete", "partial", "degraded", "failed"]
+FinalReviewVerdict = Literal[
+    "approved",
+    "approve_with_minor_notes",
+    "approve_with_required_followup",
+    "changes_requested",
+    "manual_review_required",
+    "review_unavailable",
+]
 RiskSource = Literal["chunk_risk", "downgraded_finding"]
 RejectedFindingReason = Literal[
     "missing_required_evidence",
@@ -250,4 +260,84 @@ class ChunkResults(BaseModel):
     rejected_findings: list[RejectedFinding] = Field(default_factory=list)
     coverage: ChunkResultsCoverage = Field(default_factory=ChunkResultsCoverage)
     status: ChunkResultState
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class FinalReviewFinding(BaseModel):
+    chunk_id: str
+    semantic_group: SemanticGroup
+    severity: FindingSeverity
+    title: str
+    file_path: str
+    line_or_hunk: str | None = None
+    evidence: str
+    source_artifact: str | None = None
+    contract_id: str | None = None
+    impact: str
+    confidence: FindingConfidence | None = None
+    dedupe_key: str | None = None
+    source_chunks: list[str] = Field(default_factory=list)
+    semantic_groups: list[SemanticGroup] = Field(default_factory=list)
+
+
+class FinalReviewRisk(BaseModel):
+    chunk_id: str
+    semantic_group: SemanticGroup
+    source: RiskSource
+    title: str
+    reason: str
+    missing_evidence: str | None = None
+    suggested_validation: str | None = None
+    severity: str | None = None
+    file_path: str | None = None
+    evidence: str | None = None
+    impact: str | None = None
+    dedupe_key: str | None = None
+    source_chunks: list[str] = Field(default_factory=list)
+    semantic_groups: list[SemanticGroup] = Field(default_factory=list)
+
+
+class FinalReviewRejectedSummary(BaseModel):
+    total: int = 0
+    by_reason: dict[str, int] = Field(default_factory=dict)
+    sample_titles: list[str] = Field(default_factory=list)
+
+
+class FinalReviewCoverage(BaseModel):
+    files_reviewed: list[str] = Field(default_factory=list)
+    files_partial: list[str] = Field(default_factory=list)
+    files_not_reviewed: list[str] = Field(default_factory=list)
+    expected_files: list[str] = Field(default_factory=list)
+    missing_expected_files: list[str] = Field(default_factory=list)
+    extra_reported_files: list[str] = Field(default_factory=list)
+    comparison_available: bool = False
+
+
+class FinalReviewCounts(BaseModel):
+    confirmed_findings_total: int = 0
+    findings_by_severity: dict[str, int] = Field(default_factory=dict)
+    risks_total: int = 0
+    risks_by_source: dict[str, int] = Field(default_factory=dict)
+    rejected_findings_total: int = 0
+    rejected_findings_by_reason: dict[str, int] = Field(default_factory=dict)
+    limitations_total: int = 0
+    chunks_parsed: int = 0
+    chunks_failed: int = 0
+
+
+class FinalReview(BaseModel):
+    schema_version: int = 1
+    schema_id: str = FINAL_REVIEW_SCHEMA
+    source: str = "aiops-review-synthesize"
+    target_repo: str
+    status: FinalReviewStatus
+    verdict: FinalReviewVerdict
+    summary: str
+    confirmed_findings: list[FinalReviewFinding] = Field(default_factory=list)
+    risks: list[FinalReviewRisk] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    rejected_summary: FinalReviewRejectedSummary = Field(default_factory=FinalReviewRejectedSummary)
+    coverage: FinalReviewCoverage = Field(default_factory=FinalReviewCoverage)
+    counts: FinalReviewCounts = Field(default_factory=FinalReviewCounts)
+    inputs: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now_iso)

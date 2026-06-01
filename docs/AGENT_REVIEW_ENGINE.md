@@ -3,7 +3,8 @@
 AgentReview Engine is the future generic review engine in `aiops-orchestrator`.
 Phase 1 is limited to offline intake and deterministic redaction. Phase 2 adds
 deterministic semantic chunk planning over the sanitized intake. Phase 3 parses
-structured simulated chunk responses into normalized chunk results.
+structured simulated chunk responses into normalized chunk results. Phase 4
+synthesizes those chunk results into final review JSON and Markdown artifacts.
 
 ## Runtime Boundary
 
@@ -132,8 +133,56 @@ Phase 3 still does not call an LLM, Agent Router, providers, network, CT102,
 FastAPI runtime, Docker, SSH, deploy/restart commands, final synthesis, quality
 gates, or telemetry.
 
+## Final Review Synthesis
+
+`scripts/aiops-review-synthesize.py` reads the Phase 3 `chunk-results.json` and
+writes a deterministic final review JSON artifact plus a concise pt-BR Markdown
+summary:
+
+```text
+python scripts/aiops-review-synthesize.py \
+  --chunk-results /path/to/chunk-results.json \
+  --output-json /path/to/final-review.json \
+  --output-md /path/to/final-review.md
+```
+
+Optional sanitized context can be provided explicitly:
+
+```text
+python scripts/aiops-review-synthesize.py \
+  --chunk-results /path/to/chunk-results.json \
+  --intake /path/to/aiops-intake.json \
+  --chunk-plan /path/to/semantic-chunk-plan.json \
+  --redaction-report /path/to/redaction-report.json \
+  --output-json /path/to/final-review.json \
+  --output-md /path/to/final-review.md \
+  --max-findings 10 \
+  --max-risks 10
+```
+
+The synthesizer writes `final-review.json` with schema
+`agent-review.final-review.v1` and `final-review.md` for human review. It
+deduplicates and orders already-normalized findings and risks, summarizes
+rejected findings, consolidates coverage/counts/limitations, and emits a
+deterministic preliminary verdict.
+
+Phase 4 treats `chunk-results.json` as the only required source of truth. The
+optional intake, chunk plan, and redaction report are used only for metadata,
+coverage comparison, limitations, and target repository output path guards. The
+synthesizer does not read target repository files directly.
+
+The Phase 4 verdict is preliminary and is not a quality gate. It preserves
+finding severity and review boundaries: risks, limitations, and rejected
+findings are not promoted into confirmed findings, and no new findings,
+evidence, files, lines, contracts, fixes, or recommendations are invented.
+
+Phase 4 still does not call an LLM, Agent Router, providers, network, CT102,
+FastAPI runtime, Docker, SSH, deploy/restart commands, quality gates,
+telemetry, or second opinion services.
+
 ## Roadmap
 
 This implements the local intake/redaction, semantic chunk planning, and
-structured chunk result parsing foundation for issue #46. Final synthesizer,
-quality gate, telemetry, and LLM-backed review remain future work.
+structured chunk result parsing foundation for issue #46. Final synthesis is
+the next offline deterministic layer. Quality gate, telemetry, second opinion,
+and LLM-backed review remain future work.
