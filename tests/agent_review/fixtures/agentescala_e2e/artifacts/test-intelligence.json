@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "mode": "current_run_only",
+  "scope": "backend",
+  "changed_tests": [
+    "tests/test_shift_service.py"
+  ],
+  "failed_tests": [],
+  "recommendations": []
+}
+

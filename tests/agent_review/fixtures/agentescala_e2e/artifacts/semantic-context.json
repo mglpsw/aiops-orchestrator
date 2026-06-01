@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "source": "aiops-semantic-context",
+  "available": true,
+  "status": "complete",
+  "contract_pack": "calendar",
+  "scope": "backend",
+  "change_type": "bugfix",
+  "must_hold": [
+    "10-22H remains independent from 24H coverage"
+  ],
+  "suspicious_files": []
+}
+

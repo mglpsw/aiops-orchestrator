@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "aiops-local-code-intelligence",
+  "mode": "current_run_only",
+  "budget_seconds": 180,
+  "total_duration_seconds": 4,
+  "files_analyzed": [
+    "backend/services/shift_service.py"
+  ],
+  "confirmed_local_failures": [],
+  "safe_improvement_proposals": [],
+  "manual_review_proposals": [],
+  "limitations": []
+}
+

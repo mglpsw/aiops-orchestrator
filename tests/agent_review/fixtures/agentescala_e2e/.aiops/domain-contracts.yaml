@@ -1,0 +1,10 @@
+schema_version: agent-review.domain-contracts.v1
+domain: healthcare_scheduling
+rules:
+  - id: calendar_10_22_independent
+    description: 10-22H is independent from 24H coverage.
+  - id: no_auto_contract_fix
+    description: AgentReview may suggest but must not apply contract fixes.
+  - id: no_direct_provider_calls
+    description: AgentEscala must use Agent Router instead of direct providers.
+
