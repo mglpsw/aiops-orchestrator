@@ -193,6 +193,42 @@ def test_structural_dedupe_without_writing_dedupe_key() -> None:
     assert review.confirmed_findings[0].dedupe_key is None
 
 
+def test_synthesizer_dedupes_risks_by_dedupe_key_and_aggregates_source_chunks() -> None:
+    review = synthesize_final_review(
+        _chunk_results(
+            risks=[
+                _risk(
+                    source="downgraded_finding",
+                    chunk_id="chunk-01-primary_backend_logic",
+                    semantic_group="primary_backend_logic",
+                    reason="missing_required_evidence",
+                    missing_evidence="source_artifact",
+                    evidence="The first downgraded candidate had incomplete source context.",
+                    dedupe_key="same-risk",
+                ),
+                _risk(
+                    source="downgraded_finding",
+                    chunk_id="chunk-02-api_schema_contract",
+                    semantic_group="api_schema_contract",
+                    reason="missing_required_evidence:line_or_hunk",
+                    missing_evidence="line_or_hunk",
+                    evidence="The second downgraded candidate used different wording.",
+                    dedupe_key="same-risk",
+                ),
+            ],
+            chunks_parsed=["chunk-01-primary_backend_logic", "chunk-02-api_schema_contract"],
+        )
+    )
+
+    assert len(review.risks) == 1
+    assert review.risks[0].dedupe_key == "same-risk"
+    assert review.risks[0].source_chunks == [
+        "chunk-01-primary_backend_logic",
+        "chunk-02-api_schema_contract",
+    ]
+    assert review.risks[0].semantic_groups == ["primary_backend_logic", "api_schema_contract"]
+
+
 def test_risk_is_not_transformed_into_confirmed_finding() -> None:
     review = synthesize_final_review(_chunk_results(risks=[_risk()]))
 

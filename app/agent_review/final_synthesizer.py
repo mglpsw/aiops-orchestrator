@@ -278,7 +278,10 @@ def _dedupe_risks(risks: list[NormalizedRisk]) -> list[FinalReviewRisk]:
 
 
 def _risk_key(risk: NormalizedRisk) -> tuple[str, ...]:
+    if risk.dedupe_key:
+        return ("dedupe", risk.dedupe_key)
     return (
+        "struct",
         risk.source,
         risk.severity or "",
         risk.file_path or "",
