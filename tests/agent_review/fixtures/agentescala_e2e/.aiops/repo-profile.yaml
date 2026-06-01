@@ -1,0 +1,37 @@
+schema_version: agent-review.target-profile.v1
+target_repo: mglpsw/AgentEscala
+name: AgentEscala
+artifacts:
+  - name: checks
+    path: checks.json
+    kind: json
+    required: true
+  - name: file-diff-context
+    path: file-diff-context.json
+    kind: json
+    required: true
+  - name: full-diff
+    path: full.diff
+    kind: diff
+    required: false
+  - name: test-intelligence
+    path: test-intelligence.json
+    kind: json
+    required: false
+  - name: project-context
+    path: project-context.json
+    kind: json
+    required: false
+  - name: semantic-context
+    path: semantic-context.json
+    kind: json
+    required: false
+  - name: local-code-intelligence
+    path: local-code-intelligence.json
+    kind: json
+    required: false
+  - name: validation-evidence-result
+    path: validation-evidence/validation-evidence-result.json
+    kind: json
+    required: false
+

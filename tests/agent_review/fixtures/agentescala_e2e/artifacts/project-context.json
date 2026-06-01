@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "source": "aiops-project-context-index",
+  "available": true,
+  "status": "complete",
+  "modules": {
+    "backend/api/shifts.py": "shift API",
+    "backend/services/shift_service.py": "shift service"
+  },
+  "gaps": [],
+  "project_context_available": true
+}
+

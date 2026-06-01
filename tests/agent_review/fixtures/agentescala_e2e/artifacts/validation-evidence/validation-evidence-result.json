@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "source": "aiops-validation-evidence",
+  "validation_model_available": false,
+  "validation_verdict": "degraded",
+  "blocking_findings": [],
+  "validation_risks": [],
+  "facts_for_synthesizer": [],
+  "limitations": [
+    "offline_contract_fixture"
+  ]
+}
+

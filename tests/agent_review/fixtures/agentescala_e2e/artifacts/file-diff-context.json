@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "source": "aiops-file-diff-context",
+  "available": true,
+  "status": "complete",
+  "pr_scope": "backend",
+  "contract_pack": "calendar",
+  "files": [
+    {
+      "path": "backend/api/shifts.py",
+      "status": "modified",
+      "summary": "Adjust shift response model mapping."
+    },
+    {
+      "path": "backend/services/shift_service.py",
+      "status": "modified",
+      "summary": "Preserve canonical 10-22H coverage behavior."
+    },
+    {
+      "path": "frontend/src/pages/calendar_page.jsx",
+      "status": "modified",
+      "summary": "Render updated slot status."
+    },
+    {
+      "path": "tests/test_shift_service.py",
+      "status": "modified",
+      "summary": "Add regression coverage for independent slots."
+    },
+    {
+      "path": ".github/workflows/agent-review.yml",
+      "status": "modified",
+      "summary": "Keep AgentReview workflow on CT104."
+    }
+  ],
+  "coverage_requirements": {
+    "must_review_files": [
+      "backend/api/shifts.py",
+      "backend/services/shift_service.py"
+    ],
+    "should_review_files": [
+      "frontend/src/pages/calendar_page.jsx",
+      "tests/test_shift_service.py"
+    ],
+    "may_summarize_files": [
+      ".github/workflows/agent-review.yml"
+    ],
+    "critical_pairs": []
+  },
+  "evidence_groups": [],
+  "recomposition_plan": {
+    "dedupe_keys": [],
+    "severity_rules": [],
+    "final_sections": []
+  },
+  "gaps": []
+}
+

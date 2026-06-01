@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "scope": "backend",
+  "validation_level": "targeted",
+  "budget_seconds": 420,
+  "total_duration_seconds": 12,
+  "checks": [
+    {
+      "name": "pytest targeted",
+      "status": "passed",
+      "command": "python -m pytest tests/test_shift_service.py"
+    }
+  ],
+  "limitations": []
+}
+

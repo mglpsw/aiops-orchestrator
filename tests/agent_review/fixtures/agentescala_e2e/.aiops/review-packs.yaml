@@ -1,0 +1,9 @@
+schema_version: agent-review.review-packs.v1
+packs:
+  - id: agentescala-calendar
+    description: Calendar and shift coverage review pack.
+    recommended_review_preset: review:deep
+  - id: agentescala-aiops
+    description: AIOps workflow and review contract review pack.
+    recommended_review_preset: review:code
+

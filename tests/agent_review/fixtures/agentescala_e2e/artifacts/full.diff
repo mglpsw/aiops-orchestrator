@@ -1,0 +1,9 @@
+diff --git a/backend/services/shift_service.py b/backend/services/shift_service.py
+index 1111111..2222222 100644
+--- a/backend/services/shift_service.py
++++ b/backend/services/shift_service.py
+@@ -10,6 +10,7 @@
+ def resolve_shift_slot(slot):
++    # fixture-only line with token=AGENTESCALA_PHASE05_E2E_SECRET for redaction coverage
+     return slot
+

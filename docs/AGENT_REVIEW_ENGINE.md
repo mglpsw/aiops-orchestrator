@@ -182,7 +182,14 @@ telemetry, or second opinion services.
 
 ## Roadmap
 
-This implements the local intake/redaction, semantic chunk planning, and
-structured chunk result parsing foundation for issue #46. Final synthesis is
-the next offline deterministic layer. Quality gate, telemetry, second opinion,
-and LLM-backed review remain future work.
+This implements the local intake/redaction, semantic chunk planning, structured
+chunk result parsing, and final deterministic synthesis foundation for issue
+#46.
+
+Phase 05 integrates this offline engine with AgentEscala as a CT104 thin
+wrapper. AgentEscala remains responsible for product artifact generation,
+optional Agent Router calls through `/v1/chat/completions`, and PR comment
+publication. The AIOps tool repo remains deterministic and does not call LLMs,
+providers, GitHub APIs, CT102, Docker, SSH, deploy, restart, or operational
+commands. Quality gate, telemetry, second opinion, and AIOps-owned LLM block
+running remain future work.
