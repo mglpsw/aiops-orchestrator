@@ -12,6 +12,7 @@ from app.agent_review.finding_normalizer import DedupeState, normalize_chunk_res
 from app.agent_review.redaction import RedactionState, redact_value
 from app.agent_review.schemas import (
     SEMANTIC_CHUNK_PLAN_SCHEMA,
+    ChunkCoverageNotes,
     ChunkParseFailure,
     ChunkResponse,
     ChunkResults,
@@ -105,9 +106,11 @@ def parse_chunk_results(
         rejected_findings.extend(normalized.rejected_findings)
         limitations.extend(normalized.limitations)
         limitations.extend(_response_limitations(response))
-        coverage.files_reviewed.extend(response.coverage_notes.files_reviewed)
-        coverage.files_partial.extend(response.coverage_notes.files_partial)
-        coverage.files_not_reviewed.extend(response.coverage_notes.files_not_reviewed)
+        filtered_coverage, coverage_limitations = _filter_coverage_notes(response.coverage_notes, chunk)
+        limitations.extend(coverage_limitations)
+        coverage.files_reviewed.extend(filtered_coverage.files_reviewed)
+        coverage.files_partial.extend(filtered_coverage.files_partial)
+        coverage.files_not_reviewed.extend(filtered_coverage.files_not_reviewed)
 
     coverage = ChunkResultsCoverage(
         files_reviewed=_dedupe(coverage.files_reviewed),
@@ -202,6 +205,32 @@ def _response_limitations(response: ChunkResponse) -> list[str]:
         elif detail:
             limitations.append(detail)
     return limitations
+
+
+def _filter_coverage_notes(
+    coverage_notes: ChunkCoverageNotes,
+    chunk: SemanticChunk,
+) -> tuple[ChunkResultsCoverage, list[str]]:
+    chunk_files = set(chunk.files)
+    removed = False
+
+    def keep_chunk_files(files: list[str]) -> list[str]:
+        nonlocal removed
+        filtered: list[str] = []
+        for file_path in files:
+            if file_path in chunk_files:
+                filtered.append(file_path)
+            else:
+                removed = True
+        return filtered
+
+    filtered = ChunkResultsCoverage(
+        files_reviewed=keep_chunk_files(coverage_notes.files_reviewed),
+        files_partial=keep_chunk_files(coverage_notes.files_partial),
+        files_not_reviewed=keep_chunk_files(coverage_notes.files_not_reviewed),
+    )
+    limitations = [f"coverage_file_not_in_chunk:{chunk.chunk_id}"] if removed else []
+    return filtered, limitations
 
 
 def _sanitize_results(results: ChunkResults) -> ChunkResults:

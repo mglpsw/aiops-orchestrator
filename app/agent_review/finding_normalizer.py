@@ -65,8 +65,12 @@ class DedupeState:
             return None
         if key in self.seen:
             return "duplicate_dedupe_key"
-        self.seen.add(key)
         return None
+
+    def mark_confirmed(self, finding: ChunkResponseFinding) -> None:
+        key = _dedupe_lookup_key(finding)
+        if key:
+            self.seen.add(key)
 
 
 @dataclass
@@ -138,10 +142,6 @@ def _normalize_finding(
     if not title:
         return _reject(finding, chunk, "invalid_finding")
 
-    duplicate_reason = dedupe_state.duplicate_reason(finding)
-    if duplicate_reason:
-        return _reject(finding, chunk, duplicate_reason)
-
     missing = _missing_required_fields(
         title=title,
         impact=impact,
@@ -180,6 +180,11 @@ def _normalize_finding(
             reason="unsupported_test_failure_source",
             missing_evidence="checks/test-intelligence/local-code-intelligence source artifact",
         )
+
+    duplicate_reason = dedupe_state.duplicate_reason(finding)
+    if duplicate_reason:
+        return _reject(finding, chunk, duplicate_reason)
+    dedupe_state.mark_confirmed(finding)
 
     return NormalizedFinding(
         chunk_id=chunk.chunk_id,

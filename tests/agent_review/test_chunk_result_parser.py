@@ -270,7 +270,28 @@ def test_risk_source_distinguishes_chunk_risk_and_downgraded_finding(tmp_path: P
     assert [risk.source for risk in results.risks] == ["chunk_risk", "downgraded_finding"]
 
 
-def test_dedupe_uses_explicit_key(tmp_path: Path) -> None:
+def test_dedupe_does_not_consume_key_for_downgraded_finding(tmp_path: Path) -> None:
+    chunk = _chunk()
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        confirmed_findings=[
+            _finding(dedupe_key="same-key", evidence=None),
+            _finding(dedupe_key="same-key"),
+        ],
+    )
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    assert len(results.confirmed_findings) == 1
+    assert results.confirmed_findings[0].dedupe_key == "same-key"
+    assert results.risks[0].source == "downgraded_finding"
+    assert results.risks[0].reason == "missing_required_evidence"
+    assert results.rejected_findings == []
+
+
+def test_dedupe_rejects_second_confirmed_finding_with_same_key(tmp_path: Path) -> None:
     chunk = _chunk()
     responses = _responses_dir(tmp_path)
     _write_response(
@@ -323,3 +344,25 @@ def test_output_does_not_contain_secret_fixture(tmp_path: Path) -> None:
     rendered = results.model_dump_json()
     assert FIXTURE_SECRET not in rendered
     assert "[REDACTED]" in rendered
+
+
+def test_coverage_notes_filter_out_files_not_assigned_to_chunk(tmp_path: Path) -> None:
+    chunk = _chunk(files=["backend/api/a.py"])
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        coverage_notes={
+            "files_reviewed": ["backend/api/a.py", "frontend/src/other.jsx"],
+            "files_partial": ["frontend/src/partial.jsx"],
+            "files_not_reviewed": ["frontend/src/not_reviewed.jsx"],
+        },
+    )
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    assert results.coverage.files_reviewed == ["backend/api/a.py"]
+    assert results.coverage.files_partial == []
+    assert results.coverage.files_not_reviewed == []
+    assert "frontend/src/other.jsx" not in results.model_dump_json()
+    assert f"coverage_file_not_in_chunk:{chunk.chunk_id}" in results.limitations
