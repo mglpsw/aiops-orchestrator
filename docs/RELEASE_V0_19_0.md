@@ -55,7 +55,16 @@ Final `v0.19.0` can be created only after:
 - Approval store is preserved.
 - Run store is preserved.
 - Rollback is documented and still possible.
+- Backup/snapshot covers the database/config/env **and** the JSONL runtime stores
+  (`var/audit`, `var/approvals`, `var/runs`).
+- Rollback covers the database/config/env **and** the JSONL runtime stores,
+  including the remove-or-restore policy for on-demand stores.
+- The baseline absence of `var/approvals` and `var/runs` is documented or resolved.
+- The CT102 store layout (backup manifest) is attached to issue #52.
 - Evidence is attached to issue #52.
+
+See `docs/CT102_BACKUP_ROLLBACK_V019.md` for the store-level backup/rollback
+coverage requirements.
 
 ## 7. Checklist final
 
@@ -63,6 +72,10 @@ Final `v0.19.0` can be created only after:
 - [ ] `v0.19.0-rc.2` evidence reviewed
 - [ ] CT102 pre-transition inventory attached to issue #52
 - [ ] CT102 backup or snapshot evidence attached to issue #52
+- [ ] Backup/snapshot covers DB/config/env and runtime stores JSONL
+- [ ] Rollback covers DB/config/env and runtime stores JSONL
+- [ ] Baseline absence of `var/approvals` and `var/runs` documented or resolved
+- [ ] CT102 store layout (backup manifest) attached to issue #52
 - [ ] CT102 rollback commit/tag documented
 - [ ] CT102 postcheck attached to issue #52
 - [ ] Health OK
