@@ -11,7 +11,12 @@ transition are validated with evidence.
 - `v0.19.0-rc.2` marked AgentEscala thin-wrapper E2E validated on CT104.
 - CT104 remains the development and AgentReview toolrepo path.
 - CT102 remains the production AIOps runtime.
-- Final `v0.19.0` is not created yet.
+- Runtime internal version default aligned to `0.19.0` (`app/__init__.py`,
+  `app/core/config.py`) so `/health` reports the release version after the
+  controlled CT102 runtime transition. No runtime behavior changes beyond the
+  reported version.
+- Final `v0.19.0` is not created yet; it remains gated by the criteria in
+  section 6.
 
 ## 3. RCs
 
