@@ -26,7 +26,7 @@ def _load_yaml(name: str) -> dict[str, Any]:
 class Settings(BaseSettings):
     # --- General ---
     app_name: str = "aiops-orchestrator"
-    app_version: str = "0.1.0"
+    app_version: str = "0.19.0"
     debug: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
