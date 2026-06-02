@@ -231,3 +231,26 @@ The final `v0.19.0` release can be created only after:
 
 AgentReview remains a CT104 toolrepo workflow. CT102 remains the production
 runtime and must not run AgentReview tooling.
+
+## Runtime store backup/rollback addendum
+
+Detailed backup/rollback coverage for the persistent runtime stores is defined in
+`docs/CT102_BACKUP_ROLLBACK_V019.md`. Summary of the gate it imposes:
+
+- The CT102 transition must not begin while backup/rollback does not cover:
+  - the database / Docker volume `aiops-data` or `/app/data/aiops.db`;
+  - `config/`;
+  - `.env` (preserved without exposing any secret);
+  - `var/audit`;
+  - `var/approvals`, even when absent at baseline;
+  - `var/runs`, even when absent at baseline.
+- The baseline absence of `var/approvals` and `var/runs` does not block planning,
+  but it must be recorded as the baseline layout, and the preservation/rollback
+  policy for those on-demand stores must be registered in issue #52.
+- The final release can occur only with backup/rollback evidence attached to
+  issue #52.
+
+A read-only baseline manifest can be produced with
+`scripts/aiops-runtime-backup-manifest.py`. On the current baseline it reports
+`minimum_backup_complete=false` (expected, because `var/approvals` / `var/runs`
+are absent); this is a planning signal, not a backup validation.
