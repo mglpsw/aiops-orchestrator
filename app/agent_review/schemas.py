@@ -14,6 +14,7 @@ REDACTION_REPORT_SCHEMA = "agent-review.redaction-report.v1"
 SEMANTIC_CHUNK_PLAN_SCHEMA = "agent-review.semantic-chunk-plan.v1"
 CHUNK_RESULTS_SCHEMA = "agent-review.chunk-results.v1"
 FINAL_REVIEW_SCHEMA = "agent-review.final-review.v1"
+QUALITY_GATE_SCHEMA = "agent-review.quality-gate.v1"
 
 ArtifactKind = Literal["json", "yaml", "text", "markdown", "diff"]
 ArtifactState = Literal["available", "missing", "invalid", "degraded"]
@@ -42,6 +43,8 @@ FinalReviewVerdict = Literal[
     "manual_review_required",
     "review_unavailable",
 ]
+ReviewQualityGateStatus = Literal["passed", "degraded", "failed", "manual_review_required"]
+SecondOpinionStatus = Literal["not_required", "requested", "completed", "failed", "skipped"]
 RiskSource = Literal["chunk_risk", "downgraded_finding"]
 RejectedFindingReason = Literal[
     "missing_required_evidence",
@@ -339,5 +342,22 @@ class FinalReview(BaseModel):
     rejected_summary: FinalReviewRejectedSummary = Field(default_factory=FinalReviewRejectedSummary)
     coverage: FinalReviewCoverage = Field(default_factory=FinalReviewCoverage)
     counts: FinalReviewCounts = Field(default_factory=FinalReviewCounts)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = Field(default_factory=utc_now_iso)
+
+
+class ReviewQualityGate(BaseModel):
+    schema_version: int = 1
+    schema_id: str = QUALITY_GATE_SCHEMA
+    source: Literal["aiops-review-quality-gate"] = "aiops-review-quality-gate"
+    status: ReviewQualityGateStatus
+    normalized_verdict: FinalReviewVerdict
+    quality_score: float
+    manual_review_required: bool
+    second_opinion_requested: bool = False
+    second_opinion_status: SecondOpinionStatus = "not_required"
+    blocked_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
     inputs: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now_iso)

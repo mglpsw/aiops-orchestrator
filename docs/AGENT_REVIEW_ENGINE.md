@@ -5,6 +5,7 @@ Phase 1 is limited to offline intake and deterministic redaction. Phase 2 adds
 deterministic semantic chunk planning over the sanitized intake. Phase 3 parses
 structured simulated chunk responses into normalized chunk results. Phase 4
 synthesizes those chunk results into final review JSON and Markdown artifacts.
+Phase 5A adds a deterministic post-synthesis quality gate.
 
 ## Runtime Boundary
 
@@ -180,16 +181,57 @@ Phase 4 still does not call an LLM, Agent Router, providers, network, CT102,
 FastAPI runtime, Docker, SSH, deploy/restart commands, quality gates,
 telemetry, or second opinion services.
 
+## Deterministic Quality Gate
+
+`scripts/aiops-review-quality-gate.py` reads `final-review.json` and
+`chunk-results.json`, then writes `review-quality-gate.json`:
+
+```text
+python scripts/aiops-review-quality-gate.py \
+  --final-review /path/to/final-review.json \
+  --chunk-results /path/to/chunk-results.json \
+  --output /path/to/review-quality-gate.json
+```
+
+Optional sanitized context can be provided for path guards and coverage checks:
+
+```text
+python scripts/aiops-review-quality-gate.py \
+  --final-review /path/to/final-review.json \
+  --chunk-results /path/to/chunk-results.json \
+  --intake /path/to/aiops-intake.json \
+  --chunk-plan /path/to/semantic-chunk-plan.json \
+  --redaction-report /path/to/redaction-report.json \
+  --checks /path/to/checks.json \
+  --critical-pr \
+  --output /path/to/review-quality-gate.json
+```
+
+The gate writes schema `agent-review.quality-gate.v1`. It validates whether the
+final verdict is supported by reliable deterministic evidence, normalizes unsafe
+verdicts, records warnings and limitations, and emits a diagnostic
+`quality_score`. The score is not a merge criterion; downstream decisions should
+use `status`, `normalized_verdict`, and `manual_review_required`.
+
+Phase 5A distinguishes structural input failure from verdict normalization:
+invalid JSON/schema exits without output, while an unknown but structurally
+readable final-review verdict produces a failed gate artifact with
+`normalized_verdict=review_unavailable`.
+
+This phase still does not call an LLM, Agent Router, providers, network, CT102,
+FastAPI runtime, Docker, SSH, deploy/restart commands, telemetry, second opinion
+services, GitHub write APIs, or AgentEscala code.
+
 ## Roadmap
 
 This implements the local intake/redaction, semantic chunk planning, structured
 chunk result parsing, and final deterministic synthesis foundation for issue
 #46.
 
-Phase 05 integrates this offline engine with AgentEscala as a CT104 thin
-wrapper. AgentEscala remains responsible for product artifact generation,
-optional Agent Router calls through `/v1/chat/completions`, and PR comment
-publication. The AIOps tool repo remains deterministic and does not call LLMs,
-providers, GitHub APIs, CT102, Docker, SSH, deploy, restart, or operational
-commands. Quality gate, telemetry, second opinion, and AIOps-owned LLM block
+Phase 05 integrates this offline engine with AgentEscala as a CT104 thin wrapper.
+AgentEscala remains responsible for product artifact generation, optional Agent
+Router calls through `/v1/chat/completions`, and PR comment publication. The
+AIOps tool repo remains deterministic and does not call LLMs, providers, GitHub
+APIs, CT102, Docker, SSH, deploy, restart, or operational commands. Full E2E
+quality-gate orchestration, telemetry, second opinion, and AIOps-owned LLM block
 running remain future work.

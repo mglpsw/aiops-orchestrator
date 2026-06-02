@@ -18,6 +18,7 @@ AgentEscala PR workflow on CT104
 -> optionally call Agent Router per chunk via /v1/chat/completions
 -> run aiops-review-parse-chunks.py
 -> run aiops-review-synthesize.py
+-> optionally run aiops-review-quality-gate.py (planned #60 wiring)
 -> upload sanitized artifacts
 -> comment final-review.md on the PR
 ```
@@ -63,6 +64,15 @@ python scripts/aiops-review-synthesize.py \
   --redaction-report "$RUNNER_TEMP/agent/redaction-report.json" \
   --output-json "$RUNNER_TEMP/agent/final-review.json" \
   --output-md "$RUNNER_TEMP/agent/final-review.md"
+
+# Optional/planned quality gate artifact. Full E2E wiring is tracked separately.
+python scripts/aiops-review-quality-gate.py \
+  --final-review "$RUNNER_TEMP/agent/final-review.json" \
+  --chunk-results "$RUNNER_TEMP/agent/chunk-results.json" \
+  --intake "$RUNNER_TEMP/agent/aiops-intake.json" \
+  --chunk-plan "$RUNNER_TEMP/agent/semantic-chunk-plan.json" \
+  --redaction-report "$RUNNER_TEMP/agent/redaction-report.json" \
+  --output "$RUNNER_TEMP/agent/review-quality-gate.json"
 ```
 
 ## Offline Contract Test
@@ -80,6 +90,10 @@ intake
 The test proves the six final artifacts exist and the markdown output is safe
 for PR comments. It does not call Agent Router or any provider.
 
+The quality-gate CLI is validated by focused unit/CLI tests in this PR. The
+offline E2E contract remains unchanged here; adding
+`review-quality-gate.json` to the full E2E flow is planned separately in #60.
+
 ## Upload Policy
 
 Allowed workflow artifacts:
@@ -91,6 +105,7 @@ semantic-chunk-plan.json
 chunk-results.json
 final-review.json
 final-review.md
+review-quality-gate.json
 sanitized diagnostics
 ```
 
@@ -117,4 +132,3 @@ the offline AgentReview tests pass.
 wrapper E2E on CT104 with the AIOps tool repo pinned by SHA.
 
 CT102 runtime transition is not part of Phase 05.
-
