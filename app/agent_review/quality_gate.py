@@ -67,7 +67,15 @@ TEST_FAILURE_TERMS = (
     "teste falhou",
 )
 TEST_FAILURE_SOURCES = {"checks", "test-intelligence", "local-code-intelligence"}
-OPERATIONAL_TERMS = ("ct102", "prod", "production", "deploy", "deployment", "restart", "runtime")
+OPERATIONAL_TERM_PATTERNS = (
+    re.compile(r"\bct102\b"),
+    re.compile(r"\bprod\b"),
+    re.compile(r"\bproduction\b"),
+    re.compile(r"\bdeploy\b"),
+    re.compile(r"\bdeployment\b"),
+    re.compile(r"\brestart\b"),
+    re.compile(r"\bruntime\b"),
+)
 OPERATIONAL_TRUSTED_SOURCES = {
     "checks",
     "test-intelligence",
@@ -411,8 +419,7 @@ def _is_test_failure_claim(finding: dict[str, Any]) -> bool:
 
 
 def _is_operational_claim(finding: dict[str, Any]) -> bool:
-    text = _finding_text(finding)
-    return any(term in text for term in OPERATIONAL_TERMS)
+    return _contains_operational_term(_finding_text(finding))
 
 
 def _has_reliable_operational_evidence(finding: dict[str, Any]) -> bool:
@@ -420,13 +427,17 @@ def _has_reliable_operational_evidence(finding: dict[str, Any]) -> bool:
     evidence = _clean(finding.get("evidence")).lower()
     return (
         _source_matches(source_artifact, OPERATIONAL_TRUSTED_SOURCES)
-        and any(term in evidence for term in OPERATIONAL_TERMS)
+        and _contains_operational_term(evidence)
         and any(term in evidence for term in OPERATIONAL_EVIDENCE_TERMS)
         and "docs-only" not in evidence
         and "guardrail" not in evidence
         and "prohibition" not in evidence
         and "proibição" not in evidence
     )
+
+
+def _contains_operational_term(text: str) -> bool:
+    return any(pattern.search(text) for pattern in OPERATIONAL_TERM_PATTERNS)
 
 
 def _critical_coverage_gaps(

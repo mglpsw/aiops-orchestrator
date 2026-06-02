@@ -299,6 +299,44 @@ def test_operational_claim_without_explicit_operational_evidence_is_not_blocker(
     assert any("operational_claim_requires_explicit_evidence" in warning for warning in gate.warnings)
 
 
+def test_product_text_does_not_trigger_operational_claim_detection() -> None:
+    gate = _gate(
+        _final_review(
+            verdict="approved",
+            confirmed_findings=[
+                _finding(
+                    title="Product flow breaks schedule validation",
+                    evidence="The changed product flow skips the inactive doctor guard before schedule creation.",
+                    impact="The product flow can schedule inactive doctors.",
+                    source_artifact="artifact:file-diff-context",
+                )
+            ],
+        )
+    )
+
+    assert gate.normalized_verdict == "changes_requested"
+    assert not any("operational_claim_requires_explicit_evidence" in warning for warning in gate.warnings)
+
+
+def test_ct102_deploy_still_triggers_operational_claim_detection() -> None:
+    gate = _gate(
+        _final_review(
+            verdict="changes_requested",
+            confirmed_findings=[
+                _finding(
+                    title="CT102 deploy guard is missing",
+                    evidence="Docs mention the CT102 deploy prohibition as a guardrail.",
+                    impact="Production runtime may be affected.",
+                    source_artifact="artifact:file-diff-context",
+                )
+            ],
+        )
+    )
+
+    assert gate.normalized_verdict == "manual_review_required"
+    assert any("operational_claim_requires_explicit_evidence" in warning for warning in gate.warnings)
+
+
 def test_test_failure_requires_supported_source_artifact() -> None:
     unsupported = _gate(
         _final_review(
