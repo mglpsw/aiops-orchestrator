@@ -29,6 +29,9 @@ CT104 toolrepo:
 - Do not run intake, parser, or synthesizer scripts.
 - Do not use CT102 as staging.
 - Update runtime only after a PR is merged and an explicit runtime decision is made.
+- Treat the `v0.19.0` runtime transition as operational runtime work, separate
+  from AgentReview tooling. AgentReview CLIs remain CT104-only and forbidden on
+  CT102.
 
 ## CT104 Rules
 
