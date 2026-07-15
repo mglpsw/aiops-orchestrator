@@ -79,10 +79,15 @@ def load_final_review(path: Path | str) -> dict[str, Any]:
     if raw.get("schema_id") != FINAL_REVIEW_SCHEMA or raw.get("schema_version") != 1:
         raise TelemetryError("final_review_invalid", "final review schema is invalid")
     try:
-        validate_final_review_document(raw)
+        validated_document = validate_final_review_document(raw)
+        if validated_document.verdict_unknown:
+            raise TelemetryError("final_review_invalid", "final review verdict is invalid")
+        validated = FinalReview.model_validate(raw)
+    except TelemetryError:
+        raise
     except Exception as exc:
         raise TelemetryError("final_review_invalid", "final review structure is invalid") from exc
-    return raw
+    return validated.model_dump(mode="json")
 
 
 def load_quality_gate(path: Path | str) -> ReviewQualityGate:
@@ -99,7 +104,8 @@ def load_optional_artifact(path: Path | str | None, *, name: str) -> tuple[dict[
     if path is None:
         return None, [f"optional_artifact_missing:{name}"]
     try:
-        return load_json_object(path, error_class=f"{name}_invalid"), []
+        raw = load_json_object(path, error_class=f"{name}_invalid")
+        return _validate_optional_artifact(raw, name=name), []
     except TelemetryError as exc:
         return None, [exc.error_class]
 
@@ -425,6 +431,36 @@ def _schema_limitations(optional_docs: dict[str, dict[str, Any] | None]) -> list
         elif document_schema_id is None and document_schema_version not in {schema_id, schema_version}:
             limitations.append(f"optional_artifact_schema_unexpected:{name}")
     return limitations
+
+
+def _validate_optional_artifact(raw: dict[str, Any], *, name: str) -> dict[str, Any]:
+    validators = {
+        "chunk_results": (CHUNK_RESULTS_SCHEMA, 1, ChunkResults),
+        "chunk_plan": (SEMANTIC_CHUNK_PLAN_SCHEMA, 1, SemanticChunkPlan),
+        "intake": (INTAKE_SCHEMA, INTAKE_SCHEMA, ReviewIntake),
+        "redaction_report": (REDACTION_REPORT_SCHEMA, REDACTION_REPORT_SCHEMA, RedactionReport),
+    }
+    validator = validators.get(name)
+    if validator is None:
+        return raw
+
+    schema_id, schema_version, model = validator
+    raw_schema_id = raw.get("schema_id")
+    raw_schema_version = raw.get("schema_version")
+    if raw_schema_id is not None and raw_schema_id != schema_id:
+        raise TelemetryError(f"artifact_schema_id_mismatch:{name}", "optional artifact schema_id is incompatible")
+    if raw_schema_id is None and raw_schema_version not in {schema_id, schema_version}:
+        raise TelemetryError(f"artifact_schema_id_mismatch:{name}", "optional artifact schema_id is incompatible")
+    if raw_schema_version != schema_version:
+        raise TelemetryError(
+            f"artifact_schema_version_mismatch:{name}",
+            "optional artifact schema_version is incompatible",
+        )
+    try:
+        validated = model.model_validate(raw)
+    except ValidationError as exc:
+        raise TelemetryError(f"artifact_structure_invalid:{name}", "optional artifact structure is invalid") from exc
+    return validated.model_dump(mode="json")
 
 
 def _chunks_degraded(chunk_plan: dict[str, Any] | None) -> int | None:

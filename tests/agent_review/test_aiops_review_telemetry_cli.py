@@ -133,6 +133,7 @@ def _run_cli(
     *,
     env: dict[str, str],
     intake: Path | None = None,
+    chunk_results: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     args = [
         sys.executable,
@@ -150,6 +151,8 @@ def _run_cli(
     ]
     if intake:
         args.extend(["--intake", str(intake)])
+    if chunk_results:
+        args.extend(["--chunk-results", str(chunk_results)])
     return subprocess.run(
         args,
         cwd=ROOT,
@@ -212,6 +215,19 @@ def test_telemetry_cli_fails_closed_on_invalid_required_input(tmp_path: Path) ->
     assert not output.exists()
 
 
+def test_telemetry_cli_fails_closed_on_unknown_final_review_verdict(tmp_path: Path) -> None:
+    final_review = _write_json(tmp_path, "final-review.json", _final_review(verdict="not_a_valid_verdict"))
+    quality_gate = _write_json(tmp_path, "review-quality-gate.json", _quality_gate())
+    output = tmp_path / "review-telemetry.json"
+
+    result = _run_cli(final_review, quality_gate, output, env=_dev_env())
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["error_class"] == "final_review_invalid"
+    assert not output.exists()
+
+
 def test_telemetry_cli_fails_closed_on_invalid_required_json(tmp_path: Path) -> None:
     final_review = tmp_path / "final-review.json"
     final_review.write_text("{not-json", encoding="utf-8")
@@ -242,6 +258,24 @@ def test_telemetry_cli_rejects_output_inside_known_target_repo(tmp_path: Path) -
     assert payload["error_class"] == "target_repo_write_blocked"
     assert "target repo must not be modified" in payload["message"]
     assert not output.exists()
+
+
+def test_telemetry_cli_ignores_optional_artifact_with_incompatible_schema_version(tmp_path: Path) -> None:
+    final_review = _write_json(tmp_path, "final-review.json", _final_review())
+    quality_gate = _write_json(tmp_path, "review-quality-gate.json", _quality_gate())
+    chunk_results = _write_json(
+        tmp_path,
+        "chunk-results.json",
+        {"schema_id": "agent-review.chunk-results.v1", "schema_version": 2, "chunks_parsed": ["chunk-01"]},
+    )
+    output = tmp_path / "review-telemetry.json"
+
+    result = _run_cli(final_review, quality_gate, output, env=_dev_env(), chunk_results=chunk_results)
+
+    assert result.returncode == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert "artifact_schema_version_mismatch:chunk_results" in payload["limitations"]
+    assert payload["pipeline"]["chunk_results_status"] is None
 
 
 def test_telemetry_cli_output_is_deterministic(tmp_path: Path) -> None:

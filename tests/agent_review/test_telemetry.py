@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import get_args
 
-from app.agent_review.schemas import ReviewQualityGate
-from app.agent_review.telemetry import build_review_telemetry, load_final_review, load_quality_gate
+import pytest
+
+from app.agent_review.schemas import FinalReviewVerdict, ReviewQualityGate
+from app.agent_review.telemetry import build_review_telemetry, load_final_review, load_optional_artifact, load_quality_gate
 
 
 FIXTURE_SECRET = "AGENTESCALA_PHASE3_TELEMETRY_SECRET"
@@ -253,3 +256,52 @@ def test_required_artifact_loaders_validate_schema(tmp_path: Path) -> None:
 
     assert load_final_review(final_review_path)["schema_id"] == "agent-review.final-review.v1"
     assert load_quality_gate(quality_gate_path).schema_id == "agent-review.quality-gate.v1"
+
+
+@pytest.mark.parametrize("verdict", get_args(FinalReviewVerdict))
+def test_load_final_review_accepts_canonical_verdicts(tmp_path: Path, verdict: str) -> None:
+    final_review_path = tmp_path / "final-review.json"
+    final_review_path.write_text(json.dumps(_final_review(verdict=verdict), sort_keys=True), encoding="utf-8")
+
+    loaded = load_final_review(final_review_path)
+
+    assert loaded["verdict"] == verdict
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("verdict", "not_a_valid_verdict"),
+        ("verdict", ""),
+        ("status", "not_a_valid_status"),
+    ],
+)
+def test_load_final_review_rejects_unknown_verdict_and_status(tmp_path: Path, field: str, value: str) -> None:
+    final_review_path = tmp_path / "final-review.json"
+    final_review_path.write_text(json.dumps(_final_review(**{field: value}), sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        load_final_review(final_review_path)
+
+    assert getattr(exc_info.value, "error_class") == "final_review_invalid"
+
+
+def test_optional_artifact_schema_version_mismatch_is_not_consumed(tmp_path: Path) -> None:
+    chunk_results_path = tmp_path / "chunk-results.json"
+    chunk_results_path.write_text(
+        json.dumps({"schema_id": "agent-review.chunk-results.v1", "schema_version": 2}, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    chunk_results, limitations = load_optional_artifact(chunk_results_path, name="chunk_results")
+    telemetry = build_review_telemetry(
+        final_review=_final_review(),
+        quality_gate=_quality_gate(),
+        chunk_results=chunk_results,
+        limitations=limitations,
+    )
+
+    assert chunk_results is None
+    assert limitations == ["artifact_schema_version_mismatch:chunk_results"]
+    assert "artifact_schema_version_mismatch:chunk_results" in telemetry.limitations
+    assert telemetry.pipeline["chunk_results_status"] is None
