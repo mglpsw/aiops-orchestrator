@@ -3,7 +3,7 @@ from __future__ import annotations
 import yaml
 
 from app.agent_review.contract_suggestions import build_contract_suggestions, suggestions_to_yaml
-from app.agent_review.false_positive_signatures import build_false_positive_signatures, finding_signature_basis, signature_for_basis
+from app.agent_review.false_positive_signatures import build_false_positive_signatures, signature_for_basis
 from app.agent_review.schemas import ReviewQualityGate, ReviewTelemetry
 
 
@@ -85,7 +85,8 @@ def _signatures(markers: list[dict[str, object]]):
 
 
 def test_suggestion_requires_matched_manual_suggested_rule() -> None:
-    signature = signature_for_basis(finding_signature_basis(_finding())[0])
+    base = _signatures([])
+    signature = signature_for_basis(base.candidates[0].basis)
     unmatched = "fp:v1:" + "f" * 64
     suggestions = build_contract_suggestions(
         _signatures(
@@ -99,6 +100,7 @@ def test_suggestion_requires_matched_manual_suggested_rule() -> None:
             ]
         )
     )
+    assert base.candidates[0].signature == signature
     assert suggestions.suggestions == []
 
     suggestions = build_contract_suggestions(
@@ -126,7 +128,7 @@ def test_suggestion_requires_matched_manual_suggested_rule() -> None:
 
 
 def test_suggestion_id_and_yaml_are_deterministic_and_round_trip() -> None:
-    signature = signature_for_basis(finding_signature_basis(_finding())[0])
+    signature = signature_for_basis(_signatures([]).candidates[0].basis)
     marker = {
         "finding_signature": signature,
         "reason": "docs_only_overseverity",
@@ -149,7 +151,7 @@ def test_suggestion_id_and_yaml_are_deterministic_and_round_trip() -> None:
 
 
 def test_suggestions_sanitize_sensitive_text_without_applying_contracts() -> None:
-    signature = signature_for_basis(finding_signature_basis(_finding())[0])
+    signature = signature_for_basis(_signatures([]).candidates[0].basis)
     suggestions = build_contract_suggestions(
         _signatures(
             [

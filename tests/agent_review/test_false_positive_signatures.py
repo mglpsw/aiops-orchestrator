@@ -4,6 +4,9 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
+
+from app.agent_review.contract_suggestions import build_contract_suggestions
 from app.agent_review.false_positive_signatures import (
     build_false_positive_signatures,
     finding_signature_basis,
@@ -153,6 +156,77 @@ def test_signature_basis_is_normalized_and_stable() -> None:
     assert signature_for_basis(changed_basis) == signature
 
 
+@pytest.mark.parametrize(
+    ("file_path", "expected_file_path"),
+    [
+        ("docs/CT102_RUNTIME_TRANSITION_V019.md", "docs/[REDACTED]_RUNTIME_TRANSITION_V019.md"),
+        ("docs/Authorization_Bearer_MIGRATION.md", "docs/[REDACTED]_[REDACTED]_MIGRATION.md"),
+        ("docs/DATABASE_URL_GUIDE.md", "docs/[REDACTED]_GUIDE.md"),
+    ],
+)
+def test_signature_basis_sanitizes_relative_paths_before_hashing(
+    file_path: str, expected_file_path: str
+) -> None:
+    finding = _finding(
+        file_path=file_path,
+        title="Authorization: ******",
+        contract_id="DATABASE_URL=******db.example.com/app",
+    )
+
+    basis, limitation = finding_signature_basis(finding)
+    assert limitation is None
+    assert basis is not None
+    assert basis["file_path"] == expected_file_path
+
+    artifact = _build(_final_review([finding]))
+    candidate = artifact.candidates[0]
+    assert candidate.basis == basis
+    assert candidate.signature == signature_for_basis(candidate.basis)
+
+    markers = {
+        "schema_id": "agent-review.false-positive-markers.v1",
+        "schema_version": 1,
+        "source": "manual",
+        "markers": [
+            {
+                "finding_signature": signature_for_basis(candidate.basis),
+                "reason": "docs_only_overseverity",
+                "suggested_rule": "Docs findings default to P3 unless deterministic high-impact evidence exists",
+                "contract_id": "review.docs-severity",
+            }
+        ],
+    }
+    signed = _build(_final_review([finding]), markers_document=markers)
+    assert signed.candidates[0].matched_markers == [
+        {
+            "contract_id": "review.docs-severity",
+            "finding_signature": candidate.signature,
+            "matched": True,
+            "reason": "docs_only_overseverity",
+            "source": "manual",
+            "suggested_rule": "Docs findings default to P3 unless deterministic high-impact evidence exists",
+        }
+    ]
+
+    suggestions = build_contract_suggestions(signed)
+    assert len(suggestions.suggestions) == 1
+    assert suggestions.suggestions[0].finding_signature == candidate.signature
+    assert suggestions.suggestions[0].suggestion_id.startswith("contract-suggestion:v1:")
+
+    rendered = json.dumps(artifact.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    for forbidden in (
+        file_path,
+        "Authorization",
+        "Bearer",
+        "DATABASE_URL",
+        "correct-horse-battery-staple",
+        "/home/runner",
+        "CT102",
+    ):
+        assert forbidden not in rendered
+    assert expected_file_path in rendered
+
+
 def test_signature_is_recalculable_from_sanitized_published_basis() -> None:
     github_pat = "github_pat_" + "A" * 22 + "_" + "B" * 59
     database_url = "DATABASE_URL=postgres://" + "aiops:correct-horse-battery-staple" + "@db.example.com/app"
@@ -185,13 +259,15 @@ def test_signature_is_recalculable_from_sanitized_published_basis() -> None:
     assert "[REDACTED]" in rendered
 
 
-def test_absolute_or_unsafe_paths_do_not_leak_or_generate_candidates() -> None:
-    artifact = _build(_final_review([_finding(file_path="/home/runner/work/AgentEscala/docs/release.md")]))
+@pytest.mark.parametrize("file_path", ["/home/runner/work/AgentEscala/docs/release.md", "../docs/release.md"])
+def test_absolute_or_unsafe_paths_do_not_leak_or_generate_candidates(file_path: str) -> None:
+    artifact = _build(_final_review([_finding(file_path=file_path)]))
 
     assert artifact.candidates == []
     assert artifact.limitations == ["finding_signature_path_invalid:0"]
     rendered = json.dumps(artifact.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
     assert "/home/runner" not in rendered
+    assert "../docs/release.md" not in rendered
     assert "AgentEscala/docs" not in rendered
 
 
@@ -209,7 +285,7 @@ def test_input_order_does_not_change_output_bytes() -> None:
 def test_duplicate_findings_are_deduplicated_by_signature_and_marker_matches_candidate() -> None:
     duplicate_a = _finding(title="Duplicate finding", severity="P1", confidence="high")
     duplicate_b = _finding(title=" duplicate   finding ", severity="P3", confidence="low")
-    signature = signature_for_basis(finding_signature_basis(duplicate_a)[0])
+    signature = signature_for_basis(_build(_final_review([duplicate_a])).candidates[0].basis)
     markers = {
         "schema_id": "agent-review.false-positive-markers.v1",
         "schema_version": 1,
@@ -249,7 +325,7 @@ def test_only_final_review_confirmed_findings_are_candidates() -> None:
 
 
 def test_manual_marker_valid_absent_unmatched_duplicate_and_conflict() -> None:
-    candidate_signature = signature_for_basis(finding_signature_basis(_finding())[0])
+    candidate_signature = signature_for_basis(_build(_final_review()).candidates[0].basis)
     unmatched_signature = "fp:v1:" + "0" * 64
     markers = {
         "schema_id": "agent-review.false-positive-markers.v1",
@@ -301,7 +377,7 @@ def test_manual_marker_valid_absent_unmatched_duplicate_and_conflict() -> None:
 
 
 def test_invalid_marker_reason_becomes_limitation() -> None:
-    signature = signature_for_basis(finding_signature_basis(_finding())[0])
+    signature = signature_for_basis(_build(_final_review()).candidates[0].basis)
     artifact = _build(
         _final_review(),
         markers_document={
@@ -379,7 +455,7 @@ def test_chunk_results_schema_and_version_mismatch_have_distinct_limitations(tmp
 
 
 def test_sanitizes_secrets_ct102_and_absolute_paths_from_output() -> None:
-    signature = signature_for_basis(finding_signature_basis(_finding())[0])
+    signature = signature_for_basis(_build(_final_review()).candidates[0].basis)
     artifact = _build(
         _final_review(),
         markers_document={

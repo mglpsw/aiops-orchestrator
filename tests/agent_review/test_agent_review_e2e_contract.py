@@ -19,7 +19,7 @@ from typing import get_args
 import pytest
 import yaml
 
-from app.agent_review.false_positive_signatures import finding_signature_basis, signature_for_basis
+from app.agent_review.false_positive_signatures import signature_for_basis
 from app.agent_review.schemas import FinalReviewVerdict, ReviewQualityGateStatus
 
 
@@ -431,7 +431,7 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     telemetry_payload = json.loads(first_telemetry_payload)
     false_positive_payload = json.loads(first_false_positive_payload)
 
-    marker_signature = signature_for_basis(finding_signature_basis(final_payload["confirmed_findings"][0])[0])
+    marker_signature = signature_for_basis(false_positive_payload["candidates"][0]["basis"])
     false_positive_markers.write_text(
         json.dumps(
             {

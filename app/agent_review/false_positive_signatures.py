@@ -129,6 +129,7 @@ def finding_signature_basis(finding: dict[str, Any]) -> tuple[dict[str, Any] | N
     if file_path is None:
         return None, "finding_signature_path_invalid"
     title = _sanitize_basis_string(title)
+    file_path = _sanitize_basis_string(file_path)
     contract_id = _sanitize_basis_string(contract_id) if contract_id else None
     return {"contract_id": contract_id, "file_path": file_path, "normalized_title": title}, None
 

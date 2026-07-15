@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from app.agent_review.false_positive_signatures import finding_signature_basis, signature_for_basis
+from app.agent_review.false_positive_signatures import signature_for_basis
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = ROOT.parent
@@ -177,6 +177,7 @@ def test_cli_generates_signatures_without_inventing_suggestions(monkeypatch, tmp
     suggestion_payload = yaml.safe_load(suggestions.read_text(encoding="utf-8"))
     assert payload["schema_id"] == "agent-review.false-positive-signatures.v1"
     assert len(payload["candidates"]) == 1
+    assert payload["candidates"][0]["signature"] == signature_for_basis(payload["candidates"][0]["basis"])
     assert suggestion_payload["schema_id"] == "agent-review.contract-suggestions.v1"
     assert suggestion_payload["suggestions"] == []
 
@@ -185,7 +186,12 @@ def test_cli_generates_manual_suggestion(monkeypatch, tmp_path: Path) -> None:
     for key, value in _dev_env().items():
         monkeypatch.setenv(key, value)
     paths = _artifacts(tmp_path)
-    signature = signature_for_basis(finding_signature_basis(_finding())[0])
+    output = tmp_path / "out" / "false-positive-signatures.json"
+    suggestions = tmp_path / "out" / "suggested-contract-updates.yaml"
+    first = _run_cli(_base_args(paths, output, suggestions))
+    assert first[0] == 0, first[2] + first[1]
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    signature = signature_for_basis(payload["candidates"][0]["basis"])
     markers = tmp_path / "false-positive-markers.json"
     _write_json(
         markers,
@@ -203,8 +209,6 @@ def test_cli_generates_manual_suggestion(monkeypatch, tmp_path: Path) -> None:
             ],
         },
     )
-    output = tmp_path / "out" / "false-positive-signatures.json"
-    suggestions = tmp_path / "out" / "suggested-contract-updates.yaml"
 
     result = _run_cli(_base_args(paths, output, suggestions, markers))
 
