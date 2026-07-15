@@ -193,6 +193,7 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     final_review_json = out_dir / "final-review.json"
     final_review_md = out_dir / "final-review.md"
     quality_gate = out_dir / "review-quality-gate.json"
+    telemetry = out_dir / "review-telemetry.json"
 
     intake_result = _run_cli(
         SCRIPTS / "aiops-review-intake.py",
@@ -302,6 +303,52 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     )
     assert quality_gate.read_text(encoding="utf-8") == first_gate_payload
 
+    telemetry_result = _run_cli(
+        SCRIPTS / "aiops-review-telemetry.py",
+        [
+            "--final-review",
+            str(final_review_json),
+            "--quality-gate",
+            str(quality_gate),
+            "--chunk-results",
+            str(chunk_results),
+            "--chunk-plan",
+            str(chunk_plan),
+            "--intake",
+            str(intake),
+            "--redaction-report",
+            str(redaction_report),
+            "--output",
+            str(telemetry),
+        ],
+    )
+    assert telemetry_result.returncode == 0, telemetry_result.stderr + telemetry_result.stdout
+    first_telemetry_payload = telemetry.read_text(encoding="utf-8")
+
+    deterministic_telemetry_result = _run_cli(
+        SCRIPTS / "aiops-review-telemetry.py",
+        [
+            "--final-review",
+            str(final_review_json),
+            "--quality-gate",
+            str(quality_gate),
+            "--chunk-results",
+            str(chunk_results),
+            "--chunk-plan",
+            str(chunk_plan),
+            "--intake",
+            str(intake),
+            "--redaction-report",
+            str(redaction_report),
+            "--output",
+            str(telemetry),
+        ],
+    )
+    assert deterministic_telemetry_result.returncode == 0, (
+        deterministic_telemetry_result.stderr + deterministic_telemetry_result.stdout
+    )
+    assert telemetry.read_text(encoding="utf-8") == first_telemetry_payload
+
     for output in (
         intake,
         redaction_report,
@@ -310,6 +357,7 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
         final_review_json,
         final_review_md,
         quality_gate,
+        telemetry,
     ):
         assert output.exists(), f"{output.name} was not generated"
         assert output.stat().st_size > 0, f"{output.name} is empty"
@@ -320,6 +368,7 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     final_payload = json.loads(final_review_json.read_text(encoding="utf-8"))
     results_payload = json.loads(chunk_results.read_text(encoding="utf-8"))
     gate_payload = json.loads(first_gate_payload)
+    telemetry_payload = json.loads(first_telemetry_payload)
 
     assert final_payload["schema_id"] == "agent-review.final-review.v1"
     assert final_payload["target_repo"] == "mglpsw/AgentEscala"
@@ -361,6 +410,22 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     assert gate_payload["inputs"]["chunk_plan"]["provided"] is True
     assert gate_payload["inputs"]["redaction_report"]["provided"] is True
 
+    assert telemetry_payload["schema_id"] == "agent-review.telemetry.v1"
+    assert telemetry_payload["schema_version"] == 1
+    assert telemetry_payload["source"] == "aiops-review-telemetry"
+    assert telemetry_payload["quality_gate"]["normalized_verdict"] == gate_payload["normalized_verdict"]
+    assert telemetry_payload["quality_gate"]["status"] == gate_payload["status"]
+    assert telemetry_payload["quality_gate"]["manual_review_required"] is gate_payload["manual_review_required"]
+    assert telemetry_payload["status"] in {"complete", "partial", "degraded"}
+    assert telemetry_payload["limitations"]
+    assert all(isinstance(item, str) and item for item in telemetry_payload["limitations"])
+    assert telemetry_payload["inputs"]["final_review"]["provided"] is True
+    assert telemetry_payload["inputs"]["review_quality_gate"]["provided"] is True
+    assert telemetry_payload["inputs"]["chunk_results"]["provided"] is True
+    assert telemetry_payload["inputs"]["chunk_plan"]["provided"] is True
+    assert telemetry_payload["inputs"]["intake"]["provided"] is True
+    assert telemetry_payload["inputs"]["redaction_report"]["provided"] is True
+
     forbidden = [
         FIXTURE_SECRET,
         str(REPO_ROOT),
@@ -379,12 +444,15 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
         "AIOPS_CT102_HOST",
     ]
     gate_text = json.dumps(gate_payload, ensure_ascii=False, sort_keys=True)
+    telemetry_text = json.dumps(telemetry_payload, ensure_ascii=False, sort_keys=True)
     for value in forbidden:
         assert value not in final_markdown
         assert value not in gate_text
+        assert value not in telemetry_text
 
     _assert_no_absolute_paths(final_markdown)
     _assert_no_absolute_paths(gate_text)
+    _assert_no_absolute_paths(telemetry_text)
     assert "prompt bruto" not in final_markdown.lower()
     assert "payload bruto" not in final_markdown.lower()
     assert "secret" not in final_markdown.lower()
@@ -400,6 +468,7 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
         "final-review.json",
         "final-review.md",
         "review-quality-gate.json",
+        "review-telemetry.json",
     }
     assert not generated_artifact_names & {Path(path).name for path in target_files}
     assert _file_snapshot(FIXTURE_ROOT) == fixture_snapshot_before

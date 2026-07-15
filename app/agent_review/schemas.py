@@ -15,6 +15,7 @@ SEMANTIC_CHUNK_PLAN_SCHEMA = "agent-review.semantic-chunk-plan.v1"
 CHUNK_RESULTS_SCHEMA = "agent-review.chunk-results.v1"
 FINAL_REVIEW_SCHEMA = "agent-review.final-review.v1"
 QUALITY_GATE_SCHEMA = "agent-review.quality-gate.v1"
+TELEMETRY_SCHEMA = "agent-review.telemetry.v1"
 
 ArtifactKind = Literal["json", "yaml", "text", "markdown", "diff"]
 ArtifactState = Literal["available", "missing", "invalid", "degraded"]
@@ -361,3 +362,23 @@ class ReviewQualityGate(BaseModel):
     limitations: list[str] = Field(default_factory=list)
     inputs: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now_iso)
+
+
+class ReviewTelemetry(BaseModel):
+    schema_version: int = 1
+    schema_id: str = TELEMETRY_SCHEMA
+    source: Literal["aiops-review-telemetry"] = "aiops-review-telemetry"
+    status: str
+    target: dict[str, Any] = Field(default_factory=dict)
+    pipeline: dict[str, Any] = Field(default_factory=dict)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    findings: dict[str, Any] = Field(default_factory=dict)
+    review: dict[str, Any] = Field(default_factory=dict)
+    quality_gate: dict[str, Any] = Field(default_factory=dict)
+    validation_evidence: dict[str, Any] = Field(default_factory=dict)
+    redaction: dict[str, Any] = Field(default_factory=dict)
+    model: dict[str, Any] = Field(default_factory=dict)
+    performance: dict[str, Any] = Field(default_factory=dict)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)

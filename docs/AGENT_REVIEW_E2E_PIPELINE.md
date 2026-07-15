@@ -19,6 +19,7 @@ AgentEscala PR workflow on CT104
 -> run aiops-review-parse-chunks.py
 -> run aiops-review-synthesize.py
 -> run aiops-review-quality-gate.py
+-> run aiops-review-telemetry.py
 -> upload sanitized artifacts
 -> comment final-review.md on the PR
 ```
@@ -72,6 +73,15 @@ python scripts/aiops-review-quality-gate.py \
   --chunk-plan "$RUNNER_TEMP/agent/semantic-chunk-plan.json" \
   --redaction-report "$RUNNER_TEMP/agent/redaction-report.json" \
   --output "$RUNNER_TEMP/agent/review-quality-gate.json"
+
+python scripts/aiops-review-telemetry.py \
+  --final-review "$RUNNER_TEMP/agent/final-review.json" \
+  --quality-gate "$RUNNER_TEMP/agent/review-quality-gate.json" \
+  --chunk-results "$RUNNER_TEMP/agent/chunk-results.json" \
+  --chunk-plan "$RUNNER_TEMP/agent/semantic-chunk-plan.json" \
+  --intake "$RUNNER_TEMP/agent/aiops-intake.json" \
+  --redaction-report "$RUNNER_TEMP/agent/redaction-report.json" \
+  --output "$RUNNER_TEMP/agent/review-telemetry.json"
 ```
 
 ## Offline Contract Test
@@ -85,9 +95,10 @@ intake
 -> parse-chunks
 -> synthesize
 -> quality-gate
+-> telemetry
 ```
 
-The test proves the seven final artifacts exist and are written outside the
+The test proves the eight final artifacts exist and are written outside the
 target repository:
 
 ```text
@@ -98,6 +109,7 @@ chunk-results.json
 final-review.json
 final-review.md
 review-quality-gate.json
+review-telemetry.json
 ```
 
 The E2E contract validates `review-quality-gate.json` against schema
@@ -111,6 +123,10 @@ pipeline never runs outside CT104 dev/toolrepo mode. The test does not call
 Agent Router, any provider, CT102, Docker, SSH, deploy, restart, or GitHub
 write APIs.
 
+The telemetry artifact observes the already-produced final review and quality
+gate outputs. It does not change verdicts, apply contracts, comment on PRs, or
+persist historical data.
+
 ## Upload Policy
 
 Allowed workflow artifacts:
@@ -123,6 +139,7 @@ chunk-results.json
 final-review.json
 final-review.md
 review-quality-gate.json
+review-telemetry.json
 sanitized diagnostics
 ```
 
