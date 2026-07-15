@@ -328,6 +328,9 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     assert gate_payload["source"] == "aiops-review-quality-gate"
     assert gate_payload["status"] in set(get_args(ReviewQualityGateStatus))
     assert gate_payload["normalized_verdict"] in set(get_args(FinalReviewVerdict))
+    assert gate_payload["status"] == "passed"
+    assert gate_payload["normalized_verdict"] == "approve_with_minor_notes"
+    assert gate_payload["manual_review_required"] is False
     assert gate_payload["second_opinion_requested"] is False
     assert gate_payload["second_opinion_status"] == "not_required"
     assert gate_payload["inputs"]["final_review"]["provided"] is True
