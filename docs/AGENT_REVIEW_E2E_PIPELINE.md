@@ -98,7 +98,7 @@ intake
 -> telemetry
 ```
 
-The test proves the seven final artifacts exist and are written outside the
+The test proves the eight final artifacts exist and are written outside the
 target repository:
 
 ```text
