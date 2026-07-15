@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -25,6 +26,8 @@ REPO_ROOT = ROOT.parent
 FIXTURE_ROOT = ROOT / "agent_review" / "fixtures" / "agentescala_e2e"
 SCRIPTS = REPO_ROOT / "scripts"
 FIXTURE_SECRET = "AGENTESCALA_PHASE05_E2E_SECRET"
+UNIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.~-])/(?:[A-Za-z0-9._@+=:-]+/)+[A-Za-z0-9._@+=:-]+")
+WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"\b[A-Za-z]:\\(?:[^\\\s]+\\)+[^\\\s]+")
 
 
 def _dev_env() -> dict[str, str]:
@@ -35,6 +38,19 @@ def _dev_env() -> dict[str, str]:
             "AIOPS_NODE_ROLE": "toolrepo",
             "AIOPS_REPO_MODE": "agent_review_tooling",
             "AIOPS_PRODUCTION_RUNTIME": "false",
+        }
+    )
+    return env
+
+
+def _prod_env() -> dict[str, str]:
+    env = {key: value for key, value in os.environ.items() if not key.startswith("AIOPS_")}
+    env.update(
+        {
+            "AIOPS_ENVIRONMENT": "prod",
+            "AIOPS_NODE_ROLE": "runtime",
+            "AIOPS_REPO_MODE": "aiops_runtime",
+            "AIOPS_PRODUCTION_RUNTIME": "true",
         }
     )
     return env
@@ -152,12 +168,18 @@ def _install_offline_guards(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
+def _assert_no_absolute_paths(value: str) -> None:
+    assert not UNIX_ABSOLUTE_PATH_RE.search(value), "unexpected unix absolute path leaked in output"
+    assert not WINDOWS_ABSOLUTE_PATH_RE.search(value), "unexpected windows absolute path leaked in output"
+
+
 def test_agentescala_tool_repo_e2e_contract_runs_offline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     _install_offline_guards(monkeypatch)
     working_tree_before = _git_status_snapshot()
+    fixture_snapshot_before = _file_snapshot(FIXTURE_ROOT)
     target_repo, agent_dir = _copy_fixture(tmp_path)
     target_snapshot_before = _file_snapshot(target_repo)
     out_dir = tmp_path / "agent"
@@ -361,6 +383,8 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
         assert value not in final_markdown
         assert value not in gate_text
 
+    _assert_no_absolute_paths(final_markdown)
+    _assert_no_absolute_paths(gate_text)
     assert "prompt bruto" not in final_markdown.lower()
     assert "payload bruto" not in final_markdown.lower()
     assert "secret" not in final_markdown.lower()
@@ -378,4 +402,44 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
         "review-quality-gate.json",
     }
     assert not generated_artifact_names & {Path(path).name for path in target_files}
+    assert _file_snapshot(FIXTURE_ROOT) == fixture_snapshot_before
     assert _git_status_snapshot() == working_tree_before
+
+
+def test_agentescala_tool_repo_e2e_contract_fails_closed_on_production_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    for key, value in _prod_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("AIOPS_CT102_HOST", "ct102.internal")
+
+    target_repo, agent_dir = _copy_fixture(tmp_path)
+    out_dir = tmp_path / "agent"
+    out_dir.mkdir()
+    intake = out_dir / "aiops-intake.json"
+    redaction_report = out_dir / "redaction-report.json"
+    target_snapshot_before = _file_snapshot(target_repo)
+
+    result = _run_cli(
+        SCRIPTS / "aiops-review-intake.py",
+        [
+            "--target-repo",
+            "mglpsw/AgentEscala",
+            "--repo-root",
+            str(target_repo),
+            "--agent-dir",
+            str(agent_dir),
+            "--output",
+            str(intake),
+            "--redaction-report",
+            str(redaction_report),
+        ],
+    )
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["error_class"] == "environment_blocked"
+    assert "production runtime" in payload["message"].lower()
+    assert not intake.exists()
+    assert not redaction_report.exists()
+    assert _file_snapshot(target_repo) == target_snapshot_before

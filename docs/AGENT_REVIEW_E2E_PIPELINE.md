@@ -105,8 +105,11 @@ The E2E contract validates `review-quality-gate.json` against schema
 `second_opinion_requested=false` and `second_opinion_status=not_required`, and
 checks deterministic gate output for equivalent inputs. It also snapshots the
 target fixture before and after the run to prove the target repository is not
-modified. The test does not call Agent Router, any provider, CT102, Docker, SSH,
-deploy, restart, or GitHub write APIs.
+modified, verifies the source fixture remains unchanged, and includes a
+fail-closed assertion for production/runtime (`AIOPS_ENVIRONMENT=prod`) so the
+pipeline never runs outside CT104 dev/toolrepo mode. The test does not call
+Agent Router, any provider, CT102, Docker, SSH, deploy, restart, or GitHub
+write APIs.
 
 ## Upload Policy
 

@@ -235,4 +235,6 @@ AIOps tool repo remains deterministic and does not call LLMs, providers, GitHub
 APIs, CT102, Docker, SSH, deploy, restart, or operational commands. The offline
 AIOps E2E contract now covers the quality-gate artifact through
 `review-quality-gate.json`; telemetry, second opinion, and AIOps-owned LLM block
-running remain future work.
+running remain future work. The contract suite also fails closed when forced
+into production/runtime environment flags and asserts that both the copied
+target fixture and source fixture remain unchanged throughout execution.
