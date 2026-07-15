@@ -368,15 +368,21 @@ def _input_ref(document: dict[str, Any] | None, *, provided: bool, required: boo
 
 def _schema_limitations(optional_docs: dict[str, dict[str, Any] | None]) -> list[str]:
     expected = {
-        "chunk_results": CHUNK_RESULTS_SCHEMA,
-        "chunk_plan": SEMANTIC_CHUNK_PLAN_SCHEMA,
-        "intake": INTAKE_SCHEMA,
-        "redaction_report": REDACTION_REPORT_SCHEMA,
+        "chunk_results": (CHUNK_RESULTS_SCHEMA, 1),
+        "chunk_plan": (SEMANTIC_CHUNK_PLAN_SCHEMA, 1),
+        "intake": (INTAKE_SCHEMA, INTAKE_SCHEMA),
+        "redaction_report": (REDACTION_REPORT_SCHEMA, REDACTION_REPORT_SCHEMA),
     }
     limitations: list[str] = []
-    for name, schema_id in expected.items():
+    for name, (schema_id, schema_version) in expected.items():
         document = optional_docs.get(name)
-        if document is not None and document.get("schema_id") not in {None, schema_id} and document.get("schema_version") != schema_id:
+        if document is None:
+            continue
+        document_schema_id = document.get("schema_id")
+        document_schema_version = document.get("schema_version")
+        if document_schema_id is not None and document_schema_id != schema_id:
+            limitations.append(f"optional_artifact_schema_unexpected:{name}")
+        elif document_schema_id is None and document_schema_version not in {schema_id, schema_version}:
             limitations.append(f"optional_artifact_schema_unexpected:{name}")
     return limitations
 
