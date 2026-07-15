@@ -256,8 +256,97 @@ def test_telemetry_cli_rejects_output_inside_known_target_repo(tmp_path: Path) -
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["error_class"] == "target_repo_write_blocked"
-    assert "target repo must not be modified" in payload["message"]
+    assert "cannot be written inside Git worktrees" in payload["message"]
     assert not output.exists()
+
+
+def test_telemetry_cli_rejects_output_inside_git_worktree_without_intake_repo_root(tmp_path: Path) -> None:
+    target_repo = tmp_path / "fake-target"
+    (target_repo / ".git").mkdir(parents=True)
+    final_review = _write_json(tmp_path, "final-review.json", _final_review())
+    quality_gate = _write_json(tmp_path, "review-quality-gate.json", _quality_gate())
+    intake = _write_json(tmp_path, "aiops-intake.json", _intake())
+    output = target_repo / "final-review.json"
+
+    result = _run_cli(final_review, quality_gate, output, env=_dev_env(), intake=intake)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["error_class"] == "target_repo_write_blocked"
+    assert "cannot be written inside Git worktrees" in payload["message"]
+    assert not output.exists()
+
+
+def test_telemetry_cli_rejects_output_inside_deep_git_worktree_subdirectory_without_repo_root(tmp_path: Path) -> None:
+    target_repo = tmp_path / "fake-target"
+    (target_repo / ".git").mkdir(parents=True)
+    final_review = _write_json(tmp_path, "final-review.json", _final_review())
+    quality_gate = _write_json(tmp_path, "review-quality-gate.json", _quality_gate())
+    intake = _write_json(tmp_path, "aiops-intake.json", _intake())
+    output = target_repo / "nested" / "deep" / "review-telemetry.json"
+
+    result = _run_cli(final_review, quality_gate, output, env=_dev_env(), intake=intake)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["error_class"] == "target_repo_write_blocked"
+    assert "cannot be written inside Git worktrees" in payload["message"]
+    assert not output.exists()
+    assert not output.parent.exists()
+
+
+def test_telemetry_cli_rejects_output_inside_git_worktree_with_git_file(tmp_path: Path) -> None:
+    target_repo = tmp_path / "fake-target"
+    target_repo.mkdir()
+    (target_repo / ".git").write_text("gitdir: ../.git/worktrees/fake-target\n", encoding="utf-8")
+    final_review = _write_json(tmp_path, "final-review.json", _final_review())
+    quality_gate = _write_json(tmp_path, "review-quality-gate.json", _quality_gate())
+    intake = _write_json(tmp_path, "aiops-intake.json", _intake())
+    output = target_repo / "review-telemetry.json"
+
+    result = _run_cli(final_review, quality_gate, output, env=_dev_env(), intake=intake)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["error_class"] == "target_repo_write_blocked"
+    assert "cannot be written inside Git worktrees" in payload["message"]
+    assert not output.exists()
+
+
+def test_telemetry_cli_allows_output_outside_git_worktree_without_repo_root(tmp_path: Path) -> None:
+    target_repo = tmp_path / "fake-target"
+    (target_repo / ".git").mkdir(parents=True)
+    artifact_dir = tmp_path / "agent"
+    artifact_dir.mkdir()
+    final_review = _write_json(artifact_dir, "final-review.json", _final_review())
+    quality_gate = _write_json(artifact_dir, "review-quality-gate.json", _quality_gate())
+    intake = _write_json(artifact_dir, "aiops-intake.json", _intake())
+    output = artifact_dir / "review-telemetry.json"
+
+    result = _run_cli(final_review, quality_gate, output, env=_dev_env(), intake=intake)
+
+    assert result.returncode == 0
+    assert output.exists()
+
+
+def test_telemetry_cli_rejects_symlinked_output_resolving_inside_git_worktree_without_repo_root(tmp_path: Path) -> None:
+    target_repo = tmp_path / "fake-target"
+    (target_repo / ".git").mkdir(parents=True)
+    symlinked_repo = tmp_path / "target-link"
+    symlinked_repo.symlink_to(target_repo, target_is_directory=True)
+    final_review = _write_json(tmp_path, "final-review.json", _final_review())
+    quality_gate = _write_json(tmp_path, "review-quality-gate.json", _quality_gate())
+    intake = _write_json(tmp_path, "aiops-intake.json", _intake())
+    output = symlinked_repo / "review-telemetry.json"
+
+    result = _run_cli(final_review, quality_gate, output, env=_dev_env(), intake=intake)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["error_class"] == "target_repo_write_blocked"
+    assert "cannot be written inside Git worktrees" in payload["message"]
+    assert not output.exists()
+    assert not (target_repo / "review-telemetry.json").exists()
 
 
 def test_telemetry_cli_ignores_optional_artifact_with_incompatible_schema_version(tmp_path: Path) -> None:

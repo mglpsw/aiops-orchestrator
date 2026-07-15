@@ -165,11 +165,24 @@ def _load_optional_documents(args: argparse.Namespace) -> tuple[dict[str, dict[s
 
 
 def _target_write_error(output_path: Path, *documents: dict[str, Any]) -> str | None:
+    if _containing_git_worktree(output_path) is not None:
+        return "Blocked: AgentReview artifacts cannot be written inside Git worktrees."
     for document in documents:
         for candidate in _declared_target_paths(document):
             root = Path(candidate).expanduser().resolve()
             if _is_relative_to(output_path, root) or output_path == root:
-                return "Blocked: target repo must not be modified by AgentReview telemetry output."
+                return "Blocked: AgentReview artifacts cannot be written inside Git worktrees."
+    return None
+
+
+def _containing_git_worktree(path: Path) -> Path | None:
+    current = path.resolve()
+    if not current.is_dir():
+        current = current.parent
+    for candidate in (current, *current.parents):
+        git_marker = candidate / ".git"
+        if git_marker.exists():
+            return candidate
     return None
 
 

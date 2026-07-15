@@ -226,6 +226,139 @@ def test_review_telemetry_warns_on_artifact_divergence_without_recalculating_gat
     assert "artifact_divergence:final_review_confirmed_findings_count" in telemetry.warnings
 
 
+def test_review_telemetry_treats_empty_final_review_coverage_lists_as_authoritative() -> None:
+    telemetry = build_review_telemetry(
+        final_review=_final_review(
+            coverage={
+                "files_reviewed": [],
+                "files_partial": [],
+                "files_not_reviewed": [],
+                "expected_files": [],
+            }
+        ),
+        quality_gate=_quality_gate(),
+        chunk_results={
+            **_chunk_results(),
+            "coverage": {
+                "files_reviewed": ["backend/a.py"],
+                "files_partial": ["tests/test_a.py"],
+                "files_not_reviewed": ["docs/a.md"],
+            },
+        },
+        chunk_plan={
+            **_chunk_plan(),
+            "files_covered": ["backend/a.py"],
+            "files_partially_covered": ["tests/test_a.py"],
+            "files_not_covered": ["docs/a.md"],
+        },
+    )
+
+    assert telemetry.coverage["expected_files"] == 0
+    assert telemetry.coverage["files_covered"] == 0
+    assert telemetry.coverage["files_partial"] == 0
+    assert telemetry.coverage["files_not_covered"] == 0
+
+
+def test_review_telemetry_coverage_fields_missing_from_final_review_use_fallbacks() -> None:
+    telemetry = build_review_telemetry(
+        final_review=_final_review(coverage={}),
+        quality_gate=_quality_gate(),
+        chunk_results=_chunk_results(),
+        chunk_plan=_chunk_plan(),
+    )
+
+    assert telemetry.coverage["expected_files"] == 3
+    assert telemetry.coverage["files_covered"] == 1
+    assert telemetry.coverage["files_partial"] == 1
+    assert telemetry.coverage["files_not_covered"] == 1
+
+
+def test_review_telemetry_invalid_final_review_coverage_fields_use_fallbacks() -> None:
+    telemetry = build_review_telemetry(
+        final_review=_final_review(
+            coverage={
+                "files_reviewed": "backend/a.py",
+                "files_partial": {"path": "tests/test_a.py"},
+                "files_not_reviewed": 1,
+                "expected_files": "backend/a.py",
+            }
+        ),
+        quality_gate=_quality_gate(),
+        chunk_results=_chunk_results(),
+        chunk_plan=_chunk_plan(),
+    )
+
+    assert telemetry.coverage["expected_files"] == 3
+    assert telemetry.coverage["files_covered"] == 1
+    assert telemetry.coverage["files_partial"] == 1
+    assert telemetry.coverage["files_not_covered"] == 1
+
+
+def test_review_telemetry_non_empty_final_review_coverage_lists_are_authoritative() -> None:
+    telemetry = build_review_telemetry(
+        final_review=_final_review(
+            coverage={
+                "files_reviewed": ["backend/final.py"],
+                "files_partial": ["tests/test_final.py"],
+                "files_not_reviewed": ["docs/final.md"],
+                "expected_files": ["backend/final.py", "tests/test_final.py", "docs/final.md"],
+            }
+        ),
+        quality_gate=_quality_gate(),
+        chunk_results={
+            **_chunk_results(),
+            "coverage": {
+                "files_reviewed": ["backend/chunk.py", "backend/chunk_extra.py"],
+                "files_partial": [],
+                "files_not_reviewed": [],
+            },
+        },
+        chunk_plan={
+            **_chunk_plan(),
+            "files_covered": ["backend/chunk.py", "backend/chunk_extra.py"],
+            "files_partially_covered": [],
+            "files_not_covered": [],
+        },
+    )
+
+    assert telemetry.coverage["expected_files"] == 3
+    assert telemetry.coverage["files_covered"] == 1
+    assert telemetry.coverage["files_partial"] == 1
+    assert telemetry.coverage["files_not_covered"] == 1
+
+
+def test_review_telemetry_measured_zero_coverage_remains_zero_and_deterministic() -> None:
+    final_review = _final_review(
+        coverage={
+            "files_reviewed": [],
+            "files_partial": [],
+            "files_not_reviewed": [],
+            "expected_files": [],
+        }
+    )
+    chunk_results = {
+        **_chunk_results(),
+        "coverage": {
+            "files_reviewed": ["backend/a.py"],
+            "files_partial": ["tests/test_a.py"],
+            "files_not_reviewed": ["docs/a.md"],
+        },
+    }
+    first = build_review_telemetry(final_review=final_review, quality_gate=_quality_gate(), chunk_results=chunk_results)
+    second = build_review_telemetry(final_review=final_review, quality_gate=_quality_gate(), chunk_results=chunk_results)
+    rendered_first = json.dumps(first.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    rendered_second = json.dumps(second.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+
+    assert first.coverage == {
+        "expected_files": 0,
+        "files_covered": 0,
+        "files_not_covered": 0,
+        "files_partial": 0,
+        "status": "complete",
+    }
+    assert rendered_first == rendered_second
+
+
 def test_review_telemetry_is_deterministic_and_sanitized(tmp_path: Path) -> None:
     final_review = _final_review(
         confirmed_findings=[

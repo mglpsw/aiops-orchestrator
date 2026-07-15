@@ -243,11 +243,20 @@ def _coverage(
     plan_covered = _get(chunk_plan, "files_covered")
     plan_partial = _get(chunk_plan, "files_partially_covered")
     plan_not_covered = _get(chunk_plan, "files_not_covered")
-    files_covered = _string_list(review_coverage.get("files_reviewed")) or _string_list(_get(chunk_coverage, "files_reviewed"))
-    files_partial = _string_list(review_coverage.get("files_partial")) or _string_list(_get(chunk_coverage, "files_partial"))
-    files_not_covered = _string_list(review_coverage.get("files_not_reviewed")) or _string_list(_get(chunk_coverage, "files_not_reviewed"))
-    expected_files = _string_list(review_coverage.get("expected_files")) or _dedupe(
-        [*(_string_list(plan_covered) or []), *(_string_list(plan_partial) or []), *(_string_list(plan_not_covered) or [])]
+    files_covered = _authoritative_string_list(review_coverage.get("files_reviewed"), _get(chunk_coverage, "files_reviewed"))
+    files_partial = _authoritative_string_list(review_coverage.get("files_partial"), _get(chunk_coverage, "files_partial"))
+    files_not_covered = _authoritative_string_list(
+        review_coverage.get("files_not_reviewed"), _get(chunk_coverage, "files_not_reviewed")
+    )
+    expected_files = _authoritative_string_list(
+        review_coverage.get("expected_files"),
+        _dedupe(
+            [
+                *(_string_list(plan_covered) or []),
+                *(_string_list(plan_partial) or []),
+                *(_string_list(plan_not_covered) or []),
+            ]
+        ),
     )
     return {
         "status": _coverage_status(final_review, chunk_plan),
@@ -491,6 +500,13 @@ def _string_list(value: Any) -> list[str] | None:
     if not isinstance(value, list):
         return None
     return [item for item in value if isinstance(item, str)]
+
+
+def _authoritative_string_list(primary: Any, fallback: Any) -> list[str] | None:
+    normalized = _string_list(primary)
+    if normalized is not None:
+        return normalized
+    return _string_list(fallback)
 
 
 def _count_or_none(document: dict[str, Any], section: str, key: str) -> int | None:
