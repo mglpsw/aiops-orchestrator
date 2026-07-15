@@ -17,7 +17,9 @@ from typing import Any
 from typing import get_args
 
 import pytest
+import yaml
 
+from app.agent_review.false_positive_signatures import signature_for_basis
 from app.agent_review.schemas import FinalReviewVerdict, ReviewQualityGateStatus
 
 
@@ -131,6 +133,21 @@ def _write_fake_chunk_responses(chunk_plan: Path, responses_dir: Path) -> None:
                 "files_not_reviewed": [],
             },
         }
+        if files:
+            payload["confirmed_findings"].append(
+                {
+                    "severity": "P3",
+                    "title": "Fixture docs severity marker",
+                    "file_path": files[0],
+                    "line_or_hunk": "L1-L2",
+                    "evidence": "Changed fixture content has deterministic offline review evidence.",
+                    "source_artifact": "file-diff-context",
+                    "contract_id": "review.docs-severity",
+                    "impact": "Human reviewers can audit suggested contract updates separately.",
+                    "confidence": "high",
+                    "dedupe_key": f"{chunk['chunk_id']}:{files[0]}",
+                }
+            )
         (responses_dir / f"{chunk['chunk_id']}.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -194,6 +211,10 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     final_review_md = out_dir / "final-review.md"
     quality_gate = out_dir / "review-quality-gate.json"
     telemetry = out_dir / "review-telemetry.json"
+    false_positive_signatures = out_dir / "false-positive-signatures.json"
+    false_positive_markers = out_dir / "false-positive-markers.json"
+    false_positive_signatures_with_marker = out_dir / "false-positive-signatures-with-marker.json"
+    suggested_contract_updates = out_dir / "suggested-contract-updates.yaml"
 
     intake_result = _run_cli(
         SCRIPTS / "aiops-review-intake.py",
@@ -349,6 +370,44 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     )
     assert telemetry.read_text(encoding="utf-8") == first_telemetry_payload
 
+    false_positive_result = _run_cli(
+        SCRIPTS / "aiops-review-false-positives.py",
+        [
+            "--review-telemetry",
+            str(telemetry),
+            "--quality-gate",
+            str(quality_gate),
+            "--final-review",
+            str(final_review_json),
+            "--chunk-results",
+            str(chunk_results),
+            "--output",
+            str(false_positive_signatures),
+        ],
+    )
+    assert false_positive_result.returncode == 0, false_positive_result.stderr + false_positive_result.stdout
+    first_false_positive_payload = false_positive_signatures.read_text(encoding="utf-8")
+
+    deterministic_false_positive_result = _run_cli(
+        SCRIPTS / "aiops-review-false-positives.py",
+        [
+            "--review-telemetry",
+            str(telemetry),
+            "--quality-gate",
+            str(quality_gate),
+            "--final-review",
+            str(final_review_json),
+            "--chunk-results",
+            str(chunk_results),
+            "--output",
+            str(false_positive_signatures),
+        ],
+    )
+    assert deterministic_false_positive_result.returncode == 0, (
+        deterministic_false_positive_result.stderr + deterministic_false_positive_result.stdout
+    )
+    assert false_positive_signatures.read_text(encoding="utf-8") == first_false_positive_payload
+
     for output in (
         intake,
         redaction_report,
@@ -358,6 +417,7 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
         final_review_md,
         quality_gate,
         telemetry,
+        false_positive_signatures,
     ):
         assert output.exists(), f"{output.name} was not generated"
         assert output.stat().st_size > 0, f"{output.name} is empty"
@@ -369,6 +429,60 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     results_payload = json.loads(chunk_results.read_text(encoding="utf-8"))
     gate_payload = json.loads(first_gate_payload)
     telemetry_payload = json.loads(first_telemetry_payload)
+    false_positive_payload = json.loads(first_false_positive_payload)
+
+    marker_signature = signature_for_basis(false_positive_payload["candidates"][0]["basis"])
+    false_positive_markers.write_text(
+        json.dumps(
+            {
+                "schema_id": "agent-review.false-positive-markers.v1",
+                "schema_version": 1,
+                "source": "manual",
+                "markers": [
+                    {
+                        "finding_signature": marker_signature,
+                        "reason": "docs_only_overseverity",
+                        "suggested_rule": "Docs findings default to P3 unless deterministic high-impact evidence exists",
+                        "contract_id": "review.docs-severity",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    marked_false_positive_result = _run_cli(
+        SCRIPTS / "aiops-review-false-positives.py",
+        [
+            "--review-telemetry",
+            str(telemetry),
+            "--quality-gate",
+            str(quality_gate),
+            "--final-review",
+            str(final_review_json),
+            "--chunk-results",
+            str(chunk_results),
+            "--markers",
+            str(false_positive_markers),
+            "--output",
+            str(false_positive_signatures_with_marker),
+            "--suggestions-output",
+            str(suggested_contract_updates),
+        ],
+    )
+    assert marked_false_positive_result.returncode == 0, (
+        marked_false_positive_result.stderr + marked_false_positive_result.stdout
+    )
+    marked_false_positive_payload = json.loads(false_positive_signatures_with_marker.read_text(encoding="utf-8"))
+    suggestions_payload = yaml.safe_load(suggested_contract_updates.read_text(encoding="utf-8"))
+    for output in (false_positive_markers, false_positive_signatures_with_marker, suggested_contract_updates):
+        assert output.exists(), f"{output.name} was not generated"
+        assert output.stat().st_size > 0, f"{output.name} is empty"
+        _assert_under(output, out_dir)
+        _assert_not_under(output, target_repo)
 
     assert final_payload["schema_id"] == "agent-review.final-review.v1"
     assert final_payload["target_repo"] == "mglpsw/AgentEscala"
@@ -426,6 +540,20 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     assert telemetry_payload["inputs"]["intake"]["provided"] is True
     assert telemetry_payload["inputs"]["redaction_report"]["provided"] is True
 
+    assert false_positive_payload["schema_id"] == "agent-review.false-positive-signatures.v1"
+    assert false_positive_payload["schema_version"] == 1
+    assert false_positive_payload["source"] == "aiops-review-false-positives"
+    assert false_positive_payload["target"] == {"repository": "mglpsw/AgentEscala"}
+    assert false_positive_payload["candidates"]
+    assert false_positive_payload["markers"] == []
+    assert marked_false_positive_payload["candidates"][0]["matched_markers"]
+    assert suggestions_payload["schema_id"] == "agent-review.contract-suggestions.v1"
+    assert suggestions_payload["apply_mode"] == "manual_only"
+    assert suggestions_payload["applied"] is False
+    assert suggestions_payload["target"] == {"repository": "mglpsw/AgentEscala"}
+    assert len(suggestions_payload["suggestions"]) == 1
+    assert suggestions_payload["suggestions"][0]["finding_signature"] == marker_signature
+
     forbidden = [
         FIXTURE_SECRET,
         str(REPO_ROOT),
@@ -445,14 +573,20 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     ]
     gate_text = json.dumps(gate_payload, ensure_ascii=False, sort_keys=True)
     telemetry_text = json.dumps(telemetry_payload, ensure_ascii=False, sort_keys=True)
+    false_positive_text = json.dumps(marked_false_positive_payload, ensure_ascii=False, sort_keys=True)
+    suggestions_text = json.dumps(suggestions_payload, ensure_ascii=False, sort_keys=True)
     for value in forbidden:
         assert value not in final_markdown
         assert value not in gate_text
         assert value not in telemetry_text
+        assert value not in false_positive_text
+        assert value not in suggestions_text
 
     _assert_no_absolute_paths(final_markdown)
     _assert_no_absolute_paths(gate_text)
     _assert_no_absolute_paths(telemetry_text)
+    _assert_no_absolute_paths(false_positive_text)
+    _assert_no_absolute_paths(suggestions_text)
     assert "prompt bruto" not in final_markdown.lower()
     assert "payload bruto" not in final_markdown.lower()
     assert "secret" not in final_markdown.lower()
@@ -469,6 +603,10 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
         "final-review.md",
         "review-quality-gate.json",
         "review-telemetry.json",
+        "false-positive-signatures.json",
+        "false-positive-markers.json",
+        "false-positive-signatures-with-marker.json",
+        "suggested-contract-updates.yaml",
     }
     assert not generated_artifact_names & {Path(path).name for path in target_files}
     assert _file_snapshot(FIXTURE_ROOT) == fixture_snapshot_before

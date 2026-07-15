@@ -82,6 +82,15 @@ python scripts/aiops-review-telemetry.py \
   --intake "$RUNNER_TEMP/agent/aiops-intake.json" \
   --redaction-report "$RUNNER_TEMP/agent/redaction-report.json" \
   --output "$RUNNER_TEMP/agent/review-telemetry.json"
+
+python scripts/aiops-review-false-positives.py \
+  --review-telemetry "$RUNNER_TEMP/agent/review-telemetry.json" \
+  --quality-gate "$RUNNER_TEMP/agent/review-quality-gate.json" \
+  --final-review "$RUNNER_TEMP/agent/final-review.json" \
+  --chunk-results "$RUNNER_TEMP/agent/chunk-results.json" \
+  --markers "$RUNNER_TEMP/agent/false-positive-markers.json" \
+  --output "$RUNNER_TEMP/agent/false-positive-signatures.json" \
+  --suggestions-output "$RUNNER_TEMP/agent/suggested-contract-updates.yaml"
 ```
 
 ## Offline Contract Test
