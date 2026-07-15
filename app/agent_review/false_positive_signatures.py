@@ -109,8 +109,11 @@ def load_optional_chunk_results(path: Path | str | None) -> tuple[dict[str, Any]
 def load_optional_markers(path: Path | str | None) -> tuple[dict[str, Any] | None, list[str]]:
     if path is None:
         return None, []
+    marker_path = Path(path)
+    if not marker_path.exists():
+        return None, []
     try:
-        raw = load_json_object(path, error_class="false_positive_markers_invalid")
+        raw = load_json_object(marker_path, error_class="false_positive_markers_invalid")
     except FalsePositiveError as exc:
         return None, [exc.error_class]
     if raw.get("schema_id") != FALSE_POSITIVE_MARKERS_SCHEMA or raw.get("schema_version") != 1:

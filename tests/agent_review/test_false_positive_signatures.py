@@ -11,6 +11,7 @@ from app.agent_review.false_positive_signatures import (
     build_false_positive_signatures,
     finding_signature_basis,
     load_optional_chunk_results,
+    load_optional_markers,
     signature_for_basis,
 )
 from app.agent_review.schemas import ReviewQualityGate, ReviewTelemetry
@@ -452,6 +453,87 @@ def test_chunk_results_schema_and_version_mismatch_have_distinct_limitations(tmp
     assert schema_limitations == ["artifact_schema_id_mismatch:chunk_results"]
     assert version_results is None
     assert version_limitations == ["artifact_schema_version_mismatch:chunk_results"]
+
+
+def test_optional_markers_missing_and_empty_are_not_limitations(tmp_path: Path) -> None:
+    missing_path = tmp_path / "missing-markers.json"
+    empty_path = tmp_path / "false-positive-markers.json"
+    empty_path.write_text(
+        json.dumps(
+            {
+                "schema_id": "agent-review.false-positive-markers.v1",
+                "schema_version": 1,
+                "source": "manual",
+                "markers": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    missing_markers, missing_limitations = load_optional_markers(missing_path)
+    empty_markers, empty_limitations = load_optional_markers(empty_path)
+
+    assert missing_markers is None
+    assert missing_limitations == []
+    assert empty_markers == {
+        "schema_id": "agent-review.false-positive-markers.v1",
+        "schema_version": 1,
+        "source": "manual",
+        "markers": [],
+    }
+    assert empty_limitations == []
+
+    artifact = build_false_positive_signatures(
+        final_review=_final_review(),
+        quality_gate=_quality_gate(),
+        review_telemetry=_telemetry(),
+        markers_document=empty_markers,
+    )
+    assert artifact.markers == []
+    assert artifact.limitations == []
+
+
+def test_optional_markers_invalid_json_and_schema_are_distinct_limitations(tmp_path: Path) -> None:
+    invalid_json_path = tmp_path / "invalid-markers.json"
+    schema_path = tmp_path / "schema-invalid-markers.json"
+    version_path = tmp_path / "version-invalid-markers.json"
+    invalid_json_path.write_text("{", encoding="utf-8")
+    schema_path.write_text(
+        json.dumps(
+            {
+                "schema_id": "wrong",
+                "schema_version": 1,
+                "source": "manual",
+                "markers": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    version_path.write_text(
+        json.dumps(
+            {
+                "schema_id": "agent-review.false-positive-markers.v1",
+                "schema_version": 2,
+                "source": "manual",
+                "markers": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    invalid_markers, invalid_limitations = load_optional_markers(invalid_json_path)
+    schema_markers, schema_limitations = load_optional_markers(schema_path)
+    version_markers, version_limitations = load_optional_markers(version_path)
+
+    assert invalid_markers is None
+    assert invalid_limitations == ["false_positive_markers_invalid"]
+    assert schema_markers is None
+    assert schema_limitations == ["false_positive_markers_schema_invalid"]
+    assert version_markers is None
+    assert version_limitations == ["false_positive_markers_schema_invalid"]
 
 
 def test_sanitizes_secrets_ct102_and_absolute_paths_from_output() -> None:

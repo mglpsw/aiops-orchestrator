@@ -174,8 +174,10 @@ def test_cli_generates_signatures_without_inventing_suggestions(monkeypatch, tmp
     assert suggestions.read_bytes() == first_suggestions
 
     payload = json.loads(output.read_text(encoding="utf-8"))
+    result_payload = json.loads(first[1])
     suggestion_payload = yaml.safe_load(suggestions.read_text(encoding="utf-8"))
     assert payload["schema_id"] == "agent-review.false-positive-signatures.v1"
+    assert result_payload["status"] == "complete"
     assert len(payload["candidates"]) == 1
     assert payload["candidates"][0]["signature"] == signature_for_basis(payload["candidates"][0]["basis"])
     assert suggestion_payload["schema_id"] == "agent-review.contract-suggestions.v1"
@@ -218,6 +220,92 @@ def test_cli_generates_manual_suggestion(monkeypatch, tmp_path: Path) -> None:
     assert suggestion_payload["suggestions"][0]["finding_signature"] == signature
     assert suggestion_payload["apply_mode"] == "manual_only"
     assert suggestion_payload["applied"] is False
+
+
+def test_cli_missing_markers_path_is_complete(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _artifacts(tmp_path)
+    output = tmp_path / "out.json"
+    missing_markers = tmp_path / "missing" / "false-positive-markers.json"
+
+    result = _run_cli(_base_args(paths, output, markers=missing_markers))
+
+    assert result[0] == 0, result[2] + result[1]
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    result_payload = json.loads(result[1])
+    assert result_payload["status"] == "complete"
+    assert payload["limitations"] == []
+
+
+def test_cli_invalid_markers_json_is_partial_with_limitation(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _artifacts(tmp_path)
+    output = tmp_path / "out.json"
+    markers = tmp_path / "false-positive-markers.json"
+    markers.write_text("{", encoding="utf-8")
+
+    result = _run_cli(_base_args(paths, output, markers=markers))
+
+    assert result[0] == 0, result[2] + result[1]
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    result_payload = json.loads(result[1])
+    assert result_payload["status"] == "partial"
+    assert "false_positive_markers_invalid" in payload["limitations"]
+
+
+def test_cli_invalid_markers_schema_is_partial_with_limitation(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _artifacts(tmp_path)
+    output = tmp_path / "out.json"
+    markers = tmp_path / "false-positive-markers.json"
+    _write_json(
+        markers,
+        {
+            "schema_id": "wrong",
+            "schema_version": 1,
+            "source": "manual",
+            "markers": [],
+        },
+    )
+
+    result = _run_cli(_base_args(paths, output, markers=markers))
+
+    assert result[0] == 0, result[2] + result[1]
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    result_payload = json.loads(result[1])
+    assert result_payload["status"] == "partial"
+    assert "false_positive_markers_schema_invalid" in payload["limitations"]
+
+
+def test_cli_empty_markers_file_is_complete(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _artifacts(tmp_path)
+    output = tmp_path / "out.json"
+    markers = tmp_path / "false-positive-markers.json"
+    _write_json(
+        markers,
+        {
+            "schema_id": "agent-review.false-positive-markers.v1",
+            "schema_version": 1,
+            "source": "manual",
+            "markers": [],
+        },
+    )
+
+    first = _run_cli(_base_args(paths, output, markers=markers))
+    assert first[0] == 0, first[2] + first[1]
+    first_payload = output.read_bytes()
+    second = _run_cli(_base_args(paths, output, markers=markers))
+    assert second[0] == 0, second[2] + second[1]
+    assert output.read_bytes() == first_payload
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    result_payload = json.loads(first[1])
+    assert result_payload["status"] == "complete"
+    assert payload["limitations"] == []
 
 
 def test_cli_missing_or_invalid_chunk_results_is_limitation(monkeypatch, tmp_path: Path) -> None:
