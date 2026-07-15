@@ -5,7 +5,8 @@ Phase 1 is limited to offline intake and deterministic redaction. Phase 2 adds
 deterministic semantic chunk planning over the sanitized intake. Phase 3 parses
 structured simulated chunk responses into normalized chunk results. Phase 4
 synthesizes those chunk results into final review JSON and Markdown artifacts.
-Phase 5A adds a deterministic post-synthesis quality gate.
+Phase 5A adds a deterministic post-synthesis quality gate. Phase 5B collects
+deterministic telemetry from the final review and quality gate artifacts.
 
 ## Runtime Boundary
 
@@ -219,8 +220,45 @@ readable final-review verdict produces a failed gate artifact with
 `normalized_verdict=review_unavailable`.
 
 This phase still does not call an LLM, Agent Router, providers, network, CT102,
-FastAPI runtime, Docker, SSH, deploy/restart commands, telemetry, second opinion
-services, GitHub write APIs, or AgentEscala code.
+FastAPI runtime, Docker, SSH, deploy/restart commands, second opinion services,
+GitHub write APIs, or AgentEscala code.
+
+## Review Telemetry
+
+`scripts/aiops-review-telemetry.py` reads `final-review.json` and
+`review-quality-gate.json`, then writes `review-telemetry.json`:
+
+```text
+python scripts/aiops-review-telemetry.py \
+  --final-review /path/to/final-review.json \
+  --quality-gate /path/to/review-quality-gate.json \
+  --output /path/to/review-telemetry.json
+```
+
+Optional sanitized artifacts can be provided for richer metrics:
+
+```text
+python scripts/aiops-review-telemetry.py \
+  --final-review /path/to/final-review.json \
+  --quality-gate /path/to/review-quality-gate.json \
+  --chunk-results /path/to/chunk-results.json \
+  --chunk-plan /path/to/semantic-chunk-plan.json \
+  --intake /path/to/aiops-intake.json \
+  --redaction-report /path/to/redaction-report.json \
+  --checks /path/to/checks.json \
+  --output /path/to/review-telemetry.json
+```
+
+Telemetry writes schema `agent-review.telemetry.v1`. It observes target and
+pipeline metrics, coverage counts, finding/risk/rejected counts, final review
+status, quality gate status, normalized verdict, manual-review requirement,
+redaction status, optional validation evidence status, and already-reported
+performance metadata. Missing optional artifacts become limitations, not opaque
+failures.
+
+Phase 5B still does not decide, recalibrate severity, confirm findings, apply
+contracts, call an LLM, call Agent Router, use `/v1/chat/ingest`, write target
+repository files, persist telemetry to a database, or alter AgentEscala.
 
 ## Roadmap
 
@@ -234,7 +272,7 @@ Router calls through `/v1/chat/completions`, and PR comment publication. The
 AIOps tool repo remains deterministic and does not call LLMs, providers, GitHub
 APIs, CT102, Docker, SSH, deploy, restart, or operational commands. The offline
 AIOps E2E contract now covers the quality-gate artifact through
-`review-quality-gate.json`; telemetry, second opinion, and AIOps-owned LLM block
-running remain future work. The contract suite also fails closed when forced
-into production/runtime environment flags and asserts that both the copied
-target fixture and source fixture remain unchanged throughout execution.
+`review-quality-gate.json`; second opinion and AIOps-owned LLM block running
+remain future work. The contract suite also fails closed when forced into
+production/runtime environment flags and asserts that both the copied target
+fixture and source fixture remain unchanged throughout execution.
