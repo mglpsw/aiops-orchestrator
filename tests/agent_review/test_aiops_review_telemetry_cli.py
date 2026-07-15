@@ -212,6 +212,21 @@ def test_telemetry_cli_fails_closed_on_invalid_required_input(tmp_path: Path) ->
     assert not output.exists()
 
 
+def test_telemetry_cli_fails_closed_on_invalid_required_json(tmp_path: Path) -> None:
+    final_review = tmp_path / "final-review.json"
+    final_review.write_text("{not-json", encoding="utf-8")
+    quality_gate = _write_json(tmp_path, "review-quality-gate.json", _quality_gate())
+    output = tmp_path / "review-telemetry.json"
+
+    result = _run_cli(final_review, quality_gate, output, env=_dev_env())
+
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["error_class"] == "final_review_invalid"
+    assert "invalid" in payload["message"]
+    assert not output.exists()
+
+
 def test_telemetry_cli_rejects_output_inside_known_target_repo(tmp_path: Path) -> None:
     target_repo = tmp_path / "AgentEscala"
     target_repo.mkdir()

@@ -158,7 +158,7 @@ def build_review_telemetry(
         model=_model(final_review, chunk_results, intake, checks, validation_evidence, test_intelligence, local_code_intelligence),
         performance=_performance(final_review, quality_gate.model_dump(mode="json"), *optional_docs.values()),
         inputs=_inputs(final_review, quality_gate, optional_docs),
-        warnings=_dedupe(list(quality_gate.warnings)),
+        warnings=_dedupe([*quality_gate.warnings, *_consistency_warnings(final_review, quality_gate, chunk_results, chunk_plan)]),
         limitations=normalized_limitations,
     )
     return sanitize_review_telemetry(telemetry)
@@ -266,14 +266,17 @@ def _findings(final_review: dict[str, Any], *, chunk_results: dict[str, Any] | N
     else:
         by_severity.update(Counter(str(finding.get("severity")) for finding in findings if isinstance(finding, dict)))
     chunk_rejected = _list(_get(chunk_results, "rejected_findings"))
+    confirmed_count = _int_or_none(counts.get("confirmed_findings_total"))
+    risks_count = _int_or_none(counts.get("risks_total"))
+    rejected_count = _int_or_none(rejected_summary.get("total"))
     return {
         "by_severity": by_severity,
-        "confirmed_count": _int_or_none(counts.get("confirmed_findings_total")) or len(findings),
-        "risks_count": _int_or_none(counts.get("risks_total")) or len(risks),
+        "confirmed_count": confirmed_count if confirmed_count is not None else len(findings),
+        "risks_count": risks_count if risks_count is not None else len(risks),
         "downgraded_findings_count": sum(
             1 for risk in risks if isinstance(risk, dict) and risk.get("source") == "downgraded_finding"
         ),
-        "rejected_findings_count": _int_or_none(rejected_summary.get("total")) or len(chunk_rejected),
+        "rejected_findings_count": rejected_count if rejected_count is not None else len(chunk_rejected),
     }
 
 
@@ -350,6 +353,43 @@ def _inputs(
     for name, document in optional_docs.items():
         inputs[name] = _input_ref(document, provided=document is not None, required=False)
     return inputs
+
+
+def _consistency_warnings(
+    final_review: dict[str, Any],
+    quality_gate: ReviewQualityGate,
+    chunk_results: dict[str, Any] | None,
+    chunk_plan: dict[str, Any] | None,
+) -> list[str]:
+    warnings: list[str] = []
+    final_verdict = final_review.get("verdict")
+    if isinstance(final_verdict, str) and final_verdict != quality_gate.normalized_verdict:
+        warnings.append("artifact_divergence:final_review_verdict_vs_quality_gate_normalized_verdict")
+
+    planned_chunks = {
+        chunk.get("chunk_id")
+        for chunk in _list(_get(chunk_plan, "chunks"))
+        if isinstance(chunk, dict) and isinstance(chunk.get("chunk_id"), str)
+    }
+    if planned_chunks:
+        parsed_chunks = {chunk for chunk in _list(_get(chunk_results, "chunks_parsed")) if isinstance(chunk, str)}
+        failed_chunks = {
+            failure.get("chunk_id")
+            for failure in _list(_get(chunk_results, "chunks_failed"))
+            if isinstance(failure, dict) and isinstance(failure.get("chunk_id"), str)
+        }
+        reported_chunks = parsed_chunks | failed_chunks
+        if reported_chunks and reported_chunks != planned_chunks:
+            warnings.append("artifact_divergence:chunk_plan_vs_chunk_results")
+
+    counts = final_review.get("counts") if isinstance(final_review.get("counts"), dict) else {}
+    confirmed_count = _int_or_none(counts.get("confirmed_findings_total"))
+    if confirmed_count is not None and confirmed_count != len(_list(final_review.get("confirmed_findings"))):
+        warnings.append("artifact_divergence:final_review_confirmed_findings_count")
+    risks_count = _int_or_none(counts.get("risks_total"))
+    if risks_count is not None and risks_count != len(_list(final_review.get("risks"))):
+        warnings.append("artifact_divergence:final_review_risks_count")
+    return warnings
 
 
 def _input_ref(document: dict[str, Any] | None, *, provided: bool, required: bool) -> dict[str, Any]:

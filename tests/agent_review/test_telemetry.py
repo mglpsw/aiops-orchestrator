@@ -194,6 +194,35 @@ def test_review_telemetry_collects_authoritative_gate_and_metrics() -> None:
     assert telemetry.performance["bundle_chars"] == 1234
 
 
+def test_review_telemetry_warns_on_artifact_divergence_without_recalculating_gate() -> None:
+    final_review = _final_review(
+        verdict="approved",
+        counts={**_final_review()["counts"], "confirmed_findings_total": 0},
+    )
+    telemetry = build_review_telemetry(
+        final_review=final_review,
+        quality_gate=_quality_gate(
+            status="manual_review_required",
+            normalized_verdict="manual_review_required",
+            manual_review_required=True,
+        ),
+        chunk_results={
+            **_chunk_results(),
+            "chunks_parsed": ["chunk-01-primary_backend_logic"],
+            "chunks_failed": [],
+        },
+        chunk_plan=_chunk_plan(),
+    )
+
+    assert telemetry.quality_gate["status"] == "manual_review_required"
+    assert telemetry.quality_gate["normalized_verdict"] == "manual_review_required"
+    assert telemetry.quality_gate["manual_review_required"] is True
+    assert telemetry.findings["confirmed_count"] == 0
+    assert "artifact_divergence:final_review_verdict_vs_quality_gate_normalized_verdict" in telemetry.warnings
+    assert "artifact_divergence:chunk_plan_vs_chunk_results" in telemetry.warnings
+    assert "artifact_divergence:final_review_confirmed_findings_count" in telemetry.warnings
+
+
 def test_review_telemetry_is_deterministic_and_sanitized(tmp_path: Path) -> None:
     final_review = _final_review(
         confirmed_findings=[
