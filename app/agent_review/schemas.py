@@ -16,6 +16,9 @@ CHUNK_RESULTS_SCHEMA = "agent-review.chunk-results.v1"
 FINAL_REVIEW_SCHEMA = "agent-review.final-review.v1"
 QUALITY_GATE_SCHEMA = "agent-review.quality-gate.v1"
 TELEMETRY_SCHEMA = "agent-review.telemetry.v1"
+FALSE_POSITIVE_MARKERS_SCHEMA = "agent-review.false-positive-markers.v1"
+FALSE_POSITIVE_SIGNATURES_SCHEMA = "agent-review.false-positive-signatures.v1"
+CONTRACT_SUGGESTIONS_SCHEMA = "agent-review.contract-suggestions.v1"
 
 ArtifactKind = Literal["json", "yaml", "text", "markdown", "diff"]
 ArtifactState = Literal["available", "missing", "invalid", "degraded"]
@@ -47,6 +50,12 @@ FinalReviewVerdict = Literal[
 ReviewQualityGateStatus = Literal["passed", "degraded", "failed", "manual_review_required"]
 SecondOpinionStatus = Literal["not_required", "requested", "completed", "failed", "skipped"]
 RiskSource = Literal["chunk_risk", "downgraded_finding"]
+FalsePositiveReason = Literal[
+    "docs_only_overseverity",
+    "missing_source_artifact",
+    "test_file_in_other_chunk",
+    "contract_obsolete",
+]
 RejectedFindingReason = Literal[
     "missing_required_evidence",
     "missing_file_path",
@@ -381,4 +390,59 @@ class ReviewTelemetry(BaseModel):
     performance: dict[str, Any] = Field(default_factory=dict)
     inputs: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+
+class FalsePositiveMarker(BaseModel):
+    finding_signature: str
+    reason: FalsePositiveReason
+    suggested_rule: str | None = None
+    contract_id: str | None = None
+
+
+class FalsePositiveMarkers(BaseModel):
+    schema_id: str = FALSE_POSITIVE_MARKERS_SCHEMA
+    schema_version: int = 1
+    source: Literal["manual"] = "manual"
+    markers: list[FalsePositiveMarker] = Field(default_factory=list)
+
+
+class FalsePositiveCandidate(BaseModel):
+    signature: str
+    basis: dict[str, Any]
+    finding: dict[str, Any] = Field(default_factory=dict)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    matched_markers: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class FalsePositiveSignatures(BaseModel):
+    schema_id: str = FALSE_POSITIVE_SIGNATURES_SCHEMA
+    schema_version: int = 1
+    source: Literal["aiops-review-false-positives"] = "aiops-review-false-positives"
+    target: dict[str, Any] = Field(default_factory=dict)
+    candidates: list[FalsePositiveCandidate] = Field(default_factory=list)
+    markers: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContractSuggestion(BaseModel):
+    suggestion_id: str
+    finding_signature: str
+    reason: FalsePositiveReason
+    contract_id: str | None = None
+    suggested_rule: str
+    provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class ContractSuggestions(BaseModel):
+    schema_id: str = CONTRACT_SUGGESTIONS_SCHEMA
+    schema_version: int = 1
+    source: Literal["aiops-review-false-positives"] = "aiops-review-false-positives"
+    apply_mode: Literal["manual_only"] = "manual_only"
+    applied: bool = False
+    target: dict[str, Any] = Field(default_factory=dict)
+    suggestions: list[ContractSuggestion] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
