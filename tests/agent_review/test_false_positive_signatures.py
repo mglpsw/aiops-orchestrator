@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from pathlib import Path
 
 from app.agent_review.false_positive_signatures import (
     build_false_positive_signatures,
     finding_signature_basis,
+    load_optional_chunk_results,
     signature_for_basis,
 )
 from app.agent_review.schemas import ReviewQualityGate, ReviewTelemetry
@@ -87,7 +89,11 @@ def _telemetry(**overrides: object) -> ReviewTelemetry:
         "coverage": {},
         "findings": {},
         "review": {},
-        "quality_gate": {},
+        "quality_gate": {
+            "status": "passed",
+            "normalized_verdict": "changes_requested",
+            "manual_review_required": False,
+        },
         "validation_evidence": {},
         "redaction": {},
         "model": {},
@@ -124,8 +130,8 @@ def _chunk_results(**overrides: object) -> dict[str, object]:
 def _build(final_review: dict[str, object], **kwargs: object):
     return build_false_positive_signatures(
         final_review=final_review,
-        quality_gate=_quality_gate(),
-        review_telemetry=_telemetry(),
+        quality_gate=kwargs.pop("quality_gate", _quality_gate()),
+        review_telemetry=kwargs.pop("review_telemetry", _telemetry()),
         chunk_results=_chunk_results(),
         **kwargs,
     )
@@ -147,6 +153,38 @@ def test_signature_basis_is_normalized_and_stable() -> None:
     assert signature_for_basis(changed_basis) == signature
 
 
+def test_signature_is_recalculable_from_sanitized_published_basis() -> None:
+    github_pat = "github_pat_" + "A" * 22 + "_" + "B" * 59
+    database_url = "DATABASE_URL=postgres://" + "aiops:correct-horse-battery-staple" + "@db.example.com/app"
+    finding = _finding(
+        title=(
+            "Authorization: Bearer "
+            "eyJzdWIiOiJhaW9wcyJ9.signature "
+            f"{github_pat}"
+        ),
+        contract_id=database_url,
+    )
+
+    first = _build(_final_review([finding]))
+    second = _build(_final_review([finding]))
+
+    assert len(first.candidates) == 1
+    candidate = first.candidates[0]
+    assert candidate.signature == signature_for_basis(candidate.basis)
+    rendered = json.dumps(first.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
+    for forbidden in (
+        "Authorization",
+        "Bearer",
+        github_pat,
+        "correct-horse-battery-staple",
+        "postgres://aiops",
+        "DATABASE_URL",
+    ):
+        assert forbidden not in rendered
+    assert "[REDACTED]" in rendered
+
+
 def test_absolute_or_unsafe_paths_do_not_leak_or_generate_candidates() -> None:
     artifact = _build(_final_review([_finding(file_path="/home/runner/work/AgentEscala/docs/release.md")]))
 
@@ -166,6 +204,39 @@ def test_input_order_does_not_change_output_bytes() -> None:
     assert json.dumps(first.model_dump(mode="json"), ensure_ascii=False, sort_keys=True) == json.dumps(
         second.model_dump(mode="json"), ensure_ascii=False, sort_keys=True
     )
+
+
+def test_duplicate_findings_are_deduplicated_by_signature_and_marker_matches_candidate() -> None:
+    duplicate_a = _finding(title="Duplicate finding", severity="P1", confidence="high")
+    duplicate_b = _finding(title=" duplicate   finding ", severity="P3", confidence="low")
+    signature = signature_for_basis(finding_signature_basis(duplicate_a)[0])
+    markers = {
+        "schema_id": "agent-review.false-positive-markers.v1",
+        "schema_version": 1,
+        "source": "manual",
+        "markers": [
+            {
+                "finding_signature": signature,
+                "reason": "docs_only_overseverity",
+                "suggested_rule": "Docs findings default to P3",
+                "contract_id": "review.docs-severity",
+            }
+        ],
+    }
+
+    artifact = _build(_final_review([duplicate_b, duplicate_a]), markers_document=markers)
+
+    assert [candidate.signature for candidate in artifact.candidates] == [signature]
+    assert artifact.candidates[0].matched_markers == [
+        {
+            "contract_id": "review.docs-severity",
+            "finding_signature": signature,
+            "matched": True,
+            "reason": "docs_only_overseverity",
+            "source": "manual",
+            "suggested_rule": "Docs findings default to P3",
+        }
+    ]
 
 
 def test_only_final_review_confirmed_findings_are_candidates() -> None:
@@ -243,6 +314,68 @@ def test_invalid_marker_reason_becomes_limitation() -> None:
 
     assert artifact.candidates[0].matched_markers == []
     assert f"manual_marker_reason_invalid:{signature}" in artifact.limitations
+
+
+def test_quality_gate_divergence_from_telemetry_warns_without_recalculating_gate() -> None:
+    gate = _quality_gate()
+    telemetry = _telemetry(
+        quality_gate={
+            "status": "manual_review_required",
+            "normalized_verdict": "approved",
+            "manual_review_required": True,
+        }
+    )
+
+    artifact = _build(_final_review(), quality_gate=gate, review_telemetry=telemetry)
+
+    assert artifact.inputs["review_quality_gate"]["status"] == "passed"
+    assert artifact.inputs["review_quality_gate"]["normalized_verdict"] == "changes_requested"
+    assert artifact.inputs["review_quality_gate"]["manual_review_required"] is False
+    assert "artifact_divergence:quality_gate_status" in artifact.warnings
+    assert "artifact_divergence:quality_gate_normalized_verdict" in artifact.warnings
+    assert "artifact_divergence:quality_gate_manual_review_required" in artifact.warnings
+
+
+def test_quality_gate_equivalent_to_telemetry_has_no_quality_gate_warning() -> None:
+    artifact = _build(_final_review(), quality_gate=_quality_gate(), review_telemetry=_telemetry())
+
+    assert all(not warning.startswith("artifact_divergence:quality_gate_") for warning in artifact.warnings)
+
+
+def test_invalid_chunk_results_structure_is_not_consumed_for_provenance(tmp_path: Path) -> None:
+    path = tmp_path / "chunk-results.json"
+    payload = _chunk_results(chunks_parsed=[123])
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    chunk_results, limitations = load_optional_chunk_results(path)
+    artifact = build_false_positive_signatures(
+        final_review=_final_review(),
+        quality_gate=_quality_gate(),
+        review_telemetry=_telemetry(),
+        chunk_results=chunk_results,
+        limitations=limitations,
+    )
+
+    assert chunk_results is None
+    assert limitations == ["artifact_structure_invalid:chunk_results"]
+    assert "artifact_structure_invalid:chunk_results" in artifact.limitations
+    assert artifact.candidates[0].provenance["chunk_results_used_for_provenance"] is False
+    assert artifact.candidates[0].provenance["source_chunks_in_chunk_results"] == []
+
+
+def test_chunk_results_schema_and_version_mismatch_have_distinct_limitations(tmp_path: Path) -> None:
+    schema_path = tmp_path / "chunk-results-schema.json"
+    version_path = tmp_path / "chunk-results-version.json"
+    schema_path.write_text(json.dumps({**_chunk_results(), "schema_id": "wrong"}, sort_keys=True), encoding="utf-8")
+    version_path.write_text(json.dumps({**_chunk_results(), "schema_version": 2}, sort_keys=True), encoding="utf-8")
+
+    schema_results, schema_limitations = load_optional_chunk_results(schema_path)
+    version_results, version_limitations = load_optional_chunk_results(version_path)
+
+    assert schema_results is None
+    assert schema_limitations == ["artifact_schema_id_mismatch:chunk_results"]
+    assert version_results is None
+    assert version_limitations == ["artifact_schema_version_mismatch:chunk_results"]
 
 
 def test_sanitizes_secrets_ct102_and_absolute_paths_from_output() -> None:

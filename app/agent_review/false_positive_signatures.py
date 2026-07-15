@@ -19,6 +19,7 @@ from app.agent_review.schemas import (
     FINAL_REVIEW_SCHEMA,
     QUALITY_GATE_SCHEMA,
     TELEMETRY_SCHEMA,
+    ChunkResults,
     FalsePositiveReason,
     FalsePositiveSignatures,
     FinalReview,
@@ -95,9 +96,14 @@ def load_optional_chunk_results(path: Path | str | None) -> tuple[dict[str, Any]
         raw = load_json_object(path, error_class="chunk_results_invalid")
     except FalsePositiveError as exc:
         return None, [exc.error_class]
-    if raw.get("schema_id") != CHUNK_RESULTS_SCHEMA or raw.get("schema_version") != 1:
-        return None, ["chunk_results_invalid"]
-    return raw, []
+    if raw.get("schema_id") != CHUNK_RESULTS_SCHEMA:
+        return None, ["artifact_schema_id_mismatch:chunk_results"]
+    if raw.get("schema_version") != 1:
+        return None, ["artifact_schema_version_mismatch:chunk_results"]
+    try:
+        return ChunkResults.model_validate(raw).model_dump(mode="json"), []
+    except ValidationError:
+        return None, ["artifact_structure_invalid:chunk_results"]
 
 
 def load_optional_markers(path: Path | str | None) -> tuple[dict[str, Any] | None, list[str]]:
@@ -122,6 +128,8 @@ def finding_signature_basis(finding: dict[str, Any]) -> tuple[dict[str, Any] | N
         return None, "finding_signature_title_invalid"
     if file_path is None:
         return None, "finding_signature_path_invalid"
+    title = _sanitize_basis_string(title)
+    contract_id = _sanitize_basis_string(contract_id) if contract_id else None
     return {"contract_id": contract_id, "file_path": file_path, "normalized_title": title}, None
 
 
@@ -139,11 +147,10 @@ def build_false_positive_signatures(
     markers_document: dict[str, Any] | None = None,
     limitations: list[str] | None = None,
 ) -> FalsePositiveSignatures:
-    del quality_gate  # Authoritative input is preserved for cross-artifact provenance only.
     candidates, candidate_limitations = _candidates(final_review, chunk_results)
     markers, marker_warnings, marker_limitations, conflicted = _markers(markers_document)
     by_signature = {candidate["signature"]: candidate for candidate in candidates}
-    warnings = [*_cross_artifact_warnings(final_review, review_telemetry, chunk_results), *marker_warnings]
+    warnings = [*_cross_artifact_warnings(final_review, quality_gate, review_telemetry, chunk_results), *marker_warnings]
 
     for marker in markers:
         signature = marker["finding_signature"]
@@ -167,7 +174,7 @@ def build_false_positive_signatures(
         markers=[_sanitize_value(_marker_public(marker)) for marker in markers],
         warnings=_sorted_strings(warnings),
         limitations=_sorted_strings([*(limitations or []), *candidate_limitations, *marker_limitations]),
-        inputs=_inputs(final_review, review_telemetry, chunk_results, markers_document),
+        inputs=_inputs(final_review, quality_gate, review_telemetry, chunk_results, markers_document),
     )
     return sanitize_false_positive_signatures(artifact)
 
@@ -179,29 +186,30 @@ def sanitize_false_positive_signatures(artifact: FalsePositiveSignatures) -> Fal
 
 def _candidates(final_review: dict[str, Any], chunk_results: dict[str, Any] | None) -> tuple[list[dict[str, Any]], list[str]]:
     limitations: list[str] = []
-    candidates: list[dict[str, Any]] = []
+    candidates_by_signature: dict[str, dict[str, Any]] = {}
     for index, finding in enumerate(_list(final_review.get("confirmed_findings"))):
         basis, limitation = finding_signature_basis(finding)
         if basis is None:
             limitations.append(f"{limitation}:{index}")
             continue
         signature = signature_for_basis(basis)
-        candidates.append(
-            {
-                "signature": signature,
-                "basis": basis,
-                "finding": {
-                    "title": _clean_string(finding.get("title")),
-                    "file_path": basis["file_path"],
-                    "contract_id": _clean_optional_string(finding.get("contract_id")),
-                    "severity": _clean_optional_string(finding.get("severity")),
-                    "confidence": _clean_optional_string(finding.get("confidence")),
-                },
-                "provenance": _provenance(finding, chunk_results),
-                "matched_markers": [],
-            }
-        )
-    return candidates, limitations
+        candidate = {
+            "signature": signature,
+            "basis": basis,
+            "finding": {
+                "title": _clean_string(finding.get("title")),
+                "file_path": basis["file_path"],
+                "contract_id": _clean_optional_string(finding.get("contract_id")),
+                "severity": _clean_optional_string(finding.get("severity")),
+                "confidence": _clean_optional_string(finding.get("confidence")),
+            },
+            "provenance": _provenance(finding, chunk_results),
+            "matched_markers": [],
+        }
+        current = candidates_by_signature.get(signature)
+        if current is None or _candidate_sort_key(candidate) < _candidate_sort_key(current):
+            candidates_by_signature[signature] = candidate
+    return list(candidates_by_signature.values()), limitations
 
 
 def _markers(markers_document: dict[str, Any] | None) -> tuple[list[dict[str, Any]], list[str], list[str], set[str]]:
@@ -266,12 +274,25 @@ def _provenance(finding: dict[str, Any], chunk_results: dict[str, Any] | None) -
 
 
 def _cross_artifact_warnings(
-    final_review: dict[str, Any], review_telemetry: ReviewTelemetry, chunk_results: dict[str, Any] | None
+    final_review: dict[str, Any],
+    quality_gate: ReviewQualityGate,
+    review_telemetry: ReviewTelemetry,
+    chunk_results: dict[str, Any] | None,
 ) -> list[str]:
     warnings: list[str] = []
     telemetry_repo = review_telemetry.target.get("repository") if isinstance(review_telemetry.target, dict) else None
     if telemetry_repo and final_review.get("target_repo") and telemetry_repo != final_review.get("target_repo"):
         warnings.append("artifact_divergence:final_review_vs_review_telemetry_target_repo")
+    telemetry_gate = review_telemetry.quality_gate if isinstance(review_telemetry.quality_gate, dict) else {}
+    if telemetry_gate.get("status") is not None and telemetry_gate.get("status") != quality_gate.status:
+        warnings.append("artifact_divergence:quality_gate_status")
+    if telemetry_gate.get("normalized_verdict") is not None and telemetry_gate.get("normalized_verdict") != quality_gate.normalized_verdict:
+        warnings.append("artifact_divergence:quality_gate_normalized_verdict")
+    if (
+        telemetry_gate.get("manual_review_required") is not None
+        and telemetry_gate.get("manual_review_required") != quality_gate.manual_review_required
+    ):
+        warnings.append("artifact_divergence:quality_gate_manual_review_required")
     if chunk_results is not None and chunk_results.get("target_repo") and chunk_results.get("target_repo") != final_review.get("target_repo"):
         warnings.append("artifact_divergence:final_review_vs_chunk_results_target_repo")
     return warnings
@@ -279,16 +300,29 @@ def _cross_artifact_warnings(
 
 def _inputs(
     final_review: dict[str, Any],
+    quality_gate: ReviewQualityGate,
     review_telemetry: ReviewTelemetry,
     chunk_results: dict[str, Any] | None,
     markers_document: dict[str, Any] | None,
 ) -> dict[str, Any]:
     return {
         "final_review": {"provided": True, "schema_id": final_review.get("schema_id"), "schema_version": final_review.get("schema_version")},
-        "review_quality_gate": {"provided": True, "schema_id": QUALITY_GATE_SCHEMA, "schema_version": 1},
+        "review_quality_gate": _quality_gate_input(quality_gate),
         "review_telemetry": {"provided": True, "schema_id": review_telemetry.schema_id, "schema_version": review_telemetry.schema_version},
         "chunk_results": {"provided": chunk_results is not None, "schema_id": (chunk_results or {}).get("schema_id"), "schema_version": (chunk_results or {}).get("schema_version")},
         "false_positive_markers": {"provided": markers_document is not None, "schema_id": (markers_document or {}).get("schema_id"), "schema_version": (markers_document or {}).get("schema_version")},
+    }
+
+
+def _quality_gate_input(quality_gate: ReviewQualityGate) -> dict[str, Any]:
+    return {
+        "provided": True,
+        "schema_id": quality_gate.schema_id,
+        "schema_version": quality_gate.schema_version,
+        "status": quality_gate.status,
+        "normalized_verdict": quality_gate.normalized_verdict,
+        "manual_review_required": quality_gate.manual_review_required,
+        "quality_score": quality_gate.quality_score,
     }
 
 
@@ -332,6 +366,21 @@ def _sanitize_value(value: Any) -> Any:
     state.record_file()
     redacted = redact_value(value, state)
     return _redact_for_artifact(redacted)
+
+
+def _sanitize_basis_string(value: str) -> str:
+    state = RedactionState()
+    state.record_file()
+    redacted = redact_value(value, state)
+    return _sanitize_string(str(redacted))
+
+
+def _candidate_sort_key(candidate: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(candidate["signature"]),
+        json.dumps(candidate["finding"], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+        json.dumps(candidate["provenance"], ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+    )
 
 
 def _redact_for_artifact(value: Any) -> Any:
