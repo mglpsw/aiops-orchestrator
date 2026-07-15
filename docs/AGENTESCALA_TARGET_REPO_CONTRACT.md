@@ -32,8 +32,8 @@ provider/Ollama calls, generated shell, or GitHub write APIs from AIOps.
 
 The future AgentEscala workflow must check out `aiops-orchestrator` at
 `$RUNNER_TEMP/aiops-orchestrator`, using an immutable full commit SHA or an
-approved release tag. An operational checkout from floating `master` is not
-permitted. All generated inputs and outputs must be under
+approved release tag. An operational checkout from a floating default branch
+(including `main` or `master`) is not permitted. All generated inputs and outputs must be under
 `$RUNNER_TEMP/agent`, never in the AgentEscala working tree.
 
 The toolrepo sequence is:

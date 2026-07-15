@@ -36,7 +36,7 @@ telemetry, or false-positive logic.
 
 Use the CT104 toolrepo environment and check out the tool repo at
 `$RUNNER_TEMP/aiops-orchestrator` by full commit SHA or approved release tag.
-Do not use a floating `master` checkout. Keep every output under
+Do not use a floating default-branch checkout (`main` or `master`). Keep every output under
 `$RUNNER_TEMP/agent`, never inside the AgentEscala working tree:
 
 ```text
