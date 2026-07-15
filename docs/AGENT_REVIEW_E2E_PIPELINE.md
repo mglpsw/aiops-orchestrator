@@ -18,7 +18,7 @@ AgentEscala PR workflow on CT104
 -> optionally call Agent Router per chunk via /v1/chat/completions
 -> run aiops-review-parse-chunks.py
 -> run aiops-review-synthesize.py
--> optionally run aiops-review-quality-gate.py (planned #60 wiring)
+-> run aiops-review-quality-gate.py
 -> upload sanitized artifacts
 -> comment final-review.md on the PR
 ```
@@ -65,7 +65,6 @@ python scripts/aiops-review-synthesize.py \
   --output-json "$RUNNER_TEMP/agent/final-review.json" \
   --output-md "$RUNNER_TEMP/agent/final-review.md"
 
-# Optional/planned quality gate artifact. Full E2E wiring is tracked separately.
 python scripts/aiops-review-quality-gate.py \
   --final-review "$RUNNER_TEMP/agent/final-review.json" \
   --chunk-results "$RUNNER_TEMP/agent/chunk-results.json" \
@@ -85,14 +84,29 @@ intake
 -> create fake chunk responses from semantic-chunk-plan.json
 -> parse-chunks
 -> synthesize
+-> quality-gate
 ```
 
-The test proves the six final artifacts exist and the markdown output is safe
-for PR comments. It does not call Agent Router or any provider.
+The test proves the seven final artifacts exist and are written outside the
+target repository:
 
-The quality-gate CLI is validated by focused unit/CLI tests in this PR. The
-offline E2E contract remains unchanged here; adding
-`review-quality-gate.json` to the full E2E flow is planned separately in #60.
+```text
+aiops-intake.json
+redaction-report.json
+semantic-chunk-plan.json
+chunk-results.json
+final-review.json
+final-review.md
+review-quality-gate.json
+```
+
+The E2E contract validates `review-quality-gate.json` against schema
+`agent-review.quality-gate.v1`, keeps
+`second_opinion_requested=false` and `second_opinion_status=not_required`, and
+checks deterministic gate output for equivalent inputs. It also snapshots the
+target fixture before and after the run to prove the target repository is not
+modified. The test does not call Agent Router, any provider, CT102, Docker, SSH,
+deploy, restart, or GitHub write APIs.
 
 ## Upload Policy
 

@@ -225,13 +225,14 @@ services, GitHub write APIs, or AgentEscala code.
 ## Roadmap
 
 This implements the local intake/redaction, semantic chunk planning, structured
-chunk result parsing, and final deterministic synthesis foundation for issue
-#46.
+chunk result parsing, final deterministic synthesis, and deterministic quality
+gate foundation for issue #46.
 
 Phase 05 integrates this offline engine with AgentEscala as a CT104 thin wrapper.
 AgentEscala remains responsible for product artifact generation, optional Agent
 Router calls through `/v1/chat/completions`, and PR comment publication. The
 AIOps tool repo remains deterministic and does not call LLMs, providers, GitHub
-APIs, CT102, Docker, SSH, deploy, restart, or operational commands. Full E2E
-quality-gate orchestration, telemetry, second opinion, and AIOps-owned LLM block
+APIs, CT102, Docker, SSH, deploy, restart, or operational commands. The offline
+AIOps E2E contract now covers the quality-gate artifact through
+`review-quality-gate.json`; telemetry, second opinion, and AIOps-owned LLM block
 running remain future work.
