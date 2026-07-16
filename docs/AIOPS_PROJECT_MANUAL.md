@@ -5,10 +5,10 @@
 **Documento:** AIOPS-MANUAL-001  
 **Versão do documento:** 1.0  
 **Data de consolidação:** 15 de julho de 2026  
-**Baseline do código:** após o merge da PR `mglpsw/aiops-orchestrator#66`  
+**Baseline do código:** após os merges de `mglpsw/aiops-orchestrator#72` e follow-up `#73`
 **Release produtivo do runtime:** `v0.19.0`  
 **Release track em desenvolvimento:** `v0.20.0 — AgentReview Quality Gate`  
-**Status do documento:** baseline oficial sugerida; ainda não versionada no repositório
+**Status do documento:** baseline oficial versionada no repositório
 
 ---
 
@@ -85,24 +85,15 @@ v0.20.0
 
 ### 2.1 Situação em uma frase
 
-> O AIOps já consegue produzir e validar deterministicamente um review final, mas ainda falta tornar o `review-quality-gate.json` parte do E2E oficial e fazer o AgentEscala consumi-lo como thin-wrapper.
+> O AIOps já produz e valida deterministicamente `review-quality-gate.json`, e o
+> contrato pós-#72/#73 já exige consumo fail-closed no AgentEscala.
 
 ### 2.2 Próximo bloqueio real
 
-A próxima PR deve ser a issue #60:
-
-```text
-#60 — test(agent-review): add quality gate E2E contract fixture
-```
-
-Depois dela, o caminho mais curto para gerar valor no AgentEscala é:
-
-```text
-#60 E2E do gate
-→ #65 contrato do wrapper
-→ PR própria no AgentEscala para consumir review-quality-gate.json
-→ canário no CT104
-```
+Com #60, #61, #62 e #65 concluídas, o próximo bloqueador para o track `v0.20.0`
+é a PR futura do AIOps para PR brief determinístico e bounded per-chunk
+context/payload builder (sem mudar runtime do AgentEscala nesta fase
+documental).
 
 ---
 
@@ -286,31 +277,30 @@ Corte mínimo recomendado:
 
 ```text
 #59 — deterministic review quality gate          CONCLUÍDA
-#60 — quality gate E2E contract fixture          PRÓXIMA
+#60 — quality gate E2E contract fixture          CONCLUÍDA
 ```
 
 Follow-ups do track:
 
 ```text
-#61 — telemetry baseline
-#62 — false-positive signatures / contract suggestions
+#61 — telemetry baseline                         CONCLUÍDA
+#62 — false-positive signatures / contract suggestions  CONCLUÍDA
 #63 — optional second opinion contract
 #64 — Validation Evidence semantic pre-review
-#65 — AgentEscala wrapper consumption contract
+#65 — AgentEscala wrapper consumption contract   CONCLUÍDA (documentação)
 ```
 
 ### 6.3 Estratégia de release recomendada
 
 `v0.20.0` deve ser tratado inicialmente como release de toolrepo/AgentReview. Não há necessidade de transição CT102 se o track não alterar o runtime produtivo.
 
-Antes de tag final:
+Baseline já consolidada para o track:
 
-1. merge da #60;
-2. contrato de consumo do gate documentado;
-3. execução E2E no CT104;
-4. canário no AgentEscala;
-5. release notes atualizadas;
-6. confirmação de que CT102 não foi modificado.
+1. #60 mergeada;
+2. #61 e #62 mergeadas;
+3. #65 consolidada em documentação pós-#72/#73;
+4. execução E2E no CT104 validada no toolrepo;
+5. CT102 preservado fora do escopo do track documental.
 
 ---
 
@@ -493,11 +483,11 @@ GitHub Actions aiops-ci: success
 
 ---
 
-## 8. O que ainda não funciona ponta a ponta
+## 8. Estado de integração ponta a ponta
 
-## 8.1 Quality gate ainda não faz parte do E2E oficial
+## 8.1 Quality gate já faz parte do E2E oficial no toolrepo
 
-Embora o gate exista e esteja testado isoladamente, o teste E2E oficial ainda precisa executar:
+O E2E oficial já executa:
 
 ```text
 intake
@@ -508,12 +498,7 @@ intake
 → quality gate
 ```
 
-Essa é a #60.
-
-Sem essa PR, há uma lacuna entre:
-
-- capacidade isolada validada;
-- contrato de integração E2E reproduzível.
+Esse baseline foi consolidado na #60.
 
 ## 8.2 AgentEscala ainda não consome o gate como sinal canônico
 
@@ -524,15 +509,15 @@ O AgentEscala já foi validado como thin-wrapper para o fluxo até `final-review
 - interpretar `status`, `normalized_verdict` e `manual_review_required`;
 - falhar conservadoramente se o gate não existir ou for inválido.
 
-## 8.3 Telemetry ainda não existe
+## 8.3 Telemetry baseline existe no toolrepo
 
-A #61 deve gerar:
+A #61 consolidou:
 
 ```text
 review-telemetry.json
 ```
 
-Ainda faltam métricas estruturadas de:
+A evolução futura ainda pode ampliar métricas estruturadas de:
 
 - gate status/verdict;
 - blockers rebaixados;
@@ -542,9 +527,9 @@ Ainda faltam métricas estruturadas de:
 - duração e tamanho dos bundles;
 - histórico por PR/commit.
 
-## 8.4 False-positive learning ainda não existe
+## 8.4 False-positive learning controlado existe no toolrepo
 
-A #62 deve adicionar:
+A #62 consolidou:
 
 ```text
 false-positive-signatures.json
@@ -797,36 +782,33 @@ material insuficiente
 | #39 | Final synthesizer | Concluída | Gate é autoridade posterior |
 | #40 | Thin-wrapper contract | Concluída | Evoluir consumo do gate em #65/AgentEscala |
 | #41 | Semantic grouping | Concluída | Ajustes futuros por telemetry |
-| #42 | Telemetry/FP learning épico | Aberta | Executar #61 e #62 |
-| #43 | Quality gate/second opinion épico | Parcial: gate concluído | Executar #60 e depois #63 |
+| #42 | Telemetry/FP learning épico | Aberta | Evoluir após baseline pós-#73 |
+| #43 | Quality gate/second opinion épico | Parcial: gate concluído | Manter second opinion fora do hotfix documental |
 | #44 | Validation Evidence pre-review | Aberta | Executar depois do gate/telemetry |
 | #45 | Redaction/coverage deterministic | Aberta para reavaliação | Verificar saldo após #59/#60 |
 | #46 | Roadmap mãe | Aberta | Atualizar checkpoints |
 | #52 | Release v0.19.0 | Fechada/completed | Arquivar evidência |
-| #58 | Release track v0.20.0 | Aberta | Coordenar #60–#65 |
+| #58 | Release track v0.20.0 | Aberta | Coordenar próximo bloqueador (PR brief + bounded payload builder) |
 | #59 | Deterministic quality gate | Concluída via PR #66 | Fechar/confirmar fechamento automático |
-| #60 | Quality gate E2E fixture | Próxima | Implementar agora |
-| #61 | Telemetry baseline | Aberta | Após #60 ou em paralelo controlado |
-| #62 | FP signatures/contract suggestions | Aberta | Após #61 |
+| #60 | Quality gate E2E fixture | Concluída | Manter cobertura nos testes contratuais |
+| #61 | Telemetry baseline | Concluída | Evoluir apenas por necessidade de produto |
+| #62 | FP signatures/contract suggestions | Concluída | Manter manual-only para sugestões |
 | #63 | Optional second opinion | Aberta | Depois do gate estabilizado |
 | #64 | Validation Evidence integration | Aberta | Depois de gate/telemetry |
-| #65 | AgentEscala gate consumption contract | Aberta | Após #60; pode ser acelerada |
+| #65 | AgentEscala gate consumption contract | Concluída | Hardening documental pós-merge consolidado em #73 |
 
 ---
 
 ## 12. Achados de auditoria e dívida técnica
 
-## 12.1 P2 — E2E do quality gate ainda ausente
+## 12.1 P2 — E2E do quality gate (resolvido)
 
-**Impacto:** o artifact existe e está testado isoladamente, mas o contrato completo não prova todos os passos em uma única execução reproduzível.
+**Status:** resolvido por #60 com fixture e validações contratuais no repositório.
 
-**Correção:** implementar #60.
+## 12.2 P2 — Contrato de consumo do gate no AgentEscala (resolvido no AIOps)
 
-## 12.2 P2 — AgentEscala ainda não usa o gate
-
-**Impacto:** o ganho de redução de falso positivo ainda não chega ao comentário/decisão do target repo.
-
-**Correção:** #65 + PR própria no AgentEscala.
+**Status:** contrato consolidado em #65 e endurecido no follow-up pós-#72 (#73).
+Implementação de runtime do thin wrapper permanece na PR futura do target repo.
 
 ## 12.3 P2 — documentação do release `v0.19.0` pode estar obsoleta
 
@@ -855,9 +837,11 @@ O evidence index atual funciona principalmente como lista sanitizada de referên
 
 **Correção:** evoluir incrementalmente antes ou durante #64, sem bloquear #60.
 
-## 12.5 P2 — ausência de telemetry
+## 12.5 P2 — telemetry baseline (resolvido)
 
-Sem #61, decisões de melhoria ainda dependem de observação manual. Não há base histórica para quantificar:
+**Status:** resolvido por #61 com `review-telemetry.json` no fluxo do toolrepo.
+
+Evoluções futuras podem ampliar a base histórica para quantificar:
 
 - taxa de manual review;
 - falsos P0/P1;
@@ -913,19 +897,20 @@ Essa evolução deve ser feita com schema versionado e testes, evitando acoplame
 
 ## 14. Roadmap recomendado a partir de agora
 
-## Fase imediata — fechar o contrato do gate
+## Fase imediata — baseline pós-#73 consolidada
 
 ```text
-#60 — Quality Gate E2E Contract Fixture
+#60 — Quality Gate E2E Contract Fixture            CONCLUÍDA
+#61 — review telemetry baseline                    CONCLUÍDA
+#62 — false-positive signatures/contract suggestions CONCLUÍDA
+#65 — AgentEscala wrapper consumption contract     CONCLUÍDA (documentação)
 ```
 
-Entregas:
+Estado:
 
-- E2E com sete artifacts;
-- snapshot do target repo antes/depois;
-- validação de sanitização;
-- docs atualizadas;
-- full suite verde.
+- E2E com artifacts contratuais e snapshot de target repo;
+- quality gate, telemetry e FP signatures no toolrepo;
+- documentação de consumo hardenizada no follow-up #73.
 
 ## Fase de ativação no target repo
 
@@ -942,16 +927,16 @@ Entregas:
 - fallback conservador;
 - canário CT104.
 
-## Fase de observabilidade
+## Fase de observabilidade (toolrepo)
 
 ```text
-#61 — review telemetry baseline
+#61 — review telemetry baseline (já concluída)
 ```
 
-## Fase de aprendizado controlado
+## Fase de aprendizado controlado (toolrepo)
 
 ```text
-#62 — false-positive signatures e contract suggestions
+#62 — false-positive signatures e contract suggestions (já concluída)
 ```
 
 ## Fase de revisão adicional opcional
@@ -972,9 +957,9 @@ Entregas:
 
 Esta é a trilha mais curta e segura para gerar valor real sem esperar telemetry/second opinion.
 
-## 15.1 Passo 1 — mergear a #60
+## 15.1 Passo 1 — baseline da #60 já consolidada
 
-Garantir que o E2E oficial gere:
+A #60 já foi mergeada. O E2E oficial gera:
 
 ```text
 review-quality-gate.json
@@ -982,18 +967,46 @@ review-quality-gate.json
 
 ## 15.2 Passo 2 — pin do toolrepo
 
-No workflow do AgentEscala, fazer checkout do AIOps por SHA/tag aprovado, nunca por branch flutuante em produção do workflow.
+No workflow do AgentEscala, fazer checkout do AIOps exclusivamente por SHA Git
+completo, canônico e lowercase de 40 caracteres.
 
 Exemplo conceitual:
 
 ```yaml
-- name: Checkout AIOps tool repo
-  uses: actions/checkout@v4
-  with:
-    repository: mglpsw/aiops-orchestrator
-    ref: <SHA-ou-tag-aprovado>
-    path: ${{ runner.temp }}/aiops-orchestrator
+env:
+  AIOPS_ORCHESTRATOR_SHA: <lowercase-40-character-commit-sha>
+  AIOPS_TOOLREPO_CHECKOUT_PATH: aiops-orchestrator-toolrepo
+
+steps:
+  - name: Checkout AIOps tool repo
+    uses: actions/checkout@<verified-actions-checkout-full-commit-sha> # v4.x
+    with:
+      repository: mglpsw/aiops-orchestrator
+      ref: ${{ env.AIOPS_ORCHESTRATOR_SHA }}
+      path: ${{ env.AIOPS_TOOLREPO_CHECKOUT_PATH }}
+      persist-credentials: false
+
+  - name: Move checkout to runner temp
+    run: |
+      rm -rf "$RUNNER_TEMP/aiops-orchestrator"
+      mkdir -p "$RUNNER_TEMP"
+      mv "$GITHUB_WORKSPACE/$AIOPS_TOOLREPO_CHECKOUT_PATH" "$RUNNER_TEMP/aiops-orchestrator"
 ```
+
+Regras contratuais:
+
+- tag pode ser usada apenas pelo mantenedor para escolher versão;
+- a tag deve ser resolvida e verificada antes do uso;
+- o SHA completo resultante deve ser gravado em PR revisável;
+- o runtime nunca resolve tag dinamicamente;
+- falha ao buscar o SHA interrompe o job;
+- nunca existe fallback para `master`;
+- `actions/checkout.path` deve ser relativo ao `GITHUB_WORKSPACE`;
+- a localização de execução exigida pelo contrato é `$RUNNER_TEMP/aiops-orchestrator`;
+- `AIOPS_ORCHESTRATOR_SHA` deve passar em `[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]`;
+- o checkout deve confirmar `test "$(git -C "$RUNNER_TEMP/aiops-orchestrator" rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"`;
+- o SHA da action e o SHA do toolrepo são controles diferentes e ambos revisáveis;
+- o SHA real da action deve ser escolhido na futura PR de implementação do AgentEscala.
 
 ## 15.3 Passo 3 — adicionar a chamada do gate
 
@@ -1017,7 +1030,11 @@ Pseudocódigo do wrapper:
 
 ```python
 if cli_failed or artifact_missing_or_invalid:
-    publish_manual_review_required("quality_gate_unavailable")
+    publish_review_unavailable(
+        manual_review_required=True,
+        publication_class="fail_closed",
+        reason_code=local_sanitized_reason_code,
+    )
 elif gate["status"] == "failed":
     publish_review_unavailable(gate)
 elif gate["manual_review_required"]:
@@ -1027,6 +1044,9 @@ elif gate["normalized_verdict"] == "changes_requested":
 else:
     publish_final_review_with_gate_status(gate)
 ```
+
+No caminho `cli_failed`/`artifact_missing_or_invalid`, nenhum campo do gate
+inválido pode ser usado como autoridade.
 
 O wrapper não deve:
 
@@ -1098,8 +1118,8 @@ Critério para ativação padrão no AgentEscala:
 Corte mínimo:
 
 ```text
-[ ] #59 mergeada e issue fechada
-[ ] #60 mergeada
+[x] #59 mergeada e issue fechada
+[x] #60 mergeada
 [ ] E2E gera 7 artifacts
 [ ] review-quality-gate.json validado
 [ ] target repo fixture não é modificado
@@ -1112,9 +1132,9 @@ Corte mínimo:
 Corte recomendado para valor no AgentEscala:
 
 ```text
-[ ] #65 concluída
+[x] #65 concluída
 [ ] PR própria no AgentEscala mergeada
-[ ] toolrepo pinado por SHA/tag
+[ ] toolrepo pinado por SHA Git completo de 40 caracteres
 [ ] canário CT104 validado
 [ ] fallback manual_review_required validado
 ```
@@ -1166,18 +1186,18 @@ arquivo + evidência + impacto + source confiável
 
 ---
 
-## 18. Melhorias rápidas recomendadas além da #60
+## 18. Melhorias rápidas recomendadas além do baseline pós-#73
 
 1. Atualizar `docs/RELEASE_V0_19_0.md` para estado final.
 2. Confirmar fechamento automático da #59 após merge da #66.
 3. Atualizar #58 e #46 com checkpoint pós-#66.
-4. Reavaliar #45 depois da #60 e fechar o que foi absorvido.
+4. Reavaliar #45 após baseline consolidada (#60/#61/#62/#65) e fechar o que foi absorvido.
 5. Adicionar constraint `[0,1]` ao `quality_score` em PR de hardening futura.
 6. Criar `docs/AIOPS_PROJECT_MANUAL.md` a partir deste documento e mantê-lo versionado.
 7. Adicionar uma tabela de compatibilidade de schemas/artifacts por release.
 8. Definir regra explícita de `critical-pr` no target profile, em vez de inferência informal.
 9. Criar fixture de `checks.json` versionada antes de aprofundar correlação de test failure.
-10. Depois da integração AgentEscala, priorizar #61 para medir o comportamento real do gate.
+10. Depois da integração AgentEscala, ampliar a telemetria além do baseline já entregue em #61.
 
 ---
 
@@ -1206,12 +1226,10 @@ O risco principal agora não é falta de engine; é falta de **integração ofic
 A sequência recomendada é:
 
 ```text
-#60
-→ #65
+baseline pós-#73 (#60/#61/#62/#65)
 → PR AgentEscala
 → canário CT104
-→ #61 telemetry
-→ #62 learning controlado
+→ PR futura AIOps de PR brief + bounded context/payload builder
 → #63/#64 quando houver dados reais
 ```
 

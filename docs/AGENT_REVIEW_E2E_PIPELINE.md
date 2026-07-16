@@ -11,7 +11,7 @@ frozen in `docs/AGENTESCALA_TARGET_REPO_CONTRACT.md`.
 AgentEscala PR workflow on CT104
 -> checkout AgentEscala
 -> generate local artifacts under $RUNNER_TEMP/agent
--> checkout aiops-orchestrator at an approved immutable SHA/tag
+-> checkout aiops-orchestrator at a full 40-character commit SHA
 -> validate dev/toolrepo environment
 -> run aiops-review-intake.py
 -> run aiops-review-plan-chunks.py
@@ -24,7 +24,7 @@ AgentEscala PR workflow on CT104
 -> run aiops-review-false-positives.py when applicable
 -> upload sanitized artifacts
 -> validate and consume review-quality-gate.json
--> publish final-review.md or a conservative fallback comment/summary
+-> publish a conclusive review or fail-closed fallback comment/summary
 ```
 
 The AIOps CLIs do not call Agent Router, providers, GitHub APIs, CT102, Docker,
@@ -35,8 +35,29 @@ telemetry, or false-positive logic.
 ## CLI Contract
 
 Use the CT104 toolrepo environment and check out the tool repo at
-`$RUNNER_TEMP/aiops-orchestrator` by full commit SHA or approved release tag.
-Do not use a floating default-branch checkout (`main` or `master`). Keep every output under
+`$RUNNER_TEMP/aiops-orchestrator` by full 40-character commit SHA only.
+Operational refs must never be tag, branch, short SHA, or floating default
+branch (`main` or `master`). A release tag can be used only in maintainer
+selection flow (resolve tag -> verify commit -> commit the full SHA in PR).
+Runtime tag resolution is prohibited.
+`AIOPS_ORCHESTRATOR_SHA` must be stored as canonical lowercase.
+
+Validate:
+
+```text
+[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]
+test "$(git -C "$RUNNER_TEMP/aiops-orchestrator" rev-parse HEAD)" \
+  = "$AIOPS_ORCHESTRATOR_SHA"
+```
+
+If checkout cannot resolve the pinned SHA, stop the analysis job and do not
+fallback to `master`. Uppercase SHA, short SHA, tag, or branch refs are invalid
+as operational checkout values.
+
+Fork PRs must be filtered before self-hosted CT104 runner allocation with
+`github.event.pull_request.head.repo.full_name == github.repository`.
+
+Keep every output under
 `$RUNNER_TEMP/agent`, never inside the AgentEscala working tree:
 
 ```text
@@ -104,11 +125,32 @@ python scripts/aiops-review-false-positives.py \
 ## Gate consumption
 
 `review-quality-gate.json` is the canonical post-synthesis signal. The wrapper
-must schema-validate it before publication and apply the decision table in
+must validate it before publishing any conclusive or gate-derived review, and
+apply the decision table in
 `AGENTESCALA_TARGET_REPO_CONTRACT.md`. It must disclose `status=degraded`,
 preserve gate limitations and blocked reasons, and fail closed for a missing,
 invalid, unknown-version, or contradictory gate. `final-review.json` is not a
 substitute authority.
+
+When validation fails, publication must still run in deterministic fail-closed
+mode with:
+
+```text
+publication_result=review_unavailable
+manual_review_required=true
+publication_class=fail_closed
+reason_code=<sanitized local reason code>
+```
+
+The wrapper must never trust invalid gate fields and must never publish a
+conclusive review from an invalid gate.
+
+Conclusive approval is allowed only for valid `status=passed` with
+`manual_review_required=false` and empty `blocked_reasons`. `status=degraded`
+cannot approve; it can only
+remain conclusive for `changes_requested` when the validated gate combination
+has non-empty `blocked_reasons` and explicit `limitations`. The wrapper must
+not inspect `final-review.json` to reconfirm blocker evidence.
 
 ## Offline Contract Test
 
@@ -190,10 +232,12 @@ cookies
 
 ## Release Criteria
 
-`v0.19.0-rc.1` can be created manually after the AIOps contract PR merges and
-the offline AgentReview tests pass.
+`v0.19.0` is already the finalized release line. Phase 05 documentation must
+not instruct creation of new release-candidate tags for that line.
 
-`v0.19.0-rc.2` can be created manually after AgentEscala validates the thin
-wrapper E2E on CT104 with the AIOps tool repo pinned by SHA.
+`v0.20.0` remains the active AgentReview track. After PR #72 and follow-up #73,
+the next integration blocker is the AIOps PR for deterministic PR brief and
+bounded per-chunk context/payload builder (without changing AgentEscala runtime
+in this document set).
 
 CT102 runtime transition is not part of Phase 05.

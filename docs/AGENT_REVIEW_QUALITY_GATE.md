@@ -83,22 +83,61 @@ The output schema is `agent-review.quality-gate.v1`:
 
 `review-quality-gate.json` is the canonical post-synthesis signal for a future
 AgentEscala thin wrapper. The wrapper must validate `schema_id`,
-`schema_version`, `source`, and the gate enum values before publishing a
-comment or summary. It must consume `status`, `normalized_verdict`,
+`schema_version`, `source`, and the gate enum values before publishing any
+conclusive or gate-derived comment/summary. It must consume `status`, `normalized_verdict`,
 `manual_review_required`, `blocked_reasons`, `warnings`, and `limitations`
 without recalculating or locally reinterpreting the gate.
 
-The wrapper publishes `final-review.md` for a valid `passed` or `degraded`
-non-manual gate with
-`normalized_verdict` `approved`, `approve_with_minor_notes`,
-`approve_with_required_followup`, or `changes_requested`. A `degraded` status
-must be disclosed and its limitations included. Any manual-review signal
-publishes a conservative `manual_review_required` result; `failed` or
-`review_unavailable` publishes `review_unavailable` without presenting a
-conclusive final review. A missing, malformed, incompatible, unknown-version,
-unknown-status, or contradictory gate fails closed. The complete decision table,
-artifact policy, and GitHub publication requirements are in
-`AGENTESCALA_TARGET_REPO_CONTRACT.md`.
+For toolrepo checkout in the same wrapper flow, `AIOPS_ORCHESTRATOR_SHA` must be
+canonical lowercase and match `^[0-9a-f]{40}$`. The wrapper should validate:
+
+```text
+[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]
+test "$(git -C "$RUNNER_TEMP/aiops-orchestrator" rev-parse HEAD)" \
+  = "$AIOPS_ORCHESTRATOR_SHA"
+```
+
+Allowed consumption matrix (validated before consuming any gate field as
+authority):
+
+| status | normalized_verdict | manual_review_required | result |
+| --- | --- | --- | --- |
+| passed + blocked_reasons empty | approved / approve_with_minor_notes / approve_with_required_followup | false | conclusive publication |
+| passed | changes_requested | false | conclusive blocking publication |
+| degraded | changes_requested | false | conclusive blocking publication with disclosed `limitations` |
+| Valid gate: manual_review_required | Valid gate: manual_review_required | true | non-conclusive manual-review publication |
+| Valid gate: failed | Valid gate: review_unavailable | true | non-conclusive review-unavailable publication |
+| any other combination | any | any | `gate_combination_invalid` fail-closed publication |
+
+Additional rules:
+
+- `degraded` never approves.
+- `changes_requested` requires non-empty `blocked_reasons`.
+- non-blocking publication requires empty `blocked_reasons`.
+- `degraded` requires explicit disclosure of `limitations`.
+- For validated `degraded + changes_requested`, the gate is authoritative:
+  blocker reliability was determined by AIOps before gate emission, and the
+  wrapper must not reconfirm blocker evidence from `final-review.json`.
+- Gate-combination validation happens before manual-review routing.
+- Invalid combinations must never short-circuit to manual-review rows only
+  because they contain `manual_review_required=true`.
+
+If validation fails, the wrapper must still publish a conservative fail-closed
+fallback generated from local validation failure details, without trusting
+fields from the invalid gate, and with deterministic output:
+
+```text
+publication_result=review_unavailable
+manual_review_required=true
+publication_class=fail_closed
+reason_code=<sanitized local reason code>
+```
+
+Supported local reason codes include `gate_missing`, `gate_json_invalid`,
+`gate_schema_invalid`, `gate_source_invalid`, `gate_version_unsupported`,
+`gate_status_unknown`, `gate_verdict_unknown`, `gate_combination_invalid`,
+`gate_validation_failed`, `toolrepo_sha_invalid`, `toolrepo_checkout_failed`,
+and `toolrepo_sha_mismatch`.
 
 The wrapper must never use `final-review.json` as a replacement authority,
 call CT102, use `/v1/chat/ingest`, or apply
