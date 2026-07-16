@@ -141,6 +141,10 @@ def _rendered(brief) -> str:  # noqa: ANN001
     return json.dumps(brief.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
 
 
+def _canonical_len(payload: dict) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
 def test_pr_brief_happy_path() -> None:
     brief = build_pr_brief(
         intake=_intake(),
@@ -192,18 +196,68 @@ def test_pr_brief_marks_invalid_required_artifact() -> None:
     assert "artifact_invalid:checks" in brief.limitations
 
 
-def test_pr_brief_warns_on_target_and_commit_conflicts() -> None:
-    brief = build_pr_brief(
-        intake=_intake(),
-        chunk_plan=_chunk_plan(target_repo="mglpsw/AnotherRepo"),
-        redaction_report=_redaction_report(),
-        checks={"pr_number": 99, "commit_sha": "sha-other"},
-        validation_evidence={"pr_number": 61, "commit_sha": "abc123"},
-    )
+def test_pr_brief_fails_closed_on_cross_artifact_identity_conflicts() -> None:
+    with pytest.raises(PRBriefError) as exc:
+        build_pr_brief(
+            intake=_intake(),
+            chunk_plan=_chunk_plan(target_repo="mglpsw/AnotherRepo"),
+            redaction_report=_redaction_report(),
+            checks={"pr_number": 99, "commit_sha": "sha-other"},
+            validation_evidence={"pr_number": 61, "commit_sha": "abc123"},
+        )
+    assert exc.value.error_class == "review_identity_conflict"
 
-    assert "target_repo_mismatch:intake=mglpsw/AgentEscala:chunk_plan=mglpsw/AnotherRepo" in brief.warnings
-    assert "pr_number_conflict_across_artifacts" in brief.warnings
-    assert "commit_sha_conflict_across_artifacts" in brief.warnings
+
+def test_pr_brief_fails_closed_on_target_repo_conflict() -> None:
+    with pytest.raises(PRBriefError) as exc:
+        build_pr_brief(
+            intake=_intake(),
+            chunk_plan=_chunk_plan(target_repo="mglpsw/AnotherRepo"),
+            redaction_report=_redaction_report(),
+            checks=None,
+            validation_evidence=None,
+        )
+    assert exc.value.error_class == "review_identity_conflict"
+
+
+def test_pr_brief_fails_closed_on_pr_number_conflict() -> None:
+    with pytest.raises(PRBriefError) as exc:
+        build_pr_brief(
+            intake=_intake(),
+            chunk_plan=_chunk_plan(),
+            redaction_report=_redaction_report(),
+            checks={"pr_number": 99},
+            validation_evidence={"pr_number": 61},
+        )
+    assert exc.value.error_class == "review_identity_conflict"
+
+
+def test_pr_brief_fails_closed_on_commit_sha_conflict() -> None:
+    with pytest.raises(PRBriefError) as exc:
+        build_pr_brief(
+            intake=_intake(),
+            chunk_plan=_chunk_plan(),
+            redaction_report=_redaction_report(),
+            checks={"commit_sha": "sha-a"},
+            validation_evidence={"commit_sha": "sha-b"},
+        )
+    assert exc.value.error_class == "review_identity_conflict"
+
+
+def test_pr_brief_allows_missing_identity_fields_without_conflict() -> None:
+    intake = _intake()
+    checks = intake.artifacts["checks"]["content"]
+    checks.pop("pr_number")
+    checks.pop("commit_sha")
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+    assert brief.target["pr_number"] is None
+    assert brief.target["commit_sha"] is None
 
 
 def test_pr_brief_uses_stable_ordering() -> None:
@@ -268,13 +322,34 @@ def test_pr_brief_applies_budget_and_explicit_truncation() -> None:
         redaction_report=_redaction_report(),
         checks=None,
         validation_evidence=None,
-        max_chars=900,
+        max_chars=2500,
     )
 
     assert brief.truncation.applied is True
     assert brief.truncation.original_chars > brief.truncation.emitted_chars
     assert brief.truncation.omitted_sections
     assert brief.truncation.truncation_reason
+    final_payload = brief.model_dump(mode="json")
+    assert brief.truncation.emitted_chars == _canonical_len(final_payload)
+    assert _canonical_len(final_payload) <= 2500
+
+
+def test_pr_brief_budget_len_reflects_post_sanitization_serialized_artifact() -> None:
+    intake = _intake()
+    intake.artifacts["file-diff-context"]["content"]["files"][0]["summary"] = (
+        "token=SUPERSECRET path=/opt/private/really/long/path/with/many/segments/example.py"
+    )
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+        max_chars=2500,
+    )
+    final_payload = brief.model_dump(mode="json")
+    assert brief.truncation.emitted_chars == _canonical_len(final_payload)
+    assert _canonical_len(final_payload) <= 2500
 
 
 def test_pr_brief_rejects_non_positive_budget() -> None:

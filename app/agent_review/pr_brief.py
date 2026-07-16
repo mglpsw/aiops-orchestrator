@@ -30,22 +30,24 @@ def build_pr_brief(
     max_chars: int | None = None,
     optional_limitations: list[str] | None = None,
 ) -> PRBrief:
-    if chunk_plan.target_repo != intake.target_repo:
-        warnings = [f"target_repo_mismatch:intake={intake.target_repo}:chunk_plan={chunk_plan.target_repo}"]
-    else:
-        warnings = []
+    warnings: list[str] = []
 
     brief_limitations = [*intake.limitations, *chunk_plan.limitations, *(optional_limitations or [])]
     brief_limitations.extend(_artifact_state_limitations(intake))
 
     checks_summary = _checks_summary(checks, intake=intake)
     validation_summary = _validation_summary(validation_evidence, intake=intake)
-    metadata = _review_metadata(intake=intake, checks=checks, validation_evidence=validation_evidence)
+    metadata = _review_metadata(
+        intake=intake,
+        chunk_plan=chunk_plan,
+        checks=checks,
+        validation_evidence=validation_evidence,
+    )
     warnings.extend(metadata["warnings"])
 
     payload = {
         "target": {
-            "repository": intake.target_repo,
+            "repository": metadata["target_repo"],
             "pr_number": metadata["pr_number"],
             "commit_sha": metadata["commit_sha"],
         },
@@ -80,9 +82,10 @@ def build_pr_brief(
     budget = _resolve_brief_budget(intake) if max_chars is None else max_chars
     if budget <= 0:
         raise PRBriefError("brief_budget_invalid", "pr brief budget must be greater than zero")
-    truncated_payload, truncation = _apply_budget(payload, max_chars=budget)
-    sanitized = sanitize_artifact_value(truncated_payload)
-    return PRBrief.model_validate({**sanitized, "truncation": truncation.model_dump(mode="json")})
+    sanitized = sanitize_artifact_value(payload)
+    truncated_payload, truncation = _apply_budget(sanitized, max_chars=budget)
+    model, _ = _materialize_brief(truncated_payload, truncation=truncation)
+    return model
 
 
 def _artifact_matrix(intake: ReviewIntake) -> dict[str, Any]:
@@ -252,18 +255,43 @@ def _validation_summary(validation_evidence: dict[str, Any] | None, *, intake: R
 def _review_metadata(
     *,
     intake: ReviewIntake,
+    chunk_plan: SemanticChunkPlan,
     checks: dict[str, Any] | None,
     validation_evidence: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    sources = [checks, validation_evidence, intake.model_dump(mode="json")]
-    pr_candidates = [
-        _coerce_int(_find_key(source, "pr_number")) for source in sources if _coerce_int(_find_key(source, "pr_number")) is not None
-    ]
-    commit_candidates = [
-        _clean_text(_find_key(source, "commit_sha"))
-        for source in sources
-        if isinstance(_clean_text(_find_key(source, "commit_sha")), str)
-    ]
+    target_repo = _resolve_identity_value(
+        "target_repo",
+        [
+            ("intake.target_repo", intake.target_repo),
+            ("chunk_plan.target_repo", chunk_plan.target_repo),
+            ("intake.target_profile.target_repo", _find_key(intake.target_profile, "target_repo")),
+            ("checks.target_repo", _find_key(checks, "target_repo")),
+            ("validation_evidence.target_repo", _find_key(validation_evidence, "target_repo")),
+        ],
+        coerce=_clean_text,
+    )
+    if target_repo is None:
+        raise PRBriefError("review_identity_conflict", "missing required review identity field: target_repo")
+
+    pr_number = _resolve_identity_value(
+        "pr_number",
+        [
+            ("checks.pr_number", _find_key(checks, "pr_number")),
+            ("validation_evidence.pr_number", _find_key(validation_evidence, "pr_number")),
+            ("intake.artifacts.pr_number", _find_key(intake.artifacts, "pr_number")),
+        ],
+        coerce=_coerce_int,
+    )
+    commit_sha = _resolve_identity_value(
+        "commit_sha",
+        [
+            ("checks.commit_sha", _find_key(checks, "commit_sha")),
+            ("validation_evidence.commit_sha", _find_key(validation_evidence, "commit_sha")),
+            ("intake.artifacts.commit_sha", _find_key(intake.artifacts, "commit_sha")),
+        ],
+        coerce=_clean_text,
+    )
+
     mode = _first_non_empty(
         _clean_text(_find_key(intake.artifacts, "review_mode")),
         _clean_text(_find_key(intake.artifacts, "mode")),
@@ -273,30 +301,30 @@ def _review_metadata(
         _clean_text(_find_key(intake.artifacts, "pack")),
     )
 
-    warnings: list[str] = []
-    if len(set(pr_candidates)) > 1:
-        warnings.append("pr_number_conflict_across_artifacts")
-    if len({value for value in commit_candidates if value}) > 1:
-        warnings.append("commit_sha_conflict_across_artifacts")
     return {
-        "pr_number": pr_candidates[0] if pr_candidates else None,
-        "commit_sha": commit_candidates[0] if commit_candidates else None,
+        "target_repo": target_repo,
+        "pr_number": pr_number,
+        "commit_sha": commit_sha,
         "review_mode": mode,
         "contract_pack": contract_pack,
-        "warnings": warnings,
+        "warnings": [],
     }
 
 
 def _apply_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str, Any], TruncationMetadata]:
     working = copy.deepcopy(payload)
-    original_chars = _canonical_len(working)
+    base_truncation, original_chars = _stabilize_truncation(
+        working,
+        TruncationMetadata(applied=False, original_chars=0, emitted_chars=0),
+    )
     omitted_sections: list[str] = []
     coverage_impact: list[str] = []
 
     if original_chars <= max_chars:
-        return (
-            working,
-            TruncationMetadata(applied=False, original_chars=original_chars, emitted_chars=original_chars),
+        return working, TruncationMetadata(
+            applied=False,
+            original_chars=original_chars,
+            emitted_chars=base_truncation.emitted_chars,
         )
 
     shrinkers = [
@@ -307,7 +335,21 @@ def _apply_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str,
         ("changed_files_summary.files", "coverage_changed_files_reduced", _shrink_changed_files),
     ]
 
-    while _canonical_len(working) > max_chars:
+    while True:
+        current_truncation, current_len = _stabilize_truncation(
+            working,
+            TruncationMetadata(
+                applied=True,
+                original_chars=original_chars,
+                emitted_chars=0,
+                omitted_sections=list(omitted_sections),
+                truncation_reason="max_chars_exceeded",
+                coverage_impact=list(coverage_impact),
+            ),
+        )
+        if current_len <= max_chars:
+            return working, current_truncation
+
         changed = False
         for section, impact, shrink in shrinkers:
             if shrink(working):
@@ -317,24 +359,23 @@ def _apply_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str,
                     coverage_impact.append(impact)
                 break
         if not changed:
+            limitations = working.get("limitations")
+            if isinstance(limitations, list) and "brief_budget_under_minimum_required_sections" not in limitations:
+                limitations.append("brief_budget_under_minimum_required_sections")
             break
 
-    emitted_chars = _canonical_len(working)
-    return (
+    final_truncation, _ = _stabilize_truncation(
         working,
         TruncationMetadata(
             applied=True,
             original_chars=original_chars,
-            emitted_chars=emitted_chars,
+            emitted_chars=0,
             omitted_sections=omitted_sections,
-            truncation_reason=(
-                "max_chars_exceeded"
-                if emitted_chars <= max_chars
-                else "max_chars_exceeded_minimum_required_sections"
-            ),
+            truncation_reason="max_chars_exceeded_minimum_required_sections",
             coverage_impact=coverage_impact,
         ),
     )
+    return working, final_truncation
 
 
 def _shrink_validation_findings(payload: dict[str, Any]) -> bool:
@@ -491,6 +532,55 @@ def _find_key(document: Any, key: str) -> Any:
 
 def _canonical_len(payload: dict[str, Any]) -> int:
     return len(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _materialize_brief(payload: dict[str, Any], *, truncation: TruncationMetadata) -> tuple[PRBrief, int]:
+    model = PRBrief.model_validate({**payload, "truncation": truncation.model_dump(mode="json")})
+    dumped = model.model_dump(mode="json")
+    return model, _canonical_len(dumped)
+
+
+def _stabilize_truncation(
+    payload: dict[str, Any],
+    truncation: TruncationMetadata,
+    *,
+    max_iterations: int = 16,
+) -> tuple[TruncationMetadata, int]:
+    stable = truncation.model_copy(deep=True)
+    emitted = stable.emitted_chars
+    for _ in range(max_iterations):
+        stable.emitted_chars = emitted
+        _, current_len = _materialize_brief(payload, truncation=stable)
+        if current_len == emitted:
+            stable.emitted_chars = current_len
+            return stable, current_len
+        emitted = current_len
+    stable.emitted_chars = emitted
+    return stable, emitted
+
+
+def _resolve_identity_value(
+    field_name: str,
+    candidates: list[tuple[str, Any]],
+    *,
+    coerce,
+) -> Any:
+    values_by_source: dict[str, Any] = {}
+    for source, raw in candidates:
+        value = coerce(raw)
+        if value is None:
+            continue
+        values_by_source[source] = value
+    unique_values = sorted({value for value in values_by_source.values()}, key=lambda item: str(item))
+    if len(unique_values) > 1:
+        details = ",".join(f"{source}={values_by_source[source]}" for source in sorted(values_by_source))
+        raise PRBriefError(
+            "review_identity_conflict",
+            f"conflicting review identity for {field_name}: {details}",
+        )
+    if unique_values:
+        return unique_values[0]
+    return None
 
 
 def _string_list(value: Any) -> list[str]:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from app.agent_review.chunk_payload_builder import build_chunk_payloads
+import pytest
+
+from app.agent_review.chunk_payload_builder import ChunkPayloadBuilderError, build_chunk_payloads
 from app.agent_review.pr_brief import build_pr_brief
 from app.agent_review.schemas import RedactionReport, ReviewIntake, SemanticChunk, SemanticChunkPlan
 
@@ -242,6 +244,10 @@ def _render(payload) -> str:  # noqa: ANN001
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
+def _canonical_len(payload: dict) -> int:
+    return len(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
 def test_chunk_payload_builder_generates_one_payload_per_chunk() -> None:
     intake = _intake()
     plan = _chunk_plan()
@@ -267,6 +273,7 @@ def test_chunk_payload_builder_keeps_context_bounded_to_chunk_files() -> None:
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
+        max_chars_per_payload=20_000,
     )
 
     api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
@@ -285,6 +292,7 @@ def test_chunk_payload_builder_includes_hunks_contracts_evidence_and_response_co
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
+        max_chars_per_payload=20_000,
     )
 
     api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
@@ -326,6 +334,11 @@ def test_chunk_payload_builder_applies_explicit_truncation_for_min_budget() -> N
 
     assert any(entry.truncation.applied for entry in manifest.chunks)
     assert any(payload.truncation.applied for payload in payloads.values())
+    for payload in payloads.values():
+        dumped = payload.model_dump(mode="json")
+        assert payload.truncation.emitted_chars == _canonical_len(dumped)
+        if payload.truncation.truncation_reason != "max_chars_exceeded_minimum_required_sections":
+            assert _canonical_len(dumped) <= 900
 
 
 def test_chunk_payload_builder_identity_stable_when_plan_chunk_list_order_changes() -> None:
@@ -367,9 +380,224 @@ def test_chunk_payload_builder_redacts_absolute_paths_and_secrets() -> None:
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
+        max_chars_per_payload=20_000,
     )
 
     rendered = _render(payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json"))
     assert "/tmp/backend/api/shifts.py" not in rendered
     assert "SUPERSECRET" not in rendered
     assert "[LOCAL_PATH_REDACTED]" in rendered
+
+
+def test_chunk_payload_builder_fails_closed_on_target_repo_identity_conflict() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    brief = _brief(intake, plan)
+    plan.target_repo = "mglpsw/AnotherRepo"
+
+    with pytest.raises(ChunkPayloadBuilderError) as exc:
+        build_chunk_payloads(
+            intake=intake,
+            chunk_plan=plan,
+            pr_brief=brief,
+            checks=None,
+            validation_evidence=None,
+        )
+    assert exc.value.error_class == "review_identity_conflict"
+
+
+def test_chunk_payload_builder_fails_closed_on_pr_number_identity_conflict() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    brief = _brief(intake, plan)
+    brief.target["pr_number"] = 999
+
+    with pytest.raises(ChunkPayloadBuilderError) as exc:
+        build_chunk_payloads(
+            intake=intake,
+            chunk_plan=plan,
+            pr_brief=brief,
+            checks=None,
+            validation_evidence=None,
+        )
+    assert exc.value.error_class == "review_identity_conflict"
+
+
+def test_chunk_payload_builder_filters_local_failures_by_chunk_scope() -> None:
+    intake = _intake()
+    intake.artifacts["local-code-intelligence"]["content"]["confirmed_local_failures"] = [
+        {"title": "api failure", "file_path": "backend/api/shifts.py"},
+        {"title": "tests failure", "path": "tests/test_shift_service.py"},
+        {"title": "global failure", "scope": "global"},
+        {"title": "unscoped failure"},
+    ]
+    plan = _chunk_plan()
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    api_failures = payloads["chunk-01-api_schema_contract.json"].chunk_context["evidence_context"]["local_code_intelligence"][
+        "confirmed_local_failures"
+    ]
+    tests_failures = payloads["chunk-02-tests.json"].chunk_context["evidence_context"]["local_code_intelligence"][
+        "confirmed_local_failures"
+    ]
+    assert {item["title"] for item in api_failures} == {"api failure", "global failure"}
+    assert {item["title"] for item in tests_failures} == {"tests failure", "global failure"}
+
+
+def test_chunk_payload_builder_filters_file_scoped_checks_by_chunk() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    checks = {
+        "status": "complete",
+        "checks": [
+            {"name": "api-check", "status": "passed", "command": "api", "files": ["backend/api/shifts.py"]},
+            {"name": "tests-check", "status": "passed", "command": "tests", "paths": ["tests/test_shift_service.py"]},
+            {"name": "global-check", "status": "passed", "command": "global", "scope": "global"},
+        ],
+    }
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=checks,
+        validation_evidence=None,
+    )
+
+    api_checks = payloads["chunk-01-api_schema_contract.json"].chunk_context["checks_context"]["checks"]
+    tests_checks = payloads["chunk-02-tests.json"].chunk_context["checks_context"]["checks"]
+    assert {item["name"] for item in api_checks} == {"api-check", "global-check"}
+    assert {item["name"] for item in tests_checks} == {"tests-check", "global-check"}
+
+
+def test_chunk_payload_builder_does_not_fallback_to_arbitrary_contracts() -> None:
+    intake = _intake()
+    intake.target_profile["domain_contracts"]["rules"] = [
+        {"id": "backend_service_rule", "description": "backend service contract"},
+        {"id": "database_rule", "description": "database contract"},
+    ]
+    intake.target_profile["review_packs"]["packs"] = [
+        {"id": "review-pack-backend", "description": "backend review pack"},
+    ]
+    plan = _chunk_plan()
+    plan.chunks[0].semantic_group = "frontend_ui"
+    plan.chunks[0].contracts = []
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    contracts_context = api_payload["chunk_context"]["contracts_context"]
+    assert contracts_context["domain_contracts"] == []
+    assert contracts_context["review_packs"] == []
+    assert "contracts_context_not_relevant:chunk-01-api_schema_contract" in api_payload["limitations"]
+
+
+def test_chunk_payload_builder_parses_quoted_unicode_rename_and_deleted_diff_paths() -> None:
+    intake = _intake()
+    intake.artifacts["file-diff-context"]["content"]["files"] = [
+        {"path": "backend/my file.py", "status": "modified", "summary": "spaces"},
+        {"path": "docs/ação clínica.md", "status": "modified", "summary": "unicode"},
+        {"path": "new.py", "status": "renamed", "summary": "rename"},
+        {"path": "obsolete.py", "status": "removed", "summary": "removed"},
+    ]
+    intake.artifacts["full-diff"]["content"] = "\n".join(
+        [
+            'diff --git "a/backend/my file.py" "b/backend/my file.py"',
+            "index 111..222 100644",
+            '--- "a/backend/my file.py"',
+            '+++ "b/backend/my file.py"',
+            "@@ -1 +1 @@",
+            "+print('ok')",
+            'diff --git "a/docs/ação clínica.md" "b/docs/ação clínica.md"',
+            "index 333..444 100644",
+            '--- "a/docs/ação clínica.md"',
+            '+++ "b/docs/ação clínica.md"',
+            "@@ -1 +1 @@",
+            "+conteúdo",
+            'diff --git "a/old.py" "b/new.py"',
+            "similarity index 95%",
+            "rename from old.py",
+            "rename to new.py",
+            "--- a/old.py",
+            "+++ b/new.py",
+            "@@ -1 +1 @@",
+            "+renamed",
+            "diff --git a/obsolete.py b/obsolete.py",
+            "deleted file mode 100644",
+            "index 444..0000000",
+            "--- a/obsolete.py",
+            "+++ /dev/null",
+            "@@ -1 +0,0 @@",
+            "-old content",
+        ]
+    )
+    plan = _chunk_plan()
+    plan.chunks[0].files = ["backend/my file.py", "docs/ação clínica.md", "new.py", "obsolete.py"]
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+        max_chars_per_payload=20_000,
+    )
+    api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    hunk_paths = {item["path"] for item in api_payload["chunk_context"]["chunk_hunks"]}
+    assert hunk_paths == {"backend/my file.py", "docs/ação clínica.md", "new.py", "obsolete.py"}
+
+
+def test_chunk_payload_builder_records_missing_hunks_as_limitations() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    plan.chunks[0].files = ["backend/api/shifts.py", "backend/missing.py"]
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+    api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    assert "chunk_diff_hunk_missing:backend/missing.py" in api_payload["limitations"]
+    assert api_payload["coverage"]["hunks_included"] == 1
+    assert api_payload["coverage"]["chunk_file_count"] == 2
+
+
+def test_chunk_payload_builder_rejects_duplicate_chunk_ids() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    plan.chunks[1].chunk_id = plan.chunks[0].chunk_id
+    with pytest.raises(ChunkPayloadBuilderError) as exc:
+        build_chunk_payloads(
+            intake=intake,
+            chunk_plan=plan,
+            pr_brief=_brief(intake, plan),
+            checks=None,
+            validation_evidence=None,
+        )
+    assert exc.value.error_class == "chunk_plan_duplicate_chunk_id"
+
+
+def test_chunk_payload_builder_rejects_duplicate_order_indexes() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    plan.chunks[1].order_index = plan.chunks[0].order_index
+    with pytest.raises(ChunkPayloadBuilderError) as exc:
+        build_chunk_payloads(
+            intake=intake,
+            chunk_plan=plan,
+            pr_brief=_brief(intake, plan),
+            checks=None,
+            validation_evidence=None,
+        )
+    assert exc.value.error_class == "chunk_plan_duplicate_order_index"
