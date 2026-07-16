@@ -565,6 +565,31 @@ def test_chunk_payload_builder_keeps_document_scoped_checks_for_each_chunk() -> 
     assert not any("check_scope_unclassified:" in item for entry in manifest.chunks for item in entry.limitations)
 
 
+def test_chunk_payload_builder_filters_document_scoped_checks_to_matching_chunks() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    checks = {
+        "status": "complete",
+        "scope": "backend",
+        "checks": [
+            {"name": "backend-pytest", "status": "passed", "command": "python -m pytest backend"},
+        ],
+    }
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=checks,
+        validation_evidence=None,
+    )
+
+    api_checks = payloads["chunk-01-api_schema_contract.json"].chunk_context["checks_context"]["checks"]
+    tests_checks = payloads["chunk-02-tests.json"].chunk_context["checks_context"]["checks"]
+    assert [item["name"] for item in api_checks] == ["backend-pytest"]
+    assert api_checks[0]["scope"] == "document:backend"
+    assert tests_checks == []
+
+
 def test_chunk_payload_builder_response_contract_uses_parser_supported_fields() -> None:
     intake = _intake()
     plan = _chunk_plan()

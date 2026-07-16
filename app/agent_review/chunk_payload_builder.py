@@ -490,7 +490,8 @@ def _checks_context(
         return {"provided": False, "status": None, "checks": []}, []
     checks_rows = [item for item in _list(checks_document.get("checks")) if isinstance(item, dict)]
     has_row_level_scope = any(_paths_from_item(item) or _is_global_item(item) for item in checks_rows)
-    document_scope = _clean_text(checks_document.get("scope")) or _clean_text(checks_document.get("mode"))
+    document_scope = _clean_text(checks_document.get("scope"))
+    document_mode = _clean_text(checks_document.get("mode"))
     rows = []
     limitations: list[str] = []
     for item in checks_rows:
@@ -500,13 +501,16 @@ def _checks_context(
             if not item_scope_paths.intersection(chunk_files):
                 continue
         elif not is_global:
-            if not has_row_level_scope or document_scope:
+            applies_to_chunk = True
+            if document_scope:
+                applies_to_chunk = _document_scope_applies_to_chunk(document_scope, chunk_files=chunk_files)
+            if (not has_row_level_scope or document_scope or document_mode) and applies_to_chunk:
                 rows.append(
                     {
                         "name": _clean_text(item.get("name")),
                         "status": _clean_text(item.get("status")) or "unknown",
                         "command": _clean_text(item.get("command")),
-                        "scope": "document",
+                        "scope": f"document:{document_scope}" if document_scope else "document",
                     }
                 )
                 continue
@@ -589,6 +593,22 @@ def _matches_pattern(path: str, patterns: list[str]) -> bool:
         if normalized.endswith("*") and path.startswith(normalized[:-1]):
             return True
         if normalized in path:
+            return True
+    return False
+
+
+def _document_scope_applies_to_chunk(scope: str, *, chunk_files: set[str]) -> bool:
+    normalized = scope.strip().lower()
+    if not normalized:
+        return True
+    if normalized in {"global", "all", "document"}:
+        return True
+    tokens = [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
+    for file_path in chunk_files:
+        lowered = file_path.lower()
+        if normalized in lowered:
+            return True
+        if tokens and any(token in lowered for token in tokens):
             return True
     return False
 
