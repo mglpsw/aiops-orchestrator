@@ -11,7 +11,7 @@ frozen in `docs/AGENTESCALA_TARGET_REPO_CONTRACT.md`.
 AgentEscala PR workflow on CT104
 -> checkout AgentEscala
 -> generate local artifacts under $RUNNER_TEMP/agent
--> checkout aiops-orchestrator at an approved immutable SHA/tag
+-> checkout aiops-orchestrator at a full 40-character commit SHA
 -> validate dev/toolrepo environment
 -> run aiops-review-intake.py
 -> run aiops-review-plan-chunks.py
@@ -24,7 +24,7 @@ AgentEscala PR workflow on CT104
 -> run aiops-review-false-positives.py when applicable
 -> upload sanitized artifacts
 -> validate and consume review-quality-gate.json
--> publish final-review.md or a conservative fallback comment/summary
+-> publish a conclusive review or fail-closed fallback comment/summary
 ```
 
 The AIOps CLIs do not call Agent Router, providers, GitHub APIs, CT102, Docker,
@@ -35,8 +35,23 @@ telemetry, or false-positive logic.
 ## CLI Contract
 
 Use the CT104 toolrepo environment and check out the tool repo at
-`$RUNNER_TEMP/aiops-orchestrator` by full commit SHA or approved release tag.
-Do not use a floating default-branch checkout (`main` or `master`). Keep every output under
+`$RUNNER_TEMP/aiops-orchestrator` by full 40-character commit SHA only.
+Operational refs must never be tag, branch, short SHA, or floating default
+branch (`main` or `master`). A release tag can be used only in maintainer
+selection flow (resolve tag -> verify commit -> commit the full SHA in PR).
+Runtime tag resolution is prohibited.
+
+Validate:
+
+```text
+AIOPS_ORCHESTRATOR_SHA matches ^[0-9a-fA-F]{40}$
+git rev-parse HEAD == AIOPS_ORCHESTRATOR_SHA
+```
+
+If checkout cannot resolve the pinned SHA, stop the analysis job and do not
+fallback to `master`.
+
+Keep every output under
 `$RUNNER_TEMP/agent`, never inside the AgentEscala working tree:
 
 ```text
@@ -104,11 +119,17 @@ python scripts/aiops-review-false-positives.py \
 ## Gate consumption
 
 `review-quality-gate.json` is the canonical post-synthesis signal. The wrapper
-must schema-validate it before publication and apply the decision table in
+must validate it before publishing any conclusive or gate-derived review, and
+apply the decision table in
 `AGENTESCALA_TARGET_REPO_CONTRACT.md`. It must disclose `status=degraded`,
 preserve gate limitations and blocked reasons, and fail closed for a missing,
 invalid, unknown-version, or contradictory gate. `final-review.json` is not a
 substitute authority.
+
+When validation fails, publication must still run in fail-closed mode so the PR
+gets a conservative status/comment (`manual_review_required` or
+`review_unavailable`) derived from local validation results. It must never
+publish a conclusive review from an invalid gate.
 
 ## Offline Contract Test
 

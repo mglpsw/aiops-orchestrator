@@ -83,8 +83,8 @@ The output schema is `agent-review.quality-gate.v1`:
 
 `review-quality-gate.json` is the canonical post-synthesis signal for a future
 AgentEscala thin wrapper. The wrapper must validate `schema_id`,
-`schema_version`, `source`, and the gate enum values before publishing a
-comment or summary. It must consume `status`, `normalized_verdict`,
+`schema_version`, `source`, and the gate enum values before publishing any
+conclusive or gate-derived comment/summary. It must consume `status`, `normalized_verdict`,
 `manual_review_required`, `blocked_reasons`, `warnings`, and `limitations`
 without recalculating or locally reinterpreting the gate.
 
@@ -99,6 +99,10 @@ conclusive final review. A missing, malformed, incompatible, unknown-version,
 unknown-status, or contradictory gate fails closed. The complete decision table,
 artifact policy, and GitHub publication requirements are in
 `AGENTESCALA_TARGET_REPO_CONTRACT.md`.
+
+If validation fails, the wrapper must still publish a conservative fail-closed
+fallback generated from local validation failure details, without trusting
+fields from the invalid gate.
 
 The wrapper must never use `final-review.json` as a replacement authority,
 call CT102, use `/v1/chat/ingest`, or apply
