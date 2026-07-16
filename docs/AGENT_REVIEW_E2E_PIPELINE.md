@@ -132,15 +132,24 @@ preserve gate limitations and blocked reasons, and fail closed for a missing,
 invalid, unknown-version, or contradictory gate. `final-review.json` is not a
 substitute authority.
 
-When validation fails, publication must still run in fail-closed mode so the PR
-gets a conservative status/comment (`manual_review_required` or
-`review_unavailable`) derived from local validation results. It must never
-publish a conclusive review from an invalid gate.
+When validation fails, publication must still run in deterministic fail-closed
+mode with:
+
+```text
+publication_result=review_unavailable
+manual_review_required=true
+publication_class=fail_closed
+reason_code=<sanitized local reason code>
+```
+
+The wrapper must never trust invalid gate fields and must never publish a
+conclusive review from an invalid gate.
 
 Conclusive approval is allowed only for valid `status=passed` with
 `manual_review_required=false`. `status=degraded` cannot approve; it can only
-remain conclusive for `changes_requested` with reliable blockers, non-empty
-`blocked_reasons`, and explicit `limitations`.
+remain conclusive for `changes_requested` when the validated gate combination
+has non-empty `blocked_reasons` and explicit `limitations`. The wrapper must
+not inspect `final-review.json` to reconfirm blocker evidence.
 
 ## Offline Contract Test
 

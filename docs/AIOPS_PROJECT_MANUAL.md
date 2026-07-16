@@ -1024,7 +1024,11 @@ Pseudocódigo do wrapper:
 
 ```python
 if cli_failed or artifact_missing_or_invalid:
-    publish_manual_review_required("quality_gate_unavailable")
+    publish_review_unavailable(
+        manual_review_required=True,
+        publication_class="fail_closed",
+        reason_code=local_sanitized_reason_code,
+    )
 elif gate["status"] == "failed":
     publish_review_unavailable(gate)
 elif gate["manual_review_required"]:
@@ -1034,6 +1038,9 @@ elif gate["normalized_verdict"] == "changes_requested":
 else:
     publish_final_review_with_gate_status(gate)
 ```
+
+No caminho `cli_failed`/`artifact_missing_or_invalid`, nenhum campo do gate
+inválido pode ser usado como autoridade.
 
 O wrapper não deve:
 

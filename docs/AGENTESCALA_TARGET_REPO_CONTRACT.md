@@ -180,7 +180,7 @@ never be treated as valid only because it contains `manual_review_required=true`
 | --- | --- |
 | Valid gate; `status=passed`; `manual_review_required=false`; `normalized_verdict` is `approved`, `approve_with_minor_notes`, or `approve_with_required_followup` | Publish `final-review.md` as conclusive non-blocking output. |
 | Valid gate; `status=passed`; `manual_review_required=false`; `normalized_verdict=changes_requested`; `blocked_reasons` non-empty | Publish `final-review.md` as conclusive blocking output. |
-| Valid gate; `status=degraded`; `manual_review_required=false`; `normalized_verdict=changes_requested`; `blocked_reasons` non-empty | Publish `final-review.md` as conclusive blocking output only when blocker evidence is reliable. Always disclose degraded `limitations`. |
+| Valid gate; `status=degraded`; `manual_review_required=false`; `normalized_verdict=changes_requested`; `blocked_reasons` non-empty; `limitations` non-empty | Publish conclusive blocking output and disclose all limitations. The validated gate is authoritative; the wrapper must not reconfirm blocker evidence. |
 | Valid gate; `status=manual_review_required`; `normalized_verdict=manual_review_required`; `manual_review_required=true` | Publish non-conclusive `manual_review_required` fallback with artifact references. |
 | Valid gate; `status=failed`; `normalized_verdict=review_unavailable`; `manual_review_required=true` | Publish non-conclusive `review_unavailable` fallback with artifact references. |
 | Any other combination, or gate missing/invalid/incompatible/unknown/contradictory | Use `gate_combination_invalid` (or specific local reason code) and publish deterministic fail-closed result only: `publication_result=review_unavailable`, `manual_review_required=true`, `publication_class=fail_closed`. Never use `final-review.json` as replacement authority and never copy raw invalid payload into publication. |
@@ -188,6 +188,12 @@ never be treated as valid only because it contains `manual_review_required=true`
 `status=degraded` must never be hidden and can never be used for conclusive
 approval. `changes_requested` requires non-empty `blocked_reasons`. A malformed
 or contradictory gate is not a degraded success; it follows the fail-closed row.
+
+For the validated `status=degraded` + `normalized_verdict=changes_requested`
+combination, blocker reliability is determined internally by AIOps before the
+gate is emitted. The wrapper only validates schema/source/version/enums and
+allowed combinations, verifies non-empty `blocked_reasons`, and discloses
+`limitations`. It must never inspect `final-review.json` to reconfirm blockers.
 
 ## Artifact publication and sanitization
 
