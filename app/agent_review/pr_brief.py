@@ -323,6 +323,10 @@ def _apply_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str,
             emitted_chars=base_truncation.emitted_chars,
         ),
     )
+    untruncated_truncation, untruncated_len = _stabilize_truncation(
+        working,
+        untruncated_truncation.model_copy(update={"original_chars": untruncated_len}),
+    )
     original_chars = untruncated_len
     omitted_sections: list[str] = []
     coverage_impact: list[str] = []

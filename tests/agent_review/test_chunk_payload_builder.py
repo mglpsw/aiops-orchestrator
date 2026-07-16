@@ -356,6 +356,7 @@ def test_chunk_payload_builder_non_truncated_emitted_chars_match_final_artifact(
     for payload in payloads.values():
         dumped = payload.model_dump(mode="json")
         assert payload.truncation.applied is False
+        assert payload.truncation.original_chars == _canonical_len(dumped)
         assert payload.truncation.emitted_chars == _canonical_len(dumped)
         assert _canonical_len(dumped) <= 20_000
 

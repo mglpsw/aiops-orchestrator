@@ -87,7 +87,7 @@ python scripts/aiops-review-build-payloads.py \
   --chunk-plan "$RUNNER_TEMP/agent/semantic-chunk-plan.json" \
   --redaction-report "$RUNNER_TEMP/agent/redaction-report.json" \
   --checks "$RUNNER_TEMP/agent/checks.json" \
-  --validation-evidence "$RUNNER_TEMP/agent/validation-evidence-result.json" \
+  --validation-evidence "$RUNNER_TEMP/agent/validation-evidence/validation-evidence-result.json" \
   --brief-output "$RUNNER_TEMP/agent/pr-brief.json" \
   --payloads-dir "$RUNNER_TEMP/agent/chunk-payloads" \
   --manifest-output "$RUNNER_TEMP/agent/chunk-payload-manifest.json"

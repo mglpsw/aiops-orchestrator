@@ -479,6 +479,7 @@ def test_pr_brief_non_truncated_emitted_chars_match_final_artifact() -> None:
     )
     final_payload = brief.model_dump(mode="json")
     assert brief.truncation.applied is False
+    assert brief.truncation.original_chars == _canonical_len(final_payload)
     assert brief.truncation.emitted_chars == _canonical_len(final_payload)
     assert _canonical_len(final_payload) <= 20_000
 
