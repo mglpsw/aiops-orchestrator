@@ -50,6 +50,7 @@ def test_contract_checkout_yaml_snippet_is_valid_and_pinned() -> None:
     env = snippet.get("env")
     assert isinstance(env, dict)
     assert "AIOPS_ORCHESTRATOR_SHA" in env
+    assert env.get("AIOPS_TOOLREPO_CHECKOUT_PATH") == "aiops-orchestrator-toolrepo"
 
     jobs = snippet.get("jobs")
     assert isinstance(jobs, dict)
@@ -76,11 +77,12 @@ def test_contract_checkout_yaml_snippet_is_valid_and_pinned() -> None:
     assert isinstance(checkout_with, dict)
     assert checkout_with.get("repository") == "mglpsw/aiops-orchestrator"
     assert checkout_with.get("ref") == "${{ env.AIOPS_ORCHESTRATOR_SHA }}"
-    assert checkout_with.get("path") == "${{ runner.temp }}/aiops-orchestrator"
+    assert checkout_with.get("path") == "${{ env.AIOPS_TOOLREPO_CHECKOUT_PATH }}"
     assert checkout_with.get("persist-credentials") is False
 
     run_steps = "\n".join(str(step.get("run", "")) for step in steps if isinstance(step, dict))
     assert "[[ \"$AIOPS_ORCHESTRATOR_SHA\" =~ ^[0-9a-f]{40}$ ]]" in run_steps
+    assert "mv \"$GITHUB_WORKSPACE/$AIOPS_TOOLREPO_CHECKOUT_PATH\" \"$RUNNER_TEMP/aiops-orchestrator\"" in run_steps
     assert "git -C \"$RUNNER_TEMP/aiops-orchestrator\" rev-parse HEAD" in run_steps
 
 

@@ -71,6 +71,7 @@ Contractual checkout example:
 ```yaml
 env:
   AIOPS_ORCHESTRATOR_SHA: <lowercase-40-character-commit-sha>
+  AIOPS_TOOLREPO_CHECKOUT_PATH: aiops-orchestrator-toolrepo
 
 jobs:
   aiops-analysis:
@@ -86,8 +87,14 @@ jobs:
         with:
           repository: mglpsw/aiops-orchestrator
           ref: ${{ env.AIOPS_ORCHESTRATOR_SHA }}
-          path: ${{ runner.temp }}/aiops-orchestrator
+          path: ${{ env.AIOPS_TOOLREPO_CHECKOUT_PATH }}
           persist-credentials: false
+
+      - name: Move toolrepo checkout to runner temp
+        run: |
+          rm -rf "$RUNNER_TEMP/aiops-orchestrator"
+          mkdir -p "$RUNNER_TEMP"
+          mv "$GITHUB_WORKSPACE/$AIOPS_TOOLREPO_CHECKOUT_PATH" "$RUNNER_TEMP/aiops-orchestrator"
 
       - name: Verify toolrepo checkout pin
         run: |
@@ -99,6 +106,10 @@ The action pin SHA and the toolrepo checkout SHA are separate controls. Both
 must be reviewable. The concrete action SHA value is selected by the future
 AgentEscala implementation PR; this contract intentionally avoids floating
 action tags in examples.
+
+`actions/checkout` `path` must stay workspace-relative; the contract still
+requires the effective toolrepo runtime location at
+`$RUNNER_TEMP/aiops-orchestrator`.
 
 The toolrepo sequence is:
 

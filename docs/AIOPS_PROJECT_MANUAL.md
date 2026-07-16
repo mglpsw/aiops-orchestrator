@@ -975,6 +975,7 @@ Exemplo conceitual:
 ```yaml
 env:
   AIOPS_ORCHESTRATOR_SHA: <lowercase-40-character-commit-sha>
+  AIOPS_TOOLREPO_CHECKOUT_PATH: aiops-orchestrator-toolrepo
 
 steps:
   - name: Checkout AIOps tool repo
@@ -982,8 +983,14 @@ steps:
     with:
       repository: mglpsw/aiops-orchestrator
       ref: ${{ env.AIOPS_ORCHESTRATOR_SHA }}
-      path: ${{ runner.temp }}/aiops-orchestrator
+      path: ${{ env.AIOPS_TOOLREPO_CHECKOUT_PATH }}
       persist-credentials: false
+
+  - name: Move checkout to runner temp
+    run: |
+      rm -rf "$RUNNER_TEMP/aiops-orchestrator"
+      mkdir -p "$RUNNER_TEMP"
+      mv "$GITHUB_WORKSPACE/$AIOPS_TOOLREPO_CHECKOUT_PATH" "$RUNNER_TEMP/aiops-orchestrator"
 ```
 
 Regras contratuais:
@@ -994,6 +1001,8 @@ Regras contratuais:
 - o runtime nunca resolve tag dinamicamente;
 - falha ao buscar o SHA interrompe o job;
 - nunca existe fallback para `master`;
+- `actions/checkout.path` deve ser relativo ao `GITHUB_WORKSPACE`;
+- a localização de execução exigida pelo contrato é `$RUNNER_TEMP/aiops-orchestrator`;
 - `AIOPS_ORCHESTRATOR_SHA` deve passar em `[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]`;
 - o checkout deve confirmar `test "$(git -C "$RUNNER_TEMP/aiops-orchestrator" rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"`;
 - o SHA da action e o SHA do toolrepo são controles diferentes e ambos revisáveis;
