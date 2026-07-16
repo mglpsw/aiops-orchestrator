@@ -423,6 +423,22 @@ def test_chunk_payload_builder_fails_closed_on_pr_number_identity_conflict() -> 
     assert exc.value.error_class == "review_identity_conflict"
 
 
+def test_chunk_payload_builder_fails_closed_on_validation_evidence_identity_conflict() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    brief = _brief(intake, plan)
+
+    with pytest.raises(ChunkPayloadBuilderError) as exc:
+        build_chunk_payloads(
+            intake=intake,
+            chunk_plan=plan,
+            pr_brief=brief,
+            checks=None,
+            validation_evidence={"pr_number": 999},
+        )
+    assert exc.value.error_class == "review_identity_conflict"
+
+
 def test_chunk_payload_builder_filters_local_failures_by_chunk_scope() -> None:
     intake = _intake()
     intake.artifacts["local-code-intelligence"]["content"]["confirmed_local_failures"] = [

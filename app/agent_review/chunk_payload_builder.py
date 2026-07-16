@@ -42,7 +42,13 @@ def build_chunk_payloads(
     max_chars_per_payload: int | None = None,
     optional_limitations: list[str] | None = None,
 ) -> tuple[ChunkPayloadManifest, dict[str, ChunkPayload]]:
-    _validate_identity_consistency(intake=intake, chunk_plan=chunk_plan, pr_brief=pr_brief, checks=checks)
+    _validate_identity_consistency(
+        intake=intake,
+        chunk_plan=chunk_plan,
+        pr_brief=pr_brief,
+        checks=checks,
+        validation_evidence=validation_evidence,
+    )
     diff_map = _diff_by_file(intake)
     file_context = _file_context_map(intake)
     chunks = sorted(chunk_plan.chunks, key=lambda item: (item.order_index, item.chunk_id))
@@ -294,6 +300,7 @@ def _validate_identity_consistency(
     chunk_plan: SemanticChunkPlan,
     pr_brief: PRBrief,
     checks: dict[str, Any] | None,
+    validation_evidence: dict[str, Any] | None,
 ) -> None:
     target_repo = _resolve_identity_value(
         "target_repo",
@@ -302,6 +309,7 @@ def _validate_identity_consistency(
             ("chunk_plan.target_repo", chunk_plan.target_repo),
             ("pr_brief.target.repository", _clean_text(_get(pr_brief.target, "repository"))),
             ("checks.target_repo", _find_key(checks, "target_repo")),
+            ("validation_evidence.target_repo", _find_key(validation_evidence, "target_repo")),
         ],
         coerce=_clean_text,
     )
@@ -312,6 +320,7 @@ def _validate_identity_consistency(
         [
             ("pr_brief.target.pr_number", _get(pr_brief.target, "pr_number")),
             ("checks.pr_number", _find_key(checks, "pr_number")),
+            ("validation_evidence.pr_number", _find_key(validation_evidence, "pr_number")),
             ("intake.artifacts.pr_number", _find_key(intake.artifacts, "pr_number")),
         ],
         coerce=_coerce_int,
@@ -321,6 +330,7 @@ def _validate_identity_consistency(
         [
             ("pr_brief.target.commit_sha", _get(pr_brief.target, "commit_sha")),
             ("checks.commit_sha", _find_key(checks, "commit_sha")),
+            ("validation_evidence.commit_sha", _find_key(validation_evidence, "commit_sha")),
             ("intake.artifacts.commit_sha", _find_key(intake.artifacts, "commit_sha")),
         ],
         coerce=_clean_text,
