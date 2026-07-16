@@ -399,6 +399,22 @@ def test_pr_brief_budget_len_reflects_post_sanitization_serialized_artifact() ->
     assert _canonical_len(final_payload) <= 2500
 
 
+def test_pr_brief_truncation_preserves_true_changed_file_count() -> None:
+    brief = build_pr_brief(
+        intake=_intake(),
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+        max_chars=1300,
+    )
+    payload = brief.model_dump(mode="json")
+    changed = payload["changed_files_summary"]
+    assert brief.truncation.applied is True
+    assert changed["total_files"] == 3
+    assert changed["total_files"] == sum(changed["status_counts"].values())
+
+
 def test_pr_brief_non_truncated_emitted_chars_match_final_artifact() -> None:
     brief = build_pr_brief(
         intake=_intake(),

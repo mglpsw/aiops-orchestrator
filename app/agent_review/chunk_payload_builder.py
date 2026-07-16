@@ -225,9 +225,8 @@ def _build_chunk_payload(
                 "file_path",
                 "impact",
                 "evidence",
-                "source_artifact",
-                "line_or_hunk",
             ],
+            "finding_provenance_fields": ["source_artifact", "line_or_hunk"],
             "finding_provenance_requirement": "at_least_one_of:source_artifact,line_or_hunk",
             "forbidden_content": [
                 "absolute_paths",

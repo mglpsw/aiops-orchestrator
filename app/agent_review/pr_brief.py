@@ -424,7 +424,6 @@ def _shrink_changed_files(payload: dict[str, Any]) -> bool:
     rows = payload.get("changed_files_summary", {}).get("files")
     if isinstance(rows, list) and rows:
         rows.pop()
-        payload["changed_files_summary"]["total_files"] = len(rows)
         return True
     return False
 

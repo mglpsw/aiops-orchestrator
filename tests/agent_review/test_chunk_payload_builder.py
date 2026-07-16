@@ -577,9 +577,9 @@ def test_chunk_payload_builder_response_contract_uses_parser_supported_fields() 
     )
     payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
     requirements = payload["response_contract"]["finding_requirements"]
-    assert "source_artifact" in requirements
-    assert "line_or_hunk" in requirements
-    assert "source_artifact_or_line_or_hunk" not in requirements
+    assert "source_artifact" not in requirements
+    assert "line_or_hunk" not in requirements
+    assert payload["response_contract"]["finding_provenance_fields"] == ["source_artifact", "line_or_hunk"]
     assert payload["response_contract"]["finding_provenance_requirement"] == "at_least_one_of:source_artifact,line_or_hunk"
 
 
