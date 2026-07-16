@@ -341,6 +341,25 @@ def test_chunk_payload_builder_applies_explicit_truncation_for_min_budget() -> N
             assert _canonical_len(dumped) <= 900
 
 
+def test_chunk_payload_builder_non_truncated_emitted_chars_match_final_artifact() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+        max_chars_per_payload=20_000,
+    )
+
+    for payload in payloads.values():
+        dumped = payload.model_dump(mode="json")
+        assert payload.truncation.applied is False
+        assert payload.truncation.emitted_chars == _canonical_len(dumped)
+        assert _canonical_len(dumped) <= 20_000
+
+
 def test_chunk_payload_builder_identity_stable_when_plan_chunk_list_order_changes() -> None:
     intake = _intake()
     plan_a = _chunk_plan(reverse_order=False)
@@ -435,6 +454,35 @@ def test_chunk_payload_builder_fails_closed_on_validation_evidence_identity_conf
             pr_brief=brief,
             checks=None,
             validation_evidence={"pr_number": 999},
+        )
+    assert exc.value.error_class == "review_identity_conflict"
+
+
+def test_chunk_payload_builder_fails_closed_on_conflicting_embedded_artifact_identity() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    brief = _brief(intake, plan)
+    intake.artifacts["validation-evidence-result"] = {
+        "name": "validation-evidence-result",
+        "path": "validation-evidence/validation-evidence-result.json",
+        "kind": "json",
+        "content": {
+            "status": "complete",
+            "validation_verdict": "degraded",
+            "pr_number": 999,
+            "commit_sha": "sha-other",
+            "blocking_findings": [],
+            "limitations": [],
+        },
+    }
+
+    with pytest.raises(ChunkPayloadBuilderError) as exc:
+        build_chunk_payloads(
+            intake=intake,
+            chunk_plan=plan,
+            pr_brief=brief,
+            checks=None,
+            validation_evidence=None,
         )
     assert exc.value.error_class == "review_identity_conflict"
 

@@ -244,6 +244,32 @@ def test_pr_brief_fails_closed_on_commit_sha_conflict() -> None:
     assert exc.value.error_class == "review_identity_conflict"
 
 
+def test_pr_brief_fails_closed_on_conflicting_embedded_artifact_identity() -> None:
+    intake = _intake()
+    intake.artifacts["validation-evidence-result"] = {
+        "name": "validation-evidence-result",
+        "path": "validation-evidence/validation-evidence-result.json",
+        "kind": "json",
+        "content": {
+            "status": "complete",
+            "validation_verdict": "degraded",
+            "pr_number": 999,
+            "commit_sha": "sha-other",
+            "blocking_findings": [],
+            "limitations": [],
+        },
+    }
+    with pytest.raises(PRBriefError) as exc:
+        build_pr_brief(
+            intake=intake,
+            chunk_plan=_chunk_plan(),
+            redaction_report=_redaction_report(),
+            checks=None,
+            validation_evidence=None,
+        )
+    assert exc.value.error_class == "review_identity_conflict"
+
+
 def test_pr_brief_allows_missing_identity_fields_without_conflict() -> None:
     intake = _intake()
     checks = intake.artifacts["checks"]["content"]
@@ -371,6 +397,21 @@ def test_pr_brief_budget_len_reflects_post_sanitization_serialized_artifact() ->
     final_payload = brief.model_dump(mode="json")
     assert brief.truncation.emitted_chars == _canonical_len(final_payload)
     assert _canonical_len(final_payload) <= 2500
+
+
+def test_pr_brief_non_truncated_emitted_chars_match_final_artifact() -> None:
+    brief = build_pr_brief(
+        intake=_intake(),
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+        max_chars=20_000,
+    )
+    final_payload = brief.model_dump(mode="json")
+    assert brief.truncation.applied is False
+    assert brief.truncation.emitted_chars == _canonical_len(final_payload)
+    assert _canonical_len(final_payload) <= 20_000
 
 
 def test_pr_brief_rejects_non_positive_budget() -> None:

@@ -267,6 +267,7 @@ def _review_metadata(
             ("intake.target_profile.target_repo", _find_key(intake.target_profile, "target_repo")),
             ("checks.target_repo", _find_key(checks, "target_repo")),
             ("validation_evidence.target_repo", _find_key(validation_evidence, "target_repo")),
+            *_artifact_identity_candidates(intake.artifacts, "target_repo"),
         ],
         coerce=_clean_text,
     )
@@ -278,7 +279,7 @@ def _review_metadata(
         [
             ("checks.pr_number", _find_key(checks, "pr_number")),
             ("validation_evidence.pr_number", _find_key(validation_evidence, "pr_number")),
-            ("intake.artifacts.pr_number", _find_key(intake.artifacts, "pr_number")),
+            *_artifact_identity_candidates(intake.artifacts, "pr_number"),
         ],
         coerce=_coerce_int,
     )
@@ -287,7 +288,7 @@ def _review_metadata(
         [
             ("checks.commit_sha", _find_key(checks, "commit_sha")),
             ("validation_evidence.commit_sha", _find_key(validation_evidence, "commit_sha")),
-            ("intake.artifacts.commit_sha", _find_key(intake.artifacts, "commit_sha")),
+            *_artifact_identity_candidates(intake.artifacts, "commit_sha"),
         ],
         coerce=_clean_text,
     )
@@ -314,15 +315,20 @@ def _apply_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str,
         working,
         TruncationMetadata(applied=False, original_chars=0, emitted_chars=0),
     )
-    omitted_sections: list[str] = []
-    coverage_impact: list[str] = []
-
-    if original_chars <= max_chars:
-        return working, TruncationMetadata(
+    untruncated_truncation, untruncated_len = _stabilize_truncation(
+        working,
+        TruncationMetadata(
             applied=False,
             original_chars=original_chars,
             emitted_chars=base_truncation.emitted_chars,
-        )
+        ),
+    )
+    original_chars = untruncated_len
+    omitted_sections: list[str] = []
+    coverage_impact: list[str] = []
+
+    if untruncated_len <= max_chars:
+        return working, untruncated_truncation
 
     shrinkers = [
         ("validation_evidence.blocking_findings", "coverage_validation_evidence_reduced", _shrink_validation_findings),
@@ -525,6 +531,18 @@ def _find_key(document: Any, key: str) -> Any:
             if found is not None:
                 return found
     return None
+
+
+def _artifact_identity_candidates(artifacts: Any, key: str) -> list[tuple[str, Any]]:
+    if not isinstance(artifacts, dict):
+        return []
+    candidates: list[tuple[str, Any]] = []
+    for artifact_name in sorted(artifacts):
+        artifact = artifacts[artifact_name]
+        found = _find_key(artifact, key)
+        if found is not None:
+            candidates.append((f"intake.artifacts.{artifact_name}.{key}", found))
+    return candidates
 
 
 def _canonical_len(payload: dict[str, Any]) -> int:
