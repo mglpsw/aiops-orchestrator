@@ -71,7 +71,11 @@ def test_contract_checkout_yaml_snippet_is_valid_and_pinned() -> None:
     )
     assert isinstance(checkout_step, dict), "contract must include a pinned actions/checkout step"
     uses = str(checkout_step["uses"])
-    assert "@v" not in uses.lower(), "contractual checkout example cannot use floating tag pins"
+    assert uses.startswith("actions/checkout@"), "contract must pin actions/checkout explicitly"
+    checkout_ref = uses.split("@", maxsplit=1)[1]
+    assert checkout_ref == "<verified-full-commit-sha>" or re.fullmatch(
+        r"[0-9a-f]{40}", checkout_ref
+    ), "contractual checkout pin must be placeholder or full 40-char lowercase SHA"
 
     checkout_with = checkout_step.get("with")
     assert isinstance(checkout_with, dict)
