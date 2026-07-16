@@ -292,10 +292,7 @@ def _review_metadata(
         coerce=_clean_text,
     )
 
-    mode = _first_non_empty(
-        _clean_text(_find_key(intake.artifacts, "review_mode")),
-        _clean_text(_find_key(intake.artifacts, "mode")),
-    )
+    mode = _first_non_empty(_clean_text(_find_key(intake.artifacts, "review_mode")))
     contract_pack = _first_non_empty(
         _clean_text(_find_key(intake.artifacts, "contract_pack")),
         _clean_text(_find_key(intake.artifacts, "pack")),

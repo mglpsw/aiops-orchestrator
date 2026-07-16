@@ -260,6 +260,27 @@ def test_pr_brief_allows_missing_identity_fields_without_conflict() -> None:
     assert brief.target["commit_sha"] is None
 
 
+def test_pr_brief_does_not_use_generic_artifact_mode_as_review_mode() -> None:
+    intake = _intake()
+    intake.artifacts["project-context"] = {
+        "name": "project-context",
+        "path": "project-context.json",
+        "kind": "json",
+        "content": {"mode": "current_run_only"},
+    }
+    file_context = intake.artifacts["file-diff-context"]["content"]
+    file_context.pop("review_mode", None)
+
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+    assert brief.review["mode"] is None
+
+
 def test_pr_brief_uses_stable_ordering() -> None:
     brief = build_pr_brief(
         intake=_intake(),

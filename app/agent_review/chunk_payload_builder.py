@@ -116,7 +116,8 @@ def build_chunk_payloads(
         limitations=_dedupe(manifest_limitations),
         created_at=pr_brief.created_at,
     )
-    return manifest, payloads
+    sanitized_manifest = sanitize_artifact_value(manifest.model_dump(mode="json"))
+    return ChunkPayloadManifest.model_validate(sanitized_manifest), payloads
 
 
 def _build_chunk_payload(
@@ -221,8 +222,10 @@ def _build_chunk_payload(
                 "file_path",
                 "impact",
                 "evidence",
-                "source_artifact_or_line_or_hunk",
+                "source_artifact",
+                "line_or_hunk",
             ],
+            "finding_provenance_requirement": "at_least_one_of:source_artifact,line_or_hunk",
             "forbidden_content": [
                 "absolute_paths",
                 "tokens",
@@ -475,17 +478,28 @@ def _checks_context(
     checks_document = checks if isinstance(checks, dict) else _artifact_content(intake, "checks")
     if not isinstance(checks_document, dict):
         return {"provided": False, "status": None, "checks": []}, []
+    checks_rows = [item for item in _list(checks_document.get("checks")) if isinstance(item, dict)]
+    has_row_level_scope = any(_paths_from_item(item) or _is_global_item(item) for item in checks_rows)
+    document_scope = _clean_text(checks_document.get("scope")) or _clean_text(checks_document.get("mode"))
     rows = []
     limitations: list[str] = []
-    for item in _list(checks_document.get("checks")):
-        if not isinstance(item, dict):
-            continue
+    for item in checks_rows:
         item_scope_paths = _paths_from_item(item)
         is_global = _is_global_item(item)
         if item_scope_paths:
             if not item_scope_paths.intersection(chunk_files):
                 continue
         elif not is_global:
+            if not has_row_level_scope or document_scope:
+                rows.append(
+                    {
+                        "name": _clean_text(item.get("name")),
+                        "status": _clean_text(item.get("status")) or "unknown",
+                        "command": _clean_text(item.get("command")),
+                        "scope": "document",
+                    }
+                )
+                continue
             name = _clean_text(item.get("name")) or "unknown_check"
             limitations.append(f"check_scope_unclassified:{name}")
             continue
@@ -739,12 +753,14 @@ def _apply_payload_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[d
             ),
         )
         if current_len <= max_chars:
+            _refresh_hunk_coverage(working)
             return working, current_truncation
 
         changed = False
         for section, impact, shrink in shrinkers:
             if shrink(working):
                 changed = True
+                _refresh_hunk_coverage(working)
                 if section not in omitted_sections:
                     omitted_sections.append(section)
                     coverage_impact.append(impact)
@@ -766,6 +782,7 @@ def _apply_payload_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[d
             coverage_impact=coverage_impact,
         ),
     )
+    _refresh_hunk_coverage(working)
     return working, final_truncation
 
 
@@ -861,6 +878,16 @@ def _shrink_chunk_hunks(payload: dict[str, Any]) -> bool:
             return True
     hunks.pop()
     return True
+
+
+def _refresh_hunk_coverage(payload: dict[str, Any]) -> None:
+    chunk_context = _get(payload, "chunk_context")
+    coverage = _get(payload, "coverage")
+    if not isinstance(chunk_context, dict) or not isinstance(coverage, dict):
+        return
+    hunks = chunk_context.get("chunk_hunks")
+    if isinstance(hunks, list):
+        coverage["hunks_included"] = len(hunks)
 
 
 def _payload_filename(chunk: SemanticChunk) -> tuple[str, list[str]]:

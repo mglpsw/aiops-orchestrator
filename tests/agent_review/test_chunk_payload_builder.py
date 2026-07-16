@@ -491,6 +491,67 @@ def test_chunk_payload_builder_filters_file_scoped_checks_by_chunk() -> None:
     assert {item["name"] for item in tests_checks} == {"tests-check", "global-check"}
 
 
+def test_chunk_payload_builder_keeps_document_scoped_checks_for_each_chunk() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    checks = {
+        "status": "complete",
+        "mode": "current_run_only",
+        "checks": [
+            {"name": "pytest", "status": "passed", "command": "python -m pytest"},
+            {"name": "ruff", "status": "passed", "command": "ruff check ."},
+        ],
+    }
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=checks,
+        validation_evidence=None,
+    )
+
+    for payload in payloads.values():
+        checks_context = payload.chunk_context["checks_context"]
+        assert {item["name"] for item in checks_context["checks"]} == {"pytest", "ruff"}
+        assert {item["scope"] for item in checks_context["checks"]} == {"document"}
+    assert not any("check_scope_unclassified:" in item for entry in manifest.chunks for item in entry.limitations)
+
+
+def test_chunk_payload_builder_response_contract_uses_parser_supported_fields() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+    payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    requirements = payload["response_contract"]["finding_requirements"]
+    assert "source_artifact" in requirements
+    assert "line_or_hunk" in requirements
+    assert "source_artifact_or_line_or_hunk" not in requirements
+    assert payload["response_contract"]["finding_provenance_requirement"] == "at_least_one_of:source_artifact,line_or_hunk"
+
+
+def test_chunk_payload_builder_sanitizes_manifest_metadata() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    plan.chunks[0].chunk_id = "chunk-01-token=SUPERSECRET"
+    brief = _brief(intake, plan)
+    manifest, _ = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=brief,
+        checks=None,
+        validation_evidence=None,
+    )
+
+    rendered = _render(manifest.model_dump(mode="json"))
+    assert "SUPERSECRET" not in rendered
+
+
 def test_chunk_payload_builder_does_not_fallback_to_arbitrary_contracts() -> None:
     intake = _intake()
     intake.target_profile["domain_contracts"]["rules"] = [
@@ -587,6 +648,22 @@ def test_chunk_payload_builder_records_missing_hunks_as_limitations() -> None:
     assert "chunk_diff_hunk_missing:backend/missing.py" in api_payload["limitations"]
     assert api_payload["coverage"]["hunks_included"] == 1
     assert api_payload["coverage"]["chunk_file_count"] == 2
+
+
+def test_chunk_payload_builder_updates_hunk_coverage_after_truncation_removes_hunks() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    plan.chunks[0].files = ["backend/api/shifts.py"]
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+        max_chars_per_payload=900,
+    )
+    payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    assert payload["coverage"]["hunks_included"] == len(payload["chunk_context"]["chunk_hunks"])
 
 
 def test_chunk_payload_builder_rejects_duplicate_chunk_ids() -> None:
