@@ -982,18 +982,36 @@ review-quality-gate.json
 
 ## 15.2 Passo 2 — pin do toolrepo
 
-No workflow do AgentEscala, fazer checkout do AIOps por SHA/tag aprovado, nunca por branch flutuante em produção do workflow.
+No workflow do AgentEscala, fazer checkout do AIOps exclusivamente por SHA Git
+completo, canônico e lowercase de 40 caracteres.
 
 Exemplo conceitual:
 
 ```yaml
-- name: Checkout AIOps tool repo
-  uses: actions/checkout@v4
-  with:
-    repository: mglpsw/aiops-orchestrator
-    ref: <SHA-ou-tag-aprovado>
-    path: ${{ runner.temp }}/aiops-orchestrator
+env:
+  AIOPS_ORCHESTRATOR_SHA: <lowercase-40-character-commit-sha>
+
+steps:
+  - name: Checkout AIOps tool repo
+    uses: actions/checkout@<verified-actions-checkout-full-commit-sha> # v4.x
+    with:
+      repository: mglpsw/aiops-orchestrator
+      ref: ${{ env.AIOPS_ORCHESTRATOR_SHA }}
+      path: ${{ runner.temp }}/aiops-orchestrator
 ```
+
+Regras contratuais:
+
+- tag pode ser usada apenas pelo mantenedor para escolher versão;
+- a tag deve ser resolvida e verificada antes do uso;
+- o SHA completo resultante deve ser gravado em PR revisável;
+- o runtime nunca resolve tag dinamicamente;
+- falha ao buscar o SHA interrompe o job;
+- nunca existe fallback para `master`;
+- `AIOPS_ORCHESTRATOR_SHA` deve passar em `[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]`;
+- o checkout deve confirmar `test "$(git rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"`;
+- o SHA da action e o SHA do toolrepo são controles diferentes e ambos revisáveis;
+- o SHA real da action deve ser escolhido na futura PR de implementação do AgentEscala.
 
 ## 15.3 Passo 3 — adicionar a chamada do gate
 
@@ -1114,7 +1132,7 @@ Corte recomendado para valor no AgentEscala:
 ```text
 [ ] #65 concluída
 [ ] PR própria no AgentEscala mergeada
-[ ] toolrepo pinado por SHA/tag
+[ ] toolrepo pinado por SHA Git completo de 40 caracteres
 [ ] canário CT104 validado
 [ ] fallback manual_review_required validado
 ```

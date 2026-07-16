@@ -88,6 +88,14 @@ conclusive or gate-derived comment/summary. It must consume `status`, `normalize
 `manual_review_required`, `blocked_reasons`, `warnings`, and `limitations`
 without recalculating or locally reinterpreting the gate.
 
+For toolrepo checkout in the same wrapper flow, `AIOPS_ORCHESTRATOR_SHA` must be
+canonical lowercase and match `^[0-9a-f]{40}$`. The wrapper should validate:
+
+```text
+[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]
+test "$(git rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"
+```
+
 The wrapper publishes `final-review.md` for a valid `passed` or `degraded`
 non-manual gate with
 `normalized_verdict` `approved`, `approve_with_minor_notes`,

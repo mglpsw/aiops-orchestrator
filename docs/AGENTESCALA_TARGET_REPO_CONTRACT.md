@@ -35,6 +35,7 @@ The future AgentEscala workflow must check out `aiops-orchestrator` at
 Operational refs must never be a branch, tag, short SHA, or floating default
 branch (`main`/`master`). All generated inputs and outputs must be under
 `$RUNNER_TEMP/agent`, never in the AgentEscala working tree.
+`AIOPS_ORCHESTRATOR_SHA` must be stored in canonical lowercase form.
 
 Release tags are allowed only in the human version-selection process:
 
@@ -49,31 +50,37 @@ The workflow must never resolve tags dynamically at runtime.
 The workflow must validate the configured SHA format:
 
 ```text
-^[0-9a-fA-F]{40}$
+^[0-9a-f]{40}$
 ```
 
 After checkout, the workflow must prove the effective revision is pinned:
 
 ```text
-git rev-parse HEAD == AIOPS_ORCHESTRATOR_SHA
+[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]
+test "$(git rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"
 ```
 
 If the configured SHA is invalid or cannot be fetched, analysis must stop. It
 must never fall back to `master` or any other floating ref. A moved tag must
 never change the executed code path; updating AIOps always requires a reviewed
-SHA change.
+SHA change. Uppercase SHA input is not accepted.
 
 Contractual checkout example:
 
 ```yaml
-AIOPS_ORCHESTRATOR_SHA=<40-character-full-commit-sha>
+AIOPS_ORCHESTRATOR_SHA=<lowercase-40-character-commit-sha>
 
-- uses: actions/checkout@v4
+- uses: actions/checkout@<verified-full-commit-sha> # v4.x
   with:
     repository: mglpsw/aiops-orchestrator
     ref: ${{ env.AIOPS_ORCHESTRATOR_SHA }}
     path: ${{ runner.temp }}/aiops-orchestrator
 ```
+
+The action pin SHA and the toolrepo checkout SHA are separate controls. Both
+must be reviewable. The concrete action SHA value is selected by the future
+AgentEscala implementation PR; this contract intentionally avoids floating
+action tags in examples.
 
 The toolrepo sequence is:
 
@@ -199,8 +206,10 @@ implementation in this repository.
 ## Future AgentEscala PR checklist
 
 - [ ] Checkout AIOps by full 40-character commit SHA only.
-- [ ] Validate `AIOPS_ORCHESTRATOR_SHA` against `^[0-9a-fA-F]{40}$`.
-- [ ] Verify `git rev-parse HEAD == AIOPS_ORCHESTRATOR_SHA` after checkout.
+- [ ] Store `AIOPS_ORCHESTRATOR_SHA` in canonical lowercase form.
+- [ ] Validate `AIOPS_ORCHESTRATOR_SHA` against `^[0-9a-f]{40}$`.
+- [ ] Verify `[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]`.
+- [ ] Verify `test "$(git rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"` after checkout.
 - [ ] Never resolve tags dynamically during workflow execution.
 - [ ] Execute the toolrepo on CT104.
 - [ ] Keep all outputs in `RUNNER_TEMP`.
@@ -225,10 +234,11 @@ implementation in this repository.
 
 > Implement the AgentEscala-side thin wrapper for the frozen
 > `AGENTESCALA_TARGET_REPO_CONTRACT.md` contract. Check out
-> `aiops-orchestrator` by a full 40-character SHA on CT104 (no branch/tag/short
-> SHA operational refs), consume the validated `review-quality-gate.json`
-> artifact, publish an idempotent PR comment/summary for conclusive outcomes,
-> and publish conservative fail-closed fallback from local validation errors
-> when the gate is missing or invalid. Do not reimplement AgentReview, call
-> CT102, use `/v1/chat/ingest`, expose fork secrets, or apply contract
+> `aiops-orchestrator` by a canonical lowercase full 40-character SHA on CT104
+> (no branch/tag/short SHA operational refs), consume the validated
+> `review-quality-gate.json` artifact, publish an idempotent PR comment/summary
+> for conclusive outcomes, and publish conservative fail-closed fallback from
+> local validation errors when the gate is missing or invalid. Do not
+> reimplement AgentReview, call CT102, use `/v1/chat/ingest`, expose fork
+> secrets, or apply contract
 > suggestions automatically.

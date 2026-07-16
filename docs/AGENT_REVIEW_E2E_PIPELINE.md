@@ -40,16 +40,18 @@ Operational refs must never be tag, branch, short SHA, or floating default
 branch (`main` or `master`). A release tag can be used only in maintainer
 selection flow (resolve tag -> verify commit -> commit the full SHA in PR).
 Runtime tag resolution is prohibited.
+`AIOPS_ORCHESTRATOR_SHA` must be stored as canonical lowercase.
 
 Validate:
 
 ```text
-AIOPS_ORCHESTRATOR_SHA matches ^[0-9a-fA-F]{40}$
-git rev-parse HEAD == AIOPS_ORCHESTRATOR_SHA
+[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]
+test "$(git rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"
 ```
 
 If checkout cannot resolve the pinned SHA, stop the analysis job and do not
-fallback to `master`.
+fallback to `master`. Uppercase SHA, short SHA, tag, or branch refs are invalid
+as operational checkout values.
 
 Keep every output under
 `$RUNNER_TEMP/agent`, never inside the AgentEscala working tree:
