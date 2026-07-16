@@ -117,6 +117,11 @@ def test_quality_gate_matrix_disallows_degraded_approval_and_requires_determinis
     assert "| Valid gate; `status=manual_review_required`;" in decision_table
     assert "| Valid gate; `status=failed`;" in decision_table
     assert (
+        "| Valid gate; `status=passed`; `manual_review_required=false`; `normalized_verdict` is "
+        "`approved`, `approve_with_minor_notes`, or `approve_with_required_followup`; "
+        "`blocked_reasons` empty |"
+    ) in decision_table
+    assert (
         "| Valid gate; `status=degraded`; `manual_review_required=false`; "
         "`normalized_verdict=changes_requested`; `blocked_reasons` non-empty; `limitations` non-empty |"
     ) in decision_table
@@ -133,6 +138,7 @@ def test_quality_gate_matrix_disallows_degraded_approval_and_requires_determinis
     )
 
     assert "`degraded` never approves." in quality_gate
+    assert "| passed + blocked_reasons empty | approved / approve_with_minor_notes / approve_with_required_followup | false | conclusive publication |" in quality_gate
     assert "gate_combination_invalid" in quality_gate
     assert "wrapper must not reconfirm blocker evidence from `final-review.json`." in quality_gate
     assert "wrapper must\nnot inspect `final-review.json` to reconfirm blocker evidence." in e2e
@@ -153,3 +159,12 @@ def test_manual_pseudocode_uses_fail_closed_review_unavailable_for_invalid_gate(
     assert "publish_review_unavailable(\n        manual_review_required=True," in manual
     assert 'publication_class="fail_closed"' in manual
     assert "reason_code=local_sanitized_reason_code" in manual
+
+
+def test_manual_roadmap_reflects_completed_60_61_62_baseline() -> None:
+    manual = _read(MANUAL_DOC)
+    assert "#60 — quality gate E2E contract fixture          PRÓXIMA" not in manual
+    assert "Sem #61, decisões de melhoria" not in manual
+    assert "## Fase imediata — fechar o contrato do gate" not in manual
+    assert "#61 — review telemetry baseline (já concluída)" in manual
+    assert "#62 — false-positive signatures e contract suggestions (já concluída)" in manual

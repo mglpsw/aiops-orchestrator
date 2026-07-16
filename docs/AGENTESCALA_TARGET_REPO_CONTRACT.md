@@ -178,7 +178,7 @@ never be treated as valid only because it contains `manual_review_required=true`
 
 | Gate condition | Publication result |
 | --- | --- |
-| Valid gate; `status=passed`; `manual_review_required=false`; `normalized_verdict` is `approved`, `approve_with_minor_notes`, or `approve_with_required_followup` | Publish `final-review.md` as conclusive non-blocking output. |
+| Valid gate; `status=passed`; `manual_review_required=false`; `normalized_verdict` is `approved`, `approve_with_minor_notes`, or `approve_with_required_followup`; `blocked_reasons` empty | Publish `final-review.md` as conclusive non-blocking output. |
 | Valid gate; `status=passed`; `manual_review_required=false`; `normalized_verdict=changes_requested`; `blocked_reasons` non-empty | Publish `final-review.md` as conclusive blocking output. |
 | Valid gate; `status=degraded`; `manual_review_required=false`; `normalized_verdict=changes_requested`; `blocked_reasons` non-empty; `limitations` non-empty | Publish conclusive blocking output and disclose all limitations. The validated gate is authoritative; the wrapper must not reconfirm blocker evidence. |
 | Valid gate; `status=manual_review_required`; `normalized_verdict=manual_review_required`; `manual_review_required=true` | Publish non-conclusive `manual_review_required` fallback with artifact references. |
@@ -188,6 +188,8 @@ never be treated as valid only because it contains `manual_review_required=true`
 `status=degraded` must never be hidden and can never be used for conclusive
 approval. `changes_requested` requires non-empty `blocked_reasons`. A malformed
 or contradictory gate is not a degraded success; it follows the fail-closed row.
+Any non-blocking verdict with non-empty `blocked_reasons` is an invalid
+combination and must follow fail-closed publication.
 
 For the validated `status=degraded` + `normalized_verdict=changes_requested`
 combination, blocker reliability is determined internally by AIOps before the

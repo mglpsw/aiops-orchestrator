@@ -277,31 +277,30 @@ Corte mínimo recomendado:
 
 ```text
 #59 — deterministic review quality gate          CONCLUÍDA
-#60 — quality gate E2E contract fixture          PRÓXIMA
+#60 — quality gate E2E contract fixture          CONCLUÍDA
 ```
 
 Follow-ups do track:
 
 ```text
-#61 — telemetry baseline
-#62 — false-positive signatures / contract suggestions
+#61 — telemetry baseline                         CONCLUÍDA
+#62 — false-positive signatures / contract suggestions  CONCLUÍDA
 #63 — optional second opinion contract
 #64 — Validation Evidence semantic pre-review
-#65 — AgentEscala wrapper consumption contract
+#65 — AgentEscala wrapper consumption contract   CONCLUÍDA (documentação)
 ```
 
 ### 6.3 Estratégia de release recomendada
 
 `v0.20.0` deve ser tratado inicialmente como release de toolrepo/AgentReview. Não há necessidade de transição CT102 se o track não alterar o runtime produtivo.
 
-Antes de tag final:
+Baseline já consolidada para o track:
 
-1. merge da #60;
-2. contrato de consumo do gate documentado;
-3. execução E2E no CT104;
-4. canário no AgentEscala;
-5. release notes atualizadas;
-6. confirmação de que CT102 não foi modificado.
+1. #60 mergeada;
+2. #61 e #62 mergeadas;
+3. #65 consolidada em documentação pós-#72/#73;
+4. execução E2E no CT104 validada no toolrepo;
+5. CT102 preservado fora do escopo do track documental.
 
 ---
 
@@ -484,11 +483,11 @@ GitHub Actions aiops-ci: success
 
 ---
 
-## 8. O que ainda não funciona ponta a ponta
+## 8. Estado de integração ponta a ponta
 
-## 8.1 Quality gate ainda não faz parte do E2E oficial
+## 8.1 Quality gate já faz parte do E2E oficial no toolrepo
 
-Embora o gate exista e esteja testado isoladamente, o teste E2E oficial ainda precisa executar:
+O E2E oficial já executa:
 
 ```text
 intake
@@ -499,12 +498,7 @@ intake
 → quality gate
 ```
 
-Essa é a #60.
-
-Sem essa PR, há uma lacuna entre:
-
-- capacidade isolada validada;
-- contrato de integração E2E reproduzível.
+Esse baseline foi consolidado na #60.
 
 ## 8.2 AgentEscala ainda não consome o gate como sinal canônico
 
@@ -515,15 +509,15 @@ O AgentEscala já foi validado como thin-wrapper para o fluxo até `final-review
 - interpretar `status`, `normalized_verdict` e `manual_review_required`;
 - falhar conservadoramente se o gate não existir ou for inválido.
 
-## 8.3 Telemetry ainda não existe
+## 8.3 Telemetry baseline existe no toolrepo
 
-A #61 deve gerar:
+A #61 consolidou:
 
 ```text
 review-telemetry.json
 ```
 
-Ainda faltam métricas estruturadas de:
+A evolução futura ainda pode ampliar métricas estruturadas de:
 
 - gate status/verdict;
 - blockers rebaixados;
@@ -533,9 +527,9 @@ Ainda faltam métricas estruturadas de:
 - duração e tamanho dos bundles;
 - histórico por PR/commit.
 
-## 8.4 False-positive learning ainda não existe
+## 8.4 False-positive learning controlado existe no toolrepo
 
-A #62 deve adicionar:
+A #62 consolidou:
 
 ```text
 false-positive-signatures.json
@@ -843,9 +837,11 @@ O evidence index atual funciona principalmente como lista sanitizada de referên
 
 **Correção:** evoluir incrementalmente antes ou durante #64, sem bloquear #60.
 
-## 12.5 P2 — ausência de telemetry
+## 12.5 P2 — telemetry baseline (resolvido)
 
-Sem #61, decisões de melhoria ainda dependem de observação manual. Não há base histórica para quantificar:
+**Status:** resolvido por #61 com `review-telemetry.json` no fluxo do toolrepo.
+
+Evoluções futuras podem ampliar a base histórica para quantificar:
 
 - taxa de manual review;
 - falsos P0/P1;
@@ -901,19 +897,20 @@ Essa evolução deve ser feita com schema versionado e testes, evitando acoplame
 
 ## 14. Roadmap recomendado a partir de agora
 
-## Fase imediata — fechar o contrato do gate
+## Fase imediata — baseline pós-#73 consolidada
 
 ```text
-#60 — Quality Gate E2E Contract Fixture
+#60 — Quality Gate E2E Contract Fixture            CONCLUÍDA
+#61 — review telemetry baseline                    CONCLUÍDA
+#62 — false-positive signatures/contract suggestions CONCLUÍDA
+#65 — AgentEscala wrapper consumption contract     CONCLUÍDA (documentação)
 ```
 
-Entregas:
+Estado:
 
-- E2E com sete artifacts;
-- snapshot do target repo antes/depois;
-- validação de sanitização;
-- docs atualizadas;
-- full suite verde.
+- E2E com artifacts contratuais e snapshot de target repo;
+- quality gate, telemetry e FP signatures no toolrepo;
+- documentação de consumo hardenizada no follow-up #73.
 
 ## Fase de ativação no target repo
 
@@ -930,16 +927,16 @@ Entregas:
 - fallback conservador;
 - canário CT104.
 
-## Fase de observabilidade
+## Fase de observabilidade (toolrepo)
 
 ```text
-#61 — review telemetry baseline
+#61 — review telemetry baseline (já concluída)
 ```
 
-## Fase de aprendizado controlado
+## Fase de aprendizado controlado (toolrepo)
 
 ```text
-#62 — false-positive signatures e contract suggestions
+#62 — false-positive signatures e contract suggestions (já concluída)
 ```
 
 ## Fase de revisão adicional opcional
@@ -1180,18 +1177,18 @@ arquivo + evidência + impacto + source confiável
 
 ---
 
-## 18. Melhorias rápidas recomendadas além da #60
+## 18. Melhorias rápidas recomendadas além do baseline pós-#73
 
 1. Atualizar `docs/RELEASE_V0_19_0.md` para estado final.
 2. Confirmar fechamento automático da #59 após merge da #66.
 3. Atualizar #58 e #46 com checkpoint pós-#66.
-4. Reavaliar #45 depois da #60 e fechar o que foi absorvido.
+4. Reavaliar #45 após baseline consolidada (#60/#61/#62/#65) e fechar o que foi absorvido.
 5. Adicionar constraint `[0,1]` ao `quality_score` em PR de hardening futura.
 6. Criar `docs/AIOPS_PROJECT_MANUAL.md` a partir deste documento e mantê-lo versionado.
 7. Adicionar uma tabela de compatibilidade de schemas/artifacts por release.
 8. Definir regra explícita de `critical-pr` no target profile, em vez de inferência informal.
 9. Criar fixture de `checks.json` versionada antes de aprofundar correlação de test failure.
-10. Depois da integração AgentEscala, priorizar #61 para medir o comportamento real do gate.
+10. Depois da integração AgentEscala, ampliar a telemetria além do baseline já entregue em #61.
 
 ---
 
@@ -1220,12 +1217,10 @@ O risco principal agora não é falta de engine; é falta de **integração ofic
 A sequência recomendada é:
 
 ```text
-#60
-→ #65
+baseline pós-#73 (#60/#61/#62/#65)
 → PR AgentEscala
 → canário CT104
-→ #61 telemetry
-→ #62 learning controlado
+→ PR futura AIOps de PR brief + bounded context/payload builder
 → #63/#64 quando houver dados reais
 ```
 

@@ -146,7 +146,8 @@ The wrapper must never trust invalid gate fields and must never publish a
 conclusive review from an invalid gate.
 
 Conclusive approval is allowed only for valid `status=passed` with
-`manual_review_required=false`. `status=degraded` cannot approve; it can only
+`manual_review_required=false` and empty `blocked_reasons`. `status=degraded`
+cannot approve; it can only
 remain conclusive for `changes_requested` when the validated gate combination
 has non-empty `blocked_reasons` and explicit `limitations`. The wrapper must
 not inspect `final-review.json` to reconfirm blocker evidence.

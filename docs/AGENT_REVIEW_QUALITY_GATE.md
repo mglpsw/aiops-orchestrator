@@ -102,7 +102,7 @@ authority):
 
 | status | normalized_verdict | manual_review_required | result |
 | --- | --- | --- | --- |
-| passed | approved / approve_with_minor_notes / approve_with_required_followup | false | conclusive publication |
+| passed + blocked_reasons empty | approved / approve_with_minor_notes / approve_with_required_followup | false | conclusive publication |
 | passed | changes_requested | false | conclusive blocking publication |
 | degraded | changes_requested | false | conclusive blocking publication with disclosed `limitations` |
 | Valid gate: manual_review_required | Valid gate: manual_review_required | true | non-conclusive manual-review publication |
@@ -113,6 +113,7 @@ Additional rules:
 
 - `degraded` never approves.
 - `changes_requested` requires non-empty `blocked_reasons`.
+- non-blocking publication requires empty `blocked_reasons`.
 - `degraded` requires explicit disclosure of `limitations`.
 - For validated `degraded + changes_requested`, the gate is authoritative:
   blocker reliability was determined by AIOps before gate emission, and the
