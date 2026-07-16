@@ -191,6 +191,11 @@ def _args(paths: dict[str, Path], out_root: Path) -> list[str]:
     ]
 
 
+def _error_payload(result: tuple[int, str, str]) -> dict:
+    assert result[0] == 1, f"expected failure, got {result[0]} stderr={result[2]} stdout={result[1]}"
+    return json.loads(result[1])
+
+
 def test_cli_builds_outputs_outside_git_worktree(monkeypatch, tmp_path: Path) -> None:
     for key, value in _dev_env().items():
         monkeypatch.setenv(key, value)
@@ -289,6 +294,155 @@ def test_cli_removes_partial_outputs_when_write_fails(monkeypatch, tmp_path: Pat
     assert result[0] == 1
     payload = json.loads(result[1])
     assert payload["error_class"] == "output_write_failed"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_fails_when_payloads_dir_already_exists_and_preserves_existing_content(
+    monkeypatch, tmp_path: Path
+) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    out_root = tmp_path / "agent-output"
+    payloads_dir = out_root / "chunk-payloads"
+    payloads_dir.mkdir(parents=True)
+    sentinel = payloads_dir / "sentinel.txt"
+    original = "do not touch"
+    sentinel.write_text(original, encoding="utf-8")
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "output_exists"
+    assert sentinel.read_text(encoding="utf-8") == original
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+
+
+def test_cli_fails_when_brief_output_already_exists_and_preserves_file(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    out_root = tmp_path / "agent-output"
+    out_root.mkdir(parents=True)
+    brief = out_root / "pr-brief.json"
+    original = '{"keep":"brief"}\n'
+    brief.write_text(original, encoding="utf-8")
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "output_exists"
+    assert brief.read_text(encoding="utf-8") == original
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_fails_when_manifest_output_already_exists_and_preserves_file(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    out_root = tmp_path / "agent-output"
+    out_root.mkdir(parents=True)
+    manifest = out_root / "chunk-payload-manifest.json"
+    original = '{"keep":"manifest"}\n'
+    manifest.write_text(original, encoding="utf-8")
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "output_exists"
+    assert manifest.read_text(encoding="utf-8") == original
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_never_removes_legacy_tmp_build_directory_name(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    out_root = tmp_path / "agent-output"
+    legacy_tmp = out_root / "chunk-payloads.tmp-build"
+    legacy_tmp.mkdir(parents=True)
+    sentinel = legacy_tmp / "sentinel.txt"
+    sentinel.write_text("legacy", encoding="utf-8")
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    assert result[0] == 0, result[2] + result[1]
+    assert sentinel.exists()
+    assert sentinel.read_text(encoding="utf-8") == "legacy"
+
+
+def test_cli_staging_failure_preserves_preexisting_outputs_and_removes_run_staging(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    out_root = tmp_path / "agent-output"
+    legacy_tmp = out_root / "chunk-payloads.tmp-build"
+    legacy_tmp.mkdir(parents=True)
+    sentinel = legacy_tmp / "sentinel.txt"
+    sentinel.write_text("legacy", encoding="utf-8")
+    module = _load_script_module()
+
+    original_write = module._write_file_atomic
+
+    def fail_on_payload(path: Path, content: str) -> None:  # noqa: ANN001
+        if path.name.endswith(".json") and path.parent.name in {"payloads", "chunk-payloads"}:
+            raise OSError("simulated payload write error")
+        original_write(path, content)
+
+    monkeypatch.setattr(module, "_write_file_atomic", fail_on_payload)
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "output_write_failed"
+    assert sentinel.exists()
+    assert sentinel.read_text(encoding="utf-8") == "legacy"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_fails_closed_on_review_identity_conflict(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    chunk_plan = json.loads(paths["chunk_plan"].read_text(encoding="utf-8"))
+    chunk_plan["target_repo"] = "mglpsw/AnotherRepo"
+    _write_json(paths["chunk_plan"], chunk_plan)
+    out_root = tmp_path / "agent-output"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "review_identity_conflict"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_fails_closed_when_redaction_report_is_not_safe_for_llm(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    redaction = json.loads(paths["redaction"].read_text(encoding="utf-8"))
+    redaction["output_safe_for_llm"] = False
+    _write_json(paths["redaction"], redaction)
+    out_root = tmp_path / "agent-output"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "redaction_report_unsafe"
     assert not (out_root / "pr-brief.json").exists()
     assert not (out_root / "chunk-payload-manifest.json").exists()
     assert not (out_root / "chunk-payloads").exists()

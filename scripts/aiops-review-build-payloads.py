@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,9 @@ def main(argv: list[str] | None = None) -> int:
     overwrite_error = _output_overwrite_error(paths)
     if overwrite_error:
         return _fail_json(overwrite_error[0], overwrite_error[1], limitations=[overwrite_error[0]])
+    output_exists_error = _output_exists_error(paths)
+    if output_exists_error:
+        return _fail_json(output_exists_error[0], output_exists_error[1], limitations=[output_exists_error[0]])
 
     try:
         raw_documents = _load_raw_documents(paths)
@@ -85,6 +89,11 @@ def main(argv: list[str] | None = None) -> int:
         intake = _load_intake(paths["intake"])
         chunk_plan = _load_chunk_plan(paths["chunk_plan"])
         redaction_report = _load_redaction_report(paths["redaction_report"])
+        if redaction_report.output_safe_for_llm is not True:
+            raise PayloadBuildCliError(
+                "redaction_report_unsafe",
+                "redaction report marks output as unsafe for llm routing",
+            )
         checks, checks_limitations = _load_optional_json(paths.get("checks"), "checks")
         validation_evidence, validation_limitations = _load_optional_json(
             paths.get("validation_evidence"),
@@ -179,6 +188,14 @@ def _output_overwrite_error(paths: dict[str, Any]) -> tuple[str, str] | None:
                 "output_overwrites_input",
                 "Blocked: payloads-dir must not contain input artifacts.",
             )
+    return None
+
+
+def _output_exists_error(paths: dict[str, Any]) -> tuple[str, str] | None:
+    for key in ("brief_output", "manifest_output", "payloads_dir"):
+        path = paths[key]
+        if isinstance(path, Path) and path.exists():
+            return "output_exists", f"Blocked: output already exists and must be absent before execution ({path})."
     return None
 
 
@@ -316,33 +333,37 @@ def _write_outputs(
     manifest: dict[str, Any],
     payloads: dict[str, dict[str, Any]],
 ) -> None:
-    tmp_payloads_dir = payloads_dir.parent / f"{payloads_dir.name}.tmp-build"
+    payloads_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_root = Path(tempfile.mkdtemp(prefix="aiops-review-build-payloads-", dir=str(payloads_dir.parent)))
+    staging_payloads_dir = staging_root / "payloads"
+    staging_brief = staging_root / "pr-brief.json"
+    staging_manifest = staging_root / "chunk-payload-manifest.json"
     created: list[Path] = []
     try:
-        _write_file_atomic(brief_output, _to_json(pr_brief))
+        staging_payloads_dir.mkdir(parents=True, exist_ok=False)
+        for filename, payload in sorted(payloads.items(), key=lambda item: item[0]):
+            _write_file_atomic(staging_payloads_dir / filename, _to_json(payload))
+
+        _write_file_atomic(staging_brief, _to_json(pr_brief))
+        _write_file_atomic(staging_manifest, _to_json(manifest))
+
+        _write_file_exclusive(brief_output, staging_brief.read_text(encoding="utf-8"))
         created.append(brief_output)
-        _write_file_atomic(manifest_output, _to_json(manifest))
+        _write_file_exclusive(manifest_output, staging_manifest.read_text(encoding="utf-8"))
         created.append(manifest_output)
 
-        if tmp_payloads_dir.exists():
-            shutil.rmtree(tmp_payloads_dir)
-        tmp_payloads_dir.mkdir(parents=True, exist_ok=False)
-        for filename, payload in sorted(payloads.items(), key=lambda item: item[0]):
-            _write_file_atomic(tmp_payloads_dir / filename, _to_json(payload))
-
-        if payloads_dir.exists():
-            shutil.rmtree(payloads_dir)
-        tmp_payloads_dir.rename(payloads_dir)
+        staging_payloads_dir.rename(payloads_dir)
         created.append(payloads_dir)
     except Exception as exc:
-        if tmp_payloads_dir.exists():
-            shutil.rmtree(tmp_payloads_dir, ignore_errors=True)
         for path in created:
             if path.is_file():
                 path.unlink(missing_ok=True)
             elif path.is_dir():
                 shutil.rmtree(path, ignore_errors=True)
         raise PayloadBuildCliError("output_write_failed", str(exc)) from exc
+    finally:
+        if staging_root.exists():
+            shutil.rmtree(staging_root, ignore_errors=True)
 
 
 def _write_file_atomic(path: Path, content: str) -> None:
@@ -350,6 +371,12 @@ def _write_file_atomic(path: Path, content: str) -> None:
     tmp_path = path.with_name(f"{path.name}.tmp")
     tmp_path.write_text(content, encoding="utf-8")
     tmp_path.replace(path)
+
+
+def _write_file_exclusive(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(content)
 
 
 def _environment_block_message(context: dict[str, Any]) -> str:
