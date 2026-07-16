@@ -415,7 +415,6 @@ def _shrink_semantic_group_files(payload: dict[str, Any]) -> bool:
         files = group.get("files")
         if isinstance(files, list) and files:
             files.pop()
-            group["file_count"] = len(files)
             return True
     return False
 
@@ -538,9 +537,13 @@ def _artifact_identity_candidates(artifacts: Any, key: str) -> list[tuple[str, A
     candidates: list[tuple[str, Any]] = []
     for artifact_name in sorted(artifacts):
         artifact = artifacts[artifact_name]
-        found = _find_key(artifact, key)
-        if found is not None:
-            candidates.append((f"intake.artifacts.{artifact_name}.{key}", found))
+        if not isinstance(artifact, dict):
+            continue
+        if key in artifact:
+            candidates.append((f"intake.artifacts.{artifact_name}.{key}", artifact.get(key)))
+        content = artifact.get("content")
+        if isinstance(content, dict) and key in content:
+            candidates.append((f"intake.artifacts.{artifact_name}.content.{key}", content.get(key)))
     return candidates
 
 

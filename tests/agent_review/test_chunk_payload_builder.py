@@ -487,6 +487,33 @@ def test_chunk_payload_builder_fails_closed_on_conflicting_embedded_artifact_ide
     assert exc.value.error_class == "review_identity_conflict"
 
 
+def test_chunk_payload_builder_ignores_nested_non_identity_metadata_keys() -> None:
+    intake = _intake()
+    intake.artifacts["project-context"] = {
+        "name": "project-context",
+        "path": "project-context.json",
+        "kind": "json",
+        "content": {
+            "dependency": {
+                "target_repo": "mglpsw/AnotherRepo",
+                "pr_number": 999,
+                "commit_sha": "sha-other",
+            }
+        },
+    }
+    plan = _chunk_plan()
+    brief = _brief(intake, plan)
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=brief,
+        checks=None,
+        validation_evidence=None,
+    )
+    assert manifest.target_repo == "mglpsw/AgentEscala"
+    assert payloads
+
+
 def test_chunk_payload_builder_filters_local_failures_by_chunk_scope() -> None:
     intake = _intake()
     intake.artifacts["local-code-intelligence"]["content"]["confirmed_local_failures"] = [

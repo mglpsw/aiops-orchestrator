@@ -286,6 +286,32 @@ def test_pr_brief_allows_missing_identity_fields_without_conflict() -> None:
     assert brief.target["commit_sha"] is None
 
 
+def test_pr_brief_ignores_nested_non_identity_metadata_keys() -> None:
+    intake = _intake()
+    intake.artifacts["project-context"] = {
+        "name": "project-context",
+        "path": "project-context.json",
+        "kind": "json",
+        "content": {
+            "dependency": {
+                "target_repo": "mglpsw/AnotherRepo",
+                "pr_number": 999,
+                "commit_sha": "sha-other",
+            }
+        },
+    }
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+    assert brief.target["repository"] == "mglpsw/AgentEscala"
+    assert brief.target["pr_number"] == 61
+    assert brief.target["commit_sha"] == "abc123"
+
+
 def test_pr_brief_does_not_use_generic_artifact_mode_as_review_mode() -> None:
     intake = _intake()
     intake.artifacts["project-context"] = {
@@ -413,6 +439,33 @@ def test_pr_brief_truncation_preserves_true_changed_file_count() -> None:
     assert brief.truncation.applied is True
     assert changed["total_files"] == 3
     assert changed["total_files"] == sum(changed["status_counts"].values())
+
+
+def test_pr_brief_truncation_preserves_semantic_group_file_counts() -> None:
+    baseline = build_pr_brief(
+        intake=_intake(),
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+        max_chars=20_000,
+    )
+    baseline_counts = {
+        item["semantic_group"]: item["file_count"] for item in baseline.model_dump(mode="json")["semantic_groups"]
+    }
+    brief = build_pr_brief(
+        intake=_intake(),
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+        max_chars=1300,
+    )
+    groups = brief.model_dump(mode="json")["semantic_groups"]
+    assert brief.truncation.applied is True
+    assert any(group["file_count"] > len(group["files"]) for group in groups)
+    for group in groups:
+        assert group["file_count"] == baseline_counts[group["semantic_group"]]
 
 
 def test_pr_brief_non_truncated_emitted_chars_match_final_artifact() -> None:
