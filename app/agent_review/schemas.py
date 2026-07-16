@@ -19,6 +19,9 @@ TELEMETRY_SCHEMA = "agent-review.telemetry.v1"
 FALSE_POSITIVE_MARKERS_SCHEMA = "agent-review.false-positive-markers.v1"
 FALSE_POSITIVE_SIGNATURES_SCHEMA = "agent-review.false-positive-signatures.v1"
 CONTRACT_SUGGESTIONS_SCHEMA = "agent-review.contract-suggestions.v1"
+PR_BRIEF_SCHEMA = "agent-review.pr-brief.v1"
+CHUNK_PAYLOAD_SCHEMA = "agent-review.chunk-payload.v1"
+CHUNK_PAYLOAD_MANIFEST_SCHEMA = "agent-review.chunk-payload-manifest.v1"
 
 ArtifactKind = Literal["json", "yaml", "text", "markdown", "diff"]
 ArtifactState = Literal["available", "missing", "invalid", "degraded"]
@@ -66,6 +69,7 @@ RejectedFindingReason = Literal[
     "duplicate_dedupe_key",
     "invalid_finding",
 ]
+ChunkPayloadStatus = Literal["available", "limited"]
 
 
 def utc_now_iso() -> str:
@@ -162,6 +166,80 @@ class SemanticChunkPlan(BaseModel):
     limitations: list[str] = Field(default_factory=list)
     status: ChunkPlanState
     created_at: str = Field(default_factory=utc_now_iso)
+
+
+class TruncationMetadata(BaseModel):
+    applied: bool = False
+    original_chars: int = 0
+    emitted_chars: int = 0
+    omitted_sections: list[str] = Field(default_factory=list)
+    truncation_reason: str | None = None
+    coverage_impact: list[str] = Field(default_factory=list)
+
+
+class PRBrief(BaseModel):
+    schema_version: int = 1
+    schema_id: str = PR_BRIEF_SCHEMA
+    source: Literal["aiops-review-build-payloads"] = "aiops-review-build-payloads"
+    target: dict[str, Any] = Field(default_factory=dict)
+    review: dict[str, Any] = Field(default_factory=dict)
+    changed_files_summary: dict[str, Any] = Field(default_factory=dict)
+    semantic_groups: list[dict[str, Any]] = Field(default_factory=list)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    checks: dict[str, Any] = Field(default_factory=dict)
+    validation_evidence: dict[str, Any] = Field(default_factory=dict)
+    redaction: dict[str, Any] = Field(default_factory=dict)
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    truncation: TruncationMetadata = Field(default_factory=TruncationMetadata)
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+
+
+class ChunkPayload(BaseModel):
+    schema_version: int = 1
+    schema_id: str = CHUNK_PAYLOAD_SCHEMA
+    source: Literal["aiops-review-build-payloads"] = "aiops-review-build-payloads"
+    chunk_id: str
+    semantic_group: SemanticGroup
+    order_index: int
+    target: dict[str, Any] = Field(default_factory=dict)
+    brief: dict[str, Any] = Field(default_factory=dict)
+    chunk_context: dict[str, Any] = Field(default_factory=dict)
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    response_contract: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    truncation: TruncationMetadata = Field(default_factory=TruncationMetadata)
+    created_at: str | None = None
+
+
+class ChunkPayloadManifestEntry(BaseModel):
+    chunk_id: str
+    semantic_group: SemanticGroup
+    order_index: int
+    status: ChunkPayloadStatus
+    payload_path: str | None = None
+    payload_sha256: str | None = None
+    coverage: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    truncation: TruncationMetadata = Field(default_factory=TruncationMetadata)
+
+
+class ChunkPayloadManifest(BaseModel):
+    schema_version: int = 1
+    schema_id: str = CHUNK_PAYLOAD_MANIFEST_SCHEMA
+    source: Literal["aiops-review-build-payloads"] = "aiops-review-build-payloads"
+    target_repo: str
+    chunk_plan_ref: dict[str, Any] = Field(default_factory=dict)
+    pr_brief_ref: dict[str, Any] = Field(default_factory=dict)
+    payload_count: int = 0
+    chunks: list[ChunkPayloadManifestEntry] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+    created_at: str | None = None
 
 
 class ChunkResponseFinding(BaseModel):
