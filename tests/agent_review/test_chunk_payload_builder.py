@@ -1,0 +1,375 @@
+from __future__ import annotations
+
+import json
+
+from app.agent_review.chunk_payload_builder import build_chunk_payloads
+from app.agent_review.pr_brief import build_pr_brief
+from app.agent_review.schemas import RedactionReport, ReviewIntake, SemanticChunk, SemanticChunkPlan
+
+
+def _intake() -> ReviewIntake:
+    return ReviewIntake.model_validate(
+        {
+            "schema_version": "agent-review.intake.v1",
+            "source": "aiops-review-intake",
+            "target_repo": "mglpsw/AgentEscala",
+            "target_profile": {
+                "schema_version": "agent-review.target-profile.v1",
+                "target_repo": "mglpsw/AgentEscala",
+                "domain_contracts": {
+                    "rules": [
+                        {"id": "rule-api", "description": "API contract preservation"},
+                        {"id": "rule-tests", "description": "tests must cover changed behavior"},
+                    ]
+                },
+                "review_packs": {
+                    "packs": [
+                        {
+                            "id": "agentescala-calendar",
+                            "description": "Calendar review pack",
+                            "recommended_review_preset": "review:deep",
+                        }
+                    ]
+                },
+            },
+            "artifacts": {
+                "file-diff-context": {
+                    "name": "file-diff-context",
+                    "path": "file-diff-context.json",
+                    "kind": "json",
+                    "content": {
+                        "files": [
+                            {"path": "backend/api/shifts.py", "status": "modified", "summary": "api update"},
+                            {"path": "tests/test_shift_service.py", "status": "modified", "summary": "test update"},
+                        ],
+                        "coverage_requirements": {
+                            "must_review_files": ["backend/api/shifts.py"],
+                            "should_review_files": ["tests/test_shift_service.py"],
+                            "may_summarize_files": [],
+                        },
+                    },
+                },
+                "full-diff": {
+                    "name": "full-diff",
+                    "path": "full.diff",
+                    "kind": "diff",
+                    "content": "\n".join(
+                        [
+                            "diff --git a/backend/api/shifts.py b/backend/api/shifts.py",
+                            "index 111..222 100644",
+                            "--- a/backend/api/shifts.py",
+                            "+++ b/backend/api/shifts.py",
+                            "@@ -10,1 +10,1 @@",
+                            "+token=SUPERSECRET",
+                            "diff --git a/tests/test_shift_service.py b/tests/test_shift_service.py",
+                            "index 333..444 100644",
+                            "--- a/tests/test_shift_service.py",
+                            "+++ b/tests/test_shift_service.py",
+                            "@@ -1,1 +1,1 @@",
+                            "+assert True",
+                        ]
+                    ),
+                },
+                "checks": {
+                    "name": "checks",
+                    "path": "checks.json",
+                    "kind": "json",
+                    "content": {
+                        "status": "complete",
+                        "checks": [{"name": "pytest", "status": "passed", "command": "python -m pytest"}],
+                        "pr_number": 61,
+                        "commit_sha": "abc123",
+                    },
+                },
+                "validation-evidence-result": {
+                    "name": "validation-evidence-result",
+                    "path": "validation-evidence/validation-evidence-result.json",
+                    "kind": "json",
+                    "content": {
+                        "validation_verdict": "degraded",
+                        "blocking_findings": [
+                            {"title": "API risk", "severity": "P1", "file_path": "backend/api/shifts.py"},
+                            {"title": "Other risk", "severity": "P2", "file_path": "other/file.py"},
+                        ],
+                        "limitations": [],
+                    },
+                },
+                "project-context": {
+                    "name": "project-context",
+                    "path": "project-context.json",
+                    "kind": "json",
+                    "content": {
+                        "status": "complete",
+                        "modules": {
+                            "backend/api/shifts.py": "API handlers",
+                            "tests/test_shift_service.py": "Regression tests",
+                        },
+                    },
+                },
+                "test-intelligence": {
+                    "name": "test-intelligence",
+                    "path": "test-intelligence.json",
+                    "kind": "json",
+                    "content": {
+                        "changed_tests": ["tests/test_shift_service.py"],
+                        "failed_tests": [],
+                    },
+                },
+                "local-code-intelligence": {
+                    "name": "local-code-intelligence",
+                    "path": "local-code-intelligence.json",
+                    "kind": "json",
+                    "content": {
+                        "mode": "current_run_only",
+                        "files_analyzed": ["backend/api/shifts.py"],
+                        "confirmed_local_failures": [],
+                    },
+                },
+            },
+            "artifact_status": [
+                {"name": "checks", "path": "checks.json", "available": True, "valid": True, "status": "available"},
+                {
+                    "name": "file-diff-context",
+                    "path": "file-diff-context.json",
+                    "available": True,
+                    "valid": True,
+                    "status": "available",
+                },
+                {"name": "full-diff", "path": "full.diff", "available": True, "valid": True, "status": "available"},
+            ],
+            "redaction_summary": {"schema_version": "agent-review.redaction-report.v1"},
+            "limitations": [],
+            "completeness": {},
+            "created_at": "2026-06-02T00:00:00Z",
+            "status": "complete",
+        }
+    )
+
+
+def _chunk_plan(reverse_order: bool = False, include_empty_chunk: bool = False) -> SemanticChunkPlan:
+    chunks = [
+        SemanticChunk(
+            chunk_id="chunk-01-api_schema_contract",
+            semantic_group="api_schema_contract",
+            order_index=0,
+            files=["backend/api/shifts.py"],
+            artifacts=["artifact:file-diff-context"],
+            contracts=["target_profile:domain_contracts"],
+            depends_on=[],
+            coverage="complete",
+            prompt_budget_chars=3_000,
+            estimated_chars=1_000,
+            limitations=[],
+        ),
+        SemanticChunk(
+            chunk_id="chunk-02-tests",
+            semantic_group="tests",
+            order_index=1,
+            files=["tests/test_shift_service.py"],
+            artifacts=["artifact:checks"],
+            contracts=[],
+            depends_on=[],
+            coverage="complete",
+            prompt_budget_chars=3_000,
+            estimated_chars=900,
+            limitations=[],
+        ),
+    ]
+    if include_empty_chunk:
+        chunks.append(
+            SemanticChunk(
+                chunk_id="chunk-03-unknown",
+                semantic_group="unknown",
+                order_index=2,
+                files=[],
+                artifacts=[],
+                contracts=[],
+                depends_on=[],
+                coverage="degraded",
+                prompt_budget_chars=1_000,
+                estimated_chars=0,
+                limitations=["chunk_degraded"],
+            )
+        )
+    if reverse_order:
+        chunks = list(reversed(chunks))
+    return SemanticChunkPlan.model_validate(
+        {
+            "schema_version": 1,
+            "schema_id": "agent-review.semantic-chunk-plan.v1",
+            "source": "aiops-semantic-chunk-planner",
+            "target_repo": "mglpsw/AgentEscala",
+            "max_parallel_blocks": 6,
+            "chunks": [chunk.model_dump(mode="json") for chunk in chunks],
+            "files_covered": ["backend/api/shifts.py", "tests/test_shift_service.py"],
+            "files_partially_covered": [],
+            "files_not_covered": [],
+            "limitations": [],
+            "status": "complete",
+            "created_at": "2026-06-02T00:00:00Z",
+        }
+    )
+
+
+def _redaction_report() -> RedactionReport:
+    return RedactionReport.model_validate(
+        {
+            "schema_version": "agent-review.redaction-report.v1",
+            "source": "aiops-review-intake",
+            "files_processed": 2,
+            "replacements_by_type": {"token_assignment": 1},
+            "secret_like_values_found": 1,
+            "redacted_lines_present": True,
+            "redaction_is_sanitizer_artifact": True,
+            "hardcoded_secret_confirmed": False,
+            "output_safe_for_llm": True,
+            "limitations": [],
+        }
+    )
+
+
+def _brief(intake: ReviewIntake, chunk_plan: SemanticChunkPlan):  # noqa: ANN201
+    return build_pr_brief(
+        intake=intake,
+        chunk_plan=chunk_plan,
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+
+
+def _render(payload) -> str:  # noqa: ANN001
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def test_chunk_payload_builder_generates_one_payload_per_chunk() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    assert manifest.payload_count == len(plan.chunks)
+    assert len(payloads) == len(plan.chunks)
+    assert {entry.chunk_id for entry in manifest.chunks} == {chunk.chunk_id for chunk in plan.chunks}
+
+
+def test_chunk_payload_builder_keeps_context_bounded_to_chunk_files() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    test_payload = payloads["chunk-02-tests.json"].model_dump(mode="json")
+    assert [item["path"] for item in api_payload["chunk_context"]["files"]] == ["backend/api/shifts.py"]
+    assert [item["path"] for item in test_payload["chunk_context"]["files"]] == ["tests/test_shift_service.py"]
+    assert "tests/test_shift_service.py" not in _render(api_payload["chunk_context"]["chunk_hunks"])
+
+
+def test_chunk_payload_builder_includes_hunks_contracts_evidence_and_response_contract() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    assert api_payload["chunk_context"]["chunk_hunks"]
+    assert api_payload["chunk_context"]["contracts_context"]["domain_contracts"]
+    evidence = api_payload["chunk_context"]["evidence_context"]["validation_evidence"]["blocking_findings"]
+    assert evidence and evidence[0]["file_path"] == "backend/api/shifts.py"
+    assert "required_fields" in api_payload["response_contract"]
+
+
+def test_chunk_payload_builder_handles_empty_chunk_as_limited() -> None:
+    intake = _intake()
+    plan = _chunk_plan(include_empty_chunk=True)
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    empty_entry = next(item for item in manifest.chunks if item.chunk_id == "chunk-03-unknown")
+    assert empty_entry.status == "limited"
+    assert "chunk_has_no_files:chunk-03-unknown" in empty_entry.limitations
+    assert "chunk-03-unknown.json" in payloads
+
+
+def test_chunk_payload_builder_applies_explicit_truncation_for_min_budget() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+        max_chars_per_payload=900,
+    )
+
+    assert any(entry.truncation.applied for entry in manifest.chunks)
+    assert any(payload.truncation.applied for payload in payloads.values())
+
+
+def test_chunk_payload_builder_identity_stable_when_plan_chunk_list_order_changes() -> None:
+    intake = _intake()
+    plan_a = _chunk_plan(reverse_order=False)
+    plan_b = _chunk_plan(reverse_order=True)
+    brief_a = _brief(intake, plan_a)
+    brief_b = _brief(intake, plan_b)
+    manifest_a, payloads_a = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan_a,
+        pr_brief=brief_a,
+        checks=None,
+        validation_evidence=None,
+    )
+    manifest_b, payloads_b = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan_b,
+        pr_brief=brief_b,
+        checks=None,
+        validation_evidence=None,
+    )
+
+    hashes_a = {entry.chunk_id: entry.payload_sha256 for entry in manifest_a.chunks}
+    hashes_b = {entry.chunk_id: entry.payload_sha256 for entry in manifest_b.chunks}
+    assert hashes_a == hashes_b
+    assert _render(payloads_a["chunk-01-api_schema_contract.json"].model_dump(mode="json")) == _render(
+        payloads_b["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    )
+
+
+def test_chunk_payload_builder_redacts_absolute_paths_and_secrets() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    plan.chunks[0].files = ["/tmp/backend/api/shifts.py"]
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    rendered = _render(payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json"))
+    assert "/tmp/backend/api/shifts.py" not in rendered
+    assert "SUPERSECRET" not in rendered
+    assert "[LOCAL_PATH_REDACTED]" in rendered

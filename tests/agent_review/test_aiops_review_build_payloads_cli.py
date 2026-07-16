@@ -1,0 +1,347 @@
+from __future__ import annotations
+
+import contextlib
+import importlib.util
+import io
+import json
+import os
+import socket
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "aiops-review-build-payloads.py"
+PR_BRIEF_MODULE = ROOT / "app" / "agent_review" / "pr_brief.py"
+PAYLOAD_BUILDER_MODULE = ROOT / "app" / "agent_review" / "chunk_payload_builder.py"
+
+
+def _dev_env() -> dict[str, str]:
+    env = {key: value for key, value in os.environ.items() if not key.startswith("AIOPS_")}
+    env.update(
+        {
+            "AIOPS_ENVIRONMENT": "dev",
+            "AIOPS_NODE_ROLE": "toolrepo",
+            "AIOPS_REPO_MODE": "agent_review_tooling",
+            "AIOPS_PRODUCTION_RUNTIME": "false",
+        }
+    )
+    return env
+
+
+def _load_script_module():
+    spec = importlib.util.spec_from_file_location("aiops_review_build_payloads_cli", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _invoke(module, args: list[str]) -> tuple[int, str, str]:  # noqa: ANN001
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        try:
+            returncode = module.main(args)
+        except SystemExit as exc:
+            returncode = int(exc.code or 0)
+    return returncode, stdout.getvalue(), stderr.getvalue()
+
+
+def _write_json(path: Path, payload: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _base_artifacts(tmp_path: Path) -> dict[str, Path]:
+    intake = _write_json(
+        tmp_path / "aiops-intake.json",
+        {
+            "schema_version": "agent-review.intake.v1",
+            "source": "aiops-review-intake",
+            "target_repo": "mglpsw/AgentEscala",
+            "target_profile": {
+                "schema_version": "agent-review.target-profile.v1",
+                "target_repo": "mglpsw/AgentEscala",
+                "domain_contracts": {"rules": [{"id": "rule-api", "description": "api contract"}]},
+                "review_packs": {"packs": [{"id": "calendar-pack", "description": "calendar"}]},
+            },
+            "artifacts": {
+                "file-diff-context": {
+                    "name": "file-diff-context",
+                    "path": "file-diff-context.json",
+                    "kind": "json",
+                    "content": {
+                        "review_mode": "offline",
+                        "contract_pack": "calendar",
+                        "files": [
+                            {"path": "backend/api/shifts.py", "status": "modified", "summary": "api"},
+                            {"path": "tests/test_shift_service.py", "status": "modified", "summary": "tests"},
+                        ],
+                        "coverage_requirements": {
+                            "must_review_files": ["backend/api/shifts.py"],
+                            "should_review_files": ["tests/test_shift_service.py"],
+                            "may_summarize_files": [],
+                        },
+                    },
+                },
+                "full-diff": {
+                    "name": "full-diff",
+                    "path": "full.diff",
+                    "kind": "diff",
+                    "content": "\n".join(
+                        [
+                            "diff --git a/backend/api/shifts.py b/backend/api/shifts.py",
+                            "@@ -1,1 +1,1 @@",
+                            "+token=TOPSECRET",
+                            "diff --git a/tests/test_shift_service.py b/tests/test_shift_service.py",
+                            "@@ -1,1 +1,1 @@",
+                            "+assert True",
+                        ]
+                    ),
+                },
+            },
+            "artifact_status": [
+                {"name": "file-diff-context", "path": "file-diff-context.json", "available": True, "valid": True, "status": "available"},
+                {"name": "full-diff", "path": "full.diff", "available": True, "valid": True, "status": "available"},
+            ],
+            "redaction_summary": {"schema_version": "agent-review.redaction-report.v1"},
+            "limitations": [],
+            "completeness": {},
+            "created_at": "2026-06-02T00:00:00Z",
+            "status": "complete",
+        },
+    )
+    chunk_plan = _write_json(
+        tmp_path / "semantic-chunk-plan.json",
+        {
+            "schema_version": 1,
+            "schema_id": "agent-review.semantic-chunk-plan.v1",
+            "source": "aiops-semantic-chunk-planner",
+            "target_repo": "mglpsw/AgentEscala",
+            "max_parallel_blocks": 6,
+            "chunks": [
+                {
+                    "chunk_id": "chunk-01-api_schema_contract",
+                    "semantic_group": "api_schema_contract",
+                    "order_index": 0,
+                    "files": ["backend/api/shifts.py"],
+                    "artifacts": ["artifact:file-diff-context"],
+                    "contracts": [],
+                    "depends_on": [],
+                    "coverage": "complete",
+                    "prompt_budget_chars": 2000,
+                    "estimated_chars": 800,
+                    "limitations": [],
+                },
+                {
+                    "chunk_id": "chunk-02-tests",
+                    "semantic_group": "tests",
+                    "order_index": 1,
+                    "files": ["tests/test_shift_service.py"],
+                    "artifacts": [],
+                    "contracts": [],
+                    "depends_on": [],
+                    "coverage": "complete",
+                    "prompt_budget_chars": 2000,
+                    "estimated_chars": 600,
+                    "limitations": [],
+                },
+            ],
+            "files_covered": ["backend/api/shifts.py", "tests/test_shift_service.py"],
+            "files_partially_covered": [],
+            "files_not_covered": [],
+            "limitations": [],
+            "status": "complete",
+            "created_at": "2026-06-02T00:00:00Z",
+        },
+    )
+    redaction = _write_json(
+        tmp_path / "redaction-report.json",
+        {
+            "schema_version": "agent-review.redaction-report.v1",
+            "source": "aiops-review-intake",
+            "files_processed": 1,
+            "replacements_by_type": {"token_assignment": 1},
+            "secret_like_values_found": 1,
+            "redacted_lines_present": True,
+            "redaction_is_sanitizer_artifact": True,
+            "hardcoded_secret_confirmed": False,
+            "output_safe_for_llm": True,
+            "limitations": [],
+        },
+    )
+    return {"intake": intake, "chunk_plan": chunk_plan, "redaction": redaction}
+
+
+def _args(paths: dict[str, Path], out_root: Path) -> list[str]:
+    return [
+        "--intake",
+        str(paths["intake"]),
+        "--chunk-plan",
+        str(paths["chunk_plan"]),
+        "--redaction-report",
+        str(paths["redaction"]),
+        "--brief-output",
+        str(out_root / "pr-brief.json"),
+        "--payloads-dir",
+        str(out_root / "chunk-payloads"),
+        "--manifest-output",
+        str(out_root / "chunk-payload-manifest.json"),
+    ]
+
+
+def test_cli_builds_outputs_outside_git_worktree(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    out_root = tmp_path / "agent-output"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    assert result[0] == 0, result[2] + result[1]
+    brief = out_root / "pr-brief.json"
+    manifest = out_root / "chunk-payload-manifest.json"
+    payloads_dir = out_root / "chunk-payloads"
+    assert brief.exists()
+    assert manifest.exists()
+    assert payloads_dir.exists()
+    payload = json.loads(brief.read_text(encoding="utf-8"))
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["schema_id"] == "agent-review.pr-brief.v1"
+    assert manifest_payload["schema_id"] == "agent-review.chunk-payload-manifest.v1"
+    assert manifest_payload["payload_count"] == 2
+    assert "optional_artifact_missing:checks" in payload["limitations"]
+    assert "optional_artifact_missing:validation_evidence" in payload["limitations"]
+    for entry in manifest_payload["chunks"]:
+        assert (payloads_dir / entry["payload_path"]).exists()
+
+
+def test_cli_blocks_symlinked_output_inside_git_worktree(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    target_worktree = tmp_path / "fake-worktree"
+    target_worktree.mkdir()
+    (target_worktree / ".git").write_text("gitdir: elsewhere", encoding="utf-8")
+    linked = tmp_path / "linked-worktree"
+    linked.symlink_to(target_worktree, target_is_directory=True)
+    module = _load_script_module()
+    args = _args(paths, linked)
+
+    result = _invoke(module, args)
+
+    assert result[0] == 1
+    payload = json.loads(result[1])
+    assert payload["error_class"] == "target_repo_write_blocked"
+
+
+def test_cli_blocks_input_overwrite(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    module = _load_script_module()
+    args = _args(paths, tmp_path / "out")
+    args[args.index("--brief-output") + 1] = str(paths["intake"])
+
+    result = _invoke(module, args)
+
+    assert result[0] == 1
+    payload = json.loads(result[1])
+    assert payload["error_class"] == "output_overwrites_input"
+
+
+def test_cli_blocks_brief_or_manifest_inside_payloads_dir(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    module = _load_script_module()
+    out_root = tmp_path / "agent-output"
+    args = _args(paths, out_root)
+    payloads_dir = out_root / "chunk-payloads"
+    args[args.index("--brief-output") + 1] = str(payloads_dir / "pr-brief.json")
+
+    result = _invoke(module, args)
+
+    assert result[0] == 1
+    payload = json.loads(result[1])
+    assert payload["error_class"] == "output_conflict"
+
+
+def test_cli_removes_partial_outputs_when_write_fails(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    out_root = tmp_path / "agent-output"
+    module = _load_script_module()
+
+    original_write = module._write_file_atomic
+
+    def fail_on_manifest(path: Path, content: str) -> None:  # noqa: ANN001
+        if path.name == "chunk-payload-manifest.json":
+            raise OSError("simulated write error")
+        original_write(path, content)
+
+    monkeypatch.setattr(module, "_write_file_atomic", fail_on_manifest)
+    result = _invoke(module, _args(paths, out_root))
+
+    assert result[0] == 1
+    payload = json.loads(result[1])
+    assert payload["error_class"] == "output_write_failed"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_does_not_call_network_router_or_provider(monkeypatch, tmp_path: Path) -> None:
+    def fail_network(*args, **kwargs):  # noqa: ANN001
+        raise AssertionError("network should not be called")
+
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(socket, "socket", fail_network)
+    monkeypatch.setattr(socket, "create_connection", fail_network)
+    paths = _base_artifacts(tmp_path)
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, tmp_path / "out"))
+
+    assert result[0] == 0, result[2] + result[1]
+
+
+def test_cli_error_class_is_deterministic_for_invalid_required_input(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    paths["chunk_plan"].write_text("{", encoding="utf-8")
+    module = _load_script_module()
+    args = _args(paths, tmp_path / "out")
+
+    first = _invoke(module, args)
+    second = _invoke(module, args)
+
+    assert first[0] == 1 and second[0] == 1
+    assert json.loads(first[1])["error_class"] == "chunk_plan_invalid"
+    assert json.loads(second[1])["error_class"] == "chunk_plan_invalid"
+
+
+def test_new_active_paths_do_not_contain_router_or_provider_calls() -> None:
+    active_text = (
+        SCRIPT.read_text(encoding="utf-8")
+        + "\n"
+        + PR_BRIEF_MODULE.read_text(encoding="utf-8")
+        + "\n"
+        + PAYLOAD_BUILDER_MODULE.read_text(encoding="utf-8")
+    )
+    forbidden = [
+        "/v1/chat/ingest",
+        "/v1/chat/completions",
+        "requests.",
+        "urllib.request",
+        "openai",
+        "anthropic",
+        "ollama",
+    ]
+    for value in forbidden:
+        assert value not in active_text.lower()
