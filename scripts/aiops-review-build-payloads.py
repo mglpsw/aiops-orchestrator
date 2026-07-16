@@ -132,11 +132,17 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # pragma: no cover - defensive fallback
         return _fail_json("payload_builder_unexpected_error", str(exc), limitations=["payload_builder_unexpected_error"])
 
+    has_limited_entries = any(entry.status == "limited" for entry in manifest.chunks)
+    has_truncated_entries = any(entry.truncation.applied for entry in manifest.chunks)
+    overall_status = "complete"
+    if manifest.limitations or pr_brief.truncation.applied or has_limited_entries or has_truncated_entries:
+        overall_status = "partial"
+
     print(
         _to_json(
             {
                 "ok": True,
-                "status": "complete" if not manifest.limitations else "partial",
+                "status": overall_status,
                 "payload_count": manifest.payload_count,
                 "output_written": True,
             }

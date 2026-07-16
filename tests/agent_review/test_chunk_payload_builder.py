@@ -540,7 +540,7 @@ def test_chunk_payload_builder_sanitizes_manifest_metadata() -> None:
     plan = _chunk_plan()
     plan.chunks[0].chunk_id = "chunk-01-token=SUPERSECRET"
     brief = _brief(intake, plan)
-    manifest, _ = build_chunk_payloads(
+    manifest, payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
         pr_brief=brief,
@@ -550,6 +550,9 @@ def test_chunk_payload_builder_sanitizes_manifest_metadata() -> None:
 
     rendered = _render(manifest.model_dump(mode="json"))
     assert "SUPERSECRET" not in rendered
+    payload_paths = {entry.payload_path for entry in manifest.chunks}
+    assert all(payload_path and "SUPERSECRET" not in payload_path for payload_path in payload_paths)
+    assert payload_paths == set(payloads)
 
 
 def test_chunk_payload_builder_does_not_fallback_to_arbitrary_contracts() -> None:
@@ -577,6 +580,24 @@ def test_chunk_payload_builder_does_not_fallback_to_arbitrary_contracts() -> Non
     assert contracts_context["domain_contracts"] == []
     assert contracts_context["review_packs"] == []
     assert "contracts_context_not_relevant:chunk-01-api_schema_contract" in api_payload["limitations"]
+
+
+def test_chunk_payload_builder_keeps_selected_contract_pack_from_brief() -> None:
+    intake = _intake()
+    intake.artifacts["file-diff-context"]["content"]["contract_pack"] = "calendar"
+    plan = _chunk_plan()
+    plan.chunks[0].contracts = []
+    brief = _brief(intake, plan)
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=brief,
+        checks=None,
+        validation_evidence=None,
+    )
+
+    packs = payloads["chunk-01-api_schema_contract.json"].chunk_context["contracts_context"]["review_packs"]
+    assert [item["id"] for item in packs] == ["agentescala-calendar"]
 
 
 def test_chunk_payload_builder_parses_quoted_unicode_rename_and_deleted_diff_paths() -> None:
@@ -631,6 +652,34 @@ def test_chunk_payload_builder_parses_quoted_unicode_rename_and_deleted_diff_pat
     api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
     hunk_paths = {item["path"] for item in api_payload["chunk_context"]["chunk_hunks"]}
     assert hunk_paths == {"backend/my file.py", "docs/ação clínica.md", "new.py", "obsolete.py"}
+
+
+def test_chunk_payload_builder_parses_octal_quoted_header_paths_without_plus_markers() -> None:
+    intake = _intake()
+    intake.artifacts["file-diff-context"]["content"]["files"] = [
+        {"path": "docs/ação clínica.md", "status": "modified", "summary": "unicode"},
+    ]
+    intake.artifacts["full-diff"]["content"] = "\n".join(
+        [
+            'diff --git "a/docs/a\\303\\247\\303\\243o\\040cl\\303\\255nica.md" "b/docs/a\\303\\247\\303\\243o\\040cl\\303\\255nica.md"',
+            "@@ -1 +1 @@",
+            "+conteúdo",
+        ]
+    )
+    plan = _chunk_plan()
+    plan.chunks[0].files = ["docs/ação clínica.md"]
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+        max_chars_per_payload=20_000,
+    )
+
+    api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    hunk_paths = {item["path"] for item in api_payload["chunk_context"]["chunk_hunks"]}
+    assert hunk_paths == {"docs/ação clínica.md"}
 
 
 def test_chunk_payload_builder_records_missing_hunks_as_limitations() -> None:

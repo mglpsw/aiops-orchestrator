@@ -6,7 +6,6 @@ import copy
 import hashlib
 import json
 import re
-import shlex
 from collections import defaultdict
 from typing import Any
 
@@ -161,7 +160,11 @@ def _build_chunk_payload(
             continue
         limitations.append(f"chunk_diff_hunk_missing:{_sanitize_relative_path(path)}")
 
-    contracts_context, contract_limitations = _contracts_context(intake, chunk=chunk)
+    contracts_context, contract_limitations = _contracts_context(
+        intake,
+        chunk=chunk,
+        selected_contract_pack=_clean_text(pr_brief.review.get("contract_pack")),
+    )
     checks_context, check_limitations = _checks_context(checks, intake=intake, chunk_files=set(chunk.files))
     evidence_context, evidence_limitations = _evidence_context(
         intake,
@@ -390,7 +393,12 @@ def _resolve_identity_value(
     return None
 
 
-def _contracts_context(intake: ReviewIntake, *, chunk: SemanticChunk) -> tuple[dict[str, Any], list[str]]:
+def _contracts_context(
+    intake: ReviewIntake,
+    *,
+    chunk: SemanticChunk,
+    selected_contract_pack: str | None,
+) -> tuple[dict[str, Any], list[str]]:
     profile = intake.target_profile if isinstance(intake.target_profile, dict) else {}
     contracts = _flatten_contract_rules(profile.get("domain_contracts"))
     packs = _flatten_review_packs(profile.get("review_packs"))
@@ -399,6 +407,7 @@ def _contracts_context(intake: ReviewIntake, *, chunk: SemanticChunk) -> tuple[d
     referenced_contracts = {item.split(":", 1)[1] for item in chunk.contracts if item.startswith("contract:") and ":" in item}
     include_all_contracts = "target_profile:domain_contracts" in chunk.contracts
     include_all_packs = "target_profile:review_packs" in chunk.contracts
+    selected_pack = (selected_contract_pack or "").lower()
 
     filtered_contracts = [
         item
@@ -419,6 +428,7 @@ def _contracts_context(intake: ReviewIntake, *, chunk: SemanticChunk) -> tuple[d
         if (
             include_all_packs
             or item.get("id") in referenced_contracts
+            or (selected_pack and _review_pack_matches_selected(item, selected_pack))
             or _contract_matches_chunk(item, chunk_files=chunk_file_set)
             or (
                 relevance_keywords
@@ -704,6 +714,22 @@ def _flatten_review_packs(document: Any) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
 
 
+def _review_pack_matches_selected(pack: dict[str, Any], selected_pack: str) -> bool:
+    if not selected_pack:
+        return False
+    pack_id = _clean_text(pack.get("id")) or ""
+    description = _clean_text(pack.get("description")) or ""
+    selected = selected_pack.lower()
+    id_lower = pack_id.lower()
+    description_lower = description.lower()
+    return (
+        id_lower == selected
+        or description_lower == selected
+        or selected in id_lower
+        or selected in description_lower
+    )
+
+
 def _relevance_keywords(chunk: SemanticChunk) -> tuple[str, ...]:
     mapping = {
         "primary_backend_logic": ("backend", "service", "domain", "api"),
@@ -891,10 +917,18 @@ def _refresh_hunk_coverage(payload: dict[str, Any]) -> None:
 
 
 def _payload_filename(chunk: SemanticChunk) -> tuple[str, list[str]]:
-    if _is_safe_filename(chunk.chunk_id):
-        return f"{chunk.chunk_id}.json", []
-    safe = f"chunk-{chunk.order_index + 1:02d}.json"
-    return safe, [f"chunk_id_not_safe_for_filename:{chunk.chunk_id}"]
+    chunk_id = chunk.chunk_id
+    sanitized_chunk_id = sanitize_artifact_value(chunk_id)
+    if isinstance(sanitized_chunk_id, str) and _is_safe_filename(sanitized_chunk_id) and sanitized_chunk_id == chunk_id:
+        return f"{sanitized_chunk_id}.json", []
+    digest = hashlib.sha256((_clean_text(chunk_id) or "").encode("utf-8")).hexdigest()[:10]
+    safe = f"chunk-{chunk.order_index + 1:02d}-{digest}.json"
+    limitations: list[str] = []
+    if sanitized_chunk_id != chunk_id:
+        limitations.append(f"chunk_id_sanitized_for_filename:{digest}")
+    else:
+        limitations.append(f"chunk_id_not_safe_for_filename:{digest}")
+    return safe, limitations
 
 
 def _is_safe_filename(value: str) -> bool:
@@ -961,13 +995,43 @@ def _resolve_diff_block_path(block_lines: list[str]) -> str | None:
 
 
 def _parse_diff_path(line: str) -> str | None:
-    try:
-        parts = shlex.split(line)
-    except ValueError:
+    if not line.startswith("diff --git "):
         return None
-    if len(parts) < 4 or parts[0] != "diff" or parts[1] != "--git":
+    parsed = _split_diff_git_header(line[len("diff --git ") :])
+    if len(parsed) < 2:
         return None
-    return _normalize_diff_path(parts[3])
+    return _normalize_diff_path(parsed[1])
+
+
+def _split_diff_git_header(raw: str) -> list[str]:
+    parts: list[str] = []
+    index = 0
+    length = len(raw)
+    while index < length:
+        while index < length and raw[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        if raw[index] == '"':
+            token = ['"']
+            index += 1
+            while index < length:
+                char = raw[index]
+                token.append(char)
+                index += 1
+                if char == "\\" and index < length:
+                    token.append(raw[index])
+                    index += 1
+                    continue
+                if char == '"':
+                    break
+            parts.append("".join(token))
+            continue
+        start = index
+        while index < length and not raw[index].isspace():
+            index += 1
+        parts.append(raw[start:index])
+    return parts
 
 
 def _normalize_diff_path(raw_path: str) -> str | None:

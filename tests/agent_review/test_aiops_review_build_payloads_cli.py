@@ -196,6 +196,11 @@ def _error_payload(result: tuple[int, str, str]) -> dict:
     return json.loads(result[1])
 
 
+def _success_payload(result: tuple[int, str, str]) -> dict:
+    assert result[0] == 0, f"expected success, got {result[0]} stderr={result[2]} stdout={result[1]}"
+    return json.loads(result[1])
+
+
 def test_cli_builds_outputs_outside_git_worktree(monkeypatch, tmp_path: Path) -> None:
     for key, value in _dev_env().items():
         monkeypatch.setenv(key, value)
@@ -221,6 +226,23 @@ def test_cli_builds_outputs_outside_git_worktree(monkeypatch, tmp_path: Path) ->
     assert "optional_artifact_missing:validation_evidence" in payload["limitations"]
     for entry in manifest_payload["chunks"]:
         assert (payloads_dir / entry["payload_path"]).exists()
+
+
+def test_cli_returns_partial_status_when_manifest_entries_are_truncated(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    out_root = tmp_path / "agent-output"
+    module = _load_script_module()
+    args = _args(paths, out_root)
+    args.extend(["--payload-max-chars", "900"])
+
+    result = _invoke(module, args)
+
+    payload = _success_payload(result)
+    assert payload["status"] == "partial"
+    manifest = json.loads((out_root / "chunk-payload-manifest.json").read_text(encoding="utf-8"))
+    assert any(item["truncation"]["applied"] for item in manifest["chunks"])
 
 
 def test_cli_blocks_symlinked_output_inside_git_worktree(monkeypatch, tmp_path: Path) -> None:
