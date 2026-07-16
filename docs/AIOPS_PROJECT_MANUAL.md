@@ -5,10 +5,10 @@
 **Documento:** AIOPS-MANUAL-001  
 **Versão do documento:** 1.0  
 **Data de consolidação:** 15 de julho de 2026  
-**Baseline do código:** após o merge da PR `mglpsw/aiops-orchestrator#66`  
+**Baseline do código:** após os merges de `mglpsw/aiops-orchestrator#72` e follow-up `#73`
 **Release produtivo do runtime:** `v0.19.0`  
 **Release track em desenvolvimento:** `v0.20.0 — AgentReview Quality Gate`  
-**Status do documento:** baseline oficial sugerida; ainda não versionada no repositório
+**Status do documento:** baseline oficial versionada no repositório
 
 ---
 
@@ -85,24 +85,15 @@ v0.20.0
 
 ### 2.1 Situação em uma frase
 
-> O AIOps já consegue produzir e validar deterministicamente um review final, mas ainda falta tornar o `review-quality-gate.json` parte do E2E oficial e fazer o AgentEscala consumi-lo como thin-wrapper.
+> O AIOps já produz e valida deterministicamente `review-quality-gate.json`, e o
+> contrato pós-#72/#73 já exige consumo fail-closed no AgentEscala.
 
 ### 2.2 Próximo bloqueio real
 
-A próxima PR deve ser a issue #60:
-
-```text
-#60 — test(agent-review): add quality gate E2E contract fixture
-```
-
-Depois dela, o caminho mais curto para gerar valor no AgentEscala é:
-
-```text
-#60 E2E do gate
-→ #65 contrato do wrapper
-→ PR própria no AgentEscala para consumir review-quality-gate.json
-→ canário no CT104
-```
+Com #60, #61, #62 e #65 concluídas, o próximo bloqueador para o track `v0.20.0`
+é a PR futura do AIOps para PR brief determinístico e bounded per-chunk
+context/payload builder (sem mudar runtime do AgentEscala nesta fase
+documental).
 
 ---
 
@@ -797,36 +788,33 @@ material insuficiente
 | #39 | Final synthesizer | Concluída | Gate é autoridade posterior |
 | #40 | Thin-wrapper contract | Concluída | Evoluir consumo do gate em #65/AgentEscala |
 | #41 | Semantic grouping | Concluída | Ajustes futuros por telemetry |
-| #42 | Telemetry/FP learning épico | Aberta | Executar #61 e #62 |
-| #43 | Quality gate/second opinion épico | Parcial: gate concluído | Executar #60 e depois #63 |
+| #42 | Telemetry/FP learning épico | Aberta | Evoluir após baseline pós-#73 |
+| #43 | Quality gate/second opinion épico | Parcial: gate concluído | Manter second opinion fora do hotfix documental |
 | #44 | Validation Evidence pre-review | Aberta | Executar depois do gate/telemetry |
 | #45 | Redaction/coverage deterministic | Aberta para reavaliação | Verificar saldo após #59/#60 |
 | #46 | Roadmap mãe | Aberta | Atualizar checkpoints |
 | #52 | Release v0.19.0 | Fechada/completed | Arquivar evidência |
-| #58 | Release track v0.20.0 | Aberta | Coordenar #60–#65 |
+| #58 | Release track v0.20.0 | Aberta | Coordenar próximo bloqueador (PR brief + bounded payload builder) |
 | #59 | Deterministic quality gate | Concluída via PR #66 | Fechar/confirmar fechamento automático |
-| #60 | Quality gate E2E fixture | Próxima | Implementar agora |
-| #61 | Telemetry baseline | Aberta | Após #60 ou em paralelo controlado |
-| #62 | FP signatures/contract suggestions | Aberta | Após #61 |
+| #60 | Quality gate E2E fixture | Concluída | Manter cobertura nos testes contratuais |
+| #61 | Telemetry baseline | Concluída | Evoluir apenas por necessidade de produto |
+| #62 | FP signatures/contract suggestions | Concluída | Manter manual-only para sugestões |
 | #63 | Optional second opinion | Aberta | Depois do gate estabilizado |
 | #64 | Validation Evidence integration | Aberta | Depois de gate/telemetry |
-| #65 | AgentEscala gate consumption contract | Aberta | Após #60; pode ser acelerada |
+| #65 | AgentEscala gate consumption contract | Concluída | Hardening documental pós-merge consolidado em #73 |
 
 ---
 
 ## 12. Achados de auditoria e dívida técnica
 
-## 12.1 P2 — E2E do quality gate ainda ausente
+## 12.1 P2 — E2E do quality gate (resolvido)
 
-**Impacto:** o artifact existe e está testado isoladamente, mas o contrato completo não prova todos os passos em uma única execução reproduzível.
+**Status:** resolvido por #60 com fixture e validações contratuais no repositório.
 
-**Correção:** implementar #60.
+## 12.2 P2 — Contrato de consumo do gate no AgentEscala (resolvido no AIOps)
 
-## 12.2 P2 — AgentEscala ainda não usa o gate
-
-**Impacto:** o ganho de redução de falso positivo ainda não chega ao comentário/decisão do target repo.
-
-**Correção:** #65 + PR própria no AgentEscala.
+**Status:** contrato consolidado em #65 e endurecido no follow-up pós-#72 (#73).
+Implementação de runtime do thin wrapper permanece na PR futura do target repo.
 
 ## 12.3 P2 — documentação do release `v0.19.0` pode estar obsoleta
 
@@ -972,9 +960,9 @@ Entregas:
 
 Esta é a trilha mais curta e segura para gerar valor real sem esperar telemetry/second opinion.
 
-## 15.1 Passo 1 — mergear a #60
+## 15.1 Passo 1 — baseline da #60 já consolidada
 
-Garantir que o E2E oficial gere:
+A #60 já foi mergeada. O E2E oficial gera:
 
 ```text
 review-quality-gate.json
@@ -998,6 +986,7 @@ steps:
       repository: mglpsw/aiops-orchestrator
       ref: ${{ env.AIOPS_ORCHESTRATOR_SHA }}
       path: ${{ runner.temp }}/aiops-orchestrator
+      persist-credentials: false
 ```
 
 Regras contratuais:
@@ -1009,7 +998,7 @@ Regras contratuais:
 - falha ao buscar o SHA interrompe o job;
 - nunca existe fallback para `master`;
 - `AIOPS_ORCHESTRATOR_SHA` deve passar em `[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]`;
-- o checkout deve confirmar `test "$(git rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"`;
+- o checkout deve confirmar `test "$(git -C "$RUNNER_TEMP/aiops-orchestrator" rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"`;
 - o SHA da action e o SHA do toolrepo são controles diferentes e ambos revisáveis;
 - o SHA real da action deve ser escolhido na futura PR de implementação do AgentEscala.
 
@@ -1116,8 +1105,8 @@ Critério para ativação padrão no AgentEscala:
 Corte mínimo:
 
 ```text
-[ ] #59 mergeada e issue fechada
-[ ] #60 mergeada
+[x] #59 mergeada e issue fechada
+[x] #60 mergeada
 [ ] E2E gera 7 artifacts
 [ ] review-quality-gate.json validado
 [ ] target repo fixture não é modificado
@@ -1130,7 +1119,7 @@ Corte mínimo:
 Corte recomendado para valor no AgentEscala:
 
 ```text
-[ ] #65 concluída
+[x] #65 concluída
 [ ] PR própria no AgentEscala mergeada
 [ ] toolrepo pinado por SHA Git completo de 40 caracteres
 [ ] canário CT104 validado

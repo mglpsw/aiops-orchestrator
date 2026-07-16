@@ -1,5 +1,8 @@
 # AgentEscala Tool Repo Integration
 
+Status: supplemental guidance. The canonical wrapper contract is
+`docs/AGENTESCALA_TARGET_REPO_CONTRACT.md`.
+
 Phase 05 integrates `mglpsw/AgentEscala` with the AgentReview Engine in
 `mglpsw/aiops-orchestrator` as a pinned local tool repo on CT104.
 
@@ -31,8 +34,10 @@ may call Agent Router only through the OpenAI-compatible endpoint
 - `.aiops/domain-contracts.yaml` and `.aiops/review-packs.yaml`;
 - workflow orchestration in GitHub Actions on CT104;
 - optional Agent Router calls for each chunk;
-- PR comment publication from `final-review.md`;
-- temporary manual fallback to the legacy review path.
+- publication by consuming `review-quality-gate.json` (conclusive
+  `final-review.md` only for valid gate combinations);
+- fail-closed fallback when gate validation fails (legacy rollback only when
+  explicitly configured by maintainers).
 
 Product rules stay in AgentEscala. Generic review engine logic stays in AIOps.
 
@@ -112,10 +117,22 @@ $RUNNER_TEMP/agent/semantic-chunk-plan.json
 $RUNNER_TEMP/agent/chunk-results.json
 $RUNNER_TEMP/agent/final-review.json
 $RUNNER_TEMP/agent/final-review.md
+$RUNNER_TEMP/agent/review-quality-gate.json
+$RUNNER_TEMP/agent/review-telemetry.json
 ```
 
 The AIOps CLIs reject outputs inside the target repository root. Keep all
 generated review outputs in `$RUNNER_TEMP/agent`.
+
+Optional/conditional outputs:
+
+```text
+$RUNNER_TEMP/agent/false-positive-signatures.json
+$RUNNER_TEMP/agent/suggested-contract-updates.yaml
+```
+
+`suggested-contract-updates.yaml` is manual-only and must never be
+auto-applied.
 
 ## Chunk Response Contract
 
@@ -154,8 +171,70 @@ It must never invent findings.
 
 ## Pinning
 
-AgentEscala should pin the AIOps tool repo by full commit SHA. The
-`v0.19.0-rc.1` tag is a human release label created manually after the AIOps
-Phase 05A PR merges; the workflow should validate that `git rev-parse HEAD`
-matches the configured SHA.
+AgentEscala must pin the AIOps tool repo by full commit SHA in canonical
+lowercase form:
 
+```text
+^[0-9a-f]{40}$
+```
+
+Branch refs, tags, short SHA, and floating refs are invalid as runtime checkout
+values. Maintainers may select a release tag only in human selection flow
+(resolve tag to commit, verify provenance, then store the full SHA in workflow
+configuration). Runtime tag resolution is prohibited.
+
+Validation example:
+
+```bash
+[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]
+test "$(git -C "$RUNNER_TEMP/aiops-orchestrator" rev-parse HEAD)" \
+  = "$AIOPS_ORCHESTRATOR_SHA"
+```
+
+Use `actions/checkout` pinned by verified full commit SHA (never floating action
+tags) and `persist-credentials: false` in analysis checkouts.
+
+## Publication behavior
+
+The wrapper validates the gate combination before using any field as authority.
+
+- `status=passed` with approval verdict and `manual_review_required=false`:
+  conclusive non-blocking publication.
+- `status=passed` with `changes_requested` and
+  `manual_review_required=false`: conclusive blocking publication.
+- `status=degraded` with `changes_requested` and
+  `manual_review_required=false`: conclusive blocking publication only when
+  `blocked_reasons` is non-empty and `limitations` are disclosed.
+- `status=manual_review_required` or `status=failed`: non-conclusive fallback.
+- Any unknown/invalid/contradictory combination: fail closed.
+
+`status=degraded` never approves.
+
+Fail-closed output is deterministic:
+
+```text
+publication_result=review_unavailable
+manual_review_required=true
+publication_class=fail_closed
+reason_code=<sanitized local reason code>
+```
+
+Never use `final-review.json` as replacement authority and never copy raw
+invalid gate payload into comment, summary, or artifact outputs.
+
+## CT104 security constraints
+
+Before self-hosted runner allocation, exclude forks at job level:
+
+```text
+github.event.pull_request.head.repo.full_name == github.repository
+```
+
+Fork PRs must not access CT104 execution, checkout, artifacts, Agent Router
+calls, or secrets.
+
+Also require:
+
+- no `pull_request_target` for untrusted PR code;
+- analysis job with read-only permissions where possible;
+- publication job separated with minimal write permissions.

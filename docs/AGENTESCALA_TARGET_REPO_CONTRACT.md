@@ -57,7 +57,8 @@ After checkout, the workflow must prove the effective revision is pinned:
 
 ```text
 [[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]
-test "$(git rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"
+test "$(git -C "$RUNNER_TEMP/aiops-orchestrator" rev-parse HEAD)" \
+  = "$AIOPS_ORCHESTRATOR_SHA"
 ```
 
 If the configured SHA is invalid or cannot be fetched, analysis must stop. It
@@ -68,13 +69,30 @@ SHA change. Uppercase SHA input is not accepted.
 Contractual checkout example:
 
 ```yaml
-AIOPS_ORCHESTRATOR_SHA=<lowercase-40-character-commit-sha>
+env:
+  AIOPS_ORCHESTRATOR_SHA: <lowercase-40-character-commit-sha>
 
-- uses: actions/checkout@<verified-full-commit-sha> # v4.x
-  with:
-    repository: mglpsw/aiops-orchestrator
-    ref: ${{ env.AIOPS_ORCHESTRATOR_SHA }}
-    path: ${{ runner.temp }}/aiops-orchestrator
+jobs:
+  aiops-analysis:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, ct104]
+    steps:
+      - name: Validate toolrepo SHA format
+        run: |
+          [[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+      - name: Checkout AIOps toolrepo
+        uses: actions/checkout@<verified-full-commit-sha> # actions/checkout v4.x
+        with:
+          repository: mglpsw/aiops-orchestrator
+          ref: ${{ env.AIOPS_ORCHESTRATOR_SHA }}
+          path: ${{ runner.temp }}/aiops-orchestrator
+          persist-credentials: false
+
+      - name: Verify toolrepo checkout pin
+        run: |
+          test "$(git -C "$RUNNER_TEMP/aiops-orchestrator" rev-parse HEAD)" \
+            = "$AIOPS_ORCHESTRATOR_SHA"
 ```
 
 The action pin SHA and the toolrepo checkout SHA are separate controls. Both
@@ -150,18 +168,26 @@ Fail-closed reason codes:
 - `gate_verdict_unknown`
 - `gate_combination_invalid`
 - `gate_validation_failed`
+- `toolrepo_sha_invalid`
+- `toolrepo_checkout_failed`
+- `toolrepo_sha_mismatch`
+
+Rows prefixed with **Valid gate** are evaluated only after schema/source/version
+and enum validation, plus allowed-combination validation. An invalid gate must
+never be treated as valid only because it contains `manual_review_required=true`.
 
 | Gate condition | Publication result |
 | --- | --- |
-| Valid gate; `status=passed` or `status=degraded`; `manual_review_required=false`; `normalized_verdict` is `approved`, `approve_with_minor_notes`, or `approve_with_required_followup` | Publish `final-review.md` and add a short `quality gate: passed` or `quality gate: degraded` banner matching `status`. If `status=degraded`, include the gate `limitations`. |
-| Valid gate; `status=passed` or `status=degraded`; `manual_review_required=false`; `normalized_verdict=changes_requested` | Publish `final-review.md` as a blocking review. Preserve `blocked_reasons`; disclose `status=degraded` and its `limitations` when applicable; do not require the wrapper to reconfirm the blocker or promote/reduce findings locally. |
-| `manual_review_required=true`, or `status=manual_review_required`, or `normalized_verdict=manual_review_required` | Publish a conservative `manual_review_required` comment/summary. Do not claim approval or a definitive `changes_requested`; state that human review of the available artifacts is required and link/reference those artifacts. |
-| `status=failed` or `normalized_verdict=review_unavailable` | Publish a `review_unavailable` fallback. Do not publish `final-review.md` as a conclusive review; disclose `limitations` and reference available artifacts. |
-| Gate missing, invalid JSON, incompatible schema/version/source, unknown status/verdict, impossible combination, or any other gate-validation failure | Publish fail-closed `manual_review_required` or `review_unavailable` using a sanitized reason code from local validation. Do not publish `final-review.md` as a conclusive result. Never use `final-review.json` as replacement authority, and never copy raw untrusted gate payload into publication. |
+| Valid gate; `status=passed`; `manual_review_required=false`; `normalized_verdict` is `approved`, `approve_with_minor_notes`, or `approve_with_required_followup` | Publish `final-review.md` as conclusive non-blocking output. |
+| Valid gate; `status=passed`; `manual_review_required=false`; `normalized_verdict=changes_requested`; `blocked_reasons` non-empty | Publish `final-review.md` as conclusive blocking output. |
+| Valid gate; `status=degraded`; `manual_review_required=false`; `normalized_verdict=changes_requested`; `blocked_reasons` non-empty | Publish `final-review.md` as conclusive blocking output only when blocker evidence is reliable. Always disclose degraded `limitations`. |
+| Valid gate; `status=manual_review_required`; `normalized_verdict=manual_review_required`; `manual_review_required=true` | Publish non-conclusive `manual_review_required` fallback with artifact references. |
+| Valid gate; `status=failed`; `normalized_verdict=review_unavailable`; `manual_review_required=true` | Publish non-conclusive `review_unavailable` fallback with artifact references. |
+| Any other combination, or gate missing/invalid/incompatible/unknown/contradictory | Use `gate_combination_invalid` (or specific local reason code) and publish deterministic fail-closed result only: `publication_result=review_unavailable`, `manual_review_required=true`, `publication_class=fail_closed`. Never use `final-review.json` as replacement authority and never copy raw invalid payload into publication. |
 
-`status=degraded` must never be hidden. It must be disclosed even when the
-normalized verdict is otherwise publishable. A malformed or contradictory gate
-is not a degraded success; it follows the fail-closed row.
+`status=degraded` must never be hidden and can never be used for conclusive
+approval. `changes_requested` requires non-empty `blocked_reasons`. A malformed
+or contradictory gate is not a degraded success; it follows the fail-closed row.
 
 ## Artifact publication and sanitization
 
@@ -192,10 +218,13 @@ The future wrapper PR must:
 
 - use a stable HTML marker and update the prior idempotent comment instead of
   creating duplicates;
+- block fork PRs at job level before allocating self-hosted CT104 runners:
+  `if: github.event.pull_request.head.repo.full_name == github.repository`;
 - separate read-only analysis from the job step that has write permission;
 - grant only the minimum publication permissions;
 - never use `pull_request_target` to execute untrusted PR code;
-- never expose secrets to fork PRs; and
+- never expose secrets to fork PRs;
+- set `persist-credentials: false` on analysis checkouts; and
 - validate the gate before publishing any conclusive or gate-derived review.
   When validation fails, still publish conservative fail-closed fallback from
   local validation output without trusting invalid gate fields.
@@ -209,7 +238,7 @@ implementation in this repository.
 - [ ] Store `AIOPS_ORCHESTRATOR_SHA` in canonical lowercase form.
 - [ ] Validate `AIOPS_ORCHESTRATOR_SHA` against `^[0-9a-f]{40}$`.
 - [ ] Verify `[[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]`.
-- [ ] Verify `test "$(git rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"` after checkout.
+- [ ] Verify `test "$(git -C "$RUNNER_TEMP/aiops-orchestrator" rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"` after checkout.
 - [ ] Never resolve tags dynamically during workflow execution.
 - [ ] Execute the toolrepo on CT104.
 - [ ] Keep all outputs in `RUNNER_TEMP`.
@@ -225,6 +254,7 @@ implementation in this repository.
 - [ ] Make no call to CT102.
 - [ ] Make no use of `/v1/chat/ingest`.
 - [ ] Do not reimplement the gate.
+- [ ] Exclude fork PRs from CT104 jobs before checkout/execution/artifacts/router/secrets.
 
 ## Suggested follow-up issue
 

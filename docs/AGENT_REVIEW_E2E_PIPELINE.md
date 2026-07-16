@@ -46,12 +46,16 @@ Validate:
 
 ```text
 [[ "$AIOPS_ORCHESTRATOR_SHA" =~ ^[0-9a-f]{40}$ ]]
-test "$(git rev-parse HEAD)" = "$AIOPS_ORCHESTRATOR_SHA"
+test "$(git -C "$RUNNER_TEMP/aiops-orchestrator" rev-parse HEAD)" \
+  = "$AIOPS_ORCHESTRATOR_SHA"
 ```
 
 If checkout cannot resolve the pinned SHA, stop the analysis job and do not
 fallback to `master`. Uppercase SHA, short SHA, tag, or branch refs are invalid
 as operational checkout values.
+
+Fork PRs must be filtered before self-hosted CT104 runner allocation with
+`github.event.pull_request.head.repo.full_name == github.repository`.
 
 Keep every output under
 `$RUNNER_TEMP/agent`, never inside the AgentEscala working tree:
@@ -133,6 +137,11 @@ gets a conservative status/comment (`manual_review_required` or
 `review_unavailable`) derived from local validation results. It must never
 publish a conclusive review from an invalid gate.
 
+Conclusive approval is allowed only for valid `status=passed` with
+`manual_review_required=false`. `status=degraded` cannot approve; it can only
+remain conclusive for `changes_requested` with reliable blockers, non-empty
+`blocked_reasons`, and explicit `limitations`.
+
 ## Offline Contract Test
 
 The AIOps repository validates this contract without network access:
@@ -213,10 +222,12 @@ cookies
 
 ## Release Criteria
 
-`v0.19.0-rc.1` can be created manually after the AIOps contract PR merges and
-the offline AgentReview tests pass.
+`v0.19.0` is already the finalized release line. Phase 05 documentation must
+not instruct creation of new release-candidate tags for that line.
 
-`v0.19.0-rc.2` can be created manually after AgentEscala validates the thin
-wrapper E2E on CT104 with the AIOps tool repo pinned by SHA.
+`v0.20.0` remains the active AgentReview track. After PR #72 and follow-up #73,
+the next integration blocker is the AIOps PR for deterministic PR brief and
+bounded per-chunk context/payload builder (without changing AgentEscala runtime
+in this document set).
 
 CT102 runtime transition is not part of Phase 05.
