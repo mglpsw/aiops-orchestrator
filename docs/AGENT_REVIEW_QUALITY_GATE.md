@@ -79,6 +79,31 @@ The output schema is `agent-review.quality-gate.v1`:
 `quality_score` is diagnostic only. Merge decision signals are `status`,
 `normalized_verdict`, and `manual_review_required`.
 
+## Consumer contract
+
+`review-quality-gate.json` is the canonical post-synthesis signal for a future
+AgentEscala thin wrapper. The wrapper must validate `schema_id`,
+`schema_version`, `source`, and the gate enum values before publishing a
+comment or summary. It must consume `status`, `normalized_verdict`,
+`manual_review_required`, `blocked_reasons`, `warnings`, and `limitations`
+without recalculating or locally reinterpreting the gate.
+
+The wrapper publishes `final-review.md` for a valid `passed` or `degraded`
+non-manual gate with
+`normalized_verdict` `approved`, `approve_with_minor_notes`,
+`approve_with_required_followup`, or `changes_requested`. A `degraded` status
+must be disclosed and its limitations included. Any manual-review signal
+publishes a conservative `manual_review_required` result; `failed` or
+`review_unavailable` publishes `review_unavailable` without presenting a
+conclusive final review. A missing, malformed, incompatible, unknown-version,
+unknown-status, or contradictory gate fails closed. The complete decision table,
+artifact policy, and GitHub publication requirements are in
+`AGENTESCALA_TARGET_REPO_CONTRACT.md`.
+
+The wrapper must never use `final-review.json` as a replacement authority,
+call CT102, use `/v1/chat/ingest`, or apply
+`suggested-contract-updates.yaml`.
+
 ## Deterministic Rules
 
 - Unknown `final-review.verdict` in an otherwise readable final review produces

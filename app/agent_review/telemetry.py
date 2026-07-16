@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -11,7 +10,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.agent_review.quality_gate import validate_final_review_document
-from app.agent_review.redaction import RedactionState, redact_value
+from app.agent_review.redaction import sanitize_artifact_value
 from app.agent_review.schemas import (
     CHUNK_RESULTS_SCHEMA,
     FINAL_REVIEW_SCHEMA,
@@ -50,10 +49,6 @@ PERFORMANCE_KEYS = (
     "bundle_size_chars",
     "max_bundle_chars",
 )
-
-_UNIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.~-])/(?:[A-Za-z0-9._@+=:-]+/)+[A-Za-z0-9._@+=:-]+")
-_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"\b[A-Za-z]:\\(?:[^\\\s]+\\)+[^\\\s]+")
-
 
 class TelemetryError(ValueError):
     def __init__(self, error_class: str, message: str) -> None:
@@ -171,11 +166,7 @@ def build_review_telemetry(
 
 
 def sanitize_review_telemetry(telemetry: ReviewTelemetry) -> ReviewTelemetry:
-    state = RedactionState()
-    state.record_file()
-    redacted = redact_value(telemetry.model_dump(mode="json"), state)
-    redacted = _redact_local_paths(redacted)
-    return ReviewTelemetry.model_validate(redacted)
+    return ReviewTelemetry.model_validate(sanitize_artifact_value(telemetry.model_dump(mode="json")))
 
 
 def _status(limitations: list[str], quality_gate: ReviewQualityGate) -> str:
@@ -549,28 +540,6 @@ def _first_found(documents: tuple[dict[str, Any] | None, ...], key: str) -> Any:
         if found is not None:
             return found
     return None
-
-
-def _redact_local_paths(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: _redact_local_paths(child) for key, child in value.items()}
-    if isinstance(value, list):
-        return [_redact_local_paths(item) for item in value]
-    if isinstance(value, str):
-        if _is_absolute_path(value):
-            return "[LOCAL_PATH_REDACTED]"
-        return _redact_local_paths_in_text(value)
-    return value
-
-
-def _redact_local_paths_in_text(value: str) -> str:
-    redacted = _WINDOWS_ABSOLUTE_PATH_RE.sub("[LOCAL_PATH_REDACTED]", value)
-    return _UNIX_ABSOLUTE_PATH_RE.sub("[LOCAL_PATH_REDACTED]", redacted)
-
-
-def _is_absolute_path(value: str) -> bool:
-    stripped = value.strip()
-    return stripped.startswith("/") or stripped.startswith("~/") or bool(re.match(r"^[A-Za-z]:\\", stripped))
 
 
 def _dedupe(values: list[str]) -> list[str]:

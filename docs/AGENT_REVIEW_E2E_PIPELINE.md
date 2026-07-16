@@ -2,7 +2,8 @@
 
 Phase 05 connects the offline AgentReview Engine to AgentEscala's PR workflow.
 The end-to-end flow is intentionally split across deterministic AIOps CLIs and
-AgentEscala-owned orchestration.
+AgentEscala-owned orchestration. The target-repository consumption contract is
+frozen in `docs/AGENTESCALA_TARGET_REPO_CONTRACT.md`.
 
 ## Sequence
 
@@ -10,7 +11,7 @@ AgentEscala-owned orchestration.
 AgentEscala PR workflow on CT104
 -> checkout AgentEscala
 -> generate local artifacts under $RUNNER_TEMP/agent
--> checkout aiops-orchestrator as a pinned tool repo
+-> checkout aiops-orchestrator at an approved immutable SHA/tag
 -> validate dev/toolrepo environment
 -> run aiops-review-intake.py
 -> run aiops-review-plan-chunks.py
@@ -20,16 +21,23 @@ AgentEscala PR workflow on CT104
 -> run aiops-review-synthesize.py
 -> run aiops-review-quality-gate.py
 -> run aiops-review-telemetry.py
+-> run aiops-review-false-positives.py when applicable
 -> upload sanitized artifacts
--> comment final-review.md on the PR
+-> validate and consume review-quality-gate.json
+-> publish final-review.md or a conservative fallback comment/summary
 ```
 
 The AIOps CLIs do not call Agent Router, providers, GitHub APIs, CT102, Docker,
-SSH, deploy, restart, or operational command execution.
+SSH, deploy, restart, or operational command execution. AgentEscala is a
+thin-wrapper consumer and does not reimplement parsing, synthesis, gate,
+telemetry, or false-positive logic.
 
 ## CLI Contract
 
-Use the CT104 toolrepo environment:
+Use the CT104 toolrepo environment and check out the tool repo at
+`$RUNNER_TEMP/aiops-orchestrator` by full commit SHA or approved release tag.
+Do not use a floating default-branch checkout (`main` or `master`). Keep every output under
+`$RUNNER_TEMP/agent`, never inside the AgentEscala working tree:
 
 ```text
 AIOPS_ENVIRONMENT=dev
@@ -93,6 +101,15 @@ python scripts/aiops-review-false-positives.py \
   --suggestions-output "$RUNNER_TEMP/agent/suggested-contract-updates.yaml"
 ```
 
+## Gate consumption
+
+`review-quality-gate.json` is the canonical post-synthesis signal. The wrapper
+must schema-validate it before publication and apply the decision table in
+`AGENTESCALA_TARGET_REPO_CONTRACT.md`. It must disclose `status=degraded`,
+preserve gate limitations and blocked reasons, and fail closed for a missing,
+invalid, unknown-version, or contradictory gate. `final-review.json` is not a
+substitute authority.
+
 ## Offline Contract Test
 
 The AIOps repository validates this contract without network access:
@@ -119,6 +136,8 @@ final-review.json
 final-review.md
 review-quality-gate.json
 review-telemetry.json
+false-positive-signatures.json (when applicable)
+suggested-contract-updates.yaml (when applicable)
 ```
 
 The E2E contract validates `review-quality-gate.json` against schema
@@ -138,7 +157,7 @@ persist historical data.
 
 ## Upload Policy
 
-Allowed workflow artifacts:
+Allowed workflow artifacts, when present and sanitized:
 
 ```text
 aiops-intake.json
@@ -151,6 +170,9 @@ review-quality-gate.json
 review-telemetry.json
 sanitized diagnostics
 ```
+
+`suggested-contract-updates.yaml` is manual-only and must retain
+`applied: false`; AgentEscala never applies it automatically.
 
 Do not upload:
 

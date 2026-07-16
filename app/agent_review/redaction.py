@@ -49,6 +49,9 @@ _DATABASE_URL_RE = re.compile(
     r"(?i)\b(DATABASE_URL\s*=\s*)([a-z][a-z0-9+.-]*://)([^:\s/@]+):([^@\s]+)@"
 )
 _CREDENTIAL_URL_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)([^:/@\s]+):([^/@\s]+)@")
+_UNIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.~-])/(?:[A-Za-z0-9._@+=:-]+/)+[A-Za-z0-9._@+=:-]+")
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"\b[A-Za-z]:\\(?:[^\\\s]+\\)+[^\\\s]+")
+_HOME_RELATIVE_PATH_RE = re.compile(r"(?<![\w.~/-])~/(?:[A-Za-z0-9._@+=:-]+/)*[A-Za-z0-9._@+=:-]+")
 
 
 class RedactionState:
@@ -102,6 +105,13 @@ def redact_value(value: Any, state: RedactionState) -> Any:
     if isinstance(value, str):
         return redact_text(value, state)
     return value
+
+
+def sanitize_artifact_value(value: Any) -> Any:
+    """Redact secrets and local paths before emitting an uploadable artifact."""
+    state = RedactionState()
+    state.record_file()
+    return _redact_local_paths(redact_value(value, state))
 
 
 def redact_text(text: str, state: RedactionState) -> str:
@@ -224,3 +234,24 @@ def _is_placeholder(value: str) -> bool:
     if normalized.startswith("example") or normalized.endswith("-example"):
         return True
     return False
+
+
+def _redact_local_paths(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _redact_local_paths(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_redact_local_paths(item) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_local_paths(item) for item in value]
+    if not isinstance(value, str):
+        return value
+    if _is_absolute_path(value):
+        return "[LOCAL_PATH_REDACTED]"
+    redacted = _WINDOWS_ABSOLUTE_PATH_RE.sub("[LOCAL_PATH_REDACTED]", value)
+    redacted = _UNIX_ABSOLUTE_PATH_RE.sub("[LOCAL_PATH_REDACTED]", redacted)
+    return _HOME_RELATIVE_PATH_RE.sub("[LOCAL_PATH_REDACTED]", redacted)
+
+
+def _is_absolute_path(value: str) -> bool:
+    stripped = value.strip()
+    return stripped.startswith("/") or stripped.startswith("~/") or bool(re.match(r"^[A-Za-z]:\\", stripped))

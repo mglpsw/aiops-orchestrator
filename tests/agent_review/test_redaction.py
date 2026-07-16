@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.agent_review.redaction import REDACTED, redact_content
+from app.agent_review.redaction import REDACTED, redact_content, sanitize_artifact_value
 
 
 def test_redaction_removes_authorization_header() -> None:
@@ -51,4 +51,22 @@ def test_redaction_preserves_safe_json_keys() -> None:
 
     assert redacted == {"token_count": 3, "safe": "example", "placeholder": "fake-token"}
     assert report.secret_like_values_found == 0
+
+
+def test_sanitize_artifact_value_redacts_secrets_and_local_paths() -> None:
+    sanitized = sanitize_artifact_value(
+        {
+            "token": "super-secret-token",
+            "unix": "/tmp/review/final-review.json",
+            "windows": r"C:\\Users\\runner\\review.json",
+            "home": "~/agent/review.json",
+        }
+    )
+
+    assert sanitized == {
+        "token": REDACTED,
+        "unix": "[LOCAL_PATH_REDACTED]",
+        "windows": "[LOCAL_PATH_REDACTED]",
+        "home": "[LOCAL_PATH_REDACTED]",
+    }
 
