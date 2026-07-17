@@ -114,6 +114,9 @@ The required final outputs are:
 $RUNNER_TEMP/agent/aiops-intake.json
 $RUNNER_TEMP/agent/redaction-report.json
 $RUNNER_TEMP/agent/semantic-chunk-plan.json
+$RUNNER_TEMP/agent/pr-brief.json
+$RUNNER_TEMP/agent/chunk-payload-manifest.json
+$RUNNER_TEMP/agent/chunk-payloads/<chunk_id>.json
 $RUNNER_TEMP/agent/chunk-results.json
 $RUNNER_TEMP/agent/final-review.json
 $RUNNER_TEMP/agent/final-review.md
@@ -141,6 +144,17 @@ For each chunk in `semantic-chunk-plan.json`, AgentEscala writes exactly:
 ```text
 $RUNNER_TEMP/agent/chunk-responses/<chunk_id>.json
 ```
+
+Before writing chunk responses, AgentEscala consumes bounded payloads generated
+by:
+
+```text
+python scripts/aiops-review-build-payloads.py ...
+```
+
+This builder is deterministic/offline and does not call models, `/v1/chat/ingest`,
+or providers directly. The wrapper can later send payload content only through
+Agent Router `/v1/chat/completions` as tracked by `mglpsw/AgentEscala#670`.
 
 The minimum schema is:
 
@@ -221,6 +235,9 @@ reason_code=<sanitized local reason code>
 
 Never use `final-review.json` as replacement authority and never copy raw
 invalid gate payload into comment, summary, or artifact outputs.
+
+Chunk payload request envelopes are temporary sanitized artifacts and should not
+be published outside controlled debug/allowlist flows.
 
 ## CT104 security constraints
 

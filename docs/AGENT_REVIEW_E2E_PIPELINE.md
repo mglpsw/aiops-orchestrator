@@ -15,7 +15,8 @@ AgentEscala PR workflow on CT104
 -> validate dev/toolrepo environment
 -> run aiops-review-intake.py
 -> run aiops-review-plan-chunks.py
--> create one structured response JSON per chunk
+-> run aiops-review-build-payloads.py
+-> create one structured response JSON per chunk from bounded payloads
 -> optionally call Agent Router per chunk via /v1/chat/completions
 -> run aiops-review-parse-chunks.py
 -> run aiops-review-synthesize.py
@@ -80,6 +81,16 @@ python scripts/aiops-review-intake.py \
 python scripts/aiops-review-plan-chunks.py \
   --intake "$RUNNER_TEMP/agent/aiops-intake.json" \
   --output "$RUNNER_TEMP/agent/semantic-chunk-plan.json"
+
+python scripts/aiops-review-build-payloads.py \
+  --intake "$RUNNER_TEMP/agent/aiops-intake.json" \
+  --chunk-plan "$RUNNER_TEMP/agent/semantic-chunk-plan.json" \
+  --redaction-report "$RUNNER_TEMP/agent/redaction-report.json" \
+  --checks "$RUNNER_TEMP/agent/checks.json" \
+  --validation-evidence "$RUNNER_TEMP/agent/validation-evidence/validation-evidence-result.json" \
+  --brief-output "$RUNNER_TEMP/agent/pr-brief.json" \
+  --payloads-dir "$RUNNER_TEMP/agent/chunk-payloads" \
+  --manifest-output "$RUNNER_TEMP/agent/chunk-payload-manifest.json"
 
 python scripts/aiops-review-parse-chunks.py \
   --chunk-plan "$RUNNER_TEMP/agent/semantic-chunk-plan.json" \
@@ -159,7 +170,8 @@ The AIOps repository validates this contract without network access:
 ```text
 intake
 -> plan-chunks
--> create fake chunk responses from semantic-chunk-plan.json
+-> build deterministic pr-brief and bounded chunk payloads
+-> create fake chunk responses from chunk payloads
 -> parse-chunks
 -> synthesize
 -> quality-gate
@@ -173,6 +185,8 @@ target repository:
 aiops-intake.json
 redaction-report.json
 semantic-chunk-plan.json
+pr-brief.json
+chunk-payload-manifest.json
 chunk-results.json
 final-review.json
 final-review.md
@@ -205,6 +219,8 @@ Allowed workflow artifacts, when present and sanitized:
 aiops-intake.json
 redaction-report.json
 semantic-chunk-plan.json
+pr-brief.json
+chunk-payload-manifest.json
 chunk-results.json
 final-review.json
 final-review.md
@@ -221,6 +237,7 @@ Do not upload:
 ```text
 full.diff raw
 raw prompts
+raw chunk payload request envelopes
 raw Router payloads
 unvalidated raw Router responses
 headers

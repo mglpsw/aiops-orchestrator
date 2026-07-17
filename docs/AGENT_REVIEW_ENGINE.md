@@ -3,10 +3,11 @@
 AgentReview Engine is the future generic review engine in `aiops-orchestrator`.
 Phase 1 is limited to offline intake and deterministic redaction. Phase 2 adds
 deterministic semantic chunk planning over the sanitized intake. Phase 3 parses
-structured simulated chunk responses into normalized chunk results. Phase 4
-synthesizes those chunk results into final review JSON and Markdown artifacts.
+structured simulated chunk responses into normalized chunk results. Phase 4 synthesizes those chunk results into final review JSON and Markdown artifacts.
 Phase 5A adds a deterministic post-synthesis quality gate. Phase 5B collects
 deterministic telemetry from the final review and quality gate artifacts.
+The current integration blocker also adds deterministic PR brief and bounded
+chunk payload building before synthetic or real chunk responses.
 
 ## Runtime Boundary
 
@@ -60,6 +61,21 @@ original secret values.
 
 This phase also does not apply contract fixes, generate findings, classify
 severity, call an LLM, call Agent Router, or modify AgentEscala.
+
+## Deterministic PR brief and bounded chunk payloads
+
+`scripts/aiops-review-build-payloads.py` reads sanitized intake/chunk-plan
+artifacts and writes:
+
+- `pr-brief.json` (`agent-review.pr-brief.v1`);
+- `chunk-payload-manifest.json` (`agent-review.chunk-payload-manifest.v1`);
+- one payload per chunk in `chunk-payloads/`
+  (`agent-review.chunk-payload.v1`).
+
+This stage is deterministic, provider-neutral, and sanitized. It declares
+explicit truncation and coverage impact metadata and does not call models,
+Agent Router, `/v1/chat/ingest`, direct providers, network, CT102, or GitHub
+write APIs.
 
 ## Semantic Chunk Planning
 
