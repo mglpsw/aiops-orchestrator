@@ -495,3 +495,79 @@ def test_pr_brief_rejects_non_positive_budget() -> None:
             max_chars=0,
         )
     assert exc.value.error_class == "brief_budget_invalid"
+
+
+def test_pr_brief_fallback_uses_union_of_coverage_lists_when_file_diff_context_has_no_files() -> None:
+    intake = _intake()
+    intake.artifacts["file-diff-context"]["content"]["files"] = []
+    chunk_plan = _chunk_plan()
+    chunk_plan.files_covered = ["src/covered.py", "src/shared.py"]
+    chunk_plan.files_partially_covered = ["src/partial.py", "src/shared.py"]
+    chunk_plan.files_not_covered = ["src/not-covered.py", "src/shared.py"]
+
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=chunk_plan,
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    payload = brief.model_dump(mode="json")
+    changed = payload["changed_files_summary"]
+    changed_paths = [item["path"] for item in changed["files"]]
+    assert changed["total_files"] == 4
+    assert changed["status_counts"] == {"unknown": 4}
+    assert changed_paths == sorted(changed_paths)
+    assert changed_paths == ["src/covered.py", "src/not-covered.py", "src/partial.py", "src/shared.py"]
+    assert all(item["status"] == "unknown" for item in changed["files"])
+    assert all(item["summary"] is None for item in changed["files"])
+    assert payload["coverage"]["files_not_covered"] == ["src/not-covered.py", "src/shared.py"]
+
+
+def test_pr_brief_fallback_is_byte_deterministic_without_file_diff_context() -> None:
+    intake = _intake()
+    intake.artifacts["file-diff-context"]["content"]["files"] = []
+    chunk_plan = _chunk_plan()
+    chunk_plan.files_covered = ["b.py", "a.py"]
+    chunk_plan.files_partially_covered = ["c.py"]
+    chunk_plan.files_not_covered = ["d.py"]
+
+    first = build_pr_brief(
+        intake=intake,
+        chunk_plan=chunk_plan,
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+    second = build_pr_brief(
+        intake=intake,
+        chunk_plan=chunk_plan,
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    assert _rendered(first) == _rendered(second)
+
+
+def test_pr_brief_fallback_handles_no_covered_or_uncovered_files() -> None:
+    intake = _intake()
+    intake.artifacts["file-diff-context"]["content"]["files"] = []
+    chunk_plan = _chunk_plan()
+    chunk_plan.files_covered = []
+    chunk_plan.files_partially_covered = []
+    chunk_plan.files_not_covered = []
+
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=chunk_plan,
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    changed = brief.model_dump(mode="json")["changed_files_summary"]
+    assert changed["total_files"] == 0
+    assert changed["status_counts"] == {}
+    assert changed["files"] == []

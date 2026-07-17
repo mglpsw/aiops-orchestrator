@@ -296,6 +296,82 @@ def test_cli_blocks_brief_or_manifest_inside_payloads_dir(monkeypatch, tmp_path:
     assert payload["error_class"] == "output_conflict"
 
 
+def test_cli_blocks_payloads_dir_nested_under_brief_output_path(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    module = _load_script_module()
+    out_root = tmp_path / "agent-output"
+    args = _args(paths, out_root)
+    result_root = tmp_path / "result"
+    args[args.index("--brief-output") + 1] = str(result_root)
+    args[args.index("--payloads-dir") + 1] = str(result_root / "payloads")
+
+    result = _invoke(module, args)
+
+    error = _error_payload(result)
+    assert error["error_class"] == "output_conflict"
+    assert not result_root.exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+
+
+def test_cli_blocks_payloads_dir_nested_under_manifest_output_path(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    module = _load_script_module()
+    out_root = tmp_path / "agent-output"
+    args = _args(paths, out_root)
+    result_root = tmp_path / "result"
+    args[args.index("--manifest-output") + 1] = str(result_root)
+    args[args.index("--payloads-dir") + 1] = str(result_root / "payloads")
+
+    result = _invoke(module, args)
+
+    error = _error_payload(result)
+    assert error["error_class"] == "output_conflict"
+    assert not result_root.exists()
+    assert not (out_root / "pr-brief.json").exists()
+
+
+def test_cli_blocks_manifest_output_nested_under_brief_output_path(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    module = _load_script_module()
+    out_root = tmp_path / "agent-output"
+    args = _args(paths, out_root)
+    result_root = tmp_path / "result"
+    args[args.index("--brief-output") + 1] = str(result_root)
+    args[args.index("--manifest-output") + 1] = str(result_root / "manifest.json")
+
+    result = _invoke(module, args)
+
+    error = _error_payload(result)
+    assert error["error_class"] == "output_conflict"
+    assert not result_root.exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_blocks_brief_output_nested_under_manifest_output_path(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    module = _load_script_module()
+    out_root = tmp_path / "agent-output"
+    args = _args(paths, out_root)
+    result_root = tmp_path / "result"
+    args[args.index("--manifest-output") + 1] = str(result_root)
+    args[args.index("--brief-output") + 1] = str(result_root / "brief.json")
+
+    result = _invoke(module, args)
+
+    error = _error_payload(result)
+    assert error["error_class"] == "output_conflict"
+    assert not result_root.exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
 def test_cli_removes_partial_outputs_when_write_fails(monkeypatch, tmp_path: Path) -> None:
     for key, value in _dev_env().items():
         monkeypatch.setenv(key, value)
@@ -468,6 +544,129 @@ def test_cli_fails_closed_when_redaction_report_is_not_safe_for_llm(monkeypatch,
     assert not (out_root / "pr-brief.json").exists()
     assert not (out_root / "chunk-payload-manifest.json").exists()
     assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_accepts_modern_intake_envelope(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+    intake["schema_id"] = "agent-review.intake.v1"
+    intake["schema_version"] = 1
+    _write_json(paths["intake"], intake)
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, tmp_path / "out"))
+
+    payload = _success_payload(result)
+    assert payload["ok"] is True
+
+
+def test_cli_accepts_modern_redaction_report_envelope(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    redaction = json.loads(paths["redaction"].read_text(encoding="utf-8"))
+    redaction["schema_id"] = "agent-review.redaction-report.v1"
+    redaction["schema_version"] = 1
+    _write_json(paths["redaction"], redaction)
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, tmp_path / "out"))
+
+    payload = _success_payload(result)
+    assert payload["ok"] is True
+
+
+def test_cli_rejects_modern_envelope_with_unsupported_version(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+    intake["schema_id"] = "agent-review.intake.v1"
+    intake["schema_version"] = 2
+    _write_json(paths["intake"], intake)
+    out_root = tmp_path / "out"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "intake_invalid"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_rejects_unknown_schema_id(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+    intake["schema_id"] = "agent-review.intake.v999"
+    intake["schema_version"] = 1
+    _write_json(paths["intake"], intake)
+    out_root = tmp_path / "out"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "intake_invalid"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_rejects_hybrid_inconsistent_intake_envelope(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+    intake["schema_id"] = "agent-review.intake.v1"
+    intake["schema_version"] = "agent-review.intake.v1"
+    _write_json(paths["intake"], intake)
+    out_root = tmp_path / "out"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "intake_invalid"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_emits_byte_identical_outputs_for_legacy_and_modern_envelopes(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    legacy_paths = _base_artifacts(tmp_path / "legacy")
+    modern_paths = _base_artifacts(tmp_path / "modern")
+
+    modern_intake = json.loads(modern_paths["intake"].read_text(encoding="utf-8"))
+    modern_intake["schema_id"] = "agent-review.intake.v1"
+    modern_intake["schema_version"] = 1
+    _write_json(modern_paths["intake"], modern_intake)
+
+    modern_redaction = json.loads(modern_paths["redaction"].read_text(encoding="utf-8"))
+    modern_redaction["schema_id"] = "agent-review.redaction-report.v1"
+    modern_redaction["schema_version"] = 1
+    _write_json(modern_paths["redaction"], modern_redaction)
+
+    module = _load_script_module()
+    legacy_out = tmp_path / "legacy-out"
+    modern_out = tmp_path / "modern-out"
+    legacy_result = _invoke(module, _args(legacy_paths, legacy_out))
+    modern_result = _invoke(module, _args(modern_paths, modern_out))
+
+    _success_payload(legacy_result)
+    _success_payload(modern_result)
+
+    assert (legacy_out / "pr-brief.json").read_bytes() == (modern_out / "pr-brief.json").read_bytes()
+    assert (legacy_out / "chunk-payload-manifest.json").read_bytes() == (
+        modern_out / "chunk-payload-manifest.json"
+    ).read_bytes()
 
 
 def test_cli_does_not_call_network_router_or_provider(monkeypatch, tmp_path: Path) -> None:

@@ -148,8 +148,20 @@ def _changed_files_summary(intake: ReviewIntake, *, chunk_plan: SemanticChunkPla
             }
         )
     if not files:
-        for path in _ordered_unique(chunk_plan.files_covered):
-            files.append({"path": _sanitize_relative_path(path), "status": "unknown", "summary": None})
+        fallback_paths = _ordered_unique(
+            [
+                *chunk_plan.files_covered,
+                *chunk_plan.files_partially_covered,
+                *chunk_plan.files_not_covered,
+            ]
+        )
+        seen_paths: set[str] = set()
+        for raw_path in fallback_paths:
+            path = _sanitize_relative_path(raw_path)
+            if not path or path in seen_paths:
+                continue
+            seen_paths.add(path)
+            files.append({"path": path, "status": "unknown", "summary": None})
             status_counts["unknown"] += 1
     return {
         "total_files": len(files),

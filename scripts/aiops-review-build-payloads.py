@@ -167,8 +167,12 @@ def _resolved_paths(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _output_overwrite_error(paths: dict[str, Any]) -> tuple[str, str] | None:
-    outputs = [paths["brief_output"], paths["manifest_output"]]
-    if outputs[0] == outputs[1]:
+    brief_output = paths["brief_output"]
+    manifest_output = paths["manifest_output"]
+    payloads_dir = paths["payloads_dir"]
+    outputs = [brief_output, manifest_output]
+
+    if _file_output_paths_conflict(brief_output, manifest_output):
         return "output_conflict", "Blocked: brief-output and manifest-output must be different files."
     inputs = [
         paths["intake"],
@@ -181,9 +185,8 @@ def _output_overwrite_error(paths: dict[str, Any]) -> tuple[str, str] | None:
     for output in outputs:
         if output in input_paths:
             return "output_overwrites_input", "Blocked: output file must not overwrite any input artifact."
-    payloads_dir = paths["payloads_dir"]
     for output in outputs:
-        if output == payloads_dir or _is_relative_to(output, payloads_dir):
+        if _file_and_directory_paths_conflict(output, payloads_dir):
             return (
                 "output_conflict",
                 "Blocked: brief-output and manifest-output must be outside payloads-dir.",
@@ -195,6 +198,18 @@ def _output_overwrite_error(paths: dict[str, Any]) -> tuple[str, str] | None:
                 "Blocked: payloads-dir must not contain input artifacts.",
             )
     return None
+
+
+def _file_and_directory_paths_conflict(file_path: Path, directory_path: Path) -> bool:
+    return (
+        file_path == directory_path
+        or _is_relative_to(file_path, directory_path)
+        or _is_relative_to(directory_path, file_path)
+    )
+
+
+def _file_output_paths_conflict(left: Path, right: Path) -> bool:
+    return left == right or _is_relative_to(left, right) or _is_relative_to(right, left)
 
 
 def _output_exists_error(paths: dict[str, Any]) -> tuple[str, str] | None:
@@ -223,13 +238,13 @@ def _load_raw_documents(paths: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _load_intake(path: Path) -> ReviewIntake:
     raw = _load_json_object(path, error_class="intake_invalid")
-    if raw.get("schema_id") is not None:
-        if raw.get("schema_id") != INTAKE_SCHEMA or raw.get("schema_version") != 1:
-            raise PayloadBuildCliError("intake_invalid", "intake schema is invalid")
-    elif raw.get("schema_version") != INTAKE_SCHEMA:
-        raise PayloadBuildCliError("intake_invalid", "intake schema is invalid")
+    normalized = _normalize_schema_envelope(
+        raw,
+        expected_schema_id=INTAKE_SCHEMA,
+        error_class="intake_invalid",
+    )
     try:
-        return ReviewIntake.model_validate(raw)
+        return ReviewIntake.model_validate(normalized)
     except ValidationError as exc:
         raise PayloadBuildCliError("intake_invalid", "intake structure is invalid") from exc
 
@@ -249,15 +264,36 @@ def _load_chunk_plan(path: Path) -> SemanticChunkPlan:
 
 def _load_redaction_report(path: Path) -> RedactionReport:
     raw = _load_json_object(path, error_class="redaction_report_invalid")
-    if raw.get("schema_id") is not None:
-        if raw.get("schema_id") != REDACTION_REPORT_SCHEMA or raw.get("schema_version") != 1:
-            raise PayloadBuildCliError("redaction_report_invalid", "redaction report schema is invalid")
-    elif raw.get("schema_version") != REDACTION_REPORT_SCHEMA:
-        raise PayloadBuildCliError("redaction_report_invalid", "redaction report schema is invalid")
+    normalized = _normalize_schema_envelope(
+        raw,
+        expected_schema_id=REDACTION_REPORT_SCHEMA,
+        error_class="redaction_report_invalid",
+    )
     try:
-        return RedactionReport.model_validate(raw)
+        return RedactionReport.model_validate(normalized)
     except ValidationError as exc:
         raise PayloadBuildCliError("redaction_report_invalid", "redaction report structure is invalid") from exc
+
+
+def _normalize_schema_envelope(
+    raw: dict[str, Any],
+    *,
+    expected_schema_id: str,
+    error_class: str,
+) -> dict[str, Any]:
+    normalized = dict(raw)
+
+    if "schema_id" in raw:
+        if raw.get("schema_id") != expected_schema_id or raw.get("schema_version") != 1:
+            raise PayloadBuildCliError(error_class, "input schema is invalid")
+        normalized.pop("schema_id", None)
+        normalized["schema_version"] = expected_schema_id
+        return normalized
+
+    if raw.get("schema_version") != expected_schema_id:
+        raise PayloadBuildCliError(error_class, "input schema is invalid")
+
+    return normalized
 
 
 def _load_optional_json(path: Path | None, name: str) -> tuple[dict[str, Any] | None, list[str]]:
