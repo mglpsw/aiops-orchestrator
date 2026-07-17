@@ -844,3 +844,230 @@ def test_chunk_payload_builder_rejects_duplicate_order_indexes() -> None:
             validation_evidence=None,
         )
     assert exc.value.error_class == "chunk_plan_duplicate_order_index"
+
+
+def _scoped_contract_intake_and_plan() -> tuple[ReviewIntake, SemanticChunkPlan]:
+    intake = _intake()
+    intake.target_profile["domain_contracts"]["rules"] = [
+        {"id": "r-file-path", "description": "rule one", "file_path": "backend/api/shifts.py"},
+        {"id": "r-path", "description": "rule two", "path": "backend/api/shifts.py"},
+        {"id": "r-files", "description": "rule three", "files": ["backend/api/shifts.py"]},
+        {"id": "r-paths", "description": "rule four", "paths": ["backend/api/shifts.py"]},
+        {"id": "r-source", "description": "rule five", "source_files": ["backend/api/shifts.py"]},
+        {"id": "r-related", "description": "rule six", "related_files": ["backend/api/shifts.py"]},
+        {"id": "r-pattern", "description": "rule seven", "patterns": ["backend/api/*"]},
+        {"id": "r-global-scope", "description": "rule eight", "scope": "global"},
+        {"id": "r-global-flag", "description": "rule nine", "is_global": True},
+        {"id": "r-unrelated", "description": "rule ten", "files": ["docs/README.md"]},
+    ]
+    intake.artifacts["file-diff-context"]["content"]["files"].append(
+        {"path": "frontend/app.tsx", "status": "modified", "summary": "frontend update"}
+    )
+    plan = _chunk_plan()
+    for chunk in plan.chunks:
+        chunk.contracts = []
+    plan.chunks.append(
+        SemanticChunk.model_validate(
+            {
+                "chunk_id": "chunk-03-frontend",
+                "semantic_group": "frontend_ui",
+                "order_index": 2,
+                "files": ["frontend/app.tsx"],
+                "artifacts": [],
+                "contracts": [],
+                "depends_on": [],
+                "coverage": "complete",
+                "prompt_budget_chars": 3000,
+                "estimated_chars": 800,
+                "limitations": [],
+            }
+        )
+    )
+    plan.files_covered = ["backend/api/shifts.py", "tests/test_shift_service.py", "frontend/app.tsx"]
+    return intake, plan
+
+
+def _contract_ids(payloads: dict[str, Any], payload_name: str) -> set[str]:
+    entries = payloads[payload_name].chunk_context["contracts_context"]["domain_contracts"]
+    return {item.get("id") for item in entries}
+
+
+def test_chunk_payload_builder_scoped_contracts_match_relevant_chunks_only() -> None:
+    intake, plan = _scoped_contract_intake_and_plan()
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    backend_ids = _contract_ids(payloads, "chunk-01-api_schema_contract.json")
+    tests_ids = _contract_ids(payloads, "chunk-02-tests.json")
+    frontend_ids = _contract_ids(payloads, "chunk-03-frontend.json")
+
+    assert {
+        "r-file-path",
+        "r-path",
+        "r-files",
+        "r-paths",
+        "r-source",
+        "r-related",
+        "r-pattern",
+    }.issubset(backend_ids)
+    assert "r-unrelated" not in backend_ids
+    assert "r-pattern" not in tests_ids
+    assert "r-pattern" not in frontend_ids
+    assert "r-global-scope" in backend_ids and "r-global-scope" in tests_ids and "r-global-scope" in frontend_ids
+    assert "r-global-flag" in backend_ids and "r-global-flag" in tests_ids and "r-global-flag" in frontend_ids
+
+
+def test_chunk_payload_builder_preserves_contract_scope_metadata_in_payload() -> None:
+    intake, plan = _scoped_contract_intake_and_plan()
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    backend_contracts = payloads["chunk-01-api_schema_contract.json"].chunk_context["contracts_context"][
+        "domain_contracts"
+    ]
+    row = next(item for item in backend_contracts if item.get("id") == "r-file-path")
+    assert row.get("file_path") == "backend/api/shifts.py"
+
+    pattern_row = next(item for item in backend_contracts if item.get("id") == "r-pattern")
+    assert pattern_row.get("patterns") == ["backend/api/*"]
+
+    global_row = next(item for item in backend_contracts if item.get("id") == "r-global-scope")
+    assert global_row.get("scope") == "global"
+
+    global_flag_row = next(item for item in backend_contracts if item.get("id") == "r-global-flag")
+    assert global_flag_row.get("is_global") is True
+
+
+def test_chunk_payload_builder_sanitizes_scope_paths_and_patterns_and_is_deterministic() -> None:
+    intake, plan = _scoped_contract_intake_and_plan()
+    intake.target_profile["domain_contracts"]["rules"].append(
+        {
+            "id": "r-absolute",
+            "description": "rule abs",
+            "scope": "global",
+            "files": ["/home/dev/private/file.py", "backend/api/shifts.py"],
+            "patterns": ["/home/dev/*", "backend/api/*", "backend/api/*"],
+        }
+    )
+
+    _, first_payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+    _, second_payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    first_backend = first_payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    second_backend = second_payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
+    assert _render(first_backend) == _render(second_backend)
+    rendered = _render(first_backend)
+    assert "/home/dev/private/file.py" not in rendered
+    assert "[LOCAL_PATH_REDACTED]" in rendered
+
+
+@pytest.mark.parametrize(
+    "rule_key,rule_value",
+    [
+        ("file_path", "backend/api/shifts.py"),
+        ("path", "backend/api/shifts.py"),
+        ("files", ["backend/api/shifts.py"]),
+        ("paths", ["backend/api/shifts.py"]),
+        ("source_files", ["backend/api/shifts.py"]),
+        ("related_files", ["backend/api/shifts.py"]),
+    ],
+)
+def test_chunk_payload_builder_matches_each_supported_path_scope(rule_key: str, rule_value: object) -> None:
+    intake = _intake()
+    intake.target_profile["domain_contracts"]["rules"] = [
+        {"id": "scoped", "description": "scoped", rule_key: rule_value}
+    ]
+    plan = _chunk_plan()
+    for chunk in plan.chunks:
+        chunk.contracts = []
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+    assert "scoped" in _contract_ids(payloads, "chunk-01-api_schema_contract.json")
+    assert "scoped" not in _contract_ids(payloads, "chunk-02-tests.json")
+
+
+def test_chunk_payload_builder_matches_pattern_scope_only_where_intersects() -> None:
+    intake = _intake()
+    intake.target_profile["domain_contracts"]["rules"] = [
+        {"id": "patterned", "description": "patterned", "patterns": ["backend/api/*"]}
+    ]
+    plan = _chunk_plan()
+    for chunk in plan.chunks:
+        chunk.contracts = []
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+    assert "patterned" in _contract_ids(payloads, "chunk-01-api_schema_contract.json")
+    assert "patterned" not in _contract_ids(payloads, "chunk-02-tests.json")
+
+
+def test_chunk_payload_builder_matches_global_scope_and_global_flag_on_all_chunks() -> None:
+    intake = _intake()
+    intake.target_profile["domain_contracts"]["rules"] = [
+        {"id": "by-scope", "description": "global scoped", "scope": "global"},
+        {"id": "by-flag", "description": "global flagged", "is_global": True},
+    ]
+    plan = _chunk_plan()
+    for chunk in plan.chunks:
+        chunk.contracts = []
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+    for payload_name in payloads:
+        ids = _contract_ids(payloads, payload_name)
+        assert "by-scope" in ids
+        assert "by-flag" in ids
+
+
+def test_chunk_payload_builder_excludes_non_matching_contracts() -> None:
+    intake = _intake()
+    intake.target_profile["domain_contracts"]["rules"] = [
+        {"id": "unrelated", "description": "unrelated", "files": ["docs/README.md"]}
+    ]
+    plan = _chunk_plan()
+    for chunk in plan.chunks:
+        chunk.contracts = []
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+    )
+    for payload_name in payloads:
+        assert "unrelated" not in _contract_ids(payloads, payload_name)

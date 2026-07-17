@@ -200,6 +200,220 @@ def _assert_no_absolute_paths(value: str) -> None:
     assert not WINDOWS_ABSOLUTE_PATH_RE.search(value), "unexpected windows absolute path leaked in output"
 
 
+def _prepare_intake_and_chunk_plan(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
+    _install_offline_guards(monkeypatch)
+    target_repo, agent_dir = _copy_fixture(tmp_path)
+    out_dir = tmp_path / "agent-stage"
+    out_dir.mkdir()
+    intake = out_dir / "aiops-intake.json"
+    redaction_report = out_dir / "redaction-report.json"
+    chunk_plan = out_dir / "semantic-chunk-plan.json"
+
+    intake_result = _run_cli(
+        SCRIPTS / "aiops-review-intake.py",
+        [
+            "--target-repo",
+            "mglpsw/AgentEscala",
+            "--repo-root",
+            str(target_repo),
+            "--agent-dir",
+            str(agent_dir),
+            "--output",
+            str(intake),
+            "--redaction-report",
+            str(redaction_report),
+        ],
+    )
+    assert intake_result.returncode == 0, intake_result.stderr + intake_result.stdout
+
+    plan_result = _run_cli(
+        SCRIPTS / "aiops-review-plan-chunks.py",
+        [
+            "--intake",
+            str(intake),
+            "--output",
+            str(chunk_plan),
+            "--max-blocks",
+            "6",
+        ],
+    )
+    assert plan_result.returncode == 0, plan_result.stderr + plan_result.stdout
+    return target_repo, agent_dir, out_dir, intake, chunk_plan
+
+
+def test_e2e_build_payloads_fails_closed_when_embedded_redaction_is_unsafe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, agent_dir, out_dir, intake, chunk_plan = _prepare_intake_and_chunk_plan(monkeypatch, tmp_path)
+    redaction_report = out_dir / "redaction-report.json"
+    pr_brief = out_dir / "pr-brief.json"
+    manifest = out_dir / "chunk-payload-manifest.json"
+    payloads_dir = out_dir / "chunk-payloads"
+
+    intake_payload = json.loads(intake.read_text(encoding="utf-8"))
+    intake_payload["redaction_summary"]["output_safe_for_llm"] = False
+    intake.write_text(json.dumps(intake_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    build_result = _run_cli(
+        SCRIPTS / "aiops-review-build-payloads.py",
+        [
+            "--intake",
+            str(intake),
+            "--chunk-plan",
+            str(chunk_plan),
+            "--redaction-report",
+            str(redaction_report),
+            "--checks",
+            str(agent_dir / "checks.json"),
+            "--validation-evidence",
+            str(agent_dir / "validation-evidence" / "validation-evidence-result.json"),
+            "--brief-output",
+            str(pr_brief),
+            "--payloads-dir",
+            str(payloads_dir),
+            "--manifest-output",
+            str(manifest),
+        ],
+    )
+    assert build_result.returncode == 1
+    payload = json.loads(build_result.stdout)
+    assert payload["error_class"] == "redaction_report_unsafe"
+    assert not pr_brief.exists()
+    assert not manifest.exists()
+    assert not payloads_dir.exists()
+
+
+def test_e2e_build_payloads_fails_closed_when_redaction_reports_diverge(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, agent_dir, out_dir, intake, chunk_plan = _prepare_intake_and_chunk_plan(monkeypatch, tmp_path)
+    redaction_report = out_dir / "redaction-report.json"
+    pr_brief = out_dir / "pr-brief.json"
+    manifest = out_dir / "chunk-payload-manifest.json"
+    payloads_dir = out_dir / "chunk-payloads"
+
+    redaction_payload = json.loads(redaction_report.read_text(encoding="utf-8"))
+    redaction_payload["files_processed"] = int(redaction_payload.get("files_processed", 0)) + 1
+    redaction_report.write_text(
+        json.dumps(redaction_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    build_result = _run_cli(
+        SCRIPTS / "aiops-review-build-payloads.py",
+        [
+            "--intake",
+            str(intake),
+            "--chunk-plan",
+            str(chunk_plan),
+            "--redaction-report",
+            str(redaction_report),
+            "--checks",
+            str(agent_dir / "checks.json"),
+            "--validation-evidence",
+            str(agent_dir / "validation-evidence" / "validation-evidence-result.json"),
+            "--brief-output",
+            str(pr_brief),
+            "--payloads-dir",
+            str(payloads_dir),
+            "--manifest-output",
+            str(manifest),
+        ],
+    )
+    assert build_result.returncode == 1
+    payload = json.loads(build_result.stdout)
+    assert payload["error_class"] == "redaction_report_mismatch"
+    assert not pr_brief.exists()
+    assert not manifest.exists()
+    assert not payloads_dir.exists()
+
+
+def test_e2e_build_payloads_scopes_contracts_to_matching_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _, agent_dir, out_dir, intake, chunk_plan = _prepare_intake_and_chunk_plan(monkeypatch, tmp_path)
+    redaction_report = out_dir / "redaction-report.json"
+    pr_brief = out_dir / "pr-brief.json"
+    manifest = out_dir / "chunk-payload-manifest.json"
+    payloads_dir = out_dir / "chunk-payloads"
+
+    plan_payload = json.loads(chunk_plan.read_text(encoding="utf-8"))
+    scoped_file = ""
+    for chunk in plan_payload.get("chunks", []):
+        if isinstance(chunk, dict) and isinstance(chunk.get("files"), list) and chunk["files"]:
+            candidate = chunk["files"][0]
+            if isinstance(candidate, str):
+                scoped_file = candidate
+                break
+    for chunk in plan_payload.get("chunks", []):
+        if isinstance(chunk, dict):
+            chunk["contracts"] = []
+    chunk_plan.write_text(json.dumps(plan_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    assert scoped_file
+
+    intake_payload = json.loads(intake.read_text(encoding="utf-8"))
+    intake_payload["target_profile"]["domain_contracts"]["rules"] = [
+        {"id": "scoped-backend", "description": "backend", "file_path": scoped_file},
+        {"id": "global-rule", "description": "global", "scope": "global"},
+        {"id": "non-matching", "description": "none", "files": ["docs/never.md"]},
+    ]
+    intake.write_text(json.dumps(intake_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    build_result = _run_cli(
+        SCRIPTS / "aiops-review-build-payloads.py",
+        [
+            "--intake",
+            str(intake),
+            "--chunk-plan",
+            str(chunk_plan),
+            "--redaction-report",
+            str(redaction_report),
+            "--checks",
+            str(agent_dir / "checks.json"),
+            "--validation-evidence",
+            str(agent_dir / "validation-evidence" / "validation-evidence-result.json"),
+            "--brief-output",
+            str(pr_brief),
+            "--payloads-dir",
+            str(payloads_dir),
+            "--manifest-output",
+            str(manifest),
+        ],
+    )
+    assert build_result.returncode == 0, build_result.stderr + build_result.stdout
+
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert manifest_payload["payload_count"] > 0
+    backend_seen = False
+    global_seen = False
+    unrelated_seen = False
+    for entry in manifest_payload["chunks"]:
+        payload_path = payloads_dir / str(entry["payload_path"])
+        payload = json.loads(payload_path.read_text(encoding="utf-8"))
+        contract_ids = {
+            item.get("id")
+            for item in payload.get("chunk_context", {}).get("contracts_context", {}).get("domain_contracts", [])
+            if isinstance(item, dict)
+        }
+        chunk_files = {
+            item.get("path")
+            for item in payload.get("chunk_context", {}).get("files", [])
+            if isinstance(item, dict)
+        }
+        if scoped_file in chunk_files and "scoped-backend" in contract_ids:
+            backend_seen = True
+        if "global-rule" in contract_ids:
+            global_seen = True
+        if "non-matching" in contract_ids:
+            unrelated_seen = True
+    assert backend_seen is True
+    assert global_seen is True
+    assert unrelated_seen is False
+
+
 def test_agentescala_tool_repo_e2e_contract_runs_offline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

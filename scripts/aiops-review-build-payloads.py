@@ -89,11 +89,7 @@ def main(argv: list[str] | None = None) -> int:
         intake = _load_intake(paths["intake"])
         chunk_plan = _load_chunk_plan(paths["chunk_plan"])
         redaction_report = _load_redaction_report(paths["redaction_report"])
-        if redaction_report.output_safe_for_llm is not True:
-            raise PayloadBuildCliError(
-                "redaction_report_unsafe",
-                "redaction report marks output as unsafe for llm routing",
-            )
+        _validate_redaction_consistency(intake, redaction_report)
         checks, checks_limitations = _load_optional_json(paths.get("checks"), "checks")
         validation_evidence, validation_limitations = _load_optional_json(
             paths.get("validation_evidence"),
@@ -273,6 +269,25 @@ def _load_redaction_report(path: Path) -> RedactionReport:
         return RedactionReport.model_validate(normalized)
     except ValidationError as exc:
         raise PayloadBuildCliError("redaction_report_invalid", "redaction report structure is invalid") from exc
+
+
+def _validate_redaction_consistency(
+    intake: ReviewIntake,
+    external_report: RedactionReport,
+) -> None:
+    embedded_report = intake.redaction_summary
+
+    if embedded_report.output_safe_for_llm is not True or external_report.output_safe_for_llm is not True:
+        raise PayloadBuildCliError(
+            "redaction_report_unsafe",
+            "embedded and external redaction reports must both be safe for llm routing",
+        )
+
+    if embedded_report.model_dump(mode="json") != external_report.model_dump(mode="json"):
+        raise PayloadBuildCliError(
+            "redaction_report_mismatch",
+            "embedded and external redaction reports describe different sanitization results",
+        )
 
 
 def _normalize_schema_envelope(

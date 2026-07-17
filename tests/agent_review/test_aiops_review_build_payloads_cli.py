@@ -54,6 +54,18 @@ def _write_json(path: Path, payload: dict) -> Path:
 
 
 def _base_artifacts(tmp_path: Path) -> dict[str, Path]:
+    redaction_payload = {
+        "schema_version": "agent-review.redaction-report.v1",
+        "source": "aiops-review-intake",
+        "files_processed": 1,
+        "replacements_by_type": {"token_assignment": 1},
+        "secret_like_values_found": 1,
+        "redacted_lines_present": True,
+        "redaction_is_sanitizer_artifact": True,
+        "hardcoded_secret_confirmed": False,
+        "output_safe_for_llm": True,
+        "limitations": [],
+    }
     intake = _write_json(
         tmp_path / "aiops-intake.json",
         {
@@ -105,7 +117,7 @@ def _base_artifacts(tmp_path: Path) -> dict[str, Path]:
                 {"name": "file-diff-context", "path": "file-diff-context.json", "available": True, "valid": True, "status": "available"},
                 {"name": "full-diff", "path": "full.diff", "available": True, "valid": True, "status": "available"},
             ],
-            "redaction_summary": {"schema_version": "agent-review.redaction-report.v1"},
+            "redaction_summary": redaction_payload,
             "limitations": [],
             "completeness": {},
             "created_at": "2026-06-02T00:00:00Z",
@@ -158,18 +170,7 @@ def _base_artifacts(tmp_path: Path) -> dict[str, Path]:
     )
     redaction = _write_json(
         tmp_path / "redaction-report.json",
-        {
-            "schema_version": "agent-review.redaction-report.v1",
-            "source": "aiops-review-intake",
-            "files_processed": 1,
-            "replacements_by_type": {"token_assignment": 1},
-            "secret_like_values_found": 1,
-            "redacted_lines_present": True,
-            "redaction_is_sanitizer_artifact": True,
-            "hardcoded_secret_confirmed": False,
-            "output_safe_for_llm": True,
-            "limitations": [],
-        },
+        redaction_payload,
     )
     return {"intake": intake, "chunk_plan": chunk_plan, "redaction": redaction}
 
@@ -699,6 +700,148 @@ def test_cli_error_class_is_deterministic_for_invalid_required_input(monkeypatch
     assert first[0] == 1 and second[0] == 1
     assert json.loads(first[1])["error_class"] == "chunk_plan_invalid"
     assert json.loads(second[1])["error_class"] == "chunk_plan_invalid"
+
+
+def test_cli_fails_when_embedded_redaction_report_is_not_safe(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+    intake["redaction_summary"]["output_safe_for_llm"] = False
+    _write_json(paths["intake"], intake)
+    out_root = tmp_path / "out"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "redaction_report_unsafe"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_fails_when_embedded_and_external_redaction_reports_diverge(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+    intake["redaction_summary"]["files_processed"] = 99
+    _write_json(paths["intake"], intake)
+    out_root_a = tmp_path / "out-a"
+    out_root_b = tmp_path / "out-b"
+    module = _load_script_module()
+
+    first = _invoke(module, _args(paths, out_root_a))
+    second = _invoke(module, _args(paths, out_root_b))
+
+    first_error = _error_payload(first)
+    second_error = _error_payload(second)
+    assert first_error["error_class"] == "redaction_report_mismatch"
+    assert second_error["error_class"] == "redaction_report_mismatch"
+    assert first_error == second_error
+    assert not (out_root_a / "pr-brief.json").exists()
+    assert not (out_root_a / "chunk-payload-manifest.json").exists()
+    assert not (out_root_a / "chunk-payloads").exists()
+
+
+def test_cli_fails_when_external_redaction_report_is_not_safe(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    redaction = json.loads(paths["redaction"].read_text(encoding="utf-8"))
+    redaction["output_safe_for_llm"] = False
+    _write_json(paths["redaction"], redaction)
+    out_root = tmp_path / "out"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "redaction_report_unsafe"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_fails_when_both_redaction_reports_are_not_safe(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+    intake["redaction_summary"]["output_safe_for_llm"] = False
+    _write_json(paths["intake"], intake)
+    redaction = json.loads(paths["redaction"].read_text(encoding="utf-8"))
+    redaction["output_safe_for_llm"] = False
+    _write_json(paths["redaction"], redaction)
+    out_root = tmp_path / "out"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "redaction_report_unsafe"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_fails_when_redaction_reports_differ_on_replacements(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+    intake["redaction_summary"]["replacements_by_type"] = {"token_assignment": 2}
+    _write_json(paths["intake"], intake)
+    out_root = tmp_path / "out"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "redaction_report_mismatch"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_fails_when_redaction_reports_differ_on_limitations(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+    intake["redaction_summary"]["limitations"] = ["embedded-only"]
+    _write_json(paths["intake"], intake)
+    out_root = tmp_path / "out"
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "redaction_report_mismatch"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
+
+
+def test_cli_accepts_equivalent_modern_intake_and_redaction_reports(monkeypatch, tmp_path: Path) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    paths = _base_artifacts(tmp_path)
+    intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+    intake["schema_id"] = "agent-review.intake.v1"
+    intake["schema_version"] = 1
+    _write_json(paths["intake"], intake)
+    redaction = json.loads(paths["redaction"].read_text(encoding="utf-8"))
+    redaction["schema_id"] = "agent-review.redaction-report.v1"
+    redaction["schema_version"] = 1
+    _write_json(paths["redaction"], redaction)
+    module = _load_script_module()
+
+    result = _invoke(module, _args(paths, tmp_path / "out"))
+
+    payload = _success_payload(result)
+    assert payload["ok"] is True
 
 
 def test_new_active_paths_do_not_contain_router_or_provider_calls() -> None:

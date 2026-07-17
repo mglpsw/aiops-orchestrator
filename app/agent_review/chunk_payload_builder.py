@@ -579,7 +579,7 @@ def _contract_matches_chunk(contract: dict[str, Any], *, chunk_files: set[str]) 
     contract_paths = _paths_from_item(contract)
     if contract_paths and contract_paths.intersection(chunk_files):
         return True
-    patterns = _string_list(contract.get("patterns"))
+    patterns = _normalized_contract_patterns(contract.get("patterns"))
     if patterns and any(_matches_pattern(path, patterns) for path in chunk_files):
         return True
     return _is_global_item(contract)
@@ -623,11 +623,11 @@ def _is_global_item(item: dict[str, Any]) -> bool:
 def _paths_from_item(item: dict[str, Any]) -> set[str]:
     paths: set[str] = set()
     for key in ("file_path", "path"):
-        value = _clean_text(item.get(key))
+        value = _sanitize_relative_path(_clean_text(item.get(key)) or "")
         if value:
             paths.add(value)
     for key in ("files", "paths", "source_files", "related_files"):
-        for value in _string_list(item.get(key)):
+        for value in _sanitize_contract_paths(item.get(key)):
             paths.add(value)
     return paths
 
@@ -707,13 +707,50 @@ def _flatten_contract_rules(document: Any) -> list[dict[str, Any]]:
     for item in rules:
         if not isinstance(item, dict):
             continue
-        rows.append(
-            {
-                "id": _clean_text(item.get("id")),
-                "description": _clean_text(item.get("description")),
-            }
-        )
+        row = {
+            "id": _clean_text(item.get("id")),
+            "description": _clean_text(item.get("description")),
+            "scope": _clean_text(item.get("scope")),
+            "is_global": item.get("is_global") is True,
+            "file_path": _sanitize_relative_path(_clean_text(item.get("file_path")) or ""),
+            "path": _sanitize_relative_path(_clean_text(item.get("path")) or ""),
+            "files": _sanitize_contract_paths(item.get("files")),
+            "paths": _sanitize_contract_paths(item.get("paths")),
+            "source_files": _sanitize_contract_paths(item.get("source_files")),
+            "related_files": _sanitize_contract_paths(item.get("related_files")),
+            "patterns": _normalized_contract_patterns(item.get("patterns")),
+        }
+        rows.append(_drop_empty_contract_fields(row))
     return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
+
+
+def _sanitize_contract_paths(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    paths = [_sanitize_relative_path(item) for item in value if isinstance(item, str) and item.strip()]
+    return sorted({item for item in paths if item})
+
+
+def _normalized_contract_patterns(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    patterns = [_sanitize_relative_path(item.strip()) for item in value if isinstance(item, str) and item.strip()]
+    return sorted({item for item in patterns if item})
+
+
+def _drop_empty_contract_fields(row: dict[str, Any]) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, list) and not value:
+            continue
+        if isinstance(value, str) and not value:
+            continue
+        if value is None:
+            continue
+        if key == "is_global" and value is False:
+            continue
+        cleaned[key] = value
+    return cleaned
 
 
 def _flatten_review_packs(document: Any) -> list[dict[str, Any]]:
