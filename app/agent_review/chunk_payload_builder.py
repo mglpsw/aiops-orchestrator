@@ -459,7 +459,18 @@ def _evidence_context(
         if isinstance(validation_evidence, dict)
         else _artifact_content(intake, "validation-evidence-result")
     )
-    validation_entries = _filter_validation_findings(validation_document, chunk_files=set(chunk.files))
+    chunk_files = set(chunk.files)
+    validation_entries = _filter_validation_entries(
+        validation_document,
+        field_name="blocking_findings",
+        chunk_files=chunk_files,
+    )
+    validation_risks = _filter_validation_entries(
+        validation_document,
+        field_name="validation_risks",
+        chunk_files=chunk_files,
+    )
+    facts_for_synthesizer = _validation_facts(validation_document)
     lci = _artifact_content(intake, "local-code-intelligence")
     tests = _artifact_content(intake, "test-intelligence")
     lci_context, lci_limitations = _filter_lci(lci, chunk_files=set(chunk.files))
@@ -470,6 +481,8 @@ def _evidence_context(
                 "status": _clean_text(_get(validation_document, "status")),
                 "validation_verdict": _clean_text(_get(validation_document, "validation_verdict")),
                 "blocking_findings": validation_entries,
+                "validation_risks": validation_risks,
+                "facts_for_synthesizer": facts_for_synthesizer,
                 "limitations": _string_list(_get(validation_document, "limitations")),
             },
             "local_code_intelligence": lci_context,
@@ -622,7 +635,7 @@ def _is_global_item(item: dict[str, Any]) -> bool:
 
 def _paths_from_item(item: dict[str, Any]) -> set[str]:
     paths: set[str] = set()
-    for key in ("file_path", "path"):
+    for key in ("file_path", "file", "original_file", "path"):
         value = _sanitize_relative_path(_clean_text(item.get(key)) or "")
         if value:
             paths.add(value)
@@ -678,25 +691,68 @@ def _filter_test_intelligence(document: dict[str, Any] | None, *, chunk_files: s
     }
 
 
-def _filter_validation_findings(document: dict[str, Any] | None, *, chunk_files: set[str]) -> list[dict[str, Any]]:
-    findings = _get(document, "blocking_findings")
-    if not isinstance(findings, list):
+def _filter_validation_entries(
+    document: dict[str, Any] | None,
+    *,
+    field_name: str,
+    chunk_files: set[str],
+) -> list[dict[str, Any]]:
+    entries = _get(document, field_name)
+    if not isinstance(entries, list):
         return []
     rows: list[dict[str, Any]] = []
-    for item in findings:
+    seen: set[str] = set()
+    for item in entries:
         if not isinstance(item, dict):
             continue
-        file_path = _clean_text(item.get("file_path"))
-        if file_path and file_path not in chunk_files:
+        item_paths = _paths_from_item(item)
+        if item_paths and not item_paths.intersection(chunk_files):
             continue
-        rows.append(
-            {
-                "title": _clean_text(item.get("title")),
-                "severity": _clean_text(item.get("severity")),
-                "file_path": _sanitize_relative_path(file_path or ""),
-            }
-        )
-    return sorted(rows, key=lambda item: ((item.get("severity") or ""), (item.get("file_path") or ""), (item.get("title") or "")))
+        sanitized = sanitize_artifact_value(item)
+        if not isinstance(sanitized, dict):
+            continue
+        row = _normalize_validation_scope_fields(sanitized)
+        if not row:
+            continue
+        key = _canonical_json(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+    return sorted(rows, key=_canonical_json)
+
+
+def _normalize_validation_scope_fields(item: dict[str, Any]) -> dict[str, Any]:
+    row = copy.deepcopy(item)
+    for key in ("file_path", "file", "original_file", "path"):
+        if key not in row:
+            continue
+        value = _sanitize_relative_path(_clean_text(row.get(key)) or "")
+        if value:
+            row[key] = value
+        else:
+            row.pop(key, None)
+    for key in ("files", "paths", "source_files", "related_files"):
+        if key not in row:
+            continue
+        values = _sanitize_contract_paths(row.get(key))
+        if values:
+            row[key] = values
+        else:
+            row.pop(key, None)
+    return row
+
+
+def _validation_facts(document: dict[str, Any] | None) -> list[str]:
+    facts: set[str] = set()
+    for item in _list(_get(document, "facts_for_synthesizer")):
+        cleaned = _clean_text(item) if isinstance(item, str) else None
+        if not cleaned:
+            continue
+        sanitized = sanitize_artifact_value(cleaned)
+        if isinstance(sanitized, str) and sanitized.strip():
+            facts.add(sanitized.strip())
+    return sorted(facts)
 
 
 def _flatten_contract_rules(document: Any) -> list[dict[str, Any]]:
@@ -911,6 +967,14 @@ def _shrink_evidence_context(payload: dict[str, Any]) -> bool:
         return False
     validation = evidence.get("validation_evidence")
     if isinstance(validation, dict):
+        facts = validation.get("facts_for_synthesizer")
+        if isinstance(facts, list) and facts:
+            facts.pop()
+            return True
+        risks = validation.get("validation_risks")
+        if isinstance(risks, list) and risks:
+            risks.pop()
+            return True
         findings = validation.get("blocking_findings")
         if isinstance(findings, list) and findings:
             findings.pop()
@@ -927,6 +991,8 @@ def _shrink_evidence_context(payload: dict[str, Any]) -> bool:
             "status": _get(validation, "status") if isinstance(validation, dict) else None,
             "validation_verdict": _get(validation, "validation_verdict") if isinstance(validation, dict) else None,
             "blocking_findings": [],
+            "validation_risks": [],
+            "facts_for_synthesizer": [],
             "limitations": _get(validation, "limitations") if isinstance(validation, dict) else [],
         },
         "local_code_intelligence": {"provided": False, "files_analyzed": []},
@@ -1185,8 +1251,12 @@ def _artifact_text(intake: ReviewIntake, name: str) -> str | None:
 
 
 def _sha256_payload(payload: dict[str, Any]) -> str:
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    canonical = _canonical_json(payload)
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _sanitize_relative_path(path: str) -> str:
