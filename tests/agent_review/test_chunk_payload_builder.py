@@ -4,9 +4,23 @@ import json
 
 import pytest
 
-from app.agent_review.chunk_payload_builder import ChunkPayloadBuilderError, build_chunk_payloads
+from app.agent_review.chunk_payload_builder import (
+    ChunkPayloadBuilderError,
+    _shrink_evidence_context,
+    build_chunk_payloads,
+)
 from app.agent_review.pr_brief import build_pr_brief
-from app.agent_review.schemas import RedactionReport, ReviewIntake, SemanticChunk, SemanticChunkPlan
+from app.agent_review.schemas import (
+    ChunkCoverageNotes,
+    ChunkResponse,
+    ChunkResponseFinding,
+    ChunkResponseLimitation,
+    ChunkResponseRisk,
+    RedactionReport,
+    ReviewIntake,
+    SemanticChunk,
+    SemanticChunkPlan,
+)
 
 
 def _intake() -> ReviewIntake:
@@ -248,6 +262,74 @@ def _canonical_len(payload: dict) -> int:
     return len(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
 
 
+def _populated_validation_evidence() -> dict:
+    return {
+        "status": "complete",
+        "validation_verdict": "approve_with_risks",
+        "blocking_findings": [
+            {
+                "severity": "P1",
+                "title": "Backend blocker",
+                "file_path": "backend/api/shifts.py",
+                "description": "The API contract is broken.",
+                "evidence": "The changed response omits a required field.",
+                "source_artifact": "validation-evidence-result",
+            }
+        ],
+        "validation_risks": [
+            {
+                "severity": "P2",
+                "type": "contract",
+                "title": "Backend risk by file_path",
+                "file_path": "backend/api/shifts.py",
+                "description": "The response mapping needs validation.",
+                "evidence": "The mapper changed without a matching contract assertion.",
+                "source_artifact": "validation-evidence-result",
+                "downgrade_reason": "non_blocking_validation_evidence",
+            },
+            {
+                "severity": "P2",
+                "title": "Backend risk by legacy file",
+                "file": "backend/api/shifts.py",
+                "description": "Legacy file scoping remains supported.",
+                "evidence": "The validator emitted the legacy file field.",
+            },
+            {
+                "severity": "P3",
+                "title": "Test risk by original_file",
+                "original_file": "tests/test_shift_service.py",
+                "description": "The regression assertion may be incomplete.",
+                "evidence": "Only the success path is asserted.",
+            },
+            {
+                "severity": "P3",
+                "title": "Shared global risk",
+                "scope": "global",
+                "description": "The validation environment was degraded.",
+                "evidence": "The validation model was unavailable.",
+            },
+            {
+                "severity": "P3",
+                "title": "Shared unscoped risk",
+                "description": "Review this evidence without assigning it to a file.",
+                "evidence": "The source artifact did not declare file scope.",
+            },
+            {
+                "severity": "P3",
+                "title": "Shared unscoped risk",
+                "description": "Review this evidence without assigning it to a file.",
+                "evidence": "The source artifact did not declare file scope.",
+            },
+        ],
+        "facts_for_synthesizer": [
+            "Shared zeta fact",
+            " Shared alpha fact ",
+            "Shared alpha fact",
+        ],
+        "limitations": [],
+    }
+
+
 def test_chunk_payload_builder_generates_one_payload_per_chunk() -> None:
     intake = _intake()
     plan = _chunk_plan()
@@ -301,6 +383,147 @@ def test_chunk_payload_builder_includes_hunks_contracts_evidence_and_response_co
     evidence = api_payload["chunk_context"]["evidence_context"]["validation_evidence"]["blocking_findings"]
     assert evidence and evidence[0]["file_path"] == "backend/api/shifts.py"
     assert "required_fields" in api_payload["response_contract"]
+
+
+def test_chunk_payload_builder_preserves_scoped_validation_risks_and_shared_facts() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    validation_evidence = _populated_validation_evidence()
+
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=validation_evidence,
+        max_chars_per_payload=20_000,
+    )
+
+    api_evidence = payloads["chunk-01-api_schema_contract.json"].chunk_context["evidence_context"][
+        "validation_evidence"
+    ]
+    test_evidence = payloads["chunk-02-tests.json"].chunk_context["evidence_context"]["validation_evidence"]
+    api_titles = [item["title"] for item in api_evidence["validation_risks"]]
+    test_titles = [item["title"] for item in test_evidence["validation_risks"]]
+
+    assert api_titles.count("Shared unscoped risk") == 1
+    assert "Backend risk by file_path" in api_titles
+    assert "Backend risk by legacy file" in api_titles
+    assert "Test risk by original_file" not in api_titles
+    assert "Test risk by original_file" in test_titles
+    assert "Backend risk by file_path" not in test_titles
+    assert "Backend risk by legacy file" not in test_titles
+    assert "Shared global risk" in api_titles and "Shared global risk" in test_titles
+    assert api_evidence["facts_for_synthesizer"] == ["Shared alpha fact", "Shared zeta fact"]
+    assert test_evidence["facts_for_synthesizer"] == api_evidence["facts_for_synthesizer"]
+
+    unscoped = next(item for item in api_evidence["validation_risks"] if item["title"] == "Shared unscoped risk")
+    assert "file_path" not in unscoped
+    assert unscoped.get("scope") != "global"
+    backend_risk = next(item for item in api_evidence["validation_risks"] if item["title"] == "Backend risk by file_path")
+    assert backend_risk["description"]
+    assert backend_risk["evidence"]
+    assert backend_risk["source_artifact"] == "validation-evidence-result"
+    assert backend_risk["downgrade_reason"] == "non_blocking_validation_evidence"
+
+
+def test_chunk_payload_builder_sanitizes_new_validation_evidence_fields() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    validation_evidence = _populated_validation_evidence()
+    validation_evidence["validation_risks"].append(
+        {
+            "title": "Sensitive shared risk",
+            "description": "token=AGENT_REVIEW_VALIDATION_SECRET",
+            "evidence": "Read /home/reviewer/private/evidence.json before deciding.",
+        }
+    )
+    validation_evidence["facts_for_synthesizer"].extend(
+        [
+            "token=AGENT_REVIEW_VALIDATION_SECRET",
+            "Read /home/reviewer/private/evidence.json",
+        ]
+    )
+
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=validation_evidence,
+        max_chars_per_payload=20_000,
+    )
+
+    rendered = _render(
+        {
+            "manifest": manifest.model_dump(mode="json"),
+            "payloads": {name: payload.model_dump(mode="json") for name, payload in payloads.items()},
+        }
+    )
+    assert "AGENT_REVIEW_VALIDATION_SECRET" not in rendered
+    assert "/home/reviewer/private/evidence.json" not in rendered
+    assert "[REDACTED]" in rendered
+    assert "[LOCAL_PATH_REDACTED]" in rendered
+
+
+def test_chunk_payload_builder_validation_evidence_is_byte_deterministic() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    evidence = _populated_validation_evidence()
+
+    first_manifest, first_payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=evidence,
+        max_chars_per_payload=20_000,
+    )
+    second_manifest, second_payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=evidence,
+        max_chars_per_payload=20_000,
+    )
+
+    assert first_manifest.model_dump_json() == second_manifest.model_dump_json()
+    assert {
+        name: payload.model_dump_json() for name, payload in first_payloads.items()
+    } == {
+        name: payload.model_dump_json() for name, payload in second_payloads.items()
+    }
+
+
+def test_evidence_shrink_preserves_blockers_before_risks_and_facts() -> None:
+    payload = {
+        "chunk_context": {
+            "evidence_context": {
+                "validation_evidence": {
+                    "provided": True,
+                    "status": "complete",
+                    "validation_verdict": "approve_with_risks",
+                    "blocking_findings": [{"title": "blocker"}],
+                    "validation_risks": [{"title": "risk"}],
+                    "facts_for_synthesizer": ["fact"],
+                    "limitations": [],
+                },
+                "local_code_intelligence": {"provided": False, "files_analyzed": []},
+                "test_intelligence": {"provided": False, "changed_tests": [], "failed_tests": []},
+            }
+        }
+    }
+
+    assert _shrink_evidence_context(payload) is True
+    validation = payload["chunk_context"]["evidence_context"]["validation_evidence"]
+    assert validation["facts_for_synthesizer"] == []
+    assert validation["validation_risks"] == [{"title": "risk"}]
+    assert validation["blocking_findings"] == [{"title": "blocker"}]
+
+    assert _shrink_evidence_context(payload) is True
+    assert validation["validation_risks"] == []
+    assert validation["blocking_findings"] == [{"title": "blocker"}]
 
 
 def test_chunk_payload_builder_handles_empty_chunk_as_limited() -> None:
@@ -844,6 +1067,112 @@ def test_chunk_payload_builder_rejects_duplicate_order_indexes() -> None:
             validation_evidence=None,
         )
     assert exc.value.error_class == "chunk_plan_duplicate_order_index"
+
+
+@pytest.mark.parametrize(
+    "invalid_chunk_id",
+    [
+        "chunk/backend",
+        "chunk\\backend",
+        ".",
+        "..",
+        "chunk\x00backend",
+        "chunk\nbackend",
+        "ghp_abcdefghijk_sensitive",
+        "/home/reviewer/chunk-backend",
+    ],
+)
+def test_chunk_payload_builder_rejects_response_incompatible_chunk_ids(invalid_chunk_id: str) -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    plan.chunks[0].chunk_id = invalid_chunk_id
+
+    with pytest.raises(ChunkPayloadBuilderError) as exc:
+        build_chunk_payloads(
+            intake=intake,
+            chunk_plan=plan,
+            pr_brief=_brief(intake, plan),
+            checks=None,
+            validation_evidence=None,
+        )
+
+    assert exc.value.error_class == "chunk_plan_chunk_id_invalid"
+    assert invalid_chunk_id not in exc.value.message
+
+
+def test_chunk_response_contract_describes_all_nested_model_shapes() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+        max_chars_per_payload=20_000,
+    )
+    payload = payloads["chunk-01-api_schema_contract.json"]
+    contract = payload.response_contract
+    fields = contract["field_shapes"]
+
+    assert set(fields) == set(ChunkResponse.model_fields)
+    assert set(fields["confirmed_findings"]["items"]["fields"]) == set(ChunkResponseFinding.model_fields)
+    assert set(fields["risks"]["items"]["fields"]) == set(ChunkResponseRisk.model_fields)
+    assert set(fields["limitations"]["items"]["fields"]) == set(ChunkResponseLimitation.model_fields)
+    assert set(fields["coverage_notes"]["fields"]) == set(ChunkCoverageNotes.model_fields)
+    assert fields["schema_version"] == {"type": "integer", "const": 1}
+    assert fields["chunk_id"]["const"] == payload.chunk_id
+    assert fields["semantic_group"]["const"] == payload.semantic_group
+    assert fields["risks"]["items"]["type"] == "object"
+    assert fields["risks"]["items"]["required"] == ["title", "reason"]
+    assert fields["limitations"]["items"]["type"] == "object"
+    assert fields["limitations"]["items"]["at_least_one_non_empty"] == ["type", "detail"]
+    assert fields["coverage_notes"]["required"] == [
+        "files_reviewed",
+        "files_partial",
+        "files_not_reviewed",
+    ]
+    assert fields["confirmed_findings"]["items"]["provenance"]["at_least_one_of"] == [
+        "source_artifact",
+        "line_or_hunk",
+    ]
+    assert ChunkResponse.model_validate(contract["minimum_valid_template"])
+    assert contract["output_format"] == "json_object_only"
+    assert "markdown" in contract["forbidden_output"]
+    assert "code_fences" in contract["forbidden_output"]
+    assert "text_outside_json" in contract["forbidden_output"]
+
+
+def test_chunk_response_contract_survives_truncation_and_keeps_deterministic_hashes() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    first_manifest, first_payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+        max_chars_per_payload=900,
+    )
+    second_manifest, second_payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+        max_chars_per_payload=900,
+    )
+
+    for payload in first_payloads.values():
+        assert payload.truncation.applied is True
+        assert payload.response_contract["field_shapes"]["limitations"]["items"]["type"] == "object"
+        assert ChunkResponse.model_validate(payload.response_contract["minimum_valid_template"])
+    assert first_manifest.model_dump_json() == second_manifest.model_dump_json()
+    assert {
+        name: payload.model_dump_json() for name, payload in first_payloads.items()
+    } == {
+        name: payload.model_dump_json() for name, payload in second_payloads.items()
+    }
 
 
 def _scoped_contract_intake_and_plan() -> tuple[ReviewIntake, SemanticChunkPlan]:

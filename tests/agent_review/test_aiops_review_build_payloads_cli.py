@@ -8,6 +8,8 @@ import os
 import socket
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "aiops-review-build-payloads.py"
@@ -863,3 +865,36 @@ def test_new_active_paths_do_not_contain_router_or_provider_calls() -> None:
     ]
     for value in forbidden:
         assert value not in active_text.lower()
+
+
+@pytest.mark.parametrize(
+    "invalid_chunk_id",
+    ["chunk/backend", "ghp_abcdefghijk_sensitive"],
+)
+def test_cli_rejects_invalid_chunk_id_before_outputs_are_created(
+    monkeypatch,
+    tmp_path: Path,
+    invalid_chunk_id: str,
+) -> None:
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    module = _load_script_module()
+    paths = _base_artifacts(tmp_path)
+    chunk_plan = json.loads(paths["chunk_plan"].read_text(encoding="utf-8"))
+    chunk_plan["chunks"][0]["chunk_id"] = invalid_chunk_id
+    _write_json(paths["chunk_plan"], chunk_plan)
+    out_root = tmp_path / "agent-output"
+    out_root.mkdir()
+    sentinel = out_root / "preexisting-sentinel.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+
+    result = _invoke(module, _args(paths, out_root))
+
+    error = _error_payload(result)
+    assert error["error_class"] == "chunk_plan_chunk_id_invalid"
+    assert invalid_chunk_id not in result[1]
+    assert invalid_chunk_id not in result[2]
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert not (out_root / "pr-brief.json").exists()
+    assert not (out_root / "chunk-payload-manifest.json").exists()
+    assert not (out_root / "chunk-payloads").exists()
