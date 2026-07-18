@@ -49,14 +49,22 @@ Por poder evoluir para executar ações operacionais sobre a infraestrutura, é 
 
 ---
 
-## Branch protection recomendada para `main`
+## Branch padrão, release e proteção de `master`
+
+- A branch padrão do repositório é `master`.
+- Pull Requests de release devem usar `master` como base.
+- Tags de release devem apontar somente para commits já integrados em `master`.
+- A proteção de branch de `master` está habilitada no GitHub; force push e deleção estão
+  desabilitados.
+
+Proteções adicionais recomendadas:
 
 - Exigir Pull Request antes de merge.
 - Exigir pelo menos 1 aprovação de revisão.
 - Exigir que status checks (CI) passem antes do merge.
 - Exigir resolução de todas as conversas antes do merge.
-- Bloquear force push na `main`.
-- Restringir push direto na `main` (somente via PR).
+- Bloquear force push na `master`.
+- Restringir push direto na `master` (somente via PR).
 - Exigir revisão extra para mudanças em automações, execução remota, shell commands, Docker,
   SSH ou deploy.
 
