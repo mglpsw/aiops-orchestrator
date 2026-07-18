@@ -173,7 +173,7 @@ def _chunk_plan(reverse_order: bool = False, include_empty_chunk: bool = False) 
             contracts=["target_profile:domain_contracts"],
             depends_on=[],
             coverage="complete",
-            prompt_budget_chars=3_000,
+            prompt_budget_chars=10_000,
             estimated_chars=1_000,
             limitations=[],
         ),
@@ -186,7 +186,7 @@ def _chunk_plan(reverse_order: bool = False, include_empty_chunk: bool = False) 
             contracts=[],
             depends_on=[],
             coverage="complete",
-            prompt_budget_chars=3_000,
+            prompt_budget_chars=10_000,
             estimated_chars=900,
             limitations=[],
         ),
@@ -526,6 +526,36 @@ def test_evidence_shrink_preserves_blockers_before_risks_and_facts() -> None:
     assert validation["blocking_findings"] == [{"title": "blocker"}]
 
 
+def test_validation_evidence_truncation_is_explicit_and_keeps_higher_priority_evidence() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    evidence = _populated_validation_evidence()
+    evidence["facts_for_synthesizer"].extend(
+        [f"shared-fact-{index:02d}-{'x' * 200}" for index in range(30)]
+    )
+
+    manifest, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=evidence,
+        max_chars_per_payload=5_500,
+    )
+
+    payload = payloads["chunk-01-api_schema_contract.json"]
+    validation = payload.chunk_context["evidence_context"]["validation_evidence"]
+    entry = next(item for item in manifest.chunks if item.chunk_id == payload.chunk_id)
+    assert payload.truncation.applied is True
+    assert "evidence_context" in payload.truncation.omitted_sections
+    assert "evidence_context_reduced" in payload.truncation.coverage_impact
+    assert len(validation["facts_for_synthesizer"]) < 32
+    assert validation["validation_risks"]
+    assert validation["blocking_findings"]
+    assert entry.status == "limited"
+    assert entry.truncation == payload.truncation
+
+
 def test_chunk_payload_builder_handles_empty_chunk_as_limited() -> None:
     intake = _intake()
     plan = _chunk_plan(include_empty_chunk=True)
@@ -862,7 +892,10 @@ def test_chunk_payload_builder_response_contract_uses_parser_supported_fields() 
 def test_chunk_payload_builder_sanitizes_manifest_metadata() -> None:
     intake = _intake()
     plan = _chunk_plan()
-    plan.chunks[0].chunk_id = "chunk-01-token=SUPERSECRET"
+    plan.limitations = [
+        "token=SUPERSECRET",
+        "Review /home/reviewer/private/manifest-source.json",
+    ]
     brief = _brief(intake, plan)
     manifest, payloads = build_chunk_payloads(
         intake=intake,
@@ -874,8 +907,10 @@ def test_chunk_payload_builder_sanitizes_manifest_metadata() -> None:
 
     rendered = _render(manifest.model_dump(mode="json"))
     assert "SUPERSECRET" not in rendered
+    assert "/home/reviewer/private/manifest-source.json" not in rendered
+    assert "[REDACTED]" in rendered
+    assert "[LOCAL_PATH_REDACTED]" in rendered
     payload_paths = {entry.payload_path for entry in manifest.chunks}
-    assert all(payload_path and "SUPERSECRET" not in payload_path for payload_path in payload_paths)
     assert payload_paths == set(payloads)
 
 
@@ -1206,7 +1241,7 @@ def _scoped_contract_intake_and_plan() -> tuple[ReviewIntake, SemanticChunkPlan]
                 "contracts": [],
                 "depends_on": [],
                 "coverage": "complete",
-                "prompt_budget_chars": 3000,
+                "prompt_budget_chars": 10000,
                 "estimated_chars": 800,
                 "limitations": [],
             }

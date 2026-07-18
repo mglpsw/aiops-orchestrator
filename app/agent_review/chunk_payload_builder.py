@@ -10,6 +10,7 @@ from collections import defaultdict
 from typing import Any
 
 from app.agent_review.chunk_artifact_ids import ChunkArtifactIdError, chunk_artifact_filename
+from app.agent_review.chunk_response_contract import build_chunk_response_contract
 from app.agent_review.redaction import sanitize_artifact_value
 from app.agent_review.schemas import (
     ChunkPayload,
@@ -209,36 +210,10 @@ def _build_chunk_payload(
             "hunks_included": len(chunk_hunks),
             "chunk_plan_limitations": list(chunk.limitations),
         },
-        "response_contract": {
-            "schema_version": 1,
-            "required_fields": [
-                "schema_version",
-                "chunk_id",
-                "semantic_group",
-                "confirmed_findings",
-                "risks",
-                "limitations",
-                "coverage_notes",
-            ],
-            "finding_requirements": [
-                "severity",
-                "title",
-                "file_path",
-                "impact",
-                "evidence",
-            ],
-            "finding_provenance_fields": ["source_artifact", "line_or_hunk"],
-            "finding_provenance_requirement": "at_least_one_of:source_artifact,line_or_hunk",
-            "forbidden_content": [
-                "absolute_paths",
-                "tokens",
-                "headers",
-                "cookies",
-                "env_dumps",
-                "raw_provider_payload",
-                "raw_prompt_or_response",
-            ],
-        },
+        "response_contract": build_chunk_response_contract(
+            chunk_id=chunk.chunk_id,
+            semantic_group=chunk.semantic_group,
+        ),
         "warnings": _dedupe(warnings),
         "limitations": _dedupe(limitations),
         "created_at": pr_brief.created_at,
