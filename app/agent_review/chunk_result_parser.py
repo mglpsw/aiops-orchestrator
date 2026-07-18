@@ -8,6 +8,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.agent_review.chunk_artifact_ids import (
+    ChunkArtifactIdError,
+    chunk_artifact_filename,
+    validate_chunk_ids,
+)
 from app.agent_review.finding_normalizer import DedupeState, normalize_chunk_response
 from app.agent_review.redaction import RedactionState, redact_value
 from app.agent_review.schemas import (
@@ -53,6 +58,7 @@ def load_chunk_plan(path: Path | str) -> SemanticChunkPlan:
         raise ChunkResultParserError("chunk_plan_invalid", "semantic chunk plan structure is invalid") from exc
     if plan.status == "failed":
         raise ChunkResultParserError("chunk_plan_invalid", "semantic chunk plan status is failed")
+    _validate_chunk_plan_ids(plan)
     return plan
 
 
@@ -61,6 +67,7 @@ def parse_chunk_results(
     *,
     responses_dir: Path | str,
 ) -> ChunkResults:
+    _validate_chunk_plan_ids(chunk_plan)
     response_root = Path(responses_dir).resolve()
     if not response_root.exists() or not response_root.is_dir():
         raise ChunkResultParserError("responses_dir_invalid", "responses-dir must be an existing directory")
@@ -153,12 +160,21 @@ def _load_chunk_response(response_path: Path, chunk: SemanticChunk) -> ChunkResp
 
 
 def _expected_response_path(response_root: Path, chunk: SemanticChunk) -> Path | None:
-    if "/" in chunk.chunk_id or "\\" in chunk.chunk_id or chunk.chunk_id in {".", ".."}:
+    try:
+        filename = chunk_artifact_filename(chunk.chunk_id, artifact_root=response_root)
+    except ChunkArtifactIdError:
         return None
-    candidate = (response_root / f"{chunk.chunk_id}.json").resolve()
+    candidate = (response_root / filename).resolve()
     if not _is_relative_to(candidate, response_root):
         return None
     return candidate
+
+
+def _validate_chunk_plan_ids(chunk_plan: SemanticChunkPlan) -> None:
+    try:
+        validate_chunk_ids(chunk.chunk_id for chunk in chunk_plan.chunks)
+    except ChunkArtifactIdError as exc:
+        raise ChunkResultParserError(exc.error_class, exc.message) from exc
 
 
 def _failure(chunk: SemanticChunk, error_class: str, message: str) -> ChunkParseFailure:

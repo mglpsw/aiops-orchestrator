@@ -9,6 +9,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
+from app.agent_review.chunk_artifact_ids import ChunkArtifactIdError, chunk_artifact_filename
 from app.agent_review.redaction import sanitize_artifact_value
 from app.agent_review.schemas import (
     ChunkPayload,
@@ -48,10 +49,10 @@ def build_chunk_payloads(
         checks=checks,
         validation_evidence=validation_evidence,
     )
-    diff_map = _diff_by_file(intake)
-    file_context = _file_context_map(intake)
     chunks = sorted(chunk_plan.chunks, key=lambda item: (item.order_index, item.chunk_id))
     _validate_chunk_plan_uniqueness(chunks)
+    diff_map = _diff_by_file(intake)
+    file_context = _file_context_map(intake)
 
     payloads: dict[str, ChunkPayload] = {}
     manifest_chunks: list[ChunkPayloadManifestEntry] = []
@@ -290,7 +291,10 @@ def _validate_chunk_plan_uniqueness(chunks: list[SemanticChunk]) -> None:
                 f"duplicate order_index in chunk plan: {chunk.order_index}",
             )
         seen_order_indexes.add(chunk.order_index)
-        filename, _ = _payload_filename(chunk)
+        try:
+            filename = chunk_artifact_filename(chunk.chunk_id)
+        except ChunkArtifactIdError as exc:
+            raise ChunkPayloadBuilderError(exc.error_class, exc.message) from exc
         if filename in seen_filenames:
             raise ChunkPayloadBuilderError(
                 "chunk_plan_duplicate_payload_filename",
@@ -1049,23 +1053,10 @@ def _refresh_hunk_coverage(payload: dict[str, Any]) -> None:
 
 
 def _payload_filename(chunk: SemanticChunk) -> tuple[str, list[str]]:
-    chunk_id = chunk.chunk_id
-    sanitized_chunk_id = sanitize_artifact_value(chunk_id)
-    if isinstance(sanitized_chunk_id, str) and _is_safe_filename(sanitized_chunk_id) and sanitized_chunk_id == chunk_id:
-        return f"{sanitized_chunk_id}.json", []
-    digest = hashlib.sha256((_clean_text(chunk_id) or "").encode("utf-8")).hexdigest()[:10]
-    safe = f"chunk-{chunk.order_index + 1:02d}-{digest}.json"
-    limitations: list[str] = []
-    if sanitized_chunk_id != chunk_id:
-        limitations.append(f"chunk_id_sanitized_for_filename:{digest}")
-    else:
-        limitations.append(f"chunk_id_not_safe_for_filename:{digest}")
-    return safe, limitations
-
-
-def _is_safe_filename(value: str) -> bool:
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
-    return bool(value) and all(char in allowed for char in value)
+    try:
+        return chunk_artifact_filename(chunk.chunk_id), []
+    except ChunkArtifactIdError as exc:
+        raise ChunkPayloadBuilderError(exc.error_class, exc.message) from exc
 
 
 def _diff_by_file(intake: ReviewIntake) -> dict[str, str]:
