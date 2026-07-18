@@ -4,10 +4,24 @@
   "validation_model_available": false,
   "validation_verdict": "degraded",
   "blocking_findings": [],
-  "validation_risks": [],
-  "facts_for_synthesizer": [],
+  "validation_risks": [
+    {
+      "severity": "P2",
+      "type": "contract",
+      "title": "Fixture scoped validation risk",
+      "description": "The shift service contract needs non-blocking follow-up.",
+      "evidence": "The offline validation artifact could not confirm every caller.",
+      "source_artifact": "validation-evidence-result",
+      "file_path": "backend/services/shift_service.py",
+      "downgrade_reason": "validation_model_unavailable"
+    }
+  ],
+  "facts_for_synthesizer": [
+    "The offline validation model was unavailable.",
+    "The offline validation model was unavailable.",
+    "Validation evidence remains non-blocking."
+  ],
   "limitations": [
     "offline_contract_fixture"
   ]
 }
-

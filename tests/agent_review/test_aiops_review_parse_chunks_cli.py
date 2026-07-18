@@ -231,11 +231,12 @@ def test_parse_chunks_cli_rejects_response_path_escape(tmp_path: Path) -> None:
 
     result = _run_cli(chunk_plan, responses_dir, output, env=_dev_env())
 
-    assert result.returncode == 0
-    payload = json.loads(output.read_text(encoding="utf-8"))
-    assert payload["status"] == "degraded"
-    assert payload["chunks_failed"][0]["error_class"] == "chunk_response_path_invalid"
-    assert payload["chunks_parsed"] == []
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["error_class"] == "chunk_plan_chunk_id_invalid"
+    assert "../escape" not in result.stdout
+    assert not output.exists()
+    assert (tmp_path / "escape.json").exists()
 
 
 def test_parse_chunks_cli_does_not_call_network_or_provider(monkeypatch, tmp_path: Path) -> None:  # noqa: ANN001

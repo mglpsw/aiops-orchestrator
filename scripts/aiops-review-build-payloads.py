@@ -23,6 +23,7 @@ from app.agent_review.chunk_payload_builder import (  # noqa: E402
     ChunkPayloadBuilderError,
     build_chunk_payloads,
 )
+from app.agent_review.chunk_artifact_ids import ChunkArtifactIdError, validate_chunk_ids  # noqa: E402
 from app.agent_review.pr_brief import PRBriefError, build_pr_brief  # noqa: E402
 from app.agent_review.redaction import sanitize_artifact_value  # noqa: E402
 from app.agent_review.schemas import (  # noqa: E402
@@ -255,6 +256,10 @@ def _load_chunk_plan(path: Path) -> SemanticChunkPlan:
         raise PayloadBuildCliError("chunk_plan_invalid", "chunk plan structure is invalid") from exc
     if plan.status == "failed":
         raise PayloadBuildCliError("chunk_plan_invalid", "chunk plan status must not be failed")
+    try:
+        validate_chunk_ids(chunk.chunk_id for chunk in plan.chunks)
+    except ChunkArtifactIdError as exc:
+        raise PayloadBuildCliError(exc.error_class, exc.message) from exc
     return plan
 
 

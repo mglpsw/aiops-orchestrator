@@ -390,6 +390,9 @@ def test_e2e_build_payloads_scopes_contracts_to_matching_chunks(
     backend_seen = False
     global_seen = False
     unrelated_seen = False
+    validation_risk_seen = False
+    validation_risk_leaked = False
+    fact_chunk_count = 0
     for entry in manifest_payload["chunks"]:
         payload_path = payloads_dir / str(entry["payload_path"])
         payload = json.loads(payload_path.read_text(encoding="utf-8"))
@@ -409,9 +412,28 @@ def test_e2e_build_payloads_scopes_contracts_to_matching_chunks(
             global_seen = True
         if "non-matching" in contract_ids:
             unrelated_seen = True
+        validation = payload.get("chunk_context", {}).get("evidence_context", {}).get("validation_evidence", {})
+        validation_risk_titles = {
+            item.get("title")
+            for item in validation.get("validation_risks", [])
+            if isinstance(item, dict)
+        }
+        has_fixture_risk = "Fixture scoped validation risk" in validation_risk_titles
+        if "backend/services/shift_service.py" in chunk_files:
+            validation_risk_seen = validation_risk_seen or has_fixture_risk
+        else:
+            validation_risk_leaked = validation_risk_leaked or has_fixture_risk
+        if validation.get("facts_for_synthesizer") == [
+            "The offline validation model was unavailable.",
+            "Validation evidence remains non-blocking.",
+        ]:
+            fact_chunk_count += 1
     assert backend_seen is True
     assert global_seen is True
     assert unrelated_seen is False
+    assert validation_risk_seen is True
+    assert validation_risk_leaked is False
+    assert fact_chunk_count == manifest_payload["payload_count"]
 
 
 def test_agentescala_tool_repo_e2e_contract_runs_offline(

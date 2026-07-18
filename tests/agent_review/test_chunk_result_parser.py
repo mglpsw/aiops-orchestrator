@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.agent_review.chunk_result_parser import parse_chunk_results
+import pytest
+
+from app.agent_review.chunk_result_parser import ChunkResultParserError, parse_chunk_results
 from app.agent_review.schemas import SemanticChunk, SemanticChunkPlan
 
 
@@ -52,6 +54,7 @@ def _write_response(
     chunk: SemanticChunk,
     confirmed_findings: list[dict[str, object]] | None = None,
     risks: list[dict[str, object]] | None = None,
+    limitations: list[dict[str, object]] | None = None,
     coverage_notes: dict[str, object] | None = None,
 ) -> Path:
     payload = {
@@ -60,7 +63,7 @@ def _write_response(
         "semantic_group": chunk.semantic_group,
         "confirmed_findings": confirmed_findings if confirmed_findings is not None else [],
         "risks": risks if risks is not None else [],
-        "limitations": [],
+        "limitations": limitations if limitations is not None else [],
         "coverage_notes": coverage_notes if coverage_notes is not None else {"files_reviewed": chunk.files},
     }
     path = responses_dir / f"{chunk.chunk_id}.json"
@@ -366,3 +369,75 @@ def test_coverage_notes_filter_out_files_not_assigned_to_chunk(tmp_path: Path) -
     assert results.coverage.files_not_reviewed == []
     assert "frontend/src/other.jsx" not in results.model_dump_json()
     assert f"coverage_file_not_in_chunk:{chunk.chunk_id}" in results.limitations
+
+
+@pytest.mark.parametrize(
+    "invalid_chunk_id",
+    [
+        "chunk/backend",
+        "chunk\\backend",
+        ".",
+        "..",
+        "chunk\x00backend",
+        "chunk\nbackend",
+        "ghp_abcdefghijk_sensitive",
+        "/home/reviewer/chunk-backend",
+    ],
+)
+def test_parser_rejects_the_same_response_incompatible_chunk_ids(
+    tmp_path: Path,
+    invalid_chunk_id: str,
+) -> None:
+    chunk = _chunk(chunk_id=invalid_chunk_id)
+    responses = _responses_dir(tmp_path)
+
+    with pytest.raises(ChunkResultParserError) as exc:
+        parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    assert exc.value.error_class == "chunk_plan_chunk_id_invalid"
+    assert invalid_chunk_id not in exc.value.message
+
+
+def test_parser_accepts_non_empty_response_following_structured_contract(tmp_path: Path) -> None:
+    chunk = _chunk()
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        confirmed_findings=[
+            {
+                "severity": "P2",
+                "title": "Schedule validation skips inactive doctor guard",
+                "file_path": "backend/services/schedule.py",
+                "impact": "Inactive doctors could be scheduled.",
+                "evidence": "The changed hunk removes the inactive-doctor guard.",
+                "line_or_hunk": "L42-L48",
+                "contract_id": None,
+                "confidence": "high",
+                "dedupe_key": None,
+            }
+        ],
+        risks=[
+            {
+                "title": "Caller behavior still needs validation",
+                "reason": "The chunk does not include every caller.",
+                "missing_evidence": "caller paths",
+                "suggested_validation": "Inspect local code intelligence.",
+            }
+        ],
+        limitations=[{"type": "diff_scope", "detail": "Only the assigned file was reviewed."}],
+        coverage_notes={
+            "files_reviewed": ["backend/services/schedule.py"],
+            "files_partial": [],
+            "files_not_reviewed": [],
+        },
+    )
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    assert results.status == "complete"
+    assert len(results.confirmed_findings) == 1
+    assert results.confirmed_findings[0].source_artifact is None
+    assert results.confirmed_findings[0].line_or_hunk == "L42-L48"
+    assert results.risks[0].title == "Caller behavior still needs validation"
+    assert "diff_scope:Only the assigned file was reviewed." in results.limitations

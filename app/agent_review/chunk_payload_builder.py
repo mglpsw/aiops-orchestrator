@@ -9,6 +9,8 @@ import re
 from collections import defaultdict
 from typing import Any
 
+from app.agent_review.chunk_artifact_ids import ChunkArtifactIdError, chunk_artifact_filename
+from app.agent_review.chunk_response_contract import build_chunk_response_contract
 from app.agent_review.redaction import sanitize_artifact_value
 from app.agent_review.schemas import (
     ChunkPayload,
@@ -48,10 +50,10 @@ def build_chunk_payloads(
         checks=checks,
         validation_evidence=validation_evidence,
     )
-    diff_map = _diff_by_file(intake)
-    file_context = _file_context_map(intake)
     chunks = sorted(chunk_plan.chunks, key=lambda item: (item.order_index, item.chunk_id))
     _validate_chunk_plan_uniqueness(chunks)
+    diff_map = _diff_by_file(intake)
+    file_context = _file_context_map(intake)
 
     payloads: dict[str, ChunkPayload] = {}
     manifest_chunks: list[ChunkPayloadManifestEntry] = []
@@ -208,36 +210,10 @@ def _build_chunk_payload(
             "hunks_included": len(chunk_hunks),
             "chunk_plan_limitations": list(chunk.limitations),
         },
-        "response_contract": {
-            "schema_version": 1,
-            "required_fields": [
-                "schema_version",
-                "chunk_id",
-                "semantic_group",
-                "confirmed_findings",
-                "risks",
-                "limitations",
-                "coverage_notes",
-            ],
-            "finding_requirements": [
-                "severity",
-                "title",
-                "file_path",
-                "impact",
-                "evidence",
-            ],
-            "finding_provenance_fields": ["source_artifact", "line_or_hunk"],
-            "finding_provenance_requirement": "at_least_one_of:source_artifact,line_or_hunk",
-            "forbidden_content": [
-                "absolute_paths",
-                "tokens",
-                "headers",
-                "cookies",
-                "env_dumps",
-                "raw_provider_payload",
-                "raw_prompt_or_response",
-            ],
-        },
+        "response_contract": build_chunk_response_contract(
+            chunk_id=chunk.chunk_id,
+            semantic_group=chunk.semantic_group,
+        ),
         "warnings": _dedupe(warnings),
         "limitations": _dedupe(limitations),
         "created_at": pr_brief.created_at,
@@ -278,6 +254,10 @@ def _validate_chunk_plan_uniqueness(chunks: list[SemanticChunk]) -> None:
     seen_order_indexes: set[int] = set()
     seen_filenames: set[str] = set()
     for chunk in chunks:
+        try:
+            filename = chunk_artifact_filename(chunk.chunk_id)
+        except ChunkArtifactIdError as exc:
+            raise ChunkPayloadBuilderError(exc.error_class, exc.message) from exc
         if chunk.chunk_id in seen_chunk_ids:
             raise ChunkPayloadBuilderError(
                 "chunk_plan_duplicate_chunk_id",
@@ -290,7 +270,6 @@ def _validate_chunk_plan_uniqueness(chunks: list[SemanticChunk]) -> None:
                 f"duplicate order_index in chunk plan: {chunk.order_index}",
             )
         seen_order_indexes.add(chunk.order_index)
-        filename, _ = _payload_filename(chunk)
         if filename in seen_filenames:
             raise ChunkPayloadBuilderError(
                 "chunk_plan_duplicate_payload_filename",
@@ -459,7 +438,18 @@ def _evidence_context(
         if isinstance(validation_evidence, dict)
         else _artifact_content(intake, "validation-evidence-result")
     )
-    validation_entries = _filter_validation_findings(validation_document, chunk_files=set(chunk.files))
+    chunk_files = set(chunk.files)
+    validation_entries = _filter_validation_entries(
+        validation_document,
+        field_name="blocking_findings",
+        chunk_files=chunk_files,
+    )
+    validation_risks = _filter_validation_entries(
+        validation_document,
+        field_name="validation_risks",
+        chunk_files=chunk_files,
+    )
+    facts_for_synthesizer = _validation_facts(validation_document)
     lci = _artifact_content(intake, "local-code-intelligence")
     tests = _artifact_content(intake, "test-intelligence")
     lci_context, lci_limitations = _filter_lci(lci, chunk_files=set(chunk.files))
@@ -470,6 +460,8 @@ def _evidence_context(
                 "status": _clean_text(_get(validation_document, "status")),
                 "validation_verdict": _clean_text(_get(validation_document, "validation_verdict")),
                 "blocking_findings": validation_entries,
+                "validation_risks": validation_risks,
+                "facts_for_synthesizer": facts_for_synthesizer,
                 "limitations": _string_list(_get(validation_document, "limitations")),
             },
             "local_code_intelligence": lci_context,
@@ -622,7 +614,7 @@ def _is_global_item(item: dict[str, Any]) -> bool:
 
 def _paths_from_item(item: dict[str, Any]) -> set[str]:
     paths: set[str] = set()
-    for key in ("file_path", "path"):
+    for key in ("file_path", "file", "original_file", "path"):
         value = _sanitize_relative_path(_clean_text(item.get(key)) or "")
         if value:
             paths.add(value)
@@ -678,25 +670,69 @@ def _filter_test_intelligence(document: dict[str, Any] | None, *, chunk_files: s
     }
 
 
-def _filter_validation_findings(document: dict[str, Any] | None, *, chunk_files: set[str]) -> list[dict[str, Any]]:
-    findings = _get(document, "blocking_findings")
-    if not isinstance(findings, list):
+def _filter_validation_entries(
+    document: dict[str, Any] | None,
+    *,
+    field_name: str,
+    chunk_files: set[str],
+) -> list[dict[str, Any]]:
+    entries = _get(document, field_name)
+    if not isinstance(entries, list):
         return []
     rows: list[dict[str, Any]] = []
-    for item in findings:
+    seen: set[str] = set()
+    for item in entries:
         if not isinstance(item, dict):
             continue
-        file_path = _clean_text(item.get("file_path"))
-        if file_path and file_path not in chunk_files:
+        is_global = _is_global_item(item)
+        item_paths = _paths_from_item(item)
+        if not is_global and item_paths and not item_paths.intersection(chunk_files):
             continue
-        rows.append(
-            {
-                "title": _clean_text(item.get("title")),
-                "severity": _clean_text(item.get("severity")),
-                "file_path": _sanitize_relative_path(file_path or ""),
-            }
-        )
-    return sorted(rows, key=lambda item: ((item.get("severity") or ""), (item.get("file_path") or ""), (item.get("title") or "")))
+        sanitized = sanitize_artifact_value(item)
+        if not isinstance(sanitized, dict):
+            continue
+        row = _normalize_validation_scope_fields(sanitized)
+        if not row:
+            continue
+        key = _canonical_json(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(row)
+    return sorted(rows, key=_canonical_json)
+
+
+def _normalize_validation_scope_fields(item: dict[str, Any]) -> dict[str, Any]:
+    row = copy.deepcopy(item)
+    for key in ("file_path", "file", "original_file", "path"):
+        if key not in row:
+            continue
+        value = _sanitize_relative_path(_clean_text(row.get(key)) or "")
+        if value:
+            row[key] = value
+        else:
+            row.pop(key, None)
+    for key in ("files", "paths", "source_files", "related_files"):
+        if key not in row:
+            continue
+        values = _sanitize_contract_paths(row.get(key))
+        if values:
+            row[key] = values
+        else:
+            row.pop(key, None)
+    return row
+
+
+def _validation_facts(document: dict[str, Any] | None) -> list[str]:
+    facts: set[str] = set()
+    for item in _list(_get(document, "facts_for_synthesizer")):
+        cleaned = _clean_text(item) if isinstance(item, str) else None
+        if not cleaned:
+            continue
+        sanitized = sanitize_artifact_value(cleaned)
+        if isinstance(sanitized, str) and sanitized.strip():
+            facts.add(sanitized.strip())
+    return sorted(facts)
 
 
 def _flatten_contract_rules(document: Any) -> list[dict[str, Any]]:
@@ -911,6 +947,14 @@ def _shrink_evidence_context(payload: dict[str, Any]) -> bool:
         return False
     validation = evidence.get("validation_evidence")
     if isinstance(validation, dict):
+        facts = validation.get("facts_for_synthesizer")
+        if isinstance(facts, list) and facts:
+            facts.pop()
+            return True
+        risks = validation.get("validation_risks")
+        if isinstance(risks, list) and risks:
+            risks.pop()
+            return True
         findings = validation.get("blocking_findings")
         if isinstance(findings, list) and findings:
             findings.pop()
@@ -927,6 +971,8 @@ def _shrink_evidence_context(payload: dict[str, Any]) -> bool:
             "status": _get(validation, "status") if isinstance(validation, dict) else None,
             "validation_verdict": _get(validation, "validation_verdict") if isinstance(validation, dict) else None,
             "blocking_findings": [],
+            "validation_risks": [],
+            "facts_for_synthesizer": [],
             "limitations": _get(validation, "limitations") if isinstance(validation, dict) else [],
         },
         "local_code_intelligence": {"provided": False, "files_analyzed": []},
@@ -983,23 +1029,10 @@ def _refresh_hunk_coverage(payload: dict[str, Any]) -> None:
 
 
 def _payload_filename(chunk: SemanticChunk) -> tuple[str, list[str]]:
-    chunk_id = chunk.chunk_id
-    sanitized_chunk_id = sanitize_artifact_value(chunk_id)
-    if isinstance(sanitized_chunk_id, str) and _is_safe_filename(sanitized_chunk_id) and sanitized_chunk_id == chunk_id:
-        return f"{sanitized_chunk_id}.json", []
-    digest = hashlib.sha256((_clean_text(chunk_id) or "").encode("utf-8")).hexdigest()[:10]
-    safe = f"chunk-{chunk.order_index + 1:02d}-{digest}.json"
-    limitations: list[str] = []
-    if sanitized_chunk_id != chunk_id:
-        limitations.append(f"chunk_id_sanitized_for_filename:{digest}")
-    else:
-        limitations.append(f"chunk_id_not_safe_for_filename:{digest}")
-    return safe, limitations
-
-
-def _is_safe_filename(value: str) -> bool:
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
-    return bool(value) and all(char in allowed for char in value)
+    try:
+        return chunk_artifact_filename(chunk.chunk_id), []
+    except ChunkArtifactIdError as exc:
+        raise ChunkPayloadBuilderError(exc.error_class, exc.message) from exc
 
 
 def _diff_by_file(intake: ReviewIntake) -> dict[str, str]:
@@ -1185,8 +1218,12 @@ def _artifact_text(intake: ReviewIntake, name: str) -> str | None:
 
 
 def _sha256_payload(payload: dict[str, Any]) -> str:
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    canonical = _canonical_json(payload)
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _sanitize_relative_path(path: str) -> str:
