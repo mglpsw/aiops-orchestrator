@@ -254,6 +254,10 @@ def _validate_chunk_plan_uniqueness(chunks: list[SemanticChunk]) -> None:
     seen_order_indexes: set[int] = set()
     seen_filenames: set[str] = set()
     for chunk in chunks:
+        try:
+            filename = chunk_artifact_filename(chunk.chunk_id)
+        except ChunkArtifactIdError as exc:
+            raise ChunkPayloadBuilderError(exc.error_class, exc.message) from exc
         if chunk.chunk_id in seen_chunk_ids:
             raise ChunkPayloadBuilderError(
                 "chunk_plan_duplicate_chunk_id",
@@ -266,10 +270,6 @@ def _validate_chunk_plan_uniqueness(chunks: list[SemanticChunk]) -> None:
                 f"duplicate order_index in chunk plan: {chunk.order_index}",
             )
         seen_order_indexes.add(chunk.order_index)
-        try:
-            filename = chunk_artifact_filename(chunk.chunk_id)
-        except ChunkArtifactIdError as exc:
-            raise ChunkPayloadBuilderError(exc.error_class, exc.message) from exc
         if filename in seen_filenames:
             raise ChunkPayloadBuilderError(
                 "chunk_plan_duplicate_payload_filename",

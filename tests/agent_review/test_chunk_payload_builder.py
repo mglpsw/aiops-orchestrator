@@ -1135,6 +1135,26 @@ def test_chunk_payload_builder_rejects_response_incompatible_chunk_ids(invalid_c
     assert invalid_chunk_id not in exc.value.message
 
 
+def test_chunk_payload_builder_validates_secret_like_id_before_duplicate_error() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    unsafe_id = "ghp_abcdefghijk_sensitive"
+    plan.chunks[0].chunk_id = unsafe_id
+    plan.chunks[1].chunk_id = unsafe_id
+
+    with pytest.raises(ChunkPayloadBuilderError) as exc:
+        build_chunk_payloads(
+            intake=intake,
+            chunk_plan=plan,
+            pr_brief=_brief(intake, plan),
+            checks=None,
+            validation_evidence=None,
+        )
+
+    assert exc.value.error_class == "chunk_plan_chunk_id_invalid"
+    assert unsafe_id not in exc.value.message
+
+
 def test_chunk_response_contract_describes_all_nested_model_shapes() -> None:
     intake = _intake()
     plan = _chunk_plan()
