@@ -330,6 +330,51 @@ def _populated_validation_evidence() -> dict:
     }
 
 
+def _path_bearing_global_validation_evidence() -> dict:
+    return {
+        "status": "complete",
+        "validation_verdict": "approve_with_risks",
+        "blocking_findings": [
+            {
+                "severity": "P1",
+                "title": "Global blocker with original file provenance",
+                "scope": "global",
+                "original_file": "backend/api/shifts.py",
+                "evidence": "The source file establishes provenance for a repository-wide blocker.",
+            }
+        ],
+        "validation_risks": [
+            {
+                "severity": "P2",
+                "title": "Global risk with file provenance",
+                "scope": "global",
+                "file_path": "backend/api/shifts.py",
+                "evidence": "The path identifies the source of a repository-wide risk.",
+            },
+            {
+                "severity": "P2",
+                "title": "Global flag with path list provenance",
+                "is_global": True,
+                "paths": ["backend/api/shifts.py", "/home/reviewer/private/global-risk.json"],
+                "evidence": "The path list is provenance, not a distribution restriction.",
+            },
+            {
+                "severity": "P3",
+                "title": "File-scoped risk remains bounded",
+                "file_path": "backend/api/shifts.py",
+                "evidence": "This risk applies only to the backend file.",
+            },
+            {
+                "severity": "P3",
+                "title": "Unscoped risk remains unscoped",
+                "evidence": "No file or global scope was declared.",
+            },
+        ],
+        "facts_for_synthesizer": [],
+        "limitations": [],
+    }
+
+
 def test_chunk_payload_builder_generates_one_payload_per_chunk() -> None:
     intake = _intake()
     plan = _chunk_plan()
@@ -425,6 +470,87 @@ def test_chunk_payload_builder_preserves_scoped_validation_risks_and_shared_fact
     assert backend_risk["evidence"]
     assert backend_risk["source_artifact"] == "validation-evidence-result"
     assert backend_risk["downgrade_reason"] == "non_blocking_validation_evidence"
+
+
+def test_path_bearing_global_validation_entries_reach_every_chunk() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    evidence = _path_bearing_global_validation_evidence()
+
+    _, payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=evidence,
+        max_chars_per_payload=20_000,
+    )
+
+    api_validation = payloads["chunk-01-api_schema_contract.json"].chunk_context["evidence_context"][
+        "validation_evidence"
+    ]
+    test_validation = payloads["chunk-02-tests.json"].chunk_context["evidence_context"]["validation_evidence"]
+    api_risks = {item["title"]: item for item in api_validation["validation_risks"]}
+    test_risks = {item["title"]: item for item in test_validation["validation_risks"]}
+
+    for title in ("Global risk with file provenance", "Global flag with path list provenance"):
+        assert title in api_risks
+        assert title in test_risks
+    assert api_risks["Global risk with file provenance"]["file_path"] == "backend/api/shifts.py"
+    assert test_risks["Global risk with file provenance"]["file_path"] == "backend/api/shifts.py"
+    assert set(test_risks["Global flag with path list provenance"]["paths"]) == {
+        "backend/api/shifts.py",
+        "[LOCAL_PATH_REDACTED]",
+    }
+    assert "File-scoped risk remains bounded" in api_risks
+    assert "File-scoped risk remains bounded" not in test_risks
+    assert "Unscoped risk remains unscoped" in api_risks
+    assert "Unscoped risk remains unscoped" in test_risks
+    assert test_risks["Unscoped risk remains unscoped"].get("scope") != "global"
+
+    for validation in (api_validation, test_validation):
+        blockers = {item["title"]: item for item in validation["blocking_findings"]}
+        blocker = blockers["Global blocker with original file provenance"]
+        assert blocker["original_file"] == "backend/api/shifts.py"
+        assert "/home/reviewer/private/global-risk.json" not in _render(validation)
+
+
+def test_path_bearing_global_validation_entries_are_byte_deterministic() -> None:
+    intake = _intake()
+    plan = _chunk_plan()
+    evidence = _path_bearing_global_validation_evidence()
+
+    first_manifest, first_payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=evidence,
+        max_chars_per_payload=20_000,
+    )
+    second_manifest, second_payloads = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=evidence,
+        max_chars_per_payload=20_000,
+    )
+
+    test_risk_titles = {
+        item["title"]
+        for item in first_payloads["chunk-02-tests.json"].chunk_context["evidence_context"][
+            "validation_evidence"
+        ]["validation_risks"]
+    }
+    assert "Global risk with file provenance" in test_risk_titles
+    assert "Global flag with path list provenance" in test_risk_titles
+    assert first_manifest.model_dump_json() == second_manifest.model_dump_json()
+    assert {
+        name: payload.model_dump_json() for name, payload in first_payloads.items()
+    } == {
+        name: payload.model_dump_json() for name, payload in second_payloads.items()
+    }
 
 
 def test_chunk_payload_builder_sanitizes_new_validation_evidence_fields() -> None:

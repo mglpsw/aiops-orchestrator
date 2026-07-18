@@ -684,8 +684,9 @@ def _filter_validation_entries(
     for item in entries:
         if not isinstance(item, dict):
             continue
+        is_global = _is_global_item(item)
         item_paths = _paths_from_item(item)
-        if item_paths and not item_paths.intersection(chunk_files):
+        if not is_global and item_paths and not item_paths.intersection(chunk_files):
             continue
         sanitized = sanitize_artifact_value(item)
         if not isinstance(sanitized, dict):
