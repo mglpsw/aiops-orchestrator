@@ -3,8 +3,10 @@
 Status: supplemental guidance. The canonical wrapper contract is
 `docs/AGENTESCALA_TARGET_REPO_CONTRACT.md`.
 
-Phase 05 integrates `mglpsw/AgentEscala` with the AgentReview Engine in
-`mglpsw/aiops-orchestrator` as a pinned local tool repo on CT104.
+Phase 05 defines the integration of `mglpsw/AgentEscala` with the AgentReview
+Engine in `mglpsw/aiops-orchestrator` as a pinned local tool repo on CT104.
+Target-repository adoption of the v0.20.0 quality gate remains tracked in
+`mglpsw/AgentEscala#670`.
 
 ## Boundary
 
@@ -13,19 +15,20 @@ not call CT102, use CT102 as staging, deploy, restart services, run SSH, run
 Docker remotely, call providers directly, use `/v1/chat/ingest`, auto-approve,
 auto-merge, or apply contract suggestions automatically.
 
-The AIOps tool repo remains a deterministic offline engine through Phase 04. In
-Phase 05, AgentEscala owns orchestration and any optional LLM calls. AgentEscala
-may call Agent Router only through the OpenAI-compatible endpoint
-`/v1/chat/completions`.
+The AIOps tool repo remains deterministic and offline through the complete
+`v0.20.0` pipeline. In Phase 05, AgentEscala owns orchestration and any optional
+LLM calls. AgentEscala may call Agent Router only through the OpenAI-compatible
+endpoint `/v1/chat/completions`.
 
 ## Ownership
 
 `aiops-orchestrator` owns:
 
-- intake, redaction, semantic chunk planning, structured chunk result parsing,
-  and final deterministic synthesis;
-- public schemas for `aiops-intake.json`, `semantic-chunk-plan.json`,
-  `chunk-results.json`, and `final-review.json`;
+- intake, redaction, semantic chunk planning, PR brief, bounded chunk payloads,
+  structured chunk result parsing and final deterministic synthesis;
+- deterministic quality gate, telemetry, false-positive signatures and
+  manual-only contract suggestions;
+- public schemas for every artifact documented in `RELEASE_V0_20_0.md`;
 - contract docs and offline contract tests.
 
 `AgentEscala` owns:
@@ -156,7 +159,9 @@ This builder is deterministic/offline and does not call models, `/v1/chat/ingest
 or providers directly. The wrapper can later send payload content only through
 Agent Router `/v1/chat/completions` as tracked by `mglpsw/AgentEscala#670`.
 
-The minimum schema is:
+Each payload embeds the complete response contract and a chunk-specific minimum
+valid response. The following is an illustrative minimal shape; the emitted
+payload contract is authoritative:
 
 ```json
 {

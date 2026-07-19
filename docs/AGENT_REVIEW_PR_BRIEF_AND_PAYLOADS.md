@@ -1,7 +1,7 @@
 # AgentReview PR Brief and Chunk Payloads
 
-This phase adds deterministic, sanitized, provider-neutral build artifacts for
-the next AgentReview runtime step:
+`v0.20.0` delivers deterministic, sanitized, provider-neutral build artifacts
+for target-repository review orchestration:
 
 - `pr-brief.json` (`agent-review.pr-brief.v1`);
 - `chunk-payload-manifest.json` (`agent-review.chunk-payload-manifest.v1`);

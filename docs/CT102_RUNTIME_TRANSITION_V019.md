@@ -1,5 +1,8 @@
 # CT102 Runtime Transition - AIOps v0.19.0
 
+> Historical runbook for the completed `v0.19.0` transition. It records the
+> pre-release procedure and does not authorize a current CT102 operation.
+
 ## 1. Objetivo
 
 Prepare the controlled CT102 runtime transition required before the final
@@ -218,7 +221,7 @@ Abort or rollback if any of the following happens:
 `v0.19.0-rc.1` marked the AgentReview Engine offline E2E foundation.
 `v0.19.0-rc.2` marked AgentEscala thin-wrapper E2E validation on CT104.
 
-The final `v0.19.0` release can be created only after:
+The final `v0.19.0` release was created after:
 
 - CT102 runtime is updated.
 - Health is OK.

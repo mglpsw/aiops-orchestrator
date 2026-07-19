@@ -5,7 +5,8 @@
 O catálogo de actions (`config/actions.yaml`) define o conjunto explícito e allowlisted de operações
 que o Action Planner pode sugerir. Nenhum comando livre é aceito fora deste catálogo.
 
-**Fase atual (v1 / v0.18.0 checkpoint):** apenas ações `mode: readonly` e `risk: low` estão no catálogo.
+**Contrato atual (runtime v1, preservado em v0.20.0):** apenas ações
+`mode: readonly` e `risk: low` estão no catálogo.
 Ações de escrita, restart, deploy ou remediação não existem nesta fase.
 
 ---

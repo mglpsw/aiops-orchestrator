@@ -1,9 +1,15 @@
 # AIOps Orchestrator
 
-Serviço de orquestração de automações de infraestrutura via LLM. O caminho canônico atual é
-diagnóstico, planejamento, dry-run, aprovação, execução read-only allowlisted e histórico
-auditável. Os adaptadores legados de shell/SSH/Docker continuam no repositório por compatibilidade
-histórica, mas não são o caminho oficial do runner novo.
+Serviço de orquestração AIOps com duas superfícies deliberadamente separadas:
+
+- runtime produtivo no CT102 para diagnóstico, planejamento, dry-run, aprovação,
+  execução read-only allowlisted e histórico auditável;
+- AgentReview offline no CT104 para intake sanitizado, semantic chunking, PR brief,
+  payloads limitados, parsing, síntese, quality gate e telemetria determinísticos.
+
+Os adaptadores legados de shell/SSH/Docker continuam no repositório por
+compatibilidade histórica, mas não são o caminho oficial do runner. O
+AgentReview não executa no CT102 e não chama providers diretamente.
 
 Integra-se com o [`agent-router-api`](https://github.com/mglpsw/agent-router-api)
 através da rota `@aiops` do router.
@@ -12,16 +18,23 @@ Repo canônico da CT 102: `/opt/aiops-orchestrator`.
 As surfaces legadas continuam compatíveis, mas estão marcadas como deprecated e devem migrar
 para as APIs canônicas `/v1/aiops/*`.
 
-## Release v0.18.0
+## Release v0.20.0
 
-O checkpoint final da fase AIOps readonly/chat consolida:
+Release final assinada publicada em 19 de julho de 2026 no commit
+`13695c73d1da9f16eba5c20e6478e7d51aefbb45`.
 
-- diagnóstico severity-aware com findings enriquecidos
-- runner read-only allowlisted e fail-closed
-- chat/OpenWebUI com intents determinísticas
-- GitHub Agent Review com `/agent review`, `/agent review llm` e `/agent ask`
-- respostas públicas em pt-BR por padrão e fallback seguro via `GITHUB_STEP_SUMMARY`
-- foco imediato na próxima fase `agent-router-api`
+- `review-quality-gate.json` como autoridade canônica pós-síntese;
+- E2E offline cobrindo intake, planejamento semântico, PR brief, payloads por
+  chunk, parsing, síntese, quality gate e telemetria;
+- telemetria determinística, assinaturas de falso positivo e sugestões de
+  contrato sempre `manual_only`;
+- contratos sanitizados e limitados de `pr-brief.json`,
+  `chunk-payload-manifest.json` e `chunk-payloads/<chunk_id>.json`;
+- consumo pelo target repo fixado a um SHA completo e imutável;
+- runtime CT102 validado em `0.20.0`, sem migração de banco ou mudança de API.
+
+Veja [Release v0.20.0](docs/RELEASE_V0_20_0.md) e as
+[notas de release](docs/RELEASE_NOTES.md).
 
 ---
 
@@ -35,6 +48,7 @@ O checkpoint final da fase AIOps readonly/chat consolida:
 - **Autenticação por token** (`AGENT_ROUTER_API_TOKEN` ou `AIOPS_API_TOKEN`)
 - **Métricas Prometheus**: `/metrics`
 - **SQLite persistence** para savings/histórico
+- **AgentReview offline** com artifacts determinísticos e quality gate fail-closed
 
 ---
 
@@ -57,13 +71,9 @@ explícita, use o override `deploy/docker-compose.maintenance.yml`.
 O orchestrator compartilha a network Docker `aiops-net`. Deploy o
 `agent-router-api` primeiro (ele cria a network), depois este serviço.
 
-```bash
-# No agent-router-api repo:
-cd /opt/aiops-orchestrator && docker compose -f deploy/docker-compose.yml up -d
-# No aiops-orchestrator repo:
-cd /opt/aiops-orchestrator
-# siga o fluxo de deploy validado para este ambiente
-```
+Siga o runbook do `agent-router-api` para criar a network compartilhada. Depois,
+no clone produtivo deste repositório, use apenas o fluxo de deploy aprovado para
+o ambiente. Não use o quick start como autorização de deploy.
 
 O router então encaminha `@aiops` para `http://aiops-orchestrator:8000`.
 
@@ -190,6 +200,27 @@ runs e approvals, com resposta curta, segura e sem execução de actions. Veja
 - `/agent ask <pergunta>` publica uma resposta separada e contextual, sem sobrescrever o review principal
 - Veja [`docs/GITHUB_AGENT.md`](docs/GITHUB_AGENT.md) para o contrato, autorização e modo LLM opcional
 
+### AgentReview offline v0.20.0
+
+O pipeline determinístico roda somente em CT104/dev/toolrepo:
+
+```text
+intake/redaction
+-> semantic chunk plan
+-> PR brief + bounded chunk payloads
+-> structured chunk parsing
+-> final synthesis
+-> review quality gate
+-> telemetry
+-> optional false-positive signatures and manual-only suggestions
+```
+
+`review-quality-gate.json` é a autoridade de decisão pós-síntese. O target repo
+deve validar schema, source, versão e combinações permitidas e falhar fechado
+quando o gate estiver ausente, inválido ou contraditório. Consulte o
+[contrato E2E](docs/AGENT_REVIEW_E2E_PIPELINE.md) e o
+[contrato do quality gate](docs/AGENT_REVIEW_QUALITY_GATE.md).
+
 ### Project Status
 
 - Veja [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) para o checkpoint canônico atual e o roadmap imediato
@@ -199,7 +230,8 @@ runs e approvals, com resposta curta, segura e sem execução de actions. Veja
 ## Tests
 
 ```bash
-pytest tests/ -v
+python3 -m pytest tests -q
+bash scripts/ci_validate.sh
 ```
 
 GitHub Actions CI validates the action catalog, scripts, compose configs, and tests on
@@ -211,6 +243,12 @@ manual and approved.
 ## Docs
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md)
+- [`docs/AIOPS_PROJECT_MANUAL.md`](docs/AIOPS_PROJECT_MANUAL.md)
+- [`docs/README_AI_REVIEWER_DOCS.md`](docs/README_AI_REVIEWER_DOCS.md)
+- [`docs/AGENT_REVIEW_E2E_PIPELINE.md`](docs/AGENT_REVIEW_E2E_PIPELINE.md)
+- [`docs/AGENT_REVIEW_QUALITY_GATE.md`](docs/AGENT_REVIEW_QUALITY_GATE.md)
+- [`docs/RELEASE_V0_20_0.md`](docs/RELEASE_V0_20_0.md)
 - [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)
 - [`docs/OPERATIONS.md`](docs/OPERATIONS.md)
 - [`docs/SECURITY.md`](docs/SECURITY.md)

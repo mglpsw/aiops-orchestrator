@@ -1,5 +1,56 @@
 # Changelog
 
+## v0.20.0 - 2026-07-19 - AgentReview Quality Gate
+
+### Added
+
+- deterministic post-synthesis quality gate with
+  `review-quality-gate.json` as the canonical decision authority
+- deterministic PR brief, bounded per-chunk payloads and payload manifest
+- review telemetry, false-positive signatures and human-reviewable contract
+  suggestions that remain `manual_only`
+- offline E2E coverage from intake/redaction through telemetry
+
+### Changed
+
+- AgentEscala consumption contract now requires an immutable lowercase full
+  commit SHA and fail-closed gate validation
+- chunk payload contracts preserve validation risks, synthesizer facts,
+  provenance and strict response-compatible chunk identity
+- runtime-reported default version advanced from `0.19.0` to `0.20.0`
+
+### Security
+
+- no AgentReview execution on CT102
+- no direct provider, `/v1/chat/ingest`, deploy, SSH, Docker or GitHub write
+  call from the offline AIOps CLIs
+- no automatic contract update, remediation, approval or merge
+- sanitized artifacts reject secrets and local absolute-path leakage
+
+### Release
+
+- signed RC and final tags target
+  `13695c73d1da9f16eba5c20e6478e7d51aefbb45`
+- final GitHub release is non-draft, non-prerelease and signature-verified
+- CT102 reported `0.20.0` with health, readiness, metrics, database, providers
+  and action catalog ready
+- rollback remains `v0.19.0`
+
+## v0.19.0 - 2026-06-02 - AgentReview E2E and CT102 transition
+
+### Added
+
+- offline AgentReview intake, redaction, semantic chunk planning, structured
+  chunk parsing and deterministic final synthesis
+- AgentEscala thin-wrapper E2E validation on CT104
+- explicit CT104 toolrepo and CT102 runtime environment boundaries
+
+### Changed
+
+- CT102 runtime-reported version advanced to `0.19.0`
+- production health, readiness, metrics, stores, providers and action catalog
+  were validated with documented rollback evidence
+
 ## v0.18.0 - AIOps readonly/chat checkpoint
 
 ### Added

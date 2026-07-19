@@ -1,9 +1,11 @@
 # AgentReview E2E Pipeline
 
-Phase 05 connects the offline AgentReview Engine to AgentEscala's PR workflow.
-The end-to-end flow is intentionally split across deterministic AIOps CLIs and
-AgentEscala-owned orchestration. The target-repository consumption contract is
-frozen in `docs/AGENTESCALA_TARGET_REPO_CONTRACT.md`.
+Phase 05 defines how the offline AgentReview Engine connects to AgentEscala's
+PR workflow. The end-to-end flow is intentionally split across deterministic
+AIOps CLIs and AgentEscala-owned orchestration. The target-repository
+consumption contract is frozen in
+`docs/AGENTESCALA_TARGET_REPO_CONTRACT.md`; adoption of the v0.20.0 gate by the
+target repo is tracked separately in `mglpsw/AgentEscala#670`.
 
 ## Sequence
 
@@ -29,8 +31,8 @@ AgentEscala PR workflow on CT104
 ```
 
 The AIOps CLIs do not call Agent Router, providers, GitHub APIs, CT102, Docker,
-SSH, deploy, restart, or operational command execution. AgentEscala is a
-thin-wrapper consumer and does not reimplement parsing, synthesis, gate,
+SSH, deploy, restart, or operational command execution. AgentEscala is designed
+as a thin-wrapper consumer and must not reimplement parsing, synthesis, gate,
 telemetry, or false-positive logic.
 
 ## CLI Contract
@@ -247,14 +249,15 @@ tokens
 cookies
 ```
 
-## Release Criteria
+## Release status
 
-`v0.19.0` is already the finalized release line. Phase 05 documentation must
-not instruct creation of new release-candidate tags for that line.
+`v0.20.0` is the finalized AgentReview Quality Gate line. Its signed RC and
+final tags both target
+`13695c73d1da9f16eba5c20e6478e7d51aefbb45`. The deterministic PR brief,
+bounded per-chunk payload builder and post-merge contract corrections are part
+of that release.
 
-`v0.20.0` remains the active AgentReview track. After PR #72 and follow-up #73,
-the next integration blocker is the AIOps PR for deterministic PR brief and
-bounded per-chunk context/payload builder (without changing AgentEscala runtime
-in this document set).
-
-CT102 runtime transition is not part of Phase 05.
+This document defines the continuing E2E contract; it does not authorize new
+release tags, target-repository changes or CT102 operations. Future wrapper,
+second-opinion or validation-evidence work requires separate scope and must
+preserve the `v0.20.0` fail-closed contract.

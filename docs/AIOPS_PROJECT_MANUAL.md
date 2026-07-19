@@ -2,12 +2,19 @@
 
 ## Estado atual, arquitetura, operação, auditoria e roadmap
 
-**Documento:** AIOPS-MANUAL-001  
-**Versão do documento:** 1.0  
-**Data de consolidação:** 15 de julho de 2026  
-**Baseline do código:** após os merges de `mglpsw/aiops-orchestrator#72` e follow-up `#73`
-**Release produtivo do runtime:** `v0.19.0`  
-**Release track em desenvolvimento:** `v0.20.0 — AgentReview Quality Gate`  
+**Documento:** AIOPS-MANUAL-001
+
+**Versão do documento:** 1.1
+
+**Data de consolidação:** 19 de julho de 2026
+
+**Baseline do código:** `13695c73d1da9f16eba5c20e6478e7d51aefbb45`
+após o merge de `mglpsw/aiops-orchestrator#78`
+
+**Release produtivo do runtime:** `v0.20.0`
+
+**Release track atual:** `v0.20.0 — AgentReview Quality Gate`, concluído
+
 **Status do documento:** baseline oficial versionada no repositório
 
 ---
@@ -23,8 +30,8 @@ Ele deve servir como:
 - inventário do que funciona hoje;
 - registro das fronteiras de segurança;
 - diagnóstico das lacunas ainda abertas;
-- guia de implementação do release track `v0.20.0`;
-- roteiro para ativar rapidamente o quality gate no AgentEscala.
+- registro final do release track `v0.20.0`;
+- roteiro contratual para consumo seguro do quality gate no AgentEscala.
 
 ### 1.1 Hierarquia das fontes de verdade
 
@@ -55,16 +62,20 @@ A. Runtime operacional AIOps no CT102
 B. AgentReview Tool Repo no CT104
 ```
 
-O runtime CT102 concluiu a transição para `v0.19.0`, com health, readiness, metrics, database, provider registry, action catalog e stores operacionais validados. O AgentReview não roda nesse ambiente.
+O runtime CT102 concluiu a transição para `v0.20.0`, com health, readiness,
+metrics, database, provider registry e action catalog validados. O AgentReview
+não roda nesse ambiente.
 
 No CT104, o `aiops-orchestrator` já funciona como motor offline e determinístico para:
 
 ```text
 intake/redaction
 → semantic chunk planning
+→ deterministic PR brief and bounded chunk payloads
 → structured chunk parsing
 → final review synthesis
 → deterministic quality gate
+→ telemetry and optional false-positive artifacts
 ```
 
 A PR #66, já mergeada, adicionou o quality gate determinístico e o artifact:
@@ -73,27 +84,28 @@ A PR #66, já mergeada, adicionou o quality gate determinístico e o artifact:
 review-quality-gate.json
 ```
 
-O projeto está, portanto, em uma transição de maturidade:
+O projeto consolidou a seguinte evolução:
 
 ```text
 v0.19.0
 = engine E2E até final-review + runtime CT102 estabilizado
 
 v0.20.0
-= gate determinístico integrado ao contrato E2E e consumido pelo target repo
+= gate determinístico, telemetry, false-positive signatures, PR brief e
+  bounded chunk payload contracts no toolrepo
 ```
 
 ### 2.1 Situação em uma frase
 
-> O AIOps já produz e valida deterministicamente `review-quality-gate.json`, e o
-> contrato pós-#72/#73 já exige consumo fail-closed no AgentEscala.
+> O AIOps produz e valida deterministicamente `review-quality-gate.json`; o
+> release `v0.20.0` fixa esse artifact como autoridade canônica e exige consumo
+> fail-closed no target repo.
 
-### 2.2 Próximo bloqueio real
+### 2.2 Próximo escopo
 
-Com #60, #61, #62 e #65 concluídas, o próximo bloqueador para o track `v0.20.0`
-é a PR futura do AIOps para PR brief determinístico e bounded per-chunk
-context/payload builder (sem mudar runtime do AgentEscala nesta fase
-documental).
+O track `v0.20.0` está concluído. Adoção do wrapper no target repo, optional
+second opinion e Validation Evidence semantic pre-review são follow-ups
+separados e não alteram retroativamente o contrato do release.
 
 ---
 
@@ -265,42 +277,45 @@ O release final consolidou:
 - tag/release final publicada;
 - issue #52 fechada como completed.
 
-## 6.2 `v0.20.0` — em desenvolvimento
+## 6.2 `v0.20.0` — concluído
 
-Issue mãe:
+Issue mãe, fechada como completed em 19 de julho de 2026:
 
 ```text
 #58 — release: v0.20.0 AgentReview Quality Gate track
 ```
 
-Corte mínimo recomendado:
+Entregas do corte final:
 
 ```text
 #59 — deterministic review quality gate          CONCLUÍDA
 #60 — quality gate E2E contract fixture          CONCLUÍDA
-```
-
-Follow-ups do track:
-
-```text
 #61 — telemetry baseline                         CONCLUÍDA
 #62 — false-positive signatures / contract suggestions  CONCLUÍDA
-#63 — optional second opinion contract
-#64 — Validation Evidence semantic pre-review
 #65 — AgentEscala wrapper consumption contract   CONCLUÍDA (documentação)
+#76 — deterministic PR brief and bounded chunk payloads  CONCLUÍDA
+#77 — payload-contract post-merge corrections    CONCLUÍDA
+#78 — release/version preparation                CONCLUÍDA
 ```
 
-### 6.3 Estratégia de release recomendada
+`#63` (optional second opinion) e `#64` (Validation Evidence semantic
+pre-review) permaneceram explicitamente fora do release.
 
-`v0.20.0` deve ser tratado inicialmente como release de toolrepo/AgentReview. Não há necessidade de transição CT102 se o track não alterar o runtime produtivo.
+### 6.3 Resultado da release
 
-Baseline já consolidada para o track:
+As tags assinadas `v0.20.0-rc.1` e `v0.20.0` apontam para
+`13695c73d1da9f16eba5c20e6478e7d51aefbb45`. A release final não é draft nem
+prerelease, e a assinatura foi validada localmente e pelo GitHub.
 
-1. #60 mergeada;
-2. #61 e #62 mergeadas;
-3. #65 consolidada em documentação pós-#72/#73;
-4. execução E2E no CT104 validada no toolrepo;
-5. CT102 preservado fora do escopo do track documental.
+O deploy controlado alterou somente a versão reportada pelo runtime. Não houve
+migração de banco, mudança de provider, rota, action catalog ou comportamento
+de API.
+
+1. execução E2E no CT104 validada no toolrepo;
+2. deploy CT102 validado em `0.20.0`;
+3. health, readiness, metrics, database, providers e action catalog prontos;
+4. imagem anterior `0.19.0` retida para rollback;
+5. `aiops-orchestrator-next` preservado sem alteração.
 
 ---
 
@@ -308,11 +323,11 @@ Baseline já consolidada para o track:
 
 ## 7.1 Runtime CT102
 
-Estado reportado e aceito no `v0.19.0`:
+Estado reportado e aceito no `v0.20.0`:
 
 | Capacidade | Estado |
 |---|---|
-| Versão exposta | `0.19.0` |
+| Versão exposta | `0.20.0` |
 | Health | OK |
 | Readiness | OK |
 | Metrics | OK |
@@ -321,8 +336,8 @@ Estado reportado e aceito no `v0.19.0`:
 | Action catalog | OK |
 | Audit store | Preservado |
 | Approval/run stores | Preservados ou com baseline documentada |
-| Backup | Criado |
-| Rollback | Documentado; não utilizado |
+| Backup/snapshot | Waiver operacional registrado para o fast-track |
+| Rollback | Imagem anterior `0.19.0` retida; não utilizado |
 | AgentReview tooling | Não instalado/executado no CT102 |
 
 ## 7.2 Environment guard
@@ -788,8 +803,8 @@ material insuficiente
 | #45 | Redaction/coverage deterministic | Aberta para reavaliação | Verificar saldo após #59/#60 |
 | #46 | Roadmap mãe | Aberta | Atualizar checkpoints |
 | #52 | Release v0.19.0 | Fechada/completed | Arquivar evidência |
-| #58 | Release track v0.20.0 | Aberta | Coordenar próximo bloqueador (PR brief + bounded payload builder) |
-| #59 | Deterministic quality gate | Concluída via PR #66 | Fechar/confirmar fechamento automático |
+| #58 | Release track v0.20.0 | Fechada/completed | Arquivar evidência final |
+| #59 | Deterministic quality gate | Fechada via PR #66 | Manter contrato |
 | #60 | Quality gate E2E fixture | Concluída | Manter cobertura nos testes contratuais |
 | #61 | Telemetry baseline | Concluída | Evoluir apenas por necessidade de produto |
 | #62 | FP signatures/contract suggestions | Concluída | Manter manual-only para sugestões |
@@ -810,13 +825,13 @@ material insuficiente
 **Status:** contrato consolidado em #65 e endurecido no follow-up pós-#72 (#73).
 Implementação de runtime do thin wrapper permanece na PR futura do target repo.
 
-## 12.3 P2 — documentação do release `v0.19.0` pode estar obsoleta
+## 12.3 P2 — documentação do release `v0.19.0` obsoleta (resolvido)
 
 O arquivo de release consultado ainda continha linguagem de “release final não criado” e checklist aberto, apesar de o release já ter sido concluído.
 
 **Risco:** operadores novos podem interpretar o estado incorretamente.
 
-**Correção recomendada:** uma PR documental pequena para:
+**Correção aplicada neste baseline documental:**
 
 - marcar `v0.19.0` como final;
 - registrar data/evidência;
@@ -1186,24 +1201,22 @@ arquivo + evidência + impacto + source confiável
 
 ---
 
-## 18. Melhorias rápidas recomendadas além do baseline pós-#73
+## 18. Melhorias recomendadas após `v0.20.0`
 
-1. Atualizar `docs/RELEASE_V0_19_0.md` para estado final.
-2. Confirmar fechamento automático da #59 após merge da #66.
-3. Atualizar #58 e #46 com checkpoint pós-#66.
-4. Reavaliar #45 após baseline consolidada (#60/#61/#62/#65) e fechar o que foi absorvido.
-5. Adicionar constraint `[0,1]` ao `quality_score` em PR de hardening futura.
-6. Criar `docs/AIOPS_PROJECT_MANUAL.md` a partir deste documento e mantê-lo versionado.
-7. Adicionar uma tabela de compatibilidade de schemas/artifacts por release.
-8. Definir regra explícita de `critical-pr` no target profile, em vez de inferência informal.
-9. Criar fixture de `checks.json` versionada antes de aprofundar correlação de test failure.
-10. Depois da integração AgentEscala, ampliar a telemetria além do baseline já entregue em #61.
+1. Adotar o full-SHA pin e o gate fail-closed no wrapper do target repo.
+2. Reavaliar #45 após o baseline consolidado e fechar o que já foi absorvido.
+3. Adicionar constraint `[0,1]` ao `quality_score` em hardening futuro.
+4. Definir regra explícita de `critical-pr` no target profile.
+5. Criar fixture de `checks.json` antes de aprofundar correlação de test failure.
+6. Evoluir #63 e #64 somente em escopos separados e evidence-backed.
+7. Ampliar telemetria histórica sem transformá-la em autoridade de merge.
 
 ---
 
 ## 19. Referências oficiais
 
 - [Release v0.19.0](https://github.com/mglpsw/aiops-orchestrator/releases/tag/v0.19.0)
+- [Release v0.20.0](https://github.com/mglpsw/aiops-orchestrator/releases/tag/v0.20.0)
 - [Issue #46 — Evidence-Gated Multi-Block Review Control Plane](https://github.com/mglpsw/aiops-orchestrator/issues/46)
 - [Issue #52 — release v0.19.0](https://github.com/mglpsw/aiops-orchestrator/issues/52)
 - [Issue #58 — release track v0.20.0](https://github.com/mglpsw/aiops-orchestrator/issues/58)
@@ -1219,18 +1232,23 @@ arquivo + evidência + impacto + source confiável
 
 ## 20. Conclusão oficial
 
-O projeto AIOps está em bom estado estrutural. O runtime produtivo foi estabilizado no `v0.19.0`, e o AgentReview já possui uma cadeia determinística madura até o quality gate. A arquitetura está corretamente separada entre CT104, CT102, AgentEscala e Agent Router.
+O projeto AIOps está em bom estado estrutural. O runtime produtivo foi validado
+em `v0.20.0`, e o AgentReview possui uma cadeia determinística madura do intake
+ao quality gate, telemetry e artifacts opcionais de false-positive learning. A
+arquitetura permanece separada entre CT104, CT102, AgentEscala e Agent Router.
 
-O risco principal agora não é falta de engine; é falta de **integração oficial do último estágio**. A prioridade deve ser transformar o gate recém-mergeado em parte do E2E e consumi-lo no AgentEscala sem duplicar lógica.
+O risco principal agora é desviar do contrato de consumo: o target repo deve
+usar SHA completo imutável, validar o gate antes de publicar e nunca duplicar a
+lógica do toolrepo.
 
 A sequência recomendada é:
 
 ```text
-baseline pós-#73 (#60/#61/#62/#65)
-→ PR AgentEscala
+v0.20.0 final
+→ adoção do wrapper por full SHA
 → canário CT104
-→ PR futura AIOps de PR brief + bounded context/payload builder
-→ #63/#64 quando houver dados reais
+→ telemetry observacional
+→ #63/#64 somente quando houver dados reais e escopo separado
 ```
 
 Essa ordem entrega valor rápido, reduz falsos positivos e preserva todas as fronteiras operacionais do projeto.

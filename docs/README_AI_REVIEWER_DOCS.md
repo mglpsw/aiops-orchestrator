@@ -1,42 +1,63 @@
-# Pacote de docs — GitHub Agent Review
+# AgentReview documentation index
 
-Este pacote contém documentos para adicionar ao diretório `docs/` do repositório `mglpsw/aiops-orchestrator`.
+This directory contains the canonical documentation for the deterministic
+AgentReview engine delivered in `v0.20.0`.
 
-## Arquivos
+## Start here
 
-- `AI_CONTEXT_AIOPS_ORCHESTRATOR_REVIEWER.md`
-  - contexto geral, problema observado e objetivo da melhoria.
+- [`AGENT_REVIEW_ENGINE.md`](AGENT_REVIEW_ENGINE.md) — components, phases,
+  CLIs and safety limits.
+- [`AGENT_REVIEW_E2E_PIPELINE.md`](AGENT_REVIEW_E2E_PIPELINE.md) — complete
+  CT104 pipeline and publication boundary.
+- [`AGENT_REVIEW_QUALITY_GATE.md`](AGENT_REVIEW_QUALITY_GATE.md) — canonical
+  gate schema, decision matrix and fail-closed behavior.
+- [`AGENT_REVIEW_PR_BRIEF_AND_PAYLOADS.md`](AGENT_REVIEW_PR_BRIEF_AND_PAYLOADS.md)
+  — sanitized PR brief, manifest and bounded per-chunk payloads.
+- [`AGENT_REVIEW_TELEMETRY.md`](AGENT_REVIEW_TELEMETRY.md) — observational
+  telemetry that never changes the verdict.
+- [`AGENT_REVIEW_FALSE_POSITIVES.md`](AGENT_REVIEW_FALSE_POSITIVES.md) —
+  deterministic signatures and manual-only contract suggestions.
 
-- `AI_REVIEWER_SEVERITY_AND_EVIDENCE_RULES.md`
-  - regras de severidade, evidência, anti-falso-positivo e template de comentário.
+## Target-repository integration
 
-- `AI_AGENTESCALA_REVIEW_CONTEXT.md`
-  - contexto específico para reviews de PRs do `mglpsw/AgentEscala`.
+- [`AGENTESCALA_TARGET_REPO_CONTRACT.md`](AGENTESCALA_TARGET_REPO_CONTRACT.md)
+  — immutable full-SHA checkout, gate validation and publication matrix.
+- [`AGENTESCALA_TOOL_REPO_INTEGRATION.md`](AGENTESCALA_TOOL_REPO_INTEGRATION.md)
+  — ownership and integration boundaries between AgentEscala and AIOps.
+- [`AI_AGENTESCALA_REVIEW_CONTEXT.md`](AI_AGENTESCALA_REVIEW_CONTEXT.md) —
+  target-domain review context.
 
-- `AI_GITHUB_AGENT_REVIEW_IMPROVEMENT_PROMPT.md`
-  - prompt pronto para rodar no agent do repo `aiops-orchestrator`.
+AgentEscala owns orchestration, any approved optional Agent Router request and
+GitHub publication. This toolrepo owns deterministic context selection,
+parsing, synthesis, quality gate, telemetry and false-positive artifacts.
 
-## Uso sugerido
+## Reviewer policy and historical context
 
-Copiar para:
+- [`AI_REVIEWER_SEVERITY_AND_EVIDENCE_RULES.md`](AI_REVIEWER_SEVERITY_AND_EVIDENCE_RULES.md)
+- [`AI_CONTEXT_AIOPS_ORCHESTRATOR_REVIEWER.md`](AI_CONTEXT_AIOPS_ORCHESTRATOR_REVIEWER.md)
+- [`AI_GITHUB_AGENT_REVIEW_IMPROVEMENT_PROMPT.md`](AI_GITHUB_AGENT_REVIEW_IMPROVEMENT_PROMPT.md)
+- [`GITHUB_AGENT.md`](GITHUB_AGENT.md)
 
-```bash
-docs/AI_CONTEXT_AIOPS_ORCHESTRATOR_REVIEWER.md
-docs/AI_REVIEWER_SEVERITY_AND_EVIDENCE_RULES.md
-docs/AI_AGENTESCALA_REVIEW_CONTEXT.md
-docs/AI_GITHUB_AGENT_REVIEW_IMPROVEMENT_PROMPT.md
-```
+These documents provide reviewer policy and evolution context. Where they
+conflict with emitted schemas, tests or the quality-gate contract, the merged
+code and tests are authoritative.
 
-Depois rodar o prompt de `AI_GITHUB_AGENT_REVIEW_IMPROVEMENT_PROMPT.md` no agent do repo.
+## Non-negotiable boundaries
 
-## Objetivo da mudança
+- AgentReview runs only in CT104 dev/toolrepo mode.
+- It never runs on CT102.
+- AIOps AgentReview CLIs do not call providers, Agent Router, GitHub write APIs,
+  Docker, SSH, deploy or restart.
+- `/v1/chat/ingest` is forbidden for AgentReview.
+- `review-quality-gate.json` is the post-synthesis authority;
+  `final-review.json` is not a fallback authority.
+- `suggested-contract-updates.yaml` remains `manual_only` with
+  `applied: false`.
+- Runtime checkout by a target repo must use a canonical lowercase full
+  40-character commit SHA.
 
-Fazer o reviewer automático:
+## Release reference
 
-- reduzir falsos positivos;
-- não bloquear PR com base em diff truncado;
-- separar bug confirmado de risco provável;
-- carregar contexto do AgentEscala quando necessário;
-- calibrar severidade P0/P1/P2/P3/INFO;
-- não fingir testes executados;
-- proteger contratos de escala médica sem atrapalhar PRs frontend-only.
+- [`RELEASE_V0_20_0.md`](RELEASE_V0_20_0.md)
+- [`PROJECT_STATUS.md`](PROJECT_STATUS.md)
+- [`TESTING.md`](TESTING.md)

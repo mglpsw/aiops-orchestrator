@@ -1,228 +1,195 @@
 # AIOps Orchestrator — Project Status
 
-## Objetivo
+## Canonical checkpoint
 
-O objetivo do AIOps Orchestrator é operar como um orquestrador seguro e auditável para diagnóstico,
-planejamento e execução read-only allowlisted. O foco atual é reduzir risco operacional mantendo
-sempre:
-
-- autenticação explícita;
-- allowlist estrutural;
-- approval gate;
-- auditoria persistente;
-- redaction de segredos;
-- fail-closed em catálogo, planner, dry-run, approval e run.
-
-## Status canônico atual
-
-Release canônico: `v0.18.0`.
-
-Esta é a fotografia canônica do projeto após o checkpoint final da fase AIOps readonly/chat:
-
-- o caminho produtivo é diagnóstico + planejamento + simulação + aprovação + execução read-only;
-- o runner oficial não aceita shell livre;
-- o catálogo é estrutural e validado no startup;
-- o histórico de runs e o audit log já existem;
-- o diagnóstico retorna findings enriquecidos com `impact`, `probable_cause`, `confidence`, `next_validation` e `recommended_action_ids`;
-- o health score é severity-aware e aceita baseline temporal simples via `metadata` quando há dados;
-- o GitHub Agent Review está disponível para revisão on-demand de PRs com `/agent review`, `/agent review llm` e `/agent ask`;
-- o Agent Router pode ser usado opcionalmente apenas como API de revisão LLM, nunca como executor;
-- o chat compatível com OpenWebUI detecta intents AIOps determinísticas e roteia para diagnose, runs, approvals e status sem executar actions;
-- as respostas públicas do chat e do `/agent ask` são curtas, seguras e em pt-BR por padrão.
-
-## Arquitetura atual
-
-### Camadas principais
-
-- API FastAPI em `app/main.py`
-- diagnóstico determinístico em `app/agent_router/services/aiops_diagnostic.py`
-- action catalog em `app/services/action_catalog.py`
-- action planner em `app/services/action_planner.py`
-- dry-run em `app/agent_router/services/action_dry_run.py`
-- approval store em `app/agent_router/services/approval_store.py`
-- audit log em `app/agent_router/services/audit_log.py`
-- run history em `app/agent_router/services/run_store.py`
-- read-only runner allowlisted em `app/agent_router/services/action_runner.py`
-
-### Fluxo canônico
+The current final release is `v0.20.0`, published on 19 July 2026 from:
 
 ```text
-diagnose -> plan -> dry-run -> approval -> run -> run history
+13695c73d1da9f16eba5c20e6478e7d51aefbb45
 ```
 
-O fluxo é sempre read-only nesta fase. O run executa apenas funções internas fixas e allowlisted.
+The signed `v0.20.0-rc.1` and `v0.20.0` tags resolve to that same commit.
+The previous final release and rollback ref is `v0.19.0` at
+`9c90eac6205782a17a1567737aef026728f88089`.
 
-## Endpoints existentes
+## Product surfaces
 
-### Diagnóstico e ações
+The repository contains two independent surfaces. Their environment and
+authority boundaries must remain explicit.
 
-- `POST /v1/aiops/diagnose`
-- `GET /v1/aiops/actions/catalog`
-- `POST /v1/aiops/actions/plan`
-- `POST /v1/aiops/actions/dry-run`
-- `POST /v1/aiops/actions/run`
+| Surface | Environment | Purpose | Network/provider behavior |
+| --- | --- | --- | --- |
+| AIOps runtime | CT102 prod/runtime | diagnose, plan, dry-run, approve and execute fixed read-only actions | uses only approved runtime integrations |
+| AgentReview engine | CT104 dev/toolrepo | build and validate deterministic review artifacts | offline CLIs; no direct provider or GitHub write calls |
 
-### Aprovações
+AgentReview must never run on CT102. CT102 must never be used as a staging
+environment for AgentReview.
 
-- `POST /v1/aiops/actions/approvals`
-- `GET /v1/aiops/actions/approvals/{approval_id}`
-- `POST /v1/aiops/actions/approvals/{approval_id}/approve`
-- `POST /v1/aiops/actions/approvals/{approval_id}/reject`
+## Runtime status
 
-### Histórico e auditoria
+The production runtime reports `0.20.0`. Release validation accepted:
 
-- `GET /v1/aiops/runs/recent`
-- `GET /v1/aiops/runs/{run_id}`
-- `GET /v1/aiops/audit/recent`
+- `/health`: HTTP 200 and healthy;
+- `/ready`: HTTP 200 and ready;
+- `/metrics`: HTTP 200;
+- database, providers and action catalog: ready;
+- new container: running and healthy;
+- restart count: `0`;
+- `OOMKilled`: `false`;
+- no critical runtime errors;
+- previous `0.19.0` image retained for rollback;
+- `aiops-orchestrator-next` unchanged.
 
-### Saúde e compatibilidade
+There was no database migration, route change, provider change, action-catalog
+change or runtime API behavior change in `v0.20.0`. The runtime-facing change
+was the reported application version.
 
-- `GET /health`
-- `GET /ready`
-- `GET /metrics`
-- endpoints legados de chat, tasks e providers ainda existem por compatibilidade histórica
+## Runtime architecture
 
-## Stores existentes
+The canonical read-only flow remains:
 
-- audit store JSONL em `var/audit/aiops_audit.jsonl`
-- approval store JSONL em `var/approvals/aiops_approvals.jsonl`
-- run history JSONL em `var/runs/aiops_runs.jsonl`
+```text
+diagnose -> plan -> dry-run -> approval -> run -> run history -> audit
+```
 
-Esses stores guardam metadados seguros. Eles não persistem `command`, `argv`, tokens, headers ou
-payloads brutos sensíveis.
+Key properties:
 
-## Actions disponíveis no catálogo
+- authenticated sensitive endpoints;
+- structural action allowlist validated at startup;
+- human approval before a read-only run;
+- fixed internal runner functions with no request-provided command or argv;
+- bounded output, timeout, sanitized environment and redaction;
+- persistent JSONL audit, approval and run-history stores;
+- no free shell, SSH, `docker exec`, free PromQL or automatic deploy.
 
-O catálogo atual em `config/actions.yaml` contém 13 actions allowlisted:
+The official runner is `app/agent_router/services/action_runner.py`. Legacy
+executors under `app/adapters/` are compatibility code and are not part of the
+official execution path.
 
-- `curl_health_8000`
-- `curl_ready_8000`
-- `curl_health_8001`
-- `curl_ready_8001`
-- `git_status`
-- `git_diff_stat`
-- `git_log_recent`
-- `docker_compose_config`
-- `docker_compose_bluegreen_config`
-- `systemctl_status_aiops`
-- `journalctl_aiops_recent`
-- `prometheus_query`
-- `prometheus_query_allowlisted`
+## AgentReview v0.20.0
 
-O catálogo é validado no startup e permanece fail-closed se estiver ausente ou inválido.
+The offline deterministic pipeline is:
 
-## Actions read-only executáveis atuais
+```text
+aiops-intake.json + redaction-report.json
+-> semantic-chunk-plan.json
+-> pr-brief.json + chunk-payload-manifest.json + chunk-payloads/
+-> chunk-results.json
+-> final-review.json + final-review.md
+-> review-quality-gate.json
+-> review-telemetry.json
+-> optional false-positive-signatures.json
+-> optional suggested-contract-updates.yaml
+```
 
-O runner oficial executa apenas as funções internas fixas abaixo:
+### Canonical authority
 
-- `curl_health_8000`
-- `curl_ready_8000`
-- `curl_health_8001`
-- `curl_ready_8001`
-- `git_status`
-- `git_diff_stat`
-- `docker_compose_config`
-- `docker_compose_bluegreen_config`
-- `systemctl_status_aiops`
-- `journalctl_aiops_recent`
-- `prometheus_query_allowlisted`
+`review-quality-gate.json` is the canonical post-synthesis decision authority.
+`final-review.json` is a synthesis artifact and must not be used as a fallback
+authority when the gate is missing, malformed, incompatible, unknown or
+contradictory.
 
-Nesta Session 14, o contrato que estamos fechando de forma mais explícita é o de
-`git_diff_stat` e `docker_compose_bluegreen_config`: ambos permanecem read-only,
-com `shell=False`, `argv` fixo, `cwd` canônico, timeout obrigatório, redaction e
-output truncado.
+Consumers must validate the gate schema, source, version, enumerations and
+allowed field combinations before publication. Invalid gates produce a
+deterministic fail-closed, non-conclusive result with manual review required.
 
-Nesta Session 15, o contrato que estamos fechando de forma mais explícita é o de
-`systemctl_status_aiops` e `journalctl_aiops_recent`: o primeiro é só leitura do
-estado da unit permitida; o segundo é logs bounded, sem filtros livres, sem
-follow e com janela fixa.
+### Deterministic context contract
 
-Nesta Session 16, o contrato que estamos fechando de forma mais explícita é o de
-`prometheus_query_allowlisted`: ele aceita somente queries IDs allowlisted, usa
-base URL segura existente, mantém timeout obrigatório e redige respostas e erros.
+- `pr-brief.json` is the sanitized deterministic PR summary;
+- `chunk-payload-manifest.json` records the bounded payload set and hashes;
+- each `chunk-payloads/<chunk_id>.json` contains isolated context for one
+  semantic chunk and a complete structured response contract;
+- truncation and coverage impact are explicit;
+- response-compatible `chunk_id` validation is shared and fail-closed;
+- path-bearing global validation evidence reaches every chunk while retaining
+  sanitized provenance;
+- non-global path-scoped evidence remains restricted to matching chunks.
 
-Garantias principais:
+### Telemetry and learning
 
-- `shell=False`
-- argv fixo
-- cwd canônico allowlisted
-- env sanitizado
-- timeout obrigatório
-- output truncado e redigido
-- sem `git push`, `git pull`, `git checkout`, `git reset`, `docker exec`, `docker compose up/down/restart/pull/build`
+`review-telemetry.json` observes the already-produced final review and gate. It
+does not alter verdicts. False-positive signatures are deterministic, and
+`suggested-contract-updates.yaml` is always human-reviewable, `manual_only` and
+`applied: false`.
 
-## Integrações existentes
+## Target-repository consumption
 
-- GitHub Agent Review on-demand via comentário de PR com `/agent review`
-- modo opcional `/agent review llm` com Agent Router, somente como API de análise/revisão
-- follow-up com `/agent ask`, com resposta contextual separada do review principal
-- validação blue/green via `docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config`
-- auditoria estruturada para plan, dry-run, approvals e run
+AgentEscala remains responsible for target-repository orchestration, optional
+approved Agent Router calls and GitHub publication. It must consume this
+toolrepo from an immutable canonical lowercase 40-character commit SHA.
 
-## Garantias de segurança preservadas
+The wrapper must not:
 
-- autenticação Bearer nas superfícies sensíveis
-- approval gate para execução
-- fail-closed em catálogo, planner, dry-run e run
-- sem shell livre
-- sem SSH
-- sem `docker exec`
-- sem deploy automático
-- sem execução de código do PR no GitHub Agent Review
-- redaction forte de segredos, tokens, cookies e URLs sensíveis
-- histórico e auditoria sem expor conteúdo sensível
+- resolve an operational branch, tag, short SHA or floating default branch;
+- reimplement parsing, synthesis, quality-gate or telemetry logic;
+- call `/v1/chat/ingest`;
+- call a provider directly;
+- treat `final-review.json` as substitute authority;
+- apply contract suggestions automatically.
 
-## O que ainda não existe
+## Safety boundaries
 
-Ainda não existe nesta fase:
+The AgentReview CLIs require:
 
-- shell livre
-- SSH
-- `docker exec`
-- deploy automático
-- GitHub Bridge real
-- Local Agent Bridge genérico
-- Claude/Codex Bridge
-- execução de código vindo de PR
-- comando livre vindo de comentário, YAML ou LLM
+```text
+AIOPS_ENVIRONMENT=dev
+AIOPS_NODE_ROLE=toolrepo
+AIOPS_REPO_MODE=agent_review_tooling
+AIOPS_PRODUCTION_RUNTIME=false
+```
 
-## Validações esperadas
+They fail closed in production/runtime mode and write outputs outside the
+target repository. Published artifacts must be allowlisted, sanitized and
+scanned for secrets and local absolute paths.
 
-As validações canônicas para mudanças nesta área são:
+## Validation baseline
+
+The release baseline passed:
+
+- full offline Python test suite;
+- focused AgentReview unit, CLI and E2E contracts;
+- deterministic byte-output checks;
+- target/source fixture immutability checks;
+- production-boundary fail-closed checks;
+- repository CI validation.
+
+Canonical local commands:
 
 ```bash
-python3 -m pytest -q
+python3 -m pytest tests -q
 bash scripts/ci_validate.sh
 git diff --check
-find scripts -name '*.sh' -print0 | xargs -0 -n1 bash -n
-bash scripts/validate_actions_catalog.sh
-docker compose -f deploy/docker-compose.yml config
-docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.bluegreen.yml config
-
-## Checkpoint pós-v0.18.0 — Session L1
-
-- Commit: `807faa3`
-- Session L1 concluída e aplicada no runtime `8000`
-- Endpoints legados agora retornam headers `Deprecation` e `Warning`
-- Uso legacy exposto em `aiops_legacy_endpoint_hits_total`
-- Próximo passo do AIOps: observar uso real antes da Session L2
-- Foco imediato pode voltar para `agent-router-api`
 ```
 
-## Roadmap imediato
+Runtime validation remains a separate CT102-only, explicitly authorized
+operation. Offline documentation or AgentReview work does not authorize it.
 
-### Session 18
+## Explicitly absent or out of scope
 
-- integrar o fluxo de chat/OpenWebUI ao AIOps determinístico
-- fechar o checkpoint de release `v0.18.0`
-- preparar a próxima fase com fronteiras explícitas de segurança e foco em `agent-router-api`
+- free shell or request-provided commands;
+- SSH or `docker exec` in the official runner;
+- automatic deploy, remediation, approval or merge;
+- AgentReview on CT102;
+- direct provider calls from the AIOps AgentReview CLIs;
+- real second-opinion implementation;
+- automatic contract suggestion application;
+- using telemetry score as a merge decision.
 
-## Resumo
+## Current follow-up direction
 
-O projeto está em um estado canônico de diagnóstico + planejamento + execução read-only
-allowlisted, com auditoria, histórico e integração opcional com GitHub Agent Review.
-O que não fizer parte desse contrato permanece fora da fase atual.
+The `v0.20.0` release track is complete. Future work should be scoped in
+separate issues and releases. Candidate areas are target-repository wrapper
+adoption, validation-evidence enrichment and optional second-opinion design.
+None of those areas changes the `v0.20.0` contract retroactively.
 
-O checkpoint da Session 18 fecha a ponte de chat/OpenWebUI em modo seguro e read-only,
-com intents AIOps determinísticas, respostas curtas em pt-BR e fallback para o fluxo normal
-quando a mensagem não for um pedido operacional.
+## Canonical references
+
+- [Architecture](ARCHITECTURE.md)
+- [Project manual](AIOPS_PROJECT_MANUAL.md)
+- [AgentReview engine](AGENT_REVIEW_ENGINE.md)
+- [AgentReview E2E pipeline](AGENT_REVIEW_E2E_PIPELINE.md)
+- [AgentReview quality gate](AGENT_REVIEW_QUALITY_GATE.md)
+- [AgentEscala target-repository contract](AGENTESCALA_TARGET_REPO_CONTRACT.md)
+- [Release v0.20.0](RELEASE_V0_20_0.md)
+- [Environment boundaries](ENVIRONMENT_BOUNDARIES.md)
+- [Testing](TESTING.md)

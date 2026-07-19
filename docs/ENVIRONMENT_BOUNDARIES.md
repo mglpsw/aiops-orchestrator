@@ -29,16 +29,16 @@ CT104 toolrepo:
 - Do not run intake, parser, or synthesizer scripts.
 - Do not use CT102 as staging.
 - Update runtime only after a PR is merged and an explicit runtime decision is made.
-- Treat the `v0.19.0` runtime transition as operational runtime work, separate
-  from AgentReview tooling. AgentReview CLIs remain CT104-only and forbidden on
-  CT102.
+- Treat every runtime transition, including `v0.20.0`, as operational runtime
+  work separate from AgentReview tooling. AgentReview CLIs remain CT104-only
+  and forbidden on CT102.
 
 ## CT104 Rules
 
 - May clone the toolrepo.
 - May create branches.
 - May run offline pytest.
-- May execute future AgentReview scripts.
+- May execute AgentReview scripts in the declared dev/toolrepo environment.
 - Is not production.
 
 ## Correct Flow
@@ -80,7 +80,7 @@ AIOPS_REPO_MODE=agent_review_tooling
 AIOPS_PRODUCTION_RUNTIME=false
 ```
 
-Future AgentReview scripts should start by calling, or reusing logic equivalent to:
+AgentReview scripts must call, or reuse logic equivalent to:
 
 ```text
 python scripts/guard-aiops-environment.py --require-mode agent_review_tooling --deny-production-runtime

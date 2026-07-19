@@ -3,11 +3,19 @@
 ## 1. Release identity
 
 - Release: `v0.20.0` — AgentReview Quality Gate track.
-- Baseline `master`: `c3132b26cdd5db1ab29efb733671959fd803f9c2`.
-- Release SHA: pending the squash merge of the release PR into `master`.
+- Status: final release published on 19 July 2026.
+- Release SHA: `13695c73d1da9f16eba5c20e6478e7d51aefbb45`.
+- Baseline before the release PR:
+  `c3132b26cdd5db1ab29efb733671959fd803f9c2`.
+- Signed RC tag: `v0.20.0-rc.1`.
+- Signed final tag: `v0.20.0`.
+- RC and final tags target the same release SHA.
+- GitHub release:
+  <https://github.com/mglpsw/aiops-orchestrator/releases/tag/v0.20.0>.
+- Release tracking issue #58 is closed as completed.
 - Previous release and rollback ref: `v0.19.0`.
-- The only runtime-facing change in the release PR is the reported version
-  default from `0.19.0` to `0.20.0`; no runtime logic is changed.
+- The only runtime-facing change in the release PR was the reported version
+  default from `0.19.0` to `0.20.0`; no runtime logic changed.
 
 ## 2. Included capabilities
 
@@ -103,8 +111,8 @@ where defined before treating an artifact as authoritative.
 - No database, migration, route, provider, action-catalog, or API behavior
   change is included in the release PR.
 - No data migration is required.
-- Existing runtime configuration remains compatible. The default reported app
-  version changes to `0.20.0` after a separately approved controlled deploy.
+- Existing runtime configuration remains compatible. The controlled deploy
+  advanced the reported app version to `0.20.0`.
 - AgentEscala consumption must follow the full-SHA pin and quality-gate
   validation contract; it must not use a branch, tag, or short SHA as the
   operational checkout ref.
@@ -114,8 +122,9 @@ where defined before treating an artifact as authoritative.
 - CT104 remains the development toolrepo and AgentReview runner environment.
 - CT102 remains the production AIOps runtime. It is not staging, and
   AgentReview tooling never runs there.
-- This release preparation makes no call to CT102 and performs no deploy,
-  restart, SSH, Docker operation, or service-manager action.
+- AgentReview implementation and validation remain separate from CT102 deploy,
+  restart, SSH, Docker and service-manager operations. The final release used a
+  separately authorized controlled deploy and accepted operational evidence.
 - AgentReview tooling makes no call to `/v1/chat/ingest`.
 - AgentReview tooling makes no direct OpenAI, Anthropic, Ollama, or other
   provider call. Optional model requests are owned by the thin-wrapper flow and
@@ -136,26 +145,25 @@ where defined before treating an artifact as authoritative.
 - Runtime refactors, provider changes, routes, database changes, migrations,
   deploy automation, auto-approve, auto-merge, or automated remediation.
 
-## 7. Release sequence
+## 7. Completed release sequence
 
-The required sequence is:
+The completed sequence was:
 
 ```text
-release PR
--> merge into master
--> tag v0.20.0-rc.1
+release PR #78
+-> squash merge into master at 13695c73...
+-> signed tag v0.20.0-rc.1
 -> controlled deploy on CT102
--> postchecks
--> final tag/release v0.20.0 on the same SHA
+-> accepted postchecks
+-> signed final tag/release v0.20.0 on the same SHA
 ```
 
-The release PR must be small, validated, CI-green, free of open P0/P1/P2
-findings and unresolved review threads, and independently approved by a human
-on its final SHA before merge.
+The release PR was kept small, validated and CI-green. Publication preserved
+the protected merge and signed-tag requirements.
 
-## 8. Release-candidate criteria
+## 8. Release-candidate evidence
 
-Create signed tag `v0.20.0-rc.1` only after:
+The signed `v0.20.0-rc.1` tag was created after:
 
 - the release PR is merged into `master` through the protected squash-merge
   path;
@@ -164,25 +172,33 @@ Create signed tag `v0.20.0-rc.1` only after:
 - all review threads are resolved and no P0/P1/P2 finding remains open; and
 - an independent human approval applies to the final PR SHA.
 
-The RC GitHub release is a prerelease targeted at that exact merged SHA. If GPG
-signing is unavailable, stop and obtain an explicit decision; do not create an
-unsigned replacement implicitly.
+The RC GitHub release was a prerelease targeted at the exact merged SHA. Tag
+signing used SSH/ED25519; no unsigned replacement was created.
 
-## 9. Controlled deploy and final release criteria
+## 9. Controlled deploy and final release evidence
 
-Deploy is a separate, explicitly authorized CT102 operation after RC creation.
-The final `v0.20.0` tag and GitHub release may be created only when:
+Deploy remained a separate, explicitly authorized CT102 operation after RC
+creation. Final publication was accepted with the following evidence:
 
-- the controlled CT102 change window, operator, reviewer, backup/snapshot, and
-  rollback target are confirmed;
-- CT102 reports the expected `0.20.0` runtime version at the RC SHA;
-- health, readiness, metrics, action catalog, database, provider registry,
-  audit store, approval store, and run store postchecks pass;
-- critical logs and preservation evidence show no release-blocking issue;
-- rollback remains possible and all required evidence is reviewed; and
-- the final `v0.20.0` tag targets the same SHA as `v0.20.0-rc.1`.
+- CT102 reported runtime version `0.20.0`;
+- `/health`, `/ready` and `/metrics` returned HTTP 200 with healthy/ready
+  state;
+- database, providers and action catalog were ready;
+- the new container was running and healthy with restart count `0` and
+  `OOMKilled=false`;
+- no critical runtime log error was reported;
+- the previous `0.19.0` image was retained as the immediate rollback mechanism;
+- no database migration was included or executed;
+- `aiops-orchestrator-next` was not changed;
+- the final `v0.20.0` tag targets the same SHA as `v0.20.0-rc.1`;
+- GitHub verified the final annotated tag with `verified=true` and
+  `reason=valid`;
+- the final release is neither draft nor prerelease.
 
-Do not create the final tag during release-PR preparation or RC publication.
+The storage did not support snapshots and the repository operator explicitly
+waived a separate backup for the fast-track. This exception was recorded in
+issue #58; the retained previous image remained the immediate rollback
+mechanism.
 
 ## 10. Rollback
 

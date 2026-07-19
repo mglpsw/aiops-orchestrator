@@ -8,15 +8,15 @@
 
 ## Descrição recomendada
 
-> Orquestrador AIOps para diagnóstico operacional, automações, análise de métricas e integração
-> com agentes.
+> Orquestrador AIOps com runtime operacional read-only e engine AgentReview
+> offline, determinística e evidence-gated.
 
 ---
 
 ## Topics recomendados
 
-`aiops`, `automation`, `observability`, `prometheus`, `agents`, `homelab`, `operations`,
-`diagnostics`
+`aiops`, `automation`, `observability`, `prometheus`, `agents`, `agent-review`,
+`quality-gate`, `homelab`, `operations`, `diagnostics`
 
 ---
 
