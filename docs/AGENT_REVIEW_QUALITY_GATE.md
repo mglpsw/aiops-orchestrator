@@ -81,8 +81,9 @@ The output schema is `agent-review.quality-gate.v1`:
 
 ## Consumer contract
 
-`review-quality-gate.json` is the canonical post-synthesis signal for a future
-AgentEscala thin wrapper. The wrapper must validate `schema_id`,
+`review-quality-gate.json` is the canonical post-synthesis signal for the
+AgentEscala thin-wrapper contract. The target-repository adoption is tracked in
+`mglpsw/AgentEscala#670`. The wrapper must validate `schema_id`,
 `schema_version`, `source`, and the gate enum values before publishing any
 conclusive or gate-derived comment/summary. It must consume `status`, `normalized_verdict`,
 `manual_review_required`, `blocked_reasons`, `warnings`, and `limitations`

@@ -1,23 +1,23 @@
 # AgentReview Engine
 
-AgentReview Engine is the future generic review engine in `aiops-orchestrator`.
-Phase 1 is limited to offline intake and deterministic redaction. Phase 2 adds
-deterministic semantic chunk planning over the sanitized intake. Phase 3 parses
-structured simulated chunk responses into normalized chunk results. Phase 4 synthesizes those chunk results into final review JSON and Markdown artifacts.
-Phase 5A adds a deterministic post-synthesis quality gate. Phase 5B collects
-deterministic telemetry from the final review and quality gate artifacts.
-The current integration blocker also adds deterministic PR brief and bounded
-chunk payload building before synthetic or real chunk responses.
+AgentReview Engine is the offline deterministic review engine delivered in the
+`v0.20.0` line of `aiops-orchestrator`. Its implemented pipeline covers intake
+and redaction, semantic chunk planning, deterministic PR brief and bounded
+chunk payload construction, structured chunk result parsing, final synthesis,
+post-synthesis quality gate, telemetry and optional false-positive artifacts.
+
+The numbered phases below describe component boundaries, not unfinished release
+work. Target-repository orchestration and any optional model call remain outside
+the AIOps CLIs.
 
 ## Runtime Boundary
 
-This phase runs on CT104 as local toolrepo work only. It is not CT102 runtime
+The engine runs on CT104 as local toolrepo work only. It is not CT102 runtime
 behavior and does not add FastAPI endpoints, Agent Router calls, provider calls,
 network access, Docker, SSH, deploy, restart, or operational command execution.
 
-`scripts/aiops-review-intake.py` validates the environment boundary before it
-loads artifacts. Future AgentReview scripts should keep the same fail-closed
-guard pattern.
+Every AgentReview CLI validates the environment boundary before processing
+artifacts and keeps the same fail-closed guard pattern.
 
 ## Offline Intake
 
@@ -276,13 +276,15 @@ Phase 5B still does not decide, recalibrate severity, confirm findings, apply
 contracts, call an LLM, call Agent Router, use `/v1/chat/ingest`, write target
 repository files, persist telemetry to a database, or alter AgentEscala.
 
-## Roadmap
+## Delivered scope and follow-ups
 
-This implements the local intake/redaction, semantic chunk planning, structured
-chunk result parsing, final deterministic synthesis, and deterministic quality
-gate foundation for issue #46.
+`v0.20.0` implements local intake/redaction, semantic chunk planning,
+deterministic PR brief and bounded payload building, structured chunk result
+parsing, final deterministic synthesis, quality gate, telemetry and optional
+false-positive artifacts.
 
-Phase 05 integrates this offline engine with AgentEscala as a CT104 thin wrapper.
+The target-repository contract integrates this offline engine with AgentEscala
+as a CT104 thin wrapper.
 AgentEscala remains responsible for product artifact generation, optional Agent
 Router calls through `/v1/chat/completions`, and PR comment publication. The
 AIOps tool repo remains deterministic and does not call LLMs, providers, GitHub

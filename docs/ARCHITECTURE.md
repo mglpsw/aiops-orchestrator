@@ -2,13 +2,17 @@
 
 ## Visão geral
 
-O AIOps Orchestrator é um sistema seguro e modular de orquestração orientado por diagnóstico. Separa
-**observar** (coletar sinais, diagnosticar) de **planejar** (sugerir ações) de **executar** (ações
-allowlisted, com aprovação humana obrigatória para ações de escrita).
+O AIOps Orchestrator é um sistema seguro e modular de orquestração orientado
+por diagnóstico. Separa **observar** (coletar sinais e diagnosticar),
+**planejar** (sugerir ações), **executar** (ações read-only allowlisted após
+aprovação) e **revisar software** (pipeline offline determinístico em ambiente
+separado).
 
-**Fase atual: Diagnostic-only + readonly/chat checkpoint (v0.18.0).** Nenhum executor real está
-ativo no caminho produtivo e o foco imediato é manter diagnóstico, chat e review on-demand
-seguros, curtos e read-only.
+**Release atual: `v0.20.0`.** O runner read-only está ativo no caminho
+produtivo do CT102. O AgentReview roda exclusivamente no CT104 e produz
+artifacts determinísticos até `review-quality-gate.json`, sem executar código do
+target repo nem chamar providers diretamente. Qualquer execução mutável, bridge
+ou remediação automática continua fora do contrato.
 
 ---
 
@@ -50,7 +54,7 @@ seguros, curtos e read-only.
 │           │  - Saída: action_id + justificativa     │              │
 │           │  - Aprovação humana obrigatória         │              │
 │           └──────────┬──────────────────────────────┘              │
-│                      │  (aprovação estruturada e futuro run)       │
+│                      │  (aprovação estruturada e run read-only)    │
 │          ┌───────────┴────────────┐                                │
 │          ▼                        ▼                                │
 │  ┌──────────────────┐  ┌──────────────────┐                       │
@@ -59,7 +63,7 @@ seguros, curtos e read-only.
 │  │                  │  │                  │                       │
 │  │ - Funções fixas   │  │ - GitHub Bridge  │                       │
 │  │ - Sem shell livre │  │ - Claude/Codex   │                       │
-│  │ - Sem subprocess  │  │ - Remote bridge  │                       │
+│  │ - argv fixo        │  │ - Remote bridge  │                       │
 │  │ - Auditado        │  │ - Não ativo v1   │                       │
 │  └──────────────────┘  └──────────────────┘                       │
 │           ┌──────────────────────────────┐                        │
@@ -70,6 +74,24 @@ seguros, curtos e read-only.
 │           │ - Redaction forte             │                        │
 │           └──────────────────────────────┘                        │
 └─────────────────────────────────────────────────────────────────────┘
+```
+
+O diagrama acima representa o runtime CT102. O AgentReview é uma superfície
+CT104 separada:
+
+```text
+Target repo artifacts (sanitized)
+        │
+        ▼
+Intake/redaction -> semantic chunks -> PR brief + bounded payloads
+        │
+        ▼
+Structured chunk results -> final synthesis -> quality gate
+        │                                      │
+        │                                      └─ canonical authority
+        ▼
+Telemetry -> optional false-positive signatures
+          -> suggested contract updates (manual_only, never auto-applied)
 ```
 
 ### Componente: Orchestrator Core
@@ -110,6 +132,23 @@ Reage a comentários de PR com `/agent review`, `/agent review llm` e `/agent as
   publica respostas em pt-BR por padrão
 - **Fallbacks:** respostas separadas para `/agent ask`, com fallback para `GITHUB_STEP_SUMMARY`
   quando o comentário do PR não puder ser criado
+
+### Componente: AgentReview Engine offline
+
+Constrói e valida o contexto de review no CT104 sem chamar diretamente Agent
+Router, providers, GitHub write APIs, CT102, Docker, SSH ou deploy.
+
+- **Implementado:** `app/agent_review/` e `scripts/aiops-review-*.py`
+- **Intake/redaction:** carrega apenas artifacts declarados e sanitizados
+- **Planejamento:** agrupa arquivos em chunks semânticos determinísticos
+- **Contexto:** gera `pr-brief.json`, manifest e payloads limitados por chunk
+- **Parsing/síntese:** normaliza respostas estruturadas e produz o review final
+- **Autoridade:** `review-quality-gate.json`, não `final-review.json`
+- **Observação:** telemetria e assinaturas de falso positivo não alteram o gate
+- **Aprendizado:** sugestões de contrato são `manual_only` e nunca aplicadas
+  automaticamente
+- **Target repo:** outputs ficam fora do working tree e o consumo deve fixar um
+  SHA completo e imutável deste toolrepo
 
 ### Componente: Chat / OpenWebUI Intents
 
@@ -177,8 +216,8 @@ Executa apenas funções internas fixas, read-only e allowlisted, após approval
 - **Ações fixas v1:** `curl_health_8000`, `curl_ready_8000`, `curl_health_8001`, `curl_ready_8001`,
   `git_status`, `git_diff_stat`, `docker_compose_config`, `docker_compose_bluegreen_config`,
   `systemctl_status_aiops`, `journalctl_aiops_recent`, `prometheus_query_allowlisted`
-- **Sessão 18 / v0.18.0:** o contrato final desta fase mantém o runner sem shell livre, sem SSH,
-  sem `docker exec` e sem PromQL livre
+- **Contrato preservado em v0.20.0:** runner sem shell livre, sem SSH, sem
+  `docker exec` e sem PromQL livre
 - **Garantia:** não usa `command` do catálogo como comando executável
 - **Escopo v1:** health/ready de `8000` e `8001` + inspeção local read-only fixa
 - **Prometheus allowlisted:** bundle fixo sem PromQL livre, com base URL allowlisted e redaction forte
@@ -374,7 +413,7 @@ POST /v1/aiops/actions/dry-run
     ├─ Read-only Run v1
     │      → POST /v1/aiops/actions/run
     │      → Executa apenas funções internas fixas allowlisted
-    │      → Somente health/ready 8000/8001 nesta fase
+    │      → Executa somente funções internas da allowlist fixa
     │      → Persistência e auditoria estruturadas
     │
     └─ Agent Bridges futuros

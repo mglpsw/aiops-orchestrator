@@ -81,6 +81,61 @@ Roda bash syntax check, catálogo de actions, compose config e testes:
 bash scripts/ci_validate.sh
 ```
 
+## AgentReview v0.20.0
+
+Os testes AgentReview são offline e não devem chamar CT102, providers, Agent
+Router, Docker, SSH, deploy ou GitHub write APIs.
+
+Suíte focada:
+
+```bash
+python3 -m pytest tests/agent_review -q
+```
+
+Contrato E2E:
+
+```bash
+python3 -m pytest \
+  tests/agent_review/test_agent_review_e2e_contract.py -q
+```
+
+Esses testes cobrem, entre outros pontos:
+
+- determinismo byte a byte;
+- schemas e envelopes de artifacts;
+- sanitização e redaction;
+- outputs fora do target repository;
+- imutabilidade das fixtures de origem e destino;
+- `chunk_id` compatível com artifact/response file;
+- preservação de evidência global, path-scoped e unscoped;
+- quality gate fail-closed;
+- sugestões de contrato `manual_only` e `applied: false`;
+- rejeição do pipeline em ambiente production/runtime.
+
+As CLIs manuais exigem o boundary explícito:
+
+```bash
+export AIOPS_ENVIRONMENT=dev
+export AIOPS_NODE_ROLE=toolrepo
+export AIOPS_REPO_MODE=agent_review_tooling
+export AIOPS_PRODUCTION_RUNTIME=false
+```
+
+Não use essas variáveis no CT102.
+
+## Validação documental
+
+Antes de publicar mudanças somente de documentação:
+
+```bash
+git diff --check
+python3 -m pytest tests/agent_review/test_docs_agentescala_contract.py -q
+```
+
+Também verifique que todos os links Markdown relativos apontam para arquivos
+existentes e que o diff permanece limitado a `README.md`, `CHANGELOG.md` e
+`docs/`.
+
 ---
 
 ## Validação de runtime (somente CT 102)

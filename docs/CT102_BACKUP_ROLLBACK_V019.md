@@ -1,5 +1,9 @@
 # CT102 Backup and Rollback — AIOps v0.19.0
 
+> Historical runbook for the completed `v0.19.0` transition. It is preserved
+> as release evidence and must not be treated as authorization or as the
+> current `v0.20.0` operational procedure.
+
 ## 1. Objetivo
 
 Define the minimum backup and rollback coverage required for the persistent
@@ -257,7 +261,7 @@ The transition window may open only when all of the following hold:
 
 ## 15. Relação com `v0.19.0` final
 
-The final `v0.19.0` release can be created only after:
+The final `v0.19.0` release was created after the following gate was accepted:
 
 - The CT102 runtime transition is completed in a controlled window.
 - Backup/snapshot covers the database/volume, `config/`, `.env`, and the JSONL
