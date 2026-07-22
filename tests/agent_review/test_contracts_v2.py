@@ -1503,7 +1503,7 @@ def test_safe_text_accepts_pt_br_and_small_technical_evidence() -> None:
     "route_text",
     [
         "/api/v1/users",
-        "GET /users/list",
+        "GET /api/users/list",
         "POST /v1/reviews?dry_run=true",
     ],
 )
@@ -1539,6 +1539,23 @@ def test_api_route_literal_does_not_hide_a_real_token() -> None:
 def test_api_route_literal_does_not_hide_local_path_parameters(unsafe_route_text: str) -> None:
     envelope = _success_envelope()
     envelope["result"]["summary"] = unsafe_route_text  # type: ignore[index]
+    envelope["response_sha256"] = _sha256_without_field(envelope, "response_sha256")
+
+    with pytest.raises(ValidationError):
+        validate_chunk_response_envelope_v2(envelope)
+
+
+@pytest.mark.parametrize(
+    "unsafe_method_path",
+    [
+        "GET /home/runner/work/private/review.json",
+        "POST /opt/repos/private/review.json",
+        "DELETE /tmp/private/review.json",
+    ],
+)
+def test_http_method_prefix_does_not_hide_a_local_path(unsafe_method_path: str) -> None:
+    envelope = _success_envelope()
+    envelope["result"]["summary"] = unsafe_method_path  # type: ignore[index]
     envelope["response_sha256"] = _sha256_without_field(envelope, "response_sha256")
 
     with pytest.raises(ValidationError):

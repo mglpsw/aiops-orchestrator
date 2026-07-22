@@ -224,8 +224,9 @@ Check names use bounded safe text, so names such as `Validate repository` and
 identifiers such as `secret-scan` remain representable. `SafeText` accepts
 bounded printable UTF-8, including Portuguese and small technical snippets.
 Words such as `secret`, `password`, or `cookie` are not rejected by themselves.
-HTTP-method-qualified routes and conventional `/api/...` or `/vN/...` route
-literals remain representable in summaries and evidence. Route separators are
+Conventional `/api/...` or `/vN/...` route literals remain representable in
+summaries and evidence, including when prefixed by an HTTP method. Arbitrary
+method-prefixed absolute paths are not treated as routes. Route separators are
 neutralized only in the route path for the sanitizer comparison; query,
 fragment, and matrix-parameter values retain their separators so embedded local
 paths remain detectable. The canonical response hash still covers the original

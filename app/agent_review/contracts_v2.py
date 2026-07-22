@@ -63,9 +63,6 @@ _RFC3339_SECONDS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 _GIT_BRANCH_FORBIDDEN_CHARACTERS = frozenset(" ~^:?*[\\")
 _GIT_BRANCH_SCHEMA_PATTERN = r"^[^\u0000-\u0020\u007f~^:?*\\\[]+$"
 _RELATIVE_PATH_SCHEMA_PATTERN = r"^[^*?\[\]]+$"
-_HTTP_ROUTE_LITERAL_RE = re.compile(
-    r"\b(?:GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+/[^\s\"'<>?#;]*"
-)
 _VERSIONED_ROUTE_LITERAL_RE = re.compile(
     r"(?P<prefix>^|[\s(\[{,:\"'])(?P<route>/(?:api|v[0-9]+)"
     r"(?=/|[?#;\s\"'<>]|$)[^\s\"'<>?#;]*)"
@@ -187,14 +184,10 @@ def _neutralize_route_literals_v2(value: object) -> object:
     def neutralize_route(route: str) -> str:
         return route.replace("/", " route-separator ")
 
-    def neutralize_http_route(match: re.Match[str]) -> str:
-        return neutralize_route(match.group(0))
-
     def neutralize_versioned_route(match: re.Match[str]) -> str:
         return match.group("prefix") + neutralize_route(match.group("route"))
 
-    material = _HTTP_ROUTE_LITERAL_RE.sub(neutralize_http_route, value)
-    return _VERSIONED_ROUTE_LITERAL_RE.sub(neutralize_versioned_route, material)
+    return _VERSIONED_ROUTE_LITERAL_RE.sub(neutralize_versioned_route, value)
 
 
 def _reject_sensitive_material_v2(value: object) -> None:
