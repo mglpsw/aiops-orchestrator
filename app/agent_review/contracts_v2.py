@@ -1162,6 +1162,11 @@ class ReviewReadinessV2(ContractV2Model):
             cause_reasons = {cause.reason_code for cause in self.pipeline.causes}
             if not reasons <= allowed or not self.pipeline.degraded or cause_reasons != reasons:
                 raise ValueError("blocked_pipeline accepts pipeline failures only")
+            if any(
+                finding.disposition is FindingDispositionV2.CONFIRMED
+                for finding in blocking_findings
+            ):
+                raise ValueError("blocked_pipeline cannot mask a confirmed code-blocking finding")
         elif self.state is ReadinessStateV2.MANUAL_REQUIRED:
             allowed = {
                 ReadinessReasonV2.COVERAGE_FAILURE,

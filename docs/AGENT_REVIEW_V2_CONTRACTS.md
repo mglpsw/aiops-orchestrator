@@ -258,6 +258,9 @@ The principal invariants are:
   is deliberately not a pipeline cause and may coexist with those reasons;
 - `manual_required` cannot mask an already confirmed actionable P0/P1/P2
   finding as uncertainty or another manual cause;
+- `blocked_pipeline` cannot mask such a confirmed finding as a transport,
+  schema, coverage, or policy failure; confirmed code-block precedence still
+  applies when pipeline degradation coexists;
 - when confirmed and new blocking findings coexist, confirmed code takes
   precedence as `blocked_code`; every finding remains in the audit record and
   the pending new finding must be reconsidered after the confirmed block clears;

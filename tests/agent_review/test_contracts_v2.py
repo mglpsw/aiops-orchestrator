@@ -1319,6 +1319,36 @@ def test_blocked_pipeline_preserves_partial_findings_for_audit() -> None:
     assert _validate_json(ReviewReadinessV2, payload).state is ReadinessStateV2.BLOCKED_PIPELINE
 
 
+def test_blocked_pipeline_cannot_mask_a_confirmed_blocking_finding() -> None:
+    payload = _readiness()
+    payload.update(
+        state="blocked_pipeline",
+        reason_codes=["transport_failure"],
+        blockers=[
+            {
+                "blocker_id": "pipeline-1",
+                "reason_code": "transport_failure",
+                "active": True,
+                "finding_id": None,
+            }
+        ],
+        pipeline={
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": "transport_failure",
+                    "component": "provider-transport",
+                    "detail": "response unavailable",
+                }
+            ],
+        },
+        findings=[_confirmed_lifecycle_finding()],
+    )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
 @pytest.mark.parametrize(
     ("field", "unsafe"),
     [
