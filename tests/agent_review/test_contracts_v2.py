@@ -597,6 +597,42 @@ def test_response_binding_accepts_legitimate_received_response() -> None:
     assert validate_response_binding_v2(envelope, payload) is None
 
 
+def test_response_binding_rejects_coverage_outside_payload_scope() -> None:
+    raw_envelope = _success_envelope()
+    raw_envelope["result"]["coverage"] = {  # type: ignore[index]
+        "status": "complete",
+        "expected_files": ["app/outside.py"],
+        "reviewed_files": ["app/outside.py"],
+        "partially_reviewed_files": [],
+        "missing_files": [],
+        "must_review_files": [],
+        "missing_must_review_files": [],
+        "degradation_causes": [],
+    }
+    raw_envelope["result"]["findings"] = []  # type: ignore[index]
+    raw_envelope["response_sha256"] = compute_response_sha256_v2(raw_envelope)
+    envelope = validate_chunk_response_envelope_v2(raw_envelope)
+    payload = _validate_json(ChunkPayloadV2, _payload())
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(envelope, payload)
+
+    assert raised.value.reason_code == "response_scope_mismatch"
+
+
+def test_response_binding_rejects_finding_outside_payload_scope() -> None:
+    raw_envelope = _success_envelope()
+    raw_envelope["result"]["findings"][0]["file_path"] = "app/outside.py"  # type: ignore[index]
+    raw_envelope["response_sha256"] = compute_response_sha256_v2(raw_envelope)
+    envelope = validate_chunk_response_envelope_v2(raw_envelope)
+    payload = _validate_json(ChunkPayloadV2, _payload())
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(envelope, payload)
+
+    assert raised.value.reason_code == "response_scope_mismatch"
+
+
 def test_response_binding_accepts_transport_failure_without_response_hash() -> None:
     envelope = validate_chunk_response_envelope_v2(_error_envelope())
     payload = _validate_json(ChunkPayloadV2, _payload())

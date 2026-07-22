@@ -39,9 +39,9 @@ a clean supported process must therefore be byte-identical.
 Every JSON Schema object sets `additionalProperties: false`; required and
 unknown fields are enforced by the schema. JSON Schema alone does not execute
 Pydantic cross-field/after validators. Hash equality, normalized POSIX path
-spelling, exact coverage partitions, finish-reason semantics, lifecycle
-coherence, and readiness proofs described below require validation through the
-Python contract authority.
+spelling, exact coverage partitions, response-to-payload file scope,
+finish-reason semantics, lifecycle coherence, and readiness proofs described
+below require validation through the Python contract authority.
 
 ## Canonical JSON bytes
 
@@ -119,18 +119,22 @@ complete canonical payload preimage and its digest byte for byte.
 `ResponseBindingV2`), serializes and fully revalidates the envelope, recalculates
 its response hash, re-verifies the payload hash, and then compares response
 `run_id`, `chunk_id`, `payload_sha256`, and `head_sha` before a future parser may
-consume findings. A stale hash, invalid contract, copied model, or mutated nested
-list produces the stable binding reason `response_contract_invalid`. Wiring this
-helper into consumers remains PR 2 work.
+consume findings. For a success response, the helper then requires both
+`result.coverage.expected_files` and every finding `file_path` to be subsets of
+the bound payload's `coverage.expected_files`. A stale hash, invalid contract,
+copied model, or mutated nested list produces the stable binding reason
+`response_contract_invalid`. Wiring this helper into consumers remains PR 2
+work.
 
 Binding failures are intentionally separated without embedding exception or
 payload content in the reason: `response_contract_invalid` means the envelope or
 its response hash failed full revalidation; `payload_contract_invalid` means the
 expected payload itself failed revalidation; and `payload_sha256_mismatch` means
 both objects are valid but the response is bound to a different valid payload.
-The original validation exception is retained only as the Python exception
-cause. These reason codes are contract helpers only and are not yet wired into
-consumers.
+`response_scope_mismatch` means a valid success response claims coverage or a
+finding outside the payload's file scope. The original validation exception is
+retained only as the Python exception cause. These reason codes are contract
+helpers only and are not yet wired into consumers.
 
 ## Response hash and finish reason
 
@@ -175,6 +179,10 @@ State rules are fail-closed:
   affected-file union accounts for every such file and no other file.
 
 No expected file can disappear from the partitions.
+
+At binding time the payload supplies the outer file-scope boundary. A success
+response may report only coverage and findings within that boundary; a
+cryptographically valid response cannot introduce an unbound repository path.
 
 ## Target profile hard boundaries and sanitization
 

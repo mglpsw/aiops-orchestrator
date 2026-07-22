@@ -42,6 +42,7 @@ TARGET_PROFILE_SCHEMA_V2 = "agent-review.target-profile.v2"
 REVIEW_READINESS_SCHEMA_V2 = "agent-review.review-readiness.v2"
 RESPONSE_CONTRACT_INVALID_REASON_V2 = "response_contract_invalid"
 PAYLOAD_CONTRACT_INVALID_REASON_V2 = "payload_contract_invalid"
+RESPONSE_SCOPE_MISMATCH_REASON_V2 = "response_scope_mismatch"
 
 _RUN_IDENTITY_FIELDS = (
     "repo",
@@ -793,6 +794,13 @@ def validate_response_binding_v2(
     for observed, wanted, reason_code in comparisons:
         if observed != wanted:
             raise ResponseBindingError(reason_code)
+
+    if isinstance(envelope, ChunkResponseSuccessEnvelopeV2):
+        payload_files = set(payload.coverage.expected_files)
+        response_files = set(envelope.result.coverage.expected_files)
+        finding_files = {finding.file_path for finding in envelope.result.findings}
+        if not response_files <= payload_files or not finding_files <= payload_files:
+            raise ResponseBindingError(RESPONSE_SCOPE_MISMATCH_REASON_V2)
 
 
 class TargetIdentityV2(ContractV2Model):
