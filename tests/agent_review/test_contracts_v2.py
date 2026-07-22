@@ -577,6 +577,74 @@ def test_target_profile_rejects_absolute_and_parent_paths() -> None:
             _validate_json(TargetProfileV2, payload)
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["app/./service.py", "app//service.py", "app/service.py/", ".", "./app/service.py"],
+)
+def test_relative_paths_reject_non_normalized_posix_aliases(path: str) -> None:
+    profile = _target_profile()
+    profile["artifacts"][0]["path"] = path  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        _validate_json(TargetProfileV2, profile)
+
+
+def test_coverage_cannot_duplicate_one_file_through_a_path_alias() -> None:
+    payload = _payload()
+    payload["coverage"] = {
+        "status": "complete",
+        "expected_files": ["app/service.py", "app/./service.py"],
+        "reviewed_files": ["app/service.py", "app/./service.py"],
+        "partially_reviewed_files": [],
+        "missing_files": [],
+        "must_review_files": ["app/service.py", "app/./service.py"],
+        "missing_must_review_files": [],
+        "degradation_causes": [],
+    }
+    with pytest.raises(ValidationError):
+        payload["payload_sha256"] = compute_payload_sha256_v2(payload)
+        _validate_json(ChunkPayloadV2, payload)
+
+
+def test_coverage_cannot_partition_one_file_under_two_path_spellings() -> None:
+    payload = _payload()
+    payload["coverage"] = {
+        "status": "partial",
+        "expected_files": ["app/service.py", "app/./service.py"],
+        "reviewed_files": ["app/service.py"],
+        "partially_reviewed_files": [],
+        "missing_files": ["app/./service.py"],
+        "must_review_files": ["app/service.py", "app/./service.py"],
+        "missing_must_review_files": ["app/./service.py"],
+        "degradation_causes": [],
+    }
+    with pytest.raises(ValidationError):
+        payload["payload_sha256"] = compute_payload_sha256_v2(payload)
+        _validate_json(ChunkPayloadV2, payload)
+
+
+def test_relative_patterns_preserve_normalized_posix_globs() -> None:
+    profile = _target_profile()
+    profile["must_review"]["patterns"] = [  # type: ignore[index]
+        "app/**/*.py",
+        "tests/**/test_*.py",
+        "**/*.md",
+    ]
+
+    parsed = _validate_json(TargetProfileV2, profile)
+
+    assert parsed.must_review.patterns == ["app/**/*.py", "tests/**/test_*.py", "**/*.md"]
+
+
+@pytest.mark.parametrize("pattern", ["app/./**/*.py", "app//**/*.py", "app/**/*.py/"])
+def test_relative_patterns_reject_non_normalized_aliases(pattern: str) -> None:
+    profile = _target_profile()
+    profile["must_review"]["patterns"] = [pattern]  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        _validate_json(TargetProfileV2, profile)
+
+
 def test_contracts_reject_secret_like_values_before_serialization() -> None:
     profile = _target_profile()
     profile["artifacts"][0]["artifact_id"] = "ghp_abcdefghijk"  # type: ignore[index]

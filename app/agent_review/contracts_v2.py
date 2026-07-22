@@ -80,17 +80,30 @@ def _validate_repository(value: str) -> str:
     return value
 
 
-def _validate_relative_path(value: str) -> str:
+def _validate_normalized_relative_posix(value: str, *, kind: str) -> str:
     if value != value.strip() or not value or "\\" in value:
-        raise ValueError("path must be a non-empty normalized POSIX relative path")
-    if value.startswith(("/", "~/")) or re.match(r"^[A-Za-z]:", value):
-        raise ValueError("absolute and home-relative paths are forbidden")
-    if ".." in PurePosixPath(value).parts:
+        raise ValueError(f"{kind} must be a non-empty normalized POSIX relative value")
+    if value.startswith(("/", "~")) or re.match(r"^[A-Za-z]:", value):
+        raise ValueError("absolute and home-relative values are forbidden")
+    raw_parts = value.split("/")
+    if ".." in raw_parts:
         raise ValueError("parent traversal is forbidden")
+    if any(part in {"", "."} for part in raw_parts):
+        raise ValueError(f"{kind} contains an empty or dot path component")
+    if PurePosixPath(value).as_posix() != value:
+        raise ValueError(f"{kind} must use its normalized POSIX spelling")
     if any(ord(character) < 32 or ord(character) == 127 for character in value):
         raise ValueError("control characters are forbidden")
     _reject_sensitive_value(value)
     return value
+
+
+def _validate_relative_path(value: str) -> str:
+    return _validate_normalized_relative_posix(value, kind="path")
+
+
+def _validate_relative_pattern(value: str) -> str:
+    return _validate_normalized_relative_posix(value, kind="pattern")
 
 
 def _validate_safe_identifier(value: str) -> str:
@@ -138,7 +151,7 @@ RelativePath = Annotated[
 RelativePattern = Annotated[
     StrictStr,
     Field(min_length=1, max_length=512),
-    AfterValidator(_validate_relative_path),
+    AfterValidator(_validate_relative_pattern),
 ]
 SafeIdentifier = Annotated[
     StrictStr,

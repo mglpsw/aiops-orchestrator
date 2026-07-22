@@ -38,9 +38,10 @@ a clean supported process must therefore be byte-identical.
 
 Every JSON Schema object sets `additionalProperties: false`; required and
 unknown fields are enforced by the schema. JSON Schema alone does not execute
-Pydantic cross-field validators. Hash equality, exact coverage partitions,
-finish-reason semantics, lifecycle coherence, and readiness proofs described
-below require validation through the Python contract authority.
+Pydantic cross-field/after validators. Hash equality, normalized POSIX path
+spelling, exact coverage partitions, finish-reason semantics, lifecycle
+coherence, and readiness proofs described below require validation through the
+Python contract authority.
 
 ## Canonical JSON bytes
 
@@ -175,6 +176,14 @@ safety:
 - `network_policy` is always `forbidden`;
 - `fail_closed` and `redaction_required` are always `true`;
 - `allow_partial_coverage` is always `false` in this frozen foundation.
+
+Every `RelativePath` must already be in its exact normalized POSIX spelling.
+Empty and dot components, duplicate separators, trailing separators, parent
+traversal, absolute paths, home-relative forms, and Windows forms are rejected,
+so one repository file cannot acquire multiple coverage identities.
+`RelativePattern` has a separate validator with the same structural path rules;
+glob components such as `*`, `**`, and `test_*.py` remain valid and are not
+normalized away.
 
 Check names use bounded safe text, so names such as `Validate repository` and
 identifiers such as `secret-scan` remain representable. `SafeText` accepts
