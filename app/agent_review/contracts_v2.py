@@ -58,6 +58,7 @@ _RUN_IDENTITY_FIELDS = (
 )
 _REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _SAFE_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_GIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _RFC3339_SECONDS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 _GIT_BRANCH_FORBIDDEN_CHARACTERS = frozenset(" ~^:?*[\\")
 _GIT_BRANCH_SCHEMA_PATTERN = r"^[^\u0000-\u0020\u007f~^:?*\\\[]+$"
@@ -939,6 +940,15 @@ class DispositionEvidenceV2(ContractV2Model):
     kind: DispositionEvidenceKindValue
     reference: SafeIdentifier
     head_sha: GitSha
+
+    @model_validator(mode="after")
+    def validate_reference_kind(self) -> DispositionEvidenceV2:
+        if (
+            self.kind is DispositionEvidenceKindV2.COMMIT
+            and not _GIT_SHA_RE.fullmatch(self.reference)
+        ):
+            raise ValueError("commit evidence reference must be a canonical Git SHA")
+        return self
 
 
 class FindingLifecycleRecordV2(ContractV2Model):

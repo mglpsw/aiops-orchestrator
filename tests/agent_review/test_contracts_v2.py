@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from app.agent_review.contracts_v2 import (
     AgentReviewRunV2,
     ChunkPayloadV2,
+    DispositionEvidenceV2,
     FindingDispositionV2,
     FindingLifecycleRecordV2,
     ReadinessReasonV2,
@@ -1757,6 +1758,26 @@ def test_dismissal_is_typed_owned_justified_and_bound_to_a_head() -> None:
     ]
 
     assert _validate_json(ReviewReadinessV2, payload).findings[0].decided_by == "reviewer-1"
+
+
+@pytest.mark.parametrize("reference", ["pytest-v2", "A" * 40])
+def test_commit_disposition_evidence_requires_a_canonical_git_sha(reference: str) -> None:
+    evidence = {"kind": "commit", "reference": reference, "head_sha": "2" * 40}
+
+    with pytest.raises(ValidationError):
+        _validate_json(DispositionEvidenceV2, evidence)
+
+
+@pytest.mark.parametrize(
+    ("kind", "reference"),
+    [("commit", "a" * 40), ("test", "pytest-contracts-v2")],
+)
+def test_disposition_evidence_reference_matches_its_kind(kind: str, reference: str) -> None:
+    evidence = {"kind": kind, "reference": reference, "head_sha": "2" * 40}
+
+    parsed = _validate_json(DispositionEvidenceV2, evidence)
+
+    assert parsed.reference == reference
 
 
 def test_ready_rejects_dismissed_p2_decided_on_a_previous_head() -> None:

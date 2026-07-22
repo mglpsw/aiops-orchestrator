@@ -245,6 +245,11 @@ the HEAD on which that evidence was revalidated and must also match. A commit
 evidence item continues to identify its concrete commit through `reference`.
 An older decision may be reconstructed only as a new record after revalidation
 on the current evaluated HEAD; it cannot silently make a later HEAD ready.
+For typed disposition evidence, `kind=commit` requires `reference` to be the
+exact lowercase 40-hex SHA of the referenced commit; `kind=test` retains a safe
+test identifier. This kind/reference correlation is part of the Pydantic
+cross-field authority, while `evidence.head_sha` remains the HEAD on which that
+evidence was revalidated.
 
 The principal invariants are:
 
