@@ -175,6 +175,57 @@ def _error_envelope() -> dict[str, object]:
     return payload
 
 
+def _coverage_from_states(
+    states: dict[str, str],
+    *,
+    must_review_files: list[str],
+) -> dict[str, object]:
+    reviewed = [path for path, state in states.items() if state == "reviewed"]
+    partial = [path for path, state in states.items() if state == "partially_reviewed"]
+    missing = [path for path, state in states.items() if state == "missing"]
+    return {
+        "status": "complete" if len(reviewed) == len(states) else "partial",
+        "expected_files": list(states),
+        "reviewed_files": reviewed,
+        "partially_reviewed_files": partial,
+        "missing_files": missing,
+        "must_review_files": must_review_files,
+        "missing_must_review_files": [
+            path for path in must_review_files if states[path] != "reviewed"
+        ],
+        "degradation_causes": [],
+    }
+
+
+def _validated_binding_pair(
+    payload_states: dict[str, str],
+    response_states: dict[str, str],
+    *,
+    payload_must_review: list[str],
+    response_must_review: list[str] | None = None,
+) -> tuple[ChunkPayloadV2, object]:
+    raw_payload = _payload()
+    raw_payload["coverage"] = _coverage_from_states(
+        payload_states,
+        must_review_files=payload_must_review,
+    )
+    raw_payload["payload_sha256"] = compute_payload_sha256_v2(raw_payload)
+    payload = _validate_json(ChunkPayloadV2, raw_payload)
+
+    raw_envelope = _success_envelope()
+    raw_envelope["payload_sha256"] = payload.payload_sha256
+    raw_envelope["result"]["coverage"] = _coverage_from_states(  # type: ignore[index]
+        response_states,
+        must_review_files=(
+            payload_must_review if response_must_review is None else response_must_review
+        ),
+    )
+    raw_envelope["result"]["findings"] = []  # type: ignore[index]
+    raw_envelope["response_sha256"] = compute_response_sha256_v2(raw_envelope)
+    envelope = validate_chunk_response_envelope_v2(raw_envelope)
+    return payload, envelope
+
+
 def _target_profile() -> dict[str, object]:
     return {
         "schema_id": "agent-review.target-profile.v2",
@@ -656,6 +707,74 @@ def test_response_binding_rejects_finding_outside_payload_scope() -> None:
         validate_response_binding_v2(envelope, payload)
 
     assert raised.value.reason_code == "response_scope_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("payload_state", "response_state"),
+    [
+        pytest.param("missing", "reviewed", id="missing-to-reviewed-complete"),
+        pytest.param("partially_reviewed", "reviewed", id="partial-to-reviewed"),
+        pytest.param("missing", "partially_reviewed", id="missing-to-partial"),
+    ],
+)
+def test_response_binding_rejects_coverage_state_promotions_with_valid_hashes(
+    payload_state: str,
+    response_state: str,
+) -> None:
+    payload, envelope = _validated_binding_pair(
+        {"app/service.py": payload_state},
+        {"app/service.py": response_state},
+        payload_must_review=["app/service.py"],
+    )
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(envelope, payload)
+
+    assert raised.value.reason_code == "response_scope_mismatch"
+
+
+def test_response_binding_rejects_divergent_authoritative_must_review_set() -> None:
+    payload, envelope = _validated_binding_pair(
+        {"app/service.py": "reviewed"},
+        {"app/service.py": "reviewed"},
+        payload_must_review=["app/service.py"],
+        response_must_review=[],
+    )
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(envelope, payload)
+
+    assert raised.value.reason_code == "response_scope_mismatch"
+
+
+def test_response_binding_accepts_identical_coverage_partitions_as_sets() -> None:
+    payload, envelope = _validated_binding_pair(
+        {
+            "app/service.py": "partially_reviewed",
+            "app/other.py": "reviewed",
+        },
+        {
+            "app/other.py": "reviewed",
+            "app/service.py": "partially_reviewed",
+        },
+        payload_must_review=["app/service.py", "app/other.py"],
+        response_must_review=["app/other.py", "app/service.py"],
+    )
+
+    assert validate_response_binding_v2(envelope, payload) is None
+
+
+@pytest.mark.parametrize("response_state", ["partially_reviewed", "missing"])
+def test_response_binding_accepts_legitimate_coverage_downgrade(
+    response_state: str,
+) -> None:
+    payload, envelope = _validated_binding_pair(
+        {"app/service.py": "reviewed"},
+        {"app/service.py": response_state},
+        payload_must_review=["app/service.py"],
+    )
+
+    assert validate_response_binding_v2(envelope, payload) is None
 
 
 def test_response_binding_accepts_transport_failure_without_response_hash() -> None:
