@@ -41,6 +41,7 @@ CHUNK_RESPONSE_SCHEMA_V2 = "agent-review.chunk-response.v2"
 TARGET_PROFILE_SCHEMA_V2 = "agent-review.target-profile.v2"
 REVIEW_READINESS_SCHEMA_V2 = "agent-review.review-readiness.v2"
 RESPONSE_CONTRACT_INVALID_REASON_V2 = "response_contract_invalid"
+PAYLOAD_CONTRACT_INVALID_REASON_V2 = "payload_contract_invalid"
 
 _RUN_IDENTITY_FIELDS = (
     "repo",
@@ -777,7 +778,10 @@ def validate_response_binding_v2(
         raise ResponseBindingError(RESPONSE_CONTRACT_INVALID_REASON_V2) from exc
 
     payload = expected.payload if isinstance(expected, ResponseBindingV2) else expected
-    verify_payload_sha256_v2(payload)
+    try:
+        verify_payload_sha256_v2(payload)
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise ResponseBindingError(PAYLOAD_CONTRACT_INVALID_REASON_V2) from exc
 
     comparisons = (
         (envelope.run_id, payload.run_id, "run_id_mismatch"),

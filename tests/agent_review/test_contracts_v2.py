@@ -569,6 +569,64 @@ def test_response_binding_accepts_transport_failure_without_response_hash() -> N
     assert validate_response_binding_v2(envelope, payload) is None
 
 
+def test_response_binding_normalizes_a_model_copy_with_stale_payload_hash() -> None:
+    envelope = validate_chunk_response_envelope_v2(_success_envelope())
+    payload = _validate_json(ChunkPayloadV2, _payload())
+    tampered = payload.model_copy(
+        update={"semantic_group": payload.semantic_group.__class__.TESTS}
+    )
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(envelope, tampered)
+
+    assert raised.value.reason_code == "payload_contract_invalid"
+    assert raised.value.__cause__ is not None
+
+
+@pytest.mark.parametrize("mutation", ["coverage", "references"])
+def test_response_binding_normalizes_nested_payload_mutations(mutation: str) -> None:
+    envelope = validate_chunk_response_envelope_v2(_success_envelope())
+    payload = _validate_json(ChunkPayloadV2, _payload())
+    if mutation == "coverage":
+        payload.coverage.reviewed_files.append("app/unexpected.py")
+    else:
+        payload.artifact_references[0] = payload.artifact_references[0].model_copy(
+            update={"sha256": "0" * 64}
+        )
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(envelope, payload)
+
+    assert raised.value.reason_code == "payload_contract_invalid"
+    assert raised.value.__cause__ is not None
+
+
+def test_response_binding_normalizes_a_malformed_expected_payload() -> None:
+    envelope = validate_chunk_response_envelope_v2(_success_envelope())
+    payload = _validate_json(ChunkPayloadV2, _payload())
+    malformed = payload.model_copy(update={"run_id": "malformed"})
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(envelope, malformed)
+
+    assert raised.value.reason_code == "payload_contract_invalid"
+    assert raised.value.__cause__ is not None
+
+
+def test_response_binding_keeps_payload_hash_mismatch_for_two_valid_payloads() -> None:
+    envelope = validate_chunk_response_envelope_v2(_success_envelope())
+    other_payload = _payload()
+    other_payload["artifact_references"][0]["sha256"] = "0" * 64  # type: ignore[index]
+    other_payload["payload_sha256"] = compute_payload_sha256_v2(other_payload)
+    payload = _validate_json(ChunkPayloadV2, other_payload)
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(envelope, payload)
+
+    assert raised.value.reason_code == "payload_sha256_mismatch"
+    assert raised.value.__cause__ is None
+
+
 def test_target_profile_rejects_absolute_and_parent_paths() -> None:
     for path in ("/tmp/full.diff", "../outside/full.diff", "C:\\temp\\full.diff"):
         payload = _target_profile()

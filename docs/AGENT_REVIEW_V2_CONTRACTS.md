@@ -123,6 +123,15 @@ consume findings. A stale hash, invalid contract, copied model, or mutated neste
 list produces the stable binding reason `response_contract_invalid`. Wiring this
 helper into consumers remains PR 2 work.
 
+Binding failures are intentionally separated without embedding exception or
+payload content in the reason: `response_contract_invalid` means the envelope or
+its response hash failed full revalidation; `payload_contract_invalid` means the
+expected payload itself failed revalidation; and `payload_sha256_mismatch` means
+both objects are valid but the response is bound to a different valid payload.
+The original validation exception is retained only as the Python exception
+cause. These reason codes are contract helpers only and are not yet wired into
+consumers.
+
 ## Response hash and finish reason
 
 `response_sha256` is SHA-256 over every field of the sanitized response
