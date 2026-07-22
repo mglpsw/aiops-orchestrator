@@ -234,11 +234,18 @@ The principal invariants are:
   one required deterministic check with every result green on the evaluated
   HEAD, complete total/must-review coverage, and no degraded pipeline;
 - actionable `new` or `confirmed` P0/P1/P2 findings prevent `ready`;
+- an isolated `new` P0/P1/P2 is not confirmation: it produces
+  `manual_required` with `finding_confirmation_required`, may use a healthy
+  pipeline, and its blocker points exactly to the pending finding;
 - an isolated actionable P3 does not create `blocked_code`;
 - `blocked_code` requires an active blocker pointing to an existing confirmed,
-  actionable P0/P1/P2 finding;
-- pipeline/manual blockers never point to findings and their reason set exactly
-  matches structured degradation causes;
+  actionable P0/P1/P2 finding through `confirmed_code_finding`;
+- pipeline blockers never point to findings. Manual pipeline reasons still
+  match structured degradation causes, while `finding_confirmation_required`
+  is deliberately not a pipeline cause and may coexist with those reasons;
+- when confirmed and new blocking findings coexist, confirmed code takes
+  precedence as `blocked_code`; every finding remains in the audit record and
+  the pending new finding must be reconsidered after the confirmed block clears;
 - `blocked_pipeline` and `manual_required` may preserve partial findings for
   audit without becoming ready;
 - `new` and `confirmed` are actionable; `fixed`, `dismissed`, `superseded`, and

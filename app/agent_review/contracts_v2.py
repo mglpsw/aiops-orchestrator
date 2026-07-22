@@ -335,6 +335,7 @@ class ReadinessReasonV2(str, Enum):
     COVERAGE_FAILURE = "coverage_failure"
     POLICY_FAILURE = "policy_failure"
     MODEL_UNCERTAINTY = "model_uncertainty"
+    FINDING_CONFIRMATION_REQUIRED = "finding_confirmation_required"
     CONFIRMED_CODE_FINDING = "confirmed_code_finding"
     HEAD_MISMATCH = "head_mismatch"
     IDENTITY_MISMATCH = "identity_mismatch"
@@ -1040,9 +1041,22 @@ class ReviewReadinessV2(ContractV2Model):
 
         findings_by_id = {finding.finding_id: finding for finding in self.findings}
         for blocker in self.blockers:
-            if blocker.reason_code is ReadinessReasonV2.CONFIRMED_CODE_FINDING:
+            if blocker.reason_code in {
+                ReadinessReasonV2.CONFIRMED_CODE_FINDING,
+                ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED,
+            }:
                 if blocker.finding_id is None or blocker.finding_id not in findings_by_id:
-                    raise ValueError("confirmed_code_finding blockers require a valid finding_id")
+                    raise ValueError("finding blockers require a valid finding_id")
+                finding = findings_by_id[blocker.finding_id]
+                if blocker.reason_code is ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED and not (
+                    finding.disposition is FindingDispositionV2.NEW
+                    and finding.actionable
+                    and finding.severity
+                    in {FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2}
+                ):
+                    raise ValueError(
+                        "finding_confirmation_required requires an actionable new P0/P1/P2 finding"
+                    )
             elif blocker.finding_id is not None:
                 raise ValueError("pipeline, manual, and stale blockers cannot point to findings")
 
@@ -1123,8 +1137,39 @@ class ReviewReadinessV2(ContractV2Model):
                 ReadinessReasonV2.COVERAGE_FAILURE,
                 ReadinessReasonV2.POLICY_FAILURE,
                 ReadinessReasonV2.MODEL_UNCERTAINTY,
+                ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED,
             }
             cause_reasons = {cause.reason_code for cause in self.pipeline.causes}
-            if not reasons <= allowed or not self.pipeline.degraded or cause_reasons != reasons:
-                raise ValueError("manual_required accepts uncertainty or incomplete evidence only")
+            pipeline_reasons = reasons - {ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED}
+            if (
+                not reasons <= allowed
+                or cause_reasons != pipeline_reasons
+                or self.pipeline.degraded != bool(pipeline_reasons)
+            ):
+                raise ValueError(
+                    "manual_required requires confirmation and/or matching structured pipeline causes"
+                )
+            new_findings = {
+                finding.finding_id
+                for finding in blocking_findings
+                if finding.disposition is FindingDispositionV2.NEW
+            }
+            confirmation_blockers = [
+                blocker.finding_id
+                for blocker in active_blockers
+                if blocker.reason_code is ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED
+            ]
+            confirmation_finding_ids = set(confirmation_blockers)
+            if ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED in reasons:
+                if (
+                    not new_findings
+                    or None in confirmation_finding_ids
+                    or confirmation_finding_ids != new_findings
+                    or len(confirmation_blockers) != len(confirmation_finding_ids)
+                ):
+                    raise ValueError(
+                        "manual confirmation blockers must identify every pending new P0/P1/P2 finding"
+                    )
+            elif new_findings:
+                raise ValueError("manual_required must represent pending finding confirmation")
         return self

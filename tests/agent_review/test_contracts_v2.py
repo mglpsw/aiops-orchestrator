@@ -258,6 +258,43 @@ def _readiness() -> dict[str, object]:
     }
 
 
+def _new_lifecycle_finding(
+    finding_id: str = "finding-new",
+    severity: str = "P2",
+    observed_at_head_sha: str | None = None,
+) -> dict[str, object]:
+    return {
+        "finding_id": finding_id,
+        "severity": severity,
+        "observed_at_head_sha": observed_at_head_sha or "2" * 40,
+        "disposition": "new",
+        "actionable": True,
+        "justification": None,
+        "decided_by": None,
+        "decided_at_head_sha": None,
+        "evidence": [],
+        "superseded_by": None,
+    }
+
+
+def _confirmed_lifecycle_finding(
+    finding_id: str = "finding-confirmed",
+    severity: str = "P2",
+) -> dict[str, object]:
+    return {
+        "finding_id": finding_id,
+        "severity": severity,
+        "observed_at_head_sha": "2" * 40,
+        "disposition": "confirmed",
+        "actionable": True,
+        "justification": None,
+        "decided_by": "reviewer-1",
+        "decided_at_head_sha": "2" * 40,
+        "evidence": [],
+        "superseded_by": None,
+    }
+
+
 def _validate_json(model: type, payload: dict[str, object]):  # noqa: ANN202
     return model.model_validate_json(json.dumps(payload, ensure_ascii=False))
 
@@ -1597,18 +1634,244 @@ def test_stale_readiness_keeps_findings_bound_to_the_evaluated_identity() -> Non
     assert _validate_json(ReviewReadinessV2, payload).state is ReadinessStateV2.STALE
 
 
-def test_manual_required_preserves_partial_findings_for_audit() -> None:
+@pytest.mark.parametrize("severity", ["P0", "P1", "P2"])
+def test_new_blocking_finding_is_manual_required_with_a_healthy_pipeline(severity: str) -> None:
     payload = _readiness()
     payload.update(
         state="manual_required",
-        reason_codes=["model_uncertainty"],
+        reason_codes=["finding_confirmation_required"],
+        blockers=[
+            {
+                "blocker_id": "confirmation-1",
+                "reason_code": "finding_confirmation_required",
+                "active": True,
+                "finding_id": "finding-new",
+            }
+        ],
+        findings=[_new_lifecycle_finding(severity=severity)],
+    )
+
+    parsed = _validate_json(ReviewReadinessV2, payload)
+
+    assert parsed.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert parsed.pipeline.degraded is False
+    assert parsed.blockers[0].finding_id == "finding-new"
+
+
+@pytest.mark.parametrize("finding_id", [None, "finding-missing"])
+def test_confirmation_blocker_requires_an_existing_finding_id(finding_id: str | None) -> None:
+    payload = _readiness()
+    payload.update(
+        state="manual_required",
+        reason_codes=["finding_confirmation_required"],
+        blockers=[
+            {
+                "blocker_id": "confirmation-1",
+                "reason_code": "finding_confirmation_required",
+                "active": True,
+                "finding_id": finding_id,
+            }
+        ],
+        findings=[_new_lifecycle_finding()],
+    )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+def test_new_p3_cannot_require_blocking_confirmation() -> None:
+    payload = _readiness()
+    payload.update(
+        state="manual_required",
+        reason_codes=["finding_confirmation_required"],
+        blockers=[
+            {
+                "blocker_id": "confirmation-1",
+                "reason_code": "finding_confirmation_required",
+                "active": True,
+                "finding_id": "finding-p3",
+            }
+        ],
+        findings=[_new_lifecycle_finding(finding_id="finding-p3", severity="P3")],
+    )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+def test_new_finding_alone_cannot_create_blocked_code() -> None:
+    payload = _readiness()
+    payload.update(
+        state="blocked_code",
+        reason_codes=["confirmed_code_finding"],
+        blockers=[
+            {
+                "blocker_id": "code-1",
+                "reason_code": "confirmed_code_finding",
+                "active": True,
+                "finding_id": "finding-new",
+            }
+        ],
+        findings=[_new_lifecycle_finding()],
+    )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+@pytest.mark.parametrize("severity", ["P0", "P1", "P2"])
+def test_ready_remains_forbidden_with_a_new_blocking_finding(severity: str) -> None:
+    payload = _readiness()
+    payload["findings"] = [_new_lifecycle_finding(severity=severity)]
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+@pytest.mark.parametrize("disposition", ["fixed", "dismissed"])
+def test_terminal_finding_does_not_remain_blocking(disposition: str) -> None:
+    finding = {
+        "finding_id": f"finding-{disposition}",
+        "severity": "P2",
+        "observed_at_head_sha": "2" * 40,
+        "disposition": disposition,
+        "actionable": False,
+        "justification": "revalidated terminal decision" if disposition == "dismissed" else None,
+        "decided_by": "reviewer-1",
+        "decided_at_head_sha": "2" * 40,
+        "evidence": [{"kind": "test", "reference": "pytest-v2", "head_sha": "2" * 40}],
+        "superseded_by": None,
+    }
+    payload = _readiness()
+    payload["findings"] = [finding]
+
+    assert _validate_json(ReviewReadinessV2, payload).state is ReadinessStateV2.READY
+
+
+def test_confirmed_finding_takes_precedence_without_losing_new_finding_audit() -> None:
+    payload = _readiness()
+    payload.update(
+        state="blocked_code",
+        reason_codes=["confirmed_code_finding"],
+        blockers=[
+            {
+                "blocker_id": "code-1",
+                "reason_code": "confirmed_code_finding",
+                "active": True,
+                "finding_id": "finding-confirmed",
+            }
+        ],
+        findings=[
+            _confirmed_lifecycle_finding(),
+            _new_lifecycle_finding(finding_id="finding-pending", severity="P1"),
+        ],
+    )
+
+    parsed = _validate_json(ReviewReadinessV2, payload)
+
+    assert parsed.state is ReadinessStateV2.BLOCKED_CODE
+    assert {finding.finding_id for finding in parsed.findings} == {
+        "finding-confirmed",
+        "finding-pending",
+    }
+
+
+def test_manual_confirmation_can_coexist_with_structured_pipeline_cause() -> None:
+    payload = _readiness()
+    payload.update(
+        state="manual_required",
+        reason_codes=["model_uncertainty", "finding_confirmation_required"],
         blockers=[
             {
                 "blocker_id": "manual-1",
                 "reason_code": "model_uncertainty",
                 "active": True,
                 "finding_id": None,
+            },
+            {
+                "blocker_id": "confirmation-1",
+                "reason_code": "finding_confirmation_required",
+                "active": True,
+                "finding_id": "finding-new",
+            },
+        ],
+        pipeline={
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": "model_uncertainty",
+                    "component": "provider-response",
+                    "detail": "response needs human review",
+                }
+            ],
+        },
+        findings=[_new_lifecycle_finding()],
+    )
+
+    parsed = _validate_json(ReviewReadinessV2, payload)
+
+    assert parsed.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert {cause.reason_code for cause in parsed.pipeline.causes} == {
+        ReadinessReasonV2.MODEL_UNCERTAINTY
+    }
+
+
+@pytest.mark.parametrize(
+    "disposition",
+    ["confirmed", "fixed", "dismissed", "superseded", "stale"],
+)
+def test_confirmation_blocker_rejects_every_non_new_disposition(disposition: str) -> None:
+    finding = {
+        "finding_id": "finding-not-new",
+        "severity": "P2",
+        "observed_at_head_sha": "2" * 40,
+        "disposition": disposition,
+        "actionable": disposition == "confirmed",
+        "justification": "dismissed after review" if disposition == "dismissed" else None,
+        "decided_by": "reviewer-1",
+        "decided_at_head_sha": "2" * 40,
+        "evidence": [{"kind": "test", "reference": "pytest-v2", "head_sha": "2" * 40}]
+        if disposition in {"fixed", "dismissed"}
+        else [],
+        "superseded_by": "finding-successor" if disposition == "superseded" else None,
+    }
+    payload = _readiness()
+    payload.update(
+        state="manual_required",
+        reason_codes=["finding_confirmation_required"],
+        blockers=[
+            {
+                "blocker_id": "confirmation-1",
+                "reason_code": "finding_confirmation_required",
+                "active": True,
+                "finding_id": "finding-not-new",
             }
+        ],
+        findings=[finding],
+    )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+def test_manual_required_preserves_partial_findings_for_audit() -> None:
+    payload = _readiness()
+    payload.update(
+        state="manual_required",
+        reason_codes=["model_uncertainty", "finding_confirmation_required"],
+        blockers=[
+            {
+                "blocker_id": "manual-1",
+                "reason_code": "model_uncertainty",
+                "active": True,
+                "finding_id": None,
+            },
+            {
+                "blocker_id": "confirmation-1",
+                "reason_code": "finding_confirmation_required",
+                "active": True,
+                "finding_id": "finding-partial",
+            },
         ],
         pipeline={
             "degraded": True,

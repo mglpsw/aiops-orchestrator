@@ -382,6 +382,7 @@
         "coverage_failure",
         "policy_failure",
         "model_uncertainty",
+        "finding_confirmation_required",
         "confirmed_code_finding",
         "head_mismatch",
         "identity_mismatch"
