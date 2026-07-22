@@ -62,6 +62,7 @@ _GIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
 _RFC3339_SECONDS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 _GIT_BRANCH_FORBIDDEN_CHARACTERS = frozenset(" ~^:?*[\\")
 _GIT_BRANCH_SCHEMA_PATTERN = r"^[^\u0000-\u0020\u007f~^:?*\\\[]+$"
+_RELATIVE_PATH_SCHEMA_PATTERN = r"^[^*?\[\]]+$"
 _HTTP_ROUTE_LITERAL_RE = re.compile(
     r"\b(?:GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+/[^\s\"'<>?#;]*"
 )
@@ -111,6 +112,8 @@ def _validate_normalized_relative_posix(value: str, *, kind: str) -> str:
 
 
 def _validate_relative_path(value: str) -> str:
+    if any(character in value for character in "*?[]"):
+        raise ValueError("concrete paths cannot contain glob metacharacters")
     return _validate_normalized_relative_posix(value, kind="path")
 
 
@@ -207,7 +210,7 @@ Repository = Annotated[
 ]
 RelativePath = Annotated[
     StrictStr,
-    Field(min_length=1, max_length=512),
+    Field(min_length=1, max_length=512, pattern=_RELATIVE_PATH_SCHEMA_PATTERN),
     AfterValidator(_validate_relative_path),
 ]
 RelativePattern = Annotated[

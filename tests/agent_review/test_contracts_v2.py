@@ -806,6 +806,25 @@ def test_relative_paths_reject_non_normalized_posix_aliases(path: str) -> None:
         _validate_json(TargetProfileV2, profile)
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["src/*.py", "**/*.md", "src/file?.py", "src/[ab].py", "src/[!a].py"],
+)
+def test_relative_paths_reject_glob_metacharacters(path: str) -> None:
+    profile = _target_profile()
+    profile["artifacts"][0]["path"] = path  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        _validate_json(TargetProfileV2, profile)
+
+
+def test_relative_path_schema_excludes_glob_metacharacters() -> None:
+    schema = render_v2_json_schemas()["agent-review.target-profile.v2.schema.json"]
+    path_schema = schema["$defs"]["TargetArtifactV2"]["properties"]["path"]
+
+    assert path_schema["pattern"] == r"^[^*?\[\]]+$"
+
+
 def test_coverage_cannot_duplicate_one_file_through_a_path_alias() -> None:
     payload = _payload()
     payload["coverage"] = {

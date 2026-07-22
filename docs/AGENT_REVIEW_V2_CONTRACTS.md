@@ -201,7 +201,9 @@ safety:
 Every `RelativePath` must already be in its exact normalized POSIX spelling.
 Empty and dot components, duplicate separators, trailing separators, parent
 traversal, absolute paths, home-relative forms, and Windows forms are rejected,
-so one repository file cannot acquire multiple coverage identities.
+so one repository file cannot acquire multiple coverage identities. Concrete
+paths also reject `*`, `?`, `[` and `]`; the generated schemas expose this
+restriction so a glob cannot masquerade as an exact coverage identity.
 `RelativePattern` has a separate validator with the same structural path rules;
 glob components such as `*`, `**`, and `test_*.py` remain valid and are not
 normalized away.
