@@ -182,6 +182,19 @@ separate issues and releases. Candidate areas are target-repository wrapper
 adoption, validation-evidence enrichment and optional second-opinion design.
 None of those areas changes the `v0.20.0` contract retroactively.
 
+### AgentReview v2 contract work in development
+
+Issue #80 is developing a separate AgentReview v2 line. Its first delivery
+defines strict run, chunk payload, response envelope, target profile, and review
+readiness contracts plus stable JSON Schemas and canonical run serialization.
+This is contract-foundation work only: v2 is not active in the AgentReview CLIs,
+planner, builder, parser, synthesizer, quality gate, Router, or target workflows.
+
+The complete v1 pipeline and quality gate from `v0.20.0` remain operational and
+authoritative. Future migrations must select v2 explicitly, preserve a
+documented v1 compatibility window, and never silently mix contract versions.
+See [AgentReview v2 contracts](AGENT_REVIEW_V2_CONTRACTS.md).
+
 ## Canonical references
 
 - [Architecture](ARCHITECTURE.md)

@@ -1,0 +1,330 @@
+{
+  "$defs": {
+    "ChunkCoverageV2": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Expected Files",
+          "type": "array"
+        },
+        "missing_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Missing Files",
+          "type": "array"
+        },
+        "missing_must_review_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Missing Must Review Files",
+          "type": "array"
+        },
+        "must_review_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Must Review Files",
+          "type": "array"
+        },
+        "partially_reviewed_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Partially Reviewed Files",
+          "type": "array"
+        },
+        "reviewed_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Reviewed Files",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/app__agent_review__contracts_v2__CoverageStateV2__2"
+        }
+      },
+      "required": [
+        "status",
+        "expected_files",
+        "reviewed_files",
+        "partially_reviewed_files",
+        "missing_files",
+        "must_review_files",
+        "missing_must_review_files"
+      ],
+      "title": "ChunkCoverageV2",
+      "type": "object"
+    },
+    "PayloadArtifactReferenceV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "json",
+            "yaml",
+            "text",
+            "markdown",
+            "diff"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "primary",
+            "supporting",
+            "validation",
+            "coverage"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "kind",
+        "sha256",
+        "role"
+      ],
+      "title": "PayloadArtifactReferenceV2",
+      "type": "object"
+    },
+    "PayloadContractReferenceV2": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Contract Id",
+          "type": "string"
+        },
+        "contract_version": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "scope": {
+          "enum": [
+            "repository",
+            "semantic_group",
+            "chunk",
+            "file"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_id",
+        "contract_version",
+        "sha256",
+        "scope",
+        "paths"
+      ],
+      "title": "PayloadContractReferenceV2",
+      "type": "object"
+    },
+    "RunIdentityV2": {
+      "additionalProperties": false,
+      "properties": {
+        "base_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Base Sha",
+          "type": "string"
+        },
+        "evidence_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evidence Hash",
+          "type": "string"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "policy_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Policy Hash",
+          "type": "string"
+        },
+        "pr_number": {
+          "exclusiveMinimum": 0,
+          "title": "Pr Number",
+          "type": "integer"
+        },
+        "profile_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Profile Hash",
+          "type": "string"
+        },
+        "repo": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repo",
+          "type": "string"
+        },
+        "tested_merge_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Tested Merge Sha",
+          "type": "string"
+        },
+        "toolrepo_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Toolrepo Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "pr_number",
+        "base_sha",
+        "head_sha",
+        "tested_merge_sha",
+        "toolrepo_sha",
+        "profile_hash",
+        "policy_hash",
+        "evidence_hash"
+      ],
+      "title": "RunIdentityV2",
+      "type": "object"
+    },
+    "app__agent_review__contracts_v2__CoverageStateV2__1": {
+      "enum": [
+        "complete",
+        "partial",
+        "degraded"
+      ],
+      "title": "CoverageStateV2",
+      "type": "string"
+    },
+    "app__agent_review__contracts_v2__CoverageStateV2__2": {
+      "$ref": "#/$defs/app__agent_review__contracts_v2__CoverageStateV2__1"
+    },
+    "app__agent_review__contracts_v2__SemanticGroupV2__1": {
+      "enum": [
+        "primary_backend_logic",
+        "api_schema_contract",
+        "frontend_ui",
+        "tests",
+        "workflow_aiops",
+        "docs_changelog",
+        "suspicious_out_of_scope",
+        "unknown"
+      ],
+      "title": "SemanticGroupV2",
+      "type": "string"
+    },
+    "app__agent_review__contracts_v2__SemanticGroupV2__2": {
+      "$ref": "#/$defs/app__agent_review__contracts_v2__SemanticGroupV2__1"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_references": {
+      "items": {
+        "$ref": "#/$defs/PayloadArtifactReferenceV2"
+      },
+      "title": "Artifact References",
+      "type": "array"
+    },
+    "chunk_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "Chunk Id",
+      "type": "string"
+    },
+    "contract_references": {
+      "items": {
+        "$ref": "#/$defs/PayloadContractReferenceV2"
+      },
+      "title": "Contract References",
+      "type": "array"
+    },
+    "coverage": {
+      "$ref": "#/$defs/ChunkCoverageV2"
+    },
+    "identity": {
+      "$ref": "#/$defs/RunIdentityV2"
+    },
+    "payload_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Payload Sha256",
+      "type": "string"
+    },
+    "run_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "agent-review.chunk-payload.v2",
+      "title": "Schema Id"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version"
+    },
+    "semantic_group": {
+      "$ref": "#/$defs/app__agent_review__contracts_v2__SemanticGroupV2__2"
+    },
+    "source": {
+      "const": "aiops-review-build-payloads",
+      "title": "Source"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "run_id",
+    "identity",
+    "chunk_id",
+    "semantic_group",
+    "payload_sha256",
+    "coverage",
+    "artifact_references",
+    "contract_references"
+  ],
+  "title": "ChunkPayloadV2",
+  "type": "object"
+}
