@@ -211,6 +211,14 @@ their computed run IDs, expected/evaluated HEADs, observed PR state, every
 deterministic required check and conclusion, exact total/must-review coverage,
 structured pipeline degradation, blockers, and finding lifecycle records.
 
+Every lifecycle record is a statement revalidated in the evaluated context:
+`observed_at_head_sha` must equal `evaluated_head_sha`; every non-`new`
+`decided_at_head_sha` must equal it as well; and each evidence `head_sha` means
+the HEAD on which that evidence was revalidated and must also match. A commit
+evidence item continues to identify its concrete commit through `reference`.
+An older decision may be reconstructed only as a new record after revalidation
+on the current evaluated HEAD; it cannot silently make a later HEAD ready.
+
 The principal invariants are:
 
 - `ready` requires an open non-merged PR, exact run identity and HEAD, at least

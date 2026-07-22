@@ -890,6 +890,7 @@ class DispositionEvidenceV2(ContractV2Model):
 class FindingLifecycleRecordV2(ContractV2Model):
     finding_id: SafeIdentifier
     severity: FindingSeverityValue
+    observed_at_head_sha: GitSha
     disposition: FindingDispositionValue
     actionable: StrictBool
     justification: SafeText | None
@@ -1022,6 +1023,16 @@ class ReviewReadinessV2(ContractV2Model):
             raise ValueError("required check names must be unique")
         if any(check.head_sha != self.evaluated_head_sha for check in self.checks):
             raise ValueError("check results must be bound to the evaluated HEAD")
+        for finding in self.findings:
+            if finding.observed_at_head_sha != self.evaluated_head_sha:
+                raise ValueError("findings must be observed on the evaluated HEAD")
+            if (
+                finding.disposition is not FindingDispositionV2.NEW
+                and finding.decided_at_head_sha != self.evaluated_head_sha
+            ):
+                raise ValueError("finding decisions must be revalidated on the evaluated HEAD")
+            if any(item.head_sha != self.evaluated_head_sha for item in finding.evidence):
+                raise ValueError("disposition evidence must be revalidated on the evaluated HEAD")
 
         findings_by_id = {finding.finding_id: finding for finding in self.findings}
         for blocker in self.blockers:

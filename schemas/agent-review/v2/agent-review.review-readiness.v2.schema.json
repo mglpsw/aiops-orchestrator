@@ -235,6 +235,11 @@
           ],
           "title": "Justification"
         },
+        "observed_at_head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Observed At Head Sha",
+          "type": "string"
+        },
         "severity": {
           "$ref": "#/$defs/FindingSeverityV2"
         },
@@ -254,6 +259,7 @@
       "required": [
         "finding_id",
         "severity",
+        "observed_at_head_sha",
         "disposition",
         "actionable",
         "justification",

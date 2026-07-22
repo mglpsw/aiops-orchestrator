@@ -773,6 +773,7 @@ def test_blocked_code_requires_a_confirmed_actionable_finding() -> None:
             {
                 "finding_id": "finding-001",
                 "severity": "P2",
+                "observed_at_head_sha": "2" * 40,
                 "disposition": "confirmed",
                 "actionable": True,
                 "justification": None,
@@ -825,6 +826,7 @@ def test_readiness_rejects_unknown_finding_disposition() -> None:
         {
             "finding_id": "finding-001",
             "severity": "P2",
+            "observed_at_head_sha": "2" * 40,
             "disposition": "unknown",
             "actionable": False,
             "justification": None,
@@ -843,6 +845,7 @@ def test_dismissed_finding_requires_owner_justification_and_evidence() -> None:
         {
             "finding_id": "finding-001",
             "severity": "P2",
+            "observed_at_head_sha": "2" * 40,
             "disposition": "dismissed",
             "actionable": False,
             "justification": None,
@@ -994,6 +997,7 @@ def test_p3_finding_cannot_create_a_code_blocker() -> None:
             {
                 "finding_id": "finding-003",
                 "severity": "P3",
+                "observed_at_head_sha": "2" * 40,
                 "disposition": "confirmed",
                 "actionable": True,
                 "justification": None,
@@ -1024,6 +1028,7 @@ def test_finding_lifecycle_actionability_is_coherent(disposition: str, actionabl
     finding = {
         "finding_id": "finding-001",
         "severity": "P2",
+        "observed_at_head_sha": "2" * 40,
         "disposition": disposition,
         "actionable": actionable,
         "justification": "reviewed" if disposition == "dismissed" else None,
@@ -1097,6 +1102,7 @@ def test_blocked_pipeline_preserves_partial_findings_for_audit() -> None:
             {
                 "finding_id": "finding-partial",
                 "severity": "P2",
+                "observed_at_head_sha": "2" * 40,
                 "disposition": "new",
                 "actionable": True,
                 "justification": None,
@@ -1329,6 +1335,7 @@ def test_ready_allows_an_isolated_actionable_p3_without_code_blocking() -> None:
         {
             "finding_id": "finding-p3",
             "severity": "P3",
+            "observed_at_head_sha": "2" * 40,
             "disposition": "new",
             "actionable": True,
             "justification": None,
@@ -1348,6 +1355,7 @@ def test_dismissal_is_typed_owned_justified_and_bound_to_a_head() -> None:
         {
             "finding_id": "finding-dismissed",
             "severity": "P2",
+            "observed_at_head_sha": "2" * 40,
             "disposition": "dismissed",
             "actionable": False,
             "justification": "false positive confirmed by regression test",
@@ -1361,6 +1369,174 @@ def test_dismissal_is_typed_owned_justified_and_bound_to_a_head() -> None:
     ]
 
     assert _validate_json(ReviewReadinessV2, payload).findings[0].decided_by == "reviewer-1"
+
+
+def test_ready_rejects_dismissed_p2_decided_on_a_previous_head() -> None:
+    payload = _readiness()
+    payload["findings"] = [
+        {
+            "finding_id": "finding-dismissed-old",
+            "severity": "P2",
+            "observed_at_head_sha": "2" * 40,
+            "disposition": "dismissed",
+            "actionable": False,
+            "justification": "dismissal must be revalidated",
+            "decided_by": "reviewer-1",
+            "decided_at_head_sha": "1" * 40,
+            "evidence": [{"kind": "test", "reference": "pytest-v2", "head_sha": "2" * 40}],
+            "superseded_by": None,
+        }
+    ]
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+@pytest.mark.parametrize("disposition", ["fixed", "confirmed", "superseded"])
+def test_non_new_dispositions_reject_a_decision_from_a_previous_head(disposition: str) -> None:
+    payload = _readiness()
+    finding = {
+        "finding_id": "finding-old-decision",
+        "severity": "P2",
+        "observed_at_head_sha": "2" * 40,
+        "disposition": disposition,
+        "actionable": disposition == "confirmed",
+        "justification": None,
+        "decided_by": "reviewer-1",
+        "decided_at_head_sha": "1" * 40,
+        "evidence": [{"kind": "test", "reference": "pytest-v2", "head_sha": "2" * 40}]
+        if disposition == "fixed"
+        else [],
+        "superseded_by": "finding-successor" if disposition == "superseded" else None,
+    }
+    payload["findings"] = [finding]
+    if disposition == "confirmed":
+        payload.update(
+            state="blocked_code",
+            reason_codes=["confirmed_code_finding"],
+            blockers=[
+                {
+                    "blocker_id": "code-1",
+                    "reason_code": "confirmed_code_finding",
+                    "active": True,
+                    "finding_id": "finding-old-decision",
+                }
+            ],
+        )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+def test_readiness_rejects_disposition_evidence_from_a_previous_head() -> None:
+    payload = _readiness()
+    payload["findings"] = [
+        {
+            "finding_id": "finding-old-evidence",
+            "severity": "P2",
+            "observed_at_head_sha": "2" * 40,
+            "disposition": "dismissed",
+            "actionable": False,
+            "justification": "evidence must be revalidated",
+            "decided_by": "reviewer-1",
+            "decided_at_head_sha": "2" * 40,
+            "evidence": [{"kind": "test", "reference": "pytest-v2", "head_sha": "1" * 40}],
+            "superseded_by": None,
+        }
+    ]
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+def test_readiness_rejects_a_finding_observed_on_a_previous_head() -> None:
+    payload = _readiness()
+    payload["findings"] = [
+        {
+            "finding_id": "finding-old-observation",
+            "severity": "P3",
+            "disposition": "new",
+            "actionable": True,
+            "observed_at_head_sha": "1" * 40,
+            "justification": None,
+            "decided_by": None,
+            "decided_at_head_sha": None,
+            "evidence": [],
+            "superseded_by": None,
+        }
+    ]
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+def test_decision_and_evidence_revalidated_on_the_evaluated_head_pass() -> None:
+    payload = _readiness()
+    payload["findings"] = [
+        {
+            "finding_id": "finding-current-dismissal",
+            "severity": "P2",
+            "disposition": "dismissed",
+            "actionable": False,
+            "observed_at_head_sha": "2" * 40,
+            "justification": "revalidated on the evaluated HEAD",
+            "decided_by": "reviewer-1",
+            "decided_at_head_sha": "2" * 40,
+            "evidence": [{"kind": "test", "reference": "pytest-v2", "head_sha": "2" * 40}],
+            "superseded_by": None,
+        }
+    ]
+
+    assert _validate_json(ReviewReadinessV2, payload).state is ReadinessStateV2.READY
+
+
+def test_new_finding_on_the_evaluated_head_remains_representable() -> None:
+    payload = _readiness()
+    payload["findings"] = [
+        {
+            "finding_id": "finding-current-new",
+            "severity": "P3",
+            "disposition": "new",
+            "actionable": True,
+            "observed_at_head_sha": "2" * 40,
+            "justification": None,
+            "decided_by": None,
+            "decided_at_head_sha": None,
+            "evidence": [],
+            "superseded_by": None,
+        }
+    ]
+
+    assert _validate_json(ReviewReadinessV2, payload).state is ReadinessStateV2.READY
+
+
+def test_stale_readiness_keeps_findings_bound_to_the_evaluated_identity() -> None:
+    payload = _readiness()
+    payload["evaluated_head_sha"] = "3" * 40
+    payload["evaluated_identity"]["head_sha"] = "3" * 40  # type: ignore[index]
+    evaluated_identity = _validate_json(RunIdentityV2, payload["evaluated_identity"])
+    payload.update(
+        state="stale",
+        evaluated_run_id=compute_run_id(evaluated_identity),
+        reason_codes=["head_mismatch"],
+        findings=[
+            {
+                "finding_id": "finding-stale-context",
+                "severity": "P3",
+                "disposition": "new",
+                "actionable": True,
+                "observed_at_head_sha": "3" * 40,
+                "justification": None,
+                "decided_by": None,
+                "decided_at_head_sha": None,
+                "evidence": [],
+                "superseded_by": None,
+            }
+        ],
+    )
+    payload["checks"][0]["head_sha"] = "3" * 40  # type: ignore[index]
+
+    assert _validate_json(ReviewReadinessV2, payload).state is ReadinessStateV2.STALE
 
 
 def test_manual_required_preserves_partial_findings_for_audit() -> None:
@@ -1390,6 +1566,7 @@ def test_manual_required_preserves_partial_findings_for_audit() -> None:
             {
                 "finding_id": "finding-partial",
                 "severity": "P1",
+                "observed_at_head_sha": "2" * 40,
                 "disposition": "new",
                 "actionable": True,
                 "justification": None,
