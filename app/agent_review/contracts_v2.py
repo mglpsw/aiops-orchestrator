@@ -976,7 +976,7 @@ class FindingLifecycleRecordV2(ContractV2Model):
                 raise ValueError("dismissed findings require justification and typed evidence")
         elif self.disposition is FindingDispositionV2.FIXED and not self.evidence:
             raise ValueError("fixed findings require commit or test evidence")
-        elif self.disposition is FindingDispositionV2.SUPERSEDED:
+        if self.disposition is FindingDispositionV2.SUPERSEDED:
             if self.superseded_by is None or self.superseded_by == self.finding_id:
                 raise ValueError("superseded findings require a different successor")
         elif self.superseded_by is not None:

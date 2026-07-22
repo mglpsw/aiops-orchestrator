@@ -14,6 +14,7 @@ from app.agent_review.contracts_v2 import (
     AgentReviewRunV2,
     ChunkPayloadV2,
     FindingDispositionV2,
+    FindingLifecycleRecordV2,
     ReadinessReasonV2,
     ReadinessStateV2,
     ResponseBindingError,
@@ -1325,6 +1326,27 @@ def test_finding_lifecycle_actionability_is_coherent(disposition: str, actionabl
 
     with pytest.raises(ValidationError):
         _validate_json(ReviewReadinessV2, payload)
+
+
+@pytest.mark.parametrize("disposition", ["confirmed", "fixed", "dismissed", "stale"])
+def test_superseded_by_is_exclusive_to_superseded_disposition(disposition: str) -> None:
+    finding = {
+        "finding_id": "finding-terminal",
+        "severity": "P2",
+        "observed_at_head_sha": "2" * 40,
+        "disposition": disposition,
+        "actionable": disposition == "confirmed",
+        "justification": "dismissed after review" if disposition == "dismissed" else None,
+        "decided_by": "reviewer-1",
+        "decided_at_head_sha": "2" * 40,
+        "evidence": [{"kind": "test", "reference": "pytest-v2", "head_sha": "2" * 40}]
+        if disposition in {"fixed", "dismissed"}
+        else [],
+        "superseded_by": "finding-successor",
+    }
+
+    with pytest.raises(ValidationError):
+        _validate_json(FindingLifecycleRecordV2, finding)
 
 
 def test_pipeline_blocker_cannot_point_to_an_arbitrary_finding() -> None:

@@ -276,6 +276,8 @@ The principal invariants are:
   audit without becoming ready;
 - `new` and `confirmed` are actionable; `fixed`, `dismissed`, `superseded`, and
   `stale` are not;
+- `superseded_by` is exclusive to the `superseded` disposition and must name a
+  different successor; a dismissed or fixed record cannot also be superseded;
 - every non-new disposition records the responsible identity and decision HEAD;
   dismissal additionally requires a justification and typed commit/test
   evidence bound to a HEAD;
