@@ -1137,13 +1137,21 @@ class ReviewReadinessV2(ContractV2Model):
                 for finding in blocking_findings
                 if finding.disposition is FindingDispositionV2.CONFIRMED
             }
-            blocker_findings = {
+            blocker_findings = [
                 blocker.finding_id
                 for blocker in active_blockers
                 if blocker.reason_code is ReadinessReasonV2.CONFIRMED_CODE_FINDING
-            }
-            if not confirmed or None in blocker_findings or not blocker_findings <= confirmed:
-                raise ValueError("blocked_code requires a confirmed actionable P0/P1/P2 finding")
+            ]
+            blocker_finding_set = set(blocker_findings)
+            if (
+                not confirmed
+                or None in blocker_finding_set
+                or blocker_finding_set != confirmed
+                or len(blocker_findings) != len(blocker_finding_set)
+            ):
+                raise ValueError(
+                    "blocked_code requires one active blocker per confirmed actionable P0/P1/P2 finding"
+                )
         elif self.state is ReadinessStateV2.BLOCKED_PIPELINE:
             allowed = {
                 ReadinessReasonV2.SCHEMA_FAILURE,

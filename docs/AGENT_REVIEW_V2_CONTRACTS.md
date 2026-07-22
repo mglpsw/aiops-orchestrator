@@ -251,8 +251,8 @@ The principal invariants are:
   `manual_required` with `finding_confirmation_required`, may use a healthy
   pipeline, and its blocker points exactly to the pending finding;
 - an isolated actionable P3 does not create `blocked_code`;
-- `blocked_code` requires an active blocker pointing to an existing confirmed,
-  actionable P0/P1/P2 finding through `confirmed_code_finding`;
+- `blocked_code` requires exactly one distinct active blocker for every existing
+  confirmed, actionable P0/P1/P2 finding through `confirmed_code_finding`;
 - pipeline blockers never point to findings. Manual pipeline reasons still
   match structured degradation causes, while `finding_confirmation_required`
   is deliberately not a pipeline cause and may coexist with those reasons;

@@ -946,6 +946,52 @@ def test_blocked_code_requires_a_confirmed_actionable_finding() -> None:
     assert readiness.findings[0].disposition is FindingDispositionV2.CONFIRMED
 
 
+@pytest.mark.parametrize("case", ["missing_blocker", "duplicate_target"])
+def test_blocked_code_requires_one_active_blocker_per_confirmed_finding(case: str) -> None:
+    def confirmed_finding(finding_id: str) -> dict[str, object]:
+        return {
+            "finding_id": finding_id,
+            "severity": "P2",
+            "observed_at_head_sha": "2" * 40,
+            "disposition": "confirmed",
+            "actionable": True,
+            "justification": None,
+            "decided_by": "reviewer-1",
+            "decided_at_head_sha": "2" * 40,
+            "evidence": [],
+            "superseded_by": None,
+        }
+
+    payload = _readiness()
+    payload.update(
+        state="blocked_code",
+        reason_codes=["confirmed_code_finding"],
+        blockers=[
+            {
+                "blocker_id": "b1",
+                "reason_code": "confirmed_code_finding",
+                "active": True,
+                "finding_id": "finding-001",
+            }
+        ],
+        findings=[confirmed_finding("finding-001")],
+    )
+    if case == "missing_blocker":
+        payload["findings"].append(confirmed_finding("finding-002"))  # type: ignore[union-attr]
+    else:
+        payload["blockers"].append(  # type: ignore[union-attr]
+            {
+                "blocker_id": "b2",
+                "reason_code": "confirmed_code_finding",
+                "active": True,
+                "finding_id": "finding-001",
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
 def test_stale_is_the_only_state_that_accepts_a_different_evaluated_head() -> None:
     stale = _readiness()
     stale["state"] = "stale"
