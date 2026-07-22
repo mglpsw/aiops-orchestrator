@@ -80,8 +80,16 @@ else
     skip "docker compose não disponível — pulando validação de compose"
 fi
 
-# ── 4. Testes Python (unit, offline) ─────────────────────────────────────────
-header "4. Testes Python"
+# ── 4. Schemas v2 reproduzíveis ──────────────────────────────────────────────
+header "4. Schemas AgentReview v2"
+if python3 scripts/export-agent-review-v2-schemas.py --check; then
+    ok "schemas v2 byte-identical"
+else
+    fail "schemas v2 divergentes — regenere no toolchain pinado"
+fi
+
+# ── 5. Testes Python (unit, offline) ─────────────────────────────────────────
+header "5. Testes Python"
 if ! command -v python3 &>/dev/null; then
     fail "python3 não encontrado"
 elif ! python3 -m pytest --version &>/dev/null; then

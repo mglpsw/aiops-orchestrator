@@ -1,0 +1,359 @@
+{
+  "$defs": {
+    "SemanticGroupV2": {
+      "enum": [
+        "primary_backend_logic",
+        "api_schema_contract",
+        "frontend_ui",
+        "tests",
+        "workflow_aiops",
+        "docs_changelog",
+        "suspicious_out_of_scope",
+        "unknown"
+      ],
+      "title": "SemanticGroupV2",
+      "type": "string"
+    },
+    "TargetArtifactV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "json",
+            "yaml",
+            "text",
+            "markdown",
+            "diff"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "max_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Max Bytes",
+          "type": "integer"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "path",
+        "kind",
+        "required",
+        "max_bytes"
+      ],
+      "title": "TargetArtifactV2",
+      "type": "object"
+    },
+    "TargetBudgetsV2": {
+      "additionalProperties": false,
+      "properties": {
+        "max_chars_per_chunk": {
+          "exclusiveMinimum": 0,
+          "title": "Max Chars Per Chunk",
+          "type": "integer"
+        },
+        "max_chunks": {
+          "exclusiveMinimum": 0,
+          "title": "Max Chunks",
+          "type": "integer"
+        },
+        "max_contracts_per_chunk": {
+          "exclusiveMinimum": 0,
+          "title": "Max Contracts Per Chunk",
+          "type": "integer"
+        },
+        "max_files_per_chunk": {
+          "exclusiveMinimum": 0,
+          "title": "Max Files Per Chunk",
+          "type": "integer"
+        },
+        "total_prompt_chars": {
+          "exclusiveMinimum": 0,
+          "title": "Total Prompt Chars",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_chunks",
+        "total_prompt_chars",
+        "max_chars_per_chunk",
+        "max_files_per_chunk",
+        "max_contracts_per_chunk"
+      ],
+      "title": "TargetBudgetsV2",
+      "type": "object"
+    },
+    "TargetContractV2": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Contract Id",
+          "type": "string"
+        },
+        "contract_version": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Contract Version",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "scope": {
+          "enum": [
+            "repository",
+            "semantic_group",
+            "file"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_id",
+        "contract_version",
+        "path",
+        "sha256",
+        "scope",
+        "required"
+      ],
+      "title": "TargetContractV2",
+      "type": "object"
+    },
+    "TargetIdentityV2": {
+      "additionalProperties": false,
+      "properties": {
+        "default_branch": {
+          "description": "Git branch name validated with the git-check-ref-format --branch rules.",
+          "minLength": 1,
+          "not": {
+            "const": "HEAD",
+            "type": "string"
+          },
+          "pattern": "^[^\\u0000-\\u0020\\u007f~^:?*\\\\\\[]+$",
+          "title": "Default Branch",
+          "type": "string",
+          "x-git-ref-format": "--branch"
+        },
+        "repo": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repo",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "default_branch"
+      ],
+      "title": "TargetIdentityV2",
+      "type": "object"
+    },
+    "TargetMustReviewV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Artifact Ids",
+          "type": "array"
+        },
+        "minimum_coverage": {
+          "const": "complete",
+          "title": "Minimum Coverage",
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^*?\\[\\]]+$",
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "patterns": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Patterns",
+          "type": "array"
+        }
+      },
+      "required": [
+        "paths",
+        "patterns",
+        "artifact_ids",
+        "minimum_coverage"
+      ],
+      "title": "TargetMustReviewV2",
+      "type": "object"
+    },
+    "TargetPoliciesV2": {
+      "additionalProperties": false,
+      "properties": {
+        "allow_partial_coverage": {
+          "const": false,
+          "title": "Allow Partial Coverage",
+          "type": "boolean"
+        },
+        "allowed_semantic_groups": {
+          "items": {
+            "$ref": "#/$defs/SemanticGroupV2"
+          },
+          "title": "Allowed Semantic Groups",
+          "type": "array"
+        },
+        "coverage_failure_state": {
+          "enum": [
+            "blocked_pipeline",
+            "manual_required"
+          ],
+          "title": "Coverage Failure State",
+          "type": "string"
+        },
+        "fail_closed": {
+          "const": true,
+          "title": "Fail Closed",
+          "type": "boolean"
+        },
+        "model_uncertainty_state": {
+          "const": "manual_required",
+          "title": "Model Uncertainty State",
+          "type": "string"
+        },
+        "network_policy": {
+          "const": "forbidden",
+          "title": "Network Policy",
+          "type": "string"
+        },
+        "redaction_required": {
+          "const": true,
+          "title": "Redaction Required",
+          "type": "boolean"
+        },
+        "required_checks": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Required Checks",
+          "type": "array"
+        }
+      },
+      "required": [
+        "network_policy",
+        "fail_closed",
+        "redaction_required",
+        "allow_partial_coverage",
+        "required_checks",
+        "allowed_semantic_groups",
+        "coverage_failure_state",
+        "model_uncertainty_state"
+      ],
+      "title": "TargetPoliciesV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/TargetArtifactV2"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "budgets": {
+      "$ref": "#/$defs/TargetBudgetsV2"
+    },
+    "contracts": {
+      "items": {
+        "$ref": "#/$defs/TargetContractV2"
+      },
+      "title": "Contracts",
+      "type": "array"
+    },
+    "identity": {
+      "$ref": "#/$defs/TargetIdentityV2"
+    },
+    "limitations": {
+      "items": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    },
+    "must_review": {
+      "$ref": "#/$defs/TargetMustReviewV2"
+    },
+    "policies": {
+      "$ref": "#/$defs/TargetPoliciesV2"
+    },
+    "schema_id": {
+      "const": "agent-review.target-profile.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "repo-profile",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "identity",
+    "artifacts",
+    "budgets",
+    "must_review",
+    "policies",
+    "contracts",
+    "limitations"
+  ],
+  "title": "TargetProfileV2",
+  "type": "object"
+}

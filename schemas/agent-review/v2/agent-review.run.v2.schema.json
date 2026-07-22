@@ -1,0 +1,171 @@
+{
+  "$defs": {
+    "RunIdentityV2": {
+      "additionalProperties": false,
+      "properties": {
+        "base_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Base Sha",
+          "type": "string"
+        },
+        "evidence_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evidence Hash",
+          "type": "string"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "manifest_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Hash",
+          "type": "string"
+        },
+        "policy_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Policy Hash",
+          "type": "string"
+        },
+        "pr_number": {
+          "exclusiveMinimum": 0,
+          "title": "Pr Number",
+          "type": "integer"
+        },
+        "profile_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Profile Hash",
+          "type": "string"
+        },
+        "repo": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repo",
+          "type": "string"
+        },
+        "tested_merge_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Tested Merge Sha",
+          "type": "string"
+        },
+        "toolrepo_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Toolrepo Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "pr_number",
+        "base_sha",
+        "head_sha",
+        "tested_merge_sha",
+        "toolrepo_sha",
+        "profile_hash",
+        "policy_hash",
+        "manifest_hash",
+        "evidence_hash"
+      ],
+      "title": "RunIdentityV2",
+      "type": "object"
+    },
+    "RunOriginV2": {
+      "additionalProperties": false,
+      "properties": {
+        "delivery_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Delivery Id",
+          "type": "string"
+        },
+        "event_action": {
+          "enum": [
+            "opened",
+            "reopened",
+            "synchronize",
+            "ready_for_review",
+            "manual",
+            "replay"
+          ],
+          "title": "Event Action",
+          "type": "string"
+        },
+        "event_type": {
+          "enum": [
+            "pull_request",
+            "pull_request_target",
+            "manual",
+            "replay"
+          ],
+          "title": "Event Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_type",
+        "event_action",
+        "delivery_id"
+      ],
+      "title": "RunOriginV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+      "title": "Created At",
+      "type": "string"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Expires At"
+    },
+    "identity": {
+      "$ref": "#/$defs/RunIdentityV2"
+    },
+    "origin": {
+      "$ref": "#/$defs/RunOriginV2"
+    },
+    "run_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "agent-review.run.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "aiops-review-run",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "run_id",
+    "identity",
+    "origin",
+    "created_at",
+    "expires_at"
+  ],
+  "title": "AgentReviewRunV2",
+  "type": "object"
+}

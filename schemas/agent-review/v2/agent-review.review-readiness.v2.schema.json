@@ -1,0 +1,635 @@
+{
+  "$defs": {
+    "ChunkCoverageV2": {
+      "additionalProperties": false,
+      "properties": {
+        "degradation_causes": {
+          "items": {
+            "$ref": "#/$defs/CoverageDegradationV2"
+          },
+          "title": "Degradation Causes",
+          "type": "array"
+        },
+        "expected_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^*?\\[\\]]+$",
+            "type": "string"
+          },
+          "title": "Expected Files",
+          "type": "array"
+        },
+        "missing_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^*?\\[\\]]+$",
+            "type": "string"
+          },
+          "title": "Missing Files",
+          "type": "array"
+        },
+        "missing_must_review_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^*?\\[\\]]+$",
+            "type": "string"
+          },
+          "title": "Missing Must Review Files",
+          "type": "array"
+        },
+        "must_review_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^*?\\[\\]]+$",
+            "type": "string"
+          },
+          "title": "Must Review Files",
+          "type": "array"
+        },
+        "partially_reviewed_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^*?\\[\\]]+$",
+            "type": "string"
+          },
+          "title": "Partially Reviewed Files",
+          "type": "array"
+        },
+        "reviewed_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^*?\\[\\]]+$",
+            "type": "string"
+          },
+          "title": "Reviewed Files",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/CoverageStateV2"
+        }
+      },
+      "required": [
+        "status",
+        "expected_files",
+        "reviewed_files",
+        "partially_reviewed_files",
+        "missing_files",
+        "must_review_files",
+        "missing_must_review_files",
+        "degradation_causes"
+      ],
+      "title": "ChunkCoverageV2",
+      "type": "object"
+    },
+    "CoverageDegradationReasonV2": {
+      "enum": [
+        "artifact_missing",
+        "budget_exhausted",
+        "transport_failure",
+        "schema_failure",
+        "model_uncertainty"
+      ],
+      "title": "CoverageDegradationReasonV2",
+      "type": "string"
+    },
+    "CoverageDegradationV2": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "pattern": "^[^*?\\[\\]]+$",
+            "type": "string"
+          },
+          "title": "Affected Files",
+          "type": "array"
+        },
+        "detail": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/CoverageDegradationReasonV2"
+        }
+      },
+      "required": [
+        "reason_code",
+        "affected_files",
+        "detail"
+      ],
+      "title": "CoverageDegradationV2",
+      "type": "object"
+    },
+    "CoverageStateV2": {
+      "enum": [
+        "complete",
+        "partial",
+        "degraded"
+      ],
+      "title": "CoverageStateV2",
+      "type": "string"
+    },
+    "DispositionEvidenceKindV2": {
+      "enum": [
+        "commit",
+        "test"
+      ],
+      "title": "DispositionEvidenceKindV2",
+      "type": "string"
+    },
+    "DispositionEvidenceV2": {
+      "additionalProperties": false,
+      "properties": {
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/DispositionEvidenceKindV2"
+        },
+        "reference": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Reference",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference",
+        "head_sha"
+      ],
+      "title": "DispositionEvidenceV2",
+      "type": "object"
+    },
+    "FindingDispositionV2": {
+      "enum": [
+        "new",
+        "confirmed",
+        "fixed",
+        "dismissed",
+        "superseded",
+        "stale"
+      ],
+      "title": "FindingDispositionV2",
+      "type": "string"
+    },
+    "FindingLifecycleRecordV2": {
+      "additionalProperties": false,
+      "properties": {
+        "actionable": {
+          "title": "Actionable",
+          "type": "boolean"
+        },
+        "decided_at_head_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Decided At Head Sha"
+        },
+        "decided_by": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Decided By"
+        },
+        "disposition": {
+          "$ref": "#/$defs/FindingDispositionV2"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/DispositionEvidenceV2"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "finding_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Finding Id",
+          "type": "string"
+        },
+        "justification": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Justification"
+        },
+        "observed_at_head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Observed At Head Sha",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/FindingSeverityV2"
+        },
+        "superseded_by": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Superseded By"
+        }
+      },
+      "required": [
+        "finding_id",
+        "severity",
+        "observed_at_head_sha",
+        "disposition",
+        "actionable",
+        "justification",
+        "decided_by",
+        "decided_at_head_sha",
+        "evidence",
+        "superseded_by"
+      ],
+      "title": "FindingLifecycleRecordV2",
+      "type": "object"
+    },
+    "FindingSeverityV2": {
+      "enum": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ],
+      "title": "FindingSeverityV2",
+      "type": "string"
+    },
+    "PipelineAssessmentV2": {
+      "additionalProperties": false,
+      "properties": {
+        "causes": {
+          "items": {
+            "$ref": "#/$defs/PipelineDegradationCauseV2"
+          },
+          "title": "Causes",
+          "type": "array"
+        },
+        "degraded": {
+          "title": "Degraded",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "degraded",
+        "causes"
+      ],
+      "title": "PipelineAssessmentV2",
+      "type": "object"
+    },
+    "PipelineDegradationCauseV2": {
+      "additionalProperties": false,
+      "properties": {
+        "component": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Component",
+          "type": "string"
+        },
+        "detail": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/ReadinessReasonV2"
+        }
+      },
+      "required": [
+        "reason_code",
+        "component",
+        "detail"
+      ],
+      "title": "PipelineDegradationCauseV2",
+      "type": "object"
+    },
+    "PullRequestStateV2": {
+      "enum": [
+        "open",
+        "closed",
+        "merged"
+      ],
+      "title": "PullRequestStateV2",
+      "type": "string"
+    },
+    "ReadinessBlockerV2": {
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "title": "Active",
+          "type": "boolean"
+        },
+        "blocker_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Blocker Id",
+          "type": "string"
+        },
+        "finding_id": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Finding Id"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/ReadinessReasonV2"
+        }
+      },
+      "required": [
+        "blocker_id",
+        "reason_code",
+        "active",
+        "finding_id"
+      ],
+      "title": "ReadinessBlockerV2",
+      "type": "object"
+    },
+    "ReadinessReasonV2": {
+      "enum": [
+        "schema_failure",
+        "transport_failure",
+        "coverage_failure",
+        "policy_failure",
+        "model_uncertainty",
+        "finding_confirmation_required",
+        "confirmed_code_finding",
+        "head_mismatch",
+        "identity_mismatch"
+      ],
+      "title": "ReadinessReasonV2",
+      "type": "string"
+    },
+    "ReadinessStateV2": {
+      "enum": [
+        "ready",
+        "blocked_code",
+        "blocked_pipeline",
+        "manual_required",
+        "stale"
+      ],
+      "title": "ReadinessStateV2",
+      "type": "string"
+    },
+    "RequiredCheckConclusionV2": {
+      "enum": [
+        "success",
+        "failure",
+        "pending",
+        "missing"
+      ],
+      "title": "RequiredCheckConclusionV2",
+      "type": "string"
+    },
+    "RequiredCheckResultV2": {
+      "additionalProperties": false,
+      "properties": {
+        "check_name": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Check Name",
+          "type": "string"
+        },
+        "conclusion": {
+          "$ref": "#/$defs/RequiredCheckConclusionV2"
+        },
+        "deterministic": {
+          "const": true,
+          "title": "Deterministic",
+          "type": "boolean"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "required": {
+          "const": true,
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "check_name",
+        "required",
+        "deterministic",
+        "conclusion",
+        "head_sha"
+      ],
+      "title": "RequiredCheckResultV2",
+      "type": "object"
+    },
+    "RunIdentityV2": {
+      "additionalProperties": false,
+      "properties": {
+        "base_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Base Sha",
+          "type": "string"
+        },
+        "evidence_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evidence Hash",
+          "type": "string"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "manifest_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Hash",
+          "type": "string"
+        },
+        "policy_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Policy Hash",
+          "type": "string"
+        },
+        "pr_number": {
+          "exclusiveMinimum": 0,
+          "title": "Pr Number",
+          "type": "integer"
+        },
+        "profile_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Profile Hash",
+          "type": "string"
+        },
+        "repo": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repo",
+          "type": "string"
+        },
+        "tested_merge_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Tested Merge Sha",
+          "type": "string"
+        },
+        "toolrepo_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Toolrepo Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "pr_number",
+        "base_sha",
+        "head_sha",
+        "tested_merge_sha",
+        "toolrepo_sha",
+        "profile_hash",
+        "policy_hash",
+        "manifest_hash",
+        "evidence_hash"
+      ],
+      "title": "RunIdentityV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "blockers": {
+      "items": {
+        "$ref": "#/$defs/ReadinessBlockerV2"
+      },
+      "title": "Blockers",
+      "type": "array"
+    },
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/RequiredCheckResultV2"
+      },
+      "title": "Checks",
+      "type": "array"
+    },
+    "coverage": {
+      "$ref": "#/$defs/ChunkCoverageV2"
+    },
+    "evaluated_head_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Evaluated Head Sha",
+      "type": "string"
+    },
+    "evaluated_identity": {
+      "$ref": "#/$defs/RunIdentityV2"
+    },
+    "evaluated_run_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Evaluated Run Id",
+      "type": "string"
+    },
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/FindingLifecycleRecordV2"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "head_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Head Sha",
+      "type": "string"
+    },
+    "identity": {
+      "$ref": "#/$defs/RunIdentityV2"
+    },
+    "pipeline": {
+      "$ref": "#/$defs/PipelineAssessmentV2"
+    },
+    "pr_state": {
+      "$ref": "#/$defs/PullRequestStateV2"
+    },
+    "reason_codes": {
+      "items": {
+        "$ref": "#/$defs/ReadinessReasonV2"
+      },
+      "title": "Reason Codes",
+      "type": "array"
+    },
+    "run_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "agent-review.review-readiness.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "aiops-review-quality-gate",
+      "title": "Source",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/ReadinessStateV2"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "run_id",
+    "identity",
+    "evaluated_run_id",
+    "evaluated_identity",
+    "head_sha",
+    "evaluated_head_sha",
+    "pr_state",
+    "checks",
+    "coverage",
+    "pipeline",
+    "state",
+    "reason_codes",
+    "blockers",
+    "findings"
+  ],
+  "title": "ReviewReadinessV2",
+  "type": "object"
+}
