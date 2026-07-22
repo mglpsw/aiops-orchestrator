@@ -1319,6 +1319,32 @@ def test_manifest_hash_is_canonical_order_independent_and_material() -> None:
 
 
 @pytest.mark.parametrize(
+    "unsafe_key",
+    [
+        "/home/runner/.ssh/id_rsa",
+        "Authorization: Bearer abcdefghijklmnop",
+    ],
+)
+def test_manifest_hash_rejects_sensitive_nested_object_keys(unsafe_key: str) -> None:
+    manifest = {
+        "schema_id": "agent-review.chunk-payload-manifest.v2",
+        "artifacts": {"nested": {unsafe_key: "evidence"}},
+    }
+
+    with pytest.raises(ValueError):
+        compute_manifest_hash_v2(manifest)
+
+
+def test_manifest_hash_accepts_relative_path_object_keys() -> None:
+    manifest = {
+        "schema_id": "agent-review.chunk-payload-manifest.v2",
+        "artifacts": {"app/service.py": "a" * 64},
+    }
+
+    assert len(compute_manifest_hash_v2(manifest)) == 64
+
+
+@pytest.mark.parametrize(
     "material_field",
     ["identity", "chunk_id", "semantic_group", "coverage", "artifact", "contract"],
 )

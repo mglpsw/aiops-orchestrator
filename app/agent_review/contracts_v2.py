@@ -245,6 +245,18 @@ def _canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _validate_manifest_object_keys(value: object) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("manifest contains a non-string object key")
+            _reject_sensitive_value(key)
+            _validate_manifest_object_keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            _validate_manifest_object_keys(item)
+
+
 def canonical_manifest_bytes_v2(manifest: Mapping[str, object]) -> bytes:
     """Return canonical bytes for an independently material v2 manifest.
 
@@ -254,6 +266,7 @@ def canonical_manifest_bytes_v2(manifest: Mapping[str, object]) -> bytes:
     """
 
     material = dict(manifest)
+    _validate_manifest_object_keys(material)
     if sanitize_artifact_value(material) != material:
         raise ValueError("manifest contains a secret-like value or local path")
     return _canonical_json_bytes(material)

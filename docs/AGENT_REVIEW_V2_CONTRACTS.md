@@ -87,9 +87,12 @@ is deliberately added before the contract is frozen.
 
 `manifest_hash` is SHA-256 over the entire sanitized manifest JSON object using
 the canonical encoding above. `canonical_manifest_bytes_v2` and
-`compute_manifest_hash_v2` freeze that derivation; the concrete multi-chunk v2
-manifest model remains work for PR 3. Changing profile, policy, manifest, or
-evidence independently changes `run_id`.
+`compute_manifest_hash_v2` freeze that derivation. Sanitization covers values
+and every string object key recursively, so a dynamic key containing a token,
+credential header, or absolute local path is rejected before hashing; legitimate
+relative path keys remain representable. The concrete multi-chunk v2 manifest
+model remains work for PR 3. Changing profile, policy, manifest, or evidence
+independently changes `run_id`.
 
 `created_at`, `expires_at`, and origin metadata are explicit run-envelope
 fields, not identity fields. The golden fixture
