@@ -1690,6 +1690,38 @@ def test_legitimate_check_names_and_secret_scan_identifier_are_allowed() -> None
     assert parsed.policies.required_checks == ["Validate repository", "secret-scan"]
 
 
+def test_target_profile_rejects_empty_required_checks() -> None:
+    profile = _target_profile()
+    profile["policies"]["required_checks"] = []  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        _validate_json(TargetProfileV2, profile)
+
+
+def test_target_profile_accepts_one_required_check() -> None:
+    profile = _target_profile()
+    profile["policies"]["required_checks"] = ["pytest"]  # type: ignore[index]
+
+    parsed = _validate_json(TargetProfileV2, profile)
+
+    assert parsed.policies.required_checks == ["pytest"]
+
+
+def test_target_profile_continues_to_reject_duplicate_required_checks() -> None:
+    profile = _target_profile()
+    profile["policies"]["required_checks"] = ["pytest", "pytest"]  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        _validate_json(TargetProfileV2, profile)
+
+
+def test_target_profile_schema_requires_at_least_one_required_check() -> None:
+    schema = render_v2_json_schemas()["agent-review.target-profile.v2.schema.json"]
+    required_checks = schema["$defs"]["TargetPoliciesV2"]["properties"]["required_checks"]
+
+    assert required_checks["minItems"] == 1
+
+
 @pytest.mark.parametrize(
     "unsafe_text",
     [

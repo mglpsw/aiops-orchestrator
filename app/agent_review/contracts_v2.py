@@ -902,7 +902,7 @@ class TargetPoliciesV2(ContractV2Model):
     fail_closed: Literal[True]
     redaction_required: Literal[True]
     allow_partial_coverage: Literal[False]
-    required_checks: list[SafeText]
+    required_checks: Annotated[list[SafeText], Field(min_length=1)]
     allowed_semantic_groups: list[SemanticGroupValue]
     coverage_failure_state: Literal["blocked_pipeline", "manual_required"]
     model_uncertainty_state: Literal["manual_required"]
