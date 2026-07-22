@@ -224,9 +224,11 @@ bounded printable UTF-8, including Portuguese and small technical snippets.
 Words such as `secret`, `password`, or `cookie` are not rejected by themselves.
 HTTP-method-qualified routes and conventional `/api/...` or `/vN/...` route
 literals remain representable in summaries and evidence. Route separators are
-neutralized only for the sanitizer comparison; the canonical response hash
-still covers the original route text byte-for-byte, and token-shaped content
-inside a route remains visible to the secret scanner. The real artifact
+neutralized only in the route path for the sanitizer comparison; query,
+fragment, and matrix-parameter values retain their separators so embedded local
+paths remain detectable. The canonical response hash still covers the original
+route text byte-for-byte, and token-shaped content inside a route remains
+visible to the secret scanner. The real artifact
 sanitizer still rejects token-shaped credentials, `Authorization: Bearer`
 values, credential assignments/URLs, private keys, and absolute Linux, Windows,
 or home-relative paths. The v1 sanitizer is unchanged.

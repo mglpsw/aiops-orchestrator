@@ -1509,6 +1509,23 @@ def test_api_route_literal_does_not_hide_a_real_token() -> None:
         validate_chunk_response_envelope_v2(envelope)
 
 
+@pytest.mark.parametrize(
+    "unsafe_route_text",
+    [
+        "GET /api/v1/export?path=/home/runner/work/private/review.json",
+        "GET /api/v1/export#source=/home/runner/work/private/review.json",
+        "GET /api/v1/export;path=/home/runner/work/private/review.json",
+    ],
+)
+def test_api_route_literal_does_not_hide_local_path_parameters(unsafe_route_text: str) -> None:
+    envelope = _success_envelope()
+    envelope["result"]["summary"] = unsafe_route_text  # type: ignore[index]
+    envelope["response_sha256"] = _sha256_without_field(envelope, "response_sha256")
+
+    with pytest.raises(ValidationError):
+        validate_chunk_response_envelope_v2(envelope)
+
+
 def test_legitimate_check_names_and_secret_scan_identifier_are_allowed() -> None:
     profile = _target_profile()
     profile["policies"]["required_checks"] = ["Validate repository", "secret-scan"]  # type: ignore[index]
