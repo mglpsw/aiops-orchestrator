@@ -27,6 +27,7 @@ from pydantic import (
     StrictBool,
     StrictInt,
     StrictStr,
+    ValidationError,
     model_validator,
 )
 
@@ -39,6 +40,7 @@ CHUNK_RESPONSE_ENVELOPE_SCHEMA_V2 = "agent-review.chunk-response-envelope.v2"
 CHUNK_RESPONSE_SCHEMA_V2 = "agent-review.chunk-response.v2"
 TARGET_PROFILE_SCHEMA_V2 = "agent-review.target-profile.v2"
 REVIEW_READINESS_SCHEMA_V2 = "agent-review.review-readiness.v2"
+RESPONSE_CONTRACT_INVALID_REASON_V2 = "response_contract_invalid"
 
 _RUN_IDENTITY_FIELDS = (
     "repo",
@@ -719,7 +721,12 @@ def validate_response_binding_v2(
     envelope: ChunkResponseEnvelopeValueV2,
     expected: ResponseBindingV2 | ChunkPayloadV2,
 ) -> None:
-    """Verify payload integrity, then bind a response before findings are read."""
+    """Revalidate both hashes, then bind a response before findings are read."""
+
+    try:
+        envelope = validate_chunk_response_envelope_v2(envelope)
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise ResponseBindingError(RESPONSE_CONTRACT_INVALID_REASON_V2) from exc
 
     payload = expected.payload if isinstance(expected, ResponseBindingV2) else expected
     verify_payload_sha256_v2(payload)

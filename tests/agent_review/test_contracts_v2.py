@@ -504,6 +504,71 @@ def test_response_binding_detects_run_chunk_payload_and_head_divergence(
     assert raised.value.reason_code == reason
 
 
+def test_response_binding_rejects_summary_changed_after_validation() -> None:
+    envelope = validate_chunk_response_envelope_v2(_success_envelope())
+    changed_result = envelope.result.model_copy(update={"summary": "review-changed"})
+    tampered = envelope.model_copy(update={"result": changed_result})
+    payload = _validate_json(ChunkPayloadV2, _payload())
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(tampered, payload)
+
+    assert raised.value.reason_code == "response_contract_invalid"
+
+
+def test_response_binding_rejects_finding_changed_after_validation() -> None:
+    envelope = validate_chunk_response_envelope_v2(_success_envelope())
+    changed_finding = envelope.result.findings[0].model_copy(update={"impact": "changed-impact"})
+    changed_result = envelope.result.model_copy(update={"findings": [changed_finding]})
+    tampered = envelope.model_copy(update={"result": changed_result})
+    payload = _validate_json(ChunkPayloadV2, _payload())
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(tampered, payload)
+
+    assert raised.value.reason_code == "response_contract_invalid"
+
+
+def test_response_binding_rejects_model_copy_with_stale_response_hash() -> None:
+    envelope = validate_chunk_response_envelope_v2(_success_envelope())
+    tampered = envelope.model_copy(update={"request_id": "req-80-2"})
+    payload = _validate_json(ChunkPayloadV2, _payload())
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(tampered, payload)
+
+    assert raised.value.reason_code == "response_contract_invalid"
+
+
+def test_response_binding_rejects_nested_finding_list_mutation_after_validation() -> None:
+    envelope = validate_chunk_response_envelope_v2(_success_envelope())
+    envelope.result.findings.append(
+        envelope.result.findings[0].model_copy(update={"finding_id": "finding-002"})
+    )
+    payload = _validate_json(ChunkPayloadV2, _payload())
+
+    with pytest.raises(ResponseBindingError) as raised:
+        validate_response_binding_v2(envelope, payload)
+
+    assert raised.value.reason_code == "response_contract_invalid"
+
+
+def test_response_binding_accepts_legitimate_received_response() -> None:
+    envelope = validate_chunk_response_envelope_v2(_success_envelope())
+    payload = _validate_json(ChunkPayloadV2, _payload())
+
+    assert validate_response_binding_v2(envelope, payload) is None
+
+
+def test_response_binding_accepts_transport_failure_without_response_hash() -> None:
+    envelope = validate_chunk_response_envelope_v2(_error_envelope())
+    payload = _validate_json(ChunkPayloadV2, _payload())
+
+    assert envelope.response_received is False
+    assert envelope.response_sha256 is None
+    assert validate_response_binding_v2(envelope, payload) is None
+
+
 def test_target_profile_rejects_absolute_and_parent_paths() -> None:
     for path in ("/tmp/full.diff", "../outside/full.diff", "C:\\temp\\full.diff"):
         payload = _target_profile()

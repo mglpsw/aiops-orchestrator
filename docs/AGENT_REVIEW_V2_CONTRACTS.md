@@ -115,9 +115,12 @@ attempts to bypass validation. `golden_chunk_payload_hash.json` freezes the
 complete canonical payload preimage and its digest byte for byte.
 
 `validate_response_binding_v2` accepts a validated payload (directly or through
-`ResponseBindingV2`), re-verifies its hash, and compares response `run_id`,
-`chunk_id`, `payload_sha256`, and `head_sha` before a future parser may consume
-findings. Wiring this helper into consumers remains PR 2 work.
+`ResponseBindingV2`), serializes and fully revalidates the envelope, recalculates
+its response hash, re-verifies the payload hash, and then compares response
+`run_id`, `chunk_id`, `payload_sha256`, and `head_sha` before a future parser may
+consume findings. A stale hash, invalid contract, copied model, or mutated nested
+list produces the stable binding reason `response_contract_invalid`. Wiring this
+helper into consumers remains PR 2 work.
 
 ## Response hash and finish reason
 
