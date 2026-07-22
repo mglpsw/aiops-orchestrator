@@ -153,6 +153,10 @@
         "default_branch": {
           "description": "Git branch name validated with the git-check-ref-format --branch rules.",
           "minLength": 1,
+          "not": {
+            "const": "HEAD",
+            "type": "string"
+          },
           "pattern": "^[^\\u0000-\\u0020\\u007f~^:?*\\\\\\[]+$",
           "title": "Default Branch",
           "type": "string",

@@ -122,7 +122,7 @@ def _validate_branch_name(value: str) -> str:
         raise ValueError("branch name must be non-empty with no surrounding whitespace")
     if value.startswith(("/", "-")) or value.endswith(("/", ".")) or "//" in value:
         raise ValueError("branch name has an invalid boundary or empty component")
-    if value == "@" or ".." in value or "@{" in value:
+    if value in {"@", "HEAD"} or ".." in value or "@{" in value:
         raise ValueError("branch name contains an ambiguous revision expression")
     if any(
         ord(character) < 32
@@ -189,6 +189,7 @@ BranchName = Annotated[
         min_length=1,
         description="Git branch name validated with the git-check-ref-format --branch rules.",
         json_schema_extra={
+            "not": {"const": "HEAD"},
             "pattern": _GIT_BRANCH_SCHEMA_PATTERN,
             "x-git-ref-format": "--branch",
         },

@@ -208,10 +208,11 @@ internal identifier. It implements the documented
 restrictions in-process, with no subprocess or installed-Git dependency:
 hierarchical `/` components are supported, while leading/trailing or duplicate
 slashes, dot-leading or `.lock` components, `..`, `@{`, a lone `@`, controls,
-spaces, backslash, and Git's other forbidden ref characters are rejected. The
-JSON Schema exposes the safe-character subset plus the `x-git-ref-format:
---branch` annotation; the remaining structural rules require the Python
-contract authority.
+the reserved pseudo-ref `HEAD`, spaces, backslash, and Git's other forbidden
+ref characters are rejected. The JSON Schema exposes the safe-character subset,
+rejects `HEAD` explicitly, and includes the `x-git-ref-format: --branch`
+annotation; the remaining structural rules require the Python contract
+authority.
 
 Check names use bounded safe text, so names such as `Validate repository` and
 identifiers such as `secret-scan` remain representable. `SafeText` accepts

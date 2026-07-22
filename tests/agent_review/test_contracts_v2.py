@@ -743,6 +743,7 @@ def test_target_profile_accepts_valid_git_branch_names(branch_name: str) -> None
         "feature?name",
         "feature*name",
         "feature[name",
+        "HEAD",
     ],
 )
 def test_target_profile_rejects_ambiguous_or_unsafe_git_branch_names(
@@ -765,6 +766,7 @@ def test_target_profile_branch_name_is_strict_and_documented_in_json_schema() ->
     branch_schema = schema["$defs"]["TargetIdentityV2"]["properties"]["default_branch"]
     assert branch_schema["x-git-ref-format"] == "--branch"
     assert "Git branch name" in branch_schema["description"]
+    assert branch_schema["not"]["const"] == "HEAD"
 
 
 @pytest.mark.parametrize(
