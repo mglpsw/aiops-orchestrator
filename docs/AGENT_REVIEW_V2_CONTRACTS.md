@@ -2,7 +2,7 @@
 
 Issue #80 introduces an explicitly versioned contract line alongside the
 operational AgentReview v1 pipeline from `v0.20.0`. This first delivery freezes
-only the v2 data models and JSON Schemas. It does not activate v2 in any CLI,
+only strict v2 data models and JSON Schemas. It does not activate v2 in a CLI,
 planner, payload builder, parser, synthesizer, quality gate, Router endpoint, or
 target-repository workflow.
 
@@ -11,31 +11,58 @@ target-repository workflow.
 | Contract | Purpose |
 | --- | --- |
 | `agent-review.run.v2` | Deterministic run identity and explicit origin/lifetime metadata |
-| `agent-review.chunk-payload.v2` | Run-bound chunk identity, coverage, and typed artifact/contract references |
-| `agent-review.chunk-response-envelope.v2` | Discriminated success/error response bound to run, chunk, payload, and HEAD |
-| `agent-review.target-profile.v2` | Strict generic target identity, artifacts, budgets, must-review policy, policies, and contracts |
-| `agent-review.review-readiness.v2` | Readiness state, stable reasons, blockers, and finding lifecycle |
+| `agent-review.chunk-payload.v2` | Run-bound payload material, verified payload hash, coverage, and typed references |
+| `agent-review.chunk-response-envelope.v2` | Sanitized success/error response bound to run, chunk, verified payload, and HEAD |
+| `agent-review.target-profile.v2` | Generic target inputs without control over engine safety boundaries |
+| `agent-review.review-readiness.v2` | PR, identity, checks, coverage, degradation, blockers, and finding lifecycle proof |
 
-The Python authority is `app/agent_review/contracts_v2.py`. Every contractual
-object uses Pydantic 2 strict validation, freezes instances, and rejects unknown
-fields at every nesting level. Schema ID, schema version, and source are
-required constants. Git commit SHAs are canonical lowercase 40-character
-hexadecimal values; SHA-256 values are canonical lowercase 64-character
-hexadecimal values. Relative paths reject absolute paths, Windows paths, home
-paths, and parent traversal.
+The Python authority is `app/agent_review/contracts_v2.py`. Every object uses
+Pydantic strict validation, freezes instances, and rejects unknown fields at
+every nesting level. Schema ID, schema version, and source are required
+constants. Git commit SHAs are lowercase 40-character hexadecimal values and
+SHA-256 values are lowercase 64-character hexadecimal values.
 
-The committed JSON Schemas live under `schemas/agent-review/v2/`. They are
-derived directly from the Pydantic validation schemas, and every object has
-`additionalProperties: false`. Regenerate them with:
+The supported schema-generation toolchain is Python 3.11 with the repository
+requirements, currently Pydantic `2.11.3`. Generate or verify schemas with:
 
 ```bash
 python3 scripts/export-agent-review-v2-schemas.py
+python3 scripts/export-agent-review-v2-schemas.py --check
 ```
 
-## Canonical run identity bytes
+`--check` is read-only and compares exact UTF-8 file bytes. The renderer uses a
+named response root model, collapses Pydantic reference-only aliases, replaces
+module-qualified internal definition names with unique model titles, and
+normalizes the JSON type of `const` values. Committed schemas and a render from
+a clean supported process must therefore be byte-identical.
 
-`run_id` is the lowercase SHA-256 hex digest of exactly one UTF-8 byte sequence.
-That sequence is the JSON serialization of these nine fields and no others:
+Every JSON Schema object sets `additionalProperties: false`; required and
+unknown fields are enforced by the schema. JSON Schema alone does not execute
+Pydantic cross-field validators. Hash equality, exact coverage partitions,
+finish-reason semantics, lifecycle coherence, and readiness proofs described
+below require validation through the Python contract authority.
+
+## Canonical JSON bytes
+
+All v2 hashes in this foundation use the same canonical JSON encoding:
+
+```text
+ensure_ascii=False
+sort_keys=True
+separators=(",", ":")
+allow_nan=False
+UTF-8 encoding
+no trailing newline
+```
+
+Only JSON values with string object keys are accepted. Non-finite numbers,
+timestamps inserted by the engine, random values, local paths, and non-JSON
+objects are not introduced implicitly.
+
+## Run identity and the manifest decision
+
+`run_id` is the lowercase SHA-256 digest of the canonical JSON object containing
+exactly these ten fields:
 
 ```text
 repo
@@ -46,81 +73,157 @@ tested_merge_sha
 toolrepo_sha
 profile_hash
 policy_hash
+manifest_hash
 evidence_hash
 ```
 
-Serialization uses Python `json.dumps` with:
+The initial nine-field draft omitted `manifest_hash`. Inspection of v1 showed
+that `ChunkPayloadManifest` is an independent artifact: it lists chunks and
+their individual `payload_sha256` values, while v1 has no `evidence_hash`
+derivation that commits that manifest. Consequently v2 does not claim that
+`evidence_hash` covers it. `manifest_hash` is an independent material input and
+is deliberately added before the contract is frozen.
 
-```text
-ensure_ascii=False
-sort_keys=True
-separators=(",", ":")
-allow_nan=False
-```
+`manifest_hash` is SHA-256 over the entire sanitized manifest JSON object using
+the canonical encoding above. `canonical_manifest_bytes_v2` and
+`compute_manifest_hash_v2` freeze that derivation; the concrete multi-chunk v2
+manifest model remains work for PR 3. Changing profile, policy, manifest, or
+evidence independently changes `run_id`.
 
-The resulting string is encoded with UTF-8 and hashed directly. There is no
-trailing newline and no delimiter concatenation. Dictionary insertion order,
-clock values, UUIDs, randomness, local paths, and implicit timestamps never
-participate. `created_at`, `expires_at`, and origin metadata in the run envelope
-must be supplied explicitly and do not change `run_id`.
+`created_at`, `expires_at`, and origin metadata are explicit run-envelope
+fields, not identity fields. The golden fixture
+`tests/agent_review/fixtures/v2/golden_run_identity.json` freezes the exact
+ten-field JSON text and digest.
 
-The golden fixture in
-`tests/agent_review/fixtures/v2/golden_run_identity.json` freezes both the exact
-JSON text and digest.
+## Payload hash and response binding
 
-## Payload and response binding
+`payload_sha256` is not a format-only field. Its preimage is the complete
+validated `ChunkPayloadMaterialV2` JSON object, excluding exactly the
+`payload_sha256` field to avoid a circular self-hash. It therefore covers:
 
-The v2 chunk payload carries the complete run identity, `run_id`, `chunk_id`,
-semantic group, `payload_sha256`, typed coverage, and typed artifact/contract
-references. Its `run_id` must match the canonical identity before the model is
-accepted.
+- schema ID, schema version, and source;
+- canonical `run_id` and full run identity;
+- chunk ID and semantic group;
+- total/must-review coverage and structured degradation causes;
+- every typed artifact and contract reference.
 
-The response envelope is a discriminated union on `status`:
+`canonical_chunk_payload_bytes_v2`, `compute_payload_sha256_v2`, and
+`verify_payload_sha256_v2` implement this rule. Dictionary insertion order does
+not affect the digest. Any accepted material change does. Model validation
+rejects a stale or fabricated digest, including a copied Pydantic instance that
+attempts to bypass validation. `golden_chunk_payload_hash.json` freezes the
+complete canonical payload preimage and its digest byte for byte.
 
-- `success` requires a typed sanitized result and forbids an error object;
-- `error` requires only a closed reason-code enum plus `retryable`, and forbids
-  a result object or free-form error payload.
+`validate_response_binding_v2` accepts a validated payload (directly or through
+`ResponseBindingV2`), re-verifies its hash, and compares response `run_id`,
+`chunk_id`, `payload_sha256`, and `head_sha` before a future parser may consume
+findings. Wiring this helper into consumers remains PR 2 work.
 
-Both variants require `run_id`, `chunk_id`, `payload_sha256`, `head_sha`,
-provider, model, attempt, request ID, finish reason, and `response_sha256`.
-`validate_response_binding_v2` detects run, chunk, payload, and HEAD divergence
-before a future parser inspects findings. Connecting that check to the parser is
-reserved for PR 2 of #80.
+## Response hash and finish reason
 
-## Target profile and readiness
+`response_sha256` is SHA-256 over every field of the sanitized response
+envelope except `response_sha256` itself. The preimage includes identity and
+transport metadata, `response_received`, status, finish reason, and the typed
+result or typed error. It is not a hash of a raw provider body, prompt, header,
+credential, or other sensitive content; none of those values may be stored in
+the envelope.
 
-`TargetProfileV2` is repository-neutral. It contains no branches for
-AgentEscala, InterLeitos, or any other target. This delivery intentionally does
-not replace the v1 profile loader; the full loader/migrator belongs to PR 4.
+The semantics are explicit:
 
-Readiness states are `ready`, `blocked_code`, `blocked_pipeline`,
-`manual_required`, and `stale`. Stable reason categories are
-`schema_failure`, `transport_failure`, `coverage_failure`, `policy_failure`,
-`model_uncertainty`, and `confirmed_code_finding`. Finding dispositions are
-`new`, `confirmed`, `fixed`, `dismissed`, `superseded`, and `stale`.
+- `response_received=true` requires a matching `response_sha256` for both
+  success and error envelopes;
+- `response_received=false` is allowed only for `transport_failure` with
+  `finish_reason=error`, and requires `response_sha256=null` because no response
+  bytes exist to verify;
+- the null no-response case proves only the structured failure state, not a
+  cryptographic property of an absent response.
 
-Structural validation rejects contradictory combinations. In particular:
+`success` accepts only the conclusively complete `finish_reason=stop`.
+`length`, `content_filter`, `error`, and `unknown` are error states. `tool_call`
+is reserved for possible future orchestration and is currently non-conclusive,
+so it is also accepted only in an error envelope. No tool execution is
+implemented here.
 
-- `ready` has no reason codes, active blockers, or actionable new/confirmed
-  findings;
-- blocked/manual states have non-empty reason codes matching active blockers;
-- code blockers require a confirmed actionable finding;
-- operational failures remain `blocked_pipeline` rather than model approval;
-- `stale` is the only state allowed to bind a different evaluated HEAD;
-- dismissal requires justification, a responsible identity, and commit/test
-  evidence.
+## Coverage without silent omission
 
-This contract does not yet calculate readiness in the v1 quality gate.
+For every `ChunkCoverageV2`, `reviewed_files`, `partially_reviewed_files`, and
+`missing_files` are unique, pairwise disjoint, and their union is exactly
+`expected_files`. `must_review_files` is a subset of expected files and
+`missing_must_review_files` must equal the must-review intersection with partial
+or missing files.
 
-## Compatibility window
+State rules are fail-closed:
 
-The `v0.20.0` v1 models, JSON artifacts, CLIs, quality gate, and target wrapper
-contract remain operational and unchanged. During the #80 migration window,
-v1 and v2 are separate contract lines; consumers must select a version
-explicitly and must never mix envelopes silently.
+- `complete` means every expected file is reviewed, with no partial, missing,
+  missing-must-review, or degradation cause;
+- `partial` has at least one partial or missing file and no degraded-state
+  cause;
+- `degraded` has at least one partial or missing file plus typed causes whose
+  affected-file union accounts for every such file and no other file.
 
-PR 2 will add fail-closed binding to consumers, PR 3 will add deterministic
-multi-chunk planning by change unit, and PR 4 will complete profile loading and
-the isolated toolrepo environment. Until those deliveries adopt v2 explicitly,
-the exported v2 schemas are development contracts only and do not represent a
-new release or production version.
+No expected file can disappear from the partitions.
+
+## Target profile hard boundaries and sanitization
+
+`TargetProfileV2` is repository-neutral and contains no AgentEscala,
+InterLeitos, or other target-specific branch. A target cannot weaken engine
+safety:
+
+- `network_policy` is always `forbidden`;
+- `fail_closed` and `redaction_required` are always `true`;
+- `allow_partial_coverage` is always `false` in this frozen foundation.
+
+Check names use bounded safe text, so names such as `Validate repository` and
+identifiers such as `secret-scan` remain representable. `SafeText` accepts
+bounded printable UTF-8, including Portuguese and small technical snippets.
+Words such as `secret`, `password`, or `cookie` are not rejected by themselves.
+The real artifact sanitizer still rejects token-shaped credentials,
+`Authorization: Bearer` values, credential assignments/URLs, private keys, and
+absolute Linux, Windows, or home-relative paths.
+
+## Readiness proof
+
+`ReviewReadinessV2` carries both expected and evaluated full run identities,
+their computed run IDs, expected/evaluated HEADs, observed PR state, every
+deterministic required check and conclusion, exact total/must-review coverage,
+structured pipeline degradation, blockers, and finding lifecycle records.
+
+The principal invariants are:
+
+- `ready` requires an open non-merged PR, exact run identity and HEAD, at least
+  one required deterministic check with every result green on the evaluated
+  HEAD, complete total/must-review coverage, and no degraded pipeline;
+- actionable `new` or `confirmed` P0/P1/P2 findings prevent `ready`;
+- an isolated actionable P3 does not create `blocked_code`;
+- `blocked_code` requires an active blocker pointing to an existing confirmed,
+  actionable P0/P1/P2 finding;
+- pipeline/manual blockers never point to findings and their reason set exactly
+  matches structured degradation causes;
+- `blocked_pipeline` and `manual_required` may preserve partial findings for
+  audit without becoming ready;
+- `new` and `confirmed` are actionable; `fixed`, `dismissed`, `superseded`, and
+  `stale` are not;
+- every non-new disposition records the responsible identity and decision HEAD;
+  dismissal additionally requires a justification and typed commit/test
+  evidence bound to a HEAD;
+- `stale` explicitly records `head_mismatch`, `identity_mismatch`, or both,
+  based on expected versus evaluated identities.
+
+This contract represents the proof inputs but does not calculate them in the v1
+quality gate.
+
+## Compatibility and remaining PRs
+
+The `v0.20.0` v1 models, artifacts, CLIs, quality gate, and wrapper contract are
+unchanged. During migration, consumers must select v1 or v2 explicitly and
+must never mix envelopes silently.
+
+- PR 2: connect verified payload/response binding and fail-closed precedence to
+  consumers and parser;
+- PR 3: implement a typed manifest and deterministic real multi-chunk planning;
+- PR 4: implement the complete TargetProfile v2 loader/migrator and minimal
+  isolated toolrepo lockfile.
+
+Until those deliveries adopt v2 explicitly, these schemas are development
+contracts only. They do not represent a release, deploy, Router/provider call,
+or production behavior change.

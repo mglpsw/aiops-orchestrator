@@ -186,9 +186,13 @@ None of those areas changes the `v0.20.0` contract retroactively.
 
 Issue #80 is developing a separate AgentReview v2 line. Its first delivery
 defines strict run, chunk payload, response envelope, target profile, and review
-readiness contracts plus stable JSON Schemas and canonical run serialization.
-This is contract-foundation work only: v2 is not active in the AgentReview CLIs,
-planner, builder, parser, synthesizer, quality gate, Router, or target workflows.
+readiness contracts plus byte-reproducible JSON Schemas. The run identity has an
+independent `manifest_hash`; payload and received-response hashes are computed
+and validated from documented canonical JSON preimages; readiness can represent
+expected/evaluated identity, PR state, checks, total/must-review coverage,
+degradation, and lifecycle decisions. This is contract-foundation work only: v2
+is not active in the AgentReview CLIs, planner, builder, parser, synthesizer,
+quality gate, Router, or target workflows.
 
 The complete v1 pipeline and quality gate from `v0.20.0` remain operational and
 authoritative. Future migrations must select v2 explicitly, preserve a
