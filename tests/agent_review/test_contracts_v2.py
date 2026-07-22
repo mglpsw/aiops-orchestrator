@@ -1949,6 +1949,36 @@ def test_manual_confirmation_can_coexist_with_structured_pipeline_cause() -> Non
     }
 
 
+def test_manual_required_cannot_mask_a_confirmed_blocking_finding() -> None:
+    payload = _readiness()
+    payload.update(
+        state="manual_required",
+        reason_codes=["model_uncertainty"],
+        blockers=[
+            {
+                "blocker_id": "manual-1",
+                "reason_code": "model_uncertainty",
+                "active": True,
+                "finding_id": None,
+            }
+        ],
+        pipeline={
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": "model_uncertainty",
+                    "component": "provider-response",
+                    "detail": "response needs human review",
+                }
+            ],
+        },
+        findings=[_confirmed_lifecycle_finding()],
+    )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
 @pytest.mark.parametrize(
     "disposition",
     ["confirmed", "fixed", "dismissed", "superseded", "stale"],

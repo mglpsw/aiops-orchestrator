@@ -1179,6 +1179,11 @@ class ReviewReadinessV2(ContractV2Model):
                 raise ValueError(
                     "manual_required requires confirmation and/or matching structured pipeline causes"
                 )
+            if any(
+                finding.disposition is FindingDispositionV2.CONFIRMED
+                for finding in blocking_findings
+            ):
+                raise ValueError("manual_required cannot mask a confirmed code-blocking finding")
             new_findings = {
                 finding.finding_id
                 for finding in blocking_findings
