@@ -252,15 +252,18 @@ The principal invariants are:
   pipeline, and its blocker points exactly to the pending finding;
 - an isolated actionable P3 does not create `blocked_code`;
 - `blocked_code` requires exactly one distinct active blocker for every existing
-  confirmed, actionable P0/P1/P2 finding through `confirmed_code_finding`;
+  confirmed, actionable P0/P1/P2 finding through `confirmed_code_finding`. It
+  may additionally preserve degraded pipeline reasons, active blockers, and
+  matching structured causes without surrendering code-block precedence;
 - pipeline blockers never point to findings. Manual pipeline reasons still
   match structured degradation causes, while `finding_confirmation_required`
   is deliberately not a pipeline cause and may coexist with those reasons;
 - `manual_required` cannot mask an already confirmed actionable P0/P1/P2
   finding as uncertainty or another manual cause;
 - `blocked_pipeline` cannot mask such a confirmed finding as a transport,
-  schema, coverage, or policy failure; confirmed code-block precedence still
-  applies when pipeline degradation coexists;
+  schema, coverage, or policy failure; when pipeline degradation coexists,
+  `blocked_code` carries both the confirmed finding blockers and the structured
+  degradation evidence;
 - when confirmed and new blocking findings coexist, confirmed code takes
   precedence as `blocked_code`; every finding remains in the audit record and
   the pending new finding must be reconsidered after the confirmed block clears;

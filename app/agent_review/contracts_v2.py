@@ -1128,10 +1128,24 @@ class ReviewReadinessV2(ContractV2Model):
             raise ValueError("blocked and manual states require matching active reason codes")
 
         if self.state is ReadinessStateV2.BLOCKED_CODE:
-            if reasons != {ReadinessReasonV2.CONFIRMED_CODE_FINDING}:
-                raise ValueError("blocked_code accepts only confirmed_code_finding")
-            if self.pipeline.degraded:
-                raise ValueError("blocked_code cannot substitute for a degraded pipeline")
+            allowed_pipeline_reasons = {
+                ReadinessReasonV2.SCHEMA_FAILURE,
+                ReadinessReasonV2.TRANSPORT_FAILURE,
+                ReadinessReasonV2.COVERAGE_FAILURE,
+                ReadinessReasonV2.POLICY_FAILURE,
+                ReadinessReasonV2.MODEL_UNCERTAINTY,
+            }
+            pipeline_reasons = reasons - {ReadinessReasonV2.CONFIRMED_CODE_FINDING}
+            cause_reasons = {cause.reason_code for cause in self.pipeline.causes}
+            if (
+                ReadinessReasonV2.CONFIRMED_CODE_FINDING not in reasons
+                or not pipeline_reasons <= allowed_pipeline_reasons
+                or cause_reasons != pipeline_reasons
+                or self.pipeline.degraded != bool(pipeline_reasons)
+            ):
+                raise ValueError(
+                    "blocked_code requires confirmed findings and matching structured pipeline causes"
+                )
             confirmed = {
                 finding.finding_id
                 for finding in blocking_findings

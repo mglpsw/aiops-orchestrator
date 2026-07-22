@@ -946,6 +946,85 @@ def test_blocked_code_requires_a_confirmed_actionable_finding() -> None:
     assert readiness.findings[0].disposition is FindingDispositionV2.CONFIRMED
 
 
+@pytest.mark.parametrize(
+    "pipeline_reason",
+    [
+        "schema_failure",
+        "transport_failure",
+        "coverage_failure",
+        "policy_failure",
+        "model_uncertainty",
+    ],
+)
+def test_blocked_code_preserves_structured_pipeline_degradation(pipeline_reason: str) -> None:
+    payload = _readiness()
+    payload.update(
+        state="blocked_code",
+        reason_codes=["confirmed_code_finding", pipeline_reason],
+        blockers=[
+            {
+                "blocker_id": "code-1",
+                "reason_code": "confirmed_code_finding",
+                "active": True,
+                "finding_id": "finding-confirmed",
+            },
+            {
+                "blocker_id": "pipeline-1",
+                "reason_code": pipeline_reason,
+                "active": True,
+                "finding_id": None,
+            },
+        ],
+        pipeline={
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": pipeline_reason,
+                    "component": "review-pipeline",
+                    "detail": "degradation preserved with code precedence",
+                }
+            ],
+        },
+        findings=[_confirmed_lifecycle_finding()],
+    )
+
+    parsed = _validate_json(ReviewReadinessV2, payload)
+
+    assert parsed.state is ReadinessStateV2.BLOCKED_CODE
+    assert parsed.pipeline.degraded is True
+    assert {cause.reason_code.value for cause in parsed.pipeline.causes} == {pipeline_reason}
+
+
+def test_blocked_code_rejects_unrepresented_pipeline_degradation() -> None:
+    payload = _readiness()
+    payload.update(
+        state="blocked_code",
+        reason_codes=["confirmed_code_finding"],
+        blockers=[
+            {
+                "blocker_id": "code-1",
+                "reason_code": "confirmed_code_finding",
+                "active": True,
+                "finding_id": "finding-confirmed",
+            }
+        ],
+        pipeline={
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": "transport_failure",
+                    "component": "provider-transport",
+                    "detail": "response unavailable",
+                }
+            ],
+        },
+        findings=[_confirmed_lifecycle_finding()],
+    )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
 @pytest.mark.parametrize("case", ["missing_blocker", "duplicate_target"])
 def test_blocked_code_requires_one_active_blocker_per_confirmed_finding(case: str) -> None:
     def confirmed_finding(finding_id: str) -> dict[str, object]:
