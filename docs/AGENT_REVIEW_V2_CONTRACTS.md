@@ -123,11 +123,11 @@ complete canonical payload preimage and its digest byte for byte.
 its response hash, re-verifies the payload hash, and then compares response
 `run_id`, `chunk_id`, `payload_sha256`, and `head_sha` before a future parser may
 consume findings. For a success response, the helper then requires both
-`result.coverage.expected_files` and every finding `file_path` to be subsets of
-the bound payload's `coverage.expected_files`. A stale hash, invalid contract,
-copied model, or mutated nested list produces the stable binding reason
-`response_contract_invalid`. Wiring this helper into consumers remains PR 2
-work.
+`result.coverage.expected_files` to equal the bound payload's
+`coverage.expected_files` and every finding `file_path` to be within that exact
+file universe. A stale hash, invalid contract, copied model, or mutated nested
+list produces the stable binding reason `response_contract_invalid`. Wiring
+this helper into consumers remains PR 2 work.
 
 Binding failures are intentionally separated without embedding exception or
 payload content in the reason: `response_contract_invalid` means the envelope or
@@ -184,8 +184,9 @@ State rules are fail-closed:
 No expected file can disappear from the partitions.
 
 At binding time the payload supplies the outer file-scope boundary. A success
-response may report only coverage and findings within that boundary; a
-cryptographically valid response cannot introduce an unbound repository path.
+response must retain that complete expected-file set and may report findings
+only within it; a cryptographically valid response can neither omit a payload
+file nor introduce an unbound repository path.
 
 ## Target profile hard boundaries and sanitization
 

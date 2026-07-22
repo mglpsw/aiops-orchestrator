@@ -813,7 +813,7 @@ def validate_response_binding_v2(
         payload_files = set(payload.coverage.expected_files)
         response_files = set(envelope.result.coverage.expected_files)
         finding_files = {finding.file_path for finding in envelope.result.findings}
-        if not response_files <= payload_files or not finding_files <= payload_files:
+        if response_files != payload_files or not finding_files <= payload_files:
             raise ResponseBindingError(RESPONSE_SCOPE_MISMATCH_REASON_V2)
 
 
