@@ -3,6 +3,13 @@
     "ChunkCoverageV2": {
       "additionalProperties": false,
       "properties": {
+        "degradation_causes": {
+          "items": {
+            "$ref": "#/$defs/CoverageDegradationV2"
+          },
+          "title": "Degradation Causes",
+          "type": "array"
+        },
         "expected_files": {
           "items": {
             "maxLength": 512,
@@ -58,7 +65,7 @@
           "type": "array"
         },
         "status": {
-          "$ref": "#/$defs/app__agent_review__contracts_v2__CoverageStateV2__2"
+          "$ref": "#/$defs/CoverageStateV2"
         }
       },
       "required": [
@@ -68,10 +75,61 @@
         "partially_reviewed_files",
         "missing_files",
         "must_review_files",
-        "missing_must_review_files"
+        "missing_must_review_files",
+        "degradation_causes"
       ],
       "title": "ChunkCoverageV2",
       "type": "object"
+    },
+    "CoverageDegradationReasonV2": {
+      "enum": [
+        "artifact_missing",
+        "budget_exhausted",
+        "transport_failure",
+        "schema_failure",
+        "model_uncertainty"
+      ],
+      "title": "CoverageDegradationReasonV2",
+      "type": "string"
+    },
+    "CoverageDegradationV2": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Affected Files",
+          "type": "array"
+        },
+        "detail": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/CoverageDegradationReasonV2"
+        }
+      },
+      "required": [
+        "reason_code",
+        "affected_files",
+        "detail"
+      ],
+      "title": "CoverageDegradationV2",
+      "type": "object"
+    },
+    "CoverageStateV2": {
+      "enum": [
+        "complete",
+        "partial",
+        "degraded"
+      ],
+      "title": "CoverageStateV2",
+      "type": "string"
     },
     "PayloadArtifactReferenceV2": {
       "additionalProperties": false,
@@ -183,6 +241,11 @@
           "title": "Head Sha",
           "type": "string"
         },
+        "manifest_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Hash",
+          "type": "string"
+        },
         "policy_hash": {
           "pattern": "^[0-9a-f]{64}$",
           "title": "Policy Hash",
@@ -223,24 +286,13 @@
         "toolrepo_sha",
         "profile_hash",
         "policy_hash",
+        "manifest_hash",
         "evidence_hash"
       ],
       "title": "RunIdentityV2",
       "type": "object"
     },
-    "app__agent_review__contracts_v2__CoverageStateV2__1": {
-      "enum": [
-        "complete",
-        "partial",
-        "degraded"
-      ],
-      "title": "CoverageStateV2",
-      "type": "string"
-    },
-    "app__agent_review__contracts_v2__CoverageStateV2__2": {
-      "$ref": "#/$defs/app__agent_review__contracts_v2__CoverageStateV2__1"
-    },
-    "app__agent_review__contracts_v2__SemanticGroupV2__1": {
+    "SemanticGroupV2": {
       "enum": [
         "primary_backend_logic",
         "api_schema_contract",
@@ -253,9 +305,6 @@
       ],
       "title": "SemanticGroupV2",
       "type": "string"
-    },
-    "app__agent_review__contracts_v2__SemanticGroupV2__2": {
-      "$ref": "#/$defs/app__agent_review__contracts_v2__SemanticGroupV2__1"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -298,18 +347,21 @@
     },
     "schema_id": {
       "const": "agent-review.chunk-payload.v2",
-      "title": "Schema Id"
+      "title": "Schema Id",
+      "type": "string"
     },
     "schema_version": {
       "const": 2,
-      "title": "Schema Version"
+      "title": "Schema Version",
+      "type": "integer"
     },
     "semantic_group": {
-      "$ref": "#/$defs/app__agent_review__contracts_v2__SemanticGroupV2__2"
+      "$ref": "#/$defs/SemanticGroupV2"
     },
     "source": {
       "const": "aiops-review-build-payloads",
-      "title": "Source"
+      "title": "Source",
+      "type": "string"
     }
   },
   "required": [
@@ -320,10 +372,10 @@
     "identity",
     "chunk_id",
     "semantic_group",
-    "payload_sha256",
     "coverage",
     "artifact_references",
-    "contract_references"
+    "contract_references",
+    "payload_sha256"
   ],
   "title": "ChunkPayloadV2",
   "type": "object"

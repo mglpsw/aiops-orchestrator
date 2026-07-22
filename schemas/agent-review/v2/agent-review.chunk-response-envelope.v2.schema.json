@@ -3,6 +3,13 @@
     "ChunkCoverageV2": {
       "additionalProperties": false,
       "properties": {
+        "degradation_causes": {
+          "items": {
+            "$ref": "#/$defs/CoverageDegradationV2"
+          },
+          "title": "Degradation Causes",
+          "type": "array"
+        },
         "expected_files": {
           "items": {
             "maxLength": 512,
@@ -58,7 +65,7 @@
           "type": "array"
         },
         "status": {
-          "$ref": "#/$defs/app__agent_review__contracts_v2__CoverageStateV2__2"
+          "$ref": "#/$defs/CoverageStateV2"
         }
       },
       "required": [
@@ -68,7 +75,8 @@
         "partially_reviewed_files",
         "missing_files",
         "must_review_files",
-        "missing_must_review_files"
+        "missing_must_review_files",
+        "degradation_causes"
       ],
       "title": "ChunkCoverageV2",
       "type": "object"
@@ -77,7 +85,7 @@
       "additionalProperties": false,
       "properties": {
         "confidence": {
-          "$ref": "#/$defs/app__agent_review__contracts_v2__FindingConfidenceV2__2"
+          "$ref": "#/$defs/FindingConfidenceV2"
         },
         "contract_ids": {
           "items": {
@@ -88,10 +96,11 @@
           "type": "array"
         },
         "disposition": {
-          "$ref": "#/$defs/app__agent_review__contracts_v2__FindingDispositionV2__2"
+          "$ref": "#/$defs/FindingDispositionV2"
         },
         "evidence": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9 .,;:_()#+-]{0,511}$",
+          "maxLength": 512,
+          "minLength": 1,
           "title": "Evidence",
           "type": "string"
         },
@@ -107,7 +116,8 @@
           "type": "string"
         },
         "impact": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9 .,;:_()#+-]{0,511}$",
+          "maxLength": 512,
+          "minLength": 1,
           "title": "Impact",
           "type": "string"
         },
@@ -136,10 +146,11 @@
           "title": "Line Start"
         },
         "severity": {
-          "$ref": "#/$defs/app__agent_review__contracts_v2__FindingSeverityV2__2"
+          "$ref": "#/$defs/FindingSeverityV2"
         },
         "title": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9 .,;:_()#+-]{0,511}$",
+          "maxLength": 512,
+          "minLength": 1,
           "title": "Title",
           "type": "string"
         }
@@ -178,7 +189,7 @@
           "$ref": "#/$defs/SanitizedResponseErrorV2"
         },
         "finish_reason": {
-          "$ref": "#/$defs/app__agent_review__contracts_v2__FinishReasonV2__2"
+          "$ref": "#/$defs/FinishReasonV2"
         },
         "head_sha": {
           "pattern": "^[0-9a-f]{40}$",
@@ -205,10 +216,21 @@
           "title": "Request Id",
           "type": "string"
         },
+        "response_received": {
+          "title": "Response Received",
+          "type": "boolean"
+        },
         "response_sha256": {
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Response Sha256",
-          "type": "string"
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Response Sha256"
         },
         "run_id": {
           "pattern": "^[0-9a-f]{64}$",
@@ -217,19 +239,23 @@
         },
         "schema_id": {
           "const": "agent-review.chunk-response-envelope.v2",
-          "title": "Schema Id"
+          "title": "Schema Id",
+          "type": "string"
         },
         "schema_version": {
           "const": 2,
-          "title": "Schema Version"
+          "title": "Schema Version",
+          "type": "integer"
         },
         "source": {
           "const": "agent-review-provider-response",
-          "title": "Source"
+          "title": "Source",
+          "type": "string"
         },
         "status": {
           "const": "error",
-          "title": "Status"
+          "title": "Status",
+          "type": "string"
         }
       },
       "required": [
@@ -245,6 +271,7 @@
         "attempt",
         "request_id",
         "finish_reason",
+        "response_received",
         "response_sha256",
         "status",
         "error"
@@ -267,7 +294,7 @@
           "type": "string"
         },
         "finish_reason": {
-          "$ref": "#/$defs/app__agent_review__contracts_v2__FinishReasonV2__2"
+          "$ref": "#/$defs/FinishReasonV2"
         },
         "head_sha": {
           "pattern": "^[0-9a-f]{40}$",
@@ -294,10 +321,21 @@
           "title": "Request Id",
           "type": "string"
         },
+        "response_received": {
+          "title": "Response Received",
+          "type": "boolean"
+        },
         "response_sha256": {
-          "pattern": "^[0-9a-f]{64}$",
-          "title": "Response Sha256",
-          "type": "string"
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Response Sha256"
         },
         "result": {
           "$ref": "#/$defs/ChunkReviewResultV2"
@@ -309,19 +347,23 @@
         },
         "schema_id": {
           "const": "agent-review.chunk-response-envelope.v2",
-          "title": "Schema Id"
+          "title": "Schema Id",
+          "type": "string"
         },
         "schema_version": {
           "const": 2,
-          "title": "Schema Version"
+          "title": "Schema Version",
+          "type": "integer"
         },
         "source": {
           "const": "agent-review-provider-response",
-          "title": "Source"
+          "title": "Source",
+          "type": "string"
         },
         "status": {
           "const": "success",
-          "title": "Status"
+          "title": "Status",
+          "type": "string"
         }
       },
       "required": [
@@ -337,6 +379,7 @@
         "attempt",
         "request_id",
         "finish_reason",
+        "response_received",
         "response_sha256",
         "status",
         "result"
@@ -367,14 +410,17 @@
         },
         "schema_id": {
           "const": "agent-review.chunk-response.v2",
-          "title": "Schema Id"
+          "title": "Schema Id",
+          "type": "string"
         },
         "schema_version": {
           "const": 2,
-          "title": "Schema Version"
+          "title": "Schema Version",
+          "type": "integer"
         },
         "summary": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9 .,;:_()#+-]{0,511}$",
+          "maxLength": 512,
+          "minLength": 1,
           "title": "Summary",
           "type": "string"
         }
@@ -390,11 +436,114 @@
       "title": "ChunkReviewResultV2",
       "type": "object"
     },
+    "CoverageDegradationReasonV2": {
+      "enum": [
+        "artifact_missing",
+        "budget_exhausted",
+        "transport_failure",
+        "schema_failure",
+        "model_uncertainty"
+      ],
+      "title": "CoverageDegradationReasonV2",
+      "type": "string"
+    },
+    "CoverageDegradationV2": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_files": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Affected Files",
+          "type": "array"
+        },
+        "detail": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "reason_code": {
+          "$ref": "#/$defs/CoverageDegradationReasonV2"
+        }
+      },
+      "required": [
+        "reason_code",
+        "affected_files",
+        "detail"
+      ],
+      "title": "CoverageDegradationV2",
+      "type": "object"
+    },
+    "CoverageStateV2": {
+      "enum": [
+        "complete",
+        "partial",
+        "degraded"
+      ],
+      "title": "CoverageStateV2",
+      "type": "string"
+    },
+    "FindingConfidenceV2": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ],
+      "title": "FindingConfidenceV2",
+      "type": "string"
+    },
+    "FindingDispositionV2": {
+      "enum": [
+        "new",
+        "confirmed",
+        "fixed",
+        "dismissed",
+        "superseded",
+        "stale"
+      ],
+      "title": "FindingDispositionV2",
+      "type": "string"
+    },
+    "FindingSeverityV2": {
+      "enum": [
+        "P0",
+        "P1",
+        "P2",
+        "P3"
+      ],
+      "title": "FindingSeverityV2",
+      "type": "string"
+    },
+    "FinishReasonV2": {
+      "enum": [
+        "stop",
+        "length",
+        "content_filter",
+        "tool_call",
+        "error",
+        "unknown"
+      ],
+      "title": "FinishReasonV2",
+      "type": "string"
+    },
+    "ResponseErrorReasonV2": {
+      "enum": [
+        "schema_failure",
+        "transport_failure",
+        "policy_failure",
+        "model_uncertainty"
+      ],
+      "title": "ResponseErrorReasonV2",
+      "type": "string"
+    },
     "SanitizedResponseErrorV2": {
       "additionalProperties": false,
       "properties": {
         "reason_code": {
-          "$ref": "#/$defs/app__agent_review__contracts_v2__ResponseErrorReasonV2__2"
+          "$ref": "#/$defs/ResponseErrorReasonV2"
         },
         "retryable": {
           "title": "Retryable",
@@ -407,89 +556,10 @@
       ],
       "title": "SanitizedResponseErrorV2",
       "type": "object"
-    },
-    "app__agent_review__contracts_v2__CoverageStateV2__1": {
-      "enum": [
-        "complete",
-        "partial",
-        "degraded"
-      ],
-      "title": "CoverageStateV2",
-      "type": "string"
-    },
-    "app__agent_review__contracts_v2__CoverageStateV2__2": {
-      "$ref": "#/$defs/app__agent_review__contracts_v2__CoverageStateV2__1"
-    },
-    "app__agent_review__contracts_v2__FindingConfidenceV2__1": {
-      "enum": [
-        "high",
-        "medium",
-        "low"
-      ],
-      "title": "FindingConfidenceV2",
-      "type": "string"
-    },
-    "app__agent_review__contracts_v2__FindingConfidenceV2__2": {
-      "$ref": "#/$defs/app__agent_review__contracts_v2__FindingConfidenceV2__1"
-    },
-    "app__agent_review__contracts_v2__FindingDispositionV2__1": {
-      "enum": [
-        "new",
-        "confirmed",
-        "fixed",
-        "dismissed",
-        "superseded",
-        "stale"
-      ],
-      "title": "FindingDispositionV2",
-      "type": "string"
-    },
-    "app__agent_review__contracts_v2__FindingDispositionV2__2": {
-      "$ref": "#/$defs/app__agent_review__contracts_v2__FindingDispositionV2__1"
-    },
-    "app__agent_review__contracts_v2__FindingSeverityV2__1": {
-      "enum": [
-        "P0",
-        "P1",
-        "P2",
-        "P3"
-      ],
-      "title": "FindingSeverityV2",
-      "type": "string"
-    },
-    "app__agent_review__contracts_v2__FindingSeverityV2__2": {
-      "$ref": "#/$defs/app__agent_review__contracts_v2__FindingSeverityV2__1"
-    },
-    "app__agent_review__contracts_v2__FinishReasonV2__1": {
-      "enum": [
-        "stop",
-        "length",
-        "content_filter",
-        "tool_call",
-        "error",
-        "unknown"
-      ],
-      "title": "FinishReasonV2",
-      "type": "string"
-    },
-    "app__agent_review__contracts_v2__FinishReasonV2__2": {
-      "$ref": "#/$defs/app__agent_review__contracts_v2__FinishReasonV2__1"
-    },
-    "app__agent_review__contracts_v2__ResponseErrorReasonV2__1": {
-      "enum": [
-        "schema_failure",
-        "transport_failure",
-        "policy_failure",
-        "model_uncertainty"
-      ],
-      "title": "ResponseErrorReasonV2",
-      "type": "string"
-    },
-    "app__agent_review__contracts_v2__ResponseErrorReasonV2__2": {
-      "$ref": "#/$defs/app__agent_review__contracts_v2__ResponseErrorReasonV2__1"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Named root model used for stable validation and JSON Schema refs.",
   "discriminator": {
     "mapping": {
       "error": "#/$defs/ChunkResponseErrorEnvelopeV2",

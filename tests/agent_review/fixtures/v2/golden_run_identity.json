@@ -1,9 +1,10 @@
 {
-  "canonical_json": "{\"base_sha\":\"1111111111111111111111111111111111111111\",\"evidence_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"head_sha\":\"2222222222222222222222222222222222222222\",\"policy_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"pr_number\":80,\"profile_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"repo\":\"mglpsw/aiops-orchestrator\",\"tested_merge_sha\":\"3333333333333333333333333333333333333333\",\"toolrepo_sha\":\"4444444444444444444444444444444444444444\"}",
+  "canonical_json": "{\"base_sha\":\"1111111111111111111111111111111111111111\",\"evidence_hash\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"head_sha\":\"2222222222222222222222222222222222222222\",\"manifest_hash\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"policy_hash\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"pr_number\":80,\"profile_hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"repo\":\"mglpsw/aiops-orchestrator\",\"tested_merge_sha\":\"3333333333333333333333333333333333333333\",\"toolrepo_sha\":\"4444444444444444444444444444444444444444\"}",
   "identity": {
     "base_sha": "1111111111111111111111111111111111111111",
-    "evidence_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "evidence_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "head_sha": "2222222222222222222222222222222222222222",
+    "manifest_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "policy_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "pr_number": 80,
     "profile_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -11,5 +12,5 @@
     "tested_merge_sha": "3333333333333333333333333333333333333333",
     "toolrepo_sha": "4444444444444444444444444444444444444444"
   },
-  "run_id": "fc85ba5350895387611905ec6e88c957af79cfa1893221d1bccdfe214ac591be"
+  "run_id": "7252956d2e854369a7fcade0870be5d7ddea514c629eb566d4f240622c696dba"
 }

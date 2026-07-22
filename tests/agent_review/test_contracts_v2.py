@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -18,16 +21,22 @@ from app.agent_review.contracts_v2 import (
     ReviewReadinessV2,
     RunIdentityV2,
     TargetProfileV2,
+    canonical_chunk_payload_bytes_v2,
     canonical_run_identity_bytes,
+    compute_manifest_hash_v2,
+    compute_payload_sha256_v2,
+    compute_response_sha256_v2,
     compute_run_id,
     validate_chunk_response_envelope_v2,
     validate_response_binding_v2,
+    verify_payload_sha256_v2,
 )
-from app.agent_review.schema_export_v2 import render_v2_json_schemas
+from app.agent_review.schema_export_v2 import render_v2_json_schema_text, render_v2_json_schemas
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "v2"
 SCHEMAS = Path(__file__).parents[2] / "schemas" / "agent-review" / "v2"
+REPO_ROOT = Path(__file__).parents[2]
 
 
 def _identity() -> dict[str, object]:
@@ -40,7 +49,8 @@ def _identity() -> dict[str, object]:
         "toolrepo_sha": "4" * 40,
         "profile_hash": "a" * 64,
         "policy_hash": "b" * 64,
-        "evidence_hash": "c" * 64,
+        "manifest_hash": "c" * 64,
+        "evidence_hash": "d" * 64,
     }
 
 
@@ -53,6 +63,7 @@ def _coverage() -> dict[str, object]:
         "missing_files": [],
         "must_review_files": ["app/service.py"],
         "missing_must_review_files": [],
+        "degradation_causes": [],
     }
 
 
@@ -62,7 +73,7 @@ def _run() -> dict[str, object]:
         "schema_id": "agent-review.run.v2",
         "schema_version": 2,
         "source": "aiops-review-run",
-        "run_id": "fc85ba5350895387611905ec6e88c957af79cfa1893221d1bccdfe214ac591be",
+        "run_id": "7252956d2e854369a7fcade0870be5d7ddea514c629eb566d4f240622c696dba",
         "identity": identity,
         "origin": {
             "event_type": "pull_request",
@@ -75,11 +86,11 @@ def _run() -> dict[str, object]:
 
 
 def _payload() -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "schema_id": "agent-review.chunk-payload.v2",
         "schema_version": 2,
         "source": "aiops-review-build-payloads",
-        "run_id": "fc85ba5350895387611905ec6e88c957af79cfa1893221d1bccdfe214ac591be",
+        "run_id": "7252956d2e854369a7fcade0870be5d7ddea514c629eb566d4f240622c696dba",
         "identity": _identity(),
         "chunk_id": "api-schema-001",
         "semantic_group": "api_schema_contract",
@@ -103,23 +114,26 @@ def _payload() -> dict[str, object]:
             }
         ],
     }
+    payload["payload_sha256"] = compute_payload_sha256_v2(payload)
+    return payload
 
 
 def _success_envelope() -> dict[str, object]:
-    return {
+    envelope: dict[str, object] = {
         "schema_id": "agent-review.chunk-response-envelope.v2",
         "schema_version": 2,
         "source": "agent-review-provider-response",
         "status": "success",
-        "run_id": "fc85ba5350895387611905ec6e88c957af79cfa1893221d1bccdfe214ac591be",
+        "run_id": "7252956d2e854369a7fcade0870be5d7ddea514c629eb566d4f240622c696dba",
         "chunk_id": "api-schema-001",
-        "payload_sha256": "d" * 64,
+        "payload_sha256": _payload()["payload_sha256"],
         "head_sha": "2" * 40,
         "provider": "openai",
         "model": "gpt-5.4",
         "attempt": 1,
         "request_id": "req-80-1",
         "finish_reason": "stop",
+        "response_received": True,
         "response_sha256": "9" * 64,
         "result": {
             "schema_id": "agent-review.chunk-response.v2",
@@ -144,6 +158,8 @@ def _success_envelope() -> dict[str, object]:
             "limitations": [],
         },
     }
+    envelope["response_sha256"] = compute_response_sha256_v2(envelope)
+    return envelope
 
 
 def _error_envelope() -> dict[str, object]:
@@ -152,6 +168,8 @@ def _error_envelope() -> dict[str, object]:
     payload["finish_reason"] = "error"
     payload.pop("result")
     payload["error"] = {"reason_code": "transport_failure", "retryable": True}
+    payload["response_received"] = False
+    payload["response_sha256"] = None
     return payload
 
 
@@ -215,9 +233,24 @@ def _readiness() -> dict[str, object]:
         "schema_id": "agent-review.review-readiness.v2",
         "schema_version": 2,
         "source": "aiops-review-quality-gate",
-        "run_id": "fc85ba5350895387611905ec6e88c957af79cfa1893221d1bccdfe214ac591be",
+        "run_id": "7252956d2e854369a7fcade0870be5d7ddea514c629eb566d4f240622c696dba",
+        "identity": _identity(),
+        "evaluated_run_id": "7252956d2e854369a7fcade0870be5d7ddea514c629eb566d4f240622c696dba",
+        "evaluated_identity": _identity(),
         "head_sha": "2" * 40,
         "evaluated_head_sha": "2" * 40,
+        "pr_state": "open",
+        "checks": [
+            {
+                "check_name": "Validate repository",
+                "required": True,
+                "deterministic": True,
+                "conclusion": "success",
+                "head_sha": "2" * 40,
+            }
+        ],
+        "coverage": _coverage(),
+        "pipeline": {"degraded": False, "causes": []},
         "state": "ready",
         "reason_codes": [],
         "blockers": [],
@@ -227,6 +260,22 @@ def _readiness() -> dict[str, object]:
 
 def _validate_json(model: type, payload: dict[str, object]):  # noqa: ANN202
     return model.model_validate_json(json.dumps(payload, ensure_ascii=False))
+
+
+def _canonical_without_field(payload: dict[str, object], field: str) -> bytes:
+    material = copy.deepcopy(payload)
+    material.pop(field, None)
+    return json.dumps(
+        material,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _sha256_without_field(payload: dict[str, object], field: str) -> str:
+    return hashlib.sha256(_canonical_without_field(payload, field)).hexdigest()
 
 
 def test_golden_run_identity_bytes_and_run_id_are_exact() -> None:
@@ -443,17 +492,15 @@ def test_error_envelope_cannot_carry_raw_or_sensitive_fields() -> None:
 def test_response_binding_detects_run_chunk_payload_and_head_divergence(
     field: str, changed: str, reason: str
 ) -> None:
-    envelope = validate_chunk_response_envelope_v2(_success_envelope())
-    expected = ResponseBindingV2(
-        run_id=envelope.run_id,
-        chunk_id=envelope.chunk_id,
-        payload_sha256=envelope.payload_sha256,
-        head_sha=envelope.head_sha,
-    )
-    divergent = expected.model_copy(update={field: changed})
+    raw_envelope = _success_envelope()
+    raw_envelope[field] = changed
+    raw_envelope["response_sha256"] = compute_response_sha256_v2(raw_envelope)
+    envelope = validate_chunk_response_envelope_v2(raw_envelope)
+    payload = _validate_json(ChunkPayloadV2, _payload())
+    expected = ResponseBindingV2(payload=payload)
 
     with pytest.raises(ResponseBindingError) as raised:
-        validate_response_binding_v2(envelope, divergent)
+        validate_response_binding_v2(envelope, expected)
     assert raised.value.reason_code == reason
 
 
@@ -537,7 +584,8 @@ def test_blocked_code_requires_a_confirmed_actionable_finding() -> None:
                 "disposition": "confirmed",
                 "actionable": True,
                 "justification": None,
-                "decided_by": None,
+                "decided_by": "reviewer-1",
+                "decided_at_head_sha": "2" * 40,
                 "evidence": [],
                 "superseded_by": None,
             }
@@ -553,6 +601,10 @@ def test_stale_is_the_only_state_that_accepts_a_different_evaluated_head() -> No
     stale = _readiness()
     stale["state"] = "stale"
     stale["evaluated_head_sha"] = "3" * 40
+    stale["evaluated_identity"]["head_sha"] = "3" * 40  # type: ignore[index]
+    stale["evaluated_run_id"] = compute_run_id(_validate_json(RunIdentityV2, stale["evaluated_identity"]))
+    stale["checks"][0]["head_sha"] = "3" * 40  # type: ignore[index]
+    stale["reason_codes"] = ["head_mismatch"]
     assert _validate_json(ReviewReadinessV2, stale).state is ReadinessStateV2.STALE
 
     not_stale = _readiness()
@@ -611,6 +663,580 @@ def test_dismissed_finding_requires_owner_justification_and_evidence() -> None:
         _validate_json(ReviewReadinessV2, payload)
 
 
+def test_manifest_hash_is_an_independent_material_run_identity_component() -> None:
+    identity = _identity()
+    identity["manifest_hash"] = "e" * 64
+
+    parsed = _validate_json(RunIdentityV2, identity)
+    canonical = canonical_run_identity_bytes(parsed)
+
+    assert json.loads(canonical)["manifest_hash"] == "e" * 64
+
+
+def test_payload_hash_covers_every_material_field_and_rejects_tampering() -> None:
+    payload = _payload()
+    payload["payload_sha256"] = _sha256_without_field(payload, "payload_sha256")
+    _validate_json(ChunkPayloadV2, payload)
+
+    tampered = copy.deepcopy(payload)
+    tampered["artifact_references"][0]["sha256"] = "0" * 64  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        _validate_json(ChunkPayloadV2, tampered)
+
+
+def test_golden_payload_hash_preimage_and_digest_are_byte_exact() -> None:
+    golden = json.loads((FIXTURES / "golden_chunk_payload_hash.json").read_text(encoding="utf-8"))
+    payload = _payload()
+
+    assert canonical_chunk_payload_bytes_v2(payload) == golden["canonical_json"].encode("utf-8")
+    assert compute_payload_sha256_v2(payload) == golden["payload_sha256"]
+    assert payload["payload_sha256"] == golden["payload_sha256"]
+
+
+def test_payload_hash_is_independent_of_dictionary_insertion_order() -> None:
+    payload = _payload()
+    reversed_payload = dict(reversed(list(payload.items())))
+
+    assert _sha256_without_field(payload, "payload_sha256") == _sha256_without_field(
+        reversed_payload, "payload_sha256"
+    )
+
+
+def test_response_hash_covers_the_sanitized_envelope_material() -> None:
+    envelope = _success_envelope()
+    envelope["response_sha256"] = _sha256_without_field(envelope, "response_sha256")
+    validate_chunk_response_envelope_v2(envelope)
+
+    tampered = copy.deepcopy(envelope)
+    tampered["result"]["summary"] = "review-changed"  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        validate_chunk_response_envelope_v2(tampered)
+
+
+def test_transport_failure_without_response_has_no_response_hash() -> None:
+    envelope = _error_envelope()
+    envelope["response_received"] = False
+    envelope["response_sha256"] = None
+
+    parsed = validate_chunk_response_envelope_v2(envelope)
+
+    assert parsed.response_received is False
+    assert parsed.response_sha256 is None
+
+
+def test_coverage_rejects_a_silently_omitted_expected_file() -> None:
+    payload = _payload()
+    payload["coverage"] = {
+        "status": "partial",
+        "expected_files": ["app/service.py", "app/partial.py", "app/omitted.py"],
+        "reviewed_files": ["app/service.py"],
+        "partially_reviewed_files": ["app/partial.py"],
+        "missing_files": [],
+        "must_review_files": ["app/service.py"],
+        "missing_must_review_files": [],
+        "degradation_causes": [],
+    }
+
+    with pytest.raises(ValidationError):
+        _validate_json(ChunkPayloadV2, payload)
+
+
+def test_degraded_coverage_requires_a_structured_cause() -> None:
+    payload = _payload()
+    payload["coverage"]["status"] = "degraded"  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        _validate_json(ChunkPayloadV2, payload)
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter", "tool_call", "unknown"])
+def test_success_rejects_every_non_conclusive_finish_reason(finish_reason: str) -> None:
+    envelope = _success_envelope()
+    envelope["finish_reason"] = finish_reason
+
+    with pytest.raises(ValidationError):
+        validate_chunk_response_envelope_v2(envelope)
+
+
+def test_readiness_can_represent_all_required_proof_inputs() -> None:
+    payload = _readiness()
+    payload.update(
+        identity=_identity(),
+        evaluated_run_id=payload["run_id"],
+        pr_state="open",
+        checks=[
+            {
+                "check_name": "Validate repository",
+                "required": True,
+                "deterministic": True,
+                "conclusion": "success",
+                "head_sha": payload["head_sha"],
+            }
+        ],
+        coverage=_coverage(),
+        pipeline={"degraded": False, "causes": []},
+    )
+
+    parsed = _validate_json(ReviewReadinessV2, payload)
+
+    assert parsed.pr_state.value == "open"
+    assert parsed.checks[0].conclusion.value == "success"
+    assert parsed.coverage.status.value == "complete"
+    assert parsed.pipeline.degraded is False
+
+
+def test_p3_finding_cannot_create_a_code_blocker() -> None:
+    payload = _readiness()
+    payload.update(
+        state="blocked_code",
+        reason_codes=["confirmed_code_finding"],
+        blockers=[
+            {
+                "blocker_id": "b1",
+                "reason_code": "confirmed_code_finding",
+                "active": True,
+                "finding_id": "finding-003",
+            }
+        ],
+        findings=[
+            {
+                "finding_id": "finding-003",
+                "severity": "P3",
+                "disposition": "confirmed",
+                "actionable": True,
+                "justification": None,
+                "decided_by": "reviewer-1",
+                "decided_at_head_sha": "2" * 40,
+                "evidence": [],
+                "superseded_by": None,
+            }
+        ],
+    )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+@pytest.mark.parametrize(
+    ("disposition", "actionable"),
+    [
+        ("new", False),
+        ("confirmed", False),
+        ("fixed", True),
+        ("dismissed", True),
+        ("superseded", True),
+        ("stale", True),
+    ],
+)
+def test_finding_lifecycle_actionability_is_coherent(disposition: str, actionable: bool) -> None:
+    finding = {
+        "finding_id": "finding-001",
+        "severity": "P2",
+        "disposition": disposition,
+        "actionable": actionable,
+        "justification": "reviewed" if disposition == "dismissed" else None,
+        "decided_by": "reviewer-1" if disposition != "new" else None,
+        "decided_at_head_sha": "2" * 40 if disposition != "new" else None,
+        "evidence": [{"kind": "test", "reference": "pytest", "head_sha": "2" * 40}]
+        if disposition in {"fixed", "dismissed"}
+        else [],
+        "superseded_by": "finding-002" if disposition == "superseded" else None,
+    }
+    payload = _readiness()
+    payload["findings"] = [finding]
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+def test_pipeline_blocker_cannot_point_to_an_arbitrary_finding() -> None:
+    payload = _readiness()
+    payload.update(
+        state="blocked_pipeline",
+        reason_codes=["schema_failure"],
+        blockers=[
+            {
+                "blocker_id": "pipeline-1",
+                "reason_code": "schema_failure",
+                "active": True,
+                "finding_id": "finding-ghost",
+            }
+        ],
+        pipeline={
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": "schema_failure",
+                    "component": "schema-export",
+                    "detail": "schema validation failed",
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+def test_blocked_pipeline_preserves_partial_findings_for_audit() -> None:
+    payload = _readiness()
+    payload.update(
+        state="blocked_pipeline",
+        reason_codes=["transport_failure"],
+        blockers=[
+            {
+                "blocker_id": "pipeline-1",
+                "reason_code": "transport_failure",
+                "active": True,
+                "finding_id": None,
+            }
+        ],
+        pipeline={
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": "transport_failure",
+                    "component": "provider-transport",
+                    "detail": "response unavailable",
+                }
+            ],
+        },
+        findings=[
+            {
+                "finding_id": "finding-partial",
+                "severity": "P2",
+                "disposition": "new",
+                "actionable": True,
+                "justification": None,
+                "decided_by": None,
+                "decided_at_head_sha": None,
+                "evidence": [],
+                "superseded_by": None,
+            }
+        ],
+    )
+
+    assert _validate_json(ReviewReadinessV2, payload).state is ReadinessStateV2.BLOCKED_PIPELINE
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe"),
+    [
+        ("fail_closed", False),
+        ("redaction_required", False),
+        ("allow_partial_coverage", True),
+    ],
+)
+def test_target_profile_cannot_disable_engine_boundaries(field: str, unsafe: bool) -> None:
+    profile = _target_profile()
+    profile["policies"][field] = unsafe  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        _validate_json(TargetProfileV2, profile)
+
+
+def test_safe_text_accepts_pt_br_and_small_technical_evidence() -> None:
+    envelope = _success_envelope()
+    envelope["result"]["summary"] = "Revisão concluída: ação válida — sem regressão."  # type: ignore[index]
+    envelope["result"]["findings"][0]["evidence"] = (  # type: ignore[index]
+        'if (count >= 2) { return "ok"; }'
+    )
+    envelope["response_sha256"] = compute_response_sha256_v2(envelope)
+
+    parsed = validate_chunk_response_envelope_v2(envelope)
+
+    assert parsed.result.summary.startswith("Revisão concluída")
+
+
+def test_legitimate_check_names_and_secret_scan_identifier_are_allowed() -> None:
+    profile = _target_profile()
+    profile["policies"]["required_checks"] = ["Validate repository", "secret-scan"]  # type: ignore[index]
+
+    parsed = _validate_json(TargetProfileV2, profile)
+
+    assert parsed.policies.required_checks == ["Validate repository", "secret-scan"]
+
+
+@pytest.mark.parametrize(
+    "unsafe_text",
+    [
+        "ghp_abcdefghijklmnopqrstuvwxyz123456",
+        "Authorization: Bearer abcdefghijklmnop",
+        "/home/runner/work/private/review.json",
+        r"C:\\Users\\runner\\private\\review.json",
+    ],
+)
+def test_safe_text_rejects_real_secrets_and_absolute_paths(unsafe_text: str) -> None:
+    envelope = _success_envelope()
+    envelope["result"]["summary"] = unsafe_text  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        validate_chunk_response_envelope_v2(envelope)
+
+
+def test_manifest_hash_is_canonical_order_independent_and_material() -> None:
+    first = {
+        "schema_id": "agent-review.chunk-payload-manifest.v2",
+        "chunks": [{"chunk_id": "api-schema-001", "payload_sha256": "a" * 64}],
+    }
+    reordered = dict(reversed(list(first.items())))
+    changed = copy.deepcopy(first)
+    changed["chunks"][0]["payload_sha256"] = "b" * 64  # type: ignore[index]
+
+    assert compute_manifest_hash_v2(first) == compute_manifest_hash_v2(reordered)
+    assert compute_manifest_hash_v2(first) != compute_manifest_hash_v2(changed)
+
+
+@pytest.mark.parametrize(
+    "material_field",
+    ["identity", "chunk_id", "semantic_group", "coverage", "artifact", "contract"],
+)
+def test_each_payload_material_component_changes_payload_hash(material_field: str) -> None:
+    original = _payload()
+    changed = copy.deepcopy(original)
+    if material_field == "identity":
+        changed["identity"]["head_sha"] = "5" * 40  # type: ignore[index]
+        identity = _validate_json(RunIdentityV2, changed["identity"])
+        changed["run_id"] = compute_run_id(identity)
+    elif material_field == "chunk_id":
+        changed["chunk_id"] = "api-schema-002"
+    elif material_field == "semantic_group":
+        changed["semantic_group"] = "tests"
+    elif material_field == "coverage":
+        coverage = _coverage()
+        coverage.update(
+            expected_files=["app/other.py"],
+            reviewed_files=["app/other.py"],
+            must_review_files=["app/other.py"],
+        )
+        changed["coverage"] = coverage
+    elif material_field == "artifact":
+        changed["artifact_references"][0]["sha256"] = "0" * 64  # type: ignore[index]
+    else:
+        changed["contract_references"][0]["sha256"] = "0" * 64  # type: ignore[index]
+
+    assert compute_payload_sha256_v2(original) != compute_payload_sha256_v2(changed)
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter", "tool_call", "error", "unknown"])
+def test_non_conclusive_finish_reasons_are_represented_as_errors(finish_reason: str) -> None:
+    envelope = _error_envelope()
+    envelope["response_received"] = True
+    envelope["finish_reason"] = finish_reason
+    envelope["response_sha256"] = compute_response_sha256_v2(envelope)
+
+    assert validate_chunk_response_envelope_v2(envelope).status == "error"
+
+
+def test_received_error_response_hash_rejects_tampering() -> None:
+    envelope = _error_envelope()
+    envelope["response_received"] = True
+    envelope["response_sha256"] = compute_response_sha256_v2(envelope)
+    validate_chunk_response_envelope_v2(envelope)
+
+    envelope["error"]["retryable"] = False  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        validate_chunk_response_envelope_v2(envelope)
+
+
+def test_model_copy_cannot_bypass_payload_or_response_hash_verification() -> None:
+    payload = _validate_json(ChunkPayloadV2, _payload())
+    copied_payload = payload.model_copy(update={"payload_sha256": "0" * 64})
+    with pytest.raises(ValidationError):
+        verify_payload_sha256_v2(copied_payload)
+
+    envelope = validate_chunk_response_envelope_v2(_success_envelope())
+    copied_envelope = envelope.model_copy(update={"response_sha256": "0" * 64})
+    with pytest.raises(ValidationError):
+        validate_chunk_response_envelope_v2(copied_envelope)
+
+
+@pytest.mark.parametrize("case", ["overlap", "status", "must_review"])
+def test_coverage_rejects_overlap_status_and_must_review_contradictions(case: str) -> None:
+    payload = _payload()
+    coverage = _coverage()
+    if case == "overlap":
+        coverage.update(
+            status="partial",
+            reviewed_files=["app/service.py"],
+            partially_reviewed_files=["app/service.py"],
+            missing_must_review_files=["app/service.py"],
+        )
+    elif case == "status":
+        coverage["status"] = "partial"
+    else:
+        coverage["missing_must_review_files"] = ["app/service.py"]
+    payload["coverage"] = coverage
+
+    with pytest.raises(ValidationError):
+        _validate_json(ChunkPayloadV2, payload)
+
+
+def test_degraded_coverage_accepts_only_fully_accounted_structured_causes() -> None:
+    payload = _payload()
+    payload["coverage"] = {
+        "status": "degraded",
+        "expected_files": ["app/service.py"],
+        "reviewed_files": [],
+        "partially_reviewed_files": [],
+        "missing_files": ["app/service.py"],
+        "must_review_files": ["app/service.py"],
+        "missing_must_review_files": ["app/service.py"],
+        "degradation_causes": [
+            {
+                "reason_code": "artifact_missing",
+                "affected_files": ["app/service.py"],
+                "detail": "required diff artifact unavailable",
+            }
+        ],
+    }
+    payload["payload_sha256"] = compute_payload_sha256_v2(payload)
+
+    assert _validate_json(ChunkPayloadV2, payload).coverage.status.value == "degraded"
+
+
+@pytest.mark.parametrize("case", ["closed", "merged", "checks_missing", "check_failed", "coverage", "degraded"])
+def test_ready_rejects_missing_or_contradictory_proof(case: str) -> None:
+    payload = _readiness()
+    if case in {"closed", "merged"}:
+        payload["pr_state"] = case
+    elif case == "checks_missing":
+        payload["checks"] = []
+    elif case == "check_failed":
+        payload["checks"][0]["conclusion"] = "failure"  # type: ignore[index]
+    elif case == "coverage":
+        payload["coverage"] = {
+            "status": "partial",
+            "expected_files": ["app/service.py"],
+            "reviewed_files": [],
+            "partially_reviewed_files": [],
+            "missing_files": ["app/service.py"],
+            "must_review_files": ["app/service.py"],
+            "missing_must_review_files": ["app/service.py"],
+            "degradation_causes": [],
+        }
+    else:
+        payload["pipeline"] = {
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": "model_uncertainty",
+                    "component": "provider-response",
+                    "detail": "response was inconclusive",
+                }
+            ],
+        }
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+def test_ready_allows_an_isolated_actionable_p3_without_code_blocking() -> None:
+    payload = _readiness()
+    payload["findings"] = [
+        {
+            "finding_id": "finding-p3",
+            "severity": "P3",
+            "disposition": "new",
+            "actionable": True,
+            "justification": None,
+            "decided_by": None,
+            "decided_at_head_sha": None,
+            "evidence": [],
+            "superseded_by": None,
+        }
+    ]
+
+    assert _validate_json(ReviewReadinessV2, payload).state is ReadinessStateV2.READY
+
+
+def test_dismissal_is_typed_owned_justified_and_bound_to_a_head() -> None:
+    payload = _readiness()
+    payload["findings"] = [
+        {
+            "finding_id": "finding-dismissed",
+            "severity": "P2",
+            "disposition": "dismissed",
+            "actionable": False,
+            "justification": "false positive confirmed by regression test",
+            "decided_by": "reviewer-1",
+            "decided_at_head_sha": "2" * 40,
+            "evidence": [
+                {"kind": "test", "reference": "pytest-contracts-v2", "head_sha": "2" * 40}
+            ],
+            "superseded_by": None,
+        }
+    ]
+
+    assert _validate_json(ReviewReadinessV2, payload).findings[0].decided_by == "reviewer-1"
+
+
+def test_manual_required_preserves_partial_findings_for_audit() -> None:
+    payload = _readiness()
+    payload.update(
+        state="manual_required",
+        reason_codes=["model_uncertainty"],
+        blockers=[
+            {
+                "blocker_id": "manual-1",
+                "reason_code": "model_uncertainty",
+                "active": True,
+                "finding_id": None,
+            }
+        ],
+        pipeline={
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": "model_uncertainty",
+                    "component": "provider-response",
+                    "detail": "human review required",
+                }
+            ],
+        },
+        findings=[
+            {
+                "finding_id": "finding-partial",
+                "severity": "P1",
+                "disposition": "new",
+                "actionable": True,
+                "justification": None,
+                "decided_by": None,
+                "decided_at_head_sha": None,
+                "evidence": [],
+                "superseded_by": None,
+            }
+        ],
+    )
+
+    assert _validate_json(ReviewReadinessV2, payload).state is ReadinessStateV2.MANUAL_REQUIRED
+
+
+def test_stale_explicitly_represents_run_identity_divergence() -> None:
+    payload = _readiness()
+    payload["evaluated_identity"]["policy_hash"] = "0" * 64  # type: ignore[index]
+    evaluated_identity = _validate_json(RunIdentityV2, payload["evaluated_identity"])
+    payload.update(
+        state="stale",
+        evaluated_run_id=compute_run_id(evaluated_identity),
+        reason_codes=["identity_mismatch"],
+    )
+
+    assert _validate_json(ReviewReadinessV2, payload).state is ReadinessStateV2.STALE
+
+
+def test_schema_export_check_is_read_only_and_fresh_process_stable() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/export-agent-review-v2-schemas.py", "--check"],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_exported_json_schemas_are_stable_and_deny_unknown_objects() -> None:
     rendered = render_v2_json_schemas()
     assert set(rendered) == {
@@ -622,8 +1248,11 @@ def test_exported_json_schemas_are_stable_and_deny_unknown_objects() -> None:
     }
 
     for filename, schema in rendered.items():
-        committed = json.loads((SCHEMAS / filename).read_text(encoding="utf-8"))
+        committed_text = (SCHEMAS / filename).read_text(encoding="utf-8")
+        committed = json.loads(committed_text)
         assert committed == schema
+        assert committed_text == render_v2_json_schema_text(schema)
+        assert all("app__" not in name and not name.endswith(("__1", "__2")) for name in schema.get("$defs", {}))
         _assert_objects_forbid_additional_properties(schema)
 
 

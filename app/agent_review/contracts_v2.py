@@ -9,21 +9,24 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+import unicodedata
+from collections.abc import Mapping
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Any, Literal, TypeAlias
 
 from pydantic import (
     AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
+    RootModel,
     StrictBool,
     StrictInt,
     StrictStr,
-    TypeAdapter,
     model_validator,
 )
 
@@ -46,11 +49,11 @@ _RUN_IDENTITY_FIELDS = (
     "toolrepo_sha",
     "profile_hash",
     "policy_hash",
+    "manifest_hash",
     "evidence_hash",
 )
 _REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _SAFE_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
-_SAFE_TEXT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 .,;:_()#+-]{0,511}")
 _RFC3339_SECONDS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
 
@@ -91,19 +94,19 @@ def _validate_relative_path(value: str) -> str:
 def _validate_safe_identifier(value: str) -> str:
     if value != value.strip() or not _SAFE_IDENTIFIER_RE.fullmatch(value):
         raise ValueError("identifier contains unsupported characters")
-    lowered = value.lower()
-    if any(marker in lowered for marker in ("authorization", "bearer", "password", "secret", "cookie")):
-        raise ValueError("identifier contains a sensitive marker")
     _reject_sensitive_value(value)
     return value
 
 
 def _validate_safe_text(value: str) -> str:
-    if value != value.strip() or not _SAFE_TEXT_RE.fullmatch(value):
-        raise ValueError("text is not in the sanitized contract subset")
-    lowered = value.lower()
-    if any(marker in lowered for marker in ("authorization", "bearer", "password", "secret", "cookie")):
-        raise ValueError("text contains a sensitive marker")
+    if value != value.strip() or not value:
+        raise ValueError("text must be non-empty and have no surrounding whitespace")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("text must be valid UTF-8") from exc
+    if any(unicodedata.category(character).startswith("C") for character in value):
+        raise ValueError("text contains control or non-printing characters")
     _reject_sensitive_value(value)
     return value
 
@@ -142,7 +145,7 @@ SafeIdentifier = Annotated[
 ]
 SafeText = Annotated[
     StrictStr,
-    Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9 .,;:_()#+-]{0,511}$"),
+    Field(min_length=1, max_length=512),
     AfterValidator(_validate_safe_text),
 ]
 GitSha = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{40}$")]
@@ -154,6 +157,57 @@ Rfc3339Timestamp = Annotated[
 ]
 PositiveInt = Annotated[StrictInt, Field(gt=0)]
 NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
+
+
+def _require_json_value(value: object, *, path: str = "$") -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} contains a non-finite number")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _require_json_value(item, path=f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path} contains a non-string object key")
+            _require_json_value(item, path=f"{path}.{key}")
+        return
+    raise TypeError(f"{path} contains a non-JSON value of type {type(value).__name__}")
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    """Serialize a JSON value into the canonical UTF-8 form used by v2 hashes."""
+
+    _require_json_value(value)
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def canonical_manifest_bytes_v2(manifest: Mapping[str, object]) -> bytes:
+    """Return canonical bytes for an independently material v2 manifest.
+
+    The manifest contract itself belongs to the later multi-chunk delivery.  Its
+    identity is already frozen here: the complete sanitized JSON object is
+    encoded with the same deterministic JSON rules as every other v2 hash.
+    """
+
+    material = dict(manifest)
+    if sanitize_artifact_value(material) != material:
+        raise ValueError("manifest contains a secret-like value or local path")
+    return _canonical_json_bytes(material)
+
+
+def compute_manifest_hash_v2(manifest: Mapping[str, object]) -> str:
+    return hashlib.sha256(canonical_manifest_bytes_v2(manifest)).hexdigest()
 
 
 class SemanticGroupV2(str, Enum):
@@ -171,6 +225,14 @@ class CoverageStateV2(str, Enum):
     COMPLETE = "complete"
     PARTIAL = "partial"
     DEGRADED = "degraded"
+
+
+class CoverageDegradationReasonV2(str, Enum):
+    ARTIFACT_MISSING = "artifact_missing"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    TRANSPORT_FAILURE = "transport_failure"
+    SCHEMA_FAILURE = "schema_failure"
+    MODEL_UNCERTAINTY = "model_uncertainty"
 
 
 class FindingSeverityV2(str, Enum):
@@ -203,6 +265,19 @@ class ReadinessStateV2(str, Enum):
     STALE = "stale"
 
 
+class PullRequestStateV2(str, Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+    MERGED = "merged"
+
+
+class RequiredCheckConclusionV2(str, Enum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+    PENDING = "pending"
+    MISSING = "missing"
+
+
 class ReadinessReasonV2(str, Enum):
     SCHEMA_FAILURE = "schema_failure"
     TRANSPORT_FAILURE = "transport_failure"
@@ -210,15 +285,20 @@ class ReadinessReasonV2(str, Enum):
     POLICY_FAILURE = "policy_failure"
     MODEL_UNCERTAINTY = "model_uncertainty"
     CONFIRMED_CODE_FINDING = "confirmed_code_finding"
+    HEAD_MISMATCH = "head_mismatch"
+    IDENTITY_MISMATCH = "identity_mismatch"
 
 
 SemanticGroupValue = Annotated[SemanticGroupV2, Field(strict=False)]
 CoverageStateValue = Annotated[CoverageStateV2, Field(strict=False)]
+CoverageDegradationReasonValue = Annotated[CoverageDegradationReasonV2, Field(strict=False)]
 FindingSeverityValue = Annotated[FindingSeverityV2, Field(strict=False)]
 FindingConfidenceValue = Annotated[FindingConfidenceV2, Field(strict=False)]
 FindingDispositionValue = Annotated[FindingDispositionV2, Field(strict=False)]
 ReadinessStateValue = Annotated[ReadinessStateV2, Field(strict=False)]
 ReadinessReasonValue = Annotated[ReadinessReasonV2, Field(strict=False)]
+PullRequestStateValue = Annotated[PullRequestStateV2, Field(strict=False)]
+RequiredCheckConclusionValue = Annotated[RequiredCheckConclusionV2, Field(strict=False)]
 
 
 class RunIdentityV2(ContractV2Model):
@@ -230,13 +310,14 @@ class RunIdentityV2(ContractV2Model):
     toolrepo_sha: GitSha
     profile_hash: Sha256
     policy_hash: Sha256
+    manifest_hash: Sha256
     evidence_hash: Sha256
 
 
 def canonical_run_identity_bytes(identity: RunIdentityV2) -> bytes:
     """Return the exact bytes hashed for an AgentReview v2 ``run_id``.
 
-    The bytes are UTF-8 encoding of the nine-field JSON object returned by
+    The bytes are UTF-8 encoding of the ten-field JSON object returned by
     ``RunIdentityV2.model_dump(mode="json")`` with Unicode left unescaped,
     lexicographically sorted keys, separators ``(',', ':')``, and non-finite
     numbers rejected.  No delimiter concatenation, timestamp, local path,
@@ -246,14 +327,7 @@ def canonical_run_identity_bytes(identity: RunIdentityV2) -> bytes:
     payload = identity.model_dump(mode="json")
     if set(payload) != set(_RUN_IDENTITY_FIELDS) or len(payload) != len(_RUN_IDENTITY_FIELDS):
         raise RuntimeError("run identity fields diverged from the frozen v2 contract")
-    rendered = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    return rendered.encode("utf-8")
+    return _canonical_json_bytes(payload)
 
 
 def compute_run_id(identity: RunIdentityV2) -> str:
@@ -295,6 +369,20 @@ class AgentReviewRunV2(ContractV2Model):
         return self
 
 
+class CoverageDegradationV2(ContractV2Model):
+    reason_code: CoverageDegradationReasonValue
+    affected_files: list[RelativePath]
+    detail: SafeText
+
+    @model_validator(mode="after")
+    def validate_affected_files(self) -> CoverageDegradationV2:
+        if not self.affected_files:
+            raise ValueError("a degradation cause must identify at least one affected file")
+        if len(self.affected_files) != len(set(self.affected_files)):
+            raise ValueError("degradation affected_files must be unique")
+        return self
+
+
 class ChunkCoverageV2(ContractV2Model):
     status: CoverageStateValue
     expected_files: list[RelativePath]
@@ -303,6 +391,7 @@ class ChunkCoverageV2(ContractV2Model):
     missing_files: list[RelativePath]
     must_review_files: list[RelativePath]
     missing_must_review_files: list[RelativePath]
+    degradation_causes: list[CoverageDegradationV2]
 
     @model_validator(mode="after")
     def validate_partition(self) -> ChunkCoverageV2:
@@ -324,19 +413,43 @@ class ChunkCoverageV2(ContractV2Model):
         missing = set(self.missing_files)
         must_review = set(self.must_review_files)
         missing_must_review = set(self.missing_must_review_files)
-        if not reviewed | partial | missing <= expected:
+        if not (reviewed | partial | missing) <= expected:
             raise ValueError("coverage partitions must be subsets of expected_files")
         if reviewed & partial or reviewed & missing or partial & missing:
             raise ValueError("coverage partitions must be disjoint")
+        partition = reviewed | partial | missing
+        if partition != expected:
+            omitted = sorted(expected - partition)
+            raise ValueError(f"coverage partitions omit expected_files: {omitted}")
         if not must_review <= expected or not missing_must_review <= must_review:
             raise ValueError("must-review coverage must be a subset of expected coverage")
         if missing_must_review != must_review & (partial | missing):
             raise ValueError("missing_must_review_files contradict the coverage partitions")
         if self.status is CoverageStateV2.COMPLETE:
-            if reviewed != expected or partial or missing or missing_must_review:
+            if reviewed != expected or partial or missing or missing_must_review or self.degradation_causes:
                 raise ValueError("complete coverage requires every expected file to be reviewed")
-        elif self.status is CoverageStateV2.PARTIAL and not (partial or missing):
-            raise ValueError("partial coverage requires a partial or missing file")
+        elif self.status is CoverageStateV2.PARTIAL:
+            if not (partial or missing):
+                raise ValueError("partial coverage requires a partial or missing file")
+            if self.degradation_causes:
+                raise ValueError("partial coverage cannot carry degraded-state causes")
+        elif self.status is CoverageStateV2.DEGRADED:
+            affected = partial | missing
+            if not affected or not self.degradation_causes:
+                raise ValueError("degraded coverage requires affected files and structured causes")
+            caused_files: set[str] = set()
+            cause_keys: set[tuple[CoverageDegradationReasonV2, tuple[str, ...]]] = set()
+            for cause in self.degradation_causes:
+                files = set(cause.affected_files)
+                if not files <= affected:
+                    raise ValueError("degradation causes may reference only partial or missing files")
+                caused_files.update(files)
+                key = (cause.reason_code, tuple(sorted(files)))
+                if key in cause_keys:
+                    raise ValueError("degradation causes must be unique")
+                cause_keys.add(key)
+            if caused_files != affected:
+                raise ValueError("degradation causes must account for every partial or missing file")
         return self
 
 
@@ -355,7 +468,7 @@ class PayloadContractReferenceV2(ContractV2Model):
     paths: list[RelativePath]
 
 
-class ChunkPayloadV2(ContractV2Model):
+class ChunkPayloadMaterialV2(ContractV2Model):
     schema_id: Literal["agent-review.chunk-payload.v2"]
     schema_version: Literal[2]
     source: Literal["aiops-review-build-payloads"]
@@ -363,13 +476,12 @@ class ChunkPayloadV2(ContractV2Model):
     identity: RunIdentityV2
     chunk_id: SafeIdentifier
     semantic_group: SemanticGroupValue
-    payload_sha256: Sha256
     coverage: ChunkCoverageV2
     artifact_references: list[PayloadArtifactReferenceV2]
     contract_references: list[PayloadContractReferenceV2]
 
     @model_validator(mode="after")
-    def validate_identity_and_references(self) -> ChunkPayloadV2:
+    def validate_identity_and_references(self) -> ChunkPayloadMaterialV2:
         if self.run_id != compute_run_id(self.identity):
             raise ValueError("run_id does not match the canonical run identity")
         if len({item.artifact_id for item in self.artifact_references}) != len(self.artifact_references):
@@ -378,6 +490,45 @@ class ChunkPayloadV2(ContractV2Model):
         if len(contract_keys) != len(self.contract_references):
             raise ValueError("contract references must be unique")
         return self
+
+
+class ChunkPayloadV2(ChunkPayloadMaterialV2):
+    payload_sha256: Sha256
+
+    @model_validator(mode="after")
+    def validate_payload_hash(self) -> ChunkPayloadV2:
+        expected = compute_payload_sha256_v2(self)
+        if self.payload_sha256 != expected:
+            raise ValueError("payload_sha256 does not match the canonical payload material")
+        return self
+
+
+def _chunk_payload_material(value: ChunkPayloadMaterialV2 | Mapping[str, object]) -> dict[str, Any]:
+    if isinstance(value, ChunkPayloadMaterialV2):
+        return value.model_dump(mode="json", exclude={"payload_sha256"})
+    if not isinstance(value, Mapping):
+        raise TypeError("chunk payload must be a model or mapping")
+    raw = dict(value)
+    raw.pop("payload_sha256", None)
+    material = ChunkPayloadMaterialV2.model_validate(raw)
+    return material.model_dump(mode="json")
+
+
+def canonical_chunk_payload_bytes_v2(
+    value: ChunkPayloadMaterialV2 | Mapping[str, object],
+) -> bytes:
+    """Hash preimage: every validated payload field except ``payload_sha256``."""
+
+    return _canonical_json_bytes(_chunk_payload_material(value))
+
+
+def compute_payload_sha256_v2(value: ChunkPayloadMaterialV2 | Mapping[str, object]) -> str:
+    return hashlib.sha256(canonical_chunk_payload_bytes_v2(value)).hexdigest()
+
+
+def verify_payload_sha256_v2(payload: ChunkPayloadV2) -> None:
+    encoded = _canonical_json_bytes(payload.model_dump(mode="json"))
+    ChunkPayloadV2.model_validate_json(encoded, strict=True)
 
 
 class ChunkFindingV2(ContractV2Model):
@@ -462,7 +613,8 @@ class _ChunkResponseEnvelopeBaseV2(ContractV2Model):
     attempt: Annotated[StrictInt, Field(ge=1, le=100)]
     request_id: SafeIdentifier
     finish_reason: FinishReasonValue
-    response_sha256: Sha256
+    response_received: StrictBool
+    response_sha256: Sha256 | None
 
 
 class ChunkResponseSuccessEnvelopeV2(_ChunkResponseEnvelopeBaseV2):
@@ -471,8 +623,12 @@ class ChunkResponseSuccessEnvelopeV2(_ChunkResponseEnvelopeBaseV2):
 
     @model_validator(mode="after")
     def validate_success_finish_reason(self) -> ChunkResponseSuccessEnvelopeV2:
-        if self.finish_reason is FinishReasonV2.ERROR:
-            raise ValueError("a successful envelope cannot have finish_reason=error")
+        if self.finish_reason is not FinishReasonV2.STOP:
+            raise ValueError("success requires the conclusive finish_reason=stop")
+        if not self.response_received or self.response_sha256 is None:
+            raise ValueError("success requires a received response and its canonical hash")
+        if self.response_sha256 != compute_response_sha256_v2(self):
+            raise ValueError("response_sha256 does not match the canonical sanitized response")
         return self
 
 
@@ -482,34 +638,75 @@ class ChunkResponseErrorEnvelopeV2(_ChunkResponseEnvelopeBaseV2):
 
     @model_validator(mode="after")
     def validate_error_finish_reason(self) -> ChunkResponseErrorEnvelopeV2:
-        if self.finish_reason in {FinishReasonV2.STOP, FinishReasonV2.TOOL_CALL}:
-            raise ValueError("an error envelope cannot have a successful finish reason")
+        if self.finish_reason is FinishReasonV2.STOP:
+            raise ValueError("an error envelope cannot have finish_reason=stop")
+        if not self.response_received:
+            if self.finish_reason is not FinishReasonV2.ERROR:
+                raise ValueError("no-response failures require finish_reason=error")
+            if self.error.reason_code is not ResponseErrorReasonV2.TRANSPORT_FAILURE:
+                raise ValueError("no-response failures require transport_failure")
+            if self.response_sha256 is not None:
+                raise ValueError("a missing response cannot have response_sha256")
+            return self
+        if self.response_sha256 is None:
+            raise ValueError("a received error response requires response_sha256")
+        if self.response_sha256 != compute_response_sha256_v2(self):
+            raise ValueError("response_sha256 does not match the canonical sanitized response")
         return self
 
 
-ChunkResponseEnvelopeV2: TypeAlias = Annotated[
+ChunkResponseEnvelopeValueV2: TypeAlias = Annotated[
     ChunkResponseSuccessEnvelopeV2 | ChunkResponseErrorEnvelopeV2,
     Field(discriminator="status"),
 ]
-CHUNK_RESPONSE_ENVELOPE_V2_ADAPTER = TypeAdapter(ChunkResponseEnvelopeV2)
 
 
-def validate_chunk_response_envelope_v2(value: object) -> ChunkResponseEnvelopeV2:
+class ChunkResponseEnvelopeV2(RootModel[ChunkResponseEnvelopeValueV2]):
+    """Named root model used for stable validation and JSON Schema refs."""
+
+    model_config = ConfigDict(frozen=True)
+
+
+def canonical_response_envelope_bytes_v2(
+    value: ChunkResponseEnvelopeValueV2 | Mapping[str, object],
+) -> bytes:
+    """Hash the sanitized envelope fields, excluding only ``response_sha256``.
+
+    This is deliberately not a hash of a raw provider body.  Raw responses,
+    prompts, headers, credentials, and local paths are outside this contract.
+    """
+
+    if isinstance(value, (ChunkResponseSuccessEnvelopeV2, ChunkResponseErrorEnvelopeV2)):
+        material = value.model_dump(mode="json", exclude={"response_sha256"})
+    elif isinstance(value, Mapping):
+        material = dict(value)
+        material.pop("response_sha256", None)
+    else:
+        raise TypeError("response envelope must be a validated model or mapping")
+    if sanitize_artifact_value(material) != material:
+        raise ValueError("response envelope contains a secret-like value or local path")
+    return _canonical_json_bytes(material)
+
+
+def compute_response_sha256_v2(
+    value: ChunkResponseEnvelopeValueV2 | Mapping[str, object],
+) -> str:
+    return hashlib.sha256(canonical_response_envelope_bytes_v2(value)).hexdigest()
+
+
+def validate_chunk_response_envelope_v2(value: object) -> ChunkResponseEnvelopeValueV2:
     """Validate a JSON-compatible response envelope with strict JSON semantics."""
 
     if isinstance(value, (ChunkResponseSuccessEnvelopeV2, ChunkResponseErrorEnvelopeV2)):
-        return value
+        value = value.model_dump(mode="json")
     if isinstance(value, (str, bytes, bytearray)):
-        return CHUNK_RESPONSE_ENVELOPE_V2_ADAPTER.validate_json(value, strict=True)
-    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-    return CHUNK_RESPONSE_ENVELOPE_V2_ADAPTER.validate_json(encoded, strict=True)
+        return ChunkResponseEnvelopeV2.model_validate_json(value, strict=True).root
+    encoded = _canonical_json_bytes(value)
+    return ChunkResponseEnvelopeV2.model_validate_json(encoded, strict=True).root
 
 
 class ResponseBindingV2(ContractV2Model):
-    run_id: Sha256
-    chunk_id: SafeIdentifier
-    payload_sha256: Sha256
-    head_sha: GitSha
+    payload: ChunkPayloadV2
 
 
 class ResponseBindingError(ValueError):
@@ -519,19 +716,22 @@ class ResponseBindingError(ValueError):
 
 
 def validate_response_binding_v2(
-    envelope: ChunkResponseEnvelopeV2,
-    expected: ResponseBindingV2,
+    envelope: ChunkResponseEnvelopeValueV2,
+    expected: ResponseBindingV2 | ChunkPayloadV2,
 ) -> None:
-    """Detect identity divergence before a future parser reads result findings."""
+    """Verify payload integrity, then bind a response before findings are read."""
+
+    payload = expected.payload if isinstance(expected, ResponseBindingV2) else expected
+    verify_payload_sha256_v2(payload)
 
     comparisons = (
-        ("run_id", "run_id_mismatch"),
-        ("chunk_id", "chunk_id_mismatch"),
-        ("payload_sha256", "payload_sha256_mismatch"),
-        ("head_sha", "head_sha_mismatch"),
+        (envelope.run_id, payload.run_id, "run_id_mismatch"),
+        (envelope.chunk_id, payload.chunk_id, "chunk_id_mismatch"),
+        (envelope.payload_sha256, payload.payload_sha256, "payload_sha256_mismatch"),
+        (envelope.head_sha, payload.identity.head_sha, "head_sha_mismatch"),
     )
-    for field_name, reason_code in comparisons:
-        if getattr(envelope, field_name) != getattr(expected, field_name):
+    for observed, wanted, reason_code in comparisons:
+        if observed != wanted:
             raise ResponseBindingError(reason_code)
 
 
@@ -565,10 +765,10 @@ class TargetMustReviewV2(ContractV2Model):
 
 class TargetPoliciesV2(ContractV2Model):
     network_policy: Literal["forbidden"]
-    fail_closed: StrictBool
-    redaction_required: StrictBool
-    allow_partial_coverage: StrictBool
-    required_checks: list[SafeIdentifier]
+    fail_closed: Literal[True]
+    redaction_required: Literal[True]
+    allow_partial_coverage: Literal[False]
+    required_checks: list[SafeText]
     allowed_semantic_groups: list[SemanticGroupValue]
     coverage_failure_state: Literal["blocked_pipeline", "manual_required"]
     model_uncertainty_state: Literal["manual_required"]
@@ -629,6 +829,7 @@ DispositionEvidenceKindValue = Annotated[DispositionEvidenceKindV2, Field(strict
 class DispositionEvidenceV2(ContractV2Model):
     kind: DispositionEvidenceKindValue
     reference: SafeIdentifier
+    head_sha: GitSha
 
 
 class FindingLifecycleRecordV2(ContractV2Model):
@@ -638,20 +839,41 @@ class FindingLifecycleRecordV2(ContractV2Model):
     actionable: StrictBool
     justification: SafeText | None
     decided_by: SafeIdentifier | None
+    decided_at_head_sha: GitSha | None
     evidence: list[DispositionEvidenceV2]
     superseded_by: SafeIdentifier | None
 
     @model_validator(mode="after")
     def validate_disposition_metadata(self) -> FindingLifecycleRecordV2:
+        active = self.disposition in {FindingDispositionV2.NEW, FindingDispositionV2.CONFIRMED}
+        if self.actionable is not active:
+            raise ValueError("new and confirmed findings are actionable; terminal findings are not")
+        if self.disposition is FindingDispositionV2.NEW:
+            if (
+                self.justification is not None
+                or self.decided_by is not None
+                or self.decided_at_head_sha is not None
+                or self.evidence
+                or self.superseded_by is not None
+            ):
+                raise ValueError("new findings cannot carry disposition decision metadata")
+            return self
+
+        if self.decided_by is None or self.decided_at_head_sha is None:
+            raise ValueError("disposition decisions require an owner and decision HEAD")
         if self.disposition is FindingDispositionV2.DISMISSED:
-            if self.justification is None or self.decided_by is None or not self.evidence:
-                raise ValueError("dismissed findings require justification, owner, and evidence")
+            if self.justification is None or not self.evidence:
+                raise ValueError("dismissed findings require justification and typed evidence")
         elif self.disposition is FindingDispositionV2.FIXED and not self.evidence:
             raise ValueError("fixed findings require commit or test evidence")
-        elif self.disposition is FindingDispositionV2.SUPERSEDED and self.superseded_by is None:
-            raise ValueError("superseded findings require a successor")
+        elif self.disposition is FindingDispositionV2.SUPERSEDED:
+            if self.superseded_by is None or self.superseded_by == self.finding_id:
+                raise ValueError("superseded findings require a different successor")
         elif self.superseded_by is not None:
             raise ValueError("superseded_by is valid only for superseded findings")
+        evidence_keys = [(item.kind, item.reference, item.head_sha) for item in self.evidence]
+        if len(evidence_keys) != len(set(evidence_keys)):
+            raise ValueError("disposition evidence must be unique")
         return self
 
 
@@ -662,13 +884,61 @@ class ReadinessBlockerV2(ContractV2Model):
     finding_id: SafeIdentifier | None
 
 
+class RequiredCheckResultV2(ContractV2Model):
+    check_name: SafeText
+    required: Literal[True]
+    deterministic: Literal[True]
+    conclusion: RequiredCheckConclusionValue
+    head_sha: GitSha
+
+
+class PipelineDegradationCauseV2(ContractV2Model):
+    reason_code: ReadinessReasonValue
+    component: SafeIdentifier
+    detail: SafeText
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> PipelineDegradationCauseV2:
+        allowed = {
+            ReadinessReasonV2.SCHEMA_FAILURE,
+            ReadinessReasonV2.TRANSPORT_FAILURE,
+            ReadinessReasonV2.COVERAGE_FAILURE,
+            ReadinessReasonV2.POLICY_FAILURE,
+            ReadinessReasonV2.MODEL_UNCERTAINTY,
+        }
+        if self.reason_code not in allowed:
+            raise ValueError("pipeline degradation requires a pipeline or uncertainty reason")
+        return self
+
+
+class PipelineAssessmentV2(ContractV2Model):
+    degraded: StrictBool
+    causes: list[PipelineDegradationCauseV2]
+
+    @model_validator(mode="after")
+    def validate_degradation(self) -> PipelineAssessmentV2:
+        if self.degraded != bool(self.causes):
+            raise ValueError("pipeline degraded must be exactly represented by structured causes")
+        keys = [(cause.reason_code, cause.component) for cause in self.causes]
+        if len(keys) != len(set(keys)):
+            raise ValueError("pipeline degradation causes must be unique")
+        return self
+
+
 class ReviewReadinessV2(ContractV2Model):
     schema_id: Literal["agent-review.review-readiness.v2"]
     schema_version: Literal[2]
     source: Literal["aiops-review-quality-gate"]
     run_id: Sha256
+    identity: RunIdentityV2
+    evaluated_run_id: Sha256
+    evaluated_identity: RunIdentityV2
     head_sha: GitSha
     evaluated_head_sha: GitSha
+    pr_state: PullRequestStateValue
+    checks: list[RequiredCheckResultV2]
+    coverage: ChunkCoverageV2
+    pipeline: PipelineAssessmentV2
     state: ReadinessStateValue
     reason_codes: list[ReadinessReasonValue]
     blockers: list[ReadinessBlockerV2]
@@ -676,36 +946,76 @@ class ReviewReadinessV2(ContractV2Model):
 
     @model_validator(mode="after")
     def validate_state_invariants(self) -> ReviewReadinessV2:
+        if self.run_id != compute_run_id(self.identity):
+            raise ValueError("run_id does not match the canonical readiness identity")
+        if self.evaluated_run_id != compute_run_id(self.evaluated_identity):
+            raise ValueError("evaluated_run_id does not match evaluated_identity")
+        if self.head_sha != self.identity.head_sha:
+            raise ValueError("readiness head_sha must match the expected run identity HEAD")
+        if self.evaluated_head_sha != self.evaluated_identity.head_sha:
+            raise ValueError("evaluated_head_sha must match evaluated_identity")
         if len(self.reason_codes) != len(set(self.reason_codes)):
             raise ValueError("reason_codes must be unique")
         blocker_ids = [blocker.blocker_id for blocker in self.blockers]
         finding_ids = [finding.finding_id for finding in self.findings]
+        check_names = [check.check_name for check in self.checks]
         if len(blocker_ids) != len(set(blocker_ids)):
             raise ValueError("blocker IDs must be unique")
         if len(finding_ids) != len(set(finding_ids)):
             raise ValueError("finding IDs must be unique")
+        if len(check_names) != len(set(check_names)):
+            raise ValueError("required check names must be unique")
+        if any(check.head_sha != self.evaluated_head_sha for check in self.checks):
+            raise ValueError("check results must be bound to the evaluated HEAD")
+
+        findings_by_id = {finding.finding_id: finding for finding in self.findings}
+        for blocker in self.blockers:
+            if blocker.reason_code is ReadinessReasonV2.CONFIRMED_CODE_FINDING:
+                if blocker.finding_id is None or blocker.finding_id not in findings_by_id:
+                    raise ValueError("confirmed_code_finding blockers require a valid finding_id")
+            elif blocker.finding_id is not None:
+                raise ValueError("pipeline, manual, and stale blockers cannot point to findings")
 
         active_blockers = [blocker for blocker in self.blockers if blocker.active]
         active_reasons = {blocker.reason_code for blocker in active_blockers}
         reasons = set(self.reason_codes)
         heads_differ = self.head_sha != self.evaluated_head_sha
+        expected_context = self.identity.model_dump(mode="json", exclude={"head_sha"})
+        evaluated_context = self.evaluated_identity.model_dump(mode="json", exclude={"head_sha"})
+        identities_differ = expected_context != evaluated_context
 
         if self.state is ReadinessStateV2.STALE:
-            if not heads_differ or reasons or active_blockers:
-                raise ValueError("stale requires a divergent HEAD and no active blockers or reason codes")
+            expected_reasons: set[ReadinessReasonV2] = set()
+            if heads_differ:
+                expected_reasons.add(ReadinessReasonV2.HEAD_MISMATCH)
+            if identities_differ:
+                expected_reasons.add(ReadinessReasonV2.IDENTITY_MISMATCH)
+            if not expected_reasons or reasons != expected_reasons or active_blockers:
+                raise ValueError("stale requires explicit HEAD or identity divergence reasons")
             return self
-        if heads_differ:
-            raise ValueError("only stale may refer to a different evaluated HEAD")
+        if heads_differ or identities_differ:
+            raise ValueError("only stale may refer to a different evaluated HEAD or run identity")
 
-        active_findings = [
+        blocking_findings = [
             finding
             for finding in self.findings
             if finding.actionable
             and finding.disposition in {FindingDispositionV2.NEW, FindingDispositionV2.CONFIRMED}
+            and finding.severity in {FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2}
         ]
         if self.state is ReadinessStateV2.READY:
-            if reasons or active_blockers or active_findings:
-                raise ValueError("ready cannot contain reasons, active blockers, or actionable findings")
+            if self.pr_state is not PullRequestStateV2.OPEN:
+                raise ValueError("ready requires an open, non-merged pull request")
+            if not self.checks or any(
+                check.conclusion is not RequiredCheckConclusionV2.SUCCESS for check in self.checks
+            ):
+                raise ValueError("ready requires every deterministic required check to be green")
+            if self.coverage.status is not CoverageStateV2.COMPLETE or self.coverage.missing_must_review_files:
+                raise ValueError("ready requires complete total and must-review coverage")
+            if self.pipeline.degraded:
+                raise ValueError("ready cannot use a degraded pipeline result")
+            if reasons or active_blockers or blocking_findings:
+                raise ValueError("ready cannot contain reasons, active blockers, or blocking findings")
             return self
 
         if not reasons or reasons != active_reasons:
@@ -714,9 +1024,11 @@ class ReviewReadinessV2(ContractV2Model):
         if self.state is ReadinessStateV2.BLOCKED_CODE:
             if reasons != {ReadinessReasonV2.CONFIRMED_CODE_FINDING}:
                 raise ValueError("blocked_code accepts only confirmed_code_finding")
+            if self.pipeline.degraded:
+                raise ValueError("blocked_code cannot substitute for a degraded pipeline")
             confirmed = {
                 finding.finding_id
-                for finding in active_findings
+                for finding in blocking_findings
                 if finding.disposition is FindingDispositionV2.CONFIRMED
             }
             blocker_findings = {
@@ -725,7 +1037,7 @@ class ReviewReadinessV2(ContractV2Model):
                 if blocker.reason_code is ReadinessReasonV2.CONFIRMED_CODE_FINDING
             }
             if not confirmed or None in blocker_findings or not blocker_findings <= confirmed:
-                raise ValueError("blocked_code requires a confirmed actionable finding")
+                raise ValueError("blocked_code requires a confirmed actionable P0/P1/P2 finding")
         elif self.state is ReadinessStateV2.BLOCKED_PIPELINE:
             allowed = {
                 ReadinessReasonV2.SCHEMA_FAILURE,
@@ -733,7 +1045,8 @@ class ReviewReadinessV2(ContractV2Model):
                 ReadinessReasonV2.COVERAGE_FAILURE,
                 ReadinessReasonV2.POLICY_FAILURE,
             }
-            if not reasons <= allowed or active_findings:
+            cause_reasons = {cause.reason_code for cause in self.pipeline.causes}
+            if not reasons <= allowed or not self.pipeline.degraded or cause_reasons != reasons:
                 raise ValueError("blocked_pipeline accepts pipeline failures only")
         elif self.state is ReadinessStateV2.MANUAL_REQUIRED:
             allowed = {
@@ -741,6 +1054,7 @@ class ReviewReadinessV2(ContractV2Model):
                 ReadinessReasonV2.POLICY_FAILURE,
                 ReadinessReasonV2.MODEL_UNCERTAINTY,
             }
-            if not reasons <= allowed or active_findings:
+            cause_reasons = {cause.reason_code for cause in self.pipeline.causes}
+            if not reasons <= allowed or not self.pipeline.degraded or cause_reasons != reasons:
                 raise ValueError("manual_required accepts uncertainty or incomplete evidence only")
         return self

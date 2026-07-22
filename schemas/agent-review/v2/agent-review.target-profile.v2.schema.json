@@ -1,5 +1,19 @@
 {
   "$defs": {
+    "SemanticGroupV2": {
+      "enum": [
+        "primary_backend_logic",
+        "api_schema_contract",
+        "frontend_ui",
+        "tests",
+        "workflow_aiops",
+        "docs_changelog",
+        "suspicious_out_of_scope",
+        "unknown"
+      ],
+      "title": "SemanticGroupV2",
+      "type": "string"
+    },
     "TargetArtifactV2": {
       "additionalProperties": false,
       "properties": {
@@ -167,7 +181,8 @@
         },
         "minimum_coverage": {
           "const": "complete",
-          "title": "Minimum Coverage"
+          "title": "Minimum Coverage",
+          "type": "string"
         },
         "paths": {
           "items": {
@@ -201,12 +216,13 @@
       "additionalProperties": false,
       "properties": {
         "allow_partial_coverage": {
+          "const": false,
           "title": "Allow Partial Coverage",
           "type": "boolean"
         },
         "allowed_semantic_groups": {
           "items": {
-            "$ref": "#/$defs/app__agent_review__contracts_v2__SemanticGroupV2__2"
+            "$ref": "#/$defs/SemanticGroupV2"
           },
           "title": "Allowed Semantic Groups",
           "type": "array"
@@ -220,24 +236,29 @@
           "type": "string"
         },
         "fail_closed": {
+          "const": true,
           "title": "Fail Closed",
           "type": "boolean"
         },
         "model_uncertainty_state": {
           "const": "manual_required",
-          "title": "Model Uncertainty State"
+          "title": "Model Uncertainty State",
+          "type": "string"
         },
         "network_policy": {
           "const": "forbidden",
-          "title": "Network Policy"
+          "title": "Network Policy",
+          "type": "string"
         },
         "redaction_required": {
+          "const": true,
           "title": "Redaction Required",
           "type": "boolean"
         },
         "required_checks": {
           "items": {
-            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "maxLength": 512,
+            "minLength": 1,
             "type": "string"
           },
           "title": "Required Checks",
@@ -256,23 +277,6 @@
       ],
       "title": "TargetPoliciesV2",
       "type": "object"
-    },
-    "app__agent_review__contracts_v2__SemanticGroupV2__1": {
-      "enum": [
-        "primary_backend_logic",
-        "api_schema_contract",
-        "frontend_ui",
-        "tests",
-        "workflow_aiops",
-        "docs_changelog",
-        "suspicious_out_of_scope",
-        "unknown"
-      ],
-      "title": "SemanticGroupV2",
-      "type": "string"
-    },
-    "app__agent_review__contracts_v2__SemanticGroupV2__2": {
-      "$ref": "#/$defs/app__agent_review__contracts_v2__SemanticGroupV2__1"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -314,15 +318,18 @@
     },
     "schema_id": {
       "const": "agent-review.target-profile.v2",
-      "title": "Schema Id"
+      "title": "Schema Id",
+      "type": "string"
     },
     "schema_version": {
       "const": 2,
-      "title": "Schema Version"
+      "title": "Schema Version",
+      "type": "integer"
     },
     "source": {
       "const": "repo-profile",
-      "title": "Source"
+      "title": "Source",
+      "type": "string"
     }
   },
   "required": [

@@ -18,6 +18,11 @@
           "title": "Head Sha",
           "type": "string"
         },
+        "manifest_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Hash",
+          "type": "string"
+        },
         "policy_hash": {
           "pattern": "^[0-9a-f]{64}$",
           "title": "Policy Hash",
@@ -58,6 +63,7 @@
         "toolrepo_sha",
         "profile_hash",
         "policy_hash",
+        "manifest_hash",
         "evidence_hash"
       ],
       "title": "RunIdentityV2",
@@ -136,15 +142,18 @@
     },
     "schema_id": {
       "const": "agent-review.run.v2",
-      "title": "Schema Id"
+      "title": "Schema Id",
+      "type": "string"
     },
     "schema_version": {
       "const": 2,
-      "title": "Schema Version"
+      "title": "Schema Version",
+      "type": "integer"
     },
     "source": {
       "const": "aiops-review-run",
-      "title": "Source"
+      "title": "Source",
+      "type": "string"
     }
   },
   "required": [
