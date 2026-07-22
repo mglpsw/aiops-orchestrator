@@ -1457,6 +1457,35 @@ def test_safe_text_accepts_pt_br_and_small_technical_evidence() -> None:
     assert parsed.result.summary.startswith("Revisão concluída")
 
 
+@pytest.mark.parametrize(
+    "route_text",
+    [
+        "/api/v1/users",
+        "GET /users/list",
+        "POST /v1/reviews?dry_run=true",
+    ],
+)
+def test_safe_text_accepts_api_route_literals(route_text: str) -> None:
+    envelope = _success_envelope()
+    envelope["result"]["summary"] = route_text  # type: ignore[index]
+    envelope["response_sha256"] = compute_response_sha256_v2(envelope)
+
+    parsed = validate_chunk_response_envelope_v2(envelope)
+
+    assert parsed.result is not None
+    assert parsed.result.summary == route_text
+
+
+def test_api_route_literal_does_not_hide_a_real_token() -> None:
+    envelope = _success_envelope()
+    envelope["result"]["summary"] = (  # type: ignore[index]
+        "/api/v1/users/sk-abcdefghijklmnop"
+    )
+
+    with pytest.raises(ValidationError):
+        validate_chunk_response_envelope_v2(envelope)
+
+
 def test_legitimate_check_names_and_secret_scan_identifier_are_allowed() -> None:
     profile = _target_profile()
     profile["policies"]["required_checks"] = ["Validate repository", "secret-scan"]  # type: ignore[index]

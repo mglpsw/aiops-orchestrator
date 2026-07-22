@@ -61,6 +61,12 @@ _SAFE_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _RFC3339_SECONDS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 _GIT_BRANCH_FORBIDDEN_CHARACTERS = frozenset(" ~^:?*[\\")
 _GIT_BRANCH_SCHEMA_PATTERN = r"^[^\u0000-\u0020\u007f~^:?*\\\[]+$"
+_HTTP_ROUTE_LITERAL_RE = re.compile(
+    r"\b(?:GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD)\s+/[^\s\"'<>]*"
+)
+_VERSIONED_ROUTE_LITERAL_RE = re.compile(
+    r"(?<![\w.~-])/(?:api(?:/|$)|v[0-9]+(?:/|$))[^\s\"'<>]*"
+)
 
 
 class ContractV2Model(BaseModel):
@@ -147,7 +153,7 @@ def _validate_safe_text(value: str) -> str:
         raise ValueError("text must be valid UTF-8") from exc
     if any(unicodedata.category(character).startswith("C") for character in value):
         raise ValueError("text contains control or non-printing characters")
-    _reject_sensitive_value(value)
+    _reject_sensitive_material_v2(value)
     return value
 
 
@@ -160,6 +166,29 @@ def _validate_timestamp(value: str) -> str:
 
 def _reject_sensitive_value(value: str) -> None:
     if sanitize_artifact_value(value) != value:
+        raise ValueError("value contains a secret-like token or local path")
+
+
+def _neutralize_route_literals_v2(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _neutralize_route_literals_v2(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_neutralize_route_literals_v2(item) for item in value]
+    if isinstance(value, tuple):
+        return [_neutralize_route_literals_v2(item) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    def neutralize(match: re.Match[str]) -> str:
+        return match.group(0).replace("/", " route-separator ")
+
+    material = _HTTP_ROUTE_LITERAL_RE.sub(neutralize, value)
+    return _VERSIONED_ROUTE_LITERAL_RE.sub(neutralize, material)
+
+
+def _reject_sensitive_material_v2(value: object) -> None:
+    route_neutralized = _neutralize_route_literals_v2(value)
+    if sanitize_artifact_value(route_neutralized) != route_neutralized:
         raise ValueError("value contains a secret-like token or local path")
 
 
@@ -267,8 +296,7 @@ def canonical_manifest_bytes_v2(manifest: Mapping[str, object]) -> bytes:
 
     material = dict(manifest)
     _validate_manifest_object_keys(material)
-    if sanitize_artifact_value(material) != material:
-        raise ValueError("manifest contains a secret-like value or local path")
+    _reject_sensitive_material_v2(material)
     return _canonical_json_bytes(material)
 
 
@@ -750,8 +778,7 @@ def canonical_response_envelope_bytes_v2(
         material.pop("response_sha256", None)
     else:
         raise TypeError("response envelope must be a validated model or mapping")
-    if sanitize_artifact_value(material) != material:
-        raise ValueError("response envelope contains a secret-like value or local path")
+    _reject_sensitive_material_v2(material)
     return _canonical_json_bytes(material)
 
 
