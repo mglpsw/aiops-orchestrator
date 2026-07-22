@@ -578,6 +578,65 @@ def test_target_profile_rejects_absolute_and_parent_paths() -> None:
 
 
 @pytest.mark.parametrize(
+    "branch_name",
+    ["master", "develop", "release/2026.07", "feature/agent-review-v2"],
+)
+def test_target_profile_accepts_valid_git_branch_names(branch_name: str) -> None:
+    profile = _target_profile()
+    profile["identity"]["default_branch"] = branch_name  # type: ignore[index]
+
+    parsed = _validate_json(TargetProfileV2, profile)
+
+    assert parsed.identity.default_branch == branch_name
+
+
+@pytest.mark.parametrize(
+    "branch_name",
+    [
+        "feature name",
+        "feature\\name",
+        "feature..name",
+        "feature@{1}",
+        "feature//name",
+        "/feature",
+        "feature/",
+        "feature\x01name",
+        ".hidden/name",
+        "feature/name.lock",
+        "feature.",
+        "@",
+        "-feature",
+        "feature~1",
+        "feature^1",
+        "feature:name",
+        "feature?name",
+        "feature*name",
+        "feature[name",
+    ],
+)
+def test_target_profile_rejects_ambiguous_or_unsafe_git_branch_names(
+    branch_name: str,
+) -> None:
+    profile = _target_profile()
+    profile["identity"]["default_branch"] = branch_name  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        _validate_json(TargetProfileV2, profile)
+
+
+def test_target_profile_branch_name_is_strict_and_documented_in_json_schema() -> None:
+    profile = _target_profile()
+    profile["identity"]["default_branch"] = 123  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        _validate_json(TargetProfileV2, profile)
+
+    schema = render_v2_json_schemas()["agent-review.target-profile.v2.schema.json"]
+    branch_schema = schema["$defs"]["TargetIdentityV2"]["properties"]["default_branch"]
+    assert branch_schema["x-git-ref-format"] == "--branch"
+    assert "Git branch name" in branch_schema["description"]
+
+
+@pytest.mark.parametrize(
     "path",
     ["app/./service.py", "app//service.py", "app/service.py/", ".", "./app/service.py"],
 )

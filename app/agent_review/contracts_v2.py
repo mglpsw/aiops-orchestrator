@@ -57,6 +57,8 @@ _RUN_IDENTITY_FIELDS = (
 _REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _SAFE_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _RFC3339_SECONDS_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+_GIT_BRANCH_FORBIDDEN_CHARACTERS = frozenset(" ~^:?*[\\")
+_GIT_BRANCH_SCHEMA_PATTERN = r"^[^\u0000-\u0020\u007f~^:?*\\\[]+$"
 
 
 class ContractV2Model(BaseModel):
@@ -113,6 +115,27 @@ def _validate_safe_identifier(value: str) -> str:
     return value
 
 
+def _validate_branch_name(value: str) -> str:
+    if value != value.strip() or not value:
+        raise ValueError("branch name must be non-empty with no surrounding whitespace")
+    if value.startswith(("/", "-")) or value.endswith(("/", ".")) or "//" in value:
+        raise ValueError("branch name has an invalid boundary or empty component")
+    if value == "@" or ".." in value or "@{" in value:
+        raise ValueError("branch name contains an ambiguous revision expression")
+    if any(
+        ord(character) < 32
+        or ord(character) == 127
+        or character in _GIT_BRANCH_FORBIDDEN_CHARACTERS
+        for character in value
+    ):
+        raise ValueError("branch name contains a character forbidden by Git")
+    components = value.split("/")
+    if any(component.startswith(".") or component.endswith(".lock") for component in components):
+        raise ValueError("branch components cannot start with dot or end with .lock")
+    _reject_sensitive_value(value)
+    return value
+
+
 def _validate_safe_text(value: str) -> str:
     if value != value.strip() or not value:
         raise ValueError("text must be non-empty and have no surrounding whitespace")
@@ -157,6 +180,18 @@ SafeIdentifier = Annotated[
     StrictStr,
     Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"),
     AfterValidator(_validate_safe_identifier),
+]
+BranchName = Annotated[
+    StrictStr,
+    Field(
+        min_length=1,
+        description="Git branch name validated with the git-check-ref-format --branch rules.",
+        json_schema_extra={
+            "pattern": _GIT_BRANCH_SCHEMA_PATTERN,
+            "x-git-ref-format": "--branch",
+        },
+    ),
+    AfterValidator(_validate_branch_name),
 ]
 SafeText = Annotated[
     StrictStr,
@@ -757,7 +792,7 @@ def validate_response_binding_v2(
 
 class TargetIdentityV2(ContractV2Model):
     repo: Repository
-    default_branch: SafeIdentifier
+    default_branch: BranchName
 
 
 class TargetArtifactV2(ContractV2Model):

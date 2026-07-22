@@ -185,6 +185,17 @@ so one repository file cannot acquire multiple coverage identities.
 glob components such as `*`, `**`, and `test_*.py` remain valid and are not
 normalized away.
 
+`TargetIdentityV2.default_branch` uses a dedicated strict `BranchName`, not an
+internal identifier. It implements the documented
+[`git check-ref-format --branch`](https://git-scm.com/docs/git-check-ref-format)
+restrictions in-process, with no subprocess or installed-Git dependency:
+hierarchical `/` components are supported, while leading/trailing or duplicate
+slashes, dot-leading or `.lock` components, `..`, `@{`, a lone `@`, controls,
+spaces, backslash, and Git's other forbidden ref characters are rejected. The
+JSON Schema exposes the safe-character subset plus the `x-git-ref-format:
+--branch` annotation; the remaining structural rules require the Python
+contract authority.
+
 Check names use bounded safe text, so names such as `Validate repository` and
 identifiers such as `secret-scan` remain representable. `SafeText` accepts
 bounded printable UTF-8, including Portuguese and small technical snippets.

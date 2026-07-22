@@ -151,9 +151,12 @@
       "additionalProperties": false,
       "properties": {
         "default_branch": {
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "description": "Git branch name validated with the git-check-ref-format --branch rules.",
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u0020\\u007f~^:?*\\\\\\[]+$",
           "title": "Default Branch",
-          "type": "string"
+          "type": "string",
+          "x-git-ref-format": "--branch"
         },
         "repo": {
           "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
