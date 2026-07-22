@@ -813,6 +813,13 @@ class ResponseBindingError(ValueError):
         self.reason_code = reason_code
 
 
+def _coverage_knowledge_by_file_v2(coverage: ChunkCoverageV2) -> dict[str, int]:
+    knowledge = {path: 0 for path in coverage.missing_files}
+    knowledge.update({path: 1 for path in coverage.partially_reviewed_files})
+    knowledge.update({path: 2 for path in coverage.reviewed_files})
+    return knowledge
+
+
 def validate_response_binding_v2(
     envelope: ChunkResponseEnvelopeValueV2,
     expected: ResponseBindingV2 | ChunkPayloadV2,
@@ -841,10 +848,24 @@ def validate_response_binding_v2(
             raise ResponseBindingError(reason_code)
 
     if isinstance(envelope, ChunkResponseSuccessEnvelopeV2):
-        payload_files = set(payload.coverage.expected_files)
-        response_files = set(envelope.result.coverage.expected_files)
+        payload_coverage = payload.coverage
+        response_coverage = envelope.result.coverage
+        payload_files = set(payload_coverage.expected_files)
+        response_files = set(response_coverage.expected_files)
         finding_files = {finding.file_path for finding in envelope.result.findings}
-        if response_files != payload_files or not finding_files <= payload_files:
+        payload_knowledge = _coverage_knowledge_by_file_v2(payload_coverage)
+        response_knowledge = _coverage_knowledge_by_file_v2(response_coverage)
+        coverage_promoted = any(
+            response_knowledge[path] > payload_knowledge[path]
+            for path in payload_files & response_files
+        )
+        if (
+            response_files != payload_files
+            or set(response_coverage.must_review_files)
+            != set(payload_coverage.must_review_files)
+            or coverage_promoted
+            or not finding_files <= payload_files
+        ):
             raise ResponseBindingError(RESPONSE_SCOPE_MISMATCH_REASON_V2)
 
 
@@ -881,7 +902,7 @@ class TargetPoliciesV2(ContractV2Model):
     fail_closed: Literal[True]
     redaction_required: Literal[True]
     allow_partial_coverage: Literal[False]
-    required_checks: list[SafeText]
+    required_checks: Annotated[list[SafeText], Field(min_length=1)]
     allowed_semantic_groups: list[SemanticGroupValue]
     coverage_failure_state: Literal["blocked_pipeline", "manual_required"]
     model_uncertainty_state: Literal["manual_required"]
