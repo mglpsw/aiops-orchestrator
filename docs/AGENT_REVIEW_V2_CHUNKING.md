@@ -11,19 +11,33 @@ never mistaken for issue closure.
 
 ## What this delivery adds
 
-- `app/agent_review/manifest_v2.py` -- `ManifestV2`, `FragmentV2`,
-  `LineRangeV2`, `ManifestChunkV2`, `ManifestDegradationV2`. Strict,
-  `frozen=True`, `extra="forbid"` models (via `contracts_v2.ContractV2Model`,
-  reused unmodified) with a structural losslessness invariant: every
-  `coverage_required` fragment must be referenced by exactly one chunk, or
-  explicitly accounted for by a degradation cause -- an unexplained
-  omission is a hard `ValidationError`, never a silently accepted partial
-  manifest.
-- `compute_manifest_hash_v2_for(manifest)` reuses
+- `app/agent_review/manifest_v2.py` -- `ManifestMaterialV2`, `ManifestV2`,
+  `FragmentV2`, `LineRangeV2`, `ManifestChunkV2`, `ManifestDegradationV2`.
+  Strict, `frozen=True`, `extra="forbid"` models (via
+  `contracts_v2.ContractV2Model`, reused unmodified) with a structural
+  losslessness invariant: every `coverage_required` fragment must be
+  referenced by exactly one chunk, or explicitly accounted for by a
+  degradation cause -- an unexplained omission is a hard `ValidationError`,
+  never a silently accepted partial manifest.
+- `compute_manifest_hash_v2_for(material)` reuses
   `contracts_v2.compute_manifest_hash_v2` (already frozen by PR #81)
-  unmodified on the manifest's `model_dump(mode="json")`, so a material
-  change to any fragment or chunk flips the hash that would feed
-  `RunIdentityV2.manifest_hash`.
+  unmodified, so a material change to any fragment or chunk flips the hash
+  that feeds `RunIdentityV2.manifest_hash`.
+  **`ManifestV2` extends `ManifestMaterialV2` rather than embedding
+  `run_id`/`identity` in the hash preimage.** `RunIdentityV2` itself
+  contains `manifest_hash`, and `ManifestV2` carries `identity:
+  RunIdentityV2` -- hashing the full manifest (identity included) would
+  require `identity.manifest_hash` to already be known before it could be
+  computed. `compute_manifest_hash_v2_for` always excludes `run_id`/
+  `identity` from the preimage (via `model_dump(..., exclude={"run_id",
+  "identity"})`, safe on either a bare `ManifestMaterialV2` or a full
+  `ManifestV2`), and `ManifestV2`'s own validator proves
+  `identity.manifest_hash == compute_manifest_hash_v2_for(self)` -- so a
+  manifest carrying a stale or foreign `manifest_hash` is rejected, not
+  silently accepted. This mirrors the `ChunkPayloadMaterialV2`/
+  `ChunkPayloadV2` split already established in `contracts_v2.py`, applied
+  one level up since the self-referential field lives on `identity`, not on
+  `ManifestV2` itself.
 - `app/agent_review/planner_v2.py` -- `HunkInputV2`, `plan_lossless_chunks_v2`.
   Given already-parsed hunks and a per-chunk line budget:
   - a hunk within budget becomes one fragment (fallback #2 from the issue's

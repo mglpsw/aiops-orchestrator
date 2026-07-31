@@ -11,6 +11,7 @@ from app.agent_review.manifest_v2 import (
     LineRangeV2,
     ManifestChunkV2,
     ManifestDegradationV2,
+    ManifestMaterialV2,
     ManifestV2,
     compute_fragment_id_v2,
     compute_manifest_hash_v2_for,
@@ -32,6 +33,28 @@ def _identity(**overrides: object) -> RunIdentityV2:
     }
     raw.update(overrides)
     return RunIdentityV2.model_validate(raw)
+
+
+def _material_kwargs(
+    *,
+    fragments: list[FragmentV2],
+    chunks: list[ManifestChunkV2],
+    degradation_causes: list[ManifestDegradationV2] | None = None,
+    expected_files: list[str] | None = None,
+    must_review_files: list[str] | None = None,
+    max_chunks: int = 10,
+) -> dict[str, object]:
+    return {
+        "schema_id": "agent-review.manifest.v2",
+        "schema_version": 2,
+        "source": "aiops-review-plan-chunks-v2",
+        "expected_files": expected_files or ["app/service.py"],
+        "must_review_files": must_review_files if must_review_files is not None else ["app/service.py"],
+        "fragments": fragments,
+        "chunks": chunks,
+        "max_chunks": max_chunks,
+        "degradation_causes": degradation_causes or [],
+    }
 
 
 def _fragment(
@@ -65,7 +88,12 @@ def _manifest(
     must_review_files: list[str] | None = None,
     max_chunks: int = 10,
 ) -> ManifestV2:
-    identity = identity or _identity()
+    """Builds a ManifestV2 the way a real caller must: material first, then
+    its hash, then identity/run_id -- never a placeholder manifest_hash,
+    since ManifestV2 now proves identity.manifest_hash matches the actual
+    material hash (see the module docstring on the circularity this
+    breaks)."""
+
     fragment = fragments[0] if fragments else _fragment()
     fragments = fragments if fragments is not None else [fragment]
     chunks = (
@@ -81,18 +109,21 @@ def _manifest(
             )
         ]
     )
-    return ManifestV2(
-        schema_id="agent-review.manifest.v2",
-        schema_version=2,
-        source="aiops-review-plan-chunks-v2",
-        run_id=compute_run_id(identity),
-        identity=identity,
-        expected_files=expected_files or ["app/service.py"],
-        must_review_files=must_review_files if must_review_files is not None else ["app/service.py"],
+    material_kwargs = _material_kwargs(
         fragments=fragments,
         chunks=chunks,
+        degradation_causes=degradation_causes,
+        expected_files=expected_files,
+        must_review_files=must_review_files,
         max_chunks=max_chunks,
-        degradation_causes=degradation_causes or [],
+    )
+    material = ManifestMaterialV2.model_validate(material_kwargs)
+    manifest_hash = compute_manifest_hash_v2_for(material)
+    identity = identity or _identity(manifest_hash=manifest_hash)
+    return ManifestV2(
+        **material_kwargs,
+        run_id=compute_run_id(identity),
+        identity=identity,
     )
 
 
@@ -298,3 +329,132 @@ def test_manifest_rejects_unknown_fields() -> None:
     raw["unexpected_field"] = True
     with pytest.raises(ValidationError):
         ManifestV2.model_validate(raw)
+
+
+# -- manifest_hash / identity circularity (post-merge finding, PR #99 review) --
+
+
+def test_manifest_accepts_identity_manifest_hash_matching_the_material() -> None:
+    """The positive case: a correctly constructed manifest (material ->
+    hash -> identity, in that order) validates cleanly."""
+
+    manifest = _manifest()
+    assert manifest.identity.manifest_hash == compute_manifest_hash_v2_for(manifest)
+
+
+def test_manifest_rejects_a_stale_identity_manifest_hash() -> None:
+    """The core circularity guard: identity.manifest_hash must equal the
+    hash of THIS manifest's own content, not an arbitrary or stale value.
+    A manifest built with a placeholder/incorrect manifest_hash (e.g. from
+    a different fragment set) must be rejected, not silently accepted."""
+
+    fragment = _fragment()
+    chunk = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment.fragment_id],
+        payload_sha256=None,
+    )
+    material_kwargs = _material_kwargs(fragments=[fragment], chunks=[chunk])
+    # A manifest_hash that is well-formed (64 lowercase hex) but does not
+    # match this material's actual canonical hash.
+    stale_identity = _identity(manifest_hash="0" * 64)
+    with pytest.raises(ValidationError):
+        ManifestV2(
+            **material_kwargs,
+            run_id=compute_run_id(stale_identity),
+            identity=stale_identity,
+        )
+
+
+def test_manifest_rejects_identity_manifest_hash_from_a_different_manifest() -> None:
+    """A manifest_hash that is valid for a DIFFERENT (also real) manifest
+    must still be rejected -- it is not merely "well-formed", it must be
+    THIS manifest's own hash."""
+
+    fragment_a = _fragment(start=1, end=10)
+    chunk_a = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment_a.fragment_id],
+        payload_sha256=None,
+    )
+    material_a = ManifestMaterialV2.model_validate(
+        _material_kwargs(fragments=[fragment_a], chunks=[chunk_a])
+    )
+    hash_a = compute_manifest_hash_v2_for(material_a)
+
+    fragment_b = _fragment(start=1, end=50)
+    chunk_b = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment_b.fragment_id],
+        payload_sha256=None,
+    )
+    material_b_kwargs = _material_kwargs(fragments=[fragment_b], chunks=[chunk_b])
+
+    assert hash_a != compute_manifest_hash_v2_for(ManifestMaterialV2.model_validate(material_b_kwargs))
+
+    identity_with_a_hash = _identity(manifest_hash=hash_a)
+    with pytest.raises(ValidationError):
+        ManifestV2(
+            **material_b_kwargs,
+            run_id=compute_run_id(identity_with_a_hash),
+            identity=identity_with_a_hash,
+        )
+
+
+def test_compute_manifest_hash_v2_for_agrees_between_material_and_full_manifest() -> None:
+    """compute_manifest_hash_v2_for must return the identical digest
+    whether called on the bare ManifestMaterialV2 used to build identity,
+    or on the resulting full ManifestV2 -- proving run_id/identity are
+    excluded from the preimage either way, not just coincidentally equal."""
+
+    fragment = _fragment()
+    chunk = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment.fragment_id],
+        payload_sha256=None,
+    )
+    material_kwargs = _material_kwargs(fragments=[fragment], chunks=[chunk])
+    material = ManifestMaterialV2.model_validate(material_kwargs)
+    material_hash = compute_manifest_hash_v2_for(material)
+
+    identity = _identity(manifest_hash=material_hash)
+    manifest = ManifestV2(**material_kwargs, run_id=compute_run_id(identity), identity=identity)
+
+    assert compute_manifest_hash_v2_for(manifest) == material_hash
+
+
+def test_manifest_hash_does_not_depend_on_run_id_or_identity_contents() -> None:
+    """Two manifests with identical material but DIFFERENT identities
+    (different base_sha, different manifest_hash-independent fields) must
+    still hash to the same manifest_hash for that shared material -- proving
+    identity/run_id are truly excluded from the preimage, not merely
+    unused by coincidence in the other tests."""
+
+    fragment = _fragment()
+    chunk = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment.fragment_id],
+        payload_sha256=None,
+    )
+    material_kwargs = _material_kwargs(fragments=[fragment], chunks=[chunk])
+    material = ManifestMaterialV2.model_validate(material_kwargs)
+    material_hash = compute_manifest_hash_v2_for(material)
+
+    identity_1 = _identity(manifest_hash=material_hash, base_sha="1" * 40)
+    identity_2 = _identity(manifest_hash=material_hash, base_sha="5" * 40)
+
+    manifest_1 = ManifestV2(**material_kwargs, run_id=compute_run_id(identity_1), identity=identity_1)
+    manifest_2 = ManifestV2(**material_kwargs, run_id=compute_run_id(identity_2), identity=identity_2)
+
+    assert compute_manifest_hash_v2_for(manifest_1) == compute_manifest_hash_v2_for(manifest_2)
+    assert manifest_1.run_id != manifest_2.run_id

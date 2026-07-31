@@ -2,13 +2,34 @@
 
 Bound to `manifest_hash` in `RunIdentityV2` via `contracts_v2`'s existing,
 unmodified `canonical_manifest_bytes_v2`/`compute_manifest_hash_v2` --
-reused as-is on `ManifestV2.model_dump(mode="json")`, not reimplemented.
+reused as-is, not reimplemented.
 
 This is the typed contract for issue #84's manifest. It intentionally
 covers the manifest's *shape and lossless-coverage invariant* only; git-diff
 acquisition (rename/binary/submodule/no-newline handling) and symbol/AST-aware
 grouping are separate, larger pieces of #84 not implemented in this slice --
 see `docs/AGENT_REVIEW_V2_CHUNKING.md` for exactly what remains.
+
+## Why ManifestMaterialV2 and ManifestV2 are split
+
+`RunIdentityV2.manifest_hash` is meant to certify this manifest's content.
+But `ManifestV2` also needs to carry `identity: RunIdentityV2` (so a
+consumer can verify which run it belongs to) -- and `identity` itself
+contains `manifest_hash`. Hashing "the full manifest, including identity"
+would therefore need `identity.manifest_hash` to already be known before it
+can be computed, which is circular: the hash and the field that carries it
+would depend on each other.
+
+`ChunkPayloadMaterialV2`/`ChunkPayloadV2` in `contracts_v2.py` already solve
+the analogous problem for payload hashing by splitting the hashable content
+(`*Material*`) from the object that carries its own hash
+(`payload_sha256`). This module applies the same split, but the field
+being kept out of the hash preimage lives on a *different* object
+(`identity.manifest_hash`), not on `ManifestV2` itself -- so the split has
+to happen one level up: `ManifestMaterialV2` carries no `run_id`/`identity`
+at all; only `ManifestV2` (which extends it) does, and its own validator
+proves `identity.manifest_hash` equals the hash of the material portion
+alone.
 """
 
 from __future__ import annotations
@@ -130,12 +151,15 @@ class ManifestDegradationV2(ContractV2Model):
         return self
 
 
-class ManifestV2(ContractV2Model):
+class ManifestMaterialV2(ContractV2Model):
+    """The manifest's hashable content -- deliberately without `run_id` or
+    `identity`. See the module docstring for why: `RunIdentityV2` embeds
+    `manifest_hash`, so a hash preimage that included `identity` would be
+    circular. `compute_manifest_hash_v2_for` hashes exactly this shape."""
+
     schema_id: Literal["agent-review.manifest.v2"]
     schema_version: Literal[2]
     source: Literal["aiops-review-plan-chunks-v2"]
-    run_id: Sha256
-    identity: RunIdentityV2
     expected_files: list[RelativePath]
     must_review_files: list[RelativePath]
     fragments: list[FragmentV2]
@@ -144,10 +168,7 @@ class ManifestV2(ContractV2Model):
     degradation_causes: list[ManifestDegradationV2]
 
     @model_validator(mode="after")
-    def validate_manifest(self) -> ManifestV2:
-        if self.run_id != compute_run_id(self.identity):
-            raise ValueError("run_id does not match the canonical run identity")
-
+    def validate_material(self) -> ManifestMaterialV2:
         fragment_ids = [fragment.fragment_id for fragment in self.fragments]
         if len(fragment_ids) != len(set(fragment_ids)):
             raise ValueError("fragment_id values must be unique")
@@ -197,9 +218,32 @@ class ManifestV2(ContractV2Model):
         return self
 
 
-def compute_manifest_hash_v2_for(manifest: ManifestV2) -> str:
+def compute_manifest_hash_v2_for(material: ManifestMaterialV2) -> str:
     """``manifest_hash`` for ``RunIdentityV2``, via ``contracts_v2``'s
-    existing, unmodified ``compute_manifest_hash_v2`` -- reused, not
-    reimplemented."""
+    existing, unmodified ``compute_manifest_hash_v2``.
 
-    return compute_manifest_hash_v2(manifest.model_dump(mode="json"))
+    Hashes only the material fields (``run_id``/``identity`` excluded when
+    present), so this is safe to call on either a bare
+    ``ManifestMaterialV2`` or a full ``ManifestV2`` -- the latter's
+    ``run_id``/``identity`` fields are stripped before hashing, breaking
+    the circularity described in the module docstring.
+    """
+
+    return compute_manifest_hash_v2(material.model_dump(mode="json", exclude={"run_id", "identity"}))
+
+
+class ManifestV2(ManifestMaterialV2):
+    run_id: Sha256
+    identity: RunIdentityV2
+
+    @model_validator(mode="after")
+    def validate_identity_binding(self) -> ManifestV2:
+        if self.run_id != compute_run_id(self.identity):
+            raise ValueError("run_id does not match the canonical run identity")
+        expected_manifest_hash = compute_manifest_hash_v2_for(self)
+        if self.identity.manifest_hash != expected_manifest_hash:
+            raise ValueError(
+                "identity.manifest_hash does not match the canonical hash of this "
+                "manifest's own content"
+            )
+        return self
