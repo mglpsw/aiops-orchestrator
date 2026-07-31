@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- AgentReview v2: explicit v1/v2 contract-version selection
+  (`app/agent_review/versioning.py`), rejecting unknown or mixed versions
+  fail-closed
+- AgentReview v2: verified payload-response binding wired into a new
+  consumer and parser (`app/agent_review/consumer_v2.py`,
+  `app/agent_review/parser_v2.py`); no v2 finding is reachable before run
+  identity, HEAD, chunk, payload hash, response hash, file scope, and
+  coverage-without-promotion are all proven (refs #83)
+- `docs/AGENT_REVIEW_V2_BINDING.md` documents the version-selection
+  contract, binding sequence, and reason-code precedence
+
+### Notes
+
+- `app/agent_review/contracts_v2.py` (PRs #81/#82) is unmodified; this
+  delivery only wires its existing authority into new v2-only call paths
+- the v1 pipeline (`v0.20.0`) is unmodified and remains the only active
+  operational path; v2 is not yet wired into any CLI or workflow
+
 ## v0.20.0 - 2026-07-19 - AgentReview Quality Gate
 
 ### Added
