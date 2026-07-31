@@ -611,3 +611,19 @@ def test_manifest_rejects_a_degradation_cause_missing_some_but_not_all_omitted_f
             must_review_files=["app/a.py", "app/b.py"],
             degradation_causes=[cause_naming_only_a],
         )
+
+
+# -- post-merge finding (P2, sixth Codex review of PR #99) -------------------
+
+
+def test_manifest_rejects_duplicate_expected_files() -> None:
+    with pytest.raises(ValidationError):
+        _manifest(expected_files=["app/service.py", "app/service.py"])
+
+
+def test_manifest_rejects_duplicate_must_review_files() -> None:
+    with pytest.raises(ValidationError):
+        _manifest(
+            expected_files=["app/service.py"],
+            must_review_files=["app/service.py", "app/service.py"],
+        )

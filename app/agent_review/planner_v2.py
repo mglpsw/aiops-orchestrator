@@ -202,7 +202,14 @@ def _split_hunk_into_fragments(
 #: to keep worst-case CPU bounded for pathological inputs (e.g. many
 #: same-sized fragments that are trivially, but not cheaply, infeasible)
 #: without materially limiting realistic single-semantic-group fragment
-#: counts.
+#: counts. Bin packing is NP-hard: no finite bound can guarantee finding
+#: every feasible packing before giving up (a numerically adversarial
+#: exact-fit instance -- e.g. 25 fragments whose sizes sum to *exactly*
+#: capacity*max_bins, forcing zero slack in every bin -- can still exhaust
+#: this budget even with the pruning below, in which case the search
+#: reports "cannot confirm" rather than hanging). This is a deliberate,
+#: documented trade-off for this foundational planner slice, not a claim
+#: of guaranteed optimality on arbitrary input.
 _MAX_EXACT_PACKING_STATES = 200_000
 
 #: Safety bound on the number of fragments the exact packer will even
@@ -255,6 +262,15 @@ def _pack_fragments_exact(
     if not ordered:
         return []
 
+    # Suffix sums let each node cheaply check "can what's left even fit in
+    # the room left?" -- an admissible prune (never eliminates a feasible
+    # branch) that materially reduces the search for many instances,
+    # though it cannot make an NP-hard exact-fit instance tractable in
+    # general (see _MAX_EXACT_PACKING_STATES).
+    suffix_sums = [0] * (len(sizes) + 1)
+    for i in range(len(sizes) - 1, -1, -1):
+        suffix_sums[i] = suffix_sums[i + 1] + sizes[i]
+
     bins: list[list[FragmentV2]] = []
     remaining: list[int] = []
     states_explored = 0
@@ -266,6 +282,11 @@ def _pack_fragments_exact(
             raise _ExactPackingSearchExhausted()
         if index == len(ordered):
             return True
+
+        remaining_room = sum(remaining) + (max_bins - len(bins)) * capacity
+        if suffix_sums[index] > remaining_room:
+            return False
+
         fragment = ordered[index]
         size = sizes[index]
 

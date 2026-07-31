@@ -55,7 +55,17 @@ never mistaken for issue closure.
     required fragments genuinely cannot fit within `max_chunks`, planning
     returns `blocked_pipeline` with a `budget_exhausted` degradation cause
     referencing every required fragment -- never a `planned` result with
-    partial required coverage;
+    partial required coverage. **Known, accepted limitation:** bin packing
+    is NP-hard, so no finite search bound can guarantee finding every
+    feasible packing. Cheap admissible pruning (trivial-infeasibility
+    short-circuits, a suffix-sum room check at every search node) narrows
+    the search considerably, but a numerically adversarial exact-fit
+    instance (e.g. fragment sizes summing to *exactly*
+    `capacity * max_chunks`, forcing zero slack in every bin) can still
+    exhaust the state budget before finding a solution that does exist.
+    The deliberate trade-off is failing fast and safe -- `blocked_pipeline`,
+    never a hang, a crash, or a false `planned` -- over guaranteeing
+    optimality on arbitrary input;
   - non-required (auxiliary/context) fragments are packed into leftover
     budget on a best-effort basis (first-fit-decreasing is fine here --
     suboptimal packing only means slightly less optional context fits, not

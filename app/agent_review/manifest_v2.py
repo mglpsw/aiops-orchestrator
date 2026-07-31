@@ -173,6 +173,18 @@ class ManifestMaterialV2(ContractV2Model):
         if len(fragment_ids) != len(set(fragment_ids)):
             raise ValueError("fragment_id values must be unique")
 
+        # Converting to a set below would otherwise silently absorb a
+        # repeated path: the duplicate stays in the serialized material
+        # (and therefore in manifest_hash) while every set-based check
+        # after this point stops seeing it, letting semantically identical
+        # coverage scopes acquire different hashes and letting a
+        # downstream list-based count be inflated. Mirrors the uniqueness
+        # ChunkCoverageV2 already enforces for its own file collections.
+        if len(self.expected_files) != len(set(self.expected_files)):
+            raise ValueError("expected_files must not contain duplicates")
+        if len(self.must_review_files) != len(set(self.must_review_files)):
+            raise ValueError("must_review_files must not contain duplicates")
+
         expected = set(self.expected_files)
         fragment_paths = {fragment.path for fragment in self.fragments}
         if not fragment_paths <= expected:

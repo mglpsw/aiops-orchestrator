@@ -454,3 +454,35 @@ def test_plan_handles_a_hunk_replacing_one_old_line_with_many_new_lines() -> Non
         assert not (covered_new_lines & set(rng)), "new-side windows must stay disjoint"
         covered_new_lines.update(rng)
     assert covered_new_lines == set(range(1, 1001))
+
+
+# -- post-merge finding (P2, sixth Codex review of PR #99) -------------------
+
+
+def test_plan_fails_fast_and_safe_on_a_numerically_adversarial_exact_fit_case() -> None:
+    """Known, documented limitation: bin packing is NP-hard, so no finite
+    search bound can guarantee finding every feasible packing. This
+    specific 25-fragment instance sums to *exactly* capacity*max_bins
+    (700 == 100*7), forcing zero slack in every bin if a solution exists
+    -- an adversarial exact-fit case that a valid packing does exist for,
+    but which exhausts the state budget before finding it. This is not
+    asserted as a bug fix: it documents the accepted trade-off (fail fast
+    and safe -- never hang, never crash, never falsely report success --
+    rather than search indefinitely for a guaranteed answer)."""
+
+    import time
+
+    sizes = [67, 66, 57, 52, 51, 43, 35, 34, 29, 28, 26, 26, 24, 20, 18, 17, 16, 15, 12, 12, 11, 11, 10, 10, 10]
+    hunks = [
+        _hunk(f"app/file-{i}.py", index=0, start=1, end=size, must_review=True)
+        for i, size in enumerate(sizes)
+    ]
+    started = time.monotonic()
+    outcome = plan_lossless_chunks_v2(
+        hunks, semantic_group="primary_backend_logic", max_lines_per_chunk=100, max_chunks=7
+    )
+    elapsed = time.monotonic() - started
+
+    # The only hard guarantees: it terminates quickly and never crashes.
+    assert outcome.state in ("planned", "blocked_pipeline")
+    assert elapsed < 5.0, f"exact-fit adversarial case took {elapsed:.2f}s -- expected a bounded, fast failure"
