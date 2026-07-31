@@ -124,14 +124,24 @@ def _decode_git_path(raw: str) -> str:
             continue
         decoded.extend(next_char.encode("utf-8"))
         index += 2
-    # surrogateescape, not replace: arbitrary bytes are valid in a git
-    # filename, and "replace" would collapse distinct undecodable byte
-    # sequences (e.g. octal \200 vs \201) onto the same U+FFFD character,
-    # letting two different paths conflate under one string -- corrupting
-    # completeness checks and fragment-identity hashing that key off path.
-    # surrogateescape preserves each byte's distinctness (and is exactly
-    # reversible via the same error handler on re-encode) instead.
-    return decoded.decode("utf-8", errors="surrogateescape")
+    # Strict decode, fail closed: arbitrary bytes are valid in a git
+    # filename, so "replace" is wrong (it collapses distinct undecodable
+    # byte sequences, e.g. octal \200 vs \201, onto the same U+FFFD
+    # character, conflating two different paths under one string).
+    # "surrogateescape" was tried next and is also wrong here: it does
+    # preserve distinctness, but the resulting lone-surrogate string
+    # cannot survive this module's own canonical-JSON hashing downstream
+    # (manifest_v2._canonical_json_bytes_v2/compute_fragment_id_v2 use a
+    # strict ``.encode("utf-8")`` on every fragment's path, by the same
+    # "no raw/lossy content in a hash preimage" discipline every other
+    # v2 hash in this codebase follows) -- it would trade a silent
+    # collision for a crash several calls downstream. A path this module
+    # cannot represent as a valid, hashable string is unreadable, not a
+    # value to paper over.
+    try:
+        return decoded.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2) from exc
 
 
 def _strip_ab_prefix(path: str) -> str:

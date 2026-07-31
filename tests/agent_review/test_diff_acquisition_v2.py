@@ -407,15 +407,19 @@ def test_parse_a_quoted_path_with_octal_escapes() -> None:
     assert diffs[0].path == "café.py"
 
 
-def test_parse_distinct_undecodable_octal_paths_do_not_collide() -> None:
-    """Arbitrary bytes are valid in a git filename. Decoding an
-    undecodable octal-escaped byte with errors="replace" would map every
-    such byte to the same U+FFFD character, conflating two genuinely
-    different paths (e.g. one byte 0o200, the other 0o201) under one
-    string -- corrupting completeness checks and fragment-identity
-    hashing that key off path. Must stay distinct."""
+def test_parse_fails_closed_on_an_undecodable_octal_escaped_path() -> None:
+    """Arbitrary bytes are valid in a git filename. Two decoding
+    strategies were tried and rejected: errors="replace" collapses
+    distinct undecodable byte sequences (e.g. octal \\200 vs \\201) onto
+    the same U+FFFD, conflating two different paths under one string;
+    errors="surrogateescape" preserves distinctness but produces a lone
+    surrogate that this module's own canonical-JSON fragment/manifest
+    hashing (strict ``.encode("utf-8")``, no error handler, by design)
+    cannot encode -- trading a silent collision for a crash several calls
+    downstream. A path this module cannot represent as a valid, hashable
+    string must fail closed here instead."""
 
-    diff_text_a = (
+    diff_text = (
         'diff --git "a/bad\\200.py" "b/bad\\200.py"\n'
         "index abc..def 100644\n"
         '--- "a/bad\\200.py"\n'
@@ -424,18 +428,9 @@ def test_parse_distinct_undecodable_octal_paths_do_not_collide() -> None:
         "-x\n"
         "+y\n"
     )
-    diff_text_b = (
-        'diff --git "a/bad\\201.py" "b/bad\\201.py"\n'
-        "index abc..def 100644\n"
-        '--- "a/bad\\201.py"\n'
-        '+++ "b/bad\\201.py"\n'
-        "@@ -1,1 +1,1 @@\n"
-        "-x\n"
-        "+y\n"
-    )
-    path_a = parse_unified_diff(diff_text_a)[0].path
-    path_b = parse_unified_diff(diff_text_b)[0].path
-    assert path_a != path_b
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_unified_diff(diff_text)
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
 
 
 # -- real fixture from this repository -------------------------------------------
