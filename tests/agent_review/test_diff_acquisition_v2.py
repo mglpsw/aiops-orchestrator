@@ -444,6 +444,25 @@ def test_completeness_flags_binary_and_submodule_paths_as_unrepresentable() -> N
     assert set(result.unrepresentable_paths) == {"image.png", "vendor/sub"}
 
 
+def test_completeness_flags_a_hunkless_pure_rename_as_unrepresentable() -> None:
+    """A pure rename with no content change has no hunks, is not binary,
+    and is not a submodule -- it must not be reported as covered, since it
+    can never produce a HunkInputV2/fragment for the line-range planner
+    and would otherwise silently disappear from review."""
+
+    diff_text = (
+        "diff --git a/old_name.py b/new_name.py\n"
+        "similarity index 100%\n"
+        "rename from old_name.py\n"
+        "rename to new_name.py\n"
+    )
+    diffs = parse_unified_diff(diff_text)
+    result = validate_diff_completeness_v2(diffs, expected_paths=frozenset({"new_name.py"}))
+    assert not result.complete
+    assert result.unrepresentable_paths == ("new_name.py",)
+    assert result.missing_paths == ()
+
+
 def test_completeness_reports_complete_when_everything_is_representable() -> None:
     diff_text = (
         "diff --git a/a.py b/a.py\n"
@@ -514,6 +533,27 @@ def test_parse_does_not_flag_a_shorter_but_fully_declared_hunk_as_truncated() ->
     )
     diffs = parse_unified_diff(diff_text)
     assert not diffs[0].truncated
+
+
+def test_parse_flags_truncation_masked_by_a_trailing_newline_split_artifact() -> None:
+    """``diff_text.split("\\n")`` on text ending in a newline yields a
+    synthetic trailing empty element. Left uncorrected, that element
+    satisfies the hunk body's blank-context-line check (``body_line ==
+    ""``) and inflates both the old- and new-side actual line counts --
+    masking exactly this case: a hunk declaring 1 old / 1 new line whose
+    body supplies only a removal and an addition with no context line."""
+
+    diff_text = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    diffs = parse_unified_diff(diff_text)
+    assert diffs[0].truncated
 
 
 def test_completeness_flags_truncated_paths_distinctly_from_unrepresentable() -> None:
@@ -609,3 +649,38 @@ def test_acquire_diff_runs_the_real_fixed_git_command(tmp_path: Path) -> None:
     assert len(diffs) == 1
     assert diffs[0].path == "a.py"
     assert len(diffs[0].hunks) == 1
+
+
+@pytest.mark.requires_network
+def test_acquire_diff_does_not_crash_on_non_utf8_but_non_binary_content(tmp_path: Path) -> None:
+    """A text file with a byte sequence that is not valid UTF-8 but
+    contains no NUL byte is treated by git as an ordinary textual patch
+    (not binary). ``subprocess.run(..., text=True)`` would decode under
+    the process locale and raise ``UnicodeDecodeError`` straight out of
+    ``acquire_diff_v2``, bypassing this module's stable
+    ``DiffAcquisitionError`` reason-code contract entirely. Must not
+    raise."""
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--quiet", "-b", "main", "."], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "a.py").write_bytes(b"line1\n")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "init"], cwd=repo, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    (repo / "a.py").write_bytes(b"line1\n\xff\xfe not valid utf-8\n")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "update"], cwd=repo, check=True)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    diff_text = acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert isinstance(diff_text, str)
+    diffs = parse_unified_diff(diff_text)
+    assert diffs[0].path == "a.py"

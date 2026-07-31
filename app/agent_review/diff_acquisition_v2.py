@@ -438,6 +438,14 @@ def parse_unified_diff(diff_text: str) -> tuple[ParsedFileDiffV2, ...]:
         return ()
 
     lines = diff_text.split("\n")
+    if lines and lines[-1] == "" and diff_text.endswith("\n"):
+        # ``str.split("\n")`` on text ending in a newline yields a
+        # synthetic trailing empty element that is not a real line. Left
+        # in place, it satisfies the hunk body's blank-context-line check
+        # (``body_line == ""``) and inflates both the old- and new-side
+        # actual line counts, masking a genuinely truncated hunk whose
+        # last real line was cut off right at that trailing newline.
+        lines = lines[:-1]
     if not any(line.startswith("diff --git ") for line in lines):
         raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
 
@@ -477,16 +485,21 @@ def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     if not _GIT_SHA_RE.match(base_sha) or not _GIT_SHA_RE.match(head_sha):
         raise DiffAcquisitionError(INVALID_REF_REASON_V2)
 
+    # capture_output as bytes (not text=True): text mode decodes under the
+    # process locale encoding and raises UnicodeDecodeError on any byte
+    # sequence it can't decode, bypassing this module's stable
+    # DiffAcquisitionError reason-code contract entirely. Decoding
+    # ourselves with errors="replace" can never raise.
     result = subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
         ["git", "diff", "--no-ext-diff", "--binary", f"{base_sha}...{head_sha}"],
         cwd=repo_root,
         capture_output=True,
-        text=True,
+        text=False,
         check=False,
     )
     if result.returncode != 0:
         raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
-    return result.stdout
+    return result.stdout.decode("utf-8", errors="replace")
 
 
 @dataclass(frozen=True)
@@ -495,8 +508,13 @@ class DiffCompletenessResultV2:
     missing_paths: tuple[str, ...]
     unrepresentable_paths: tuple[str, ...]
     """Paths present in the diff but not representable as ordinary
-    line-range hunks (binary or submodule content) -- these need an
-    explicit, separate policy decision, never silent coverage."""
+    line-range hunks -- binary content, submodule/gitlink changes, or a
+    hunkless metadata-only change (pure rename/copy, mode change, or an
+    empty file add/delete with no hunk headers at all). A hunkless entry
+    can never produce a ``HunkInputV2``/fragment for the line-range
+    planner, so treating it as covered would let it silently disappear
+    from review; these need an explicit, separate policy decision, never
+    silent coverage."""
     truncated_paths: tuple[str, ...] = ()
     """Paths whose patch content itself is incomplete: a hunk header
     declared more old/new lines than the body actually contains. Distinct
@@ -525,7 +543,8 @@ def validate_diff_completeness_v2(
         sorted(
             file_diff.path
             for file_diff in file_diffs
-            if file_diff.path in expected_paths and (file_diff.is_binary or file_diff.is_submodule)
+            if file_diff.path in expected_paths
+            and (file_diff.is_binary or file_diff.is_submodule or not file_diff.hunks)
         )
     )
     truncated = tuple(

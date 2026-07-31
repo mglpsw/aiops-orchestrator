@@ -203,6 +203,35 @@ def test_payload_coverage_only_flags_must_review_files_actually_in_this_chunk() 
 # -- error handling -----------------------------------------------------------
 
 
+def test_build_chunk_payload_rejects_a_chunk_id_reused_with_a_different_scope() -> None:
+    """A chunk sharing chunk_id with a real manifest entry but carrying
+    different fragment_ids/semantic_group must be rejected outright, not
+    used to build a correctly hashed payload for a forged scope -- the
+    manifest's own chunk record is the only source of truth once chunk_id
+    is confirmed to exist."""
+
+    manifest = _build_manifest(
+        [_hunk("app/a.py"), _hunk("app/b.py")],
+        expected_files=["app/a.py", "app/b.py"],
+        must_review_files=["app/a.py", "app/b.py"],
+        max_lines_per_chunk=5,
+        max_chunks=10,
+    )
+    assert len(manifest.chunks) >= 2
+    real_chunk = manifest.chunks[0]
+    other_chunk = manifest.chunks[1]
+    forged_chunk = ManifestChunkV2(
+        chunk_id=real_chunk.chunk_id,
+        order_index=real_chunk.order_index,
+        semantic_group=real_chunk.semantic_group,
+        fragment_ids=other_chunk.fragment_ids,
+        payload_sha256=None,
+    )
+    with pytest.raises(PayloadBuilderError) as excinfo:
+        build_chunk_payload_v2(manifest, forged_chunk)
+    assert excinfo.value.reason_code == CHUNK_NOT_IN_MANIFEST_REASON_V2
+
+
 def test_build_chunk_payload_rejects_a_chunk_not_from_this_manifest() -> None:
     manifest = _build_manifest(
         [_hunk("app/a.py")], expected_files=["app/a.py"], must_review_files=["app/a.py"]

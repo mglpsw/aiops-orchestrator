@@ -103,8 +103,17 @@ def build_chunk_payload_v2(manifest: ManifestV2, chunk: ManifestChunkV2) -> Chun
     is follow-up work integrating with #85's profile loader, not attempted
     here."""
 
-    if chunk.fragment_ids and chunk.chunk_id not in {c.chunk_id for c in manifest.chunks}:
+    chunk_by_id = {c.chunk_id: c for c in manifest.chunks}
+    manifest_chunk = chunk_by_id.get(chunk.chunk_id)
+    if manifest_chunk is None or manifest_chunk != chunk:
+        # Matching by id alone would let a caller pass a chunk that
+        # shares an id with a real manifest entry but carries different
+        # fragment_ids/semantic_group -- building a correctly hashed
+        # payload for a forged scope that the response binder would still
+        # accept under the real manifest's identity. Only the manifest's
+        # own chunk record is ever used past this point.
         raise PayloadBuilderError(CHUNK_NOT_IN_MANIFEST_REASON_V2)
+    chunk = manifest_chunk
 
     coverage = _build_chunk_coverage(manifest, chunk)
     material = {
@@ -128,10 +137,20 @@ def build_chunk_payloads_v2(manifest: ManifestV2) -> tuple[BuiltChunkPayloadV2, 
 
     The manifest itself is not mutated: ``ManifestChunkV2.payload_sha256``
     stays ``None`` on the input manifest (it is frozen, like every other
-    v2 contract model); a caller that wants a manifest carrying the built
-    hashes must construct a new ``ManifestV2`` with updated chunks
-    (``manifest_v2.ManifestV2`` and ``ManifestChunkV2`` are both frozen,
-    so this is an explicit rebuild, never an in-place mutation).
+    v2 contract model).
+
+    **Not attempted, and not a well-defined operation with the current
+    contracts:** inserting a built ``payload_sha256`` back into a chunk and
+    rebuilding a new ``ManifestV2`` from it. ``ManifestChunkV2.payload_sha256``
+    is itself part of ``ManifestMaterialV2``'s hash preimage
+    (``compute_manifest_hash_v2_for`` only excludes ``run_id``/``identity``),
+    so setting it changes ``manifest_hash``, which forces a new
+    ``identity``/``run_id`` -- and ``run_id``/``identity`` are themselves
+    embedded verbatim in each payload's own material
+    (``compute_payload_sha256_v2``), so the just-inserted hash would no
+    longer match what the payload's material actually hashes to. This is a
+    genuine circular dependency, not a mutation-discipline detail; no
+    non-circular preimage or lifecycle for it is defined here.
     """
 
     return tuple(

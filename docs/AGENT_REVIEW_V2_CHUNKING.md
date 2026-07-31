@@ -64,10 +64,11 @@ verified against real git output), a missing trailing newline on either
 side, and a **truncated hunk**: a header declaring more old/new lines than
 its body actually supplies, which is flagged rather than trusted at its
 declared range. `validate_diff_completeness_v2` reports missing /
-unrepresentable (binary, submodule) / truncated paths distinctly, so a
-caller routes each to the right remediation (explicit policy vs. blob
-reconstruction per the issue's own text) instead of silently treating any
-of them as covered.
+unrepresentable (binary, submodule, or a hunkless metadata-only change --
+pure rename/copy, mode change, empty add/delete -- which can never produce
+a `HunkInputV2`/fragment) / truncated paths distinctly, so a caller routes
+each to the right remediation (explicit policy vs. blob reconstruction per
+the issue's own text) instead of silently treating any of them as covered.
 
 `acquire_diff_v2` is a thin, fixed-argv subprocess wrapper for the exact
 canonical command -- never a shell, never a caller-controlled command
