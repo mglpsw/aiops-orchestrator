@@ -1,0 +1,492 @@
+{
+  "$id": "https://caem.local/schemas/evidence-bundle.schema.json",
+  "title": "CAEM evidence bundle",
+  "type": "object",
+  "required": [
+    "bundle_id",
+    "task_id",
+    "generated_at",
+    "identity",
+    "gate_runs",
+    "sanitization",
+    "actions",
+    "limitations",
+    "worktree"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "bundle_id": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "repository"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "base_sha": {
+          "type": "string"
+        },
+        "head_sha": {
+          "type": "string"
+        },
+        "tested_sha": {
+          "type": "string"
+        },
+        "synthetic_merge_sha": {
+          "type": "string"
+        },
+        "merge_commit_sha": {
+          "type": "string"
+        },
+        "release_commit_sha": {
+          "type": "string"
+        },
+        "deployed_revision": {
+          "type": "string"
+        },
+        "artifact_digests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "migration_head": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "gate_runs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "gate_id",
+          "environment",
+          "subject",
+          "result"
+        ],
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "gate_id": {
+            "type": "string",
+            "enum": [
+              "docs-consistency",
+              "focused-tests",
+              "type-lint-build",
+              "full-affected-suite",
+              "postgres-real",
+              "negative-authorization",
+              "concurrency",
+              "visual-contract",
+              "accessibility",
+              "canonical-dev-smoke",
+              "slice-journey",
+              "provider-sandbox",
+              "release-attestation",
+              "production-health",
+              "security-sanitization",
+              "ai-contract"
+            ]
+          },
+          "environment": {
+            "type": "object",
+            "required": [
+              "role"
+            ],
+            "properties": {
+              "role": {
+                "type": "string",
+                "enum": [
+                  "documentation",
+                  "local",
+                  "ci",
+                  "ephemeral",
+                  "canonical_dev",
+                  "external_sandbox",
+                  "production",
+                  "local_or_ci",
+                  "local_ci_and_ephemeral"
+                ]
+              },
+              "profile_ref": {
+                "type": "string"
+              },
+              "runner": {
+                "type": "string"
+              },
+              "runtime_digest": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "subject": {
+            "type": "object",
+            "required": [
+              "type",
+              "identity"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "source",
+                  "synthetic_merge",
+                  "artifact",
+                  "deployment",
+                  "documentation"
+                ]
+              },
+              "identity": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "command": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ended_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "result": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "blocked",
+              "unavailable",
+              "skipped_with_approval",
+              "stale",
+              "inherited"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "path_or_uri",
+                "sha256"
+              ],
+              "properties": {
+                "path_or_uri": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-fA-F0-9]{64}$"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "inheritance": {
+            "type": "object",
+            "required": [
+              "source_bundle",
+              "source_sha",
+              "target_sha",
+              "proof_method"
+            ],
+            "properties": {
+              "source_bundle": {
+                "type": "string"
+              },
+              "source_sha": {
+                "type": "string"
+              },
+              "target_sha": {
+                "type": "string"
+              },
+              "proof_method": {
+                "type": "string"
+              },
+              "unaffected_surfaces": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "documentation",
+                    "domain",
+                    "api_contract",
+                    "authorization_iam",
+                    "database_schema",
+                    "migration",
+                    "concurrency",
+                    "frontend_behavior",
+                    "visual_ux",
+                    "accessibility",
+                    "integration",
+                    "provider_outbox",
+                    "observability",
+                    "deployment_runtime",
+                    "release",
+                    "clinical_data",
+                    "ai_analysis",
+                    "infrastructure"
+                  ]
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "approval": {
+            "type": "object",
+            "required": [
+              "approved_by",
+              "reason"
+            ],
+            "properties": {
+              "approved_by": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "expires_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "compensating_control": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "limitations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "result": {
+                  "const": "inherited"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "inheritance"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "result": {
+                  "const": "skipped_with_approval"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "approval"
+              ]
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
+    },
+    "sanitization": {
+      "type": "object",
+      "required": [
+        "policy",
+        "data_classification",
+        "secret_scan",
+        "personal_or_clinical_identifiers_present"
+      ],
+      "properties": {
+        "policy": {
+          "type": "string"
+        },
+        "data_classification": {
+          "type": "string",
+          "enum": [
+            "public",
+            "internal",
+            "restricted_workforce",
+            "restricted_infrastructure",
+            "restricted_code_and_operations",
+            "restricted_clinical"
+          ]
+        },
+        "secret_scan": {
+          "type": "object",
+          "required": [
+            "result"
+          ],
+          "properties": {
+            "tool": {
+              "type": "string"
+            },
+            "result": {
+              "type": "string",
+              "enum": [
+                "passed",
+                "failed",
+                "not_applicable"
+              ]
+            },
+            "notes": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "personal_or_clinical_identifiers_present": {
+          "type": "boolean"
+        },
+        "redactions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reviewed_by": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "action",
+          "executed"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "commit",
+              "push",
+              "open_change_request",
+              "mark_ready",
+              "resolve_review_thread",
+              "merge",
+              "close_issue",
+              "deploy_canonical_dev",
+              "deploy_production",
+              "apply_migration",
+              "mutate_database",
+              "destructive_database_action",
+              "restart_service",
+              "invoke_external_provider",
+              "publish_review",
+              "modify_proxy_or_dns",
+              "rotate_secret",
+              "delete_branch",
+              "start_next_phase"
+            ]
+          },
+          "executed": {
+            "type": "boolean"
+          },
+          "grant_id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "executed": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "grant_id",
+                "target"
+              ]
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "worktree": {
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "clean",
+            "dirty_preexisting",
+            "dirty_created_by_task",
+            "unknown"
+          ]
+        },
+        "details": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "next_action": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-generated-from": "policy/caem-policy.json",
+  "x-caem-version": "2.1.0"
+}

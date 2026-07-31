@@ -1,0 +1,112 @@
+{
+  "$schema": "schemas/repository-registry.schema.json",
+  "registry_id": "mglpsw-caem-repositories",
+  "caem_version": "2.1.0",
+  "observed_at": "2026-07-30T12:32:30-03:00",
+  "source": "GitHub connector live repository listing and commit observations",
+  "owner": "mglpsw",
+  "repositories": [
+    {
+      "full_name": "mglpsw/homelab",
+      "url": "https://github.com/mglpsw/homelab",
+      "default_branch": "main",
+      "visibility": "private",
+      "role": "canonical_homelab_infrastructure",
+      "bundle": "Homelab",
+      "observed_head": "06abd85a893c990c9fe3bd9314489fbeef7896d9"
+    },
+    {
+      "full_name": "mglpsw/AgentEscala",
+      "url": "https://github.com/mglpsw/AgentEscala",
+      "default_branch": "develop",
+      "visibility": "private",
+      "role": "medical_workforce_product",
+      "bundle": "AgentEscala",
+      "observed_head": "2936538a84cd00804a7692ea7622e78478a5012b"
+    },
+    {
+      "full_name": "mglpsw/agent-sandbox",
+      "url": "https://github.com/mglpsw/agent-sandbox",
+      "default_branch": "main",
+      "visibility": "public",
+      "role": "public_agent_experimentation_sandbox",
+      "bundle": null,
+      "observed_head": "75f7a699d7be30372d39509e74edcd9d9a0b9f2a"
+    },
+    {
+      "full_name": "mglpsw/agent-router-api",
+      "url": "https://github.com/mglpsw/agent-router-api",
+      "default_branch": "master",
+      "visibility": "private",
+      "role": "llm_inference_gateway_and_adaptive_router",
+      "bundle": "AgentRouter",
+      "observed_head": "96cb3e9994bb06e73ef0f0db7a2e8f6b9762dd69"
+    },
+    {
+      "full_name": "mglpsw/aiops-orchestrator",
+      "url": "https://github.com/mglpsw/aiops-orchestrator",
+      "default_branch": "master",
+      "visibility": "public",
+      "role": "aiops_runtime_and_agentreview_engine",
+      "bundle": "AIOps-AgentReview",
+      "observed_head": "620242eec8c665b0c990cdf3c2f32881b034be5e"
+    },
+    {
+      "full_name": "mglpsw/interleitos",
+      "url": "https://github.com/mglpsw/interleitos",
+      "default_branch": "main",
+      "visibility": "private",
+      "role": "clinical_transfer_and_bed_regulation_product",
+      "bundle": "InterLeitos",
+      "observed_head": "43e567b2fd61274ba018fd2027fb1f7de880c358"
+    }
+  ],
+  "relationships": [
+    {
+      "from": "mglpsw/AgentEscala",
+      "to": "mglpsw/aiops-orchestrator",
+      "type": "target_repo_consumes_agentreview_toolrepo"
+    },
+    {
+      "from": "mglpsw/interleitos",
+      "to": "mglpsw/aiops-orchestrator",
+      "type": "planned_target_repo_for_reporeview_and_projectops"
+    },
+    {
+      "from": "mglpsw/aiops-orchestrator",
+      "to": "mglpsw/agent-router-api",
+      "type": "inference_transport_only"
+    },
+    {
+      "from": "mglpsw/agent-router-api",
+      "to": "mglpsw/homelab",
+      "type": "runtime_and_observability_infrastructure_defined_in"
+    },
+    {
+      "from": "mglpsw/aiops-orchestrator",
+      "to": "mglpsw/homelab",
+      "type": "runtime_and_observability_infrastructure_defined_in"
+    },
+    {
+      "from": "mglpsw/AgentEscala",
+      "to": "mglpsw/homelab",
+      "type": "dev_production_and_monitoring_bindings"
+    },
+    {
+      "from": "mglpsw/interleitos",
+      "to": "mglpsw/homelab",
+      "type": "canonical_dev_binding"
+    },
+    {
+      "from": "mglpsw/agent-sandbox",
+      "to": "mglpsw/agent-router-api",
+      "type": "safe_public_experimentation_client"
+    }
+  ],
+  "notes": [
+    "AgentReview is not a separate repository; it is a subsystem of mglpsw/aiops-orchestrator.",
+    "Agent Router is inference transport/execution policy; it is not the AgentReview quality authority.",
+    "InterLeitos has no canonical production environment provisioned or authorized at this checkpoint.",
+    "Observed heads are dated checkpoint facts and must be revalidated before action."
+  ]
+}

@@ -1,0 +1,265 @@
+{
+  "$id": "https://caem.local/schemas/handoff.schema.json",
+  "title": "CAEM multi-agent handoff",
+  "type": "object",
+  "required": [
+    "handoff_id",
+    "task_id",
+    "generated_at",
+    "from",
+    "to",
+    "state",
+    "identity",
+    "changes",
+    "evidence_refs",
+    "blockers",
+    "decisions",
+    "authority",
+    "next_minimum_action",
+    "live_revalidation_required"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "handoff_id": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "from": {
+      "type": "string"
+    },
+    "to": {
+      "type": "string"
+    },
+    "state": {
+      "type": "object",
+      "required": [
+        "implementation",
+        "validation",
+        "change_request",
+        "slice",
+        "release",
+        "deployment",
+        "observation"
+      ],
+      "properties": {
+        "implementation": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "in_progress",
+            "completed",
+            "blocked"
+          ]
+        },
+        "validation": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "partial",
+            "passed",
+            "failed",
+            "unavailable",
+            "stale"
+          ]
+        },
+        "change_request": {
+          "type": "string",
+          "enum": [
+            "none",
+            "draft",
+            "ready",
+            "approved",
+            "merged",
+            "closed"
+          ]
+        },
+        "slice": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "in_progress",
+            "implemented_not_closed",
+            "closed",
+            "blocked"
+          ]
+        },
+        "release": {
+          "type": "string",
+          "enum": [
+            "not_created",
+            "candidate",
+            "approved",
+            "published",
+            "withdrawn"
+          ]
+        },
+        "deployment": {
+          "type": "string",
+          "enum": [
+            "not_deployed",
+            "in_progress",
+            "completed",
+            "rolled_back",
+            "failed"
+          ]
+        },
+        "observation": {
+          "type": "string",
+          "enum": [
+            "not_applicable",
+            "unknown",
+            "healthy",
+            "degraded",
+            "unhealthy"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "repository"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "base_sha": {
+          "type": "string"
+        },
+        "head_sha": {
+          "type": "string"
+        },
+        "tested_sha": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "class",
+          "summary"
+        ],
+        "properties": {
+          "class": {
+            "type": "string",
+            "enum": [
+              "product",
+              "regression",
+              "preexisting",
+              "environment",
+              "gate_unavailable",
+              "contract",
+              "authority",
+              "security",
+              "data_integrity",
+              "unknown"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "decision",
+          "status"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "taken",
+              "not_taken",
+              "deferred"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "authority": {
+      "type": "object",
+      "required": [
+        "consumed",
+        "not_consumed",
+        "transferred"
+      ],
+      "properties": {
+        "consumed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_consumed": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "transferred": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "next_minimum_action": {
+      "type": "string",
+      "minLength": 1
+    },
+    "live_revalidation_required": {
+      "const": true
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-generated-from": "policy/caem-policy.json",
+  "x-caem-version": "2.1.0"
+}
