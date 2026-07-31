@@ -131,6 +131,28 @@ def test_migrate_never_touches_the_canonical_profile_on_disk(tmp_path) -> None: 
 # -- post-merge findings (Codex review of PR #98) --------------------------
 
 
+def test_migrate_never_leaks_a_secret_shaped_schema_version_in_the_error() -> None:
+    """Post-merge finding (P2, Codex re-review of PR #101): the
+    ProfileMigrationError raised for an unrecognized schema_version
+    embedded the untrusted document's own value verbatim, and the CLI
+    prints that message to stderr -- potentially persisting a
+    secret-shaped value from an attacker- or accident-controlled profile
+    into CI/operator logs. The error must describe the problem without
+    echoing the rejected value."""
+
+    unsafe_schema_version = "token=ghp_1234567890abcdef1234567890abcdef1234"
+    profile = TargetProfile.model_validate(
+        {
+            "schema_version": unsafe_schema_version,
+            "target_repo": "mglpsw/aiops-orchestrator",
+            "artifacts": [],
+        }
+    )
+    with pytest.raises(ProfileMigrationError) as excinfo:
+        migrate_profile_v1_to_v2(profile, repo="mglpsw/aiops-orchestrator", default_branch="master")
+    assert unsafe_schema_version not in str(excinfo.value)
+
+
 def test_migrate_rejects_an_unrecognized_v1_schema_version() -> None:
     """A profile claiming a schema_version other than the canonical v1
     identifier must be refused, not silently processed as if it were v1."""

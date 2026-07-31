@@ -94,9 +94,13 @@ def migrate_profile_v1_to_v2(
     """
 
     if profile_v1.schema_version != TARGET_PROFILE_SCHEMA_V1:
+        # Never echo the untrusted document's own schema_version value here:
+        # the CLI prints this message to stderr, and an attacker- or
+        # accident-controlled profile could put a secret-shaped value in
+        # that field. Only the known-safe expected constant is reported.
         raise ProfileMigrationError(
-            f"unrecognized v1 profile schema_version {profile_v1.schema_version!r}; "
-            f"expected {TARGET_PROFILE_SCHEMA_V1!r}"
+            f"profile schema_version does not match the expected v1 identifier "
+            f"{TARGET_PROFILE_SCHEMA_V1!r}"
         )
 
     pending: list[ProfileMigrationDecisionV2] = []
