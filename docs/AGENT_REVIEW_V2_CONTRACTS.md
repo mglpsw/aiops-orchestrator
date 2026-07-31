@@ -303,12 +303,15 @@ The `v0.20.0` v1 models, artifacts, CLIs, quality gate, and wrapper contract are
 unchanged. During migration, consumers must select v1 or v2 explicitly and
 must never mix envelopes silently.
 
-- PR 2: connect verified payload/response binding and fail-closed precedence to
-  consumers and parser;
-- PR 3: implement a typed manifest and deterministic real multi-chunk planning;
-- PR 4: implement the complete TargetProfile v2 loader/migrator and minimal
-  isolated toolrepo lockfile.
+- PR 2 (#83, delivered): connect verified payload/response binding and
+  fail-closed precedence to a v2 consumer and parser. See
+  `docs/AGENT_REVIEW_V2_BINDING.md` for the version-selection contract,
+  binding sequence, and reason-code precedence added by that delivery.
+- PR 3 (#84): implement a typed manifest and deterministic real multi-chunk
+  planning;
+- PR 4 (#85): implement the complete TargetProfile v2 loader/migrator and
+  minimal isolated toolrepo lockfile.
 
-Until those deliveries adopt v2 explicitly, these schemas are development
-contracts only. They do not represent a release, deploy, Router/provider call,
-or production behavior change.
+Until those remaining deliveries adopt v2 explicitly, these schemas continue
+to represent development contracts. They do not represent a release, deploy,
+Router/provider call, or production behavior change.
