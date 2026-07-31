@@ -14,6 +14,24 @@
   coverage-without-promotion are all proven (refs #83)
 - `docs/AGENT_REVIEW_V2_BINDING.md` documents the version-selection
   contract, binding sequence, and reason-code precedence
+- AgentReview v2: strict, fail-closed `TargetProfileV2` loader
+  (`app/agent_review/profile_loader_v2.py`) with reproducible
+  profile/policy hashing; no silent degradation to a placeholder profile
+  (refs #85)
+- AgentReview v2: explicit, non-destructive v1 -> v2 target-profile
+  migrator (`app/agent_review/profile_migration_v1_v2.py` +
+  `scripts/migrate-agent-review-profile-v1-v2.py`); never fabricates
+  required checks, must-review rules, or contract hashes, and never runs
+  automatically (refs #85)
+- AgentReview v2: minimal, hash-pinned offline toolrepo lock
+  (`requirements-agent-review.lock`,
+  `scripts/install-agent-review-toolrepo.sh`); installs only what
+  `app/agent_review` imports (`pydantic`, `PyYAML`, and pydantic's own
+  dependencies), verified installable in a clean venv with
+  `pip --require-hashes` (refs #85)
+- `docs/AGENT_REVIEW_V2_TARGET_PROFILE.md` and
+  `docs/AGENT_REVIEW_V2_INSTALLATION.md` document the loader, migrator, and
+  installation contract
 
 ### Notes
 
