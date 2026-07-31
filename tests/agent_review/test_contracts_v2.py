@@ -2483,6 +2483,7 @@ def test_exported_json_schemas_are_stable_and_deny_unknown_objects() -> None:
         "agent-review.chunk-response-envelope.v2.schema.json",
         "agent-review.target-profile.v2.schema.json",
         "agent-review.review-readiness.v2.schema.json",
+        "agent-review.manifest.v2.schema.json",
     }
 
     for filename, schema in rendered.items():
