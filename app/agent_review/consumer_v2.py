@@ -117,11 +117,16 @@ class BoundChunkResponseV2:
 
     @property
     def findings(self) -> tuple[ChunkFindingV2, ...]:
-        return self._findings
+        # frozen=True on ChunkFindingV2 blocks reassigning a field (e.g.
+        # `finding.severity = ...`), but not mutating a list field it
+        # already holds (e.g. `finding.contract_ids.append(...)`). Handing
+        # out a fresh deep copy on every access means such a mutation is
+        # thrown away, never corrupting this object's held state.
+        return tuple(finding.model_copy(deep=True) for finding in self._findings)
 
     @property
     def coverage(self) -> ChunkCoverageV2:
-        return self._coverage
+        return self._coverage.model_copy(deep=True)
 
     @property
     def limitations(self) -> tuple[str, ...]:
@@ -190,8 +195,11 @@ def load_and_bind_chunk_response_v2(
     """
 
     try:
+        # UnicodeDecodeError derives from ValueError, not OSError -- caught
+        # explicitly alongside it so invalid-UTF-8 bytes surface a stable
+        # reason code instead of an unhandled exception.
         payload_text = payload_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise ResponseBindingError(PAYLOAD_CONTRACT_INVALID_REASON_V2) from exc
 
     try:
@@ -203,5 +211,9 @@ def load_and_bind_chunk_response_v2(
         response_text = response_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ResponseBindingError(TRANSPORT_FAILURE_REASON_V2) from exc
+    except UnicodeDecodeError as exc:
+        # Bytes were received (unlike a missing file / transport failure);
+        # they simply are not a bindable response.
+        raise ResponseBindingError(RESPONSE_CONTRACT_INVALID_REASON_V2) from exc
 
     return bind_chunk_response_v2(envelope=response_text, payload=payload)

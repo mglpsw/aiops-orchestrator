@@ -534,3 +534,62 @@ def test_reason_codes_never_interpolate_raw_content_and_stay_within_a_closed_lis
     assert "/" not in excinfo.value.reason_code
     assert "Bearer" not in str(excinfo.value)
     assert "Traceback" not in str(excinfo.value)
+
+
+# -- post-merge findings (Codex review of PR #97) --------------------------
+
+
+def test_bound_coverage_property_returns_an_isolated_copy_on_each_access() -> None:
+    """A bound object's own coverage must not be corruptible through its own
+    returned reference: frozen=True on ChunkCoverageV2 blocks reassigning
+    the `reviewed_files` field, but not mutating the list object it already
+    holds. Every `.coverage` access must hand out a disposable copy."""
+
+    payload = _payload()
+    envelope = _success_envelope_raw(payload, findings=[_finding()])
+    bound = bind_chunk_response_v2(envelope=envelope, payload=payload)
+
+    first_read = bound.coverage
+    first_read.reviewed_files.append("app/injected.py")
+
+    second_read = bound.coverage
+    assert "app/injected.py" not in second_read.reviewed_files
+
+
+def test_bound_finding_property_returns_isolated_copies_on_each_access() -> None:
+    payload = _payload()
+    envelope = _success_envelope_raw(payload, findings=[_finding()])
+    bound = bind_chunk_response_v2(envelope=envelope, payload=payload)
+
+    first_read = bound.findings
+    first_read[0].contract_ids.append("injected-contract")
+
+    second_read = bound.findings
+    assert "injected-contract" not in second_read[0].contract_ids
+
+
+def test_load_and_bind_rejects_invalid_utf8_in_the_response_file(tmp_path: Path) -> None:
+    """UnicodeDecodeError derives from ValueError, not OSError -- reading
+    invalid UTF-8 bytes must still surface a stable ResponseBindingError,
+    never an unhandled exception escaping the closed reason-code surface."""
+
+    payload = _payload()
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(payload.model_dump_json(), encoding="utf-8")
+    response_path = tmp_path / "response.json"
+    response_path.write_bytes(b"\xff\xfe\x00invalid-utf8")
+
+    with pytest.raises(ResponseBindingError) as excinfo:
+        load_and_bind_chunk_response_v2(payload_path=payload_path, response_path=response_path)
+    assert excinfo.value.reason_code == RESPONSE_CONTRACT_INVALID_REASON_V2
+
+
+def test_load_and_bind_rejects_invalid_utf8_in_the_payload_file(tmp_path: Path) -> None:
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_bytes(b"\xff\xfe\x00invalid-utf8")
+    response_path = tmp_path / "response.json"
+    response_path.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ResponseBindingError) as excinfo:
+        load_and_bind_chunk_response_v2(payload_path=payload_path, response_path=response_path)
+    assert excinfo.value.reason_code == PAYLOAD_CONTRACT_INVALID_REASON_V2
