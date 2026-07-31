@@ -227,8 +227,22 @@ class ManifestMaterialV2(ContractV2Model):
                 "coverage_required fragments are omitted from chunks without a "
                 "degradation cause accounting for them"
             )
-        if degraded_ids and not (degraded_ids <= required_ids):
-            raise ValueError("a degradation cause references a fragment that is not coverage_required")
+        # A degradation cause must reference exactly the missing (omitted)
+        # required fragments -- not merely any coverage_required fragment.
+        # Without this, a fragment already assigned to a chunk could also
+        # be named in a degradation cause, producing a manifest that
+        # contradictorily claims both "covered" and "omitted" for the same
+        # fragment -- exactly the kind of ambiguity that could later block
+        # a clean readiness result even though coverage is actually
+        # complete. ChunkCoverageV2's own partition rules apply the same
+        # restriction (degradation causes may reference only partial/
+        # missing files), so this mirrors existing contracts_v2 practice.
+        if degraded_ids != missing_required:
+            raise ValueError(
+                "degradation causes must reference exactly the coverage_required "
+                "fragments that are missing from every chunk -- not an already-"
+                "covered fragment, and not a fragment that is not coverage_required"
+            )
 
         return self
 

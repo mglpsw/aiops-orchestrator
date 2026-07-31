@@ -506,3 +506,51 @@ def test_manifest_rejects_a_must_review_path_covered_only_by_non_required_fragme
             chunks=[chunk],
             must_review_files=["app/service.py"],
         )
+
+
+# -- post-merge finding (P2, second Codex review of PR #99) -----------------
+
+
+def test_manifest_rejects_a_degradation_cause_for_an_already_covered_fragment() -> None:
+    """A required fragment that IS assigned to a chunk must not also be
+    named in a degradation cause -- that would contradictorily claim both
+    'covered' and 'omitted' for the same fragment, which could later
+    confuse a readiness computation even though coverage is complete."""
+
+    fragment = _fragment(required=True)
+    chunk = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment.fragment_id],
+        payload_sha256=None,
+    )
+    bogus_cause = ManifestDegradationV2(
+        reason_code="budget_exhausted",
+        affected_fragment_ids=[fragment.fragment_id],  # already covered by `chunk` above
+        detail="incorrectly claims this covered fragment is also missing",
+    )
+    with pytest.raises(ValidationError):
+        _manifest(fragments=[fragment], chunks=[chunk], degradation_causes=[bogus_cause])
+
+
+def test_manifest_rejects_a_degradation_cause_missing_some_but_not_all_omitted_fragments() -> None:
+    """Partial degradation-cause coverage of the missing set is also
+    rejected -- degraded_ids must equal missing_required exactly, not just
+    be a subset of required_ids."""
+
+    fragment_a = _fragment(path="app/a.py", start=1, end=10, required=True)
+    fragment_b = _fragment(path="app/b.py", start=1, end=10, required=True)
+    cause_naming_only_a = ManifestDegradationV2(
+        reason_code="budget_exhausted",
+        affected_fragment_ids=[fragment_a.fragment_id],
+        detail="only accounts for fragment_a, leaving fragment_b unexplained",
+    )
+    with pytest.raises(ValidationError):
+        _manifest(
+            fragments=[fragment_a, fragment_b],
+            chunks=[],
+            expected_files=["app/a.py", "app/b.py"],
+            must_review_files=["app/a.py", "app/b.py"],
+            degradation_causes=[cause_naming_only_a],
+        )

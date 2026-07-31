@@ -300,3 +300,44 @@ def test_plan_finds_a_valid_packing_that_a_greedy_heuristic_would_miss() -> None
     referenced = {fid for chunk in outcome.chunks for fid in chunk.fragment_ids}
     required_ids = {f.fragment_id for f in outcome.fragments if f.coverage_required}
     assert required_ids <= referenced
+
+
+def test_plan_blocks_quickly_on_a_trivially_infeasible_large_input() -> None:
+    """Post-merge finding (P2, second Codex review of PR #99): thirty
+    size-5 fragments with capacity 10 and max_bins=14 are infeasible by
+    total size alone (30*5=150 > 10*14=140) and must be rejected via the
+    cheap sum check, not by exhaustively searching ~13.4M states."""
+
+    import time
+
+    hunks = [
+        _hunk(f"app/file-{i}.py", index=0, start=1, end=5, must_review=True) for i in range(30)
+    ]
+    started = time.monotonic()
+    outcome = plan_lossless_chunks_v2(
+        hunks, semantic_group="primary_backend_logic", max_lines_per_chunk=10, max_chunks=14
+    )
+    elapsed = time.monotonic() - started
+
+    assert outcome.state == "blocked_pipeline"
+    assert elapsed < 5.0, f"trivial infeasibility took {elapsed:.2f}s -- expected a cheap short-circuit"
+
+
+def test_plan_blocks_rather_than_hangs_on_a_large_ambiguous_input() -> None:
+    """A large-but-not-trivially-infeasible required-fragment set must
+    still terminate quickly: the search-state cap bounds worst-case cost,
+    and the fragment-count cap bounds recursion depth."""
+
+    import time
+
+    hunks = [
+        _hunk(f"app/file-{i}.py", index=0, start=1, end=5, must_review=True) for i in range(60)
+    ]
+    started = time.monotonic()
+    outcome = plan_lossless_chunks_v2(
+        hunks, semantic_group="primary_backend_logic", max_lines_per_chunk=10, max_chunks=30
+    )
+    elapsed = time.monotonic() - started
+
+    assert outcome.state in ("planned", "blocked_pipeline")
+    assert elapsed < 10.0, f"bounded search took {elapsed:.2f}s -- expected the state cap to bound cost"

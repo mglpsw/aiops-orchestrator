@@ -134,12 +134,37 @@ def _split_hunk_into_fragments(
     return fragments
 
 
+#: Safety bound on the exact packer's search, in backtracking calls. Chosen
+#: to keep worst-case CPU bounded for pathological inputs (e.g. many
+#: same-sized fragments that are trivially, but not cheaply, infeasible)
+#: without materially limiting realistic single-semantic-group fragment
+#: counts.
+_MAX_EXACT_PACKING_STATES = 200_000
+
+#: Safety bound on the number of fragments the exact packer will even
+#: attempt: recursion depth equals fragment count, and Python's default
+#: recursion limit (~1000) is a hard ceiling regardless of the state
+#: budget above. A single semantic group needing more than this many
+#: *required* fragments is already far outside what this foundational
+#: planner slice is sized for.
+_MAX_EXACT_PACKING_FRAGMENTS = 500
+
+
+class _ExactPackingSearchExhausted(Exception):
+    """Raised internally when the state budget is exceeded. Caught by
+    ``_pack_fragments_exact`` and treated as "cannot confirm this fits" --
+    the same safe, conservative outcome as genuine infeasibility."""
+
+
 def _pack_fragments_exact(
     fragments: Sequence[FragmentV2], *, capacity: int, max_bins: int
 ) -> list[list[FragmentV2]] | None:
     """Exact bin-packing decision procedure: can these fragments fit into
     at most ``max_bins`` bins of the given ``capacity``? Returns a valid
-    packing if so, else ``None``.
+    packing if so, else ``None`` -- either because packing is genuinely
+    infeasible, or because the bounded search could not confirm feasibility
+    within its safety limits (never treated as success either way; a
+    caller only ever sees this as "plan it, or block the pipeline").
 
     Used only for ``coverage_required`` fragments, where the answer gates
     ``blocked_pipeline`` -- a merely-heuristic packer (first-fit-decreasing
@@ -149,18 +174,36 @@ def _pack_fragments_exact(
     would block a pipeline that didn't need to be blocked. Backtracking
     with duplicate-remaining-capacity pruning at each recursion level keeps
     this tractable for the fragment counts a single semantic group
-    produces; it is not intended for arbitrarily large inputs.
+    produces; it is not intended for arbitrarily large inputs, so two
+    cheap guards bound worst-case cost: a trivial-infeasibility check
+    (no search at all) and a hard cap on both search states and input size.
     """
 
     ordered = sorted(fragments, key=lambda f: (-_fragment_size(f), f.fragment_id))
+    sizes = [_fragment_size(fragment) for fragment in ordered]
+
+    if any(size > capacity for size in sizes):
+        return None  # a single fragment larger than one chunk can never fit
+    if sum(sizes) > capacity * max_bins:
+        return None  # trivially infeasible by total size -- no search needed
+    if len(ordered) > _MAX_EXACT_PACKING_FRAGMENTS:
+        return None  # too large to search safely within this slice's scope
+    if not ordered:
+        return []
+
     bins: list[list[FragmentV2]] = []
     remaining: list[int] = []
+    states_explored = 0
 
     def backtrack(index: int) -> bool:
+        nonlocal states_explored
+        states_explored += 1
+        if states_explored > _MAX_EXACT_PACKING_STATES:
+            raise _ExactPackingSearchExhausted()
         if index == len(ordered):
             return True
         fragment = ordered[index]
-        size = _fragment_size(fragment)
+        size = sizes[index]
 
         tried_remaining: set[int] = set()
         for bin_index in range(len(bins)):
@@ -186,7 +229,10 @@ def _pack_fragments_exact(
 
         return False
 
-    if not backtrack(0):
+    try:
+        if not backtrack(0):
+            return None
+    except _ExactPackingSearchExhausted:
         return None
     return [list(group) for group in bins]
 

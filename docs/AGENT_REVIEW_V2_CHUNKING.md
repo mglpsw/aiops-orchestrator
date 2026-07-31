@@ -45,17 +45,24 @@ never mistaken for issue closure.
   - a hunk larger than budget is split into stable, disjoint line windows
     (fallback #3: "janelas de linha estáveis"), covering it exactly --
     verified by union-equals-input tests, never a shrinker;
-  - `must_review` (`coverage_required`) fragments are bin-packed
-    (first-fit-decreasing, deterministic tie-break by `fragment_id`) into
-    chunks; if they cannot all fit within `max_chunks`, planning returns
-    `blocked_pipeline` with a `budget_exhausted` degradation cause
+  - `must_review` (`coverage_required`) fragments are packed into chunks
+    with an *exact* backtracking bin-packing decision procedure
+    (`_pack_fragments_exact`, deterministic tie-break by `fragment_id`,
+    bounded by a trivial-infeasibility short-circuit plus a hard cap on
+    both search states and input size) -- not a greedy heuristic like
+    first-fit-decreasing, which is not guaranteed optimal and could
+    wrongly report `blocked_pipeline` for content that actually fits; if
+    required fragments genuinely cannot fit within `max_chunks`, planning
+    returns `blocked_pipeline` with a `budget_exhausted` degradation cause
     referencing every required fragment -- never a `planned` result with
     partial required coverage;
   - non-required (auxiliary/context) fragments are packed into leftover
-    budget on a best-effort basis and silently dropped if they still do
-    not fit, per the issue's own allowance ("podem ser reduzidos somente
-    contextos auxiliares declarados") -- this is the only place content is
-    ever dropped, and it is never `must_review` content.
+    budget on a best-effort basis (first-fit-decreasing is fine here --
+    suboptimal packing only means slightly less optional context fits, not
+    a correctness issue) and silently dropped if they still do not fit,
+    per the issue's own allowance ("podem ser reduzidos somente contextos
+    auxiliares declarados") -- this is the only place content is ever
+    dropped, and it is never `must_review` content.
 
 `app/agent_review/contracts_v2.py` and `tests/agent_review/test_contracts_v2.py`
 are unmodified, exactly as in #83 and #85: `ContractV2Model`,
