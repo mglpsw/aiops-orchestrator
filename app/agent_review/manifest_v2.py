@@ -58,7 +58,22 @@ MANIFEST_SCHEMA_V2 = "agent-review.manifest.v2"
 NonNegativeInt = Annotated[int, Field(ge=0)]
 
 DegradationReasonValueV2 = Literal[
-    "budget_exhausted", "artifact_missing", "transport_failure", "schema_failure", "model_uncertainty"
+    "budget_exhausted",
+    "artifact_missing",
+    "transport_failure",
+    "schema_failure",
+    "model_uncertainty",
+    # Distinct from "budget_exhausted" (mathematically proven infeasible):
+    # the exact packer's bounded search could not confirm feasibility one
+    # way or the other before its safety limits kicked in. A valid packing
+    # may exist; the search simply didn't find it in time. Conflating this
+    # with proven infeasibility would misrepresent a "cannot determine" as
+    # a "does not fit".
+    "packing_search_exhausted",
+    # The input itself (fragment count) exceeded the planner's safety
+    # limit before any search was attempted -- also distinct from proven
+    # infeasibility.
+    "planner_limit_exceeded",
 ]
 
 

@@ -486,3 +486,79 @@ def test_plan_fails_fast_and_safe_on_a_numerically_adversarial_exact_fit_case() 
     # The only hard guarantees: it terminates quickly and never crashes.
     assert outcome.state in ("planned", "blocked_pipeline")
     assert elapsed < 5.0, f"exact-fit adversarial case took {elapsed:.2f}s -- expected a bounded, fast failure"
+    if outcome.state == "blocked_pipeline":
+        # A valid 7-bin packing is independently confirmed to exist (see
+        # the commit message), so this must NEVER be reported as
+        # "budget_exhausted" (mathematically proven infeasible) -- that
+        # would misrepresent "the search gave up" as "it does not fit".
+        assert outcome.degradation_causes[0].reason_code == "packing_search_exhausted"
+        assert outcome.degradation_causes[0].reason_code != "budget_exhausted"
+
+
+# -- reason-code precedence: proven_infeasible vs search_exhausted vs input_too_large --
+
+
+def test_pack_fragments_exact_distinguishes_proven_infeasible_from_search_exhausted() -> None:
+    from app.agent_review.planner_v2 import _pack_fragments_exact
+    from app.agent_review.manifest_v2 import FragmentV2, LineRangeV2, compute_fragment_id_v2
+    import hashlib
+
+    def frag(path: str, size: int) -> FragmentV2:
+        rng = LineRangeV2(start=1, end=size)
+        diff_sha = hashlib.sha256(path.encode()).hexdigest()
+        fid = compute_fragment_id_v2(path=path, old_range=rng, new_range=rng, diff_sha256=diff_sha)
+        return FragmentV2(
+            fragment_id=fid, path=path, old_range=rng, new_range=rng, hunk_indexes=[0],
+            diff_chars=10, diff_sha256=diff_sha, coverage_required=True,
+        )
+
+    # Proven infeasible: total (30*5=150) exceeds capacity*max_bins (10*14=140).
+    trivial = [frag(f"app/t{i}.py", 5) for i in range(30)]
+    result = _pack_fragments_exact(trivial, capacity=10, max_bins=14)
+    assert result.status == "proven_infeasible"
+
+    # Search exhausted: the documented adversarial 25-fragment exact-fit case.
+    sizes = [67, 66, 57, 52, 51, 43, 35, 34, 29, 28, 26, 26, 24, 20, 18, 17, 16, 15, 12, 12, 11, 11, 10, 10, 10]
+    adversarial = [frag(f"app/a{i}.py", s) for i, s in enumerate(sizes)]
+    result = _pack_fragments_exact(adversarial, capacity=100, max_bins=7)
+    assert result.status == "search_exhausted"
+
+    # Found: a simple case that fits trivially.
+    easy = [frag("app/e.py", 5)]
+    result = _pack_fragments_exact(easy, capacity=10, max_bins=1)
+    assert result.status == "found"
+    assert result.bins is not None
+    assert len(result.bins) == 1
+
+
+def test_pack_fragments_exact_reports_input_too_large_distinctly() -> None:
+    from app.agent_review.planner_v2 import _pack_fragments_exact, _MAX_EXACT_PACKING_FRAGMENTS
+    from app.agent_review.manifest_v2 import FragmentV2, LineRangeV2, compute_fragment_id_v2
+    import hashlib
+
+    def frag(path: str) -> FragmentV2:
+        rng = LineRangeV2(start=1, end=1)
+        diff_sha = hashlib.sha256(path.encode()).hexdigest()
+        fid = compute_fragment_id_v2(path=path, old_range=rng, new_range=rng, diff_sha256=diff_sha)
+        return FragmentV2(
+            fragment_id=fid, path=path, old_range=rng, new_range=rng, hunk_indexes=[0],
+            diff_chars=1, diff_sha256=diff_sha, coverage_required=True,
+        )
+
+    too_many = [frag(f"app/x{i}.py") for i in range(_MAX_EXACT_PACKING_FRAGMENTS + 1)]
+    result = _pack_fragments_exact(too_many, capacity=10, max_bins=1000)
+    assert result.status == "input_too_large"
+
+
+def test_plan_reports_planner_limit_exceeded_distinctly_from_budget_exhausted() -> None:
+    from app.agent_review.planner_v2 import _MAX_EXACT_PACKING_FRAGMENTS
+
+    hunks = [
+        _hunk(f"app/many-{i}.py", index=0, start=1, end=1, must_review=True)
+        for i in range(_MAX_EXACT_PACKING_FRAGMENTS + 1)
+    ]
+    outcome = plan_lossless_chunks_v2(
+        hunks, semantic_group="primary_backend_logic", max_lines_per_chunk=10, max_chunks=1000
+    )
+    assert outcome.state == "blocked_pipeline"
+    assert outcome.degradation_causes[0].reason_code == "planner_limit_exceeded"

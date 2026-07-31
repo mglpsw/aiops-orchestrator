@@ -53,18 +53,32 @@ never mistaken for issue closure.
     first-fit-decreasing, which is not guaranteed optimal and could
     wrongly report `blocked_pipeline` for content that actually fits; if
     required fragments genuinely cannot fit within `max_chunks`, planning
-    returns `blocked_pipeline` with a `budget_exhausted` degradation cause
-    referencing every required fragment -- never a `planned` result with
-    partial required coverage. **Known, accepted limitation:** bin packing
-    is NP-hard, so no finite search bound can guarantee finding every
-    feasible packing. Cheap admissible pruning (trivial-infeasibility
-    short-circuits, a suffix-sum room check at every search node) narrows
-    the search considerably, but a numerically adversarial exact-fit
-    instance (e.g. fragment sizes summing to *exactly*
-    `capacity * max_chunks`, forcing zero slack in every bin) can still
-    exhaust the state budget before finding a solution that does exist.
-    The deliberate trade-off is failing fast and safe -- `blocked_pipeline`,
-    never a hang, a crash, or a false `planned` -- over guaranteeing
+    returns `blocked_pipeline` -- never a `planned` result with partial
+    required coverage. **The reason code distinguishes *why*, honestly:**
+    `_pack_fragments_exact` returns a three-way `ExactPackingResultV2`
+    (`found` / `proven_infeasible` / `search_exhausted` / `input_too_large`),
+    not a boolean, and each maps to its own degradation `reason_code` --
+    `budget_exhausted` only when infeasibility is mathematically proven
+    (a single fragment larger than the budget, or total size exceeding
+    `capacity * max_chunks`, or the search exhausting every arrangement);
+    `packing_search_exhausted` when the bounded search could not confirm
+    feasibility either way before its state budget ran out (a valid
+    packing may still exist -- see the known limitation below);
+    `planner_limit_exceeded` when the fragment count itself exceeds the
+    safe search input size before any search is attempted. Collapsing
+    these into a single `budget_exhausted` would misrepresent "the search
+    gave up" as "it mathematically does not fit". **Known, accepted
+    limitation:** bin packing is NP-hard, so no finite search bound can
+    guarantee finding every feasible packing. Cheap admissible pruning
+    (trivial-infeasibility short-circuits, a suffix-sum room check at
+    every search node) narrows the search considerably, but a numerically
+    adversarial exact-fit instance (e.g. fragment sizes summing to
+    *exactly* `capacity * max_chunks`, forcing zero slack in every bin)
+    can still exhaust the state budget before finding a solution that
+    does exist -- reported as `packing_search_exhausted`, not
+    `budget_exhausted`. The deliberate trade-off is failing fast and safe
+    -- `blocked_pipeline`, never a hang, a crash, or a false `planned` --
+    over guaranteeing
     optimality on arbitrary input;
   - non-required (auxiliary/context) fragments are packed into leftover
     budget on a best-effort basis (first-fit-decreasing is fine here --

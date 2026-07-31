@@ -222,20 +222,33 @@ _MAX_EXACT_PACKING_FRAGMENTS = 500
 
 
 class _ExactPackingSearchExhausted(Exception):
-    """Raised internally when the state budget is exceeded. Caught by
-    ``_pack_fragments_exact`` and treated as "cannot confirm this fits" --
-    the same safe, conservative outcome as genuine infeasibility."""
+    """Raised internally when the state budget is exceeded before the
+    search could prove either a packing or infeasibility. Caught by
+    ``_pack_fragments_exact`` and reported as ``search_exhausted`` --
+    deliberately distinct from ``proven_infeasible``, since a valid
+    packing may still exist; the search simply did not find it in time."""
+
+
+@dataclass(frozen=True)
+class ExactPackingResultV2:
+    """Three-way outcome, not a boolean: ``found`` (a packing exists and
+    is returned), ``proven_infeasible`` (mathematically cannot fit --
+    single fragment too large, or total size exceeds capacity*max_bins, or
+    the search exhausted every arrangement without finding one), and
+    ``search_exhausted``/``input_too_large`` (the bounded search could not
+    determine an answer either way). Collapsing the latter two into
+    ``proven_infeasible`` would misrepresent "we don't know" as "it
+    doesn't fit"."""
+
+    status: Literal["found", "proven_infeasible", "search_exhausted", "input_too_large"]
+    bins: tuple[tuple[FragmentV2, ...], ...] | None = None
 
 
 def _pack_fragments_exact(
     fragments: Sequence[FragmentV2], *, capacity: int, max_bins: int
-) -> list[list[FragmentV2]] | None:
+) -> ExactPackingResultV2:
     """Exact bin-packing decision procedure: can these fragments fit into
-    at most ``max_bins`` bins of the given ``capacity``? Returns a valid
-    packing if so, else ``None`` -- either because packing is genuinely
-    infeasible, or because the bounded search could not confirm feasibility
-    within its safety limits (never treated as success either way; a
-    caller only ever sees this as "plan it, or block the pipeline").
+    at most ``max_bins`` bins of the given ``capacity``?
 
     Used only for ``coverage_required`` fragments, where the answer gates
     ``blocked_pipeline`` -- a merely-heuristic packer (first-fit-decreasing
@@ -243,24 +256,26 @@ def _pack_fragments_exact(
     ``[6, 5, 3, 2, 2, 2]`` with two bins of capacity 10) could wrongly
     report content as not fitting when a valid arrangement exists, which
     would block a pipeline that didn't need to be blocked. Backtracking
-    with duplicate-remaining-capacity pruning at each recursion level keeps
-    this tractable for the fragment counts a single semantic group
-    produces; it is not intended for arbitrarily large inputs, so two
-    cheap guards bound worst-case cost: a trivial-infeasibility check
-    (no search at all) and a hard cap on both search states and input size.
+    with duplicate-remaining-capacity and admissible suffix-sum pruning
+    keeps this tractable for most fragment counts a single semantic group
+    produces; it is not intended for arbitrarily large inputs, so bounds
+    on both search states and input size cap worst-case cost. Bin packing
+    is NP-hard, so those bounds cannot guarantee an answer on every
+    input -- see ``ExactPackingResultV2`` for how that is reported
+    honestly rather than folded into "infeasible".
     """
 
     ordered = sorted(fragments, key=lambda f: (-_fragment_size(f), f.fragment_id))
     sizes = [_fragment_size(fragment) for fragment in ordered]
 
     if any(size > capacity for size in sizes):
-        return None  # a single fragment larger than one chunk can never fit
+        return ExactPackingResultV2(status="proven_infeasible")  # one fragment alone can never fit
     if sum(sizes) > capacity * max_bins:
-        return None  # trivially infeasible by total size -- no search needed
+        return ExactPackingResultV2(status="proven_infeasible")  # infeasible by total size -- no search needed
     if len(ordered) > _MAX_EXACT_PACKING_FRAGMENTS:
-        return None  # too large to search safely within this slice's scope
+        return ExactPackingResultV2(status="input_too_large")
     if not ordered:
-        return []
+        return ExactPackingResultV2(status="found", bins=())
 
     # Suffix sums let each node cheaply check "can what's left even fit in
     # the room left?" -- an admissible prune (never eliminates a feasible
@@ -315,11 +330,12 @@ def _pack_fragments_exact(
         return False
 
     try:
-        if not backtrack(0):
-            return None
+        found = backtrack(0)
     except _ExactPackingSearchExhausted:
-        return None
-    return [list(group) for group in bins]
+        return ExactPackingResultV2(status="search_exhausted")
+    if not found:
+        return ExactPackingResultV2(status="proven_infeasible")
+    return ExactPackingResultV2(status="found", bins=tuple(tuple(group) for group in bins))
 
 
 def plan_lossless_chunks_v2(
@@ -342,17 +358,33 @@ def plan_lossless_chunks_v2(
     required = [fragment for fragment in all_fragments if fragment.coverage_required]
     auxiliary = [fragment for fragment in all_fragments if not fragment.coverage_required]
 
-    required_bins = _pack_fragments_exact(
+    packing_result = _pack_fragments_exact(
         required, capacity=max_lines_per_chunk, max_bins=max_chunks
     )
-    if required_bins is None:
-        cause = ManifestDegradationV2(
-            reason_code="budget_exhausted",
-            affected_fragment_ids=[fragment.fragment_id for fragment in required],
-            detail=(
+    if packing_result.status != "found":
+        reason_code, detail = {
+            "proven_infeasible": (
+                "budget_exhausted",
                 f"must_review content cannot be packed into max_chunks={max_chunks} "
-                f"chunks of max_lines_per_chunk={max_lines_per_chunk}"
+                f"chunks of max_lines_per_chunk={max_lines_per_chunk} -- proven infeasible",
             ),
+            "search_exhausted": (
+                "packing_search_exhausted",
+                f"the exact packing search could not confirm within its bounded search "
+                f"budget whether must_review content fits into max_chunks={max_chunks} "
+                f"chunks of max_lines_per_chunk={max_lines_per_chunk} -- a valid packing "
+                f"may exist but was not found within the search limit",
+            ),
+            "input_too_large": (
+                "planner_limit_exceeded",
+                f"{len(required)} required fragments exceed this planner's safe exact-search "
+                f"input limit before any packing search was attempted",
+            ),
+        }[packing_result.status]
+        cause = ManifestDegradationV2(
+            reason_code=reason_code,
+            affected_fragment_ids=[fragment.fragment_id for fragment in required],
+            detail=detail,
         )
         return PlanningOutcomeV2(
             state="blocked_pipeline",
@@ -361,7 +393,8 @@ def plan_lossless_chunks_v2(
             degradation_causes=(cause,),
         )
 
-    bins = [list(group) for group in required_bins]
+    assert packing_result.bins is not None
+    bins = [list(group) for group in packing_result.bins]
     totals = [sum(_fragment_size(fragment) for fragment in group) for group in bins]
 
     # Best-effort packing of auxiliary (non-required) context into leftover
