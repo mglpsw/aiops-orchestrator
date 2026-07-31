@@ -27,14 +27,21 @@ VENV_DIR="$1"
 shift || true
 
 TOOLREPO_SHA=""
+TOOLREPO_SHA_PROVIDED=0
 if [ "${1:-}" = "--toolrepo-sha" ]; then
+    TOOLREPO_SHA_PROVIDED=1
     TOOLREPO_SHA="${2:-}"
     shift 2 || true
 fi
 
-if [ -n "$TOOLREPO_SHA" ]; then
+# Validate whenever the flag was given at all, including an explicitly
+# empty value (--toolrepo-sha ""). Checking `-n "$TOOLREPO_SHA"` alone would
+# silently treat an empty argument the same as the flag never being passed,
+# letting a broken/empty CI variable slip through as "no pin requested"
+# instead of being rejected as an invalid pin.
+if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
     if ! [[ "$TOOLREPO_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-        echo "Blocked: --toolrepo-sha must be a full lowercase 40-character commit SHA, not a branch/tag/short SHA." >&2
+        echo "Blocked: --toolrepo-sha must be a full lowercase 40-character commit SHA, not empty, a branch/tag, or a short SHA." >&2
         exit 2
     fi
     ACTUAL_SHA="$(cd "$ROOT_DIR" && git rev-parse HEAD)"
@@ -50,11 +57,15 @@ if [ ! -f "$LOCK_FILE" ]; then
 fi
 
 python3 -m venv "$VENV_DIR"
-"$VENV_DIR/bin/python3" -m pip install --upgrade pip --quiet
+# Deliberately does NOT run `pip install --upgrade pip` first: that step
+# would fetch whatever pip version happens to be latest at install time,
+# an unpinned, unverified download that undermines reproducibility between
+# two installs of the same lock file. The venv's own bundled pip (from
+# Python's ensurepip) already supports --require-hashes.
 "$VENV_DIR/bin/python3" -m pip install --require-hashes --no-deps -r "$LOCK_FILE"
 
 echo "AgentReview toolrepo venv ready at: $VENV_DIR"
 echo "Installed strictly from: $LOCK_FILE (--require-hashes --no-deps)"
-if [ -n "$TOOLREPO_SHA" ]; then
+if [ "$TOOLREPO_SHA_PROVIDED" = "1" ]; then
     echo "Toolrepo pinned at full SHA: $TOOLREPO_SHA"
 fi

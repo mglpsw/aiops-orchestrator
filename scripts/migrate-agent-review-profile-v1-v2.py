@@ -18,7 +18,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.agent_review.profile_migration_v1_v2 import migrate_profile_v1_to_v2  # noqa: E402
+from app.agent_review.profile_migration_v1_v2 import (  # noqa: E402
+    ProfileMigrationError,
+    migrate_profile_v1_to_v2,
+)
 from app.agent_review.schemas import TargetProfile  # noqa: E402
 
 
@@ -61,10 +64,19 @@ def main(argv: list[str] | None = None) -> int:
         print("Blocked: --profile-v1 did not parse into an object.", file=sys.stderr)
         return 2
 
-    profile_v1 = TargetProfile.model_validate(raw)
-    report = migrate_profile_v1_to_v2(
-        profile_v1, repo=args.repo, default_branch=args.default_branch
-    )
+    try:
+        profile_v1 = TargetProfile.model_validate(raw)
+    except Exception as exc:  # pydantic.ValidationError
+        print(f"Blocked: --profile-v1 is not a valid v1 profile ({exc.__class__.__name__}).", file=sys.stderr)
+        return 2
+
+    try:
+        report = migrate_profile_v1_to_v2(
+            profile_v1, repo=args.repo, default_branch=args.default_branch
+        )
+    except ProfileMigrationError as exc:
+        print(f"Blocked: {exc}", file=sys.stderr)
+        return 2
 
     output_doc = {
         "source_schema_version": report.source_schema_version,
