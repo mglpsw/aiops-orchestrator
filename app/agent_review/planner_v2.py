@@ -93,9 +93,27 @@ def _proportional_window(start: int, end: int, *, window_index: int, window_coun
     """Split the inclusive range [start, end] into `window_count`
     contiguous, disjoint sub-ranges of nearly equal size (remainder lines
     distributed to the first windows) and return the sub-range for
-    `window_index` (0-based). Deterministic and stable across runs."""
+    `window_index` (0-based). Deterministic and stable across runs.
+
+    When `total < window_count` (this side has fewer lines than the
+    number of windows the *other*, larger side requires -- e.g. replacing
+    1 old line with 1,000 new lines at a 100-line budget), the naive
+    proportional formula produces `window_size == 0` for most windows,
+    which yields `end == start - 1`: an inverted range that ``LineRangeV2``
+    rejects. Each of the first `total` windows instead gets one line of
+    its own; any remaining windows anchor to the last available line
+    rather than producing an empty/inverted range. This side is never the
+    one enforcing the budget in that case (the larger side's own window
+    count guarantees `total >= window_count` there -- see
+    `_split_hunk_into_fragments`), so a repeated single-point anchor here
+    is a safe, valid placeholder, not a coverage requirement.
+    """
 
     total = end - start + 1
+    if total <= window_count:
+        position = min(window_index, total - 1)
+        point = start + position
+        return point, point
     base, remainder = divmod(total, window_count)
     window_size = base + (1 if window_index < remainder else 0)
     offset = window_index * base + min(window_index, remainder)

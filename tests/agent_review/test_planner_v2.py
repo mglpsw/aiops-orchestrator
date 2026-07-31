@@ -415,3 +415,42 @@ def test_plan_blocks_a_large_deletion_that_cannot_fit_in_max_chunks() -> None:
         max_chunks=2,  # 10,000 / 100 = 100 chunks needed, far more than 2
     )
     assert outcome.state == "blocked_pipeline"
+
+
+# -- post-merge finding (P2, fourth Codex review of PR #99) -----------------
+
+
+def test_plan_handles_a_hunk_replacing_one_old_line_with_many_new_lines() -> None:
+    """The exact scenario from the Codex finding: 1 old line replaced by
+    1,000 new lines at a 100-line budget. The old side (1 line) has far
+    fewer lines than the 10 windows the new side requires; a naive
+    proportional split produces an inverted range on the old side and
+    LineRangeV2 raises instead of the planner returning a result. Must not
+    raise -- must return planned or blocked_pipeline."""
+
+    hunk = _hunk(
+        "app/imbalanced.py",
+        index=0,
+        old_start=1,
+        old_end=1,
+        start=1,
+        end=1000,
+        must_review=True,
+    )
+    outcome = plan_lossless_chunks_v2(
+        hunks=[hunk],
+        semantic_group="primary_backend_logic",
+        max_lines_per_chunk=100,
+        max_chunks=20,
+    )
+    assert outcome.state == "planned"
+    for fragment in outcome.fragments:
+        assert fragment.old_range.start <= fragment.old_range.end
+        assert fragment.new_range.start <= fragment.new_range.end
+
+    covered_new_lines: set[int] = set()
+    for fragment in outcome.fragments:
+        rng = range(fragment.new_range.start, fragment.new_range.end + 1)
+        assert not (covered_new_lines & set(rng)), "new-side windows must stay disjoint"
+        covered_new_lines.update(rng)
+    assert covered_new_lines == set(range(1, 1001))
