@@ -64,8 +64,11 @@ def _response_contract_version(response_raw: Mapping[str, object]) -> ContractVe
         return ContractVersionV2.V2
     # v1's ChunkResponse (schemas.py) never declares a schema_id field at
     # all; schema_version == 1 alone is its genuine, complete canonical
-    # marker -- not a partial-field guess.
-    if schema_id is None and schema_version == _RESPONSE_SCHEMA_VERSION_V1:
+    # marker -- not a partial-field guess. The key must be *absent*, not
+    # merely falsy: {"schema_id": null, ...} is a corrupted/foreign
+    # document that happens to share Python's `None`, not a v1 response,
+    # and must not be silently accepted as one.
+    if "schema_id" not in response_raw and schema_version == _RESPONSE_SCHEMA_VERSION_V1:
         return ContractVersionV2.V1
     return None
 

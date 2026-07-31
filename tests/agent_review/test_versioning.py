@@ -158,3 +158,20 @@ def test_v1_chunk_response_model_independently_rejects_a_v2_shaped_envelope() ->
     }
     with pytest.raises(Exception):
         ChunkResponse.model_validate(v2_shaped_response)
+
+
+# -- post-merge finding (Codex review of PR #97) ---------------------------
+
+
+def test_select_contract_version_rejects_an_explicit_null_schema_id() -> None:
+    """{"schema_id": null} is not the same document as one that never
+    declared schema_id at all -- an explicit null is a corrupted/foreign
+    shape and must not be silently accepted as v1."""
+
+    with pytest.raises(ResponseBindingError) as excinfo:
+        select_contract_version(
+            requested="v1",
+            payload_raw=_v1_payload_marker(),
+            response_raw={"schema_id": None, "schema_version": 1},
+        )
+    assert excinfo.value.reason_code == UNSUPPORTED_CONTRACT_VERSION_REASON_V2
