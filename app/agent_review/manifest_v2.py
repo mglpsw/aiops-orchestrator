@@ -1,0 +1,205 @@
+"""Typed AgentReview v2 fragment manifest.
+
+Bound to `manifest_hash` in `RunIdentityV2` via `contracts_v2`'s existing,
+unmodified `canonical_manifest_bytes_v2`/`compute_manifest_hash_v2` --
+reused as-is on `ManifestV2.model_dump(mode="json")`, not reimplemented.
+
+This is the typed contract for issue #84's manifest. It intentionally
+covers the manifest's *shape and lossless-coverage invariant* only; git-diff
+acquisition (rename/binary/submodule/no-newline handling) and symbol/AST-aware
+grouping are separate, larger pieces of #84 not implemented in this slice --
+see `docs/AGENT_REVIEW_V2_CHUNKING.md` for exactly what remains.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from typing import Annotated, Literal
+
+from pydantic import Field, model_validator
+
+from app.agent_review.contracts_v2 import (
+    ContractV2Model,
+    PositiveInt,
+    RelativePath,
+    RunIdentityV2,
+    SafeIdentifier,
+    SafeText,
+    SemanticGroupValue,
+    Sha256,
+    compute_manifest_hash_v2,
+    compute_run_id,
+)
+
+MANIFEST_SCHEMA_V2 = "agent-review.manifest.v2"
+
+NonNegativeInt = Annotated[int, Field(ge=0)]
+
+DegradationReasonValueV2 = Literal[
+    "budget_exhausted", "artifact_missing", "transport_failure", "schema_failure", "model_uncertainty"
+]
+
+
+def _canonical_json_bytes_v2(value: object) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+
+class LineRangeV2(ContractV2Model):
+    start: NonNegativeInt
+    end: NonNegativeInt
+
+    @model_validator(mode="after")
+    def validate_order(self) -> LineRangeV2:
+        if self.end < self.start:
+            raise ValueError("range end must not precede start")
+        return self
+
+
+def compute_fragment_id_v2(
+    *, path: str, old_range: LineRangeV2, new_range: LineRangeV2, diff_sha256: str
+) -> str:
+    """``sha256(path|old_range|new_range|diff_sha256)`` in canonical JSON --
+    the exact preimage sketched in issue #84."""
+
+    material = {
+        "path": path,
+        "old_range": {"start": old_range.start, "end": old_range.end},
+        "new_range": {"start": new_range.start, "end": new_range.end},
+        "diff_sha256": diff_sha256,
+    }
+    return hashlib.sha256(_canonical_json_bytes_v2(material)).hexdigest()
+
+
+class FragmentV2(ContractV2Model):
+    fragment_id: Sha256
+    path: RelativePath
+    old_range: LineRangeV2
+    new_range: LineRangeV2
+    hunk_indexes: list[NonNegativeInt]
+    diff_chars: NonNegativeInt
+    diff_sha256: Sha256
+    coverage_required: bool
+
+    @model_validator(mode="after")
+    def validate_fragment_id(self) -> FragmentV2:
+        expected = compute_fragment_id_v2(
+            path=self.path,
+            old_range=self.old_range,
+            new_range=self.new_range,
+            diff_sha256=self.diff_sha256,
+        )
+        if self.fragment_id != expected:
+            raise ValueError("fragment_id does not match its canonical preimage")
+        if not self.hunk_indexes:
+            raise ValueError("a fragment must reference at least one hunk index")
+        if len(self.hunk_indexes) != len(set(self.hunk_indexes)):
+            raise ValueError("hunk_indexes must be unique")
+        return self
+
+
+class ManifestChunkV2(ContractV2Model):
+    chunk_id: SafeIdentifier
+    order_index: NonNegativeInt
+    semantic_group: SemanticGroupValue
+    fragment_ids: list[Sha256]
+    payload_sha256: Sha256 | None
+
+    @model_validator(mode="after")
+    def validate_fragment_ids(self) -> ManifestChunkV2:
+        if not self.fragment_ids:
+            raise ValueError("a chunk must reference at least one fragment")
+        if len(self.fragment_ids) != len(set(self.fragment_ids)):
+            raise ValueError("fragment_ids must be unique within a chunk")
+        return self
+
+
+class ManifestDegradationV2(ContractV2Model):
+    reason_code: DegradationReasonValueV2
+    affected_fragment_ids: list[Sha256]
+    detail: SafeText
+
+    @model_validator(mode="after")
+    def validate_affected_fragments(self) -> ManifestDegradationV2:
+        if not self.affected_fragment_ids:
+            raise ValueError("a degradation cause must identify at least one affected fragment")
+        if len(self.affected_fragment_ids) != len(set(self.affected_fragment_ids)):
+            raise ValueError("affected_fragment_ids must be unique")
+        return self
+
+
+class ManifestV2(ContractV2Model):
+    schema_id: Literal["agent-review.manifest.v2"]
+    schema_version: Literal[2]
+    source: Literal["aiops-review-plan-chunks-v2"]
+    run_id: Sha256
+    identity: RunIdentityV2
+    expected_files: list[RelativePath]
+    must_review_files: list[RelativePath]
+    fragments: list[FragmentV2]
+    chunks: list[ManifestChunkV2]
+    max_chunks: PositiveInt
+    degradation_causes: list[ManifestDegradationV2]
+
+    @model_validator(mode="after")
+    def validate_manifest(self) -> ManifestV2:
+        if self.run_id != compute_run_id(self.identity):
+            raise ValueError("run_id does not match the canonical run identity")
+
+        fragment_ids = [fragment.fragment_id for fragment in self.fragments]
+        if len(fragment_ids) != len(set(fragment_ids)):
+            raise ValueError("fragment_id values must be unique")
+
+        expected = set(self.expected_files)
+        fragment_paths = {fragment.path for fragment in self.fragments}
+        if not fragment_paths <= expected:
+            raise ValueError("every fragment path must belong to expected_files")
+        if not set(self.must_review_files) <= expected:
+            raise ValueError("must_review_files must be a subset of expected_files")
+
+        chunk_ids = [chunk.chunk_id for chunk in self.chunks]
+        if len(chunk_ids) != len(set(chunk_ids)):
+            raise ValueError("chunk_id values must be unique")
+        if len(self.chunks) > self.max_chunks:
+            raise ValueError("chunk count exceeds max_chunks")
+
+        known_fragment_ids = set(fragment_ids)
+        assignment_count: dict[str, int] = {}
+        for chunk in self.chunks:
+            for fragment_id in chunk.fragment_ids:
+                if fragment_id not in known_fragment_ids:
+                    raise ValueError("a chunk references an unknown fragment_id")
+                assignment_count[fragment_id] = assignment_count.get(fragment_id, 0) + 1
+
+        duplicated = {fid for fid, count in assignment_count.items() if count > 1}
+        if duplicated:
+            raise ValueError("a fragment must not be assigned to more than one chunk")
+
+        # Losslessness: every fragment marked coverage_required must be
+        # assigned to exactly one chunk, unless a degradation cause
+        # explicitly and completely accounts for its omission. There is no
+        # silent partial approval: an unexplained gap is a validation error.
+        required_ids = {fragment.fragment_id for fragment in self.fragments if fragment.coverage_required}
+        missing_required = required_ids - set(assignment_count)
+        degraded_ids: set[str] = set()
+        for cause in self.degradation_causes:
+            degraded_ids.update(cause.affected_fragment_ids)
+        if missing_required - degraded_ids:
+            raise ValueError(
+                "coverage_required fragments are omitted from chunks without a "
+                "degradation cause accounting for them"
+            )
+        if degraded_ids and not (degraded_ids <= required_ids):
+            raise ValueError("a degradation cause references a fragment that is not coverage_required")
+
+        return self
+
+
+def compute_manifest_hash_v2_for(manifest: ManifestV2) -> str:
+    """``manifest_hash`` for ``RunIdentityV2``, via ``contracts_v2``'s
+    existing, unmodified ``compute_manifest_hash_v2`` -- reused, not
+    reimplemented."""
+
+    return compute_manifest_hash_v2(manifest.model_dump(mode="json"))

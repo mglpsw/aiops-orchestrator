@@ -1,0 +1,300 @@
+from __future__ import annotations
+
+import copy
+
+import pytest
+from pydantic import ValidationError
+
+from app.agent_review.contracts_v2 import RunIdentityV2, compute_run_id
+from app.agent_review.manifest_v2 import (
+    FragmentV2,
+    LineRangeV2,
+    ManifestChunkV2,
+    ManifestDegradationV2,
+    ManifestV2,
+    compute_fragment_id_v2,
+    compute_manifest_hash_v2_for,
+)
+
+
+def _identity(**overrides: object) -> RunIdentityV2:
+    raw: dict[str, object] = {
+        "repo": "mglpsw/aiops-orchestrator",
+        "pr_number": 84,
+        "base_sha": "1" * 40,
+        "head_sha": "2" * 40,
+        "tested_merge_sha": "3" * 40,
+        "toolrepo_sha": "4" * 40,
+        "profile_hash": "a" * 64,
+        "policy_hash": "b" * 64,
+        "manifest_hash": "c" * 64,
+        "evidence_hash": "d" * 64,
+    }
+    raw.update(overrides)
+    return RunIdentityV2.model_validate(raw)
+
+
+def _fragment(
+    *, path: str = "app/service.py", start: int = 1, end: int = 10, required: bool = True
+) -> FragmentV2:
+    old_range = LineRangeV2(start=start, end=end)
+    new_range = LineRangeV2(start=start, end=end)
+    diff_sha256 = "e" * 64
+    fragment_id = compute_fragment_id_v2(
+        path=path, old_range=old_range, new_range=new_range, diff_sha256=diff_sha256
+    )
+    return FragmentV2(
+        fragment_id=fragment_id,
+        path=path,
+        old_range=old_range,
+        new_range=new_range,
+        hunk_indexes=[0],
+        diff_chars=100,
+        diff_sha256=diff_sha256,
+        coverage_required=required,
+    )
+
+
+def _manifest(
+    *,
+    identity: RunIdentityV2 | None = None,
+    fragments: list[FragmentV2] | None = None,
+    chunks: list[ManifestChunkV2] | None = None,
+    degradation_causes: list[ManifestDegradationV2] | None = None,
+    expected_files: list[str] | None = None,
+    must_review_files: list[str] | None = None,
+    max_chunks: int = 10,
+) -> ManifestV2:
+    identity = identity or _identity()
+    fragment = fragments[0] if fragments else _fragment()
+    fragments = fragments if fragments is not None else [fragment]
+    chunks = (
+        chunks
+        if chunks is not None
+        else [
+            ManifestChunkV2(
+                chunk_id="chunk-0000",
+                order_index=0,
+                semantic_group="primary_backend_logic",
+                fragment_ids=[fragment.fragment_id],
+                payload_sha256=None,
+            )
+        ]
+    )
+    return ManifestV2(
+        schema_id="agent-review.manifest.v2",
+        schema_version=2,
+        source="aiops-review-plan-chunks-v2",
+        run_id=compute_run_id(identity),
+        identity=identity,
+        expected_files=expected_files or ["app/service.py"],
+        must_review_files=must_review_files if must_review_files is not None else ["app/service.py"],
+        fragments=fragments,
+        chunks=chunks,
+        max_chunks=max_chunks,
+        degradation_causes=degradation_causes or [],
+    )
+
+
+# -- fragment_id ---------------------------------------------------------
+
+
+def test_fragment_id_is_the_documented_preimage() -> None:
+    fragment = _fragment()
+    recomputed = compute_fragment_id_v2(
+        path=fragment.path,
+        old_range=fragment.old_range,
+        new_range=fragment.new_range,
+        diff_sha256=fragment.diff_sha256,
+    )
+    assert fragment.fragment_id == recomputed
+
+
+def test_fragment_rejects_a_stale_fragment_id() -> None:
+    fragment = _fragment()
+    with pytest.raises(ValidationError):
+        FragmentV2.model_validate(
+            {**fragment.model_dump(mode="json"), "fragment_id": "f" * 64}
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("path", "app/other.py"),
+        ("diff_sha256", "f" * 64),
+    ],
+)
+def test_fragment_id_changes_when_material_identity_changes(field: str, value: object) -> None:
+    fragment = _fragment()
+    other_path = value if field == "path" else fragment.path
+    other_diff = value if field == "diff_sha256" else fragment.diff_sha256
+    other_id = compute_fragment_id_v2(
+        path=other_path,
+        old_range=fragment.old_range,
+        new_range=fragment.new_range,
+        diff_sha256=other_diff,
+    )
+    assert other_id != fragment.fragment_id
+
+
+def test_line_range_rejects_an_inverted_range() -> None:
+    with pytest.raises(ValidationError):
+        LineRangeV2(start=10, end=5)
+
+
+# -- manifest structural invariants ---------------------------------------
+
+
+def test_manifest_accepts_a_fully_covered_single_chunk() -> None:
+    manifest = _manifest()
+    assert manifest.chunks[0].fragment_ids == [manifest.fragments[0].fragment_id]
+
+
+def test_manifest_rejects_a_run_id_not_matching_identity() -> None:
+    identity = _identity()
+    with pytest.raises(ValidationError):
+        ManifestV2(
+            schema_id="agent-review.manifest.v2",
+            schema_version=2,
+            source="aiops-review-plan-chunks-v2",
+            run_id="0" * 64,
+            identity=identity,
+            expected_files=["app/service.py"],
+            must_review_files=["app/service.py"],
+            fragments=[_fragment()],
+            chunks=[],
+            max_chunks=10,
+            degradation_causes=[],
+        )
+
+
+def test_manifest_rejects_a_fragment_path_outside_expected_files() -> None:
+    fragment = _fragment(path="app/outside.py")
+    with pytest.raises(ValidationError):
+        _manifest(fragments=[fragment], expected_files=["app/service.py"])
+
+
+def test_manifest_rejects_must_review_files_not_in_expected_files() -> None:
+    with pytest.raises(ValidationError):
+        _manifest(must_review_files=["app/other.py"])
+
+
+def test_manifest_rejects_a_chunk_referencing_an_unknown_fragment() -> None:
+    fragment = _fragment()
+    bogus_chunk = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=["f" * 64],
+        payload_sha256=None,
+    )
+    with pytest.raises(ValidationError):
+        _manifest(fragments=[fragment], chunks=[bogus_chunk])
+
+
+def test_manifest_rejects_a_fragment_assigned_to_two_chunks() -> None:
+    fragment = _fragment()
+    chunk_a = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment.fragment_id],
+        payload_sha256=None,
+    )
+    chunk_b = ManifestChunkV2(
+        chunk_id="chunk-0001",
+        order_index=1,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment.fragment_id],
+        payload_sha256=None,
+    )
+    with pytest.raises(ValidationError):
+        _manifest(fragments=[fragment], chunks=[chunk_a, chunk_b])
+
+
+def test_manifest_rejects_an_unexplained_omission_of_a_required_fragment() -> None:
+    """The core losslessness guard: a coverage_required fragment missing
+    from every chunk, with no degradation cause, is a hard validation
+    error -- never a silently accepted partial manifest."""
+
+    fragment = _fragment(required=True)
+    with pytest.raises(ValidationError):
+        _manifest(fragments=[fragment], chunks=[])
+
+
+def test_manifest_accepts_an_omission_explained_by_a_degradation_cause() -> None:
+    fragment = _fragment(required=True)
+    cause = ManifestDegradationV2(
+        reason_code="budget_exhausted",
+        affected_fragment_ids=[fragment.fragment_id],
+        detail="max_chunks too small",
+    )
+    manifest = _manifest(fragments=[fragment], chunks=[], degradation_causes=[cause])
+    assert manifest.chunks == []
+
+
+def test_manifest_rejects_a_degradation_cause_for_a_non_required_fragment() -> None:
+    fragment = _fragment(required=False)
+    cause = ManifestDegradationV2(
+        reason_code="budget_exhausted",
+        affected_fragment_ids=[fragment.fragment_id],
+        detail="irrelevant",
+    )
+    with pytest.raises(ValidationError):
+        _manifest(fragments=[fragment], chunks=[], degradation_causes=[cause])
+
+
+def test_manifest_accepts_an_unreferenced_non_required_fragment() -> None:
+    """An auxiliary (non-must_review) fragment can be present in the
+    manifest without being assigned to any chunk -- it was optional
+    context, not required coverage."""
+
+    fragment = _fragment(required=False)
+    manifest = _manifest(fragments=[fragment], chunks=[])
+    assert manifest.fragments[0].fragment_id == fragment.fragment_id
+    assert manifest.chunks == []
+
+
+def test_manifest_rejects_chunk_count_exceeding_max_chunks() -> None:
+    fragment = _fragment()
+    chunk = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment.fragment_id],
+        payload_sha256=None,
+    )
+    with pytest.raises(ValidationError):
+        _manifest(fragments=[fragment], chunks=[chunk], max_chunks=0)
+
+
+# -- manifest_hash reuse of contracts_v2 -----------------------------------
+
+
+def test_manifest_hash_is_deterministic() -> None:
+    manifest = _manifest()
+    manifest_copy = ManifestV2.model_validate_json(manifest.model_dump_json())
+    assert compute_manifest_hash_v2_for(manifest) == compute_manifest_hash_v2_for(manifest_copy)
+
+
+def test_manifest_hash_changes_when_a_fragment_changes() -> None:
+    manifest = _manifest()
+    other_fragment = _fragment(path="app/service.py", start=1, end=20)
+    other_chunk = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[other_fragment.fragment_id],
+        payload_sha256=None,
+    )
+    other_manifest = _manifest(fragments=[other_fragment], chunks=[other_chunk])
+    assert compute_manifest_hash_v2_for(manifest) != compute_manifest_hash_v2_for(other_manifest)
+
+
+def test_manifest_rejects_unknown_fields() -> None:
+    manifest = _manifest()
+    raw = manifest.model_dump(mode="json")
+    raw["unexpected_field"] = True
+    with pytest.raises(ValidationError):
+        ManifestV2.model_validate(raw)
