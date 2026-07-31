@@ -538,6 +538,33 @@ def test_manifest_rejects_a_must_review_path_covered_only_by_non_required_fragme
         )
 
 
+def test_manifest_rejects_a_must_review_path_with_a_mix_of_required_and_optional_fragments() -> None:
+    """Post-merge finding (P1, fifth Codex review of PR #99): "at least one
+    coverage_required fragment per must-review path" is not enough -- a
+    path can have several fragments (a large hunk split into windows, or
+    several hunks touching the same file), and if even one of that path's
+    fragments is coverage_required=False, that slice of a must-review file
+    could still be silently omitted. Every fragment of a must-review path
+    must be coverage_required, not just at least one."""
+
+    required_fragment = _fragment(path="app/service.py", start=1, end=10, required=True)
+    optional_fragment = _fragment(path="app/service.py", start=11, end=20, required=False)
+    chunk = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[required_fragment.fragment_id],  # optional_fragment omitted, no degradation cause
+        payload_sha256=None,
+    )
+    with pytest.raises(ValidationError):
+        _manifest(
+            fragments=[required_fragment, optional_fragment],
+            chunks=[chunk],
+            expected_files=["app/service.py"],
+            must_review_files=["app/service.py"],
+        )
+
+
 # -- post-merge finding (P2, second Codex review of PR #99) -----------------
 
 

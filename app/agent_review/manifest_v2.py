@@ -180,20 +180,30 @@ class ManifestMaterialV2(ContractV2Model):
         must_review = set(self.must_review_files)
         if not must_review <= expected:
             raise ValueError("must_review_files must be a subset of expected_files")
-        # A must-review path being a subset of expected_files is not enough:
-        # nothing so far requires that path to actually have any
-        # coverage_required fragment at all. Without this, a producer could
-        # list a path in must_review_files while emitting zero fragments for
-        # it (or only coverage_required=False ones), and the manifest would
-        # still validate -- the must-review guarantee would be a no-op for
-        # that file. Every must-review path must be represented by at least
-        # one required fragment.
-        required_paths = {fragment.path for fragment in self.fragments if fragment.coverage_required}
-        if not must_review <= required_paths:
-            raise ValueError(
-                "every must_review_files path must be represented by at least one "
-                "coverage_required fragment"
-            )
+        # A must-review path being a subset of expected_files is not enough,
+        # and "at least one coverage_required fragment for that path" is
+        # still not enough either: a path can have several fragments (a
+        # large hunk split into windows, or several hunks touching the same
+        # file), and if even one of that path's fragments is marked
+        # coverage_required=False, that portion of a must-review file could
+        # be silently omitted from every chunk without a degradation
+        # cause -- the must-review guarantee would be a no-op for exactly
+        # that slice of the file. Every fragment belonging to a must-review
+        # path must itself be coverage_required, and the path must have at
+        # least one fragment at all.
+        fragments_by_path: dict[str, list[FragmentV2]] = {}
+        for fragment in self.fragments:
+            fragments_by_path.setdefault(fragment.path, []).append(fragment)
+        for path in must_review:
+            path_fragments = fragments_by_path.get(path, [])
+            if not path_fragments:
+                raise ValueError("a must_review_files path has no fragments at all")
+            if not all(fragment.coverage_required for fragment in path_fragments):
+                raise ValueError(
+                    "a must_review_files path has a fragment marked "
+                    "coverage_required=False -- every fragment of a must-review "
+                    "path must be coverage_required"
+                )
 
         chunk_ids = [chunk.chunk_id for chunk in self.chunks]
         if len(chunk_ids) != len(set(chunk_ids)):
