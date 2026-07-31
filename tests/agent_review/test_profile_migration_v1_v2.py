@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import pytest
+
 from app.agent_review.contracts_v2 import TargetProfileV2
 from app.agent_review.profile_migration_v1_v2 import (
     ProfileMigrationDecisionV2,
+    ProfileMigrationError,
     migrate_profile_v1_to_v2,
 )
 from app.agent_review.schemas import ArtifactDeclaration, TargetProfile
@@ -120,3 +123,84 @@ def test_migrate_never_touches_the_canonical_profile_on_disk(tmp_path) -> None: 
     assert "open(" not in source
     assert "write_text" not in source
     assert "Path(" not in source
+
+
+# -- post-merge findings (Codex review of PR #98) --------------------------
+
+
+def test_migrate_rejects_an_unrecognized_v1_schema_version() -> None:
+    """A profile claiming a schema_version other than the canonical v1
+    identifier must be refused, not silently processed as if it were v1."""
+
+    profile = TargetProfile.model_validate(
+        {
+            "schema_version": "some-other-schema.v7",
+            "target_repo": "mglpsw/aiops-orchestrator",
+            "artifacts": [],
+        }
+    )
+    with pytest.raises(ProfileMigrationError):
+        migrate_profile_v1_to_v2(profile, repo="mglpsw/aiops-orchestrator", default_branch="master")
+
+
+def test_migrate_flags_an_absolute_artifact_path_instead_of_carrying_it() -> None:
+    profile = TargetProfile.model_validate(
+        {
+            "target_repo": "mglpsw/aiops-orchestrator",
+            "artifacts": [{"name": "full-diff", "path": "/etc/passwd", "kind": "diff", "required": True}],
+        }
+    )
+    report = migrate_profile_v1_to_v2(
+        profile, repo="mglpsw/aiops-orchestrator", default_branch="master"
+    )
+    assert report.candidate["artifacts"][0]["path"] is None  # type: ignore[index]
+    assert any(
+        decision.field == "artifacts[full-diff].path" for decision in report.pending_decisions
+    )
+
+
+def test_migrate_flags_a_traversal_artifact_path_instead_of_carrying_it() -> None:
+    profile = TargetProfile.model_validate(
+        {
+            "target_repo": "mglpsw/aiops-orchestrator",
+            "artifacts": [{"name": "full-diff", "path": "../../etc/passwd", "kind": "diff", "required": True}],
+        }
+    )
+    report = migrate_profile_v1_to_v2(
+        profile, repo="mglpsw/aiops-orchestrator", default_branch="master"
+    )
+    assert report.candidate["artifacts"][0]["path"] is None  # type: ignore[index]
+    assert any(
+        decision.field == "artifacts[full-diff].path" for decision in report.pending_decisions
+    )
+
+
+def test_migrate_flags_an_unsafe_artifact_id_instead_of_carrying_it() -> None:
+    profile = TargetProfile.model_validate(
+        {
+            "target_repo": "mglpsw/aiops-orchestrator",
+            "artifacts": [
+                {"name": "full diff with spaces", "path": "artifacts/full.diff", "kind": "diff", "required": True}
+            ],
+        }
+    )
+    report = migrate_profile_v1_to_v2(
+        profile, repo="mglpsw/aiops-orchestrator", default_branch="master"
+    )
+    assert report.candidate["artifacts"][0]["artifact_id"] is None  # type: ignore[index]
+    assert any(
+        decision.field == "artifacts[full diff with spaces].artifact_id"
+        for decision in report.pending_decisions
+    )
+
+
+def test_migrate_accepts_a_safe_artifact_id_and_path_without_flagging_them() -> None:
+    report = migrate_profile_v1_to_v2(
+        _profile_v1(), repo="mglpsw/aiops-orchestrator", default_branch="master"
+    )
+    assert report.candidate["artifacts"][0]["artifact_id"] == "full-diff"  # type: ignore[index]
+    assert report.candidate["artifacts"][0]["path"] == "artifacts/full.diff"  # type: ignore[index]
+    assert not any(
+        decision.field in ("artifacts[full-diff].artifact_id", "artifacts[full-diff].path")
+        for decision in report.pending_decisions
+    )

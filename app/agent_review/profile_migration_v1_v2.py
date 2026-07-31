@@ -20,8 +20,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from app.agent_review.contracts_v2 import TARGET_PROFILE_SCHEMA_V2
+from pydantic import TypeAdapter, ValidationError
+
+from app.agent_review.contracts_v2 import RelativePath, SafeIdentifier, TARGET_PROFILE_SCHEMA_V2
+from app.agent_review.schemas import TARGET_PROFILE_SCHEMA as TARGET_PROFILE_SCHEMA_V1
 from app.agent_review.schemas import TargetProfile
+
+_RELATIVE_PATH_ADAPTER: TypeAdapter[str] = TypeAdapter(RelativePath)
+_SAFE_IDENTIFIER_ADAPTER: TypeAdapter[str] = TypeAdapter(SafeIdentifier)
+
+
+class ProfileMigrationError(ValueError):
+    """Raised when the input document is not recognizable as a v1 profile
+    at all -- not merely incomplete, which is what ``pending_decisions``
+    is for."""
+
+
+def _is_valid_relative_path(value: str) -> bool:
+    try:
+        _RELATIVE_PATH_ADAPTER.validate_python(value)
+    except ValidationError:
+        return False
+    return True
+
+
+def _is_valid_safe_identifier(value: str) -> bool:
+    try:
+        _SAFE_IDENTIFIER_ADAPTER.validate_python(value)
+    except ValidationError:
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -59,24 +87,63 @@ def migrate_profile_v1_to_v2(
     checkout the migrator tool is run against -- v1's ``TargetProfile``
     carries only an optional, free-text ``target_repo`` that this function
     does not trust as a v2 ``TargetIdentityV2.repo`` value.
+
+    Raises ``ProfileMigrationError`` if ``profile_v1.schema_version`` is not
+    the canonical v1 identifier -- an unrecognized schema is refused, never
+    silently processed as if it were v1.
     """
+
+    if profile_v1.schema_version != TARGET_PROFILE_SCHEMA_V1:
+        raise ProfileMigrationError(
+            f"unrecognized v1 profile schema_version {profile_v1.schema_version!r}; "
+            f"expected {TARGET_PROFILE_SCHEMA_V1!r}"
+        )
 
     pending: list[ProfileMigrationDecisionV2] = []
 
     # v1's ArtifactKind literal ("json"/"yaml"/"text"/"markdown"/"diff") is
     # exactly TargetArtifactV2.kind's literal set, so this mapping is always
     # direct and lossless -- there is no ambiguous or unknown kind to flag.
+    # artifact_id/path are NOT assumed safe just because v1 accepted them:
+    # v1's ArtifactDeclaration.name/path are plain, unconstrained strings,
+    # while v2's SafeIdentifier/RelativePath forbid things v1 never
+    # rejected (spaces, absolute paths, traversal, Windows separators). An
+    # unsafe value is never silently carried into the candidate -- it is
+    # nulled out and flagged as a pending human decision instead.
     artifacts: list[dict[str, object]] = []
     for artifact in profile_v1.artifacts:
+        id_valid = _is_valid_safe_identifier(artifact.name)
+        path_valid = _is_valid_relative_path(artifact.path)
         artifacts.append(
             {
-                "artifact_id": artifact.name,
-                "path": artifact.path,
+                "artifact_id": artifact.name if id_valid else None,
+                "path": artifact.path if path_valid else None,
                 "kind": artifact.kind,
                 "required": artifact.required,
                 "max_bytes": None,
             }
         )
+        if not id_valid:
+            pending.append(
+                ProfileMigrationDecisionV2(
+                    field=f"artifacts[{artifact.name}].artifact_id",
+                    reason=(
+                        f"v1 artifact name {artifact.name!r} is not a safe v2 "
+                        "identifier; a human must supply a corrected artifact_id"
+                    ),
+                )
+            )
+        if not path_valid:
+            pending.append(
+                ProfileMigrationDecisionV2(
+                    field=f"artifacts[{artifact.name}].path",
+                    reason=(
+                        f"v1 path {artifact.path!r} is not a safe v2 relative path "
+                        "(absolute, traversal, or Windows-style separators); a human "
+                        "must supply a corrected path"
+                    ),
+                )
+            )
         pending.append(
             ProfileMigrationDecisionV2(
                 field=f"artifacts[{artifact.name}].max_bytes",
