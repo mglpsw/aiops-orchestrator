@@ -1004,3 +1004,61 @@ def test_acquire_diff_fails_closed_on_non_utf8_but_non_binary_content(tmp_path: 
     with pytest.raises(DiffAcquisitionError) as excinfo:
         acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
     assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
+def test_parse_fails_closed_on_content_after_an_eof_marker_within_the_same_hunk() -> None:
+    """Content cannot exist past end-of-file on the side a marker
+    applies to, even within the same hunk -- distinct from the
+    already-fixed later-hunk case. A removal after an old-side marker,
+    an addition after a new-side marker, or a context line (which
+    requires both sides to still have real content) after either marker
+    are all physically impossible."""
+
+    old_side_then_more_old = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,2 +1,1 @@\n"
+        "-x\n"
+        "\\ No newline at end of file\n"
+        "-w\n"
+        "+y\n"
+    )
+    new_side_then_more_new = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        "-x\n"
+        "+y\n"
+        "\\ No newline at end of file\n"
+        "+z\n"
+    )
+    for diff_text in (old_side_then_more_old, new_side_then_more_new):
+        with pytest.raises(DiffAcquisitionError) as excinfo:
+            parse_unified_diff(diff_text)
+        assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
+def test_parse_fails_closed_on_non_utf8_encodable_text_passed_directly() -> None:
+    """parse_unified_diff is a public, pure-text boundary callable by any
+    adapter, not only via acquire_diff_v2 (whose own subprocess output is
+    already strictly decoded). A caller-supplied str containing a lone
+    surrogate must be rejected here too, before any hunk-body hashing
+    (which uses errors="replace" and would otherwise collapse distinct
+    surrogates onto the same encoded byte)."""
+
+    diff_text = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\ud800\n"
+        "+y\n"
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_unified_diff(diff_text)
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2

@@ -401,6 +401,34 @@ def plan_lossless_chunks_v2(
     if len(fragment_ids) != len(set(fragment_ids)):
         raise ValueError("duplicate fragment_id across input hunks -- a hunk was supplied more than once")
 
+    # A duplicate fragment_id (checked above) only catches two hunks that
+    # are byte-identical (same diff_sha256). Two *different* input hunks
+    # for the same path whose real old/new ranges genuinely overlap (e.g.
+    # conflicting reconstructed/API pages) produce distinct fragment_ids
+    # and would slip past that check, yet still violate the lossless,
+    # non-overlapping coverage invariant this planner exists to guarantee.
+    # Fragments split from the *same* hunk deliberately share a range on
+    # a starved side (see _proportional_window's documented anchor
+    # reuse) -- that is expected and excluded here by comparing
+    # hunk_indexes, not path alone.
+    def _ranges_overlap(first: LineRangeV2, second: LineRangeV2) -> bool:
+        return first.start <= second.end and second.start <= first.end
+
+    fragments_by_path: dict[str, list[FragmentV2]] = {}
+    for fragment in all_fragments:
+        fragments_by_path.setdefault(fragment.path, []).append(fragment)
+    for path_fragments in fragments_by_path.values():
+        for i, fragment_a in enumerate(path_fragments):
+            for fragment_b in path_fragments[i + 1 :]:
+                if set(fragment_a.hunk_indexes) & set(fragment_b.hunk_indexes):
+                    continue
+                if _ranges_overlap(fragment_a.old_range, fragment_b.old_range) or _ranges_overlap(
+                    fragment_a.new_range, fragment_b.new_range
+                ):
+                    raise ValueError(
+                        "overlapping fragment ranges from different hunks for the same path"
+                    )
+
     required = [fragment for fragment in all_fragments if fragment.coverage_required]
     auxiliary = [fragment for fragment in all_fragments if not fragment.coverage_required]
 

@@ -308,6 +308,28 @@ def test_plan_rejects_a_duplicated_hunk() -> None:
         )
 
 
+def test_plan_rejects_overlapping_ranges_from_different_hunks_on_the_same_path() -> None:
+    """A duplicate fragment_id (checked above) only catches two hunks
+    that are byte-identical. Two *different* hunks (different content/
+    diff_sha256, e.g. conflicting reconstructed/API pages) for the same
+    path whose real ranges genuinely overlap produce distinct
+    fragment_ids and would slip past that check, yet still violate the
+    lossless, non-overlapping coverage invariant. Fragments split from
+    the *same* hunk deliberately share a range on a starved side and
+    must not be flagged -- this uses two distinct input hunks (distinct
+    hunk_index) to avoid that legitimate case."""
+
+    hunk_a = _hunk("app/a.py", index=0, start=1, end=10)
+    hunk_b = _hunk("app/a.py", index=1, start=5, end=15)
+    with pytest.raises(ValueError):
+        plan_lossless_chunks_v2(
+            [hunk_a, hunk_b],
+            semantic_group="primary_backend_logic",
+            max_lines_per_chunk=100,
+            max_chunks=10,
+        )
+
+
 def test_plan_handles_a_deletion_only_hunk_without_a_negative_range() -> None:
     hunk = _hunk(start=10, end=9, old_start=10, old_end=20, must_review=True)  # new_end < new_start
     outcome = plan_lossless_chunks_v2(

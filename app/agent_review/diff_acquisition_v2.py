@@ -327,6 +327,21 @@ class _FileBlockBuilder:
                     # (already-stripped) trailing split artifact or
                     # malformed/truncated input; either way it must not be
                     # counted as hunk content.
+                    #
+                    # Content cannot exist past end-of-file: once a side
+                    # has recorded a no-newline-at-EOF marker (checked
+                    # against self.old/new_no_newline_at_eof, set the
+                    # moment a marker line is seen, before this point),
+                    # any further line contributing to that side --
+                    # including a context line, which requires *both*
+                    # sides to still have real content -- is contradictory
+                    # reconstructed/malformed input.
+                    if line.startswith("-") and self.old_no_newline_at_eof:
+                        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
+                    if line.startswith("+") and self.new_no_newline_at_eof:
+                        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
+                    if line.startswith(" ") and (self.old_no_newline_at_eof or self.new_no_newline_at_eof):
+                        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
                     current_hunk_body.append(line)
                     index += 1
                     continue
@@ -551,6 +566,21 @@ def parse_unified_diff(diff_text: str) -> tuple[ParsedFileDiffV2, ...]:
 
     if diff_text.strip() == "":
         return ()
+
+    # This is a public boundary: parse_unified_diff is a pure text
+    # function callable directly by any adapter (e.g. a blob/API
+    # reconstruction path), not only via acquire_diff_v2 (whose own
+    # subprocess output is already strictly decoded). A caller-supplied
+    # str can still contain a lone surrogate (e.g. built elsewhere via
+    # errors="surrogateescape"); every hunk-body hash downstream encodes
+    # with errors="replace", which maps distinct lone surrogates (e.g.
+    # \ud800 vs \ud801) onto the same "?" byte, corrupting diff_sha256/
+    # fragment-identity uniqueness. Reject non-UTF-8-encodable text here,
+    # at the top, before any of that hashing happens.
+    try:
+        diff_text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2) from exc
 
     lines = diff_text.split("\n")
     if lines and lines[-1] == "" and diff_text.endswith("\n"):
