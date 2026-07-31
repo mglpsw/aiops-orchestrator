@@ -224,6 +224,23 @@ def test_manifest_rejects_a_chunk_referencing_an_unknown_fragment() -> None:
         _manifest(fragments=[fragment], chunks=[bogus_chunk])
 
 
+def test_chunk_rejects_a_populated_payload_sha256() -> None:
+    """No producer can populate payload_sha256 without circularity:
+    build_chunk_payload_v2 always computes its own fresh hash and ignores
+    whatever is set here, so any non-null value can only ever be stale,
+    forged, or wrong relative to what actually gets built. Must be
+    rejected outright, never silently accepted as a verified claim."""
+
+    with pytest.raises(ValidationError):
+        ManifestChunkV2(
+            chunk_id="chunk-0000",
+            order_index=0,
+            semantic_group="primary_backend_logic",
+            fragment_ids=["f" * 64],
+            payload_sha256="a" * 64,
+        )
+
+
 def test_manifest_rejects_a_fragment_assigned_to_two_chunks() -> None:
     fragment = _fragment()
     chunk_a = ManifestChunkV2(

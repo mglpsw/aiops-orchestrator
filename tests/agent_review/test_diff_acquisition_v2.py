@@ -407,6 +407,37 @@ def test_parse_a_quoted_path_with_octal_escapes() -> None:
     assert diffs[0].path == "café.py"
 
 
+def test_parse_distinct_undecodable_octal_paths_do_not_collide() -> None:
+    """Arbitrary bytes are valid in a git filename. Decoding an
+    undecodable octal-escaped byte with errors="replace" would map every
+    such byte to the same U+FFFD character, conflating two genuinely
+    different paths (e.g. one byte 0o200, the other 0o201) under one
+    string -- corrupting completeness checks and fragment-identity
+    hashing that key off path. Must stay distinct."""
+
+    diff_text_a = (
+        'diff --git "a/bad\\200.py" "b/bad\\200.py"\n'
+        "index abc..def 100644\n"
+        '--- "a/bad\\200.py"\n'
+        '+++ "b/bad\\200.py"\n'
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    diff_text_b = (
+        'diff --git "a/bad\\201.py" "b/bad\\201.py"\n'
+        "index abc..def 100644\n"
+        '--- "a/bad\\201.py"\n'
+        '+++ "b/bad\\201.py"\n'
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    path_a = parse_unified_diff(diff_text_a)[0].path
+    path_b = parse_unified_diff(diff_text_b)[0].path
+    assert path_a != path_b
+
+
 # -- real fixture from this repository -------------------------------------------
 
 

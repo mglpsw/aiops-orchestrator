@@ -149,6 +149,19 @@ class ManifestChunkV2(ContractV2Model):
             raise ValueError("a chunk must reference at least one fragment")
         if len(self.fragment_ids) != len(set(self.fragment_ids)):
             raise ValueError("fragment_ids must be unique within a chunk")
+        if self.payload_sha256 is not None:
+            # payload_builder_v2.build_chunk_payload_v2 always computes
+            # its own fresh payload_sha256 and ignores whatever is set
+            # here -- there is no non-circular way to populate this field
+            # in advance (see payload_builder_v2's build_chunk_payloads_v2
+            # docstring: setting it would change manifest_hash, forcing a
+            # new identity/run_id, which the payload material itself
+            # embeds, making the just-inserted hash stale again). A
+            # populated value can therefore only ever be stale, forged, or
+            # simply wrong relative to what will actually be built --
+            # reject it outright rather than silently accept a claim
+            # nothing here verifies.
+            raise ValueError("payload_sha256 must be null; no producer can populate it without circularity")
         return self
 
 

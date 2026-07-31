@@ -124,7 +124,14 @@ def _decode_git_path(raw: str) -> str:
             continue
         decoded.extend(next_char.encode("utf-8"))
         index += 2
-    return decoded.decode("utf-8", errors="replace")
+    # surrogateescape, not replace: arbitrary bytes are valid in a git
+    # filename, and "replace" would collapse distinct undecodable byte
+    # sequences (e.g. octal \200 vs \201) onto the same U+FFFD character,
+    # letting two different paths conflate under one string -- corrupting
+    # completeness checks and fragment-identity hashing that key off path.
+    # surrogateescape preserves each byte's distinctness (and is exactly
+    # reversible via the same error handler on re-encode) instead.
+    return decoded.decode("utf-8", errors="surrogateescape")
 
 
 def _strip_ab_prefix(path: str) -> str:
@@ -230,10 +237,15 @@ class _FileBlockBuilder:
             # arrived early -- the patch was truncated, not merely short.
             # Silently trusting a truncated hunk's declared range would
             # let a coverage claim outlive the content that was supposed
-            # to back it.
+            # to back it. More matching lines than declared is equally a
+            # mismatch (a reconstructed/corrupted patch, e.g. a stale
+            # header left over a body that grew): the declared range would
+            # then silently exclude real content past it, so any
+            # departure from the declared count -- not just a shortfall --
+            # is flagged.
             actual_old_lines = sum(1 for body_line in current_hunk_body if body_line[:1] in (" ", "-"))
             actual_new_lines = sum(1 for body_line in current_hunk_body if body_line[:1] in (" ", "+"))
-            if actual_old_lines < current_old_lines or actual_new_lines < current_new_lines:
+            if actual_old_lines != current_old_lines or actual_new_lines != current_new_lines:
                 self.truncated = True
             body_text = "\n".join(current_hunk_body)
             self.hunks.append(
