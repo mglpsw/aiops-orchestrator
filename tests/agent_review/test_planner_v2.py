@@ -287,6 +287,27 @@ def test_plan_rejects_a_hunk_with_both_sides_empty() -> None:
         )
 
 
+def test_plan_rejects_a_duplicated_hunk() -> None:
+    """fragment_id is a deterministic hash of path/old_range/new_range/
+    diff_sha256 -- it does not include hunk_index. A duplicated
+    HunkInputV2 (e.g. a replayed API page from a caller other than
+    diff_acquisition_v2) produces two fragments with the same
+    fragment_id, which would otherwise reach ManifestChunkV2/
+    ManifestMaterialV2 as an unusable "planned" outcome depending on how
+    packing happened to group the duplicates. Must be rejected here,
+    deterministically."""
+
+    hunk = _hunk("app/a.py")
+    duplicated_hunk = _hunk("app/a.py")  # same path/range/diff_sha256 defaults
+    with pytest.raises(ValueError):
+        plan_lossless_chunks_v2(
+            [hunk, duplicated_hunk],
+            semantic_group="primary_backend_logic",
+            max_lines_per_chunk=100,
+            max_chunks=10,
+        )
+
+
 def test_plan_handles_a_deletion_only_hunk_without_a_negative_range() -> None:
     hunk = _hunk(start=10, end=9, old_start=10, old_end=20, must_review=True)  # new_end < new_start
     outcome = plan_lossless_chunks_v2(

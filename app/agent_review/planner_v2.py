@@ -386,6 +386,21 @@ def plan_lossless_chunks_v2(
     for hunk in hunks:
         all_fragments.extend(_split_hunk_into_fragments(hunk, max_lines_per_chunk=max_lines_per_chunk))
 
+    # fragment_id is a deterministic hash of path/old_range/new_range/
+    # diff_sha256 (compute_fragment_id_v2) -- it does not include
+    # hunk_index. A duplicated HunkInputV2 (e.g. a replayed API page from
+    # a caller other than diff_acquisition_v2, which already never emits
+    # the same hunk twice) produces two fragments with the same
+    # fragment_id. Left uncaught here, this "planned" outcome is actually
+    # unusable: ManifestChunkV2/ManifestMaterialV2 will later raise a
+    # duplicate-fragment-id ValidationError depending on how packing
+    # happened to group them, rather than this function ever reporting
+    # the real cause. Reject it at this boundary, deterministically,
+    # regardless of how packing would have grouped the duplicates.
+    fragment_ids = [fragment.fragment_id for fragment in all_fragments]
+    if len(fragment_ids) != len(set(fragment_ids)):
+        raise ValueError("duplicate fragment_id across input hunks -- a hunk was supplied more than once")
+
     required = [fragment for fragment in all_fragments if fragment.coverage_required]
     auxiliary = [fragment for fragment in all_fragments if not fragment.coverage_required]
 
