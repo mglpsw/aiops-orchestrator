@@ -134,27 +134,61 @@ def _split_hunk_into_fragments(
     return fragments
 
 
-def _pack_fragments(
-    fragments: Sequence[FragmentV2], *, max_lines_per_chunk: int
-) -> list[list[FragmentV2]]:
-    """First-fit-decreasing bin packing by fragment size. Deterministic:
-    ties in size are broken by fragment_id so packing is stable across
-    equivalent runs."""
+def _pack_fragments_exact(
+    fragments: Sequence[FragmentV2], *, capacity: int, max_bins: int
+) -> list[list[FragmentV2]] | None:
+    """Exact bin-packing decision procedure: can these fragments fit into
+    at most ``max_bins`` bins of the given ``capacity``? Returns a valid
+    packing if so, else ``None``.
+
+    Used only for ``coverage_required`` fragments, where the answer gates
+    ``blocked_pipeline`` -- a merely-heuristic packer (first-fit-decreasing
+    is not guaranteed optimal; a small counterexample exists at sizes like
+    ``[6, 5, 3, 2, 2, 2]`` with two bins of capacity 10) could wrongly
+    report content as not fitting when a valid arrangement exists, which
+    would block a pipeline that didn't need to be blocked. Backtracking
+    with duplicate-remaining-capacity pruning at each recursion level keeps
+    this tractable for the fragment counts a single semantic group
+    produces; it is not intended for arbitrarily large inputs.
+    """
 
     ordered = sorted(fragments, key=lambda f: (-_fragment_size(f), f.fragment_id))
     bins: list[list[FragmentV2]] = []
-    totals: list[int] = []
-    for fragment in ordered:
+    remaining: list[int] = []
+
+    def backtrack(index: int) -> bool:
+        if index == len(ordered):
+            return True
+        fragment = ordered[index]
         size = _fragment_size(fragment)
-        for index, total in enumerate(totals):
-            if total + size <= max_lines_per_chunk:
-                bins[index].append(fragment)
-                totals[index] = total + size
-                break
-        else:
+
+        tried_remaining: set[int] = set()
+        for bin_index in range(len(bins)):
+            room = remaining[bin_index]
+            if room in tried_remaining:
+                continue  # equivalent bin state already explored at this depth
+            tried_remaining.add(room)
+            if room >= size:
+                bins[bin_index].append(fragment)
+                remaining[bin_index] = room - size
+                if backtrack(index + 1):
+                    return True
+                remaining[bin_index] = room
+                bins[bin_index].pop()
+
+        if len(bins) < max_bins and size <= capacity:
             bins.append([fragment])
-            totals.append(size)
-    return bins
+            remaining.append(capacity - size)
+            if backtrack(index + 1):
+                return True
+            bins.pop()
+            remaining.pop()
+
+        return False
+
+    if not backtrack(0):
+        return None
+    return [list(group) for group in bins]
 
 
 def plan_lossless_chunks_v2(
@@ -177,14 +211,16 @@ def plan_lossless_chunks_v2(
     required = [fragment for fragment in all_fragments if fragment.coverage_required]
     auxiliary = [fragment for fragment in all_fragments if not fragment.coverage_required]
 
-    required_bins = _pack_fragments(required, max_lines_per_chunk=max_lines_per_chunk)
-    if len(required_bins) > max_chunks:
+    required_bins = _pack_fragments_exact(
+        required, capacity=max_lines_per_chunk, max_bins=max_chunks
+    )
+    if required_bins is None:
         cause = ManifestDegradationV2(
             reason_code="budget_exhausted",
             affected_fragment_ids=[fragment.fragment_id for fragment in required],
             detail=(
-                f"{len(required_bins)} chunks are required to cover must_review "
-                f"content but max_chunks={max_chunks}"
+                f"must_review content cannot be packed into max_chunks={max_chunks} "
+                f"chunks of max_lines_per_chunk={max_lines_per_chunk}"
             ),
         )
         return PlanningOutcomeV2(

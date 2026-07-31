@@ -279,10 +279,11 @@ def test_manifest_rejects_a_degradation_cause_for_a_non_required_fragment() -> N
 def test_manifest_accepts_an_unreferenced_non_required_fragment() -> None:
     """An auxiliary (non-must_review) fragment can be present in the
     manifest without being assigned to any chunk -- it was optional
-    context, not required coverage."""
+    context, not required coverage. must_review_files is empty here since
+    this fragment's path carries no must-review claim at all."""
 
     fragment = _fragment(required=False)
-    manifest = _manifest(fragments=[fragment], chunks=[])
+    manifest = _manifest(fragments=[fragment], chunks=[], must_review_files=[])
     assert manifest.fragments[0].fragment_id == fragment.fragment_id
     assert manifest.chunks == []
 
@@ -458,3 +459,50 @@ def test_manifest_hash_does_not_depend_on_run_id_or_identity_contents() -> None:
 
     assert compute_manifest_hash_v2_for(manifest_1) == compute_manifest_hash_v2_for(manifest_2)
     assert manifest_1.run_id != manifest_2.run_id
+
+
+# -- post-merge finding (P1, Codex review of PR #99) ------------------------
+
+
+def test_manifest_rejects_a_must_review_path_with_no_required_fragment_at_all() -> None:
+    """A must_review_files path that has NO fragments at all (not even a
+    non-required one) must be rejected -- the must-review guarantee must
+    not be satisfiable by simply never emitting a fragment for that path."""
+
+    fragment = _fragment(path="app/service.py", required=True)
+    with pytest.raises(ValidationError):
+        _manifest(
+            fragments=[fragment],
+            chunks=[],
+            expected_files=["app/service.py", "app/uncovered.py"],
+            must_review_files=["app/service.py", "app/uncovered.py"],
+            degradation_causes=[
+                ManifestDegradationV2(
+                    reason_code="budget_exhausted",
+                    affected_fragment_ids=[fragment.fragment_id],
+                    detail="max_chunks too small",
+                )
+            ],
+        )
+
+
+def test_manifest_rejects_a_must_review_path_covered_only_by_non_required_fragments() -> None:
+    """The exact scenario from the Codex finding: a must_review_files path
+    has fragments, but all of them are coverage_required=False. Nothing
+    upstream of this validator connects must_review_files to the
+    coverage_required flag, so this must be caught here."""
+
+    optional_fragment = _fragment(path="app/service.py", required=False)
+    chunk = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[optional_fragment.fragment_id],
+        payload_sha256=None,
+    )
+    with pytest.raises(ValidationError):
+        _manifest(
+            fragments=[optional_fragment],
+            chunks=[chunk],
+            must_review_files=["app/service.py"],
+        )

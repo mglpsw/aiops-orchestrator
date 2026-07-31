@@ -266,3 +266,37 @@ def test_plan_handles_a_deletion_only_hunk_without_a_negative_range() -> None:
     assert outcome.state == "planned"
     assert len(outcome.fragments) == 1
     assert outcome.fragments[0].new_range.start == outcome.fragments[0].new_range.end
+
+
+# -- post-merge finding (P2, Codex review of PR #99) -------------------------
+
+
+def test_plan_finds_a_valid_packing_that_a_greedy_heuristic_would_miss() -> None:
+    """The exact counterexample from the Codex finding: sizes [6,5,3,2,2,2]
+    with max_lines_per_chunk=10 and max_chunks=2. First-fit-decreasing
+    produces 3 bins (6+3, 5+2+2, 2) and would wrongly report
+    blocked_pipeline, even though a valid 2-bin packing exists
+    (6+2+2=10, 5+3+2=10). The planner must find it."""
+
+    sizes = [6, 5, 3, 2, 2, 2]
+    hunks = [
+        _hunk(f"app/file-{i}.py", index=0, start=1, end=size, must_review=True)
+        for i, size in enumerate(sizes)
+    ]
+    outcome = plan_lossless_chunks_v2(
+        hunks, semantic_group="primary_backend_logic", max_lines_per_chunk=10, max_chunks=2
+    )
+    assert outcome.state == "planned"
+    assert len(outcome.chunks) <= 2
+
+    fragments_by_id = {fragment.fragment_id: fragment for fragment in outcome.fragments}
+    for chunk in outcome.chunks:
+        total = sum(
+            fragments_by_id[fid].new_range.end - fragments_by_id[fid].new_range.start + 1
+            for fid in chunk.fragment_ids
+        )
+        assert total <= 10
+
+    referenced = {fid for chunk in outcome.chunks for fid in chunk.fragment_ids}
+    required_ids = {f.fragment_id for f in outcome.fragments if f.coverage_required}
+    assert required_ids <= referenced

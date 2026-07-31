@@ -177,8 +177,23 @@ class ManifestMaterialV2(ContractV2Model):
         fragment_paths = {fragment.path for fragment in self.fragments}
         if not fragment_paths <= expected:
             raise ValueError("every fragment path must belong to expected_files")
-        if not set(self.must_review_files) <= expected:
+        must_review = set(self.must_review_files)
+        if not must_review <= expected:
             raise ValueError("must_review_files must be a subset of expected_files")
+        # A must-review path being a subset of expected_files is not enough:
+        # nothing so far requires that path to actually have any
+        # coverage_required fragment at all. Without this, a producer could
+        # list a path in must_review_files while emitting zero fragments for
+        # it (or only coverage_required=False ones), and the manifest would
+        # still validate -- the must-review guarantee would be a no-op for
+        # that file. Every must-review path must be represented by at least
+        # one required fragment.
+        required_paths = {fragment.path for fragment in self.fragments if fragment.coverage_required}
+        if not must_review <= required_paths:
+            raise ValueError(
+                "every must_review_files path must be represented by at least one "
+                "coverage_required fragment"
+            )
 
         chunk_ids = [chunk.chunk_id for chunk in self.chunks]
         if len(chunk_ids) != len(set(chunk_ids)):
