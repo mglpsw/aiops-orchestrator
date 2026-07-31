@@ -92,6 +92,23 @@ def test_install_script_rejects_a_short_sha() -> None:
     assert not Path("/tmp/should-not-be-created-short-sha").exists()
 
 
+def test_install_script_rejects_an_explicitly_empty_sha() -> None:
+    """Post-merge finding (P1, Codex review of PR #98): `-n "$TOOLREPO_SHA"`
+    alone treats an explicitly empty --toolrepo-sha the same as the flag
+    never being passed, silently skipping pin validation. A caller that
+    intended to pin (e.g. a CI variable that resolved empty) must be
+    rejected, not silently downgraded to "no pin requested"."""
+
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT), "/tmp/should-not-be-created-empty-sha", "--toolrepo-sha", ""],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert not Path("/tmp/should-not-be-created-empty-sha").exists()
+
+
 def test_install_script_rejects_a_branch_name_as_pin() -> None:
     result = subprocess.run(
         ["bash", str(INSTALL_SCRIPT), "/tmp/should-not-be-created-branch", "--toolrepo-sha", "master"],
