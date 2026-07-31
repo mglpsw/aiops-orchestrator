@@ -32,6 +32,30 @@
 - `docs/AGENT_REVIEW_V2_TARGET_PROFILE.md` and
   `docs/AGENT_REVIEW_V2_INSTALLATION.md` document the loader, migrator, and
   installation contract
+- AgentReview v2: typed, deny-unknown fragment manifest
+  (`app/agent_review/manifest_v2.py`) with a structural losslessness
+  invariant -- every must-review fragment is referenced by exactly one
+  chunk or explicitly accounted for by a degradation cause; published as
+  `schemas/agent-review/v2/agent-review.manifest.v2.schema.json` (refs #84)
+- AgentReview v2: lossless line-range multi-chunk planner
+  (`app/agent_review/planner_v2.py`) with an exact (not merely heuristic)
+  bin-packing decision procedure for required content, and honest
+  three-way reason codes (`budget_exhausted` / `packing_search_exhausted`
+  / `planner_limit_exceeded`) distinguishing proven infeasibility from a
+  bounded search's inconclusive result (refs #84)
+- AgentReview v2: git unified-diff acquisition and parsing
+  (`app/agent_review/diff_acquisition_v2.py`) -- renames, binaries
+  (including the real `GIT binary patch` format), submodules, missing
+  trailing newlines, and truncated hunks all recognized structurally,
+  verified against real `git diff --binary` output (refs #84)
+- AgentReview v2: payload builder (`app/agent_review/payload_builder_v2.py`)
+  turning a planned manifest's chunks into actual `ChunkPayloadV2`
+  objects, with N-chunk propagation through the existing #83
+  consumer/parser proven end-to-end (refs #84)
+- `docs/AGENT_REVIEW_V2_CHUNKING.md` documents the manifest, planner, diff
+  acquisition, and payload builder, including the one deliberately
+  deferred piece (symbol/AST-aware grouping, explicitly optional in the
+  issue) and the documented file-vs-line-range coverage granularity gap
 
 ### Notes
 

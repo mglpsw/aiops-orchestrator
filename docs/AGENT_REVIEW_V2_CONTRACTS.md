@@ -307,13 +307,15 @@ must never mix envelopes silently.
   fail-closed precedence to a v2 consumer and parser. See
   `docs/AGENT_REVIEW_V2_BINDING.md` for the version-selection contract,
   binding sequence, and reason-code precedence added by that delivery.
-- PR 3 (#84): implement a typed manifest and deterministic real multi-chunk
-  planning;
+- PR 3 (#84, delivered): implement a typed manifest and deterministic real
+  multi-chunk planning, including git-diff acquisition and a payload
+  builder. See `docs/AGENT_REVIEW_V2_CHUNKING.md` for what is implemented
+  and the one deliberately deferred piece (symbol/AST-aware grouping).
 - PR 4 (#85, delivered): implement the complete TargetProfile v2
   loader/migrator and minimal isolated toolrepo lockfile. See
   `docs/AGENT_REVIEW_V2_TARGET_PROFILE.md` and
   `docs/AGENT_REVIEW_V2_INSTALLATION.md`.
 
-Until the remaining delivery adopts v2 explicitly, these schemas continue
-to represent development contracts. They do not represent a release, deploy,
-Router/provider call, or production behavior change.
+None of these deliveries activate v2 in any target repository, workflow,
+or CLI yet. They do not represent a release, deploy, Router/provider call,
+or production behavior change.

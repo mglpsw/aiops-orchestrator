@@ -50,7 +50,7 @@ O humano continua responsável pelo merge e pelas exceções.
 | Contratos run/payload/response/profile/readiness v2 | concluída | PR #81, squash `6bb140e625452fc32f2ed39e220dc60639dc2f79` |
 | Coverage binding sem promoção e required checks não vazios | concluída | PR #82, squash `4797fc8ba3eda6dbc2d7be599a981f7c1c5a9efc` |
 | Consumers/parser v2 | concluída | #83 |
-| Manifest/fragments e multi-chunk lossless | pendente | #84 |
+| Manifest/fragments e multi-chunk lossless | concluída | #84 |
 | Profile loader/migrator e lock mínimo | concluída | #85 |
 | Conformance AgentEscala/InterLeitos | pendente | #86 |
 | Codex guidance/subagents | pendente, paralela | #87 |
