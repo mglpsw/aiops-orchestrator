@@ -231,12 +231,8 @@ class _FileBlockBuilder:
             # Silently trusting a truncated hunk's declared range would
             # let a coverage claim outlive the content that was supposed
             # to back it.
-            actual_old_lines = sum(
-                1 for body_line in current_hunk_body if body_line[:1] in (" ", "-") or body_line == ""
-            )
-            actual_new_lines = sum(
-                1 for body_line in current_hunk_body if body_line[:1] in (" ", "+") or body_line == ""
-            )
+            actual_old_lines = sum(1 for body_line in current_hunk_body if body_line[:1] in (" ", "-"))
+            actual_new_lines = sum(1 for body_line in current_hunk_body if body_line[:1] in (" ", "+"))
             if actual_old_lines < current_old_lines or actual_new_lines < current_new_lines:
                 self.truncated = True
             body_text = "\n".join(current_hunk_body)
@@ -258,17 +254,30 @@ class _FileBlockBuilder:
             if line.startswith("diff --git "):
                 break
             if in_hunk:
-                if line.startswith(("+", "-", " ")) or line == "":
+                if line.startswith(("+", "-", " ")):
+                    # A real unified-diff content line always carries one
+                    # of these three prefixes -- even a blank context line
+                    # is emitted as a single space character, never an
+                    # empty string. An unprefixed blank here is either the
+                    # (already-stripped) trailing split artifact or
+                    # malformed/truncated input; either way it must not be
+                    # counted as hunk content.
                     current_hunk_body.append(line)
                     index += 1
                     continue
                 if line == r"\ No newline at end of file":
                     # Applies to whichever side the immediately preceding
-                    # body line belonged to.
+                    # body line belonged to -- a context line (" " prefix)
+                    # is unchanged content present on *both* sides, so a
+                    # missing trailing newline there means both sides lack
+                    # it, not just the new side.
                     last = current_hunk_body[-1] if current_hunk_body else ""
                     if last.startswith("-"):
                         self.old_no_newline_at_eof = True
+                    elif last.startswith("+"):
+                        self.new_no_newline_at_eof = True
                     else:
+                        self.old_no_newline_at_eof = True
                         self.new_no_newline_at_eof = True
                     index += 1
                     continue
@@ -486,10 +495,14 @@ def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
         raise DiffAcquisitionError(INVALID_REF_REASON_V2)
 
     # capture_output as bytes (not text=True): text mode decodes under the
-    # process locale encoding and raises UnicodeDecodeError on any byte
-    # sequence it can't decode, bypassing this module's stable
-    # DiffAcquisitionError reason-code contract entirely. Decoding
-    # ourselves with errors="replace" can never raise.
+    # process locale encoding and raises a raw UnicodeDecodeError on any
+    # byte sequence it can't decode, bypassing this module's stable
+    # DiffAcquisitionError reason-code contract entirely. We decode
+    # ourselves, strictly -- errors="replace" was tried and rejected: it
+    # maps distinct undecodable byte sequences (e.g. 0x80 vs 0x81) to the
+    # same replacement character before the hunk body is hashed, so
+    # genuinely different content could collide on the same diff_sha256/
+    # fragment_id. Undecodable output fails closed instead.
     result = subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
         ["git", "diff", "--no-ext-diff", "--binary", f"{base_sha}...{head_sha}"],
         cwd=repo_root,
@@ -499,7 +512,10 @@ def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     )
     if result.returncode != 0:
         raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
-    return result.stdout.decode("utf-8", errors="replace")
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2) from exc
 
 
 @dataclass(frozen=True)

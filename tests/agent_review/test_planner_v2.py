@@ -455,6 +455,24 @@ def test_plan_handles_a_hunk_replacing_one_old_line_with_many_new_lines() -> Non
         covered_new_lines.update(rng)
     assert covered_new_lines == set(range(1, 1001))
 
+    # The starved old side (1 real line) cannot be split into 10 genuinely
+    # distinct single-line ranges -- disjointness is only guaranteed on
+    # the side that drives window_count (the new side, checked above).
+    # Every fragment's old_range must still be a valid, in-bounds
+    # single-line anchor on the one real old line, and reusing that
+    # anchor across fragments must not inflate the represented old-side
+    # content: the union of old-side points is still exactly {1}, never
+    # more than the hunk's real old-side line count.
+    old_range_points: set[int] = set()
+    for fragment in outcome.fragments:
+        assert fragment.old_range.start == fragment.old_range.end == 1
+        old_range_points.add(fragment.old_range.start)
+    assert old_range_points == {1}
+
+    # Distinct new-side windows still yield distinct fragment_ids even
+    # though every fragment shares the same (anchor) old_range.
+    assert len({fragment.fragment_id for fragment in outcome.fragments}) == len(outcome.fragments)
+
 
 # -- post-merge finding (P2, sixth Codex review of PR #99) -------------------
 

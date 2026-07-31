@@ -88,14 +88,25 @@ per-chunk line budget:
 
 - a hunk within budget becomes one fragment (fallback #2 from the issue's
   own deterministic fallback list: "hunk completo");
-- a hunk larger than budget is split into stable, disjoint windows on
-  *both* sides proportionally (fallback #3: "janelas de linha estáveis"),
-  covering it exactly -- verified by union-equals-input tests, never a
-  shrinker. A deletion-only hunk (no new-side content) is windowed by its
-  old-side size instead of being under-counted as free; an imbalanced
-  hunk (one side much smaller than the number of windows the other side
-  needs) anchors the smaller side's excess windows to its last available
-  line instead of producing an invalid inverted range;
+- a hunk larger than budget is split into stable windows on *both* sides
+  proportionally (fallback #3: "janelas de linha estáveis"), covering it
+  exactly -- verified by union-equals-input tests, never a shrinker. A
+  deletion-only hunk (no new-side content) is windowed by its old-side
+  size instead of being under-counted as free. **Disjointness is only
+  guaranteed on the side that actually drives the window count.** An
+  imbalanced hunk (one side with fewer real lines than the number of
+  windows the other side needs -- e.g. 1 old line replacing 1,000 new
+  lines at a 100-line budget) cannot split that starved side into that
+  many genuinely distinct single-line ranges: its excess windows anchor
+  to its last available line instead of producing an invalid inverted
+  range, so the same starved-side point is deliberately reused across
+  several fragments. This is a safe placeholder, not a duplicated
+  coverage claim -- nothing in this delivery sums per-fragment range
+  sizes across a shared path (coverage stays file-level; the exact
+  packer's fragment size is `max(old, new, 1)`, and the non-starved side
+  already dominates in exactly this scenario) -- but it is a real,
+  accepted exception to "disjoint windows on both sides", not a universal
+  guarantee;
 - `must_review` (`coverage_required`) fragments are packed into chunks
   with an *exact* backtracking bin-packing decision procedure
   (`_pack_fragments_exact`, deterministic tie-break by `fragment_id`,

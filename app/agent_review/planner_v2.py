@@ -156,11 +156,30 @@ def _split_hunk_into_fragments(
             )
         ]
 
-    # Hunk exceeds budget on its larger side: stable, disjoint windows
-    # (fallback #3), proportionally on BOTH sides so neither dominates a
-    # window's real size -- windowing only the new side (as a prior
-    # revision did) let a large old-side deletion or a hunk kept "verbatim"
-    # on the untouched side silently exceed the advertised budget.
+    # Hunk exceeds budget on its larger (window-count-driving) side:
+    # stable, disjoint windows (fallback #3), proportionally on BOTH sides
+    # so neither dominates a window's real size -- windowing only the new
+    # side (as a prior revision did) let a large old-side deletion or a
+    # hunk kept "verbatim" on the untouched side silently exceed the
+    # advertised budget.
+    #
+    # Disjointness is only guaranteed on whichever side actually drives
+    # window_count. A starved side (real line count < window_count, e.g.
+    # 1 old line replacing 1,000 new lines at a 100-line budget) cannot be
+    # split into window_count genuinely distinct single-line ranges --
+    # there are not that many real lines to assign. _proportional_window
+    # anchors that side's excess windows to its last available line
+    # instead of raising on an inverted range; those repeated anchors are
+    # *not* independent coverage claims (the true old-side content is
+    # exactly the 1 line, not 1 line x window_count), only a valid,
+    # required LineRangeV2 placeholder for a side with no real range left
+    # to report. Nothing downstream currently sums per-fragment range
+    # sizes across a shared path (payload_builder_v2 reports coverage
+    # file-level; the exact packer sizes by max(old,new,1) and the larger
+    # side already dominates in exactly this scenario), so the repeated
+    # anchor cannot inflate a computed total -- but it is a real,
+    # documented exception to "disjoint windows on both sides", not a
+    # universal guarantee.
     window_count = math.ceil(effective_total / max_lines_per_chunk)
     fragments: list[FragmentV2] = []
     for window_index in range(window_count):

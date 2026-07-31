@@ -367,6 +367,29 @@ def test_parse_no_newline_at_eof_only_on_new_side() -> None:
     assert diffs[0].new_no_newline_at_eof
 
 
+def test_parse_no_newline_at_eof_after_an_unchanged_context_line_marks_both_sides() -> None:
+    """When the unchanged trailing line lacks a newline in both revisions,
+    git emits exactly one marker after a space-prefixed context line --
+    that context line is unchanged content present on both sides, so both
+    flags must be set, not just the new side."""
+
+    diff_text = (
+        "diff --git a/file.py b/file.py\n"
+        "index abc..def 100644\n"
+        "--- a/file.py\n"
+        "+++ b/file.py\n"
+        "@@ -1,2 +1,2 @@\n"
+        " line1\n"
+        "-line2\n"
+        "+line2_changed\n"
+        " line3_unchanged\n"
+        "\\ No newline at end of file\n"
+    )
+    diffs = parse_unified_diff(diff_text)
+    assert diffs[0].old_no_newline_at_eof
+    assert diffs[0].new_no_newline_at_eof
+
+
 # -- quoted / non-ASCII paths -----------------------------------------------------
 
 
@@ -652,14 +675,17 @@ def test_acquire_diff_runs_the_real_fixed_git_command(tmp_path: Path) -> None:
 
 
 @pytest.mark.requires_network
-def test_acquire_diff_does_not_crash_on_non_utf8_but_non_binary_content(tmp_path: Path) -> None:
+def test_acquire_diff_fails_closed_on_non_utf8_but_non_binary_content(tmp_path: Path) -> None:
     """A text file with a byte sequence that is not valid UTF-8 but
     contains no NUL byte is treated by git as an ordinary textual patch
     (not binary). ``subprocess.run(..., text=True)`` would decode under
-    the process locale and raise ``UnicodeDecodeError`` straight out of
-    ``acquire_diff_v2``, bypassing this module's stable
-    ``DiffAcquisitionError`` reason-code contract entirely. Must not
-    raise."""
+    the process locale and raise a raw ``UnicodeDecodeError`` straight out
+    of ``acquire_diff_v2``, bypassing this module's stable
+    ``DiffAcquisitionError`` reason-code contract entirely -- must not do
+    that. Lossily replacing the undecodable bytes was tried and rejected
+    too: it would let distinct byte sequences collapse onto the same
+    diff_sha256, breaking the hash's content-identity guarantee. The
+    correct behavior is to fail closed with a stable reason code."""
 
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -680,7 +706,6 @@ def test_acquire_diff_does_not_crash_on_non_utf8_but_non_binary_content(tmp_path
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
 
-    diff_text = acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
-    assert isinstance(diff_text, str)
-    diffs = parse_unified_diff(diff_text)
-    assert diffs[0].path == "a.py"
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
