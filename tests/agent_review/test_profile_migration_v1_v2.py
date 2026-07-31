@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
+
 import pytest
 
 from app.agent_review.contracts_v2 import TargetProfileV2
@@ -188,10 +191,46 @@ def test_migrate_flags_an_unsafe_artifact_id_instead_of_carrying_it() -> None:
         profile, repo="mglpsw/aiops-orchestrator", default_branch="master"
     )
     assert report.candidate["artifacts"][0]["artifact_id"] is None  # type: ignore[index]
+    # Referenced by position (#0), never by the unsafe raw name -- see the
+    # dedicated leak-prevention test below.
     assert any(
-        decision.field == "artifacts[full diff with spaces].artifact_id"
-        for decision in report.pending_decisions
+        decision.field == "artifacts[#0].artifact_id" for decision in report.pending_decisions
     )
+
+
+def test_migrate_never_leaks_an_unsafe_artifact_name_or_path_into_the_report() -> None:
+    """Post-merge finding (P2, Codex review of PR #101): pending_decisions
+    is persisted verbatim into the human-reviewable migration report. An
+    unsafe artifact name/path could itself be a token-shaped credential or
+    an absolute local path -- exactly the kind of value SafeIdentifier/
+    RelativePath already reject -- so it must never be echoed back into
+    `field` or `reason`."""
+
+    # Contains "=", which SafeIdentifier's charset forbids -- unsafe, and
+    # shaped like a leaked token/credential assignment.
+    unsafe_name = "token=ghp_1234567890abcdef1234567890abcdef1234"
+    unsafe_path = "/home/deploy/.ssh/id_rsa"
+    profile = TargetProfile.model_validate(
+        {
+            "target_repo": "mglpsw/aiops-orchestrator",
+            "artifacts": [
+                {"name": unsafe_name, "path": unsafe_path, "kind": "diff", "required": True}
+            ],
+        }
+    )
+    report = migrate_profile_v1_to_v2(
+        profile, repo="mglpsw/aiops-orchestrator", default_branch="master"
+    )
+
+    serialized = json.dumps(
+        [asdict(decision) for decision in report.pending_decisions]
+    )
+    assert unsafe_name not in serialized
+    assert unsafe_path not in serialized
+    assert "ghp_1234567890abcdef1234567890abcdef1234" not in serialized
+    # And the candidate itself must not carry the unsafe values either.
+    assert report.candidate["artifacts"][0]["artifact_id"] is None  # type: ignore[index]
+    assert report.candidate["artifacts"][0]["path"] is None  # type: ignore[index]
 
 
 def test_migrate_accepts_a_safe_artifact_id_and_path_without_flagging_them() -> None:

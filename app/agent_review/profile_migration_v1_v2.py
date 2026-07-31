@@ -111,7 +111,7 @@ def migrate_profile_v1_to_v2(
     # unsafe value is never silently carried into the candidate -- it is
     # nulled out and flagged as a pending human decision instead.
     artifacts: list[dict[str, object]] = []
-    for artifact in profile_v1.artifacts:
+    for index, artifact in enumerate(profile_v1.artifacts):
         id_valid = _is_valid_safe_identifier(artifact.name)
         path_valid = _is_valid_relative_path(artifact.path)
         artifacts.append(
@@ -123,30 +123,38 @@ def migrate_profile_v1_to_v2(
                 "max_bytes": None,
             }
         )
+        # Reference the artifact by its safe name when available, or by
+        # position otherwise. Never interpolate the raw name/path into
+        # `field` or `reason`: either could be a token-shaped credential or
+        # an absolute local path -- exactly what an unsafe value might be
+        # -- and this report is meant to be human-reviewable, potentially
+        # shared or committed output, not a place to persist rejected
+        # sensitive material.
+        artifact_ref = artifact.name if id_valid else f"#{index}"
         if not id_valid:
             pending.append(
                 ProfileMigrationDecisionV2(
-                    field=f"artifacts[{artifact.name}].artifact_id",
+                    field=f"artifacts[{artifact_ref}].artifact_id",
                     reason=(
-                        f"v1 artifact name {artifact.name!r} is not a safe v2 "
-                        "identifier; a human must supply a corrected artifact_id"
+                        "v1 artifact name is not a safe v2 identifier; a human "
+                        "must supply a corrected artifact_id"
                     ),
                 )
             )
         if not path_valid:
             pending.append(
                 ProfileMigrationDecisionV2(
-                    field=f"artifacts[{artifact.name}].path",
+                    field=f"artifacts[{artifact_ref}].path",
                     reason=(
-                        f"v1 path {artifact.path!r} is not a safe v2 relative path "
-                        "(absolute, traversal, or Windows-style separators); a human "
-                        "must supply a corrected path"
+                        "v1 path is not a safe v2 relative path (absolute, "
+                        "traversal, or Windows-style separators); a human must "
+                        "supply a corrected path"
                     ),
                 )
             )
         pending.append(
             ProfileMigrationDecisionV2(
-                field=f"artifacts[{artifact.name}].max_bytes",
+                field=f"artifacts[{artifact_ref}].max_bytes",
                 reason="v1 never bounded artifact size; a human must set an explicit byte cap",
             )
         )
