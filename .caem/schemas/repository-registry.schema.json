@@ -1,0 +1,118 @@
+{
+  "$id": "https://caem.local/schemas/repository-registry.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CAEM canonical repository registry",
+  "type": "object",
+  "required": [
+    "registry_id",
+    "caem_version",
+    "observed_at",
+    "source",
+    "owner",
+    "repositories",
+    "relationships",
+    "notes"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "registry_id": {
+      "type": "string"
+    },
+    "caem_version": {
+      "const": "2.1.0"
+    },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "string"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "repositories": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "full_name",
+          "url",
+          "default_branch",
+          "visibility",
+          "role",
+          "bundle",
+          "observed_head"
+        ],
+        "properties": {
+          "full_name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "default_branch": {
+            "type": "string"
+          },
+          "visibility": {
+            "enum": [
+              "public",
+              "private",
+              "internal"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "bundle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_head": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}$"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "type"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-generated-from": "GitHub connector + CAEM policy",
+  "x-caem-version": "2.1.0"
+}

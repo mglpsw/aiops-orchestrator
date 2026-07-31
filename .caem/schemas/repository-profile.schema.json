@@ -1,0 +1,139 @@
+{
+  "$id": "https://caem.local/schemas/repository-profile.schema.json",
+  "title": "CAEM repository overlay/profile",
+  "type": "object",
+  "required": [
+    "profile_id",
+    "project",
+    "caem_version",
+    "repository",
+    "environment_bindings",
+    "protected_resources",
+    "required_overlays",
+    "commands",
+    "project_rules",
+    "data_classification"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "profile_id": {
+      "type": "string"
+    },
+    "project": {
+      "type": "string"
+    },
+    "caem_version": {
+      "const": "2.1.0"
+    },
+    "repository": {
+      "type": "object",
+      "required": [
+        "forge",
+        "full_name",
+        "default_branch",
+        "url",
+        "visibility",
+        "role"
+      ],
+      "properties": {
+        "forge": {
+          "type": "string"
+        },
+        "full_name": {
+          "type": "string"
+        },
+        "default_branch": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "visibility": {
+          "type": "string",
+          "enum": [
+            "public",
+            "private",
+            "internal"
+          ]
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "environment_bindings": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "local_name": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "production_authority": {
+            "type": "boolean"
+          },
+          "runner_allowed": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "protected_resources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "required_overlays": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "commands": {
+      "type": "object",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "project_rules": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "data_classification": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "restricted_workforce",
+        "restricted_infrastructure",
+        "restricted_code_and_operations",
+        "restricted_clinical"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-generated-from": "policy/caem-policy.json",
+  "x-caem-version": "2.1.0"
+}

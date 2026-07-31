@@ -1,0 +1,622 @@
+{
+  "$schema": "schemas/caem-policy.schema.json",
+  "metadata": {
+    "id": "caem",
+    "name": "Cânone de Arquitetura e Engenharia Multiagente",
+    "version": "2.1.0",
+    "status": "canonical-baseline",
+    "released_at": "2026-07-30",
+    "language": "pt-BR",
+    "origin": [
+      "homelab",
+      "AgentEscala",
+      "AIOps/AgentReview",
+      "Agent Router",
+      "InterLeitos"
+    ],
+    "vendor_neutral": true
+  },
+  "canonicality": {
+    "normative_source": "policy/caem-policy.json",
+    "generated_views_are_normative_only_at_matching_digest": true,
+    "historical_sources_are_non_normative": true,
+    "default_effect": "deny",
+    "meaning_of_definitive": "baseline imutável e versionada; evolução apenas por supersessão explícita"
+  },
+  "precedence": {
+    "normative": [
+      "lei_regulacao_e_politica_institucional",
+      "caem_core",
+      "project_overlay",
+      "task_contract",
+      "authority_grant",
+      "ad_hoc_instruction_within_delegable_bounds"
+    ],
+    "factual": [
+      "runtime_observed",
+      "forge_and_repository_live",
+      "artifact_identity_and_attestation",
+      "code_contracts_and_tests",
+      "current_project_documentation",
+      "dated_checkpoint",
+      "conversation_memory",
+      "inference"
+    ],
+    "rules": [
+      "A camada inferior pode restringir, mas não ampliar autoridade além da camada superior.",
+      "Estado factual pode bloquear uma ação autorizada; não pode reescrever silenciosamente a norma.",
+      "Conflitos são registrados e resolvidos fail-closed quando afetarem segurança, produção, integridade ou dados clínicos."
+    ]
+  },
+  "evidence_classes": [
+    "observed",
+    "implemented",
+    "specified",
+    "planned",
+    "proposed",
+    "historical",
+    "inferred",
+    "unknown"
+  ],
+  "principles": [
+    {
+      "id": "P001",
+      "title": "Estado vivo antes de ação",
+      "rule": "Snapshots, memória e documentação iniciam a investigação, mas ações reais exigem revalidação do repositório, forge, runtime e artefatos vivos."
+    },
+    {
+      "id": "P002",
+      "title": "Precedência normativa e factual são distintas",
+      "rule": "Normas respondem ao que é permitido; fontes factuais respondem ao que existe agora. Nenhuma lista única deve misturar essas perguntas."
+    },
+    {
+      "id": "P003",
+      "title": "Evidência tem classe",
+      "rule": "Distinguir observado, implementado, especificado, planejado, proposto, histórico, inferido e desconhecido."
+    },
+    {
+      "id": "P004",
+      "title": "Supersessão não apaga proveniência",
+      "rule": "Uma regra nova substitui a anterior por versão e ADR, preservando origem, motivo e data."
+    },
+    {
+      "id": "P005",
+      "title": "Um fato, uma autoridade primária",
+      "rule": "Cada contrato relevante deve possuir um escritor canônico e projeções derivadas, evitando múltiplas fontes editáveis."
+    },
+    {
+      "id": "P006",
+      "title": "Capacidade não equivale a permissão",
+      "rule": "Conhecimento, credencial, conectividade, acesso ao host e capacidade técnica não concedem autoridade operacional."
+    },
+    {
+      "id": "P007",
+      "title": "Escopo positivo e fronteira negativa",
+      "rule": "Toda tarefa declara o que pode e o que não pode alterar, executar, publicar, encerrar ou promover."
+    },
+    {
+      "id": "P008",
+      "title": "Produção negada por padrão",
+      "rule": "Produção, providers reais, bancos destrutivos e ações irreversíveis exigem grants explícitos e delimitados."
+    },
+    {
+      "id": "P009",
+      "title": "Autoridade é grant nominal",
+      "rule": "Autorizações têm ação, alvo, método, identidade protegida, precondições, exclusões, emissor e validade; não são booleanos globais."
+    },
+    {
+      "id": "P010",
+      "title": "Identidade e autorização são resolvidas no servidor",
+      "rule": "O cliente não escolhe ator, papel, instituição, tenant ou decisão de autorização."
+    },
+    {
+      "id": "P011",
+      "title": "Uma PR, um objetivo operacional",
+      "rule": "Uma pull request deve entregar uma capacidade coerente, com risco e aceite compreensíveis."
+    },
+    {
+      "id": "P012",
+      "title": "Menor fatia funcional",
+      "rule": "Dividir o trabalho na menor slice validável sem quebrar o contrato operacional."
+    },
+    {
+      "id": "P013",
+      "title": "Fora de escopo vira follow-up",
+      "rule": "Não incorporar refatorações, redesign ou correções adjacentes oportunistas."
+    },
+    {
+      "id": "P014",
+      "title": "Estados de entrega são independentes",
+      "rule": "PR aprovada, slice implementada, slice encerrada, release, deploy e saúde observada não são sinônimos."
+    },
+    {
+      "id": "P015",
+      "title": "Execução é multidimensional",
+      "rule": "Operação, unidade, escopo de validação, ambiente, risco e fase são eixos ortogonais; nomes históricos são apenas presets."
+    },
+    {
+      "id": "P016",
+      "title": "DEV exercita o caminho essencial de PROD",
+      "rule": "Reload e bind mounts podem diferir; runtime, migrations, entrypoints, contratos e autorização não devem divergir."
+    },
+    {
+      "id": "P017",
+      "title": "Papéis de ambiente são canônicos",
+      "rule": "O núcleo usa canonical_dev e production; nomes como CT104 e CT102 pertencem ao overlay local."
+    },
+    {
+      "id": "P018",
+      "title": "Mutação exige reversibilidade",
+      "rule": "Antes de mutar dados, infraestrutura ou release, definir backup, rollback ou estratégia de compensação compatível com o risco."
+    },
+    {
+      "id": "P019",
+      "title": "Automação de infraestrutura é confinada",
+      "rule": "Oferecer dry-run, detectar conflitos e reverter apenas o stack próprio; nunca presumir autoridade sobre proxies ou stacks vizinhos."
+    },
+    {
+      "id": "P020",
+      "title": "Gates proporcionais ao impacto",
+      "rule": "Selecionar testes pelas superfícies e riscos, evitando tanto a suíte indiscriminada quanto validação focal insuficiente."
+    },
+    {
+      "id": "P021",
+      "title": "Evidência é ligada a identidade e ambiente",
+      "rule": "Cada gate registra subject, SHA/digest, ambiente, runner, comando, resultado e limitações."
+    },
+    {
+      "id": "P022",
+      "title": "Mudança de identidade torna evidência stale",
+      "rule": "Reuso entre SHAs é negado por padrão e só ocorre com prova determinística de não impacto."
+    },
+    {
+      "id": "P023",
+      "title": "Falhas são classificadas",
+      "rule": "Separar produto, regressão, baseline preexistente, ambiente, gate indisponível, contrato e autoridade."
+    },
+    {
+      "id": "P024",
+      "title": "Nunca fabricar prova",
+      "rule": "Sem navegador, DSN, credencial ou ferramenta, registrar pendência; não inferir print, teste, deploy ou inspeção."
+    },
+    {
+      "id": "P025",
+      "title": "Evidência é compacta, suficiente e sanitizada",
+      "rule": "Preservar diagnóstico e rastreabilidade sem logs excessivos, segredos, dados pessoais ou clínicos desnecessários."
+    },
+    {
+      "id": "P026",
+      "title": "LLM produz hipótese, não verdade",
+      "rule": "Saída de modelo permanece não confiável até normalização, schema, coverage e quality gate determinísticos."
+    },
+    {
+      "id": "P027",
+      "title": "Análise, decisão e publicação são separadas",
+      "rule": "O componente que analisa não ganha automaticamente autoridade para aprovar, publicar, mergear ou remediar."
+    },
+    {
+      "id": "P028",
+      "title": "Review por IA é advisory",
+      "rule": "Readiness final é calculada por regras determinísticas para o mesmo HEAD, com coverage e findings classificados."
+    },
+    {
+      "id": "P029",
+      "title": "Efeito externo passa por executor canônico",
+      "rule": "Providers, outbox, migrations, deploy e publicação devem possuir executor único, idempotência e auditoria."
+    },
+    {
+      "id": "P030",
+      "title": "Semântica operacional é segurança",
+      "rule": "Rótulos, estados, ausência e próxima ação devem refletir o modelo mental do usuário e não mascarar erro."
+    },
+    {
+      "id": "P031",
+      "title": "Eixos de domínio independentes não colapsam",
+      "rule": "Identidade, vínculo, função, autoridade, capacidade e audiência permanecem conceitos distintos."
+    },
+    {
+      "id": "P032",
+      "title": "Uma superfície, uma pergunta operacional",
+      "rule": "Cada tela, painel ou endpoint principal deve responder claramente a uma pergunta e oferecer próxima ação coerente."
+    },
+    {
+      "id": "P033",
+      "title": "Dados importados preservam proveniência",
+      "rule": "Importações registram origem, versão, transformações, warnings e identidade do artefato."
+    },
+    {
+      "id": "P034",
+      "title": "Histórico relevante é append-only",
+      "rule": "Assinaturas, auditoria e decisões não são sobrescritas; correções usam adendo ou evento compensatório."
+    },
+    {
+      "id": "P035",
+      "title": "Handoff transfere contexto, não autoridade",
+      "rule": "O próximo agente recebe estado e evidências, mas precisa revalidar o vivo e obter seus próprios grants."
+    },
+    {
+      "id": "P036",
+      "title": "Núcleo é vendor-neutral",
+      "rule": "Claude, GPT, Codex e agentes locais são adapters da mesma norma, não autoridades concorrentes."
+    },
+    {
+      "id": "P037",
+      "title": "Uma regra, um ID, uma fonte",
+      "rule": "Projeções humanas e adapters são gerados da política canônica; edição manual de arquivo gerado é drift."
+    },
+    {
+      "id": "P038",
+      "title": "Contexto usa revelação progressiva",
+      "rule": "Carregar guardrails mínimos sempre e detalhes apenas conforme tarefa, superfície, ambiente e risco."
+    },
+    {
+      "id": "P039",
+      "title": "Checkpoint é datado e não normativo",
+      "rule": "Checkpoints registram estado em uma data; não substituem código, forge, runtime ou política atual."
+    },
+    {
+      "id": "P040",
+      "title": "Evolução é versionada",
+      "rule": "Mudanças normativas exigem versão, changelog, ADR, migração e testes de conformidade."
+    },
+    {
+      "id": "P041",
+      "title": "Preview é write-zero",
+      "rule": "Simulação, preview e dry-run não podem produzir efeitos persistentes ou externos."
+    },
+    {
+      "id": "P042",
+      "title": "Fallback crítico é fail-closed",
+      "rule": "Contrato desconhecido, identidade ambígua ou coverage insuficiente bloqueiam ou exigem revisão humana."
+    },
+    {
+      "id": "P043",
+      "title": "Concorrência é contrato de domínio",
+      "rule": "Operações suscetíveis a corrida exigem banco/lock/constraint real e testes de concorrência, não apenas mocks."
+    },
+    {
+      "id": "P044",
+      "title": "Observabilidade não é autoridade de remediação",
+      "rule": "Prometheus, logs e AIOps podem detectar e propor; mutação exige fluxo separado e autorização."
+    },
+    {
+      "id": "P045",
+      "title": "Descoberta não equivale a homologação",
+      "rule": "Um recurso, modelo ou provider listado só é elegível após validação do contrato e endpoint realmente utilizados, com estado, TTL e fallback seguros."
+    },
+    {
+      "id": "P046",
+      "title": "Preset é política versionada",
+      "rule": "Consumidores escolhem intenção/preset lógico; seleção de provider, modelo, orçamento e execução pertence ao componente de roteamento segundo política auditável."
+    },
+    {
+      "id": "P047",
+      "title": "Contexto nominal não é orçamento útil",
+      "rule": "Reservar output, system, contexto compartilhado e margem operacional; validar limite antes da chamada e nunca truncar silenciosamente."
+    },
+    {
+      "id": "P048",
+      "title": "Falha parcial não produz conclusão positiva",
+      "rule": "Coverage parcial, chunk ausente, resposta inválida ou conflito não resolvido degradam confiabilidade e bloqueiam aprovação ou sucesso implícito."
+    }
+  ],
+  "execution_axes": {
+    "operation": [
+      "analyze",
+      "plan",
+      "document",
+      "implement",
+      "validate",
+      "review",
+      "merge",
+      "deploy",
+      "release",
+      "operate",
+      "migrate",
+      "incident_response"
+    ],
+    "work_unit": [
+      "none",
+      "documentation",
+      "issue",
+      "pull_request",
+      "slice",
+      "release",
+      "environment",
+      "incident"
+    ],
+    "validation_scope": [
+      "none",
+      "documentary",
+      "focused",
+      "affected",
+      "integrated",
+      "release"
+    ],
+    "environment_role": [
+      "documentation",
+      "local",
+      "ci",
+      "ephemeral",
+      "canonical_dev",
+      "external_sandbox",
+      "production",
+      "local_or_ci",
+      "local_ci_and_ephemeral"
+    ],
+    "risk": [
+      "low",
+      "medium",
+      "high",
+      "critical"
+    ],
+    "lifecycle_phase": [
+      "discovery",
+      "planning",
+      "implementation",
+      "validation",
+      "review",
+      "merge",
+      "promotion",
+      "operation",
+      "retrospective"
+    ]
+  },
+  "presets": {
+    "docs": {
+      "operation": "document",
+      "work_unit": "documentation",
+      "validation_scope": "documentary",
+      "environment_role": "documentation",
+      "risk": "low",
+      "lifecycle_phase": "implementation"
+    },
+    "pr-fast": {
+      "operation": "implement",
+      "work_unit": "pull_request",
+      "validation_scope": "focused",
+      "environment_role": "local_or_ci",
+      "risk": "low",
+      "lifecycle_phase": "implementation"
+    },
+    "pr-full": {
+      "operation": "implement",
+      "work_unit": "pull_request",
+      "validation_scope": "affected",
+      "environment_role": "local_ci_and_ephemeral",
+      "risk": "high",
+      "lifecycle_phase": "implementation"
+    },
+    "dev-iterate": {
+      "operation": "deploy",
+      "work_unit": "environment",
+      "validation_scope": "affected",
+      "environment_role": "canonical_dev",
+      "risk": "medium",
+      "lifecycle_phase": "validation"
+    },
+    "slice-close": {
+      "operation": "validate",
+      "work_unit": "slice",
+      "validation_scope": "integrated",
+      "environment_role": "canonical_dev",
+      "risk": "high",
+      "lifecycle_phase": "validation"
+    },
+    "release": {
+      "operation": "release",
+      "work_unit": "release",
+      "validation_scope": "release",
+      "environment_role": "production",
+      "risk": "critical",
+      "lifecycle_phase": "promotion"
+    }
+  },
+  "deprecated_aliases": {
+    "ct104-iterate": {
+      "replacement": "dev-iterate",
+      "remove_not_before": "3.0.0",
+      "reason": "nomes físicos pertencem ao overlay"
+    }
+  },
+  "state_vector": {
+    "implementation": [
+      "not_started",
+      "in_progress",
+      "completed",
+      "blocked"
+    ],
+    "validation": [
+      "not_started",
+      "partial",
+      "passed",
+      "failed",
+      "unavailable",
+      "stale"
+    ],
+    "change_request": [
+      "none",
+      "draft",
+      "ready",
+      "approved",
+      "merged",
+      "closed"
+    ],
+    "slice": [
+      "not_started",
+      "in_progress",
+      "implemented_not_closed",
+      "closed",
+      "blocked"
+    ],
+    "release": [
+      "not_created",
+      "candidate",
+      "approved",
+      "published",
+      "withdrawn"
+    ],
+    "deployment": [
+      "not_deployed",
+      "in_progress",
+      "completed",
+      "rolled_back",
+      "failed"
+    ],
+    "observation": [
+      "not_applicable",
+      "unknown",
+      "healthy",
+      "degraded",
+      "unhealthy"
+    ]
+  },
+  "protected_actions": [
+    "commit",
+    "push",
+    "open_change_request",
+    "mark_ready",
+    "resolve_review_thread",
+    "merge",
+    "close_issue",
+    "deploy_canonical_dev",
+    "deploy_production",
+    "apply_migration",
+    "mutate_database",
+    "destructive_database_action",
+    "restart_service",
+    "invoke_external_provider",
+    "publish_review",
+    "modify_proxy_or_dns",
+    "rotate_secret",
+    "delete_branch",
+    "start_next_phase"
+  ],
+  "failure_classes": [
+    "product",
+    "regression",
+    "preexisting",
+    "environment",
+    "gate_unavailable",
+    "contract",
+    "authority",
+    "security",
+    "data_integrity",
+    "unknown"
+  ],
+  "surfaces": [
+    "documentation",
+    "domain",
+    "api_contract",
+    "authorization_iam",
+    "database_schema",
+    "migration",
+    "concurrency",
+    "frontend_behavior",
+    "visual_ux",
+    "accessibility",
+    "integration",
+    "provider_outbox",
+    "observability",
+    "deployment_runtime",
+    "release",
+    "clinical_data",
+    "ai_analysis",
+    "infrastructure"
+  ],
+  "gate_catalog": [
+    {
+      "id": "docs-consistency",
+      "kind": "deterministic",
+      "proves": "links, references, generated views and schemas are coherent"
+    },
+    {
+      "id": "focused-tests",
+      "kind": "deterministic",
+      "proves": "changed unit or contract behaves as expected"
+    },
+    {
+      "id": "type-lint-build",
+      "kind": "deterministic",
+      "proves": "static and build contracts"
+    },
+    {
+      "id": "full-affected-suite",
+      "kind": "deterministic",
+      "proves": "affected surfaces remain coherent"
+    },
+    {
+      "id": "postgres-real",
+      "kind": "deterministic",
+      "proves": "physical database behavior, migrations, constraints and locks"
+    },
+    {
+      "id": "negative-authorization",
+      "kind": "deterministic",
+      "proves": "deny-by-default and cross-boundary denials"
+    },
+    {
+      "id": "concurrency",
+      "kind": "deterministic",
+      "proves": "races preserve invariants"
+    },
+    {
+      "id": "visual-contract",
+      "kind": "deterministic_or_reviewed",
+      "proves": "intended visual surface and regressions"
+    },
+    {
+      "id": "accessibility",
+      "kind": "deterministic_or_reviewed",
+      "proves": "keyboard, labels, semantics and contrast as applicable"
+    },
+    {
+      "id": "canonical-dev-smoke",
+      "kind": "runtime",
+      "proves": "deployed revision works on canonical development runtime"
+    },
+    {
+      "id": "slice-journey",
+      "kind": "runtime",
+      "proves": "end-to-end capability including reload/restart and denials"
+    },
+    {
+      "id": "provider-sandbox",
+      "kind": "runtime",
+      "proves": "external integration without real-world effect"
+    },
+    {
+      "id": "release-attestation",
+      "kind": "deterministic",
+      "proves": "version, artifact digest, migration head and source identity"
+    },
+    {
+      "id": "production-health",
+      "kind": "runtime",
+      "proves": "health, readiness and targeted smoke after promotion"
+    },
+    {
+      "id": "security-sanitization",
+      "kind": "deterministic_or_reviewed",
+      "proves": "no secrets or excessive personal/clinical data in evidence"
+    },
+    {
+      "id": "ai-contract",
+      "kind": "deterministic",
+      "proves": "schema, coverage, identity, reason codes and fail-closed behavior"
+    }
+  ],
+  "governance": {
+    "change_requires": [
+      "ADR",
+      "semantic_version",
+      "changelog",
+      "migration_notes",
+      "conformance_tests",
+      "generated_view_refresh"
+    ],
+    "generated_file_marker_required": true,
+    "manual_edit_to_generated_file_is_drift": true,
+    "maintainer_model": "one policy owner plus project overlay owners"
+  }
+}

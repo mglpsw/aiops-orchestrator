@@ -1,0 +1,188 @@
+{
+  "$id": "https://caem.local/schemas/authority-grant.schema.json",
+  "title": "CAEM scoped authority grant",
+  "type": "object",
+  "required": [
+    "grant_id",
+    "action",
+    "target",
+    "issued_by",
+    "issued_at",
+    "transferable",
+    "status"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "grant_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "commit",
+        "push",
+        "open_change_request",
+        "mark_ready",
+        "resolve_review_thread",
+        "merge",
+        "close_issue",
+        "deploy_canonical_dev",
+        "deploy_production",
+        "apply_migration",
+        "mutate_database",
+        "destructive_database_action",
+        "restart_service",
+        "invoke_external_provider",
+        "publish_review",
+        "modify_proxy_or_dns",
+        "rotate_secret",
+        "delete_branch",
+        "start_next_phase"
+      ]
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "type",
+        "id"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "repository",
+            "branch",
+            "pull_request",
+            "issue",
+            "environment",
+            "database",
+            "service",
+            "provider",
+            "artifact",
+            "release",
+            "infrastructure_resource",
+            "phase"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "environment_role": {
+          "type": "string",
+          "enum": [
+            "documentation",
+            "local",
+            "ci",
+            "ephemeral",
+            "canonical_dev",
+            "external_sandbox",
+            "production",
+            "local_or_ci",
+            "local_ci_and_ephemeral"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string"
+        },
+        "subject_sha": {
+          "type": "string"
+        },
+        "base_sha": {
+          "type": "string"
+        },
+        "artifact_digest": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_mutations": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "preconditions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "excludes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "commit",
+          "push",
+          "open_change_request",
+          "mark_ready",
+          "resolve_review_thread",
+          "merge",
+          "close_issue",
+          "deploy_canonical_dev",
+          "deploy_production",
+          "apply_migration",
+          "mutate_database",
+          "destructive_database_action",
+          "restart_service",
+          "invoke_external_provider",
+          "publish_review",
+          "modify_proxy_or_dns",
+          "rotate_secret",
+          "delete_branch",
+          "start_next_phase"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "issued_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "transferable": {
+      "const": false
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "consumed",
+        "expired",
+        "revoked"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-generated-from": "policy/caem-policy.json",
+  "x-caem-version": "2.1.0"
+}

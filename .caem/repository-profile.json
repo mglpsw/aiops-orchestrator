@@ -1,0 +1,42 @@
+{
+  "$schema": "schemas/repository-profile.schema.json",
+  "profile_id": "aiops-agentreview",
+  "project": "AIOps/AgentReview",
+  "caem_version": "2.1.0",
+  "repository": {
+    "forge": "github",
+    "full_name": "mglpsw/aiops-orchestrator",
+    "default_branch": "master",
+    "url": "https://github.com/mglpsw/aiops-orchestrator",
+    "visibility": "public",
+    "role": "aiops_runtime_and_agentreview_engine"
+  },
+  "environment_bindings": {
+    "canonical_dev": {
+      "local_name": "CT104"
+    },
+    "external_sandbox": {
+      "local_name": "Agent Router HTTPS"
+    }
+  },
+  "protected_resources": [
+    "review_publication",
+    "production_remediation",
+    "router_host",
+    "target_repository_credentials"
+  ],
+  "required_overlays": [
+    "overlays/AIOPS_AGENTREVIEW.md",
+    "overlays/HOMELAB.md"
+  ],
+  "commands": {},
+  "project_rules": [
+    "AI review is advisory",
+    "deterministic review-readiness is authoritative",
+    "same HEAD and full coverage required",
+    "Router access does not authorize Router host",
+    "CI remains authority",
+    "shadow mode before enforcement"
+  ],
+  "data_classification": "restricted_code_and_operations"
+}

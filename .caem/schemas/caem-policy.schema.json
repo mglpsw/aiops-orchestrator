@@ -1,0 +1,208 @@
+{
+  "$id": "https://caem.local/schemas/caem-policy.schema.json",
+  "title": "CAEM canonical policy",
+  "type": "object",
+  "required": [
+    "metadata",
+    "canonicality",
+    "precedence",
+    "principles",
+    "execution_axes",
+    "presets",
+    "state_vector",
+    "protected_actions",
+    "surfaces",
+    "gate_catalog",
+    "governance"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "version",
+        "status",
+        "released_at",
+        "vendor_neutral"
+      ],
+      "properties": {
+        "id": {
+          "const": "caem"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+        },
+        "status": {
+          "type": "string"
+        },
+        "released_at": {
+          "type": "string",
+          "format": "date"
+        },
+        "language": {
+          "type": "string"
+        },
+        "origin": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "vendor_neutral": {
+          "const": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "canonicality": {
+      "type": "object",
+      "required": [
+        "normative_source",
+        "default_effect"
+      ],
+      "properties": {
+        "normative_source": {
+          "const": "policy/caem-policy.json"
+        },
+        "default_effect": {
+          "const": "deny"
+        }
+      },
+      "additionalProperties": true
+    },
+    "precedence": {
+      "type": "object",
+      "required": [
+        "normative",
+        "factual",
+        "rules"
+      ],
+      "properties": {
+        "normative": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "factual": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "evidence_classes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "principles": {
+      "type": "array",
+      "minItems": 40,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "rule"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^P\\d{3}$"
+          },
+          "title": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "execution_axes": {
+      "type": "object"
+    },
+    "presets": {
+      "type": "object"
+    },
+    "deprecated_aliases": {
+      "type": "object"
+    },
+    "state_vector": {
+      "type": "object"
+    },
+    "protected_actions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "failure_classes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "surfaces": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "gate_catalog": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "proves"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "proves": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "governance": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "x-generated-from": "policy/caem-policy.json",
+  "x-caem-version": "2.1.0"
+}
