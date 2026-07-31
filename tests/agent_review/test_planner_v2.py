@@ -341,3 +341,77 @@ def test_plan_blocks_rather_than_hangs_on_a_large_ambiguous_input() -> None:
 
     assert outcome.state in ("planned", "blocked_pipeline")
     assert elapsed < 10.0, f"bounded search took {elapsed:.2f}s -- expected the state cap to bound cost"
+
+
+# -- post-merge finding (P2, third Codex review of PR #99) -------------------
+
+
+def test_plan_splits_a_large_deletion_only_hunk_against_its_old_side_budget() -> None:
+    """The exact scenario from the Codex finding: deleting 10,000 old
+    lines with max_lines_per_chunk=100 must not be returned as a single
+    fragment costing "1 line" -- it must be split (or correctly sized)
+    against the old-side range that is actually being removed."""
+
+    hunk = _hunk(
+        "app/big-deletion.py",
+        index=0,
+        start=1,
+        end=0,  # new_end < new_start: pure deletion, no new content
+        old_start=1,
+        old_end=10_000,
+        must_review=True,
+    )
+    outcome = plan_lossless_chunks_v2(
+        hunks=[hunk],
+        semantic_group="primary_backend_logic",
+        max_lines_per_chunk=100,
+        max_chunks=200,
+    )
+    assert outcome.state == "planned"
+    assert len(outcome.fragments) > 1, "a 10,000-line deletion must be split, not kept as one fragment"
+
+    total_old_lines = sum(
+        fragment.old_range.end - fragment.old_range.start + 1 for fragment in outcome.fragments
+    )
+    assert total_old_lines == 10_000
+
+    for fragment in outcome.fragments:
+        old_size = fragment.old_range.end - fragment.old_range.start + 1
+        assert old_size <= 100, f"fragment old-side size {old_size} exceeds max_lines_per_chunk"
+
+    # Each chunk's total assigned size must also respect the budget --
+    # proves the packer is using the corrected (old-side-aware) fragment
+    # size, not the collapsed new_range.
+    fragments_by_id = {fragment.fragment_id: fragment for fragment in outcome.fragments}
+    for chunk in outcome.chunks:
+        chunk_total = sum(
+            max(
+                fragments_by_id[fid].old_range.end - fragments_by_id[fid].old_range.start + 1,
+                fragments_by_id[fid].new_range.end - fragments_by_id[fid].new_range.start + 1,
+            )
+            for fid in chunk.fragment_ids
+        )
+        assert chunk_total <= 100
+
+
+def test_plan_blocks_a_large_deletion_that_cannot_fit_in_max_chunks() -> None:
+    """A 10,000-line deletion with a budget that genuinely cannot fit it
+    within max_chunks must block the pipeline, not silently under-count
+    the deletion as free and report success."""
+
+    hunk = _hunk(
+        "app/big-deletion.py",
+        index=0,
+        start=1,
+        end=0,
+        old_start=1,
+        old_end=10_000,
+        must_review=True,
+    )
+    outcome = plan_lossless_chunks_v2(
+        hunks=[hunk],
+        semantic_group="primary_backend_logic",
+        max_lines_per_chunk=100,
+        max_chunks=2,  # 10,000 / 100 = 100 chunks needed, far more than 2
+    )
+    assert outcome.state == "blocked_pipeline"

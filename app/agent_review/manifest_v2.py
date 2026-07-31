@@ -198,6 +198,13 @@ class ManifestMaterialV2(ContractV2Model):
         chunk_ids = [chunk.chunk_id for chunk in self.chunks]
         if len(chunk_ids) != len(set(chunk_ids)):
             raise ValueError("chunk_id values must be unique")
+        # Mirrors the existing v1 precedent (chunk_payload_builder.py
+        # rejects duplicate order indexes): two chunks sharing the same
+        # order_index leave execution order ambiguous for any consumer that
+        # relies on it, and nothing else in this contract catches that.
+        order_indexes = [chunk.order_index for chunk in self.chunks]
+        if len(order_indexes) != len(set(order_indexes)):
+            raise ValueError("chunk order_index values must be unique")
         if len(self.chunks) > self.max_chunks:
             raise ValueError("chunk count exceeds max_chunks")
 

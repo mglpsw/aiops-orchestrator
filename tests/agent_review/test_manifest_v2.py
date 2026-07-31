@@ -244,6 +244,36 @@ def test_manifest_rejects_a_fragment_assigned_to_two_chunks() -> None:
         _manifest(fragments=[fragment], chunks=[chunk_a, chunk_b])
 
 
+def test_manifest_rejects_duplicate_chunk_order_indexes() -> None:
+    """Two distinct chunks sharing the same order_index leave execution
+    order ambiguous -- mirrors the existing v1 precedent in
+    chunk_payload_builder.py, which already rejects this."""
+
+    fragment_a = _fragment(path="app/a.py")
+    fragment_b = _fragment(path="app/b.py")
+    chunk_a = ManifestChunkV2(
+        chunk_id="chunk-0000",
+        order_index=0,
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment_a.fragment_id],
+        payload_sha256=None,
+    )
+    chunk_b = ManifestChunkV2(
+        chunk_id="chunk-0001",
+        order_index=0,  # duplicate of chunk_a's order_index
+        semantic_group="primary_backend_logic",
+        fragment_ids=[fragment_b.fragment_id],
+        payload_sha256=None,
+    )
+    with pytest.raises(ValidationError):
+        _manifest(
+            fragments=[fragment_a, fragment_b],
+            chunks=[chunk_a, chunk_b],
+            expected_files=["app/a.py", "app/b.py"],
+            must_review_files=["app/a.py", "app/b.py"],
+        )
+
+
 def test_manifest_rejects_an_unexplained_omission_of_a_required_fragment() -> None:
     """The core losslessness guard: a coverage_required fragment missing
     from every chunk, with no degradation cause, is a hard validation
