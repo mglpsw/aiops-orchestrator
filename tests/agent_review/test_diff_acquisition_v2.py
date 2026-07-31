@@ -188,6 +188,25 @@ def test_parse_a_pure_rename_without_content_change() -> None:
     assert file_diff.hunks == ()
 
 
+def test_parse_preserves_a_rename_path_under_a_top_level_directory_named_a() -> None:
+    """Unlike diff --git/---/+++ marker paths, git never adds an a/ or
+    b/ prefix to "rename from"/"rename to" header paths -- they are
+    already repo-relative. A file genuinely living under a top-level
+    directory literally named "a" (real repo path "a/foo.py") must not
+    have that "a/" stripped as if it were the diff-marker prefix."""
+
+    diff_text = (
+        "diff --git a/a/foo.py b/a/bar.py\n"
+        "similarity index 100%\n"
+        "rename from a/foo.py\n"
+        "rename to a/bar.py\n"
+    )
+    diffs = parse_unified_diff(diff_text)
+    file_diff = diffs[0]
+    assert file_diff.old_path == "a/foo.py"
+    assert file_diff.new_path == "a/bar.py"
+
+
 # -- binary files (both "Binary files ... differ" and real "GIT binary patch") --
 
 
@@ -407,6 +426,49 @@ def test_parse_a_quoted_path_with_octal_escapes() -> None:
     assert diffs[0].path == "café.py"
 
 
+def test_parse_decodes_the_full_git_c_style_escape_set_correctly() -> None:
+    """git's quote_c_style() (quote.c) escapes exactly these letters:
+    a, b, f, n, r, t, v, backslash, and double-quote. A path containing a
+    real backspace byte is quoted as "\\b" -- treating an unrecognized
+    escape char as ordinary text (dropping the backslash) would silently
+    decode that to the same string as a distinct real file literally
+    named "b", conflating two different paths."""
+
+    diff_text = (
+        'diff --git "a/x\\bfile.py" "b/x\\bfile.py"\n'
+        "index abc..def 100644\n"
+        '--- "a/x\\bfile.py"\n'
+        '+++ "b/x\\bfile.py"\n'
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    diffs = parse_unified_diff(diff_text)
+    assert diffs[0].path == "x\bfile.py"
+    assert diffs[0].path != "xbfile.py"
+
+
+def test_parse_fails_closed_on_an_unrecognized_backslash_escape() -> None:
+    """A backslash followed by a character that is neither one of git's
+    own escape letters, backslash, double-quote, nor a 3-digit octal is
+    not a sequence git's own quoting ever produces -- malformed or
+    unrepresentable input, not a value to guess at by dropping the
+    backslash."""
+
+    diff_text = (
+        'diff --git "a/x\\zfile.py" "b/x\\zfile.py"\n'
+        "index abc..def 100644\n"
+        '--- "a/x\\zfile.py"\n'
+        '+++ "b/x\\zfile.py"\n'
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_unified_diff(diff_text)
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
 def test_parse_fails_closed_on_an_undecodable_octal_escaped_path() -> None:
     """Arbitrary bytes are valid in a git filename. Two decoding
     strategies were tried and rejected: errors="replace" collapses
@@ -510,6 +572,31 @@ def test_completeness_flags_a_hunkless_pure_rename_as_unrepresentable() -> None:
     assert not result.complete
     assert result.unrepresentable_paths == ("new_name.py",)
     assert result.missing_paths == ()
+
+
+def test_completeness_flags_a_glob_metacharacter_path_as_unrepresentable() -> None:
+    """A path containing a glob metacharacter (e.g. the common Next.js
+    route app/[id]/page.tsx) is a perfectly ordinary, valid git path, but
+    manifest_v2.FragmentV2.path's frozen RelativePath contract
+    (contracts_v2._validate_relative_path) rejects *?[] outright -- those
+    are reserved for the pattern type, never a concrete path. Letting
+    this reach the planner uncaught would raise an uncontrolled
+    pydantic.ValidationError well past acquisition; must be classified
+    here as unrepresentable instead."""
+
+    diff_text = (
+        "diff --git a/app/[id]/page.tsx b/app/[id]/page.tsx\n"
+        "index abc..def 100644\n"
+        "--- a/app/[id]/page.tsx\n"
+        "+++ b/app/[id]/page.tsx\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    diffs = parse_unified_diff(diff_text)
+    result = validate_diff_completeness_v2(diffs, expected_paths=frozenset({"app/[id]/page.tsx"}))
+    assert not result.complete
+    assert result.unrepresentable_paths == ("app/[id]/page.tsx",)
 
 
 def test_completeness_reports_complete_when_everything_is_representable() -> None:

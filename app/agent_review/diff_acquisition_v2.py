@@ -116,14 +116,28 @@ def _decode_git_path(raw: str) -> str:
             decoded.append(int(octal, 8))
             index += 4
             continue
-        escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"'}
+        # The complete set git's own quote_c_style() escapes (quote.c:
+        # `escaped = "abfnrtv\\\""`), not just the subset that happens to
+        # be common in test fixtures. A path containing a literal
+        # backspace, for example, is quoted as "\b" -- treating an
+        # unrecognized escape char as ordinary text (dropping the
+        # backslash, as a prior revision did) silently collides a path
+        # like "x\b.py" (real backspace byte) with a distinct real file
+        # literally named "xb.py".
+        escape_map = {
+            "a": "\a", "b": "\b", "f": "\f", "n": "\n",
+            "r": "\r", "t": "\t", "v": "\v", "\\": "\\", '"': '"',
+        }
         mapped = escape_map.get(next_char)
         if mapped is not None:
             decoded.extend(mapped.encode("utf-8"))
             index += 2
             continue
-        decoded.extend(next_char.encode("utf-8"))
-        index += 2
+        # Any other backslash escape is not one git's own quoting ever
+        # produces (only these letters, "\\", '"', or a 3-digit octal
+        # are valid) -- malformed or unrepresentable input, not a value
+        # to guess at.
+        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
     # Strict decode, fail closed: arbitrary bytes are valid in a git
     # filename, so "replace" is wrong (it collapses distinct undecodable
     # byte sequences, e.g. octal \200 vs \201, onto the same U+FFFD
@@ -332,19 +346,24 @@ class _FileBlockBuilder:
                 index += 1
                 continue
             if line.startswith("rename from "):
-                self.rename_from = _strip_ab_prefix(_decode_git_path(line[len("rename from "):]))
+                # Unlike diff --git/---/+++ marker paths, git never adds
+                # an a/ or b/ prefix to rename/copy header paths -- they
+                # are already repo-relative. Stripping here would corrupt
+                # a real path under a top-level directory literally named
+                # "a" or "b" (e.g. "rename to a/bar" -> wrongly "bar").
+                self.rename_from = _decode_git_path(line[len("rename from "):])
                 index += 1
                 continue
             if line.startswith("rename to "):
-                self.rename_to = _strip_ab_prefix(_decode_git_path(line[len("rename to "):]))
+                self.rename_to = _decode_git_path(line[len("rename to "):])
                 index += 1
                 continue
             if line.startswith("copy from "):
-                self.copy_from = _strip_ab_prefix(_decode_git_path(line[len("copy from "):]))
+                self.copy_from = _decode_git_path(line[len("copy from "):])
                 index += 1
                 continue
             if line.startswith("copy to "):
-                self.copy_to = _strip_ab_prefix(_decode_git_path(line[len("copy to "):]))
+                self.copy_to = _decode_git_path(line[len("copy to "):])
                 index += 1
                 continue
             if line.startswith("new file mode "):
@@ -546,13 +565,22 @@ class DiffCompletenessResultV2:
     missing_paths: tuple[str, ...]
     unrepresentable_paths: tuple[str, ...]
     """Paths present in the diff but not representable as ordinary
-    line-range hunks -- binary content, submodule/gitlink changes, or a
+    line-range hunks -- binary content, submodule/gitlink changes, a
     hunkless metadata-only change (pure rename/copy, mode change, or an
-    empty file add/delete with no hunk headers at all). A hunkless entry
-    can never produce a ``HunkInputV2``/fragment for the line-range
-    planner, so treating it as covered would let it silently disappear
-    from review; these need an explicit, separate policy decision, never
-    silent coverage."""
+    empty file add/delete with no hunk headers at all), or a path
+    containing a glob metacharacter (``*?[]``). A hunkless entry can
+    never produce a ``HunkInputV2``/fragment for the line-range planner;
+    a glob-metacharacter path (e.g. the common Next.js route
+    ``app/[id]/page.tsx``) is a perfectly valid, ordinary git path but is
+    rejected by ``manifest_v2.FragmentV2.path``'s frozen ``RelativePath``
+    contract (``contracts_v2._validate_relative_path`` forbids
+    ``*?[]`` -- those characters are reserved for the *pattern* type,
+    ``RelativePattern``, never a concrete path). Letting either case
+    reach the planner uncaught would raise an uncontrolled
+    ``pydantic.ValidationError`` well past acquisition instead of a
+    controlled, explicit policy decision; these need that explicit,
+    separate policy decision, never silent coverage or an uncontrolled
+    crash."""
     truncated_paths: tuple[str, ...] = ()
     """Paths whose patch content itself is incomplete: a hunk header
     declared more old/new lines than the body actually contains. Distinct
@@ -577,12 +605,21 @@ def validate_diff_completeness_v2(
 
     present_paths = {file_diff.path for file_diff in file_diffs if file_diff.path}
     missing = frozenset(expected_paths) - present_paths
+    # Mirrors contracts_v2._validate_relative_path's own rejection set --
+    # a concrete FragmentV2.path can never contain these, only a pattern
+    # (RelativePattern) can.
+    _GLOB_METACHARACTERS = "*?[]"
     unrepresentable = tuple(
         sorted(
             file_diff.path
             for file_diff in file_diffs
             if file_diff.path in expected_paths
-            and (file_diff.is_binary or file_diff.is_submodule or not file_diff.hunks)
+            and (
+                file_diff.is_binary
+                or file_diff.is_submodule
+                or not file_diff.hunks
+                or any(character in file_diff.path for character in _GLOB_METACHARACTERS)
+            )
         )
     )
     truncated = tuple(
