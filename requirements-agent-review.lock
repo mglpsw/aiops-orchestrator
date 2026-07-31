@@ -1,0 +1,31 @@
+# AgentReview offline toolrepo lock -- minimal, exact, hash-pinned.
+#
+# Installs ONLY what app/agent_review and its tests import: pydantic (with
+# its own required dependencies) and PyYAML. No FastAPI, Uvicorn,
+# SQLAlchemy, database driver, or other production-runtime dependency is
+# present, and none is required by this package's import graph.
+#
+# Generated for: CPython 3.11, manylinux2014/glibc x86_64 (the AgentReview
+# offline toolrepo target). pydantic-core and PyYAML ship compiled
+# extensions; their hashes below are for this platform's wheel only. A
+# different target platform requires regenerating this lock on that
+# platform (see docs/AGENT_REVIEW_V2_INSTALLATION.md), not adding more
+# hashes by hand.
+#
+# Install with:
+#   pip install --require-hashes --no-deps -r requirements-agent-review.lock
+# (see scripts/install-agent-review-toolrepo.sh for the full dedicated-venv
+# procedure).
+
+annotated-types==0.7.0 \
+    --hash=sha256:1f02e8b43a8fbbc3f3e0d4f0f4bfc8131bcb4eebe8849b8e5c773f3a1c582a53
+pydantic==2.11.3 \
+    --hash=sha256:a082753436a07f9ba1289c6ffa01cd93db3548776088aa917cc43b63f68fa60f
+pydantic-core==2.33.1 \
+    --hash=sha256:c964fd24e6166420d18fb53996d8c9fd6eac9bf5ae3ec3d03015be4414ce497f
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+typing-inspection==0.4.2 \
+    --hash=sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7
+PyYAML==6.0.2 \
+    --hash=sha256:3ad2a3decf9aaba3d29c8f537ac4b243e36bef957511b4766cb0057d32b0be85
