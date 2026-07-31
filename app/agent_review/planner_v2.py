@@ -383,8 +383,11 @@ def plan_lossless_chunks_v2(
             raise ValueError("a hunk must have at least one real line on the old or new side")
 
     all_fragments: list[FragmentV2] = []
-    for hunk in hunks:
-        all_fragments.extend(_split_hunk_into_fragments(hunk, max_lines_per_chunk=max_lines_per_chunk))
+    fragment_source_position: dict[str, int] = {}
+    for source_position, hunk in enumerate(hunks):
+        for fragment in _split_hunk_into_fragments(hunk, max_lines_per_chunk=max_lines_per_chunk):
+            all_fragments.append(fragment)
+            fragment_source_position[fragment.fragment_id] = source_position
 
     # fragment_id is a deterministic hash of path/old_range/new_range/
     # diff_sha256 (compute_fragment_id_v2) -- it does not include
@@ -409,8 +412,13 @@ def plan_lossless_chunks_v2(
     # non-overlapping coverage invariant this planner exists to guarantee.
     # Fragments split from the *same* hunk deliberately share a range on
     # a starved side (see _proportional_window's documented anchor
-    # reuse) -- that is expected and excluded here by comparing
-    # hunk_indexes, not path alone.
+    # reuse) -- that is expected and excluded here by comparing each
+    # fragment's actual source position in `hunks` (fragment_source_position,
+    # built from enumerate(hunks) above), never the caller-supplied
+    # hunk.hunk_index: HunkInputV2's public boundary does not enforce
+    # (path, hunk_index) uniqueness, so a caller reusing an index across
+    # two genuinely different hunks (e.g. paginated numbering restarting)
+    # must not exempt them from this check.
     def _ranges_overlap(first: LineRangeV2, second: LineRangeV2) -> bool:
         return first.start <= second.end and second.start <= first.end
 
@@ -420,7 +428,7 @@ def plan_lossless_chunks_v2(
     for path_fragments in fragments_by_path.values():
         for i, fragment_a in enumerate(path_fragments):
             for fragment_b in path_fragments[i + 1 :]:
-                if set(fragment_a.hunk_indexes) & set(fragment_b.hunk_indexes):
+                if fragment_source_position[fragment_a.fragment_id] == fragment_source_position[fragment_b.fragment_id]:
                     continue
                 if _ranges_overlap(fragment_a.old_range, fragment_b.old_range) or _ranges_overlap(
                     fragment_a.new_range, fragment_b.new_range

@@ -278,6 +278,21 @@ class ManifestMaterialV2(ContractV2Model):
         # assigned to exactly one chunk, unless a degradation cause
         # explicitly and completely accounts for its omission. There is no
         # silent partial approval: an unexplained gap is a validation error.
+        # Reject a duplicate degradation-cause record before aggregating
+        # it: unioning affected_fragment_ids into a set below silently
+        # absorbs the repeat, so the manifest would still validate --
+        # admitting redundant identity-bound material that inflates
+        # downstream cause counts and lets the same omission explanation
+        # be represented by different manifest_hash values. Mirrors
+        # ChunkCoverageV2's own duplicate rejection for its degradation
+        # causes.
+        cause_keys = [
+            (cause.reason_code, tuple(cause.affected_fragment_ids), cause.detail)
+            for cause in self.degradation_causes
+        ]
+        if len(cause_keys) != len(set(cause_keys)):
+            raise ValueError("degradation_causes must not contain duplicate entries")
+
         required_ids = {fragment.fragment_id for fragment in self.fragments if fragment.coverage_required}
         missing_required = required_ids - set(assignment_count)
         degraded_ids: set[str] = set()

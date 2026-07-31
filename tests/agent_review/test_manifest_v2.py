@@ -312,6 +312,29 @@ def test_manifest_accepts_an_omission_explained_by_a_degradation_cause() -> None
     assert manifest.chunks == []
 
 
+def test_manifest_rejects_a_duplicate_degradation_cause() -> None:
+    """Unioning affected_fragment_ids into a set silently absorbs a
+    repeated cause record, so the manifest would still validate --
+    admitting redundant identity-bound material that inflates downstream
+    cause counts and lets the same omission explanation be represented
+    by different manifest_hash values. Must be rejected before
+    aggregating, mirroring ChunkCoverageV2's own duplicate rejection."""
+
+    fragment = _fragment(required=True)
+    cause = ManifestDegradationV2(
+        reason_code="budget_exhausted",
+        affected_fragment_ids=[fragment.fragment_id],
+        detail="max_chunks too small",
+    )
+    duplicate_cause = ManifestDegradationV2(
+        reason_code="budget_exhausted",
+        affected_fragment_ids=[fragment.fragment_id],
+        detail="max_chunks too small",
+    )
+    with pytest.raises(ValidationError):
+        _manifest(fragments=[fragment], chunks=[], degradation_causes=[cause, duplicate_cause])
+
+
 def test_manifest_rejects_a_degradation_cause_for_a_non_required_fragment() -> None:
     fragment = _fragment(required=False)
     cause = ManifestDegradationV2(
