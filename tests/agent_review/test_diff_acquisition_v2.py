@@ -259,6 +259,14 @@ def test_parse_a_real_git_binary_patch_new_file() -> None:
     assert diffs[0].change_type == "added"
     assert diffs[0].is_binary
     assert diffs[0].hunks == ()
+    # An addition has no old blob -- old_path must not be populated just
+    # because the diff --git header (the only path source for a GIT
+    # binary patch block) always carries both an a/ and a b/ token, even
+    # when one side doesn't exist. A consumer using old_path for an
+    # explicit binary/blob-retrieval policy must not try to fetch a blob
+    # from a revision where it never existed.
+    assert diffs[0].old_path is None
+    assert diffs[0].new_path == "real_binary.bin"
 
 
 def test_parse_a_real_git_binary_patch_modification() -> None:
@@ -310,6 +318,9 @@ def test_parse_a_real_git_binary_patch_deletion() -> None:
     assert diffs[0].path == "real_binary.bin"
     assert diffs[0].change_type == "deleted"
     assert diffs[0].is_binary
+    # A deletion has no new blob -- symmetric to the addition case above.
+    assert diffs[0].old_path == "real_binary.bin"
+    assert diffs[0].new_path is None
 
 
 # -- submodules (gitlinks, mode 160000) ------------------------------------------
@@ -829,6 +840,31 @@ def test_parse_fails_closed_on_a_hunk_with_zero_changed_lines() -> None:
         "@@ -1,1 +1,1 @@\n"
         "-x\n"
         "+y\n"
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_unified_diff(diff_text)
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
+def test_parse_fails_closed_on_a_hunk_following_an_eof_marker_in_the_same_file() -> None:
+    """A "\\ No newline at end of file" marker can only ever apply to a
+    file's true final hunk -- content cannot exist past end-of-file. A
+    file that already recorded one and is then followed by another hunk
+    is contradictory reconstructed/malformed input, not a legitimate
+    multi-hunk file."""
+
+    diff_text = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+        "\\ No newline at end of file\n"
+        "@@ -5,1 +5,1 @@\n"
+        "-w\n"
+        "+z\n"
     )
     with pytest.raises(DiffAcquisitionError) as excinfo:
         parse_unified_diff(diff_text)

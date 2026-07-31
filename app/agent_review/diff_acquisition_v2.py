@@ -368,6 +368,16 @@ class _FileBlockBuilder:
 
             match = _HUNK_HEADER_RE.match(line)
             if match:
+                if self.old_no_newline_at_eof or self.new_no_newline_at_eof:
+                    # A "\ No newline at end of file" marker can only
+                    # apply to a file's true final hunk -- content cannot
+                    # exist past end-of-file. A file that already recorded
+                    # one and is now starting another hunk is contradictory
+                    # reconstructed/malformed input, not a legitimate
+                    # multi-hunk file; accepting it would let
+                    # validate_diff_completeness_v2 approve coverage for
+                    # a physically impossible file shape.
+                    raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
                 current_old_start = int(match.group("old_start"))
                 current_old_lines = int(match.group("old_lines") or "1")
                 current_new_start = int(match.group("new_start"))
@@ -483,6 +493,21 @@ class _FileBlockBuilder:
             if header_paths is not None:
                 old_path = _strip_ab_prefix(_decode_git_path(header_paths[0]))
                 new_path = _strip_ab_prefix(_decode_git_path(header_paths[1]))
+                # The diff --git header always carries both a/ and b/
+                # tokens, even for an addition (no old blob) or a deletion
+                # (no new blob) -- unlike the --- /+++ markers (which git
+                # would otherwise print as /dev/null), this fallback has
+                # no "absent side" marker of its own. Clear the side that
+                # is_new_file/is_deleted_file (set from the file's own
+                # "new file mode"/"deleted file mode" header line) says
+                # cannot exist, so a consumer relying on old_path/new_path
+                # for an explicit binary/blob-retrieval policy does not
+                # try to fetch a blob from a revision where it never
+                # existed.
+                if self.is_new_file:
+                    old_path = None
+                elif self.is_deleted_file:
+                    new_path = None
 
         if self.rename_from and self.rename_to:
             change_type: ChangeTypeV2 = "renamed"
