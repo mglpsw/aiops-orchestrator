@@ -277,6 +277,15 @@ class _FileBlockBuilder:
             actual_new_lines = sum(1 for body_line in current_hunk_body if body_line[:1] in (" ", "+"))
             if actual_old_lines != current_old_lines or actual_new_lines != current_new_lines:
                 self.truncated = True
+            # A real unified-diff hunk always represents at least one
+            # actual change -- a hunk with zero +/- lines (e.g. a
+            # malformed "@@ -0,0 +0,0 @@" with only context or nothing at
+            # all) is not something git diff ever produces. Materializing
+            # it anyway would give the file a nonempty hunks tuple with no
+            # real changed content, which validate_diff_completeness_v2
+            # would then wrongly treat as representable.
+            if not any(body_line[:1] in ("+", "-") for body_line in current_hunk_body):
+                raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
             body_text = "\n".join(current_hunk_body)
             # A "\ No newline at end of file" marker can only ever apply
             # to a file's final hunk (only the true last line of a file

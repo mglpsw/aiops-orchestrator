@@ -100,16 +100,8 @@
           "type": "integer"
         },
         "payload_sha256": {
-          "anyOf": [
-            {
-              "pattern": "^[0-9a-f]{64}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Payload Sha256"
+          "title": "Payload Sha256",
+          "type": "null"
         },
         "semantic_group": {
           "$ref": "#/$defs/SemanticGroupV2"

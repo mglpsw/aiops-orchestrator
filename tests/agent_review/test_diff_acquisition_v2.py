@@ -810,6 +810,31 @@ def test_parse_fails_closed_on_a_no_newline_marker_with_no_preceding_body_line()
     assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
 
 
+def test_parse_fails_closed_on_a_hunk_with_zero_changed_lines() -> None:
+    """A real unified-diff hunk always represents at least one actual
+    change; a malformed "@@ -0,0 +0,0 @@" with no +/- content at all (no
+    marker involved -- the orphaned-EOF-marker case is a distinct bug)
+    must not be materialized as a real, representable hunk."""
+
+    diff_text = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -0,0 +0,0 @@\n"
+        "diff --git a/b.py b/b.py\n"
+        "index 1..2 100644\n"
+        "--- a/b.py\n"
+        "+++ b/b.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_unified_diff(diff_text)
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
 # -- acquire_diff_v2: fixed argv, SHA-validated, no shell -------------------------
 
 

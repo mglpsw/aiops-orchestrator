@@ -141,7 +141,24 @@ class ManifestChunkV2(ContractV2Model):
     order_index: NonNegativeInt
     semantic_group: SemanticGroupValue
     fragment_ids: list[Sha256]
-    payload_sha256: Sha256 | None
+    # Typed as null-only, not Sha256 | None: payload_builder_v2.
+    # build_chunk_payload_v2 always computes its own fresh payload_sha256
+    # and ignores whatever is set here -- there is no non-circular way to
+    # populate this field in advance (see payload_builder_v2's
+    # build_chunk_payloads_v2 docstring: setting it would change
+    # manifest_hash, forcing a new identity/run_id, which the payload
+    # material itself embeds, making the just-inserted hash stale again).
+    # A populated value can therefore only ever be stale, forged, or
+    # simply wrong relative to what will actually be built. A previous
+    # revision rejected a non-null value at the model-validator level
+    # (runtime-only), but the exported JSON Schema still advertised
+    # string-or-null, letting a producer validating only against the
+    # published schema believe a populated value was acceptable. Typing
+    # the field itself as null-only makes the schema and the canonical
+    # Python contract agree, and rejects a populated value at the type
+    # level -- earlier and unconditionally, not via a model_validator
+    # that could drift from the field's own declared shape.
+    payload_sha256: None
 
     @model_validator(mode="after")
     def validate_fragment_ids(self) -> ManifestChunkV2:
@@ -149,19 +166,6 @@ class ManifestChunkV2(ContractV2Model):
             raise ValueError("a chunk must reference at least one fragment")
         if len(self.fragment_ids) != len(set(self.fragment_ids)):
             raise ValueError("fragment_ids must be unique within a chunk")
-        if self.payload_sha256 is not None:
-            # payload_builder_v2.build_chunk_payload_v2 always computes
-            # its own fresh payload_sha256 and ignores whatever is set
-            # here -- there is no non-circular way to populate this field
-            # in advance (see payload_builder_v2's build_chunk_payloads_v2
-            # docstring: setting it would change manifest_hash, forcing a
-            # new identity/run_id, which the payload material itself
-            # embeds, making the just-inserted hash stale again). A
-            # populated value can therefore only ever be stale, forged, or
-            # simply wrong relative to what will actually be built --
-            # reject it outright rather than silently accept a claim
-            # nothing here verifies.
-            raise ValueError("payload_sha256 must be null; no producer can populate it without circularity")
         return self
 
 
