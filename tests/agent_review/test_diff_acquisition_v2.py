@@ -788,6 +788,28 @@ def test_hunk_diff_sha256_differs_by_which_side_lacks_a_trailing_newline() -> No
     assert diffs_old[0].hunks[0].diff_sha256 != diffs_new[0].hunks[0].diff_sha256
 
 
+def test_parse_fails_closed_on_a_no_newline_marker_with_no_preceding_body_line() -> None:
+    """A "\\ No newline at end of file" marker with no preceding -/+/space
+    body line at all cannot belong to any side -- it is not a real EOF
+    annotation but a symptom of malformed/reconstructed input (e.g. right
+    after a bare hunk header). Guessing "both sides" for it would let a
+    hunk with no actual changed-line content still produce a nonempty
+    hunks tuple, which validate_diff_completeness_v2 would then wrongly
+    treat as representable."""
+
+    diff_text = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -0,0 +0,0 @@\n"
+        "\\ No newline at end of file\n"
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_unified_diff(diff_text)
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
 # -- acquire_diff_v2: fixed argv, SHA-validated, no shell -------------------------
 
 

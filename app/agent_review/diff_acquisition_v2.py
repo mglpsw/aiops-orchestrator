@@ -325,8 +325,19 @@ class _FileBlockBuilder:
                     # body line belonged to -- a context line (" " prefix)
                     # is unchanged content present on *both* sides, so a
                     # missing trailing newline there means both sides lack
-                    # it, not just the new side.
-                    last = current_hunk_body[-1] if current_hunk_body else ""
+                    # it, not just the new side. A marker with no
+                    # preceding body line at all (current_hunk_body empty)
+                    # is not a real EOF annotation -- it cannot belong to
+                    # any side -- but a symptom of malformed/reconstructed
+                    # input (e.g. a marker immediately after a bare hunk
+                    # header); guessing "both sides" for it would let a
+                    # hunk with no actual changed-line content still
+                    # produce a nonempty hunks tuple, which
+                    # validate_diff_completeness_v2 would then treat as a
+                    # representable path.
+                    if not current_hunk_body:
+                        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
+                    last = current_hunk_body[-1]
                     if last.startswith("-"):
                         self.old_no_newline_at_eof = True
                     elif last.startswith("+"):
