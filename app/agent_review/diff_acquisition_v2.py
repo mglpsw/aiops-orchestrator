@@ -34,6 +34,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from pydantic import TypeAdapter, ValidationError
+
+from app.agent_review.contracts_v2 import RelativePath
+
+_RELATIVE_PATH_ADAPTER: TypeAdapter[str] = TypeAdapter(RelativePath)
+
 _HUNK_HEADER_RE = re.compile(
     r"^@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? "
     r"\+(?P<new_start>\d+)(?:,(?P<new_lines>\d+))? @@"
@@ -272,13 +278,26 @@ class _FileBlockBuilder:
             if actual_old_lines != current_old_lines or actual_new_lines != current_new_lines:
                 self.truncated = True
             body_text = "\n".join(current_hunk_body)
+            # A "\ No newline at end of file" marker can only ever apply
+            # to a file's final hunk (only the true last line of a file
+            # can lack a trailing newline), and self.old/new_no_newline_at_eof
+            # are still False at every earlier hunk's flush -- so their
+            # value here always reflects this specific hunk's own EOF
+            # state, never an earlier hunk's. Two otherwise-identical
+            # patches differing only in which side lacks the final
+            # newline emit the same body text; without folding this
+            # state into the hash preimage they would collide on
+            # diff_sha256/fragment_id despite genuinely different content.
+            hasher = hashlib.sha256(body_text.encode("utf-8", errors="replace"))
+            hasher.update(f"\x00old_no_newline_at_eof={self.old_no_newline_at_eof}".encode())
+            hasher.update(f"\x00new_no_newline_at_eof={self.new_no_newline_at_eof}".encode())
             self.hunks.append(
                 ParsedHunkV2(
                     old_start=current_old_start,
                     old_lines=current_old_lines,
                     new_start=current_new_start,
                     new_lines=current_new_lines,
-                    diff_sha256=hashlib.sha256(body_text.encode("utf-8", errors="replace")).hexdigest(),
+                    diff_sha256=hasher.hexdigest(),
                     diff_chars=len(body_text),
                 )
             )
@@ -567,20 +586,20 @@ class DiffCompletenessResultV2:
     """Paths present in the diff but not representable as ordinary
     line-range hunks -- binary content, submodule/gitlink changes, a
     hunkless metadata-only change (pure rename/copy, mode change, or an
-    empty file add/delete with no hunk headers at all), or a path
-    containing a glob metacharacter (``*?[]``). A hunkless entry can
-    never produce a ``HunkInputV2``/fragment for the line-range planner;
-    a glob-metacharacter path (e.g. the common Next.js route
-    ``app/[id]/page.tsx``) is a perfectly valid, ordinary git path but is
-    rejected by ``manifest_v2.FragmentV2.path``'s frozen ``RelativePath``
-    contract (``contracts_v2._validate_relative_path`` forbids
-    ``*?[]`` -- those characters are reserved for the *pattern* type,
-    ``RelativePattern``, never a concrete path). Letting either case
-    reach the planner uncaught would raise an uncontrolled
-    ``pydantic.ValidationError`` well past acquisition instead of a
-    controlled, explicit policy decision; these need that explicit,
-    separate policy decision, never silent coverage or an uncontrolled
-    crash."""
+    empty file add/delete with no hunk headers at all), or a path that
+    fails ``contracts_v2.RelativePath`` -- the same frozen contract
+    ``manifest_v2.FragmentV2.path`` uses (validated here against that
+    actual authoritative type, not a re-derived subset of its rules). A
+    hunkless entry can never produce a ``HunkInputV2``/fragment for the
+    line-range planner; a path violating ``RelativePath`` (e.g. a glob
+    metacharacter like the common Next.js route ``app/[id]/page.tsx``, or
+    a decoded control character from an escape sequence) is a perfectly
+    valid, ordinary git path but would be rejected by ``FragmentV2``
+    itself. Letting any of these reach the planner uncaught would raise
+    an uncontrolled ``pydantic.ValidationError`` well past acquisition
+    instead of a controlled, explicit policy decision; these need that
+    explicit, separate policy decision, never silent coverage or an
+    uncontrolled crash."""
     truncated_paths: tuple[str, ...] = ()
     """Paths whose patch content itself is incomplete: a hunk header
     declared more old/new lines than the body actually contains. Distinct
@@ -605,10 +624,22 @@ def validate_diff_completeness_v2(
 
     present_paths = {file_diff.path for file_diff in file_diffs if file_diff.path}
     missing = frozenset(expected_paths) - present_paths
-    # Mirrors contracts_v2._validate_relative_path's own rejection set --
-    # a concrete FragmentV2.path can never contain these, only a pattern
-    # (RelativePattern) can.
-    _GLOB_METACHARACTERS = "*?[]"
+
+    def _violates_relative_path_contract(path: str) -> bool:
+        # Validate against the actual authoritative contract
+        # (contracts_v2.RelativePath, the same type FragmentV2.path uses)
+        # rather than re-deriving a subset of its rules here -- a glob
+        # metacharacter is only one of several ways a perfectly valid git
+        # path (e.g. containing a decoded control character from an
+        # escape sequence) can still fail RelativePath's stricter
+        # contract and would otherwise reach the planner as an
+        # uncontrolled pydantic.ValidationError.
+        try:
+            _RELATIVE_PATH_ADAPTER.validate_python(path)
+        except ValidationError:
+            return True
+        return False
+
     unrepresentable = tuple(
         sorted(
             file_diff.path
@@ -618,7 +649,7 @@ def validate_diff_completeness_v2(
                 file_diff.is_binary
                 or file_diff.is_submodule
                 or not file_diff.hunks
-                or any(character in file_diff.path for character in _GLOB_METACHARACTERS)
+                or _violates_relative_path_contract(file_diff.path)
             )
         )
     )

@@ -599,6 +599,32 @@ def test_completeness_flags_a_glob_metacharacter_path_as_unrepresentable() -> No
     assert result.unrepresentable_paths == ("app/[id]/page.tsx",)
 
 
+def test_completeness_flags_a_decoded_control_character_path_as_unrepresentable() -> None:
+    """A quoted path decoding to a real control character (e.g. a
+    backspace from git's "\\b" escape) is a perfectly valid, ordinary git
+    path -- no glob metacharacter is involved -- but still fails
+    contracts_v2.RelativePath's control-character rule
+    (_validate_normalized_relative_posix). Validating only for glob
+    metacharacters would miss this and let it reach the planner as an
+    uncontrolled pydantic.ValidationError; must be classified here
+    against the actual authoritative contract instead."""
+
+    diff_text = (
+        'diff --git "a/x\\bfile.py" "b/x\\bfile.py"\n'
+        "index abc..def 100644\n"
+        '--- "a/x\\bfile.py"\n'
+        '+++ "b/x\\bfile.py"\n'
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    diffs = parse_unified_diff(diff_text)
+    path = diffs[0].path
+    result = validate_diff_completeness_v2(diffs, expected_paths=frozenset({path}))
+    assert not result.complete
+    assert result.unrepresentable_paths == (path,)
+
+
 def test_completeness_reports_complete_when_everything_is_representable() -> None:
     diff_text = (
         "diff --git a/a.py b/a.py\n"
@@ -727,6 +753,39 @@ def test_hunk_diff_sha256_changes_when_hunk_body_changes() -> None:
     diffs_a = parse_unified_diff(make("-x"))
     diffs_b = parse_unified_diff(make("-z"))
     assert diffs_a[0].hunks[0].diff_sha256 != diffs_b[0].hunks[0].diff_sha256
+
+
+def test_hunk_diff_sha256_differs_by_which_side_lacks_a_trailing_newline() -> None:
+    """Two otherwise-identical hunks differing only in whether the old or
+    new revision lacks the final newline emit the same -x/+y body text
+    (the marker line itself is never added to the hashed body) -- the
+    EOF marker's side must still be folded into the hash so they don't
+    collide on diff_sha256/fragment_id despite genuinely different
+    content."""
+
+    diff_text_old_side_no_newline = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "\\ No newline at end of file\n"
+        "+y\n"
+    )
+    diff_text_new_side_no_newline = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+        "\\ No newline at end of file\n"
+    )
+    diffs_old = parse_unified_diff(diff_text_old_side_no_newline)
+    diffs_new = parse_unified_diff(diff_text_new_side_no_newline)
+    assert diffs_old[0].hunks[0].diff_sha256 != diffs_new[0].hunks[0].diff_sha256
 
 
 # -- acquire_diff_v2: fixed argv, SHA-validated, no shell -------------------------
