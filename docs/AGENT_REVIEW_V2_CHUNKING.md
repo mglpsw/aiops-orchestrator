@@ -88,10 +88,15 @@ never mistaken for issue closure.
     auxiliares declarados") -- this is the only place content is ever
     dropped, and it is never `must_review` content.
 
-`app/agent_review/contracts_v2.py` and `tests/agent_review/test_contracts_v2.py`
-are unmodified, exactly as in #83 and #85: `ContractV2Model`,
-`RunIdentityV2`, `compute_run_id`, and `compute_manifest_hash_v2` are reused
-as-is.
+`app/agent_review/contracts_v2.py` is unmodified, exactly as in #83 and #85:
+`ContractV2Model`, `RunIdentityV2`, `compute_run_id`, and
+`compute_manifest_hash_v2` are reused as-is.
+`tests/agent_review/test_contracts_v2.py` has exactly one line changed: the
+set of expected exported schema filenames in
+`test_exported_json_schemas_are_stable_and_deny_unknown_objects` now
+includes `agent-review.manifest.v2.schema.json` (see "JSON Schema export"
+below) -- no other change to that file or to the frozen v2 foundation it
+protects.
 
 ## What remains (not implemented in this delivery)
 
@@ -118,16 +123,13 @@ cannot be honestly demonstrated:
    accept and preserve N chunks per semantic group. `consumer_v2.py`
    already binds one payload/envelope pair at a time (#83); nothing wires
    a multi-chunk manifest into that flow yet.
-5. **JSON Schema export.** `schemas/agent-review/v2/agent-review.manifest.v2.schema.json`
-   is not published. Adding it would require editing
-   `tests/agent_review/test_contracts_v2.py`'s hard-coded set of five
-   exported schema filenames -- exactly the kind of change to the frozen,
-   already-reviewed v2 foundation this delivery (like #83 and #85 before
-   it) deliberately avoids. Exporting the manifest schema is real,
-   contained follow-up work, not a structural blocker.
+
+**Done, not remaining:** `schemas/agent-review/v2/agent-review.manifest.v2.schema.json`
+is now published (`app/agent_review/schema_export_v2.py` renders it from
+`ManifestV2`, unmodified from every other v2 contract's export path).
 
 Because of (1)-(4), the acceptance criteria that require an actual diff
 acquisition path, symbol-aware grouping, or full pipeline propagation are
-**not** met by this delivery, and issue #84 is not closed by it. What is
-implemented (the manifest's losslessness invariant and the line-range
-planner) is real, tested, and safe to build on.
+**not yet** met by this delivery. What is implemented (the manifest's
+losslessness invariant, the line-range planner, and the published schema)
+is real, tested, and safe to build on.

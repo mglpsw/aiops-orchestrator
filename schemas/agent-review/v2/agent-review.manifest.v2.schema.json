@@ -1,0 +1,339 @@
+{
+  "$defs": {
+    "FragmentV2": {
+      "additionalProperties": false,
+      "properties": {
+        "coverage_required": {
+          "title": "Coverage Required",
+          "type": "boolean"
+        },
+        "diff_chars": {
+          "minimum": 0,
+          "title": "Diff Chars",
+          "type": "integer"
+        },
+        "diff_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Diff Sha256",
+          "type": "string"
+        },
+        "fragment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Fragment Id",
+          "type": "string"
+        },
+        "hunk_indexes": {
+          "items": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": "Hunk Indexes",
+          "type": "array"
+        },
+        "new_range": {
+          "$ref": "#/$defs/LineRangeV2"
+        },
+        "old_range": {
+          "$ref": "#/$defs/LineRangeV2"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "fragment_id",
+        "path",
+        "old_range",
+        "new_range",
+        "hunk_indexes",
+        "diff_chars",
+        "diff_sha256",
+        "coverage_required"
+      ],
+      "title": "FragmentV2",
+      "type": "object"
+    },
+    "LineRangeV2": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "minimum": 0,
+          "title": "End",
+          "type": "integer"
+        },
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "title": "LineRangeV2",
+      "type": "object"
+    },
+    "ManifestChunkV2": {
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Chunk Id",
+          "type": "string"
+        },
+        "fragment_ids": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Fragment Ids",
+          "type": "array"
+        },
+        "order_index": {
+          "minimum": 0,
+          "title": "Order Index",
+          "type": "integer"
+        },
+        "payload_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Payload Sha256"
+        },
+        "semantic_group": {
+          "$ref": "#/$defs/SemanticGroupV2"
+        }
+      },
+      "required": [
+        "chunk_id",
+        "order_index",
+        "semantic_group",
+        "fragment_ids",
+        "payload_sha256"
+      ],
+      "title": "ManifestChunkV2",
+      "type": "object"
+    },
+    "ManifestDegradationV2": {
+      "additionalProperties": false,
+      "properties": {
+        "affected_fragment_ids": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Affected Fragment Ids",
+          "type": "array"
+        },
+        "detail": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "reason_code": {
+          "enum": [
+            "budget_exhausted",
+            "artifact_missing",
+            "transport_failure",
+            "schema_failure",
+            "model_uncertainty",
+            "packing_search_exhausted",
+            "planner_limit_exceeded"
+          ],
+          "title": "Reason Code",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason_code",
+        "affected_fragment_ids",
+        "detail"
+      ],
+      "title": "ManifestDegradationV2",
+      "type": "object"
+    },
+    "RunIdentityV2": {
+      "additionalProperties": false,
+      "properties": {
+        "base_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Base Sha",
+          "type": "string"
+        },
+        "evidence_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Evidence Hash",
+          "type": "string"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "manifest_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Hash",
+          "type": "string"
+        },
+        "policy_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Policy Hash",
+          "type": "string"
+        },
+        "pr_number": {
+          "exclusiveMinimum": 0,
+          "title": "Pr Number",
+          "type": "integer"
+        },
+        "profile_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Profile Hash",
+          "type": "string"
+        },
+        "repo": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repo",
+          "type": "string"
+        },
+        "tested_merge_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Tested Merge Sha",
+          "type": "string"
+        },
+        "toolrepo_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Toolrepo Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo",
+        "pr_number",
+        "base_sha",
+        "head_sha",
+        "tested_merge_sha",
+        "toolrepo_sha",
+        "profile_hash",
+        "policy_hash",
+        "manifest_hash",
+        "evidence_hash"
+      ],
+      "title": "RunIdentityV2",
+      "type": "object"
+    },
+    "SemanticGroupV2": {
+      "enum": [
+        "primary_backend_logic",
+        "api_schema_contract",
+        "frontend_ui",
+        "tests",
+        "workflow_aiops",
+        "docs_changelog",
+        "suspicious_out_of_scope",
+        "unknown"
+      ],
+      "title": "SemanticGroupV2",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "chunks": {
+      "items": {
+        "$ref": "#/$defs/ManifestChunkV2"
+      },
+      "title": "Chunks",
+      "type": "array"
+    },
+    "degradation_causes": {
+      "items": {
+        "$ref": "#/$defs/ManifestDegradationV2"
+      },
+      "title": "Degradation Causes",
+      "type": "array"
+    },
+    "expected_files": {
+      "items": {
+        "maxLength": 512,
+        "minLength": 1,
+        "pattern": "^[^*?\\[\\]]+$",
+        "type": "string"
+      },
+      "title": "Expected Files",
+      "type": "array"
+    },
+    "fragments": {
+      "items": {
+        "$ref": "#/$defs/FragmentV2"
+      },
+      "title": "Fragments",
+      "type": "array"
+    },
+    "identity": {
+      "$ref": "#/$defs/RunIdentityV2"
+    },
+    "max_chunks": {
+      "exclusiveMinimum": 0,
+      "title": "Max Chunks",
+      "type": "integer"
+    },
+    "must_review_files": {
+      "items": {
+        "maxLength": 512,
+        "minLength": 1,
+        "pattern": "^[^*?\\[\\]]+$",
+        "type": "string"
+      },
+      "title": "Must Review Files",
+      "type": "array"
+    },
+    "run_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "agent-review.manifest.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "aiops-review-plan-chunks-v2",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "expected_files",
+    "must_review_files",
+    "fragments",
+    "chunks",
+    "max_chunks",
+    "degradation_causes",
+    "run_id",
+    "identity"
+  ],
+  "title": "ManifestV2",
+  "type": "object"
+}

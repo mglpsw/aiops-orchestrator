@@ -14,6 +14,7 @@ from app.agent_review.contracts_v2 import (
     ReviewReadinessV2,
     TargetProfileV2,
 )
+from app.agent_review.manifest_v2 import ManifestV2
 
 
 _STABLE_DEFINITION_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -131,6 +132,7 @@ def render_v2_json_schemas() -> dict[str, dict[str, object]]:
         ),
         "agent-review.target-profile.v2.schema.json": TargetProfileV2.model_json_schema(mode="validation"),
         "agent-review.review-readiness.v2.schema.json": ReviewReadinessV2.model_json_schema(mode="validation"),
+        "agent-review.manifest.v2.schema.json": ManifestV2.model_json_schema(mode="validation"),
     }
     schemas = {filename: normalize_v2_json_schema(schema) for filename, schema in schemas.items()}
     for schema in schemas.values():
