@@ -53,8 +53,8 @@ one level up since the self-referential field lives on `identity`, not on
 ### `app/agent_review/diff_acquisition_v2.py`
 
 `parse_unified_diff` -- a pure text parser (no subprocess, no I/O) turning
-`git diff --no-ext-diff --binary BASE...HEAD` output into structured
-per-file, per-hunk records. Handles additions, deletions, modifications,
+`git diff --no-ext-diff --no-textconv --binary BASE...HEAD` output into
+structured per-file, per-hunk records. Handles additions, deletions, modifications,
 renames/copies (with similarity index), binary files (both the
 human-readable `Binary files ... differ` marker and the real `GIT binary
 patch` base85 format `--binary` actually produces -- verified against real
@@ -74,6 +74,11 @@ the issue's own text) instead of silently treating any of them as covered.
 canonical command -- never a shell, never a caller-controlled command
 string; `base_sha`/`head_sha` must each be a full lowercase 40-character
 commit SHA, rejected otherwise before ever reaching `subprocess.run`.
+`--no-textconv` is as load-bearing as `--no-ext-diff`: the two disable
+separate git mechanisms (external diff driver vs. a driver's textconv
+filter), and without both a maliciously configured target repository
+(`.gitattributes` + git config) could get this module to execute
+arbitrary tooling while merely acquiring a patch.
 
 Never retains or forwards raw hunk content: each hunk's body is hashed
 into `diff_sha256` and discarded immediately, matching the same "no raw

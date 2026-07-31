@@ -369,6 +369,18 @@ def plan_lossless_chunks_v2(
         raise ValueError("max_lines_per_chunk must be at least 1")
     if max_chunks < 1:
         raise ValueError("max_chunks must be at least 1")
+    for hunk in hunks:
+        # This is a public boundary: HunkInputV2 can be constructed by any
+        # caller, not just diff_acquisition_v2 (whose own parser already
+        # rejects a zero-changed-line hunk at the text level -- that
+        # rejection does not protect this path). A hunk with both sides
+        # empty (e.g. old_start=0, old_end=-1, new_start=0, new_end=-1)
+        # would otherwise fall into the whole-hunk-as-one-fragment branch
+        # below and materialize a single-point-anchor fragment for content
+        # that does not exist -- and, if must_review, a required-coverage
+        # claim for it.
+        if _side_total(hunk.old_start, hunk.old_end) == 0 and _side_total(hunk.new_start, hunk.new_end) == 0:
+            raise ValueError("a hunk must have at least one real line on the old or new side")
 
     all_fragments: list[FragmentV2] = []
     for hunk in hunks:

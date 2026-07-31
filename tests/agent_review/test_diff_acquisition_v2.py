@@ -894,6 +894,46 @@ def test_acquire_diff_runs_the_real_fixed_git_command(tmp_path: Path) -> None:
 
 
 @pytest.mark.requires_network
+def test_acquire_diff_never_runs_a_configured_textconv_filter(tmp_path: Path) -> None:
+    """--no-ext-diff alone does not disable a diff driver's textconv
+    filter -- a separate git mechanism. Without --no-textconv, a
+    repository whose .gitattributes assigns a path to a driver with a
+    locally configured textconv command could get acquire_diff_v2 to
+    execute that command while merely acquiring a patch, violating this
+    module's "never executes untrusted code" boundary."""
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--quiet", "-b", "main", "."], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+
+    marker = tmp_path / "textconv-ran.marker"
+    subprocess.run(
+        ["git", "config", "diff.marker.textconv", f"sh -c 'touch {marker}; cat \"$1\"' --"],
+        cwd=repo,
+        check=True,
+    )
+    (repo / ".gitattributes").write_text("a.py diff=marker\n", encoding="utf-8")
+    (repo / "a.py").write_text("line1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "a.py", ".gitattributes"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "init"], cwd=repo, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    (repo / "a.py").write_text("line1\nline2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "update"], cwd=repo, check=True)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert not marker.exists(), "acquire_diff_v2 must never execute a configured textconv filter"
+
+
+@pytest.mark.requires_network
 def test_acquire_diff_fails_closed_on_non_utf8_but_non_binary_content(tmp_path: Path) -> None:
     """A text file with a byte sequence that is not valid UTF-8 but
     contains no NUL byte is treated by git as an ordinary textual patch

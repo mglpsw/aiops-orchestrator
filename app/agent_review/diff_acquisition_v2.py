@@ -1,7 +1,8 @@
 """Git unified-diff acquisition for AgentReview v2 (issue #84).
 
-Parses the text of ``git diff --no-ext-diff --binary BASE...HEAD`` into
-structured per-file, per-hunk records (``ParsedFileDiffV2``/``ParsedHunkV2``)
+Parses the text of ``git diff --no-ext-diff --no-textconv --binary
+BASE...HEAD`` into structured per-file, per-hunk records
+(``ParsedFileDiffV2``/``ParsedHunkV2``)
 consumable by ``planner_v2.HunkInputV2``. This module never executes
 untrusted code: it is a pure text parser (``parse_unified_diff``), plus a
 thin, fixed-argv subprocess wrapper (``acquire_diff_v2``) that only ever
@@ -513,8 +514,8 @@ class _FileBlockBuilder:
 
 
 def parse_unified_diff(diff_text: str) -> tuple[ParsedFileDiffV2, ...]:
-    """Parse the full text of ``git diff --no-ext-diff --binary
-    BASE...HEAD`` into structured per-file, per-hunk records.
+    """Parse the full text of ``git diff --no-ext-diff --no-textconv
+    --binary BASE...HEAD`` into structured per-file, per-hunk records.
 
     Never raises on content it does not specifically recognize inside a
     file block (unrecognized extended-header lines are skipped, matching
@@ -557,8 +558,20 @@ _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     """Run the canonical, fixed, allowlisted diff command:
-    ``git diff --no-ext-diff --binary <base_sha>...<head_sha>`` in
-    ``repo_root``, and return its raw text.
+    ``git diff --no-ext-diff --no-textconv --binary <base_sha>...<head_sha>``
+    in ``repo_root``, and return its raw text.
+
+    ``--no-textconv`` matters as much as ``--no-ext-diff``: the two are
+    separate git mechanisms. ``--no-ext-diff`` only disables an external
+    *diff driver* (``diff.<driver>.command``); it does **not** disable a
+    driver's *textconv* filter (``diff.<driver>.textconv``), which git
+    still runs to turn a path into a text representation before diffing
+    it, whenever a tracked ``.gitattributes`` in the checkout assigns that
+    driver to the path and the local git config defines its textconv
+    command. Without ``--no-textconv`` this module could execute
+    arbitrary repository-configured tooling while merely acquiring a
+    patch -- a direct violation of the "never executes untrusted code"
+    boundary this module documents for itself.
 
     Never invokes a shell interpreter (the command is a fixed argv list). ``base_sha``/``head_sha`` must each be a full
     lowercase 40-character commit SHA -- never a branch, tag, or
@@ -584,7 +597,7 @@ def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     # genuinely different content could collide on the same diff_sha256/
     # fragment_id. Undecodable output fails closed instead.
     result = subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
-        ["git", "diff", "--no-ext-diff", "--binary", f"{base_sha}...{head_sha}"],
+        ["git", "diff", "--no-ext-diff", "--no-textconv", "--binary", f"{base_sha}...{head_sha}"],
         cwd=repo_root,
         capture_output=True,
         text=False,

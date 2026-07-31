@@ -258,6 +258,35 @@ def test_plan_rejects_a_non_positive_budget_or_cap(max_lines_per_chunk: int, max
         )
 
 
+def test_plan_rejects_a_hunk_with_both_sides_empty() -> None:
+    """plan_lossless_chunks_v2 is a public boundary: HunkInputV2 can be
+    constructed by any caller, not just diff_acquisition_v2 (whose own
+    parser already rejects a zero-changed-line hunk at the text level --
+    that rejection does not protect this path). A hunk with both sides
+    empty must not fall into the whole-hunk-as-one-fragment branch and
+    materialize a fragment (and, if must_review, a required-coverage
+    claim) for content that does not exist."""
+
+    empty_hunk = HunkInputV2(
+        path="app/a.py",
+        hunk_index=0,
+        old_start=0,
+        old_end=-1,
+        new_start=0,
+        new_end=-1,
+        diff_sha256="a" * 64,
+        diff_chars=0,
+        must_review=True,
+    )
+    with pytest.raises(ValueError):
+        plan_lossless_chunks_v2(
+            [empty_hunk],
+            semantic_group="primary_backend_logic",
+            max_lines_per_chunk=100,
+            max_chunks=10,
+        )
+
+
 def test_plan_handles_a_deletion_only_hunk_without_a_negative_range() -> None:
     hunk = _hunk(start=10, end=9, old_start=10, old_end=20, must_review=True)  # new_end < new_start
     outcome = plan_lossless_chunks_v2(
