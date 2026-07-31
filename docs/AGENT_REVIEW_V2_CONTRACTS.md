@@ -309,9 +309,11 @@ must never mix envelopes silently.
   binding sequence, and reason-code precedence added by that delivery.
 - PR 3 (#84): implement a typed manifest and deterministic real multi-chunk
   planning;
-- PR 4 (#85): implement the complete TargetProfile v2 loader/migrator and
-  minimal isolated toolrepo lockfile.
+- PR 4 (#85, delivered): implement the complete TargetProfile v2
+  loader/migrator and minimal isolated toolrepo lockfile. See
+  `docs/AGENT_REVIEW_V2_TARGET_PROFILE.md` and
+  `docs/AGENT_REVIEW_V2_INSTALLATION.md`.
 
-Until those remaining deliveries adopt v2 explicitly, these schemas continue
+Until the remaining delivery adopts v2 explicitly, these schemas continue
 to represent development contracts. They do not represent a release, deploy,
 Router/provider call, or production behavior change.
