@@ -44,6 +44,10 @@ from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.parser_v2 import ParsedChunkResultV2
 
 STALE_PRIOR_LIFECYCLE_REASON_V2 = "stale_prior_lifecycle_record"
+DUPLICATE_PRIOR_LIFECYCLE_FINDING_REASON_V2 = "duplicate_prior_lifecycle_finding"
+STALE_PRIOR_LIFECYCLE_DECISION_REASON_V2 = "stale_prior_lifecycle_decision"
+STALE_PRIOR_LIFECYCLE_EVIDENCE_REASON_V2 = "stale_prior_lifecycle_evidence"
+PRIOR_LIFECYCLE_SEVERITY_MISMATCH_REASON_V2 = "prior_lifecycle_severity_mismatch"
 
 
 class LifecycleAggregationError(ValueError):
@@ -69,15 +73,32 @@ class FindingProvenanceV2:
     original_finding_id: str
 
 
-def _dedup_key(finding: ChunkFindingV2) -> tuple[str, int | None, int | None, tuple[str, ...], str]:
-    """Two findings collapse into one only if they name the same file, the
-    same exact line range, the same set of violated contracts, and the
-    same severity -- never merely the same title or evidence text. Two
-    fragments never share a line range (planner_v2's own disjointness
-    guarantee), so this key is already fragment-discriminating without
-    needing a fragment_id field directly on ChunkFindingV2."""
+def _dedup_key(chunk_id: str, finding: ChunkFindingV2) -> tuple[object, ...]:
+    """Two findings collapse into one only if they share the same root
+    cause -- never merely the same title or evidence text.
 
+    For a finding with a line range, root cause is file + exact range +
+    contract set + severity: two fragments never share a line range
+    (planner_v2's own disjointness guarantee), so this is already
+    fragment-discriminating without needing a fragment_id field directly on
+    ChunkFindingV2.
+
+    A file-level finding (no range) has no such fragment-discriminating
+    signal -- file + contracts + severity alone would collapse two
+    genuinely distinct file-level claims from two different chunks on the
+    same structurally divided path into one record, destroying the
+    per-chunk provenance separation the coverage report itself preserves
+    (see synthesis_v2.py's structural_split handling). ``chunk_id`` is
+    folded into the key for this case instead -- it does not invent a
+    fragment identity the finding never claimed, it just keeps two
+    chunks' independent file-level claims from being conflated. Two
+    identical file-level findings observed by the *same* chunk still
+    dedupe, since chunk_id is then equal."""
+
+    if finding.line_start is None or finding.line_end is None:
+        return ("file_level", finding.file_path, chunk_id, tuple(sorted(finding.contract_ids)), finding.severity.value)
     return (
+        "ranged",
         finding.file_path,
         finding.line_start,
         finding.line_end,
@@ -86,7 +107,7 @@ def _dedup_key(finding: ChunkFindingV2) -> tuple[str, int | None, int | None, tu
     )
 
 
-def _synthesized_finding_id(key: tuple[str, int | None, int | None, tuple[str, ...], str]) -> str:
+def _synthesized_finding_id(key: tuple[object, ...]) -> str:
     canonical = json.dumps(list(key), ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -100,6 +121,38 @@ def _fragment_id_for_finding(manifest: ManifestV2, finding: ChunkFindingV2) -> s
         if fragment.new_range.start <= finding.line_start and finding.line_end <= fragment.new_range.end:
             return fragment.fragment_id
     return None
+
+
+def _validate_prior_lifecycle_v2(
+    prior_lifecycle: Sequence[FindingLifecycleRecordV2], evaluated_head_sha: str
+) -> Mapping[str, FindingLifecycleRecordV2]:
+    """Revalidate every ``prior_lifecycle`` record before it is trusted to
+    be merged or preserved. A caller-supplied record is untrusted input,
+    just like ``ParsedChunkResultV2`` (synthesis_v2.py) -- ``FindingLifecycleRecordV2``
+    itself enforces internal consistency (e.g. dismissed requires
+    justification/evidence), but nothing in the contract enforces that a
+    record was genuinely revalidated for *this* ``evaluated_head_sha``, nor
+    that two records don't silently claim the same ``finding_id``, nor that
+    a reobserved finding's severity actually agrees with what the prior
+    decision was made against."""
+
+    prior_by_id: dict[str, FindingLifecycleRecordV2] = {}
+    for record in prior_lifecycle:
+        if record.finding_id in prior_by_id:
+            raise LifecycleAggregationError(DUPLICATE_PRIOR_LIFECYCLE_FINDING_REASON_V2)
+        prior_by_id[record.finding_id] = record
+
+        if record.observed_at_head_sha != evaluated_head_sha:
+            raise LifecycleAggregationError(STALE_PRIOR_LIFECYCLE_REASON_V2)
+
+        if record.disposition is not FindingDispositionV2.NEW:
+            if record.decided_at_head_sha != evaluated_head_sha:
+                raise LifecycleAggregationError(STALE_PRIOR_LIFECYCLE_DECISION_REASON_V2)
+            for evidence in record.evidence:
+                if evidence.head_sha != evaluated_head_sha:
+                    raise LifecycleAggregationError(STALE_PRIOR_LIFECYCLE_EVIDENCE_REASON_V2)
+
+    return prior_by_id
 
 
 def aggregate_finding_lifecycle_v2(
@@ -116,38 +169,42 @@ def aggregate_finding_lifecycle_v2(
 
     ``prior_lifecycle`` entries must already be revalidated for
     ``evaluated_head_sha`` -- i.e. ``record.observed_at_head_sha ==
-    evaluated_head_sha`` -- by whatever produced them (a human decision
-    process, or a caller re-stamping a persistent decision onto a new
-    HEAD). This function does not, and cannot, fabricate that revalidation
-    itself: it only accepts already-valid records or rejects fail-closed.
-    A finding_id is deterministic (a hash of its dedup key), so the same
-    underlying defect re-observed in a later run naturally matches a prior
-    decision for it, letting that decision persist instead of reverting to
-    ``new``.
+    evaluated_head_sha``, and for any non-``new`` disposition,
+    ``decided_at_head_sha`` and every ``DispositionEvidenceV2.head_sha`` as
+    well -- by whatever produced them (a human decision process, or a
+    caller re-stamping a persistent decision onto a new HEAD). This
+    function does not, and cannot, fabricate that revalidation itself: it
+    only accepts already-valid records or rejects fail-closed, the same way
+    it treats every ``ParsedChunkResultV2`` as untrusted input rather than
+    assuming ``isinstance`` implies genuine binding. A finding_id is
+    deterministic (a hash of its dedup key), so the same underlying defect
+    re-observed in a later run naturally matches a prior decision for it,
+    letting that decision persist instead of reverting to ``new`` -- but
+    only if the prior's own recorded severity still agrees with what is
+    observed now; a mismatch is rejected fail-closed, never silently
+    overwritten by the freshly observed value.
     """
 
-    for record in prior_lifecycle:
-        if record.observed_at_head_sha != evaluated_head_sha:
-            raise LifecycleAggregationError(STALE_PRIOR_LIFECYCLE_REASON_V2)
+    prior_by_id = _validate_prior_lifecycle_v2(prior_lifecycle, evaluated_head_sha)
 
     observations: dict[tuple, list[tuple[str, ChunkFindingV2]]] = {}
     for result in chunk_results:
         for finding in result.findings:
-            key = _dedup_key(finding)
+            key = _dedup_key(result.chunk_id, finding)
             observations.setdefault(key, []).append((result.chunk_id, finding))
-
-    prior_by_id = {record.finding_id: record for record in prior_lifecycle}
 
     findings_out: list[FindingLifecycleRecordV2] = []
     provenance_out: dict[str, tuple[FindingProvenanceV2, ...]] = {}
 
     for key, chunk_findings in observations.items():
         synthesized_id = _synthesized_finding_id(key)
+        _, first_finding = chunk_findings[0]
         prior = prior_by_id.get(synthesized_id)
         if prior is not None:
+            if prior.severity != first_finding.severity:
+                raise LifecycleAggregationError(PRIOR_LIFECYCLE_SEVERITY_MISMATCH_REASON_V2)
             findings_out.append(prior)
         else:
-            _, first_finding = chunk_findings[0]
             findings_out.append(
                 FindingLifecycleRecordV2(
                     finding_id=synthesized_id,

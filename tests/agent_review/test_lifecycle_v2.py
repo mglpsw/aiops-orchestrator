@@ -16,11 +16,23 @@ from app.agent_review.contracts_v2 import (
     compute_run_id,
 )
 from app.agent_review.lifecycle_v2 import (
+    DUPLICATE_PRIOR_LIFECYCLE_FINDING_REASON_V2,
+    PRIOR_LIFECYCLE_SEVERITY_MISMATCH_REASON_V2,
+    STALE_PRIOR_LIFECYCLE_DECISION_REASON_V2,
+    STALE_PRIOR_LIFECYCLE_EVIDENCE_REASON_V2,
     STALE_PRIOR_LIFECYCLE_REASON_V2,
     LifecycleAggregationError,
     aggregate_finding_lifecycle_v2,
 )
-from app.agent_review.manifest_v2 import ManifestMaterialV2, ManifestV2, compute_manifest_hash_v2_for
+from app.agent_review.manifest_v2 import (
+    FragmentV2,
+    LineRangeV2,
+    ManifestChunkV2,
+    ManifestMaterialV2,
+    ManifestV2,
+    compute_fragment_id_v2,
+    compute_manifest_hash_v2_for,
+)
 from app.agent_review.parser_v2 import ParsedChunkResultV2
 from app.agent_review.planner_v2 import HunkInputV2, plan_lossless_chunks_v2
 
@@ -59,9 +71,11 @@ def _hunk(path: str, *, index: int = 0, start: int = 1, end: int = 10) -> HunkIn
     )
 
 
-def _build_manifest(hunks: list[HunkInputV2], *, expected_files: list[str], head_sha: str = "2" * 40) -> ManifestV2:
+def _build_manifest(
+    hunks: list[HunkInputV2], *, expected_files: list[str], head_sha: str = "2" * 40, max_lines_per_chunk: int = 100
+) -> ManifestV2:
     outcome = plan_lossless_chunks_v2(
-        hunks, semantic_group="primary_backend_logic", max_lines_per_chunk=100, max_chunks=10
+        hunks, semantic_group="primary_backend_logic", max_lines_per_chunk=max_lines_per_chunk, max_chunks=10
     )
     assert outcome.state == "planned"
     material_kwargs = {
@@ -81,6 +95,44 @@ def _build_manifest(hunks: list[HunkInputV2], *, expected_files: list[str], head
     return ManifestV2(**material_kwargs, run_id=compute_run_id(identity), identity=identity)
 
 
+def _build_two_chunk_split_manifest() -> ManifestV2:
+    """A hand-built manifest with ONE path whose two fragments are
+    genuinely assigned to TWO different, real chunk_ids."""
+
+    def _fragment(seed: bytes, path: str, start: int) -> FragmentV2:
+        diff_sha = hashlib.sha256(seed).hexdigest()
+        old_range = LineRangeV2(start=start, end=start + 4)
+        new_range = LineRangeV2(start=start, end=start + 4)
+        fragment_id = compute_fragment_id_v2(path=path, old_range=old_range, new_range=new_range, diff_sha256=diff_sha)
+        return FragmentV2(
+            fragment_id=fragment_id, path=path, old_range=old_range, new_range=new_range,
+            hunk_indexes=[0], diff_chars=10, diff_sha256=diff_sha, coverage_required=True,
+        )
+
+    fragment_1 = _fragment(b"lifecycle-split-1", "app/a.py", 1)
+    fragment_2 = _fragment(b"lifecycle-split-2", "app/a.py", 10)
+    material_kwargs = {
+        "schema_id": "agent-review.manifest.v2",
+        "schema_version": 2,
+        "source": "aiops-review-plan-chunks-v2",
+        "expected_files": ["app/a.py"],
+        "must_review_files": ["app/a.py"],
+        "fragments": [fragment_1, fragment_2],
+        "chunks": [
+            ManifestChunkV2(chunk_id="chunk-0", order_index=0, semantic_group="primary_backend_logic",
+                             fragment_ids=[fragment_1.fragment_id], payload_sha256=None),
+            ManifestChunkV2(chunk_id="chunk-1", order_index=1, semantic_group="primary_backend_logic",
+                             fragment_ids=[fragment_2.fragment_id], payload_sha256=None),
+        ],
+        "max_chunks": 10,
+        "degradation_causes": [],
+    }
+    material = ManifestMaterialV2.model_validate(material_kwargs)
+    manifest_hash = compute_manifest_hash_v2_for(material)
+    identity = RunIdentityV2.model_validate(_identity(manifest_hash=manifest_hash))
+    return ManifestV2(**material_kwargs, run_id=compute_run_id(identity), identity=identity)
+
+
 def _finding(
     *, finding_id: str, path: str, line_start: int, line_end: int, contract_ids: list[str], severity: FindingSeverityV2 = FindingSeverityV2.P1
 ) -> ChunkFindingV2:
@@ -91,6 +143,24 @@ def _finding(
         file_path=path,
         line_start=line_start,
         line_end=line_end,
+        evidence="evidence text",
+        impact="impact text",
+        confidence=FindingConfidenceV2.HIGH,
+        contract_ids=contract_ids,
+        disposition=FindingDispositionV2.NEW,
+    )
+
+
+def _file_level_finding(
+    *, finding_id: str, path: str, contract_ids: list[str], severity: FindingSeverityV2 = FindingSeverityV2.P1
+) -> ChunkFindingV2:
+    return ChunkFindingV2(
+        finding_id=finding_id,
+        severity=severity,
+        title="a file-level finding",
+        file_path=path,
+        line_start=None,
+        line_end=None,
         evidence="evidence text",
         impact="impact text",
         confidence=FindingConfidenceV2.HIGH,
@@ -141,30 +211,35 @@ def test_identical_findings_on_different_fragments_are_not_deduplicated() -> Non
 
 
 def test_same_root_cause_in_different_chunks_deduplicates_and_retains_all_provenance() -> None:
-    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
-    chunk_id = manifest.chunks[0].chunk_id
+    """Two GENUINELY DISTINCT chunk_ids (from a real two-chunk manifest),
+    each independently reporting a finding with an identical ranged root
+    cause, still collapse to one record with both provenances retained --
+    proving dedup keys on root cause, not on chunk identity, whenever a
+    range is present."""
+
+    manifest = _build_manifest(
+        [_hunk("app/a.py"), _hunk("app/b.py")], expected_files=["app/a.py", "app/b.py"], max_lines_per_chunk=10
+    )
+    chunk_id_0, chunk_id_1 = manifest.chunks[0].chunk_id, manifest.chunks[1].chunk_id
+    assert chunk_id_0 != chunk_id_1
     finding_1 = _finding(finding_id="from-chunk-report-1", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"])
     finding_2 = _finding(finding_id="from-chunk-report-2", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"])
     result_1 = _result(
-        run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha,
+        run_id=manifest.run_id, chunk_id=chunk_id_0, head_sha=manifest.identity.head_sha,
         findings=(finding_1,), coverage=_coverage_all_reviewed(["app/a.py"]),
     )
-    findings, provenance = aggregate_finding_lifecycle_v2(
-        manifest=manifest,
-        chunk_results=[result_1, result_1.__class__(
-            run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha,
-            summary="s2", findings=(finding_2,), coverage=_coverage_all_reviewed(["app/a.py"]), limitations=(),
-        )],
-        evaluated_head_sha=manifest.identity.head_sha,
+    result_2 = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id_1, head_sha=manifest.identity.head_sha,
+        findings=(finding_2,), coverage=_coverage_all_reviewed(["app/a.py"]),
     )
-    # Two ParsedChunkResultV2 sharing a chunk_id is unusual, but the dedup
-    # logic itself only cares about the (file, range, contracts, severity)
-    # key -- this proves two independent OBSERVATIONS of the same root
-    # cause collapse to one record with both provenances retained.
+    findings, provenance = aggregate_finding_lifecycle_v2(
+        manifest=manifest, chunk_results=[result_1, result_2], evaluated_head_sha=manifest.identity.head_sha
+    )
     assert len(findings) == 1
     provenance_entries = provenance[findings[0].finding_id]
     assert len(provenance_entries) == 2
     assert {p.original_finding_id for p in provenance_entries} == {"from-chunk-report-1", "from-chunk-report-2"}
+    assert {p.chunk_id for p in provenance_entries} == {chunk_id_0, chunk_id_1}
 
 
 def test_two_models_agreeing_stays_new_never_confirmed() -> None:
@@ -324,6 +399,202 @@ def test_dismissed_without_justification_or_evidence_is_rejected_by_the_contract
             evidence=[],  # required for dismissed
             superseded_by=None,
         )
+
+
+# -- P2-1: prior_lifecycle is fully revalidated, not just observed_at_head_sha -
+
+
+def _decided_prior(
+    *, finding_id: str, severity: FindingSeverityV2, head_sha: str, decided_at_head_sha: str, evidence_head_sha: str
+) -> FindingLifecycleRecordV2:
+    return FindingLifecycleRecordV2(
+        finding_id=finding_id,
+        severity=severity,
+        observed_at_head_sha=head_sha,
+        disposition=FindingDispositionV2.DISMISSED,
+        actionable=False,
+        justification="false positive",
+        decided_by="reviewer-1",
+        decided_at_head_sha=decided_at_head_sha,
+        evidence=[DispositionEvidenceV2(kind="commit", reference="a" * 40, head_sha=evidence_head_sha)],
+        superseded_by=None,
+    )
+
+
+def test_prior_with_current_observed_head_but_stale_decided_head_is_rejected() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    head = manifest.identity.head_sha
+    prior = _decided_prior(
+        finding_id="f" * 64, severity=FindingSeverityV2.P1, head_sha=head, decided_at_head_sha="9" * 40, evidence_head_sha=head
+    )
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=[], evaluated_head_sha=head, prior_lifecycle=[prior]
+        )
+    assert excinfo.value.reason_code == STALE_PRIOR_LIFECYCLE_DECISION_REASON_V2
+
+
+def test_prior_with_current_decided_head_but_stale_evidence_head_is_rejected() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    head = manifest.identity.head_sha
+    prior = _decided_prior(
+        finding_id="f" * 64, severity=FindingSeverityV2.P1, head_sha=head, decided_at_head_sha=head, evidence_head_sha="9" * 40
+    )
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=[], evaluated_head_sha=head, prior_lifecycle=[prior]
+        )
+    assert excinfo.value.reason_code == STALE_PRIOR_LIFECYCLE_EVIDENCE_REASON_V2
+
+
+def test_two_priors_sharing_the_same_finding_id_are_rejected_regardless_of_order() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    head = manifest.identity.head_sha
+    prior_1 = _decided_prior(
+        finding_id="f" * 64, severity=FindingSeverityV2.P1, head_sha=head, decided_at_head_sha=head, evidence_head_sha=head
+    )
+    prior_2 = _decided_prior(
+        finding_id="f" * 64, severity=FindingSeverityV2.P2, head_sha=head, decided_at_head_sha=head, evidence_head_sha=head
+    )
+    for ordering in ([prior_1, prior_2], [prior_2, prior_1]):
+        with pytest.raises(LifecycleAggregationError) as excinfo:
+            aggregate_finding_lifecycle_v2(
+                manifest=manifest, chunk_results=[], evaluated_head_sha=head, prior_lifecycle=ordering
+            )
+        assert excinfo.value.reason_code == DUPLICATE_PRIOR_LIFECYCLE_FINDING_REASON_V2
+
+
+def test_prior_matching_a_reobserved_finding_with_a_different_severity_is_rejected() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    head = manifest.identity.head_sha
+    finding = _finding(finding_id="f1", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"], severity=FindingSeverityV2.P1)
+    result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id, head_sha=head, findings=(finding,), coverage=_coverage_all_reviewed(["app/a.py"])
+    )
+    findings_first_pass, _ = aggregate_finding_lifecycle_v2(manifest=manifest, chunk_results=[result], evaluated_head_sha=head)
+    synthesized_id = findings_first_pass[0].finding_id
+
+    # a prior claiming this exact finding_id, but recorded at a DIFFERENT
+    # severity than what is actually observed this round -- must never
+    # silently override the observed severity, nor be silently accepted.
+    mismatched_prior = _decided_prior(
+        finding_id=synthesized_id, severity=FindingSeverityV2.P3, head_sha=head, decided_at_head_sha=head, evidence_head_sha=head
+    )
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=[result], evaluated_head_sha=head, prior_lifecycle=[mismatched_prior]
+        )
+    assert excinfo.value.reason_code == PRIOR_LIFECYCLE_SEVERITY_MISMATCH_REASON_V2
+
+
+def test_a_fully_valid_prior_bound_to_the_current_head_is_preserved() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    head = manifest.identity.head_sha
+    valid_prior = _decided_prior(
+        finding_id="f" * 64, severity=FindingSeverityV2.P2, head_sha=head, decided_at_head_sha=head, evidence_head_sha=head
+    )
+    findings, _ = aggregate_finding_lifecycle_v2(
+        manifest=manifest, chunk_results=[], evaluated_head_sha=head, prior_lifecycle=[valid_prior]
+    )
+    assert findings == (valid_prior,)
+
+
+def test_reordering_valid_priors_does_not_change_the_output() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    head = manifest.identity.head_sha
+    prior_a = _decided_prior(
+        finding_id="a" * 64, severity=FindingSeverityV2.P1, head_sha=head, decided_at_head_sha=head, evidence_head_sha=head
+    )
+    prior_b = _decided_prior(
+        finding_id="b" * 64, severity=FindingSeverityV2.P2, head_sha=head, decided_at_head_sha=head, evidence_head_sha=head
+    )
+    forward, _ = aggregate_finding_lifecycle_v2(
+        manifest=manifest, chunk_results=[], evaluated_head_sha=head, prior_lifecycle=[prior_a, prior_b]
+    )
+    backward, _ = aggregate_finding_lifecycle_v2(
+        manifest=manifest, chunk_results=[], evaluated_head_sha=head, prior_lifecycle=[prior_b, prior_a]
+    )
+    assert forward == backward
+
+
+# -- P2-2: file-level (no-range) findings dedup by chunk_id, not just path ---
+
+
+def test_file_level_findings_from_two_different_chunks_on_the_same_split_path_are_not_deduplicated() -> None:
+    manifest = _build_two_chunk_split_manifest()
+    finding_0 = _file_level_finding(finding_id="from-chunk-0", path="app/a.py", contract_ids=["c1"])
+    finding_1 = _file_level_finding(finding_id="from-chunk-1", path="app/a.py", contract_ids=["c1"])
+    result_0 = _result(
+        run_id=manifest.run_id, chunk_id="chunk-0", head_sha=manifest.identity.head_sha,
+        findings=(finding_0,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    result_1 = _result(
+        run_id=manifest.run_id, chunk_id="chunk-1", head_sha=manifest.identity.head_sha,
+        findings=(finding_1,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    findings, provenance = aggregate_finding_lifecycle_v2(
+        manifest=manifest, chunk_results=[result_0, result_1], evaluated_head_sha=manifest.identity.head_sha
+    )
+    assert len(findings) == 2
+    all_provenance = [p for entries in provenance.values() for p in entries]
+    assert {p.chunk_id for p in all_provenance} == {"chunk-0", "chunk-1"}
+    assert {p.original_finding_id for p in all_provenance} == {"from-chunk-0", "from-chunk-1"}
+
+
+def test_identical_file_level_findings_within_the_same_chunk_are_deduplicated() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    finding_a = _file_level_finding(finding_id="fa", path="app/a.py", contract_ids=["c1"])
+    finding_b = _file_level_finding(finding_id="fb", path="app/a.py", contract_ids=["c1"])
+    result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha,
+        findings=(finding_a, finding_b), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    findings, provenance = aggregate_finding_lifecycle_v2(
+        manifest=manifest, chunk_results=[result], evaluated_head_sha=manifest.identity.head_sha
+    )
+    assert len(findings) == 1
+    assert {p.original_finding_id for p in provenance[findings[0].finding_id]} == {"fa", "fb"}
+
+
+def test_findings_with_distinct_ranges_on_the_same_split_path_remain_separate() -> None:
+    manifest = _build_two_chunk_split_manifest()
+    finding_0 = _finding(finding_id="from-chunk-0", path="app/a.py", line_start=1, line_end=5, contract_ids=["c1"])
+    finding_1 = _finding(finding_id="from-chunk-1", path="app/a.py", line_start=10, line_end=14, contract_ids=["c1"])
+    result_0 = _result(
+        run_id=manifest.run_id, chunk_id="chunk-0", head_sha=manifest.identity.head_sha,
+        findings=(finding_0,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    result_1 = _result(
+        run_id=manifest.run_id, chunk_id="chunk-1", head_sha=manifest.identity.head_sha,
+        findings=(finding_1,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    findings, _ = aggregate_finding_lifecycle_v2(
+        manifest=manifest, chunk_results=[result_0, result_1], evaluated_head_sha=manifest.identity.head_sha
+    )
+    assert len(findings) == 2
+
+
+def test_reordering_file_level_split_chunk_results_does_not_change_ids_or_result() -> None:
+    manifest = _build_two_chunk_split_manifest()
+    finding_0 = _file_level_finding(finding_id="from-chunk-0", path="app/a.py", contract_ids=["c1"])
+    finding_1 = _file_level_finding(finding_id="from-chunk-1", path="app/a.py", contract_ids=["c1"])
+    result_0 = _result(
+        run_id=manifest.run_id, chunk_id="chunk-0", head_sha=manifest.identity.head_sha,
+        findings=(finding_0,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    result_1 = _result(
+        run_id=manifest.run_id, chunk_id="chunk-1", head_sha=manifest.identity.head_sha,
+        findings=(finding_1,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    forward, _ = aggregate_finding_lifecycle_v2(
+        manifest=manifest, chunk_results=[result_0, result_1], evaluated_head_sha=manifest.identity.head_sha
+    )
+    backward, _ = aggregate_finding_lifecycle_v2(
+        manifest=manifest, chunk_results=[result_1, result_0], evaluated_head_sha=manifest.identity.head_sha
+    )
+    assert forward == backward
 
 
 # -- determinism ----------------------------------------------------------------
