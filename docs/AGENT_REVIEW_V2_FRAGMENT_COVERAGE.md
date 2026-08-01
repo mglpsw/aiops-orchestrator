@@ -87,7 +87,17 @@ manifest-aware half of the policy a bare Pydantic model cannot do alone:
 - each entry's `expected_fragment_ids` equals that path's *real* fragment
   set in the manifest — not just internally consistent, actually correct
   relative to this manifest;
-- every `affected_chunk_ids` reference exists in the manifest;
+- every path's `affected_chunk_ids` is EXACTLY the manifest's real per-path
+  chunk set — not merely a subset of chunks that exist somewhere in the
+  manifest. `RunFragmentCoverageEntryV2` alone has no manifest to check "is
+  this path divided?" against; it computes that purely from the
+  caller-supplied `affected_chunk_ids` list. A caller that under-reports
+  that list (naming only one of a path's two real chunks) could otherwise
+  make a genuinely multi-chunk-split path look undivided — and therefore
+  eligible for `status="reviewed"` — at the entry level alone. This exact
+  gap was found by independent review before merge: the entry's own
+  validator was airtight in isolation, but the fail-closed policy did not
+  hold at the system level until this exact-match check closed it;
 - a fragment named in the manifest's own `degradation_causes` can never be
   `reviewed`, and must appear in that entry's `missing_fragment_ids` — never
   silently absorbed into `partially_reviewed`.

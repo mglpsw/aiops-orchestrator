@@ -15,6 +15,7 @@ from app.agent_review.manifest_v2 import (
 )
 from app.agent_review.planner_v2 import HunkInputV2, plan_lossless_chunks_v2
 from app.agent_review.run_fragment_coverage_v2 import (
+    AFFECTED_CHUNK_SET_MISMATCH_REASON_V2,
     DEGRADED_FRAGMENT_CANNOT_BE_REVIEWED_REASON_V2,
     DEGRADED_FRAGMENT_NOT_ACCOUNTED_REASON_V2,
     FRAGMENT_SET_MISMATCH_REASON_V2,
@@ -684,3 +685,168 @@ def test_bind_accepts_a_degraded_fragment_correctly_reported_missing() -> None:
     sha = compute_coverage_report_sha256_v2(RunFragmentCoverageReportMaterialV2.model_validate(material))
     report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
     bind_coverage_report_to_manifest_v2(report, manifest)  # must not raise
+
+
+# -- affected_chunk_ids must be the REAL per-path chunk set, not merely a --
+# -- subset of chunks that exist somewhere in the manifest. Found by       --
+# -- independent review: RunFragmentCoverageEntryV2 alone has no manifest --
+# -- to check "is this path divided?" against, so an entry that           --
+# -- under-reports affected_chunk_ids could otherwise make a genuinely    --
+# -- multi-chunk-split path look undivided -- and therefore eligible for  --
+# -- status=reviewed -- purely at the entry level. --------------------------
+
+
+def _build_manifest_with_a_two_chunk_split_path() -> tuple[ManifestV2, str, str]:
+    """A hand-built manifest with ONE path whose two fragments are
+    genuinely assigned to TWO different chunks -- a real structural split,
+    unlike the plan_lossless_chunks_v2-built manifests elsewhere in this
+    file, which don't deterministically guarantee splitting a single
+    path's fragments across chunks."""
+
+    from app.agent_review.manifest_v2 import FragmentV2, LineRangeV2, compute_fragment_id_v2
+
+    def _fragment(seed: bytes, path: str, start: int) -> FragmentV2:
+        diff_sha = hashlib.sha256(seed).hexdigest()
+        old_range = LineRangeV2(start=start, end=start + 4)
+        new_range = LineRangeV2(start=start, end=start + 4)
+        fragment_id = compute_fragment_id_v2(
+            path=path, old_range=old_range, new_range=new_range, diff_sha256=diff_sha
+        )
+        return FragmentV2(
+            fragment_id=fragment_id,
+            path=path,
+            old_range=old_range,
+            new_range=new_range,
+            hunk_indexes=[0],
+            diff_chars=10,
+            diff_sha256=diff_sha,
+            coverage_required=True,
+        )
+
+    fragment_1 = _fragment(b"split-fragment-1", "app/a.py", 1)
+    fragment_2 = _fragment(b"split-fragment-2", "app/a.py", 10)
+
+    material_kwargs = {
+        "schema_id": "agent-review.manifest.v2",
+        "schema_version": 2,
+        "source": "aiops-review-plan-chunks-v2",
+        "expected_files": ["app/a.py"],
+        "must_review_files": ["app/a.py"],
+        "fragments": [fragment_1, fragment_2],
+        "chunks": [
+            ManifestChunkV2(
+                chunk_id="chunk-0",
+                order_index=0,
+                semantic_group="primary_backend_logic",
+                fragment_ids=[fragment_1.fragment_id],
+                payload_sha256=None,
+            ),
+            ManifestChunkV2(
+                chunk_id="chunk-1",
+                order_index=1,
+                semantic_group="primary_backend_logic",
+                fragment_ids=[fragment_2.fragment_id],
+                payload_sha256=None,
+            ),
+        ],
+        "max_chunks": 10,
+        "degradation_causes": [],
+    }
+    material = ManifestMaterialV2.model_validate(material_kwargs)
+    manifest_hash = compute_manifest_hash_v2_for(material)
+    identity = RunIdentityV2.model_validate(_identity(manifest_hash=manifest_hash))
+    manifest = ManifestV2(**material_kwargs, run_id=compute_run_id(identity), identity=identity)
+    return manifest, fragment_1.fragment_id, fragment_2.fragment_id
+
+
+def test_bind_rejects_an_entry_that_underreports_affected_chunk_ids_to_hide_a_real_split() -> None:
+    """The exact regression the independent review found: an entry that
+    claims only ONE of a path's two real chunks -- making it look
+    undivided to RunFragmentCoverageEntryV2's own validator, which has no
+    manifest to check against -- while claiming full review, must be
+    rejected by the manifest-aware binder even though the entry alone
+    validates successfully in isolation."""
+
+    manifest, fragment_1_id, fragment_2_id = _build_manifest_with_a_two_chunk_split_path()
+    entry = RunFragmentCoverageEntryV2(
+        path="app/a.py",
+        expected_fragment_ids=[fragment_1_id, fragment_2_id],
+        assigned_fragment_ids=[fragment_1_id, fragment_2_id],
+        reviewed_fragment_ids=[fragment_1_id, fragment_2_id],
+        partially_reviewed_fragment_ids=[],
+        missing_fragment_ids=[],
+        affected_chunk_ids=["chunk-0"],  # real chunks are chunk-0 AND chunk-1 -- under-reported
+        status=FragmentCoverageStatusV2.REVIEWED,
+        reason_codes=[],
+    )
+    material = _report_material(run_id=manifest.run_id, manifest_hash=manifest.identity.manifest_hash, paths=[entry])
+    sha = compute_coverage_report_sha256_v2(RunFragmentCoverageReportMaterialV2.model_validate(material))
+    report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
+    with pytest.raises(FragmentCoverageBindingError) as excinfo:
+        bind_coverage_report_to_manifest_v2(report, manifest)
+    assert excinfo.value.reason_code == AFFECTED_CHUNK_SET_MISMATCH_REASON_V2
+
+
+def test_bind_accepts_a_correctly_reported_two_chunk_split_path_as_partial() -> None:
+    """The honest counterpart: the same manifest, but the report correctly
+    names BOTH real chunks and caps status at partial -- accepted."""
+
+    manifest, fragment_1_id, fragment_2_id = _build_manifest_with_a_two_chunk_split_path()
+    entry = RunFragmentCoverageEntryV2(
+        path="app/a.py",
+        expected_fragment_ids=[fragment_1_id, fragment_2_id],
+        assigned_fragment_ids=[fragment_1_id, fragment_2_id],
+        reviewed_fragment_ids=[fragment_1_id, fragment_2_id],
+        partially_reviewed_fragment_ids=[],
+        missing_fragment_ids=[],
+        affected_chunk_ids=["chunk-0", "chunk-1"],
+        status=FragmentCoverageStatusV2.PARTIAL,
+        reason_codes=[FragmentCoverageReasonV2.STRUCTURAL_SPLIT],
+    )
+    material = _report_material(run_id=manifest.run_id, manifest_hash=manifest.identity.manifest_hash, paths=[entry])
+    sha = compute_coverage_report_sha256_v2(RunFragmentCoverageReportMaterialV2.model_validate(material))
+    report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
+    bind_coverage_report_to_manifest_v2(report, manifest)  # must not raise
+
+
+def test_bind_rejects_an_entry_that_overreports_affected_chunk_ids() -> None:
+    """The opposite direction: claiming a chunk that genuinely exists in
+    the manifest, but does not actually carry this path's fragments."""
+
+    manifest = _build_manifest(
+        [_hunk("app/a.py"), _hunk("app/b.py")],
+        expected_files=["app/a.py", "app/b.py"],
+        must_review_files=[],
+        max_lines_per_chunk=10,
+        max_chunks=10,
+    )
+    chunk_by_fragment = {
+        fid: chunk.chunk_id for chunk in manifest.chunks for fid in chunk.fragment_ids
+    }
+    fragment_a_id = next(f.fragment_id for f in manifest.fragments if f.path == "app/a.py")
+    real_chunk_for_a = chunk_by_fragment[fragment_a_id]
+    other_chunk_ids = {chunk.chunk_id for chunk in manifest.chunks} - {real_chunk_for_a}
+    assert other_chunk_ids, "test setup requires app/a.py and app/b.py in different chunks"
+    unrelated_chunk = sorted(other_chunk_ids)[0]
+
+    entry = RunFragmentCoverageEntryV2(
+        path="app/a.py",
+        expected_fragment_ids=[fragment_a_id],
+        assigned_fragment_ids=[fragment_a_id],
+        reviewed_fragment_ids=[fragment_a_id],
+        partially_reviewed_fragment_ids=[],
+        missing_fragment_ids=[],
+        affected_chunk_ids=sorted([real_chunk_for_a, unrelated_chunk]),
+        status=FragmentCoverageStatusV2.PARTIAL,
+        reason_codes=[FragmentCoverageReasonV2.STRUCTURAL_SPLIT],
+    )
+    other_fragment_id = next(f.fragment_id for f in manifest.fragments if f.path == "app/b.py")
+    other_entry = _reviewed_entry("app/b.py", other_fragment_id, chunk_by_fragment[other_fragment_id])
+    material = _report_material(
+        run_id=manifest.run_id, manifest_hash=manifest.identity.manifest_hash, paths=[entry, other_entry]
+    )
+    sha = compute_coverage_report_sha256_v2(RunFragmentCoverageReportMaterialV2.model_validate(material))
+    report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
+    with pytest.raises(FragmentCoverageBindingError) as excinfo:
+        bind_coverage_report_to_manifest_v2(report, manifest)
+    assert excinfo.value.reason_code == AFFECTED_CHUNK_SET_MISMATCH_REASON_V2

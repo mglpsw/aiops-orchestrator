@@ -249,6 +249,7 @@ MANIFEST_HASH_MISMATCH_REASON_V2 = "manifest_hash_mismatch"
 PATH_SET_MISMATCH_REASON_V2 = "path_set_mismatch"
 FRAGMENT_SET_MISMATCH_REASON_V2 = "fragment_set_mismatch"
 UNKNOWN_CHUNK_REFERENCE_REASON_V2 = "unknown_chunk_reference"
+AFFECTED_CHUNK_SET_MISMATCH_REASON_V2 = "affected_chunk_set_mismatch"
 DEGRADED_FRAGMENT_CANNOT_BE_REVIEWED_REASON_V2 = "degraded_fragment_cannot_be_reviewed"
 DEGRADED_FRAGMENT_NOT_ACCOUNTED_REASON_V2 = "degraded_fragment_not_accounted"
 
@@ -263,9 +264,20 @@ def bind_coverage_report_to_manifest_v2(
     This proves the report is not just internally coherent (already
     guaranteed by ``RunFragmentCoverageEntryV2``'s own validator) but
     actually *about* this manifest and this run: identity, the complete set
-    of paths, each path's real fragment set, and every referenced chunk.
-    Replay against a different run or a different manifest that happens to
-    reuse fragment IDs is rejected here, not assumed safe elsewhere.
+    of paths, each path's real fragment set, and each path's EXACT chunk
+    set -- not merely a subset of chunks that exist somewhere in the
+    manifest. This last check closes the gap a bare entry cannot close on
+    its own: ``RunFragmentCoverageEntryV2`` computes "is this path
+    divided?" purely from the caller-supplied ``affected_chunk_ids`` list
+    (it has no manifest to consult), so a caller that under-reports that
+    list -- naming only one of a path's two real chunks -- could otherwise
+    make a genuinely multi-chunk-split path look undivided, and therefore
+    eligible for ``status="reviewed"``, at the entry level alone. Requiring
+    exact equality with the manifest's real per-path chunk set here is what
+    makes the fail-closed policy hold at the system level, not just inside
+    one object considered in isolation. Replay against a different run or
+    a different manifest that happens to reuse fragment IDs is rejected
+    here too, not assumed safe elsewhere.
 
     What this function does NOT verify: whether a chunk that carries a
     fragment was actually usable (its response bound and parsed
@@ -289,6 +301,14 @@ def bind_coverage_report_to_manifest_v2(
     for fragment in manifest.fragments:
         fragments_by_path.setdefault(fragment.path, set()).add(fragment.fragment_id)
     chunk_ids = {chunk.chunk_id for chunk in manifest.chunks}
+    # A fragment is assigned to at most one chunk -- manifest_v2's own
+    # validator already guarantees this ("a fragment must not be assigned
+    # to more than one chunk") -- so this mapping is safe to build as a
+    # plain fragment_id -> chunk_id dict, never overwritten ambiguously.
+    chunk_by_fragment: dict[str, str] = {}
+    for chunk in manifest.chunks:
+        for fragment_id in chunk.fragment_ids:
+            chunk_by_fragment[fragment_id] = chunk.chunk_id
     degraded_fragment_ids: set[str] = set()
     for cause in manifest.degradation_causes:
         degraded_fragment_ids.update(cause.affected_fragment_ids)
@@ -299,6 +319,21 @@ def bind_coverage_report_to_manifest_v2(
             raise FragmentCoverageBindingError(FRAGMENT_SET_MISMATCH_REASON_V2)
         if not set(entry.affected_chunk_ids) <= chunk_ids:
             raise FragmentCoverageBindingError(UNKNOWN_CHUNK_REFERENCE_REASON_V2)
+        # Not just "these chunk IDs exist somewhere in the manifest" --
+        # they must be EXACTLY the chunks that actually carry this path's
+        # fragments. A subset-only check would let a caller under-report
+        # affected_chunk_ids (omit a real chunk) to make a genuinely
+        # multi-chunk-split path look undivided to
+        # RunFragmentCoverageEntryV2's own len(affected_chunk_ids) > 1
+        # test -- defeating the fail-closed policy at the system level
+        # even though the entry's own validator is airtight in isolation.
+        real_chunks_for_path = {
+            chunk_by_fragment[fragment_id]
+            for fragment_id in expected
+            if fragment_id in chunk_by_fragment
+        }
+        if set(entry.affected_chunk_ids) != real_chunks_for_path:
+            raise FragmentCoverageBindingError(AFFECTED_CHUNK_SET_MISMATCH_REASON_V2)
 
         path_degraded = expected & degraded_fragment_ids
         if path_degraded:
