@@ -623,6 +623,43 @@ def test_prior_matching_a_reobserved_finding_with_a_different_severity_is_reject
     assert excinfo.value.reason_code == PRIOR_LIFECYCLE_SEVERITY_MISMATCH_REASON_V2
 
 
+def test_a_naturally_reobserved_finding_at_a_drifted_severity_is_rejected_not_silently_duplicated() -> None:
+    """Codex finding on PR #117: severity used to be folded into the dedup
+    key, so the SAME underlying defect (same file/range/contract)
+    re-observed at a genuinely different severity in a later round
+    computed a DIFFERENT finding_id -- it would never match the prior at
+    all, so a human's earlier ``dismissed`` decision would sit unobserved
+    (silently persisted unchanged) while a second, spurious ``new`` record
+    appeared for what is really the same defect. With severity excluded
+    from the key, the reobservation now correctly MATCHES the prior by id,
+    and the severity-mismatch guard makes this fail closed instead of
+    silently duplicating."""
+
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    head = manifest.identity.head_sha
+
+    # Round 1: observed at P2, a human dismisses it.
+    finding_round1 = _finding(finding_id="f1", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"], severity=FindingSeverityV2.P2)
+    result_round1 = _result(run_id=manifest.run_id, chunk_id=chunk_id, head_sha=head, findings=(finding_round1,), coverage=_coverage_all_reviewed(["app/a.py"]))
+    findings_round1, _ = aggregate_finding_lifecycle_v2(manifest=manifest, chunk_results=[result_round1], evaluated_head_sha=head)
+    original_id = findings_round1[0].finding_id
+    dismissed_prior = _decided_prior(
+        finding_id=original_id, severity=FindingSeverityV2.P2, head_sha=head, decided_at_head_sha=head, evidence_head_sha=head
+    )
+
+    # Round 2: the SAME root cause, now reported at P1 instead of P2 --
+    # a genuine model/human reclassification, not a hand-forged record.
+    finding_round2 = _finding(finding_id="f1-round2", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"], severity=FindingSeverityV2.P1)
+    result_round2 = _result(run_id=manifest.run_id, chunk_id=chunk_id, head_sha=head, findings=(finding_round2,), coverage=_coverage_all_reviewed(["app/a.py"]))
+
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=[result_round2], evaluated_head_sha=head, prior_lifecycle=[dismissed_prior]
+        )
+    assert excinfo.value.reason_code == PRIOR_LIFECYCLE_SEVERITY_MISMATCH_REASON_V2
+
+
 def test_a_fully_valid_prior_bound_to_the_current_head_is_preserved() -> None:
     manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
     head = manifest.identity.head_sha

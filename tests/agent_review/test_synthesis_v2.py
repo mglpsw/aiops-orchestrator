@@ -189,15 +189,21 @@ def _coverage(paths: list[str], *, reviewed: list[str] = (), partial: list[str] 
     )
 
 
-def _result(*, run_id: str, chunk_id: str, head_sha: str, findings: tuple = (), coverage: ChunkCoverageV2) -> ParsedChunkResultV2:
+def _result(
+    *, run_id: str, chunk_id: str, head_sha: str, findings: tuple = (), coverage: ChunkCoverageV2, limitations: tuple[str, ...] = ()
+) -> ParsedChunkResultV2:
     return ParsedChunkResultV2(
-        run_id=run_id, chunk_id=chunk_id, head_sha=head_sha, summary="s", findings=findings, coverage=coverage, limitations=()
+        run_id=run_id, chunk_id=chunk_id, head_sha=head_sha, summary="s", findings=findings, coverage=coverage,
+        limitations=limitations,
     )
 
 
-def _finding(*, finding_id: str, path: str, line_start: int = 1, line_end: int = 5, contract_ids: list[str] = ("c1",)) -> ChunkFindingV2:
+def _finding(
+    *, finding_id: str, path: str, line_start: int = 1, line_end: int = 5, contract_ids: list[str] = ("c1",),
+    severity: FindingSeverityV2 = FindingSeverityV2.P1,
+) -> ChunkFindingV2:
     return ChunkFindingV2(
-        finding_id=finding_id, severity=FindingSeverityV2.P1, title="finding", file_path=path,
+        finding_id=finding_id, severity=severity, title="finding", file_path=path,
         line_start=line_start, line_end=line_end, evidence="ev", impact="impact",
         confidence=FindingConfidenceV2.HIGH, contract_ids=list(contract_ids), disposition=FindingDispositionV2.NEW,
     )
@@ -513,3 +519,75 @@ def test_a_genuine_multi_chunk_multi_finding_result_still_synthesizes_cleanly() 
         manifest=manifest, chunk_results=[result_a, result_b], evaluated_head_sha=manifest.identity.head_sha
     )
     assert len(synthesis.findings) == 2
+
+
+# -- Codex review of PR #117: limitations and severity-in-identity fixes -----
+
+
+def test_a_chunks_limitations_are_preserved_and_deduplicated_in_the_synthesis_result() -> None:
+    """Codex finding on PR #117: a valid, in-scope chunk carrying a nonempty
+    ``limitations`` tuple (e.g. ``model_uncertainty``) used to vanish --
+    ``SynthesisResultV2`` had no field for it and nothing aggregated it, so
+    #108's readiness computation had nothing to turn into pipeline
+    degradation for an otherwise-unsupported run."""
+
+    manifest, chunk_id_by_path = _two_chunk_two_file_manifest()
+    result_a = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id_by_path["app/a.py"], head_sha=manifest.identity.head_sha,
+        coverage=_coverage(["app/a.py"], reviewed=["app/a.py"]), limitations=("model_uncertainty",),
+    )
+    result_b = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id_by_path["app/b.py"], head_sha=manifest.identity.head_sha,
+        coverage=_coverage(["app/b.py"], reviewed=["app/b.py"]), limitations=("model_uncertainty", "transport_degraded"),
+    )
+    synthesis = synthesize_chunk_results_v2(
+        manifest=manifest, chunk_results=[result_a, result_b], evaluated_head_sha=manifest.identity.head_sha
+    )
+    assert synthesis.limitations == ("model_uncertainty", "transport_degraded")
+
+
+def test_no_limitations_produces_an_empty_tuple_not_a_missing_field() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha,
+        coverage=_coverage(["app/a.py"], reviewed=["app/a.py"]),
+    )
+    synthesis = synthesize_chunk_results_v2(manifest=manifest, chunk_results=[result], evaluated_head_sha=manifest.identity.head_sha)
+    assert synthesis.limitations == ()
+
+
+def test_the_same_root_cause_at_different_severities_across_two_chunks_picks_the_most_severe_deterministically() -> None:
+    """Codex finding on PR #117: severity used to be part of the dedup key,
+    so removing it (to let genuine severity drift be caught by the
+    prior-severity-mismatch guard instead of silently producing a
+    different finding_id) means TWO observations of the same root cause at
+    DIFFERENT severities within one round can now collapse into one key.
+    The chosen severity must be deterministic (most severe wins), not an
+    artifact of chunk_results ordering."""
+
+    manifest = _build_two_chunk_split_manifest()
+    # Same file-level (no-range) root cause claimed identically by BOTH
+    # chunks that share this structurally split path -- but this test
+    # cares about a single grouped finding for one chunk that reports it
+    # twice at different severities (route-independent of chunk_id, since
+    # the file-level key already folds in chunk_id -- so two DIFFERENT
+    # severities for the SAME range within the SAME chunk is the concrete
+    # scenario to exercise here).
+    finding_p2 = _finding(finding_id="f-p2", path="app/a.py", line_start=1, line_end=5, severity=FindingSeverityV2.P2)
+    finding_p0 = _finding(finding_id="f-p0", path="app/a.py", line_start=1, line_end=5, severity=FindingSeverityV2.P0)
+    result = _result(
+        run_id=manifest.run_id, chunk_id="chunk-0", head_sha=manifest.identity.head_sha,
+        findings=(finding_p2, finding_p0), coverage=_coverage(["app/a.py"], reviewed=["app/a.py"]),
+    )
+    forward = synthesize_chunk_results_v2(manifest=manifest, chunk_results=[result], evaluated_head_sha=manifest.identity.head_sha)
+    result_reordered = _result(
+        run_id=manifest.run_id, chunk_id="chunk-0", head_sha=manifest.identity.head_sha,
+        findings=(finding_p0, finding_p2), coverage=_coverage(["app/a.py"], reviewed=["app/a.py"]),
+    )
+    backward = synthesize_chunk_results_v2(
+        manifest=manifest, chunk_results=[result_reordered], evaluated_head_sha=manifest.identity.head_sha
+    )
+    assert len(forward.findings) == 1
+    assert forward.findings[0].severity is FindingSeverityV2.P0
+    assert forward.findings == backward.findings

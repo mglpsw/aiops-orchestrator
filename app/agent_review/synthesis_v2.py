@@ -13,7 +13,11 @@ Entry point: ``synthesize_chunk_results_v2``. Turns N already-bound
       with every fresh finding entering as ``new`` and every other
       disposition only ever *preserved* from an already-decided,
       already-revalidated prior record -- never synthesized here from
-      concordance between chunks or models.
+      concordance between chunks or models;
+    - the deduplicated union of every bound chunk's own
+      ``limitations`` (e.g. ``model_uncertainty``), so a real per-chunk
+      limitation is never silently dropped between here and #108's
+      readiness computation.
 
 Accepts nothing but genuine ``ParsedChunkResultV2`` instances for the exact
 run this manifest describes. A raw envelope, a v1 result, a hand-built dict,
@@ -94,13 +98,21 @@ class SynthesisErrorV2(ValueError):
 class SynthesisResultV2:
     """Plain, freely constructible data value -- like ``ParsedChunkResultV2``,
     not a wire contract with its own schema/hash. Meant for consumption by
-    #108's readiness computation."""
+    #108's readiness computation.
+
+    ``limitations`` is the deduplicated union of every successfully-bound
+    chunk's own ``ParsedChunkResultV2.limitations`` (e.g. ``model_uncertainty``).
+    Without it, a chunk that reported a real limitation but was otherwise
+    valid and in-scope would have that limitation silently vanish here,
+    leaving #108's readiness computation nothing to turn into pipeline
+    degradation -- it could evaluate an unsupported run as healthy."""
 
     run_id: str
     evaluated_head_sha: str
     coverage_report: RunFragmentCoverageReportV2
     findings: tuple[FindingLifecycleRecordV2, ...]
     provenance: Mapping[str, tuple[FindingProvenanceV2, ...]]
+    limitations: tuple[str, ...]
 
 
 def _file_status_in_chunk(coverage, path: str) -> str:
@@ -277,6 +289,9 @@ def synthesize_chunk_results_v2(
         evaluated_head_sha=evaluated_head_sha,
         prior_lifecycle=prior_lifecycle,
     )
+    limitations = tuple(
+        sorted({limitation for result in results_by_chunk_id.values() for limitation in result.limitations})
+    )
 
     return SynthesisResultV2(
         run_id=manifest.run_id,
@@ -284,4 +299,5 @@ def synthesize_chunk_results_v2(
         coverage_report=coverage_report,
         findings=findings,
         provenance=provenance,
+        limitations=limitations,
     )

@@ -50,9 +50,21 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app.agent_review.chunk_result_scope_v2 import ChunkResultScopeError, validate_chunk_results_scope_v2
-from app.agent_review.contracts_v2 import ChunkFindingV2, FindingDispositionV2, FindingLifecycleRecordV2
+from app.agent_review.contracts_v2 import (
+    ChunkFindingV2,
+    FindingDispositionV2,
+    FindingLifecycleRecordV2,
+    FindingSeverityV2,
+)
 from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.parser_v2 import ParsedChunkResultV2
+
+_SEVERITY_RANK_V2 = {
+    FindingSeverityV2.P0: 0,
+    FindingSeverityV2.P1: 1,
+    FindingSeverityV2.P2: 2,
+    FindingSeverityV2.P3: 3,
+}
 
 STALE_PRIOR_LIFECYCLE_REASON_V2 = "stale_prior_lifecycle_record"
 DUPLICATE_PRIOR_LIFECYCLE_FINDING_REASON_V2 = "duplicate_prior_lifecycle_finding"
@@ -86,36 +98,58 @@ class FindingProvenanceV2:
 
 def _dedup_key(chunk_id: str, finding: ChunkFindingV2) -> tuple[object, ...]:
     """Two findings collapse into one only if they share the same root
-    cause -- never merely the same title or evidence text.
+    cause -- never merely the same title or evidence text, and NOT
+    severity.
+
+    Severity is deliberately excluded from the key (Finding from PR #117's
+    Codex review): the same underlying defect can legitimately be
+    re-observed at a different severity across rounds (a model or human
+    reclassifying it). Including severity in the identity preimage would
+    give that re-observation a DIFFERENT finding_id, so it would never
+    match the prior record for the same root cause -- the prior would sit
+    unobserved-but-persisted while a second, spurious ``new`` record
+    appeared for what is really the same defect, and the severity-mismatch
+    guard in ``_aggregate_finding_lifecycle_core_v2`` could never actually
+    fire for a naturally-drifted severity, only for a hand-forged prior
+    record. Severity is compared AFTER matching by this severity-free key,
+    not folded into the key itself.
 
     For a finding with a line range, root cause is file + exact range +
-    contract set + severity: two fragments never share a line range
-    (planner_v2's own disjointness guarantee), so this is already
-    fragment-discriminating without needing a fragment_id field directly on
-    ChunkFindingV2.
+    contract set: two fragments never share a line range (planner_v2's own
+    disjointness guarantee), so this is already fragment-discriminating
+    without needing a fragment_id field directly on ChunkFindingV2.
 
     A file-level finding (no range) has no such fragment-discriminating
-    signal -- file + contracts + severity alone would collapse two
-    genuinely distinct file-level claims from two different chunks on the
-    same structurally divided path into one record, destroying the
-    per-chunk provenance separation the coverage report itself preserves
-    (see synthesis_v2.py's structural_split handling). ``chunk_id`` is
-    folded into the key for this case instead -- it does not invent a
-    fragment identity the finding never claimed, it just keeps two
-    chunks' independent file-level claims from being conflated. Two
-    identical file-level findings observed by the *same* chunk still
-    dedupe, since chunk_id is then equal."""
+    signal -- file + contracts alone would collapse two genuinely distinct
+    file-level claims from two different chunks on the same structurally
+    divided path into one record, destroying the per-chunk provenance
+    separation the coverage report itself preserves (see synthesis_v2.py's
+    structural_split handling). ``chunk_id`` is folded into the key for
+    this case instead -- it does not invent a fragment identity the
+    finding never claimed, it just keeps two chunks' independent
+    file-level claims from being conflated. Two identical file-level
+    findings observed by the *same* chunk still dedupe, since chunk_id is
+    then equal."""
 
     if finding.line_start is None or finding.line_end is None:
-        return ("file_level", finding.file_path, chunk_id, tuple(sorted(finding.contract_ids)), finding.severity.value)
+        return ("file_level", finding.file_path, chunk_id, tuple(sorted(finding.contract_ids)))
     return (
         "ranged",
         finding.file_path,
         finding.line_start,
         finding.line_end,
         tuple(sorted(finding.contract_ids)),
-        finding.severity.value,
     )
+
+
+def _most_severe_v2(findings: Sequence[ChunkFindingV2]) -> FindingSeverityV2:
+    """Deterministic, order-independent choice of severity for a group of
+    findings that share a root-cause key but may disagree on severity
+    (possible now that severity is excluded from the key -- see
+    ``_dedup_key``): the most severe value wins, never an arbitrary first
+    element of the (possibly caller-order-dependent) observation list."""
+
+    return min((finding.severity for finding in findings), key=lambda severity: _SEVERITY_RANK_V2[severity])
 
 
 def _synthesized_finding_id(key: tuple[object, ...]) -> str:
@@ -174,9 +208,10 @@ def aggregate_finding_lifecycle_v2(
     prior_lifecycle: Sequence[FindingLifecycleRecordV2] = (),
 ) -> tuple[tuple[FindingLifecycleRecordV2, ...], Mapping[str, tuple[FindingProvenanceV2, ...]]]:
     """Deduplicate every finding across ``chunk_results`` by root cause
-    (file + exact line range + contract set + severity), preserving
-    provenance for every chunk that observed it, and merge in any
-    already-decided ``prior_lifecycle`` records.
+    (file + exact line range + contract set -- deliberately NOT severity,
+    see ``_dedup_key``), preserving provenance for every chunk that
+    observed it, and merge in any already-decided ``prior_lifecycle``
+    records.
 
     ``chunk_results`` is revalidated against ``manifest`` by
     ``chunk_result_scope_v2.validate_chunk_results_scope_v2`` before any
@@ -246,17 +281,17 @@ def _aggregate_finding_lifecycle_core_v2(
 
     for key, chunk_findings in observations.items():
         synthesized_id = _synthesized_finding_id(key)
-        _, first_finding = chunk_findings[0]
+        observed_severity = _most_severe_v2([finding for _, finding in chunk_findings])
         prior = prior_by_id.get(synthesized_id)
         if prior is not None:
-            if prior.severity != first_finding.severity:
+            if prior.severity != observed_severity:
                 raise LifecycleAggregationError(PRIOR_LIFECYCLE_SEVERITY_MISMATCH_REASON_V2)
             findings_out.append(prior)
         else:
             findings_out.append(
                 FindingLifecycleRecordV2(
                     finding_id=synthesized_id,
-                    severity=first_finding.severity,
+                    severity=observed_severity,
                     observed_at_head_sha=evaluated_head_sha,
                     disposition=FindingDispositionV2.NEW,
                     actionable=True,
