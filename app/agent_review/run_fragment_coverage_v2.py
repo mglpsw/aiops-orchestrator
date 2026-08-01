@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Set as AbstractSet
 from enum import Enum
 from typing import Annotated, Literal
 
@@ -79,6 +79,31 @@ class FragmentCoverageReasonV2(str, Enum):
 
 FragmentCoverageStatusValueV2 = Annotated[FragmentCoverageStatusV2, Field(strict=False)]
 FragmentCoverageReasonValueV2 = Annotated[FragmentCoverageReasonV2, Field(strict=False)]
+
+
+def compute_fragment_coverage_status_v2(
+    *,
+    expected: AbstractSet[str],
+    reviewed: AbstractSet[str],
+    partially_reviewed: AbstractSet[str],
+    missing: AbstractSet[str],
+    divided: bool,
+) -> FragmentCoverageStatusV2:
+    """The exact status-derivation rule ``RunFragmentCoverageEntryV2``'s own
+    validator enforces, exposed as a pure function so a producer (e.g.
+    #107's synthesis, aggregating real per-chunk results into an entry) can
+    compute a status guaranteed to satisfy that validator, instead of
+    duplicating this rule at the call site and risking the two drifting
+    apart. Reused, not reimplemented, by ``RunFragmentCoverageEntryV2.
+    validate_entry`` below.
+    """
+
+    fully_reviewed = reviewed == expected and not partially_reviewed and not missing
+    if fully_reviewed and not divided:
+        return FragmentCoverageStatusV2.REVIEWED
+    if not reviewed and not partially_reviewed:
+        return FragmentCoverageStatusV2.MISSING
+    return FragmentCoverageStatusV2.PARTIAL
 
 
 class RunFragmentCoverageEntryV2(ContractV2Model):
@@ -154,13 +179,13 @@ class RunFragmentCoverageEntryV2(ContractV2Model):
         # docstring), so a per-fragment "reviewed" claim spanning multiple
         # chunks is not verifiable and must not be trusted structurally.
         divided = len(self.affected_chunk_ids) > 1
-        fully_reviewed = reviewed == expected and not partial and not missing
-        if fully_reviewed and not divided:
-            expected_status = FragmentCoverageStatusV2.REVIEWED
-        elif not reviewed and not partial:
-            expected_status = FragmentCoverageStatusV2.MISSING
-        else:
-            expected_status = FragmentCoverageStatusV2.PARTIAL
+        expected_status = compute_fragment_coverage_status_v2(
+            expected=expected,
+            reviewed=reviewed,
+            partially_reviewed=partial,
+            missing=missing,
+            divided=divided,
+        )
         if self.status is not expected_status:
             raise ValueError(f"status must be {expected_status.value!r} for this fragment partition")
 
