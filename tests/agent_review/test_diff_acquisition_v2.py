@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -8,11 +9,34 @@ import pytest
 from app.agent_review.diff_acquisition_v2 import (
     DIFF_UNREADABLE_REASON_V2,
     INVALID_REF_REASON_V2,
+    RAW_DIFF_CARDINALITY_MISMATCH_REASON_V2,
+    RAW_DIFF_PATH_MISMATCH_REASON_V2,
+    RAW_DIFF_STATUS_MISMATCH_REASON_V2,
+    RAW_DIFF_TYPE_CHANGE_UNSUPPORTED_REASON_V2,
     DiffAcquisitionError,
+    RawDiffRecordV2,
+    acquire_authoritative_diff_v2,
     acquire_diff_v2,
+    acquire_raw_diff_v2,
+    correlate_raw_and_unified_v2,
+    parse_raw_diff_z,
     parse_unified_diff,
     validate_diff_completeness_v2,
 )
+
+
+def _raw_record(mode_old: str, mode_new: str, sha_old: str, sha_new: str, status: str, *paths: str) -> str:
+    """Build one NUL-terminated ``git diff --raw -z`` record for tests --
+    metadata line, then one path (single-path statuses) or two paths
+    (rename/copy), each individually NUL-terminated, matching the exact
+    byte shape verified empirically against real git output."""
+
+    header = f":{mode_old} {mode_new} {sha_old} {sha_new} {status}"
+    return "\x00".join((header, *paths)) + "\x00"
+
+
+def _raw_stream(*records: str) -> str:
+    return "".join(records)
 
 
 # -- empty / malformed input --------------------------------------------------
@@ -1061,4 +1085,569 @@ def test_parse_fails_closed_on_non_utf8_encodable_text_passed_directly() -> None
     )
     with pytest.raises(DiffAcquisitionError) as excinfo:
         parse_unified_diff(diff_text)
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
+# =============================================================================
+# Issue #103 — raw -z as the deterministic authority for path identity and
+# change type, correlated against the unified diff's own blocks.
+# =============================================================================
+
+
+# -- parse_raw_diff_z: pure parsing of the NUL-separated raw stream ----------
+
+
+def test_parse_raw_diff_z_returns_empty_tuple_for_empty_stream() -> None:
+    assert parse_raw_diff_z("") == ()
+
+
+def test_parse_raw_diff_z_parses_a_single_path_modified_record() -> None:
+    stream = _raw_stream(_raw_record("100644", "100644", "abc1234", "def5678", "M", "app/service.py"))
+    records = parse_raw_diff_z(stream)
+    assert records == (
+        RawDiffRecordV2(status="M", similarity_index=None, old_path="app/service.py", new_path="app/service.py"),
+    )
+
+
+def test_parse_raw_diff_z_parses_an_added_record_with_only_new_path() -> None:
+    stream = _raw_stream(_raw_record("000000", "100644", "0000000", "abc1234", "A", "new_file.py"))
+    records = parse_raw_diff_z(stream)
+    assert records == (
+        RawDiffRecordV2(status="A", similarity_index=None, old_path=None, new_path="new_file.py"),
+    )
+
+
+def test_parse_raw_diff_z_parses_a_deleted_record_with_only_old_path() -> None:
+    stream = _raw_stream(_raw_record("100644", "000000", "abc1234", "0000000", "D", "gone.py"))
+    records = parse_raw_diff_z(stream)
+    assert records == (
+        RawDiffRecordV2(status="D", similarity_index=None, old_path="gone.py", new_path=None),
+    )
+
+
+def test_parse_raw_diff_z_parses_a_rename_record_with_two_paths() -> None:
+    """Proves the parser treats a rename as ONE logical record carrying
+    both old_path and new_path -- the exact case #103 requires: 'rename
+    com espaço nos dois lados' parsed as a single two-path record, not
+    two records or a token-count mismatch."""
+
+    stream = _raw_stream(
+        _raw_record("100644", "100644", "aaa1111", "bbb2222", "R090", "old name file.txt", "new name file.txt")
+    )
+    records = parse_raw_diff_z(stream)
+    assert len(records) == 1
+    assert records[0].status == "R"
+    assert records[0].similarity_index == 90
+    assert records[0].old_path == "old name file.txt"
+    assert records[0].new_path == "new name file.txt"
+
+
+def test_parse_raw_diff_z_parses_a_copy_record_as_one_record_with_two_paths() -> None:
+    """'copy (C<score>) tratado como registro de dois paths, não como
+    dois registros' -- a single raw metadata line for status C must
+    yield exactly one RawDiffRecordV2, never two."""
+
+    stream = _raw_stream(
+        _raw_record("100644", "100644", "ccc3333", "ccc3333", "C066", "source.txt", "copied target file.txt")
+    )
+    records = parse_raw_diff_z(stream)
+    assert len(records) == 1
+    assert records[0].status == "C"
+    assert records[0].old_path == "source.txt"
+    assert records[0].new_path == "copied target file.txt"
+
+
+def test_parse_raw_diff_z_parses_multiple_records_in_stable_order() -> None:
+    stream = _raw_stream(
+        _raw_record("100644", "100644", "1", "2", "M", "a.py"),
+        _raw_record("000000", "100644", "0", "3", "A", "b.py"),
+        _raw_record("100644", "000000", "4", "0", "D", "c.py"),
+    )
+    records = parse_raw_diff_z(stream)
+    assert [r.status for r in records] == ["M", "A", "D"]
+    assert [r.new_path or r.old_path for r in records] == ["a.py", "b.py", "c.py"]
+
+
+def test_parse_raw_diff_z_fails_closed_on_a_malformed_header_line() -> None:
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_raw_diff_z("not-a-valid-raw-header\x00a.py\x00")
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
+def test_parse_raw_diff_z_fails_closed_on_a_stream_truncated_before_its_path() -> None:
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_raw_diff_z(":100644 100644 abc1234 def5678 M\x00")
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
+def test_parse_raw_diff_z_fails_closed_on_a_rename_missing_its_second_path() -> None:
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_raw_diff_z(":100644 100644 abc1234 def5678 R090\x00only_one_path.py\x00")
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
+def test_parse_raw_diff_z_decodes_an_accented_utf8_path_exactly() -> None:
+    """Equivalence fixture per issue #103's boundary: the GitHub API
+    filename is a VERIFICATION value for this exact scenario (AgentEscala
+    #752's field report: the API returns the decoded name, the old
+    quoted-header path was 'b/docs/revis\\303\\243o.md'). With -z, git
+    never quotes or escapes the path at all -- the raw stream carries the
+    literal UTF-8 bytes directly, so no octal-escape decoding is needed
+    here (unlike `_decode_git_path`, which this module deliberately does
+    not touch)."""
+
+    github_api_filename_fixture = "docs/revisão.md"
+    stream = _raw_stream(
+        _raw_record("100644", "100644", "1111111", "2222222", "M", github_api_filename_fixture)
+    )
+    records = parse_raw_diff_z(stream)
+    assert records[0].new_path == github_api_filename_fixture
+    assert records[0].old_path == github_api_filename_fixture
+
+
+# -- correlate_raw_and_unified_v2: cross-checking raw against unified -------
+
+
+def test_correlate_accepts_a_matching_single_file_modification() -> None:
+    diff_text = (
+        "diff --git a/app/service.py b/app/service.py\n"
+        "index abc1234..def5678 100644\n"
+        "--- a/app/service.py\n"
+        "+++ b/app/service.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    file_diffs = parse_unified_diff(diff_text)
+    raw_records = parse_raw_diff_z(
+        _raw_stream(_raw_record("100644", "100644", "abc1234", "def5678", "M", "app/service.py"))
+    )
+    # must not raise
+    correlate_raw_and_unified_v2(raw_records, file_diffs)
+
+
+def test_correlate_fails_closed_on_cardinality_mismatch() -> None:
+    diff_text = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    file_diffs = parse_unified_diff(diff_text)
+    raw_records = parse_raw_diff_z(
+        _raw_stream(
+            _raw_record("100644", "100644", "1", "2", "M", "a.py"),
+            _raw_record("000000", "100644", "0", "3", "A", "b.py"),
+        )
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        correlate_raw_and_unified_v2(raw_records, file_diffs)
+    assert excinfo.value.reason_code == RAW_DIFF_CARDINALITY_MISMATCH_REASON_V2
+
+
+def test_correlate_fails_closed_on_status_mismatch() -> None:
+    """Raw says 'added' (status A); unified reports the block as an
+    ordinary modification -- a genuine disagreement about change type."""
+
+    diff_text = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    file_diffs = parse_unified_diff(diff_text)
+    raw_records = parse_raw_diff_z(
+        _raw_stream(_raw_record("000000", "100644", "0", "2", "A", "a.py"))
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        correlate_raw_and_unified_v2(raw_records, file_diffs)
+    assert excinfo.value.reason_code == RAW_DIFF_STATUS_MISMATCH_REASON_V2
+
+
+def test_correlate_fails_closed_on_a_rename_whose_paths_do_not_match() -> None:
+    diff_text = (
+        "diff --git a/old_name.py b/new_name.py\n"
+        "similarity index 90%\n"
+        "rename from old_name.py\n"
+        "rename to new_name.py\n"
+    )
+    file_diffs = parse_unified_diff(diff_text)
+    raw_records = parse_raw_diff_z(
+        _raw_stream(
+            _raw_record("100644", "100644", "1", "2", "R090", "old_name.py", "different_name.py")
+        )
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        correlate_raw_and_unified_v2(raw_records, file_diffs)
+    assert excinfo.value.reason_code == RAW_DIFF_PATH_MISMATCH_REASON_V2
+
+
+def test_correlate_fails_closed_on_order_divergence_between_two_records() -> None:
+    """Two distinct, individually valid files whose raw records are
+    supplied in the opposite order from the unified blocks: position i
+    must correspond to block i, so a swap manifests as a mismatch at
+    both positions rather than being silently accepted as a set."""
+
+    diff_text = (
+        "diff --git a/a.py b/a.py\n"
+        "index 1..2 100644\n"
+        "--- a/a.py\n"
+        "+++ b/a.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+        "diff --git a/b.py b/b.py\n"
+        "index 3..4 100644\n"
+        "--- a/b.py\n"
+        "+++ b/b.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    file_diffs = parse_unified_diff(diff_text)
+    raw_records = parse_raw_diff_z(
+        _raw_stream(
+            _raw_record("100644", "100644", "3", "4", "M", "b.py"),
+            _raw_record("100644", "100644", "1", "2", "M", "a.py"),
+        )
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        correlate_raw_and_unified_v2(raw_records, file_diffs)
+    assert excinfo.value.reason_code == RAW_DIFF_PATH_MISMATCH_REASON_V2
+
+
+def test_correlate_accepts_a_pure_mode_change_as_type_changed() -> None:
+    """A pure chmod (no content change, no hunks) is raw status 'M' --
+    NOT 'T' -- verified empirically against real git. The existing
+    unified parser labels this hunkless, mode-only shape 'type_changed';
+    correlation must accept raw 'M' against either 'modified' (content
+    changed) or 'type_changed' (pure attribute change), since a single
+    raw letter legitimately covers both."""
+
+    diff_text = "diff --git a/script.sh b/script.sh\nold mode 100644\nnew mode 100755\n"
+    file_diffs = parse_unified_diff(diff_text)
+    assert file_diffs[0].change_type == "type_changed"
+    raw_records = parse_raw_diff_z(
+        _raw_stream(_raw_record("100644", "100755", "ce01362", "ce01362", "M", "script.sh"))
+    )
+    # must not raise
+    correlate_raw_and_unified_v2(raw_records, file_diffs)
+
+
+def test_correlate_fails_closed_on_a_raw_type_change_record() -> None:
+    """A genuine object-type change (raw status 'T', e.g. regular file ->
+    symlink) is represented by git's UNIFIED diff as a delete+add PAIR
+    (two blocks), not one -- verified empirically against real git. This
+    module does not attempt to correlate a 1-record/2-block shape; it
+    fails closed with a dedicated reason code rather than misreporting it
+    as a generic cardinality mismatch or silently accepting a wrong
+    pairing."""
+
+    diff_text = (
+        "diff --git a/target.txt b/target.txt\n"
+        "deleted file mode 100644\n"
+        "index ce01362..0000000\n"
+        "--- a/target.txt\n"
+        "+++ /dev/null\n"
+        "@@ -1,1 +0,0 @@\n"
+        "-hello\n"
+        "diff --git a/target.txt b/target.txt\n"
+        "new file mode 120000\n"
+        "index 0000000..0231def\n"
+        "--- /dev/null\n"
+        "+++ b/target.txt\n"
+        "@@ -0,0 +1,1 @@\n"
+        "+script.sh\n"
+    )
+    file_diffs = parse_unified_diff(diff_text)
+    raw_records = parse_raw_diff_z(
+        _raw_stream(_raw_record("100644", "120000", "ce01362", "0231def", "T", "target.txt"))
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        correlate_raw_and_unified_v2(raw_records, file_diffs)
+    assert excinfo.value.reason_code == RAW_DIFF_TYPE_CHANGE_UNSUPPORTED_REASON_V2
+
+
+def test_correlate_catches_the_binary_space_path_loss_bug() -> None:
+    """Case (a) from issue #103: a 'GIT binary patch' block for a file
+    whose name contains a space has no '--- '/'+++ ' markers and no
+    'Binary files ... differ' line; the 'diff --git' header itself
+    splits into 4 whitespace tokens (not 2), so today's unified parser
+    resolves both old_path and new_path to None (path=''). Correlating
+    against the raw stream's clean, unambiguous path must fail closed
+    instead of silently returning the empty path."""
+
+    diff_text = (
+        "diff --git a/my file.bin b/my file.bin\n"
+        "new file mode 100644\n"
+        "index 0000000..a611fb8\n"
+        "GIT binary patch\n"
+        "literal 16\n"
+        "XcmZQzWJ=1+ODw8P&d)1J%_{)_CNl+u\n"
+    )
+    file_diffs = parse_unified_diff(diff_text)
+    assert file_diffs[0].path == ""  # the bug this issue closes, reproduced
+    raw_records = parse_raw_diff_z(
+        _raw_stream(_raw_record("000000", "100644", "0000000", "a611fb8", "A", "my file.bin"))
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        correlate_raw_and_unified_v2(raw_records, file_diffs)
+    assert excinfo.value.reason_code == RAW_DIFF_PATH_MISMATCH_REASON_V2
+
+
+def test_correlate_catches_the_and_in_name_corruption_bug() -> None:
+    """Case (b) from issue #103: the 'Binary files ... differ' marker
+    line splits on the FIRST ' and ' it finds, so a filename that itself
+    contains the literal text ' and ' corrupts both old_path and
+    new_path. This textual marker form is not reachable through the real
+    acquire_diff_v2 pipeline (which always passes --binary, so real git
+    emits 'GIT binary patch' instead) -- but parse_unified_diff is a
+    public, pure-text boundary any adapter may call directly (its own
+    module docstring), so the corruption must still be caught here."""
+
+    diff_text = (
+        "diff --git a/x and y.bin b/x and y.bin\n"
+        "index 1111111..2222222 100644\n"
+        "Binary files a/x and y.bin and b/x and y.bin differ\n"
+    )
+    file_diffs = parse_unified_diff(diff_text)
+    assert file_diffs[0].old_path == "x"  # the corruption this issue closes, reproduced
+    assert file_diffs[0].new_path == "y.bin and b/x and y.bin"
+    raw_records = parse_raw_diff_z(
+        _raw_stream(_raw_record("100644", "100644", "1111111", "2222222", "M", "x and y.bin"))
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        correlate_raw_and_unified_v2(raw_records, file_diffs)
+    assert excinfo.value.reason_code == RAW_DIFF_PATH_MISMATCH_REASON_V2
+
+
+def test_correlate_fails_closed_on_a_confident_but_wrong_unified_header() -> None:
+    """'header inequívoco discordando do stream': the unified side is not
+    ambiguous here -- it confidently reports a coherent, well-formed path
+    -- but it simply disagrees with the raw stream's ground truth (e.g. a
+    reconstructed/replayed diff pointing at the wrong file). Confidence
+    is not correctness; correlation must still fail closed."""
+
+    diff_text = (
+        "diff --git a/reported_name.py b/reported_name.py\n"
+        "index abc1234..def5678 100644\n"
+        "--- a/reported_name.py\n"
+        "+++ b/reported_name.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-x\n"
+        "+y\n"
+    )
+    file_diffs = parse_unified_diff(diff_text)
+    raw_records = parse_raw_diff_z(
+        _raw_stream(_raw_record("100644", "100644", "abc1234", "def5678", "M", "actual_name.py"))
+    )
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        correlate_raw_and_unified_v2(raw_records, file_diffs)
+    assert excinfo.value.reason_code == RAW_DIFF_PATH_MISMATCH_REASON_V2
+
+
+def test_correlate_accepts_a_safe_rename_path_under_a_top_level_directory_named_a() -> None:
+    """Safe counterexample that must keep passing: a real path under a
+    top-level directory literally named 'a' is not an artifact of the
+    diff-marker a/ b/ prefix, and must correlate cleanly."""
+
+    diff_text = (
+        "diff --git a/a/foo.py b/a/bar.py\n"
+        "similarity index 100%\n"
+        "rename from a/foo.py\n"
+        "rename to a/bar.py\n"
+    )
+    file_diffs = parse_unified_diff(diff_text)
+    raw_records = parse_raw_diff_z(
+        _raw_stream(_raw_record("100644", "100644", "1", "1", "R100", "a/foo.py", "a/bar.py"))
+    )
+    # must not raise
+    correlate_raw_and_unified_v2(raw_records, file_diffs)
+
+
+# -- acquire_raw_diff_v2 / acquire_authoritative_diff_v2 (real git) ----------
+
+
+def test_acquire_raw_diff_rejects_a_short_sha(tmp_path: Path) -> None:
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        acquire_raw_diff_v2(tmp_path, base_sha="abc1234", head_sha="d" * 40)
+    assert excinfo.value.reason_code == INVALID_REF_REASON_V2
+
+
+def test_acquire_raw_diff_rejects_a_branch_name_as_a_ref(tmp_path: Path) -> None:
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        acquire_raw_diff_v2(tmp_path, base_sha="master", head_sha="d" * 40)
+    assert excinfo.value.reason_code == INVALID_REF_REASON_V2
+
+
+def _init_repo(repo: Path) -> None:
+    repo.mkdir()
+    subprocess.run(["git", "init", "--quiet", "-b", "main", "."], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+
+
+def _commit_all(repo: Path, message: str) -> str:
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", message], cwd=repo, check=True)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+@pytest.mark.requires_network
+def test_acquire_raw_diff_runs_the_real_fixed_git_command(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("line1\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+    (repo / "a.py").write_text("line1\nline2\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    raw_text = acquire_raw_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    records = parse_raw_diff_z(raw_text)
+    assert len(records) == 1
+    assert records[0].status == "M"
+    assert records[0].new_path == "a.py"
+
+
+@pytest.mark.requires_network
+def test_acquire_authoritative_diff_returns_file_diffs_for_a_simple_modification(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("line1\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+    (repo / "a.py").write_text("line1\nline2\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert len(file_diffs) == 1
+    assert file_diffs[0].path == "a.py"
+    assert file_diffs[0].change_type == "modified"
+
+
+@pytest.mark.requires_network
+def test_acquire_authoritative_diff_fails_closed_on_a_real_binary_file_with_a_space(tmp_path: Path) -> None:
+    """End-to-end reproduction of case (a): a genuinely new binary file
+    whose name contains a space, added through a real git repository and
+    acquired through the exact --binary-flagged command acquire_diff_v2
+    already uses. Verified empirically to produce a 'GIT binary patch'
+    block whose header alone cannot be split into two path tokens."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+    (repo / "my file.bin").write_bytes(b"\x00\x01\x02binarycontent")
+    head_sha = _commit_all(repo, "add binary with space")
+
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert excinfo.value.reason_code == RAW_DIFF_PATH_MISMATCH_REASON_V2
+
+
+@pytest.mark.requires_network
+def test_acquire_authoritative_diff_handles_a_real_rename_and_copy_with_spaces(tmp_path: Path) -> None:
+    """A real rename AND a real copy (source also modified, within
+    --find-copies' default detection scope), both with spaces on both
+    sides of the path, in the same commit -- proving the shared,
+    explicit --find-renames/--find-copies flags detect and correlate
+    identically between the raw and unified acquisitions."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "old name file.txt").write_text(
+        "line one\nline two\nline three\nline four\nline five\n", encoding="utf-8"
+    )
+    base_sha = _commit_all(repo, "init")
+
+    subprocess.run(
+        ["git", "mv", "old name file.txt", "new name file.txt"], cwd=repo, check=True
+    )
+    (repo / "new name file.txt").write_text(
+        "line one\nline two\nline three CHANGED\nline four\nline five\n", encoding="utf-8"
+    )
+    (repo / "copied target file.txt").write_text(
+        "line one\nline two\nline three CHANGED\nline four\nline five\n", encoding="utf-8"
+    )
+    head_sha = _commit_all(repo, "rename with spaces + copy")
+
+    file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    change_types = {fd.change_type for fd in file_diffs}
+    assert change_types == {"renamed", "copied"}
+    paths = {(fd.old_path, fd.new_path) for fd in file_diffs}
+    assert ("old name file.txt", "new name file.txt") in paths
+    assert ("old name file.txt", "copied target file.txt") in paths
+
+
+@pytest.mark.requires_network
+def test_acquire_authoritative_diff_preserves_a_real_rename_under_directory_named_a(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a").mkdir()
+    (repo / "a" / "foo.py").write_text("content\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+    subprocess.run(["git", "mv", "a/foo.py", "a/bar.py"], cwd=repo, check=True)
+    head_sha = _commit_all(repo, "rename under a/")
+
+    file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert len(file_diffs) == 1
+    assert file_diffs[0].old_path == "a/foo.py"
+    assert file_diffs[0].new_path == "a/bar.py"
+
+
+@pytest.mark.requires_network
+def test_acquire_authoritative_diff_fails_closed_on_a_real_type_change(tmp_path: Path) -> None:
+    """End-to-end reproduction of the object-type-change asymmetry
+    discovered while building this issue: a real regular-file-to-symlink
+    conversion produces one raw 'T' record but two unified blocks. This
+    module fails closed with a dedicated reason code rather than
+    misreporting it as a cardinality mismatch."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "script.sh").write_text("hello\n", encoding="utf-8")
+    (repo / "target.txt").write_text("hello\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+
+    (repo / "target.txt").unlink()
+    (repo / "target.txt").symlink_to("script.sh")
+    head_sha = _commit_all(repo, "convert to symlink")
+
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert excinfo.value.reason_code == RAW_DIFF_TYPE_CHANGE_UNSUPPORTED_REASON_V2
+
+
+@pytest.mark.requires_network
+def test_acquire_raw_diff_fails_closed_on_non_utf8_path_bytes(tmp_path: Path) -> None:
+    """A filename containing a byte sequence that is not valid UTF-8:
+    with -z, git never quotes or escapes it, so the raw stream itself
+    contains the invalid bytes directly. Decoding the whole subprocess
+    output as UTF-8 must fail closed with the same disciplined reason
+    code the rest of this module already uses for undecodable output."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+
+    # Path does not support a bytes path component; construct and open the
+    # non-UTF-8 filename via raw bytes at the os level instead.
+    bad_name_bytes = os.fsencode(str(repo)) + b"/f\xff\xfe.txt"
+    fd = os.open(bad_name_bytes, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        os.write(fd, b"content\n")
+    finally:
+        os.close(fd)
+    head_sha = _commit_all(repo, "add non-utf8 filename")
+
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        acquire_raw_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
     assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
