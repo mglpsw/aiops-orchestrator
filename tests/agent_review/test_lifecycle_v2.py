@@ -15,6 +15,14 @@ from app.agent_review.contracts_v2 import (
     RunIdentityV2,
     compute_run_id,
 )
+from app.agent_review.chunk_result_scope_v2 import (
+    CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2,
+    CHUNK_RESULT_HEAD_MISMATCH_REASON_V2,
+    CROSS_RUN_CHUNK_RESULT_REASON_V2,
+    FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2,
+    SYNTHESIS_EVALUATED_HEAD_MISMATCH_REASON_V2,
+    UNKNOWN_CHUNK_RESULT_REASON_V2,
+)
 from app.agent_review.lifecycle_v2 import (
     DUPLICATE_PRIOR_LIFECYCLE_FINDING_REASON_V2,
     PRIOR_LIFECYCLE_SEVERITY_MISMATCH_REASON_V2,
@@ -133,6 +141,18 @@ def _build_two_chunk_split_manifest() -> ManifestV2:
     return ManifestV2(**material_kwargs, run_id=compute_run_id(identity), identity=identity)
 
 
+def _two_chunk_two_file_manifest() -> tuple[ManifestV2, dict[str, str]]:
+    """Two files, each planned into its own distinct, real chunk_id."""
+
+    manifest = _build_manifest(
+        [_hunk("app/a.py"), _hunk("app/b.py")], expected_files=["app/a.py", "app/b.py"], max_lines_per_chunk=10
+    )
+    chunk_by_fragment = {fid: c.chunk_id for c in manifest.chunks for fid in c.fragment_ids}
+    fragment_by_path = {f.path: f for f in manifest.fragments}
+    chunk_id_by_path = {path: chunk_by_fragment[fragment_by_path[path].fragment_id] for path in ("app/a.py", "app/b.py")}
+    return manifest, chunk_id_by_path
+
+
 def _finding(
     *, finding_id: str, path: str, line_start: int, line_end: int, contract_ids: list[str], severity: FindingSeverityV2 = FindingSeverityV2.P1
 ) -> ChunkFindingV2:
@@ -210,36 +230,151 @@ def test_identical_findings_on_different_fragments_are_not_deduplicated() -> Non
     assert all(f.disposition is FindingDispositionV2.NEW for f in findings)
 
 
-def test_same_root_cause_in_different_chunks_deduplicates_and_retains_all_provenance() -> None:
-    """Two GENUINELY DISTINCT chunk_ids (from a real two-chunk manifest),
-    each independently reporting a finding with an identical ranged root
-    cause, still collapse to one record with both provenances retained --
-    proving dedup keys on root cause, not on chunk identity, whenever a
-    range is present."""
+def test_same_root_cause_reported_twice_by_the_same_chunk_deduplicates_and_retains_all_provenance() -> None:
+    """A single chunk's own response can list the identical ranged root
+    cause twice under two different provider-assigned finding_ids (e.g. two
+    internal rules both flagging the same range) -- this collapses to one
+    record with both provenances retained.
 
-    manifest = _build_manifest(
-        [_hunk("app/a.py"), _hunk("app/b.py")], expected_files=["app/a.py", "app/b.py"], max_lines_per_chunk=10
-    )
-    chunk_id_0, chunk_id_1 = manifest.chunks[0].chunk_id, manifest.chunks[1].chunk_id
-    assert chunk_id_0 != chunk_id_1
-    finding_1 = _finding(finding_id="from-chunk-report-1", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"])
-    finding_2 = _finding(finding_id="from-chunk-report-2", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"])
-    result_1 = _result(
-        run_id=manifest.run_id, chunk_id=chunk_id_0, head_sha=manifest.identity.head_sha,
-        findings=(finding_1,), coverage=_coverage_all_reviewed(["app/a.py"]),
-    )
-    result_2 = _result(
-        run_id=manifest.run_id, chunk_id=chunk_id_1, head_sha=manifest.identity.head_sha,
-        findings=(finding_2,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    This can only legitimately happen WITHIN one chunk for a ranged
+    finding: planner_v2 guarantees two fragments never share a line range,
+    so validate_chunk_results_scope_v2 correctly rejects (as
+    finding_outside_chunk_scope) a SECOND, different real chunk claiming
+    the identical range -- there is no way for two genuinely distinct
+    chunks to legitimately report the same ranged root cause. (An earlier
+    version of this test tried to model "different chunks" by attributing
+    an app/a.py finding to a chunk whose real manifest scope was app/b.py
+    -- exactly the cross-scope claim this module's own hardening now
+    rejects; see test_rejects_a_finding_attributed_to_a_chunk_outside_its_manifest_scope.)
+    """
+
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    finding_1 = _finding(finding_id="from-provider-rule-1", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"])
+    finding_2 = _finding(finding_id="from-provider-rule-2", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"])
+    result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha,
+        findings=(finding_1, finding_2), coverage=_coverage_all_reviewed(["app/a.py"]),
     )
     findings, provenance = aggregate_finding_lifecycle_v2(
-        manifest=manifest, chunk_results=[result_1, result_2], evaluated_head_sha=manifest.identity.head_sha
+        manifest=manifest, chunk_results=[result], evaluated_head_sha=manifest.identity.head_sha
     )
     assert len(findings) == 1
     provenance_entries = provenance[findings[0].finding_id]
     assert len(provenance_entries) == 2
-    assert {p.original_finding_id for p in provenance_entries} == {"from-chunk-report-1", "from-chunk-report-2"}
-    assert {p.chunk_id for p in provenance_entries} == {chunk_id_0, chunk_id_1}
+    assert {p.original_finding_id for p in provenance_entries} == {"from-provider-rule-1", "from-provider-rule-2"}
+    assert {p.chunk_id for p in provenance_entries} == {chunk_id}
+
+
+def test_rejects_a_finding_attributed_to_a_chunk_outside_its_manifest_scope() -> None:
+    """Finding 1 from the independent adversarial review of PR #117:
+    ``aggregate_finding_lifecycle_v2`` used to trust ``chunk_results``
+    wholesale, with no revalidation against the manifest of its own --
+    only the sibling ``synthesis_v2._validate_synthesis_inputs_v2`` did
+    that, so calling this function directly (bypassing
+    ``synthesize_chunk_results_v2``) silently accepted a finding on
+    app/a.py attributed to a chunk whose real manifest fragments are all
+    for app/b.py. This is exactly the scenario the previous version of
+    ``test_same_root_cause_in_different_chunks_deduplicates_and_retains_all_provenance``
+    exercised without realizing it was out of scope."""
+
+    manifest, chunk_id_by_path = _two_chunk_two_file_manifest()
+    out_of_scope_finding = _finding(finding_id="f1", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"])
+    result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id_by_path["app/b.py"], head_sha=manifest.identity.head_sha,
+        findings=(out_of_scope_finding,), coverage=_coverage_all_reviewed(["app/b.py"]),
+    )
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=[result], evaluated_head_sha=manifest.identity.head_sha
+        )
+    assert excinfo.value.reason_code == FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2
+
+
+def test_rejects_a_chunk_result_for_a_chunk_id_that_does_not_exist_in_the_manifest() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    forged_result = _result(
+        run_id=manifest.run_id, chunk_id="chunk-that-does-not-exist", head_sha=manifest.identity.head_sha,
+        findings=(), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=[forged_result], evaluated_head_sha=manifest.identity.head_sha
+        )
+    assert excinfo.value.reason_code == UNKNOWN_CHUNK_RESULT_REASON_V2
+
+
+def test_rejects_a_chunk_result_from_a_different_run() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    foreign_result = _result(
+        run_id="f" * 64, chunk_id=chunk_id, head_sha=manifest.identity.head_sha,
+        findings=(), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=[foreign_result], evaluated_head_sha=manifest.identity.head_sha
+        )
+    assert excinfo.value.reason_code == CROSS_RUN_CHUNK_RESULT_REASON_V2
+
+
+def test_rejects_a_chunk_result_whose_head_sha_diverges_from_the_manifest_identity() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    stale_result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id, head_sha="9" * 40,
+        findings=(), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=[stale_result], evaluated_head_sha=manifest.identity.head_sha
+        )
+    assert excinfo.value.reason_code == CHUNK_RESULT_HEAD_MISMATCH_REASON_V2
+
+
+def test_rejects_aggregation_whose_evaluated_head_sha_diverges_from_the_manifest_identity() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha,
+        findings=(), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(manifest=manifest, chunk_results=[result], evaluated_head_sha="9" * 40)
+    assert excinfo.value.reason_code == SYNTHESIS_EVALUATED_HEAD_MISMATCH_REASON_V2
+
+
+def test_rejects_a_chunk_result_claiming_coverage_of_a_path_outside_its_own_chunk() -> None:
+    manifest, chunk_id_by_path = _two_chunk_two_file_manifest()
+    overclaiming_result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id_by_path["app/a.py"], head_sha=manifest.identity.head_sha,
+        findings=(), coverage=_coverage_all_reviewed(["app/a.py", "app/b.py"]),
+    )
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=[overclaiming_result], evaluated_head_sha=manifest.identity.head_sha
+        )
+    assert excinfo.value.reason_code == CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2
+
+
+def test_rejects_a_finding_whose_line_range_belongs_to_a_different_chunks_fragment_on_the_same_split_path() -> None:
+    """Same path (structurally split across chunk-0/chunk-1), finding
+    reported by chunk-0 but whose line range only exists inside chunk-1's
+    own fragment -- a file-path match alone must not be enough, even
+    though a file-level (no-range) claim on the same shared path would be
+    legitimate for either chunk."""
+
+    manifest = _build_two_chunk_split_manifest()
+    finding = _finding(finding_id="f1", path="app/a.py", line_start=10, line_end=14, contract_ids=["c1"])
+    result = _result(
+        run_id=manifest.run_id, chunk_id="chunk-0", head_sha=manifest.identity.head_sha,
+        findings=(finding,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=[result], evaluated_head_sha=manifest.identity.head_sha
+        )
+    assert excinfo.value.reason_code == FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2
 
 
 def test_two_models_agreeing_stays_new_never_confirmed() -> None:
@@ -601,18 +736,15 @@ def test_reordering_file_level_split_chunk_results_does_not_change_ids_or_result
 
 
 def test_reordering_chunk_results_does_not_change_the_output() -> None:
-    manifest = _build_manifest([_hunk("app/a.py"), _hunk("app/b.py")], expected_files=["app/a.py", "app/b.py"])
+    manifest, chunk_id_by_path = _two_chunk_two_file_manifest()
     finding_a = _finding(finding_id="fa", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"])
     finding_b = _finding(finding_id="fb", path="app/b.py", line_start=1, line_end=10, contract_ids=["c2"])
 
-    fragment_by_path = {f.path: f for f in manifest.fragments}
-    chunk_by_fragment = {fid: c.chunk_id for c in manifest.chunks for fid in c.fragment_ids}
     results = []
     for path, finding in (("app/a.py", finding_a), ("app/b.py", finding_b)):
-        chunk_id = chunk_by_fragment[fragment_by_path[path].fragment_id]
         results.append(
             _result(
-                run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha,
+                run_id=manifest.run_id, chunk_id=chunk_id_by_path[path], head_sha=manifest.identity.head_sha,
                 findings=(finding,), coverage=_coverage_all_reviewed([path]),
             )
         )

@@ -28,8 +28,11 @@ nothing about whether the result's HEAD, coverage, or findings are
 consistent with what this manifest's own chunk actually describes. This
 module treats every ``ParsedChunkResultV2`` as untrusted downstream input
 and revalidates it deterministically against ``manifest`` before any
-aggregation: HEAD identity, chunk membership, coverage scope, and per-finding
-scope must all match the manifest's own structure, or synthesis fails closed.
+aggregation, via ``chunk_result_scope_v2.validate_chunk_results_scope_v2`` --
+the single shared authority also used independently by
+``lifecycle_v2.aggregate_finding_lifecycle_v2``: HEAD identity, chunk
+membership, coverage scope, and per-finding scope must all match the
+manifest's own structure, or synthesis fails closed.
 
 Deliberately out of scope, per the issue: readiness, quality gate,
 publication, Router/provider, target workflow, Codex, release, any CLI, and
@@ -46,9 +49,21 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from app.agent_review.contracts_v2 import ChunkFindingV2, FindingLifecycleRecordV2
-from app.agent_review.lifecycle_v2 import FindingProvenanceV2, aggregate_finding_lifecycle_v2
-from app.agent_review.manifest_v2 import FragmentV2, ManifestV2
+from app.agent_review.chunk_result_scope_v2 import (
+    CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2,
+    CHUNK_RESULT_HEAD_MISMATCH_REASON_V2,
+    CROSS_RUN_CHUNK_RESULT_REASON_V2,
+    DUPLICATE_CHUNK_RESULT_REASON_V2,
+    FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2,
+    INVALID_CHUNK_RESULT_TYPE_REASON_V2,
+    SYNTHESIS_EVALUATED_HEAD_MISMATCH_REASON_V2,
+    UNKNOWN_CHUNK_RESULT_REASON_V2,
+    ChunkResultScopeError,
+    validate_chunk_results_scope_v2,
+)
+from app.agent_review.contracts_v2 import FindingLifecycleRecordV2
+from app.agent_review.lifecycle_v2 import FindingProvenanceV2, _aggregate_finding_lifecycle_core_v2
+from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.parser_v2 import ParsedChunkResultV2
 from app.agent_review.run_fragment_coverage_v2 import (
     RunFragmentCoverageEntryV2,
@@ -60,15 +75,7 @@ from app.agent_review.run_fragment_coverage_v2 import (
     compute_fragment_coverage_status_v2,
 )
 
-CROSS_RUN_CHUNK_RESULT_REASON_V2 = "cross_run_chunk_result"
-INVALID_CHUNK_RESULT_TYPE_REASON_V2 = "invalid_chunk_result_type"
-DUPLICATE_CHUNK_RESULT_REASON_V2 = "duplicate_chunk_result"
 FRAGMENTLESS_EXPECTED_FILE_REASON_V2 = "fragmentless_expected_file"
-UNKNOWN_CHUNK_RESULT_REASON_V2 = "unknown_chunk_result"
-CHUNK_RESULT_HEAD_MISMATCH_REASON_V2 = "chunk_result_head_mismatch"
-SYNTHESIS_EVALUATED_HEAD_MISMATCH_REASON_V2 = "synthesis_evaluated_head_mismatch"
-CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2 = "chunk_result_coverage_scope_mismatch"
-FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2 = "finding_outside_chunk_scope"
 
 _COVERAGE_REPORT_SCHEMA_ID_V2 = "agent-review.run-fragment-coverage.v2"
 _COVERAGE_REPORT_SOURCE_V2 = "aiops-review-fragment-coverage"
@@ -233,84 +240,6 @@ def _build_coverage_report(
     )
 
 
-def _finding_within_chunk_fragments_v2(
-    *,
-    fragments_by_id: Mapping[str, FragmentV2],
-    chunk_fragment_ids: Sequence[str],
-    finding: ChunkFindingV2,
-) -> bool:
-    if finding.line_start is None or finding.line_end is None:
-        return True
-    for fragment_id in chunk_fragment_ids:
-        fragment = fragments_by_id[fragment_id]
-        if fragment.path != finding.file_path:
-            continue
-        if fragment.new_range.start <= finding.line_start and finding.line_end <= fragment.new_range.end:
-            return True
-    return False
-
-
-def _validate_synthesis_inputs_v2(
-    *,
-    manifest: ManifestV2,
-    chunk_results: Sequence[ParsedChunkResultV2],
-    evaluated_head_sha: str,
-) -> Mapping[str, ParsedChunkResultV2]:
-    """Revalidate every ``ParsedChunkResultV2`` against ``manifest``'s own
-    structure before any aggregation is allowed to consume it.
-
-    A genuinely bound result (``parser_v2.parse_bound_chunk_response_v2``)
-    always already satisfies every check here -- ``BoundChunkResponseV2``
-    and ``validate_response_binding_v2`` guarantee it upstream. This
-    function exists because ``ParsedChunkResultV2`` itself carries no proof
-    of that upstream binding: it is a plain, freely constructible value, so
-    a hand-built or malformed instance sharing this manifest's ``run_id``
-    must still be caught here, not assumed correct from its type alone.
-    """
-
-    if evaluated_head_sha != manifest.identity.head_sha:
-        raise SynthesisErrorV2(SYNTHESIS_EVALUATED_HEAD_MISMATCH_REASON_V2)
-
-    fragments_by_id = {fragment.fragment_id: fragment for fragment in manifest.fragments}
-    chunks_by_id = {chunk.chunk_id: chunk for chunk in manifest.chunks}
-    chunk_paths_by_id = {
-        chunk.chunk_id: {fragments_by_id[fid].path for fid in chunk.fragment_ids} for chunk in manifest.chunks
-    }
-    must_review_files = set(manifest.must_review_files)
-
-    results_by_chunk_id: dict[str, ParsedChunkResultV2] = {}
-    for result in chunk_results:
-        if not isinstance(result, ParsedChunkResultV2):
-            raise SynthesisErrorV2(INVALID_CHUNK_RESULT_TYPE_REASON_V2)
-        if result.run_id != manifest.run_id:
-            raise SynthesisErrorV2(CROSS_RUN_CHUNK_RESULT_REASON_V2)
-        if result.chunk_id in results_by_chunk_id:
-            raise SynthesisErrorV2(DUPLICATE_CHUNK_RESULT_REASON_V2)
-        if result.chunk_id not in chunks_by_id:
-            raise SynthesisErrorV2(UNKNOWN_CHUNK_RESULT_REASON_V2)
-        if result.head_sha != manifest.identity.head_sha:
-            raise SynthesisErrorV2(CHUNK_RESULT_HEAD_MISMATCH_REASON_V2)
-
-        chunk = chunks_by_id[result.chunk_id]
-        chunk_paths = chunk_paths_by_id[result.chunk_id]
-        if set(result.coverage.expected_files) != chunk_paths:
-            raise SynthesisErrorV2(CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2)
-        if set(result.coverage.must_review_files) != (chunk_paths & must_review_files):
-            raise SynthesisErrorV2(CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2)
-
-        for finding in result.findings:
-            if finding.file_path not in chunk_paths:
-                raise SynthesisErrorV2(FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2)
-            if not _finding_within_chunk_fragments_v2(
-                fragments_by_id=fragments_by_id, chunk_fragment_ids=chunk.fragment_ids, finding=finding
-            ):
-                raise SynthesisErrorV2(FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2)
-
-        results_by_chunk_id[result.chunk_id] = result
-
-    return results_by_chunk_id
-
-
 def synthesize_chunk_results_v2(
     *,
     manifest: ManifestV2,
@@ -326,14 +255,25 @@ def synthesize_chunk_results_v2(
     a valid result whose coverage report honestly reports what is missing.
     """
 
-    results_by_chunk_id = _validate_synthesis_inputs_v2(
-        manifest=manifest, chunk_results=chunk_results, evaluated_head_sha=evaluated_head_sha
-    )
+    try:
+        results_by_chunk_id = validate_chunk_results_scope_v2(
+            manifest=manifest, chunk_results=chunk_results, evaluated_head_sha=evaluated_head_sha
+        )
+    except ChunkResultScopeError as exc:
+        raise SynthesisErrorV2(exc.reason_code) from exc
 
     coverage_report = _build_coverage_report(manifest=manifest, results_by_chunk_id=results_by_chunk_id)
-    findings, provenance = aggregate_finding_lifecycle_v2(
+    # Calls lifecycle_v2's private core directly, on the SAME
+    # already-validated mapping this function just produced, rather than
+    # the public aggregate_finding_lifecycle_v2 -- which independently
+    # calls validate_chunk_results_scope_v2 itself for any OTHER caller.
+    # Re-running that same check a second time here would be redundant,
+    # not additional safety: this composed path is safe because it is the
+    # SAME single authority, called once, not because either side trusts
+    # the other's say-so.
+    findings, provenance = _aggregate_finding_lifecycle_core_v2(
         manifest=manifest,
-        chunk_results=chunk_results,
+        results_by_chunk_id=results_by_chunk_id,
         evaluated_head_sha=evaluated_head_sha,
         prior_lifecycle=prior_lifecycle,
     )

@@ -30,6 +30,16 @@ collapses to one ``new`` record, not a ``confirmed`` one.
 ``ReadinessStateV2.STALE`` is a different concept entirely, computed later
 by #108 from HEAD/identity divergence at the run level -- not from any
 finding's own ``disposition``. Nothing here conflates the two.
+
+``aggregate_finding_lifecycle_v2`` is a public entry point in its own
+right, independent of ``synthesis_v2.synthesize_chunk_results_v2`` -- so it
+revalidates ``chunk_results`` itself, via the same shared
+``chunk_result_scope_v2.validate_chunk_results_scope_v2`` authority
+``synthesize_chunk_results_v2`` uses, rather than trusting that some other
+caller already did. There is no "already validated" flag to skip this: a
+direct call with an out-of-scope ``chunk_id``, a stale HEAD, or a finding
+claiming a path/range outside its chunk is rejected here exactly as it
+would be there.
 """
 
 from __future__ import annotations
@@ -39,6 +49,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from app.agent_review.chunk_result_scope_v2 import ChunkResultScopeError, validate_chunk_results_scope_v2
 from app.agent_review.contracts_v2 import ChunkFindingV2, FindingDispositionV2, FindingLifecycleRecordV2
 from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.parser_v2 import ParsedChunkResultV2
@@ -167,6 +178,11 @@ def aggregate_finding_lifecycle_v2(
     provenance for every chunk that observed it, and merge in any
     already-decided ``prior_lifecycle`` records.
 
+    ``chunk_results`` is revalidated against ``manifest`` by
+    ``chunk_result_scope_v2.validate_chunk_results_scope_v2`` before any
+    finding in it is trusted -- this function is a public entry point in
+    its own right and does not assume some other caller already did this.
+
     ``prior_lifecycle`` entries must already be revalidated for
     ``evaluated_head_sha`` -- i.e. ``record.observed_at_head_sha ==
     evaluated_head_sha``, and for any non-``new`` disposition,
@@ -174,21 +190,53 @@ def aggregate_finding_lifecycle_v2(
     well -- by whatever produced them (a human decision process, or a
     caller re-stamping a persistent decision onto a new HEAD). This
     function does not, and cannot, fabricate that revalidation itself: it
-    only accepts already-valid records or rejects fail-closed, the same way
-    it treats every ``ParsedChunkResultV2`` as untrusted input rather than
-    assuming ``isinstance`` implies genuine binding. A finding_id is
-    deterministic (a hash of its dedup key), so the same underlying defect
-    re-observed in a later run naturally matches a prior decision for it,
-    letting that decision persist instead of reverting to ``new`` -- but
-    only if the prior's own recorded severity still agrees with what is
-    observed now; a mismatch is rejected fail-closed, never silently
-    overwritten by the freshly observed value.
+    only accepts already-valid records or rejects fail-closed. A
+    finding_id is deterministic (a hash of its dedup key), so the same
+    underlying defect re-observed in a later run naturally matches a prior
+    decision for it, letting that decision persist instead of reverting to
+    ``new`` -- but only if the prior's own recorded severity still agrees
+    with what is observed now; a mismatch is rejected fail-closed, never
+    silently overwritten by the freshly observed value.
+    """
+
+    try:
+        results_by_chunk_id = validate_chunk_results_scope_v2(
+            manifest=manifest, chunk_results=chunk_results, evaluated_head_sha=evaluated_head_sha
+        )
+    except ChunkResultScopeError as exc:
+        raise LifecycleAggregationError(exc.reason_code) from exc
+
+    return _aggregate_finding_lifecycle_core_v2(
+        manifest=manifest,
+        results_by_chunk_id=results_by_chunk_id,
+        evaluated_head_sha=evaluated_head_sha,
+        prior_lifecycle=prior_lifecycle,
+    )
+
+
+def _aggregate_finding_lifecycle_core_v2(
+    *,
+    manifest: ManifestV2,
+    results_by_chunk_id: Mapping[str, ParsedChunkResultV2],
+    evaluated_head_sha: str,
+    prior_lifecycle: Sequence[FindingLifecycleRecordV2] = (),
+) -> tuple[tuple[FindingLifecycleRecordV2, ...], Mapping[str, tuple[FindingProvenanceV2, ...]]]:
+    """Internal core shared by ``aggregate_finding_lifecycle_v2`` and
+    ``synthesis_v2.synthesize_chunk_results_v2``. Takes a ``chunk_id``-keyed
+    mapping that MUST already have passed
+    ``chunk_result_scope_v2.validate_chunk_results_scope_v2`` -- this
+    function performs no scope revalidation of its own, precisely so that
+    the composed ``synthesize_chunk_results_v2`` path (which validates once
+    to build its coverage report, then reuses the same validated mapping
+    here) does not pay for that check twice. Never call this directly with
+    an unvalidated mapping; the only two call sites are the public wrapper
+    above and ``synthesis_v2.py``.
     """
 
     prior_by_id = _validate_prior_lifecycle_v2(prior_lifecycle, evaluated_head_sha)
 
     observations: dict[tuple, list[tuple[str, ChunkFindingV2]]] = {}
-    for result in chunk_results:
+    for result in results_by_chunk_id.values():
         for finding in result.findings:
             key = _dedup_key(result.chunk_id, finding)
             observations.setdefault(key, []).append((result.chunk_id, finding))
