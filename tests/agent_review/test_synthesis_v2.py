@@ -31,9 +31,14 @@ from app.agent_review.run_fragment_coverage_v2 import (
     bind_coverage_report_to_manifest_v2,
 )
 from app.agent_review.synthesis_v2 import (
+    CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2,
+    CHUNK_RESULT_HEAD_MISMATCH_REASON_V2,
     CROSS_RUN_CHUNK_RESULT_REASON_V2,
     DUPLICATE_CHUNK_RESULT_REASON_V2,
+    FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2,
     INVALID_CHUNK_RESULT_TYPE_REASON_V2,
+    SYNTHESIS_EVALUATED_HEAD_MISMATCH_REASON_V2,
+    UNKNOWN_CHUNK_RESULT_REASON_V2,
     SynthesisErrorV2,
     synthesize_chunk_results_v2,
 )
@@ -377,3 +382,134 @@ def test_findings_flow_through_to_the_synthesis_result() -> None:
     assert len(synthesis.findings) == 1
     assert synthesis.findings[0].disposition is FindingDispositionV2.NEW
     assert synthesis.findings[0].finding_id in synthesis.provenance
+
+
+# -- boundary hardening: ParsedChunkResultV2 is a freely constructible value --
+# -- and carries no seal proving it came from parse_bound_chunk_response_v2. --
+# -- Every claim it makes is revalidated against the manifest's own scope. ---
+
+
+def _two_chunk_two_file_manifest() -> tuple[ManifestV2, dict[str, str]]:
+    """Two files, each planned into its own distinct chunk."""
+
+    manifest = _build_manifest(
+        [_hunk("app/a.py"), _hunk("app/b.py")], expected_files=["app/a.py", "app/b.py"], max_lines_per_chunk=10
+    )
+    chunk_by_fragment = {fid: c.chunk_id for c in manifest.chunks for fid in c.fragment_ids}
+    fragment_by_path = {f.path: f for f in manifest.fragments}
+    chunk_id_by_path = {path: chunk_by_fragment[fragment_by_path[path].fragment_id] for path in ("app/a.py", "app/b.py")}
+    return manifest, chunk_id_by_path
+
+
+def test_rejects_a_chunk_result_for_a_chunk_id_that_does_not_exist_in_the_manifest() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    forged_result = _result(
+        run_id=manifest.run_id, chunk_id="chunk-that-does-not-exist", head_sha=manifest.identity.head_sha,
+        coverage=_coverage(["app/a.py"], reviewed=["app/a.py"]),
+    )
+    with pytest.raises(SynthesisErrorV2) as excinfo:
+        synthesize_chunk_results_v2(manifest=manifest, chunk_results=[forged_result], evaluated_head_sha=manifest.identity.head_sha)
+    assert excinfo.value.reason_code == UNKNOWN_CHUNK_RESULT_REASON_V2
+
+
+def test_rejects_a_chunk_result_whose_head_sha_diverges_from_the_manifest_identity() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    stale_result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id, head_sha="9" * 40,
+        coverage=_coverage(["app/a.py"], reviewed=["app/a.py"]),
+    )
+    with pytest.raises(SynthesisErrorV2) as excinfo:
+        synthesize_chunk_results_v2(manifest=manifest, chunk_results=[stale_result], evaluated_head_sha=manifest.identity.head_sha)
+    assert excinfo.value.reason_code == CHUNK_RESULT_HEAD_MISMATCH_REASON_V2
+
+
+def test_rejects_synthesis_whose_evaluated_head_sha_diverges_from_the_manifest_identity() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha,
+        coverage=_coverage(["app/a.py"], reviewed=["app/a.py"]),
+    )
+    with pytest.raises(SynthesisErrorV2) as excinfo:
+        synthesize_chunk_results_v2(manifest=manifest, chunk_results=[result], evaluated_head_sha="9" * 40)
+    assert excinfo.value.reason_code == SYNTHESIS_EVALUATED_HEAD_MISMATCH_REASON_V2
+
+
+def test_rejects_a_chunk_result_claiming_coverage_of_a_path_outside_its_own_chunk() -> None:
+    manifest, chunk_id_by_path = _two_chunk_two_file_manifest()
+    overclaiming_result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id_by_path["app/a.py"], head_sha=manifest.identity.head_sha,
+        coverage=_coverage(["app/a.py", "app/b.py"], reviewed=["app/a.py", "app/b.py"]),
+    )
+    with pytest.raises(SynthesisErrorV2) as excinfo:
+        synthesize_chunk_results_v2(
+            manifest=manifest, chunk_results=[overclaiming_result], evaluated_head_sha=manifest.identity.head_sha
+        )
+    assert excinfo.value.reason_code == CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2
+
+
+def test_rejects_a_chunk_result_claiming_must_review_for_a_path_the_manifest_never_marked_must_review() -> None:
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    # override must_review_files to [] at the manifest-material level would break
+    # identity binding, so instead assert the coverage claim disagrees with the
+    # manifest's own must_review_files directly via a hand-built coverage object.
+    chunk_id = manifest.chunks[0].chunk_id
+    assert manifest.must_review_files == ["app/a.py"]
+    coverage = ChunkCoverageV2(
+        status="complete", expected_files=["app/a.py"], reviewed_files=["app/a.py"], partially_reviewed_files=[],
+        missing_files=[], must_review_files=[], missing_must_review_files=[], degradation_causes=[],
+    )
+    result = _result(run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha, coverage=coverage)
+    with pytest.raises(SynthesisErrorV2) as excinfo:
+        synthesize_chunk_results_v2(manifest=manifest, chunk_results=[result], evaluated_head_sha=manifest.identity.head_sha)
+    assert excinfo.value.reason_code == CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2
+
+
+def test_rejects_a_finding_whose_file_path_belongs_to_a_different_chunk() -> None:
+    manifest, chunk_id_by_path = _two_chunk_two_file_manifest()
+    finding = _finding(finding_id="f1", path="app/b.py")
+    result = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id_by_path["app/a.py"], head_sha=manifest.identity.head_sha,
+        findings=(finding,), coverage=_coverage(["app/a.py"], reviewed=["app/a.py"]),
+    )
+    with pytest.raises(SynthesisErrorV2) as excinfo:
+        synthesize_chunk_results_v2(manifest=manifest, chunk_results=[result], evaluated_head_sha=manifest.identity.head_sha)
+    assert excinfo.value.reason_code == FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2
+
+
+def test_rejects_a_finding_whose_line_range_belongs_to_a_different_chunks_fragment_on_the_same_path() -> None:
+    """Same path (structurally split across chunk-0/chunk-1), finding reported
+    by chunk-0 but whose line range only exists inside chunk-1's own
+    fragment -- a file-path match alone must not be enough."""
+
+    manifest = _build_two_chunk_split_manifest()
+    finding = _finding(finding_id="f1", path="app/a.py", line_start=10, line_end=14)
+    result = _result(
+        run_id=manifest.run_id, chunk_id="chunk-0", head_sha=manifest.identity.head_sha,
+        findings=(finding,), coverage=_coverage(["app/a.py"], reviewed=["app/a.py"]),
+    )
+    with pytest.raises(SynthesisErrorV2) as excinfo:
+        synthesize_chunk_results_v2(manifest=manifest, chunk_results=[result], evaluated_head_sha=manifest.identity.head_sha)
+    assert excinfo.value.reason_code == FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2
+
+
+def test_a_genuine_multi_chunk_multi_finding_result_still_synthesizes_cleanly() -> None:
+    """The hardening must not reject a well-formed multi-chunk run: each
+    chunk's coverage and findings genuinely stay within its own scope."""
+
+    manifest, chunk_id_by_path = _two_chunk_two_file_manifest()
+    finding_a = _finding(finding_id="fa", path="app/a.py", line_start=1, line_end=5)
+    finding_b = _finding(finding_id="fb", path="app/b.py", line_start=1, line_end=5, contract_ids=["c2"])
+    result_a = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id_by_path["app/a.py"], head_sha=manifest.identity.head_sha,
+        findings=(finding_a,), coverage=_coverage(["app/a.py"], reviewed=["app/a.py"]),
+    )
+    result_b = _result(
+        run_id=manifest.run_id, chunk_id=chunk_id_by_path["app/b.py"], head_sha=manifest.identity.head_sha,
+        findings=(finding_b,), coverage=_coverage(["app/b.py"], reviewed=["app/b.py"]),
+    )
+    synthesis = synthesize_chunk_results_v2(
+        manifest=manifest, chunk_results=[result_a, result_b], evaluated_head_sha=manifest.identity.head_sha
+    )
+    assert len(synthesis.findings) == 2
