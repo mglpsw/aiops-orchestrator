@@ -96,7 +96,7 @@ class FindingProvenanceV2:
     original_finding_id: str
 
 
-def _dedup_key(chunk_id: str, finding: ChunkFindingV2) -> tuple[object, ...]:
+def _dedup_key(file_level_scope_id: tuple[str, ...], finding: ChunkFindingV2) -> tuple[object, ...]:
     """Two findings collapse into one only if they share the same root
     cause -- never merely the same title or evidence text, and NOT
     severity.
@@ -124,15 +124,25 @@ def _dedup_key(chunk_id: str, finding: ChunkFindingV2) -> tuple[object, ...]:
     file-level claims from two different chunks on the same structurally
     divided path into one record, destroying the per-chunk provenance
     separation the coverage report itself preserves (see synthesis_v2.py's
-    structural_split handling). ``chunk_id`` is folded into the key for
-    this case instead -- it does not invent a fragment identity the
-    finding never claimed, it just keeps two chunks' independent
-    file-level claims from being conflated. Two identical file-level
-    findings observed by the *same* chunk still dedupe, since chunk_id is
-    then equal."""
+    structural_split handling). ``file_level_scope_id`` is folded into the
+    key for this case instead of the chunk's own ``chunk_id``: it is the
+    sorted tuple of ``fragment_id``s (content-derived hashes of
+    path/range/diff, ``compute_fragment_id_v2``) that this path contributes
+    to this specific chunk -- never a chunk's positional label
+    (``planner_v2.plan_lossless_chunks_v2`` assigns ``chunk_id`` as
+    ``f"{prefix}-{order_index:04d}"``, a bin-packing ordinal, not content).
+    ``manifest_v2.py`` guarantees a fragment is never assigned to more than
+    one chunk, so this set is chunk-exclusive by contract -- using it keeps
+    two chunks' independent file-level claims from being conflated exactly
+    as ``chunk_id`` did, but WITHOUT tying finding identity to how the
+    packer happened to order or label its bins. Two identical file-level
+    findings observed by the *same* chunk still dedupe, since the fragment
+    set for that path is then equal; re-planning the identical diff content
+    into a differently-ORDERED or differently-LABELED (but same-fragment)
+    chunk assignment no longer changes the finding_id."""
 
     if finding.line_start is None or finding.line_end is None:
-        return ("file_level", finding.file_path, chunk_id, tuple(sorted(finding.contract_ids)))
+        return ("file_level", finding.file_path, file_level_scope_id, tuple(sorted(finding.contract_ids)))
     return (
         "ranged",
         finding.file_path,
@@ -270,10 +280,24 @@ def _aggregate_finding_lifecycle_core_v2(
 
     prior_by_id = _validate_prior_lifecycle_v2(prior_lifecycle, evaluated_head_sha)
 
+    # Content-derived discriminator for file-level (no-range) findings:
+    # for each (chunk_id, path), the sorted tuple of fragment_ids that path
+    # contributes to that chunk. See _dedup_key's docstring for why this
+    # replaces the chunk's own (positional, bin-packing-ordinal) chunk_id.
+    fragment_by_id = {fragment.fragment_id: fragment for fragment in manifest.fragments}
+    file_level_scope_by_chunk_and_path: dict[tuple[str, str], tuple[str, ...]] = {}
+    for chunk in manifest.chunks:
+        fragment_ids_by_path: dict[str, list[str]] = {}
+        for fragment_id in chunk.fragment_ids:
+            fragment_ids_by_path.setdefault(fragment_by_id[fragment_id].path, []).append(fragment_id)
+        for path, fragment_ids in fragment_ids_by_path.items():
+            file_level_scope_by_chunk_and_path[(chunk.chunk_id, path)] = tuple(sorted(fragment_ids))
+
     observations: dict[tuple, list[tuple[str, ChunkFindingV2]]] = {}
     for result in results_by_chunk_id.values():
         for finding in result.findings:
-            key = _dedup_key(result.chunk_id, finding)
+            file_level_scope_id = file_level_scope_by_chunk_and_path.get((result.chunk_id, finding.file_path), ())
+            key = _dedup_key(file_level_scope_id, finding)
             observations.setdefault(key, []).append((result.chunk_id, finding))
 
     findings_out: list[FindingLifecycleRecordV2] = []

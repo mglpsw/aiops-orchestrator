@@ -103,22 +103,27 @@ def _build_manifest(
     return ManifestV2(**material_kwargs, run_id=compute_run_id(identity), identity=identity)
 
 
-def _build_two_chunk_split_manifest() -> ManifestV2:
+def _split_fragment(seed: bytes, path: str, start: int) -> FragmentV2:
+    diff_sha = hashlib.sha256(seed).hexdigest()
+    old_range = LineRangeV2(start=start, end=start + 4)
+    new_range = LineRangeV2(start=start, end=start + 4)
+    fragment_id = compute_fragment_id_v2(path=path, old_range=old_range, new_range=new_range, diff_sha256=diff_sha)
+    return FragmentV2(
+        fragment_id=fragment_id, path=path, old_range=old_range, new_range=new_range,
+        hunk_indexes=[0], diff_chars=10, diff_sha256=diff_sha, coverage_required=True,
+    )
+
+
+def _build_two_chunk_split_manifest(
+    *, chunk_id_a: str = "chunk-0", chunk_id_b: str = "chunk-1", order_a: int = 0, order_b: int = 1
+) -> ManifestV2:
     """A hand-built manifest with ONE path whose two fragments are
-    genuinely assigned to TWO different, real chunk_ids."""
+    genuinely assigned to TWO different, real chunk_ids -- chunk_id/order
+    labels are parameterized so a test can prove finding_id is stable
+    under relabeling of the SAME underlying fragment content."""
 
-    def _fragment(seed: bytes, path: str, start: int) -> FragmentV2:
-        diff_sha = hashlib.sha256(seed).hexdigest()
-        old_range = LineRangeV2(start=start, end=start + 4)
-        new_range = LineRangeV2(start=start, end=start + 4)
-        fragment_id = compute_fragment_id_v2(path=path, old_range=old_range, new_range=new_range, diff_sha256=diff_sha)
-        return FragmentV2(
-            fragment_id=fragment_id, path=path, old_range=old_range, new_range=new_range,
-            hunk_indexes=[0], diff_chars=10, diff_sha256=diff_sha, coverage_required=True,
-        )
-
-    fragment_1 = _fragment(b"lifecycle-split-1", "app/a.py", 1)
-    fragment_2 = _fragment(b"lifecycle-split-2", "app/a.py", 10)
+    fragment_1 = _split_fragment(b"lifecycle-split-1", "app/a.py", 1)
+    fragment_2 = _split_fragment(b"lifecycle-split-2", "app/a.py", 10)
     material_kwargs = {
         "schema_id": "agent-review.manifest.v2",
         "schema_version": 2,
@@ -127,9 +132,9 @@ def _build_two_chunk_split_manifest() -> ManifestV2:
         "must_review_files": ["app/a.py"],
         "fragments": [fragment_1, fragment_2],
         "chunks": [
-            ManifestChunkV2(chunk_id="chunk-0", order_index=0, semantic_group="primary_backend_logic",
+            ManifestChunkV2(chunk_id=chunk_id_a, order_index=order_a, semantic_group="primary_backend_logic",
                              fragment_ids=[fragment_1.fragment_id], payload_sha256=None),
-            ManifestChunkV2(chunk_id="chunk-1", order_index=1, semantic_group="primary_backend_logic",
+            ManifestChunkV2(chunk_id=chunk_id_b, order_index=order_b, semantic_group="primary_backend_logic",
                              fragment_ids=[fragment_2.fragment_id], payload_sha256=None),
         ],
         "max_chunks": 10,
@@ -793,3 +798,71 @@ def test_reordering_chunk_results_does_not_change_the_output() -> None:
         manifest=manifest, chunk_results=list(reversed(results)), evaluated_head_sha=manifest.identity.head_sha
     )
     assert forward == reversed_findings
+
+
+# -- own review finding: file-level finding_id must not depend on the ---------
+# -- planner's positional chunk_id label/order for the SAME fragment content -
+
+
+def test_file_level_finding_id_is_stable_under_relabeling_of_the_same_fragment_content() -> None:
+    """A chunk_id (``planner_v2.plan_lossless_chunks_v2``: ``f"{prefix}-
+    {order_index:04d}"``) is a bin-packing ordinal, not content. Re-planning
+    the IDENTICAL underlying diff -- same fragments, same path grouping --
+    into differently-labeled or differently-ordered chunks must not change
+    the finding_id of a file-level finding on the shared path, or a retry at
+    the same HEAD would silently orphan prior lifecycle decisions."""
+
+    manifest_original = _build_two_chunk_split_manifest(chunk_id_a="chunk-0", chunk_id_b="chunk-1", order_a=0, order_b=1)
+    manifest_relabeled = _build_two_chunk_split_manifest(
+        chunk_id_a="segment-99", chunk_id_b="segment-42", order_a=1, order_b=0
+    )
+    assert manifest_original.run_id != manifest_relabeled.run_id  # genuinely different manifests/runs
+
+    finding_original = _file_level_finding(finding_id="from-original", path="app/a.py", contract_ids=["c1"])
+    result_original = _result(
+        run_id=manifest_original.run_id, chunk_id="chunk-0", head_sha=manifest_original.identity.head_sha,
+        findings=(finding_original,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    findings_original, _ = aggregate_finding_lifecycle_v2(
+        manifest=manifest_original, chunk_results=[result_original], evaluated_head_sha=manifest_original.identity.head_sha
+    )
+
+    finding_relabeled = _file_level_finding(finding_id="from-relabeled", path="app/a.py", contract_ids=["c1"])
+    result_relabeled = _result(
+        run_id=manifest_relabeled.run_id, chunk_id="segment-99", head_sha=manifest_relabeled.identity.head_sha,
+        findings=(finding_relabeled,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    findings_relabeled, _ = aggregate_finding_lifecycle_v2(
+        manifest=manifest_relabeled, chunk_results=[result_relabeled], evaluated_head_sha=manifest_relabeled.identity.head_sha
+    )
+
+    assert findings_original[0].finding_id == findings_relabeled[0].finding_id
+
+
+def test_file_level_finding_id_still_differs_when_the_underlying_fragment_set_genuinely_differs() -> None:
+    """The stability proven above must not degrade into ignoring content --
+    a genuinely different fragment split for the same path (e.g. only one
+    chunk instead of two) still produces a different finding_id."""
+
+    manifest_split = _build_two_chunk_split_manifest()
+    finding_split = _file_level_finding(finding_id="f-split", path="app/a.py", contract_ids=["c1"])
+    result_split = _result(
+        run_id=manifest_split.run_id, chunk_id="chunk-0", head_sha=manifest_split.identity.head_sha,
+        findings=(finding_split,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    findings_split, _ = aggregate_finding_lifecycle_v2(
+        manifest=manifest_split, chunk_results=[result_split], evaluated_head_sha=manifest_split.identity.head_sha
+    )
+
+    manifest_unsplit = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest_unsplit.chunks[0].chunk_id
+    finding_unsplit = _file_level_finding(finding_id="f-unsplit", path="app/a.py", contract_ids=["c1"])
+    result_unsplit = _result(
+        run_id=manifest_unsplit.run_id, chunk_id=chunk_id, head_sha=manifest_unsplit.identity.head_sha,
+        findings=(finding_unsplit,), coverage=_coverage_all_reviewed(["app/a.py"]),
+    )
+    findings_unsplit, _ = aggregate_finding_lifecycle_v2(
+        manifest=manifest_unsplit, chunk_results=[result_unsplit], evaluated_head_sha=manifest_unsplit.identity.head_sha
+    )
+
+    assert findings_split[0].finding_id != findings_unsplit[0].finding_id
