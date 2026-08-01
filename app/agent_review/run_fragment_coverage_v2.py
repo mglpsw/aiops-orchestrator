@@ -277,6 +277,7 @@ UNKNOWN_CHUNK_REFERENCE_REASON_V2 = "unknown_chunk_reference"
 AFFECTED_CHUNK_SET_MISMATCH_REASON_V2 = "affected_chunk_set_mismatch"
 DEGRADED_FRAGMENT_CANNOT_BE_REVIEWED_REASON_V2 = "degraded_fragment_cannot_be_reviewed"
 DEGRADED_FRAGMENT_NOT_ACCOUNTED_REASON_V2 = "degraded_fragment_not_accounted"
+ASSIGNED_FRAGMENT_SET_MISMATCH_REASON_V2 = "assigned_fragment_set_mismatch"
 
 
 def bind_coverage_report_to_manifest_v2(
@@ -303,6 +304,15 @@ def bind_coverage_report_to_manifest_v2(
     one object considered in isolation. Replay against a different run or
     a different manifest that happens to reuse fragment IDs is rejected
     here too, not assumed safe elsewhere.
+
+    The same discipline applies to ``assigned_fragment_ids`` (issue #115): a
+    fragment the manifest never assigned to any chunk -- notably a
+    ``coverage_required=False`` auxiliary fragment the planner dropped for
+    lack of budget, a shape ``manifest_v2.py`` explicitly permits without a
+    degradation cause -- must not be claimed ``assigned``/``reviewed``
+    here. Without this, a path whose only fragments are all such dropped
+    auxiliaries could reach ``status="reviewed"`` with an empty (and
+    therefore vacuously matching) ``affected_chunk_ids``.
 
     What this function does NOT verify: whether a chunk that carries a
     fragment was actually usable (its response bound and parsed
@@ -360,8 +370,37 @@ def bind_coverage_report_to_manifest_v2(
         if set(entry.affected_chunk_ids) != real_chunks_for_path:
             raise FragmentCoverageBindingError(AFFECTED_CHUNK_SET_MISMATCH_REASON_V2)
 
+        # Same discipline as affected_chunk_ids above, applied to
+        # assigned_fragment_ids: a fragment this manifest never assigned to
+        # any chunk (e.g. a coverage_required=False auxiliary fragment the
+        # planner dropped for lack of budget -- manifest_v2.py explicitly
+        # allows this shape without a degradation cause, since only
+        # coverage_required fragments must be assigned-or-degraded) must
+        # never be claimed assigned/reviewed here. Without this check, a
+        # path whose only fragments are all such dropped auxiliaries could
+        # reach status="reviewed" with an empty, and therefore
+        # vacuously-matching, affected_chunk_ids -- exactly synthesis_v2.py's
+        # own assigned_ids = [fid for fid in expected_ids if fid in
+        # chunk_by_fragment] (:224), enforced here for reports this module
+        # did not itself build.
+        assigned_in_manifest = {fragment_id for fragment_id in expected if fragment_id in chunk_by_fragment}
+        if set(entry.assigned_fragment_ids) != assigned_in_manifest:
+            raise FragmentCoverageBindingError(ASSIGNED_FRAGMENT_SET_MISMATCH_REASON_V2)
+
         path_degraded = expected & degraded_fragment_ids
         if path_degraded:
+            # Retained as defense in depth, though the assigned_fragment_ids
+            # check above (issue #115) now makes both branches below
+            # unreachable through any manifest this contract can construct:
+            # manifest_v2.py guarantees a degraded fragment is NEVER in any
+            # chunk's fragment_ids (`degraded_ids != missing_required` ->
+            # ValueError), so it can never be in assigned_in_manifest either
+            # -- and RunFragmentCoverageEntryV2's own validator requires
+            # reviewed/partial to be subsets of assigned_fragment_ids. Any
+            # entry that claims a degraded fragment reviewed or partially
+            # reviewed therefore already fails the assigned check above
+            # first. Kept rather than removed, in case a future change to
+            # either validator's shape reopens a path to this state.
             if entry.status is FragmentCoverageStatusV2.REVIEWED:
                 raise FragmentCoverageBindingError(DEGRADED_FRAGMENT_CANNOT_BE_REVIEWED_REASON_V2)
             if not path_degraded <= set(entry.missing_fragment_ids):

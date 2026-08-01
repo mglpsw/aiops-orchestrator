@@ -16,8 +16,7 @@ from app.agent_review.manifest_v2 import (
 from app.agent_review.planner_v2 import HunkInputV2, plan_lossless_chunks_v2
 from app.agent_review.run_fragment_coverage_v2 import (
     AFFECTED_CHUNK_SET_MISMATCH_REASON_V2,
-    DEGRADED_FRAGMENT_CANNOT_BE_REVIEWED_REASON_V2,
-    DEGRADED_FRAGMENT_NOT_ACCOUNTED_REASON_V2,
+    ASSIGNED_FRAGMENT_SET_MISMATCH_REASON_V2,
     FRAGMENT_SET_MISMATCH_REASON_V2,
     MANIFEST_HASH_MISMATCH_REASON_V2,
     PATH_SET_MISMATCH_REASON_V2,
@@ -623,6 +622,18 @@ def _build_manifest_with_degradation() -> tuple[ManifestV2, str]:
 
 
 def test_bind_rejects_a_degraded_fragment_marked_reviewed() -> None:
+    """Issue #115 changes which reason code fires first here. A degraded
+    fragment is, by manifest_v2's own contract (``degraded_ids !=
+    missing_required`` -> ValueError), NEVER assigned to any real chunk --
+    degradation and assignment are mutually exclusive by construction. And
+    RunFragmentCoverageEntryV2's own validator requires reviewed_fragment_ids
+    <= assigned_fragment_ids, so the ONLY way to claim a degraded fragment
+    "reviewed" is to ALSO claim it "assigned" -- which is itself now an
+    assigned_fragment_set_mismatch, a more fundamental violation than the
+    degraded-specific one, and is correctly caught first. The entry is
+    still rejected fail-closed either way; only the reported reason_code
+    changed to the more accurate one."""
+
     manifest, degraded_fragment_id = _build_manifest_with_degradation()
     ok_fragment_id = next(f.fragment_id for f in manifest.fragments if f.fragment_id != degraded_fragment_id)
     entry = RunFragmentCoverageEntryV2(
@@ -641,10 +652,16 @@ def test_bind_rejects_a_degraded_fragment_marked_reviewed() -> None:
     report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
     with pytest.raises(FragmentCoverageBindingError) as excinfo:
         bind_coverage_report_to_manifest_v2(report, manifest)
-    assert excinfo.value.reason_code == DEGRADED_FRAGMENT_CANNOT_BE_REVIEWED_REASON_V2
+    assert excinfo.value.reason_code == ASSIGNED_FRAGMENT_SET_MISMATCH_REASON_V2
 
 
 def test_bind_rejects_a_degraded_fragment_not_accounted_as_missing() -> None:
+    """Same reachability change as the test above: claiming the degraded
+    fragment as partially_reviewed still requires claiming it assigned
+    first (entry validator: partial <= assigned), so the fundamental
+    assigned_fragment_set_mismatch fires before the degraded-specific
+    check ever runs. Still rejected fail-closed."""
+
     manifest, degraded_fragment_id = _build_manifest_with_degradation()
     ok_fragment_id = next(f.fragment_id for f in manifest.fragments if f.fragment_id != degraded_fragment_id)
     # degraded fragment reported as "partially_reviewed" instead of "missing" -- must be rejected
@@ -664,7 +681,7 @@ def test_bind_rejects_a_degraded_fragment_not_accounted_as_missing() -> None:
     report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
     with pytest.raises(FragmentCoverageBindingError) as excinfo:
         bind_coverage_report_to_manifest_v2(report, manifest)
-    assert excinfo.value.reason_code == DEGRADED_FRAGMENT_NOT_ACCOUNTED_REASON_V2
+    assert excinfo.value.reason_code == ASSIGNED_FRAGMENT_SET_MISMATCH_REASON_V2
 
 
 def test_bind_accepts_a_degraded_fragment_correctly_reported_missing() -> None:
@@ -850,3 +867,178 @@ def test_bind_rejects_an_entry_that_overreports_affected_chunk_ids() -> None:
     with pytest.raises(FragmentCoverageBindingError) as excinfo:
         bind_coverage_report_to_manifest_v2(report, manifest)
     assert excinfo.value.reason_code == AFFECTED_CHUNK_SET_MISMATCH_REASON_V2
+
+
+def _build_manifest_with_unassigned_auxiliary_fragment() -> tuple[ManifestV2, str]:
+    """Issue #115: a hand-built manifest with one auxiliary
+    (coverage_required=False) fragment that was never assigned to any
+    chunk and has no degradation cause -- a real, valid manifest_v2 shape
+    (manifest_v2.py: an unreferenced auxiliary fragment is explicitly
+    permitted, "auditable... but never a validation error"). Only
+    coverage_required fragments must be assigned-or-degraded; this one is
+    neither, and that is not itself a defect."""
+
+    from app.agent_review.manifest_v2 import FragmentV2, LineRangeV2, compute_fragment_id_v2
+
+    diff_sha = hashlib.sha256(b"unassigned-auxiliary-fragment").hexdigest()
+    old_range = LineRangeV2(start=1, end=5)
+    new_range = LineRangeV2(start=1, end=5)
+    fragment_id = compute_fragment_id_v2(
+        path="app/a.py", old_range=old_range, new_range=new_range, diff_sha256=diff_sha
+    )
+    auxiliary_fragment = FragmentV2(
+        fragment_id=fragment_id,
+        path="app/a.py",
+        old_range=old_range,
+        new_range=new_range,
+        hunk_indexes=[0],
+        diff_chars=10,
+        diff_sha256=diff_sha,
+        coverage_required=False,
+    )
+
+    material_kwargs = {
+        "schema_id": "agent-review.manifest.v2",
+        "schema_version": 2,
+        "source": "aiops-review-plan-chunks-v2",
+        "expected_files": ["app/a.py"],
+        "must_review_files": [],
+        "fragments": [auxiliary_fragment],
+        "chunks": [],
+        "max_chunks": 10,
+        "degradation_causes": [],
+    }
+    material = ManifestMaterialV2.model_validate(material_kwargs)
+    manifest_hash = compute_manifest_hash_v2_for(material)
+    identity = RunIdentityV2.model_validate(_identity(manifest_hash=manifest_hash))
+    manifest = ManifestV2(**material_kwargs, run_id=compute_run_id(identity), identity=identity)
+    return manifest, auxiliary_fragment.fragment_id
+
+
+def test_bind_rejects_an_unassigned_auxiliary_fragment_falsely_claimed_as_reviewed() -> None:
+    """The exact scenario reported in issue #115: a coverage_required=False
+    fragment never assigned to any chunk, with no degradation cause,
+    falsely declared assigned+reviewed. Before the fix, affected_chunk_ids=[]
+    vacuously matched the real (empty) chunk set for this path, so the
+    entry passed binding with status=reviewed despite zero real lastro."""
+
+    manifest, fragment_id = _build_manifest_with_unassigned_auxiliary_fragment()
+    entry = RunFragmentCoverageEntryV2(
+        path="app/a.py",
+        expected_fragment_ids=[fragment_id],
+        assigned_fragment_ids=[fragment_id],
+        reviewed_fragment_ids=[fragment_id],
+        partially_reviewed_fragment_ids=[],
+        missing_fragment_ids=[],
+        affected_chunk_ids=[],
+        status=FragmentCoverageStatusV2.REVIEWED,
+        reason_codes=[],
+    )
+    material = _report_material(
+        run_id=manifest.run_id, manifest_hash=manifest.identity.manifest_hash, paths=[entry]
+    )
+    sha = compute_coverage_report_sha256_v2(RunFragmentCoverageReportMaterialV2.model_validate(material))
+    report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
+    with pytest.raises(FragmentCoverageBindingError) as excinfo:
+        bind_coverage_report_to_manifest_v2(report, manifest)
+    assert excinfo.value.reason_code == ASSIGNED_FRAGMENT_SET_MISMATCH_REASON_V2
+
+
+def test_bind_accepts_an_unassigned_auxiliary_fragment_correctly_reported_missing() -> None:
+    """The fix must not over-reject: the SAME unassigned auxiliary fragment,
+    honestly reported missing (never assigned, never reviewed), is a valid
+    report and must bind cleanly."""
+
+    manifest, fragment_id = _build_manifest_with_unassigned_auxiliary_fragment()
+    entry = RunFragmentCoverageEntryV2(
+        path="app/a.py",
+        expected_fragment_ids=[fragment_id],
+        assigned_fragment_ids=[],
+        reviewed_fragment_ids=[],
+        partially_reviewed_fragment_ids=[],
+        missing_fragment_ids=[fragment_id],
+        affected_chunk_ids=[],
+        status=FragmentCoverageStatusV2.MISSING,
+        reason_codes=[FragmentCoverageReasonV2.NOT_YET_PROCESSED],
+    )
+    material = _report_material(
+        run_id=manifest.run_id, manifest_hash=manifest.identity.manifest_hash, paths=[entry]
+    )
+    sha = compute_coverage_report_sha256_v2(RunFragmentCoverageReportMaterialV2.model_validate(material))
+    report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
+    bind_coverage_report_to_manifest_v2(report, manifest)  # must not raise
+
+
+def test_bind_rejects_a_mixed_path_overclaiming_assigned_fragment_ids() -> None:
+    """A path with one genuinely assigned+reviewed fragment and one
+    unassigned auxiliary fragment on the same path: assigned_fragment_ids
+    over-claiming the auxiliary too (as if it were assigned) must be
+    rejected, even though the real assigned fragment's own chunk is
+    correctly reported in affected_chunk_ids."""
+
+    from app.agent_review.manifest_v2 import FragmentV2, LineRangeV2, compute_fragment_id_v2
+
+    def _fragment(seed: bytes, *, start: int, coverage_required: bool) -> FragmentV2:
+        diff_sha = hashlib.sha256(seed).hexdigest()
+        old_range = LineRangeV2(start=start, end=start + 4)
+        new_range = LineRangeV2(start=start, end=start + 4)
+        fragment_id = compute_fragment_id_v2(
+            path="app/a.py", old_range=old_range, new_range=new_range, diff_sha256=diff_sha
+        )
+        return FragmentV2(
+            fragment_id=fragment_id,
+            path="app/a.py",
+            old_range=old_range,
+            new_range=new_range,
+            hunk_indexes=[0],
+            diff_chars=10,
+            diff_sha256=diff_sha,
+            coverage_required=coverage_required,
+        )
+
+    assigned_fragment = _fragment(b"mixed-assigned-fragment", start=1, coverage_required=True)
+    auxiliary_fragment = _fragment(b"mixed-auxiliary-fragment", start=10, coverage_required=False)
+
+    material_kwargs = {
+        "schema_id": "agent-review.manifest.v2",
+        "schema_version": 2,
+        "source": "aiops-review-plan-chunks-v2",
+        "expected_files": ["app/a.py"],
+        "must_review_files": [],
+        "fragments": [assigned_fragment, auxiliary_fragment],
+        "chunks": [
+            ManifestChunkV2(
+                chunk_id="chunk-0",
+                order_index=0,
+                semantic_group="primary_backend_logic",
+                fragment_ids=[assigned_fragment.fragment_id],
+                payload_sha256=None,
+            )
+        ],
+        "max_chunks": 10,
+        "degradation_causes": [],
+    }
+    material = ManifestMaterialV2.model_validate(material_kwargs)
+    manifest_hash = compute_manifest_hash_v2_for(material)
+    identity = RunIdentityV2.model_validate(_identity(manifest_hash=manifest_hash))
+    manifest = ManifestV2(**material_kwargs, run_id=compute_run_id(identity), identity=identity)
+
+    entry = RunFragmentCoverageEntryV2(
+        path="app/a.py",
+        expected_fragment_ids=[assigned_fragment.fragment_id, auxiliary_fragment.fragment_id],
+        assigned_fragment_ids=[assigned_fragment.fragment_id, auxiliary_fragment.fragment_id],
+        reviewed_fragment_ids=[assigned_fragment.fragment_id, auxiliary_fragment.fragment_id],
+        partially_reviewed_fragment_ids=[],
+        missing_fragment_ids=[],
+        affected_chunk_ids=["chunk-0"],
+        status=FragmentCoverageStatusV2.REVIEWED,
+        reason_codes=[],
+    )
+    material2 = _report_material(
+        run_id=manifest.run_id, manifest_hash=manifest.identity.manifest_hash, paths=[entry]
+    )
+    sha = compute_coverage_report_sha256_v2(RunFragmentCoverageReportMaterialV2.model_validate(material2))
+    report = RunFragmentCoverageReportV2.model_validate({**material2, "coverage_report_sha256": sha})
+    with pytest.raises(FragmentCoverageBindingError) as excinfo:
+        bind_coverage_report_to_manifest_v2(report, manifest)
+    assert excinfo.value.reason_code == ASSIGNED_FRAGMENT_SET_MISMATCH_REASON_V2
