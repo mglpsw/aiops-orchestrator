@@ -64,6 +64,10 @@ class DiffAcquisitionError(ValueError):
 DIFF_UNREADABLE_REASON_V2 = "diff_unreadable"
 DIFF_TRUNCATED_REASON_V2 = "diff_truncated"
 INVALID_REF_REASON_V2 = "invalid_git_ref"
+RAW_DIFF_CARDINALITY_MISMATCH_REASON_V2 = "raw_diff_cardinality_mismatch"
+RAW_DIFF_STATUS_MISMATCH_REASON_V2 = "raw_diff_status_mismatch"
+RAW_DIFF_PATH_MISMATCH_REASON_V2 = "raw_diff_path_mismatch"
+RAW_DIFF_TYPE_CHANGE_UNSUPPORTED_REASON_V2 = "raw_diff_type_change_unsupported"
 
 
 @dataclass(frozen=True)
@@ -610,11 +614,24 @@ def parse_unified_diff(diff_text: str) -> tuple[ParsedFileDiffV2, ...]:
 
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
+#: Explicit, fixed rename/copy detection thresholds shared verbatim by
+#: ``acquire_diff_v2`` and ``acquire_raw_diff_v2`` (issue #103). Nothing is
+#: inherited from ``diff.renames``/``diff.copies`` config: if the two
+#: acquisitions used different (or ambient, config-dependent) thresholds,
+#: one could detect a rename/copy the other misses, and
+#: ``correlate_raw_and_unified_v2`` would then reject a perfectly legitimate
+#: diff as a status/path mismatch. ``--find-copies`` (not
+#: ``--find-copies-harder``) only searches modified files in the same diff
+#: for a copy source -- deliberately bounded, not an unbounded whole-tree
+#: scan, matching this module's "no unbounded internal work" discipline.
+_RENAME_COPY_DETECTION_ARGS_V2: tuple[str, ...] = ("--find-renames=50%", "--find-copies=50%")
+
 
 def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     """Run the canonical, fixed, allowlisted diff command:
-    ``git diff --no-ext-diff --no-textconv --binary <base_sha>...<head_sha>``
-    in ``repo_root``, and return its raw text.
+    ``git diff --no-ext-diff --no-textconv --binary --find-renames=50%
+    --find-copies=50% <base_sha>...<head_sha>`` in ``repo_root``, and
+    return its raw text.
 
     ``--no-textconv`` matters as much as ``--no-ext-diff``: the two are
     separate git mechanisms. ``--no-ext-diff`` only disables an external
@@ -652,7 +669,10 @@ def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     # genuinely different content could collide on the same diff_sha256/
     # fragment_id. Undecodable output fails closed instead.
     result = subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
-        ["git", "diff", "--no-ext-diff", "--no-textconv", "--binary", f"{base_sha}...{head_sha}"],
+        [
+            "git", "diff", "--no-ext-diff", "--no-textconv", "--binary",
+            *_RENAME_COPY_DETECTION_ARGS_V2, f"{base_sha}...{head_sha}",
+        ],
         cwd=repo_root,
         capture_output=True,
         text=False,
@@ -754,3 +774,274 @@ def validate_diff_completeness_v2(
         unrepresentable_paths=unrepresentable,
         truncated_paths=truncated,
     )
+
+
+# =============================================================================
+# Issue #103 -- deterministic path identity via a raw NUL-separated stream.
+#
+# The unified diff parsed above must still guess at a path whenever a
+# "GIT binary patch" block's header cannot be split into exactly two
+# whitespace tokens (a name containing a plain space), or whenever a
+# "Binary files ... differ" marker line contains the literal separator
+# " and " as part of a real filename -- both silent, ambiguous cases (see
+# ``_split_diff_git_header_paths`` and the "Binary files " branch of
+# ``_FileBlockBuilder.consume_header`` above, neither of which is modified
+# by this section: the fix is a new, independent authority, not a smarter
+# guess).
+#
+# ``git diff --raw -z`` never quotes or escapes a path -- unlike the
+# unified diff's header/marker lines, which ``_decode_git_path`` must
+# reconstruct from quoted, octal-escaped text. Parsed into logical records
+# and correlated position-by-position against the unified diff's own
+# blocks (produced by the SAME range with the SAME explicit rename/copy
+# thresholds), it becomes a ground truth that can prove -- or disprove --
+# every path and change type the unified parser derived. Divergence of
+# any kind fails closed; nothing is guessed.
+# =============================================================================
+
+_RAW_RECORD_HEADER_RE = re.compile(
+    r"^:(?P<old_mode>[0-7]{6}) (?P<new_mode>[0-7]{6}) "
+    r"(?P<old_sha>[0-9a-f]+) (?P<new_sha>[0-9a-f]+) "
+    r"(?P<status>[ACDMRTUX])(?P<score>\d*)$"
+)
+
+# Statuses git's raw format ever emits carrying exactly one path. "U"
+# (unmerged) and "X" ("unknown" -- per git's own documentation, a status
+# that should never actually appear in output) are deliberately excluded:
+# neither can occur in an ordinary <base>...<head> range diff, and forcing
+# a decision for them here (rather than a fabricated single/two-path
+# guess) keeps the parser itself a faithful, non-opinionated record of
+# whatever git actually emitted.
+_RAW_SINGLE_PATH_STATUSES = frozenset({"A", "D", "M", "T"})
+_RAW_TWO_PATH_STATUSES = frozenset({"R", "C"})
+
+# Change types the *unified* parser (see ``ParsedFileDiffV2.change_type``
+# above) may legitimately report for a given raw status letter. A raw "M"
+# maps to *both* "modified" (ordinary content change) and "type_changed"
+# (a pure, hunkless mode/attribute change, e.g. chmod) -- verified
+# empirically: git's raw diff reports a plain chmod as "M" with identical
+# old/new blob SHAs, and the existing unified parser's own "type_changed"
+# label is reachable *only* for that hunkless, mode-only shape (its
+# ``finish()`` elif chain checks ``is_new_file``/``is_deleted_file``
+# first, so a genuine raw "T" object-type change -- see below -- never
+# reaches that branch at all). Raw "T" is deliberately absent from this
+# map: it is handled, and rejected, before this map is ever consulted.
+_RAW_STATUS_TO_CHANGE_TYPES_V2: dict[str, frozenset[ChangeTypeV2]] = {
+    "A": frozenset({"added"}),
+    "D": frozenset({"deleted"}),
+    "M": frozenset({"modified", "type_changed"}),
+    "R": frozenset({"renamed"}),
+    "C": frozenset({"copied"}),
+}
+
+
+@dataclass(frozen=True)
+class RawDiffRecordV2:
+    """One logical record from ``git diff --raw -z``: a single-path
+    change (``old_path``/``new_path`` set from the *same* literal path,
+    per that status's side -- ``None`` for the side that does not exist),
+    or a rename/copy carrying its own distinct ``old_path``/``new_path``.
+    Paths here are never quoted or escaped by git, so -- unlike
+    ``ParsedFileDiffV2`` -- there is no ambiguity left for this module to
+    resolve; it is the ground truth ``correlate_raw_and_unified_v2``
+    checks the unified diff's own paths against."""
+
+    status: str
+    similarity_index: int | None
+    old_path: str | None
+    new_path: str | None
+
+
+def parse_raw_diff_z(raw_text: str) -> tuple[RawDiffRecordV2, ...]:
+    """Parse the full text of ``git diff --raw -z`` into logical records.
+
+    Parsing proceeds by RECORD, never by raw NUL-token count: a rename or
+    copy record consumes two path tokens for one logical change, so
+    comparing token counts between this stream and the unified diff's
+    block count would be a category error (issue #103 is explicit about
+    this). ``correlate_raw_and_unified_v2`` below compares *record* count
+    to *block* count instead.
+
+    Any structurally unreadable input -- an unparseable metadata line, or
+    a record whose declared status is missing its expected path token(s)
+    -- raises ``DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)``, the
+    same reason code this module already uses for undecodable output;
+    this is not a new class of failure, just a new source of it.
+    """
+
+    if raw_text == "":
+        return ()
+
+    tokens = raw_text.split("\x00")
+    # Every record's final path is itself NUL-terminated, including the
+    # very last record in the stream -- splitting on "\x00" therefore
+    # yields one synthetic trailing empty token that is not a real path,
+    # exactly mirroring parse_unified_diff's own trailing-newline handling.
+    if tokens and tokens[-1] == "":
+        tokens = tokens[:-1]
+
+    records: list[RawDiffRecordV2] = []
+    index = 0
+    while index < len(tokens):
+        header = tokens[index]
+        match = _RAW_RECORD_HEADER_RE.match(header)
+        if match is None:
+            raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
+        status = match.group("status")
+        score_text = match.group("score")
+        similarity_index = int(score_text) if score_text else None
+        index += 1
+
+        if status in _RAW_TWO_PATH_STATUSES:
+            if index + 1 >= len(tokens):
+                raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
+            old_path_token = tokens[index]
+            new_path_token = tokens[index + 1]
+            index += 2
+            records.append(
+                RawDiffRecordV2(
+                    status=status,
+                    similarity_index=similarity_index,
+                    old_path=old_path_token,
+                    new_path=new_path_token,
+                )
+            )
+        elif status in _RAW_SINGLE_PATH_STATUSES:
+            if index >= len(tokens):
+                raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
+            path_token = tokens[index]
+            index += 1
+            if status == "A":
+                old_path, new_path = None, path_token
+            elif status == "D":
+                old_path, new_path = path_token, None
+            else:  # "M" or "T": path unchanged, present on both sides
+                old_path, new_path = path_token, path_token
+            records.append(
+                RawDiffRecordV2(
+                    status=status,
+                    similarity_index=similarity_index,
+                    old_path=old_path,
+                    new_path=new_path,
+                )
+            )
+        else:
+            # Unreachable given the header regex's status character
+            # class, kept as an explicit fail-closed branch rather than
+            # an assertion: a future, wider status charset must not fall
+            # through silently.
+            raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
+
+    return tuple(records)
+
+
+def correlate_raw_and_unified_v2(
+    raw_records: tuple[RawDiffRecordV2, ...],
+    file_diffs: tuple[ParsedFileDiffV2, ...],
+) -> None:
+    """Prove the unified diff's own parsed paths and change types agree
+    with the raw stream's ground truth. Raises ``DiffAcquisitionError``
+    fail-closed on any divergence; returns ``None`` on success (the
+    unified ``file_diffs`` were already correct -- this only certifies
+    that fact, it does not construct a new value).
+
+    A raw "T" record (a genuine object-type change, e.g. regular file to
+    symlink or submodule) is rejected unconditionally, before the
+    cardinality check: verified empirically, git's UNIFIED diff renders
+    this as a delete+add PAIR (two blocks) for one raw record, a
+    1-to-2 shape this module does not attempt to correlate. Checking
+    cardinality first would misreport this known, deliberate boundary as
+    a generic mismatch instead of its own stable reason code.
+
+    Position ``i`` in ``raw_records`` must correspond to block ``i`` in
+    ``file_diffs`` -- there is no reordering or matching by set
+    membership. A swapped order therefore surfaces as a status or path
+    mismatch at the affected positions, which is the intended, sufficient
+    detection: no separate "order" reason code is needed on top of that.
+    """
+
+    for record in raw_records:
+        if record.status == "T":
+            raise DiffAcquisitionError(RAW_DIFF_TYPE_CHANGE_UNSUPPORTED_REASON_V2)
+
+    if len(raw_records) != len(file_diffs):
+        raise DiffAcquisitionError(RAW_DIFF_CARDINALITY_MISMATCH_REASON_V2)
+
+    for record, file_diff in zip(raw_records, file_diffs):
+        allowed_change_types = _RAW_STATUS_TO_CHANGE_TYPES_V2.get(record.status)
+        if allowed_change_types is None or file_diff.change_type not in allowed_change_types:
+            raise DiffAcquisitionError(RAW_DIFF_STATUS_MISMATCH_REASON_V2)
+        if record.old_path != file_diff.old_path or record.new_path != file_diff.new_path:
+            raise DiffAcquisitionError(RAW_DIFF_PATH_MISMATCH_REASON_V2)
+
+
+def acquire_raw_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
+    """Run the canonical, fixed, allowlisted raw-diff command:
+    ``git diff --no-ext-diff --raw -z --find-renames=50% --find-copies=50%
+    <base_sha>...<head_sha>`` in ``repo_root``, and return its raw text.
+
+    Uses the exact same ``_RENAME_COPY_DETECTION_ARGS_V2`` as
+    ``acquire_diff_v2`` -- never independently configured -- so a caller
+    correlating this stream against the unified diff (via
+    ``correlate_raw_and_unified_v2``) is comparing two views of the same
+    underlying diff computation, not two that could legitimately disagree
+    because of mismatched thresholds.
+
+    Never invokes a shell interpreter (the command is a fixed argv list).
+    ``base_sha``/``head_sha`` must each be a full lowercase 40-character
+    commit SHA, exactly like ``acquire_diff_v2`` -- rejected with
+    ``DiffAcquisitionError(INVALID_REF_REASON_V2)`` otherwise.
+
+    The entire subprocess output is decoded as UTF-8 up front, strictly:
+    with ``-z``, git never quotes or escapes a path, so any raw path byte
+    is either valid UTF-8 or the acquisition fails closed with
+    ``DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)`` -- the same
+    discipline, and the same reason code, ``acquire_diff_v2`` already
+    applies to its own output.
+    """
+
+    import subprocess
+
+    if not _GIT_SHA_RE.match(base_sha) or not _GIT_SHA_RE.match(head_sha):
+        raise DiffAcquisitionError(INVALID_REF_REASON_V2)
+
+    result = subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
+        [
+            "git", "diff", "--no-ext-diff", "--raw", "-z",
+            *_RENAME_COPY_DETECTION_ARGS_V2, f"{base_sha}...{head_sha}",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2) from exc
+
+
+def acquire_authoritative_diff_v2(
+    repo_root: Path, *, base_sha: str, head_sha: str
+) -> tuple[ParsedFileDiffV2, ...]:
+    """Acquire both the unified diff and the raw ``-z`` stream for the
+    same ``base_sha...head_sha`` range, with identical rename/copy
+    detection thresholds, and return the unified ``ParsedFileDiffV2``
+    tuple only after ``correlate_raw_and_unified_v2`` has proven its
+    paths and change types against the raw stream's ground truth.
+
+    This is now the entry point a caller wanting authoritative path
+    identity should use in place of calling ``acquire_diff_v2`` +
+    ``parse_unified_diff`` directly -- both remain available and
+    unchanged for callers (e.g. existing tests) that do not need the
+    cross-check.
+    """
+
+    diff_text = acquire_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
+    file_diffs = parse_unified_diff(diff_text)
+    raw_text = acquire_raw_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
+    raw_records = parse_raw_diff_z(raw_text)
+    correlate_raw_and_unified_v2(raw_records, file_diffs)
+    return file_diffs
