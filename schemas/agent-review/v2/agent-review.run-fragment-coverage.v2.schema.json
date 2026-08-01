@@ -1,0 +1,159 @@
+{
+  "$defs": {
+    "FragmentCoverageReasonV2": {
+      "enum": [
+        "structural_split",
+        "fragment_degraded",
+        "chunk_unavailable",
+        "not_yet_processed"
+      ],
+      "title": "FragmentCoverageReasonV2",
+      "type": "string"
+    },
+    "FragmentCoverageStatusV2": {
+      "enum": [
+        "reviewed",
+        "partial",
+        "missing"
+      ],
+      "title": "FragmentCoverageStatusV2",
+      "type": "string"
+    },
+    "RunFragmentCoverageEntryV2": {
+      "additionalProperties": false,
+      "description": "Per-path fragment coverage, independently verifiable from its own\nfields -- no external manifest reference is needed to prove this entry\nis *internally* consistent. Cross-checking it against the manifest it\nactually claims to describe is ``bind_coverage_report_to_manifest_v2``'s\njob, not this model's: a bare Pydantic model has no way to reach out to\nanother object at construction time, and conflating \"shape is coherent\"\nwith \"shape matches this specific manifest\" would blur exactly the\nrun/manifest-identity discipline the rest of v2 already relies on.",
+      "properties": {
+        "affected_chunk_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Affected Chunk Ids",
+          "type": "array"
+        },
+        "assigned_fragment_ids": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Assigned Fragment Ids",
+          "type": "array"
+        },
+        "expected_fragment_ids": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Expected Fragment Ids",
+          "type": "array"
+        },
+        "missing_fragment_ids": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Missing Fragment Ids",
+          "type": "array"
+        },
+        "partially_reviewed_fragment_ids": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Partially Reviewed Fragment Ids",
+          "type": "array"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "reason_codes": {
+          "items": {
+            "$ref": "#/$defs/FragmentCoverageReasonV2"
+          },
+          "title": "Reason Codes",
+          "type": "array"
+        },
+        "reviewed_fragment_ids": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Reviewed Fragment Ids",
+          "type": "array"
+        },
+        "status": {
+          "$ref": "#/$defs/FragmentCoverageStatusV2"
+        }
+      },
+      "required": [
+        "path",
+        "expected_fragment_ids",
+        "assigned_fragment_ids",
+        "reviewed_fragment_ids",
+        "partially_reviewed_fragment_ids",
+        "missing_fragment_ids",
+        "affected_chunk_ids",
+        "status",
+        "reason_codes"
+      ],
+      "title": "RunFragmentCoverageEntryV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "coverage_report_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Coverage Report Sha256",
+      "type": "string"
+    },
+    "manifest_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Manifest Hash",
+      "type": "string"
+    },
+    "paths": {
+      "items": {
+        "$ref": "#/$defs/RunFragmentCoverageEntryV2"
+      },
+      "title": "Paths",
+      "type": "array"
+    },
+    "run_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "agent-review.run-fragment-coverage.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "aiops-review-fragment-coverage",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "run_id",
+    "manifest_hash",
+    "paths",
+    "coverage_report_sha256"
+  ],
+  "title": "RunFragmentCoverageReportV2",
+  "type": "object"
+}
