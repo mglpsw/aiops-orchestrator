@@ -1425,14 +1425,23 @@ def test_correlate_fails_closed_on_a_raw_type_change_record() -> None:
     assert excinfo.value.reason_code == RAW_DIFF_TYPE_CHANGE_UNSUPPORTED_REASON_V2
 
 
-def test_correlate_catches_the_binary_space_path_loss_bug() -> None:
-    """Case (a) from issue #103: a 'GIT binary patch' block for a file
-    whose name contains a space has no '--- '/'+++ ' markers and no
-    'Binary files ... differ' line; the 'diff --git' header itself
-    splits into 4 whitespace tokens (not 2), so today's unified parser
-    resolves both old_path and new_path to None (path=''). Correlating
-    against the raw stream's clean, unambiguous path must fail closed
-    instead of silently returning the empty path."""
+def test_correlate_accepts_a_binary_space_path_now_that_it_is_resolved() -> None:
+    """Case (a) from issue #103, corrected by a later Codex review (#99):
+    a 'GIT binary patch' block for a file whose name contains a space has
+    no '--- '/'+++ ' markers and no 'Binary files ... differ' line, so the
+    'diff --git' header itself is the only source of its path. git quotes
+    a path only for non-ASCII/special characters, never merely for a
+    plain space, so the header's own whitespace-token count for a spaced
+    path is ambiguous on its face -- but by the time this fallback runs,
+    any rename/copy has already been consumed from its own dedicated
+    header lines, so old_path and new_path are ALWAYS identical here.
+    _split_diff_git_header_paths now exploits that invariant (the header
+    is always exactly "a/<X> b/<X>" for a single X) to resolve the path
+    correctly instead of returning None. Previously this test asserted
+    the unresolved path ("") and relied on correlate_raw_and_unified_v2's
+    raw-stream cross-check to fail closed as a defense-in-depth net; the
+    root cause is now fixed, so the path resolves correctly and
+    correlation succeeds instead of raising."""
 
     diff_text = (
         "diff --git a/my file.bin b/my file.bin\n"
@@ -1443,13 +1452,11 @@ def test_correlate_catches_the_binary_space_path_loss_bug() -> None:
         "XcmZQzWJ=1+ODw8P&d)1J%_{)_CNl+u\n"
     )
     file_diffs = parse_unified_diff(diff_text)
-    assert file_diffs[0].path == ""  # the bug this issue closes, reproduced
+    assert file_diffs[0].path == "my file.bin"
     raw_records = parse_raw_diff_z(
         _raw_stream(_raw_record("000000", "100644", "0000000", "a611fb8", "A", "my file.bin"))
     )
-    with pytest.raises(DiffAcquisitionError) as excinfo:
-        correlate_raw_and_unified_v2(raw_records, file_diffs)
-    assert excinfo.value.reason_code == RAW_DIFF_PATH_MISMATCH_REASON_V2
+    correlate_raw_and_unified_v2(raw_records, file_diffs)  # succeeds, raises nothing
 
 
 def test_correlate_catches_the_and_in_name_corruption_bug() -> None:
@@ -1584,12 +1591,15 @@ def test_acquire_authoritative_diff_returns_file_diffs_for_a_simple_modification
 
 
 @pytest.mark.requires_network
-def test_acquire_authoritative_diff_fails_closed_on_a_real_binary_file_with_a_space(tmp_path: Path) -> None:
-    """End-to-end reproduction of case (a): a genuinely new binary file
-    whose name contains a space, added through a real git repository and
-    acquired through the exact --binary-flagged command acquire_diff_v2
-    already uses. Verified empirically to produce a 'GIT binary patch'
-    block whose header alone cannot be split into two path tokens."""
+def test_acquire_authoritative_diff_resolves_a_real_binary_file_with_a_space(tmp_path: Path) -> None:
+    """End-to-end reproduction of case (a), corrected by a later Codex
+    review (#99): a genuinely new binary file whose name contains a
+    space, added through a real git repository and acquired through the
+    exact --binary-flagged command acquire_diff_v2 already uses. This
+    produces a 'GIT binary patch' block whose header alone is the only
+    path source; _split_diff_git_header_paths now resolves it correctly
+    (previously it could not be split into two whitespace tokens, and the
+    caller relied on the raw-stream correlation to fail closed instead)."""
 
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -1598,9 +1608,11 @@ def test_acquire_authoritative_diff_fails_closed_on_a_real_binary_file_with_a_sp
     (repo / "my file.bin").write_bytes(b"\x00\x01\x02binarycontent")
     head_sha = _commit_all(repo, "add binary with space")
 
-    with pytest.raises(DiffAcquisitionError) as excinfo:
-        acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
-    assert excinfo.value.reason_code == RAW_DIFF_PATH_MISMATCH_REASON_V2
+    file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert len(file_diffs) == 1
+    assert file_diffs[0].path == "my file.bin"
+    assert file_diffs[0].change_type == "added"
+    assert file_diffs[0].is_binary
 
 
 @pytest.mark.requires_network
@@ -1651,6 +1663,50 @@ def test_acquire_authoritative_diff_preserves_a_real_rename_under_directory_name
     assert len(file_diffs) == 1
     assert file_diffs[0].old_path == "a/foo.py"
     assert file_diffs[0].new_path == "a/bar.py"
+
+
+@pytest.mark.requires_network
+def test_acquire_authoritative_diff_detects_renames_despite_a_low_ambient_rename_limit(
+    tmp_path: Path,
+) -> None:
+    """Codex review of PR #112: --find-renames/--find-copies alone do not
+    bound how many candidate paths git will attempt to pair up (git diff -h
+    documents -l<n> as "limit rename attempts up to <n> paths"). A large
+    enough number of similar-but-not-identical renames (a PURE, byte-
+    identical rename is matched via a cheap exact-content lookup that
+    never consults renameLimit at all -- confirmed empirically; this is
+    why each file gets one appended line after the rename) makes real git
+    skip inexact rename detection entirely once diff.renameLimit is set
+    low, printing "exhaustive rename detection was skipped due to too many
+    files" and falling back to delete+add pairs -- confirmed empirically
+    against this exact scenario. -l1000, now an explicit, fixed argument
+    shared by both acquisitions rather than inherited from ambient config,
+    keeps rename detection working regardless of a hostile-low ambient
+    diff.renameLimit (simulating an ambient runner setting or a large diff
+    exceeding git's built-in default)."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    file_count = 60
+    for index in range(file_count):
+        lines = "\n".join(f"line {n} of file {index} with some content padding here" for n in range(50))
+        (repo / f"file{index}.txt").write_text(lines + "\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+
+    for index in range(file_count):
+        subprocess.run(["git", "mv", f"file{index}.txt", f"file{index}_renamed.txt"], cwd=repo, check=True)
+        with (repo / f"file{index}_renamed.txt").open("a", encoding="utf-8") as handle:
+            handle.write("one extra line appended after the rename\n")
+    head_sha = _commit_all(repo, "rename and slightly modify every file")
+
+    subprocess.run(["git", "config", "diff.renameLimit", "1"], cwd=repo, check=True)
+
+    file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    change_types = {fd.change_type for fd in file_diffs}
+    assert change_types == {"renamed"}
+    assert len(file_diffs) == file_count
+    paths = {(fd.old_path, fd.new_path) for fd in file_diffs}
+    assert paths == {(f"file{index}.txt", f"file{index}_renamed.txt") for index in range(file_count)}
 
 
 @pytest.mark.requires_network

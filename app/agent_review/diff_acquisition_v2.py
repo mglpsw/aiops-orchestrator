@@ -212,9 +212,34 @@ def _split_diff_git_header_paths(raw: str) -> tuple[str, str] | None:
         while index < length and not raw[index].isspace():
             index += 1
         tokens.append(raw[start:index])
-    if len(tokens) != 2:
-        return None
-    return tokens[0], tokens[1]
+    if len(tokens) == 2:
+        return tokens[0], tokens[1]
+
+    # A Codex review found a real gap here: git quotes a path only for
+    # non-ASCII/special characters, NEVER merely for a plain space, so an
+    # unquoted path such as "foo and bar.bin" still splits into more than
+    # two whitespace tokens above and this returned None for a real
+    # (non-adversarial) binary filename. Exploit this function's own
+    # documented invariant to disambiguate: this fallback fires only when
+    # finish() found no rename/copy header, so old_path and new_path are
+    # ALWAYS identical here (a rename/copy would have already set them from
+    # its own "rename from"/"rename to" header lines). raw is therefore
+    # always exactly "a/<X> b/<X>" for some single X -- find the one
+    # occurrence of " b/" whose two sides are equal.
+    if raw.startswith("a/"):
+        remainder = raw[len("a/"):]
+        search_start = 0
+        while True:
+            split_at = remainder.find(" b/", search_start)
+            if split_at == -1:
+                break
+            candidate = remainder[:split_at]
+            after = remainder[split_at + len(" b/"):]
+            if candidate and candidate == after:
+                return f"a/{candidate}", f"b/{candidate}"
+            search_start = split_at + 1
+
+    return None
 
 
 def _parse_marker_path(line: str, *, prefix: str) -> str | None:
@@ -624,7 +649,20 @@ _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 #: ``--find-copies-harder``) only searches modified files in the same diff
 #: for a copy source -- deliberately bounded, not an unbounded whole-tree
 #: scan, matching this module's "no unbounded internal work" discipline.
-_RENAME_COPY_DETECTION_ARGS_V2: tuple[str, ...] = ("--find-renames=50%", "--find-copies=50%")
+#:
+#: ``-l1000`` (git's own long-standing default rename-limit value, made
+#: explicit here) closes a real gap a Codex review found: ``--find-renames``/
+#: ``--find-copies`` alone do not bound the number of rename/copy candidate
+#: paths git will attempt to pair up (``git diff -h`` documents ``-l<n>`` as
+#: "limit rename attempts up to <n> paths") -- an ambient
+#: ``diff.renameLimit`` config value, or a large diff exceeding git's
+#: built-in default, could make the two acquisitions degrade differently
+#: (one giving up on rename detection before the other), producing
+#: different file counts, change types, and old/new path linkage that
+#: ``correlate_raw_and_unified_v2`` cannot detect as a mismatch, since both
+#: sides "agree" on their own degraded shape. Fixing this value here means
+#: authoritative identity never depends on ambient runner configuration.
+_RENAME_COPY_DETECTION_ARGS_V2: tuple[str, ...] = ("--find-renames=50%", "--find-copies=50%", "-l1000")
 
 
 def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
