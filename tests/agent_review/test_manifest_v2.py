@@ -358,6 +358,30 @@ def test_manifest_accepts_an_unreferenced_non_required_fragment() -> None:
     assert manifest.chunks == []
 
 
+def test_manifest_rejects_a_non_must_review_expected_file_with_no_fragments() -> None:
+    """Codex review of PR #114: only must_review_files paths were required
+    to have a fragment, so a directly-constructed manifest (this model is
+    freely constructible, not exclusively produced by
+    assemble_manifest_from_diff_v2) could declare a non-must-review
+    expected_files path with ZERO fragments -- for which
+    RunFragmentCoverageEntryV2's own "a path must declare at least one
+    expected fragment" invariant then made constructing any valid coverage
+    report for that manifest impossible. The real assembly pipeline never
+    produces this shape (a hunkless path is classified unrepresentable and
+    excluded from expected_files entirely), so requiring every
+    expected_files path to have a fragment closes the contract gap without
+    narrowing any real shape."""
+
+    fragment = _fragment(path="app/service.py", required=False)
+    with pytest.raises(ValidationError):
+        _manifest(
+            fragments=[fragment],
+            chunks=[],
+            expected_files=["app/service.py", "app/other.py"],
+            must_review_files=[],
+        )
+
+
 def test_manifest_rejects_chunk_count_exceeding_max_chunks() -> None:
     fragment = _fragment()
     chunk = ManifestChunkV2(

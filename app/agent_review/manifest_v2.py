@@ -239,6 +239,25 @@ class ManifestMaterialV2(ContractV2Model):
         fragments_by_path: dict[str, list[FragmentV2]] = {}
         for fragment in self.fragments:
             fragments_by_path.setdefault(fragment.path, []).append(fragment)
+        # A Codex review found a real contract gap: only must_review_files
+        # paths were required to have a fragment, so a directly-constructed
+        # ManifestMaterialV2 (this model is freely constructible -- not
+        # exclusively produced by assemble_manifest_from_diff_v2) could
+        # declare a non-must-review expected_files path with ZERO
+        # fragments, for which RunFragmentCoverageEntryV2's own "a path
+        # must declare at least one expected fragment" invariant then made
+        # constructing any valid coverage report for that manifest
+        # impossible. The real assembly pipeline never actually produces
+        # this shape today -- a hunkless path (e.g. a pure rename with no
+        # content change) is classified unrepresentable and excluded from
+        # expected_files entirely (validate_diff_completeness_v2), never
+        # left in expected_files with no fragments -- so requiring every
+        # expected_files path to have at least one fragment, not just
+        # must-review ones, closes the contract gap without narrowing any
+        # shape the real pipeline can construct.
+        for path in expected:
+            if path not in fragments_by_path:
+                raise ValueError("every expected_files path must have at least one fragment")
         for path in must_review:
             path_fragments = fragments_by_path.get(path, [])
             if not path_fragments:
