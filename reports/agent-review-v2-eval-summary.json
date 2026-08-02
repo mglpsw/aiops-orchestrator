@@ -7,18 +7,21 @@
       "case_id": "agentescala-contract-p3-finding-still-ready",
       "category": "contract",
       "chunk_count": 1,
-      "duration_ms": 13.915,
+      "duplicate_finding_ids_detected": 0,
+      "duration_ms": 13.562,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
       "expected_readiness": "ready",
+      "expected_severities": [],
       "forbidden_findings_leaked": 0,
       "fragment_count": 1,
       "manifest_hash": "1e6e19ede70ac0d41f691488afd961097c83782736a081009e0ec4e3655fa90e",
       "payload_hashes": [
         "2cfe43a8c38862562eb37b2b707a64f73fd0db162ece3c5d66c4aa24901c5028"
       ],
-      "readiness_matches": true
+      "readiness_matches": true,
+      "recovered_severities": []
     },
     {
       "actual_readiness": "manual_required",
@@ -27,18 +30,25 @@
       "case_id": "agentescala-domain-new-finding-manual-required",
       "category": "domain",
       "chunk_count": 1,
-      "duration_ms": 13.904,
+      "duplicate_finding_ids_detected": 0,
+      "duration_ms": 10.912,
       "error": null,
       "expected_findings_recovered": 1,
       "expected_findings_total": 1,
       "expected_readiness": "manual_required",
+      "expected_severities": [
+        "P2"
+      ],
       "forbidden_findings_leaked": 0,
       "fragment_count": 1,
       "manifest_hash": "8590afb6837bcc6c924966f7669a4090763b87a7f827eb62d31ac63fc2cd38ee",
       "payload_hashes": [
         "57cc374ef6ed531b64e53bdbf25e7e67c5c1bf2f14a042da19880ed06412f946"
       ],
-      "readiness_matches": true
+      "readiness_matches": true,
+      "recovered_severities": [
+        "P2"
+      ]
     },
     {
       "actual_readiness": "ready",
@@ -47,18 +57,21 @@
       "case_id": "agentescala-false-positive-unrelated-change",
       "category": "false-positive",
       "chunk_count": 1,
-      "duration_ms": 9.438,
+      "duplicate_finding_ids_detected": 0,
+      "duration_ms": 11.21,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
       "expected_readiness": "ready",
+      "expected_severities": [],
       "forbidden_findings_leaked": 0,
       "fragment_count": 1,
       "manifest_hash": "7a0f09b3750963810dce9cea3beaa759e6c96ad7b0ac0f5682370cdd9b1e82b6",
       "payload_hashes": [
         "abeb4cd9ec785a9374061364bf5f6895a268cb0fff15652f39b70e379af82b53"
       ],
-      "readiness_matches": true
+      "readiness_matches": true,
+      "recovered_severities": []
     },
     {
       "actual_readiness": "blocked_code",
@@ -67,18 +80,25 @@
       "case_id": "agentescala-security-confirmed-finding-blocked-code",
       "category": "security",
       "chunk_count": 1,
-      "duration_ms": 16.073,
+      "duplicate_finding_ids_detected": 0,
+      "duration_ms": 12.851,
       "error": null,
       "expected_findings_recovered": 1,
       "expected_findings_total": 1,
       "expected_readiness": "blocked_code",
+      "expected_severities": [
+        "P1"
+      ],
       "forbidden_findings_leaked": 0,
       "fragment_count": 1,
       "manifest_hash": "b5821d07586d01f92a7e0da7532429dbb2a487d17ff15aa59e0a10df175b96ae",
       "payload_hashes": [
         "8646f4065cda63281e4f1e42cf24af7a2f165708adbff6089016fb7c0866b15c"
       ],
-      "readiness_matches": true
+      "readiness_matches": true,
+      "recovered_severities": [
+        "P1"
+      ]
     },
     {
       "actual_readiness": "blocked_pipeline",
@@ -87,16 +107,19 @@
       "case_id": "aiops-contract-missing-must-review",
       "category": "coverage",
       "chunk_count": 0,
-      "duration_ms": 4.111,
+      "duplicate_finding_ids_detected": 0,
+      "duration_ms": 5.972,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
       "expected_readiness": "blocked_pipeline",
+      "expected_severities": [],
       "forbidden_findings_leaked": 0,
       "fragment_count": 0,
       "manifest_hash": null,
       "payload_hashes": [],
-      "readiness_matches": true
+      "readiness_matches": true,
+      "recovered_severities": []
     },
     {
       "actual_readiness": "stale",
@@ -105,18 +128,21 @@
       "case_id": "aiops-contract-stale-head",
       "category": "stale",
       "chunk_count": 1,
-      "duration_ms": 11.268,
+      "duplicate_finding_ids_detected": 0,
+      "duration_ms": 9.658,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
       "expected_readiness": "stale",
+      "expected_severities": [],
       "forbidden_findings_leaked": 0,
       "fragment_count": 1,
       "manifest_hash": "499125e826034e765d5e3bcd76aba2a4286f6c1059ce6bb837a120d559f5a805",
       "payload_hashes": [
         "cfe82905b78eca4197462982251c2dd13549ea8270a7be33df49d3d2a8bf7eba"
       ],
-      "readiness_matches": true
+      "readiness_matches": true,
+      "recovered_severities": []
     },
     {
       "actual_readiness": "manual_required",
@@ -125,18 +151,21 @@
       "case_id": "interleitos-domain-dlp-suspicion-manual-required",
       "category": "domain",
       "chunk_count": 1,
-      "duration_ms": 10.557,
+      "duplicate_finding_ids_detected": 0,
+      "duration_ms": 9.185,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
       "expected_readiness": "manual_required",
+      "expected_severities": [],
       "forbidden_findings_leaked": 0,
       "fragment_count": 1,
       "manifest_hash": "24bcc90673a14dffc60b0f81b097747bf423cecbda497110cd5a7a509b7acd24",
       "payload_hashes": [
         "b6eb4e213e947401b44c5272dd643642343e88a7fe8a9d6550f0a0258fd2f098"
       ],
-      "readiness_matches": true
+      "readiness_matches": true,
+      "recovered_severities": []
     },
     {
       "actual_readiness": "ready",
@@ -145,18 +174,21 @@
       "case_id": "interleitos-false-positive-synthetic-clinical-terms",
       "category": "false-positive",
       "chunk_count": 1,
-      "duration_ms": 8.95,
+      "duplicate_finding_ids_detected": 0,
+      "duration_ms": 9.891,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
       "expected_readiness": "ready",
+      "expected_severities": [],
       "forbidden_findings_leaked": 0,
       "fragment_count": 1,
       "manifest_hash": "40721f18325f0691e78057c23a7bf4b293e3ff483ffaa5053bd9092af8f36a9e",
       "payload_hashes": [
         "cb0492bcb2b8e2ea0d8ff501c1deea2d6b19ef30a6b2c6b99c9a3d55ca8d28d3"
       ],
-      "readiness_matches": true
+      "readiness_matches": true,
+      "recovered_severities": []
     },
     {
       "actual_readiness": "blocked_pipeline",
@@ -165,30 +197,52 @@
       "case_id": "interleitos-security-blocked-prior-to-response",
       "category": "security",
       "chunk_count": 0,
-      "duration_ms": 3.68,
+      "duplicate_finding_ids_detected": 0,
+      "duration_ms": 3.475,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
       "expected_readiness": "blocked_pipeline",
+      "expected_severities": [],
       "forbidden_findings_leaked": 0,
       "fragment_count": 0,
       "manifest_hash": null,
       "payload_hashes": [],
-      "readiness_matches": true
+      "readiness_matches": true,
+      "recovered_severities": []
     }
   ],
   "lane": "aiops_v2_deterministic_offline",
   "schema_id": "agent-review.v2-eval-summary",
   "summary": {
+    "duplicate_finding_ids_total": 0,
     "expected_findings_recovered": 2,
     "expected_findings_total": 2,
     "false_approvals": [],
     "forbidden_findings_leaked_total": 0,
     "readiness_matches": 9,
     "readiness_mismatches": [],
+    "recall_by_severity": {
+      "P0": {
+        "recovered": 0,
+        "total": 0
+      },
+      "P1": {
+        "recovered": 1,
+        "total": 1
+      },
+      "P2": {
+        "recovered": 1,
+        "total": 1
+      },
+      "P3": {
+        "recovered": 0,
+        "total": 0
+      }
+    },
     "stale_cases_correct": 1,
     "stale_cases_total": 1,
     "total_cases": 9,
-    "total_duration_ms": 91.896
+    "total_duration_ms": 86.717
   }
 }

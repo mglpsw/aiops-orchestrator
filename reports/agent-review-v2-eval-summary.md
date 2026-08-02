@@ -6,7 +6,17 @@
 - stale cases correctly rejected: 1/1
 - expected findings recovered: 2/2
 - forbidden findings leaked: 0
-- total duration: 91.9 ms
+- duplicate finding_ids detected: 0
+- total duration: 86.7 ms
+
+## Recall by severity
+
+| severity | recovered/total |
+|---|---|
+| P0 | 0/0 |
+| P1 | 1/1 |
+| P2 | 1/1 |
+| P3 | 0/0 |
 
 | case_id | category | expected | actual | match | findings | forbidden leaked |
 |---|---|---|---|---|---|---|

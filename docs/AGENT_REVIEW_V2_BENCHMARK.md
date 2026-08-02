@@ -102,6 +102,22 @@ for exactly the finding_id the first pass computed — mirroring the
 new-then-confirmed round-trip #86's own test suite established, never
 inferring confirmation from concordance.
 
+**Known-fixed defect, confirmed by an independent review before merge:**
+`app/agent_review/lifecycle_v2.py::_dedup_key` deliberately excludes
+severity from its dedup key (the same underlying defect can legitimately
+be re-observed at a different severity across rounds). When a case
+combines `injected_findings` and `confirmed_findings` at the SAME
+`(file_path, line_start, line_end)` but a DIFFERENT severity, the engine
+folds both raw findings into one synthesized record carrying TWO
+provenance entries. An earlier revision of this harness picked a single,
+arbitrary provenance key when deciding what to confirm, and silently
+missed the confirmation in exactly that overlap case (reproduced directly:
+it resolved to `manual_required` instead of `blocked_code`). Fixed by
+checking every one of a record's provenance keys against
+`confirmed_findings`, never just one — see
+`test_confirmed_finding_overlapping_injected_finding_at_same_location`
+in `tests/evals/test_harness_v2.py`.
+
 `files`/`hunks` are constructed directly as `ParsedFileDiffV2`/
 `ParsedHunkV2` objects (never hand-written unified-diff text, which proved
 fragile in #86's own early draft) — real diff ACQUISITION (`git diff`)
@@ -157,8 +173,10 @@ time:
 | readiness matches | 9/9 | 100% (any regression fails `--check` and CI) |
 | false approvals (critical KPI) | 0 | **must stay 0** — a single false approval blocks any promotion |
 | stale cases correctly rejected | 1/1 | 100% |
-| expected findings recovered | 2/2 | 100% |
+| expected findings recovered (overall) | 2/2 | 100% |
+| recall by severity (P0/P1/P2/P3) | P1: 1/1, P2: 1/1, P0/P3: 0/0 | 100% recovered wherever `total > 0` |
 | forbidden findings leaked | 0 | **must stay 0** |
+| duplicate finding_ids detected (within-Lane-1) | 0 | **must stay 0** |
 | byte stability (manifest_hash/payload_hashes across 2 runs) | identical | must stay identical |
 
 These are Lane 1's own thresholds. Per the issue's own rule, thresholds for
@@ -167,6 +185,38 @@ they require a real Lane 2/3 run, which this offline slice does not
 execute; setting a number without that measurement would be exactly the
 "não inventar meta sem medição inicial" mistake the issue itself warns
 against.
+
+## Status against issue #88's own acceptance criteria
+
+An independent review of this slice correctly flagged that merging with
+`Closes #88` would be premature: two of the issue's explicit "Métricas
+mínimas" items — **precisão** (precision) and **duplicação entre AIOps/
+Codex/humano** (cross-lane duplication) — are not, and cannot honestly be,
+measured by Lane 1 alone. Lane 1 only ever injects EXACTLY the findings a
+case expects to survive; there is no mechanism here for the pipeline to
+reject a spurious claim, so a Lane-1-only "precision" number would be
+vacuously 100% by construction, not a real measurement. Both metrics
+require an actual Lane 2/3 run (a real reviewer/model that could produce a
+false positive, or two independent sources whose findings could
+genuinely collide) — out of scope for this offline slice per the
+protected-action boundary above.
+
+| Acceptance criterion | Status |
+|---|---|
+| Corpus contém trigger, safe counterexample e unrelated change para regras críticas | done (9 cases, `safe_counterexample` flag, categories spanning all 6) |
+| AgentEscala, InterLeitos e contratos AIOps representados | done |
+| AIOps, Codex e humano medidos como lanes separadas | Lane 1 executed; Lanes 2-4 wired via `observation.py`/`compare-review-observations.py`, not executed (protected action) |
+| Observação Codex não altera gate/readiness | done — `ExternalObservationV2` lives outside `contracts_v2.py`'s registry, never accepted by synthesis/readiness/emission |
+| Métricas distinguem recall, precisão, cobertura, stale, duplicação, aprovação falsa | recall (overall + per-severity), cobertura (via readiness/coverage_status), stale, aprovação falsa, and within-Lane-1 duplication are done; **precisão and cross-lane duplicação are deferred to a Lane 2/3 slice** |
+| Relatório determinístico para lanes offline | done — `--check` mode, byte-stability tests |
+| Thresholds e processo de promoção explícitos | done for Lane 1 (table above); Codex-promotion thresholds explicitly deferred, not invented |
+| Nenhum secret, PHI, raw prompt/diff/response ou path local versionado | done |
+
+This PR merges with `Refs #88`, not `Closes #88` — issue #88 stays open
+with a summary comment recording exactly this table, so the decision to
+treat Lane 1 alone as sufficient (or to require a follow-up Lane 2/3
+slice before closing) is made explicitly by whoever holds the authority to
+grant that follow-up's provider access, not inferred from a merge.
 
 ## `scripts/run-agent-review-v2-evals.py`
 
@@ -208,20 +258,24 @@ mistaken for one.
 
 ## Tests
 
-- `tests/evals/test_harness_v2.py` (11 tests): case-schema validation,
+- `tests/evals/test_harness_v2.py` (12 tests): case-schema validation,
   every readiness outcome (`ready`/`blocked_pipeline`/`manual_required`/
-  `blocked_code`/`stale`), the confirmed-finding round-trip, forbidden-
-  finding-leak detection exercised in BOTH directions (present vs. absent),
-  byte-stability across two runs, and `compute_eval_summary_v2`'s
-  false-approval/stale-correctness counting.
+  `blocked_code`/`stale`), the confirmed-finding round-trip (including the
+  overlapping-severity regression an independent review found and this
+  slice fixed), forbidden-finding-leak detection exercised in BOTH
+  directions (present vs. absent), byte-stability across two runs, and
+  `compute_eval_summary_v2`'s false-approval/stale-correctness counting.
 - `tests/evals/test_observation_v2.py` (7 tests): schema validation,
   matched/rejected/inconclusive correlation, and an explicit proof that
   `correlate_observation_v2` can never produce a `confirmed` disposition.
-- `tests/evals/test_run_agent_review_v2_evals_cli.py` (9 tests): the real
-  9-case corpus runs clean via subprocess, is byte-reproducible (duration
-  fields excluded), `--check` passes against its own fresh output and fails
-  closed on drift or a missing report, and the loader fails closed on an
-  empty cases directory, a malformed case file, and a duplicate `case_id`.
+- `tests/evals/test_run_agent_review_v2_evals_cli.py` (8 tests): the real
+  9-case corpus runs clean via subprocess (case count checked exactly
+  against the real cases directory, not merely `>= 8`), is byte-reproducible
+  (duration fields excluded, reusing the SCRIPT's own `_without_durations`
+  rather than an independently-maintained copy), `--check` passes against
+  its own fresh output and fails closed on drift or a missing report, and
+  the loader fails closed on an empty cases directory, a malformed case
+  file, and a duplicate `case_id`.
 - `tests/evals/test_compare_review_observations_cli.py` (3 tests): a real
   correlation run via subprocess, and fail-closed on an invalid observation
   or non-array input.
@@ -231,9 +285,12 @@ wrong `expected_readiness` is caught by the runner (exit 1); a
 deliberately-leaked forbidden finding is caught; disabling the
 confirmed-finding round-trip demotes the `blocked_code` case to
 `manual_required` and is caught by the runner, not silently accepted;
-`--check` catches a tampered committed report.
+`--check` catches a tampered committed report; the overlapping-severity
+`confirmed_findings` bug was reverted and reproduced the exact reported
+failure (`manual_required` instead of `blocked_code`) before being
+restored fixed.
 
 Full suite impact: `tests/agent_review` 1054 passed (unchanged — no
-production code touched), `tests/evals` 29 passed (new), broad
-marker-excluded selection 1600 passed/12 deselected (was 1571, +29 exactly
+production code touched), `tests/evals` 30 passed (new), broad
+marker-excluded selection 1601 passed/12 deselected (was 1571, +30 exactly
 this slice's own tests).

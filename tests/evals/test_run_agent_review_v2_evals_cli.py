@@ -32,7 +32,7 @@ def test_real_corpus_runs_clean(tmp_path: Path):
     )
     assert result.returncode == 0, result.stderr
     summary = json.loads(json_output.read_text(encoding="utf-8"))
-    assert summary["summary"]["total_cases"] >= 8
+    assert summary["summary"]["total_cases"] == len(list(REAL_CASES_DIR.glob("*.yaml")))
     assert summary["summary"]["false_approvals"] == []
     assert summary["summary"]["forbidden_findings_leaked_total"] == 0
     assert markdown_output.exists()
@@ -126,22 +126,23 @@ def test_check_mode_fails_closed_when_report_missing(tmp_path: Path):
     assert "eval_summary_missing" in check_result.stderr
 
 
-def _strip_durations(summary: dict) -> dict:
-    """`duration_ms`/`total_duration_ms` are legitimate wall-clock
-    measurements (the issue's own "Operação: duração" metric) and are
-    expected to vary run to run -- byte-reproducibility applies to every
-    OTHER field (every hash, every readiness/finding count), never to
-    timing. Stripping duration here is what makes this a correct
-    determinism proof rather than a flaky one."""
+def _load_evals_script_module():
+    """`scripts/*.py` filenames use hyphens and cannot be `import`ed
+    normally -- load the real module directly so this test reuses the
+    SCRIPT's own `_without_durations`, never a second, independently
+    maintained copy of the same field-stripping logic that could silently
+    drift from it."""
 
-    stripped = json.loads(json.dumps(summary))
-    for case in stripped["cases"]:
-        case.pop("duration_ms", None)
-    stripped["summary"].pop("total_duration_ms", None)
-    return stripped
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("run_agent_review_v2_evals", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_real_corpus_is_byte_reproducible(tmp_path: Path):
+    without_durations = _load_evals_script_module()._without_durations
     outputs = []
     for i in range(2):
         json_output = tmp_path / f"summary_{i}.json"
@@ -158,7 +159,7 @@ def test_real_corpus_is_byte_reproducible(tmp_path: Path):
             ]
         )
         assert result.returncode == 0
-        outputs.append(_strip_durations(json.loads(json_output.read_text(encoding="utf-8"))))
+        outputs.append(without_durations(json.loads(json_output.read_text(encoding="utf-8"))))
     assert outputs[0] == outputs[1]
 
 

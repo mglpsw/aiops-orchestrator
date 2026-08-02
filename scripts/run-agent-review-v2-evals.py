@@ -110,6 +110,9 @@ def _result_to_dict(result: EvalCaseResultV2) -> dict:
         "fragment_count": result.fragment_count,
         "blocked_at_assembly": result.blocked_at_assembly,
         "blocked_reason_code": result.blocked_reason_code,
+        "expected_severities": list(result.expected_severities),
+        "recovered_severities": list(result.recovered_severities),
+        "duplicate_finding_ids_detected": result.duplicate_finding_ids_detected,
         "error": result.error,
     }
 
@@ -129,6 +132,8 @@ def _summary_dict(results: list[EvalCaseResultV2], summary) -> dict:
             "expected_findings_total": summary.expected_findings_total,
             "expected_findings_recovered": summary.expected_findings_recovered,
             "forbidden_findings_leaked_total": summary.forbidden_findings_leaked_total,
+            "recall_by_severity": summary.recall_by_severity,
+            "duplicate_finding_ids_total": summary.duplicate_finding_ids_total,
             "total_duration_ms": round(summary.total_duration_ms, 3),
         },
     }
@@ -152,7 +157,17 @@ def _render_markdown(results: list[EvalCaseResultV2], summary) -> str:
         f"- stale cases correctly rejected: {summary.stale_cases_correct}/{summary.stale_cases_total}",
         f"- expected findings recovered: {summary.expected_findings_recovered}/{summary.expected_findings_total}",
         f"- forbidden findings leaked: {summary.forbidden_findings_leaked_total}",
+        f"- duplicate finding_ids detected: {summary.duplicate_finding_ids_total}",
         f"- total duration: {summary.total_duration_ms:.1f} ms",
+        "",
+        "## Recall by severity",
+        "",
+        "| severity | recovered/total |",
+        "|---|---|",
+    ]
+    for severity, counts in summary.recall_by_severity.items():
+        lines.append(f"| {severity} | {counts['recovered']}/{counts['total']} |")
+    lines += [
         "",
         "| case_id | category | expected | actual | match | findings | forbidden leaked |",
         "|---|---|---|---|---|---|---|",
@@ -216,7 +231,12 @@ def main(argv: list[str] | None = None) -> int:
     markdown_output.write_text(_render_markdown(results, summary), encoding="utf-8")
 
     print(f"ok: {summary.total_cases} cases, {summary.readiness_matches} readiness matches")
-    if summary.false_approvals or summary.readiness_mismatches or summary.forbidden_findings_leaked_total:
+    if (
+        summary.false_approvals
+        or summary.readiness_mismatches
+        or summary.forbidden_findings_leaked_total
+        or summary.duplicate_finding_ids_total
+    ):
         return 1
     return 0
 

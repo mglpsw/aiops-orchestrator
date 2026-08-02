@@ -156,6 +156,16 @@ class EvalCaseResultV2:
     fragment_count: int
     blocked_at_assembly: bool
     blocked_reason_code: str | None
+    # Per-severity recall breakdown (issue #88's own "recall de findings
+    # esperados por P0/P1/P2/P3" metric): the severity of every expected
+    # finding, and the severity of every one of THOSE that was recovered.
+    expected_severities: tuple[str, ...] = ()
+    recovered_severities: tuple[str, ...] = ()
+    # Structural duplication check (issue #88's own "duplicação entre
+    # chunks" metric, Lane-1 scope): synthesis.findings is already
+    # deduplicated by construction (synthesis_v2's own root-cause dedup),
+    # but this measures it directly rather than merely trusting that.
+    duplicate_finding_ids_detected: int = 0
     error: str | None = None
 
 
@@ -316,6 +326,9 @@ def run_eval_case_v2(case: EvalCaseV2, *, fixtures_root: Path, head_sha: str) ->
             fragment_count=0,
             blocked_at_assembly=True,
             blocked_reason_code=outcome.blocked_reason.reason_code if outcome.blocked_reason else None,
+            expected_severities=tuple(f.severity for f in case.expected_findings),
+            recovered_severities=(),
+            duplicate_finding_ids_detected=0,
         )
 
     manifest = outcome.manifest
@@ -360,17 +373,26 @@ def run_eval_case_v2(case: EvalCaseV2, *, fixtures_root: Path, head_sha: str) ->
         confirmed_keys = {
             (f.file_path, f.line_start, f.line_end, f.severity) for f in case.confirmed_findings
         }
-        finding_id_by_key: dict[tuple[str, int, int, str], str] = {}
+        # `app/agent_review/lifecycle_v2.py::_dedup_key` deliberately does
+        # NOT include severity in its dedup key (the same underlying
+        # defect can legitimately be re-observed at a different severity
+        # across rounds) -- so a synthesized record can carry provenance
+        # from MULTIPLE raw findings (e.g. one from injected_findings, one
+        # from confirmed_findings, at the same file/line but different
+        # severity), all folded into one record. Track every key a record's
+        # provenance maps to, and confirm it if ANY of them is in
+        # confirmed_keys -- never pick a single, arbitrary key.
+        keys_by_finding_id: dict[str, set[tuple[str, int, int, str]]] = {}
         for record in synthesis.findings:
             for prov in synthesis.provenance.get(record.finding_id, ()):
                 key = raw_id_to_key.get(prov.original_finding_id)
                 if key is not None:
-                    finding_id_by_key[key] = record.finding_id
+                    keys_by_finding_id.setdefault(record.finding_id, set()).add(key)
 
         prior_lifecycle = []
         for record in synthesis.findings:
-            matching_key = next((k for k, fid in finding_id_by_key.items() if fid == record.finding_id), None)
-            if matching_key is not None and matching_key in confirmed_keys:
+            record_keys = keys_by_finding_id.get(record.finding_id, set())
+            if record_keys & confirmed_keys:
                 prior_lifecycle.append(
                     FindingLifecycleRecordV2(
                         finding_id=record.finding_id,
@@ -412,16 +434,17 @@ def run_eval_case_v2(case: EvalCaseV2, *, fixtures_root: Path, head_sha: str) ->
             if key is not None:
                 surviving_keys.add(key)
 
-    survived_count = sum(
-        1
-        for f in case.expected_findings
-        if (f.file_path, f.line_start, f.line_end, f.severity) in surviving_keys
-    )
+    recovered_expected = [
+        f for f in case.expected_findings if (f.file_path, f.line_start, f.line_end, f.severity) in surviving_keys
+    ]
+    survived_count = len(recovered_expected)
     forbidden_leaked = sum(
         1
         for f in case.forbidden_findings
         if (f.file_path, f.line_start, f.line_end, f.severity) in surviving_keys
     )
+    all_finding_ids = [record.finding_id for record in synthesis.findings]
+    duplicate_finding_ids_detected = len(all_finding_ids) - len(set(all_finding_ids))
 
     duration_ms = (time.perf_counter() - started) * 1000
     return EvalCaseResultV2(
@@ -440,7 +463,13 @@ def run_eval_case_v2(case: EvalCaseV2, *, fixtures_root: Path, head_sha: str) ->
         fragment_count=len(manifest.fragments),
         blocked_at_assembly=False,
         blocked_reason_code=None,
+        expected_severities=tuple(f.severity for f in case.expected_findings),
+        recovered_severities=tuple(f.severity for f in recovered_expected),
+        duplicate_finding_ids_detected=duplicate_finding_ids_detected,
     )
+
+
+_SEVERITIES_V2 = ("P0", "P1", "P2", "P3")
 
 
 @dataclass(frozen=True)
@@ -454,6 +483,10 @@ class EvalSummaryV2:
     expected_findings_total: int
     expected_findings_recovered: int
     forbidden_findings_leaked_total: int
+    # {"P0": {"recovered": int, "total": int}, ...} -- issue #88's own
+    # "recall de findings esperados por P0/P1/P2/P3" metric.
+    recall_by_severity: dict[str, dict[str, int]]
+    duplicate_finding_ids_total: int
     total_duration_ms: float
 
 
@@ -465,6 +498,14 @@ def compute_eval_summary_v2(results: list[EvalCaseResultV2]) -> EvalSummaryV2:
         r.case_id for r in results if r.expected_readiness != "ready" and r.actual_readiness == "ready"
     )
     stale_cases = [r for r in results if r.expected_readiness == "stale"]
+
+    recall_by_severity: dict[str, dict[str, int]] = {sev: {"recovered": 0, "total": 0} for sev in _SEVERITIES_V2}
+    for r in results:
+        for sev in r.expected_severities:
+            recall_by_severity[sev]["total"] += 1
+        for sev in r.recovered_severities:
+            recall_by_severity[sev]["recovered"] += 1
+
     return EvalSummaryV2(
         total_cases=len(results),
         readiness_matches=sum(1 for r in results if r.readiness_matches),
@@ -475,5 +516,7 @@ def compute_eval_summary_v2(results: list[EvalCaseResultV2]) -> EvalSummaryV2:
         expected_findings_total=sum(r.expected_findings_total for r in results),
         expected_findings_recovered=sum(r.expected_findings_recovered for r in results),
         forbidden_findings_leaked_total=sum(r.forbidden_findings_leaked for r in results),
+        recall_by_severity=recall_by_severity,
+        duplicate_finding_ids_total=sum(r.duplicate_finding_ids_detected for r in results),
         total_duration_ms=sum(r.duration_ms for r in results),
     )

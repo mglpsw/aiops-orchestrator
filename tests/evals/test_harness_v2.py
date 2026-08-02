@@ -127,6 +127,35 @@ def test_confirmed_finding_resolves_blocked_code():
     assert result.expected_findings_recovered == 1
 
 
+def test_confirmed_finding_overlapping_injected_finding_at_same_location():
+    """Regression: `lifecycle_v2._dedup_key` deliberately excludes
+    severity from its dedup key (the same defect can legitimately be
+    re-observed at a different severity across rounds), so an
+    `injected_findings` entry and a `confirmed_findings` entry at the SAME
+    (file_path, line_start, line_end) but DIFFERENT severity collapse into
+    ONE synthesized record with two provenance entries. An earlier harness
+    revision picked a single, arbitrary provenance key when deciding what
+    to confirm and silently missed the confirmation in exactly this case
+    (reproduced directly: it resolved to `manual_required` instead of
+    `blocked_code`). Fixed by checking ALL of a record's provenance keys
+    against `confirmed_keys`, never just one."""
+
+    case = EvalCaseV2.model_validate(
+        _base_case(
+            injected_findings=[
+                {"file_path": "backend/scheduling/shift_rules.py", "severity": "P2", "line_start": 12, "line_end": 13}
+            ],
+            confirmed_findings=[
+                {"file_path": "backend/scheduling/shift_rules.py", "severity": "P1", "line_start": 12, "line_end": 13}
+            ],
+            expected_readiness="blocked_code",
+        )
+    )
+    result = run_eval_case_v2(case, fixtures_root=FIXTURES_ROOT, head_sha=_HEAD_SHA)
+    assert result.actual_readiness == "blocked_code"
+    assert result.readiness_matches
+
+
 def test_forbidden_finding_leak_is_detected_when_actually_injected():
     """Non-vacuity proof: forbidden_findings_leaked must be 0 when the
     forbidden finding was never injected, and >0 when it was -- this test
