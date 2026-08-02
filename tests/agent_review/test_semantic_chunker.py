@@ -176,10 +176,56 @@ def test_semantic_chunker_uses_sanitized_intake_only(monkeypatch) -> None:  # no
 
 
 def test_semantic_chunker_accepts_current_phase1_intake_schema_with_limitation() -> None:
+    """The prior canonical form (schema_version holding the schema string,
+    no schema_id field) must still be accepted during the compatibility
+    window (#111) -- flagged with intake_schema_id_missing, exactly as
+    before. Never mutate this fixture to the new form; that would defeat
+    the point of this specific regression."""
+
     plan = build_semantic_chunk_plan(_intake(["backend/api/notification_admin.py"]))
 
     assert plan.status == "partial"
     assert "intake_schema_id_missing" in plan.limitations
+
+
+def test_semantic_chunker_accepts_the_new_schema_id_intake_without_the_limitation() -> None:
+    """Issue #111: a real ReviewIntake -- the canonical, currently-constructed
+    form, schema_id + integer schema_version -- must no longer carry
+    intake_schema_id_missing. This is AgentEscala#675's acceptance
+    criterion #1."""
+
+    intake = _intake(["backend/api/notification_admin.py"])
+    intake.pop("schema_version")
+    intake["schema_id"] = "agent-review.intake.v1"
+    intake["schema_version"] = 1
+
+    plan = build_semantic_chunk_plan(intake)
+
+    assert "intake_schema_id_missing" not in plan.limitations
+
+
+def test_a_real_review_intake_no_longer_carries_the_missing_schema_id_limitation() -> None:
+    """End-to-end proof, not just a hand-built dict: a real ReviewIntake
+    (schemas.py), built through its own constructor with only the fields
+    every production caller actually supplies (cli.py never sets
+    schema_version/schema_id explicitly), must already satisfy the new
+    canonical form by default."""
+
+    from app.agent_review.schemas import ReviewIntake
+    from app.agent_review.semantic_chunker import validate_intake_contract
+
+    intake = ReviewIntake(
+        target_repo="mglpsw/aiops-orchestrator",
+        target_profile={},
+        artifacts={},
+        artifact_status=[],
+        redaction_summary={"schema_version": "agent-review.redaction-report.v1"},
+        status="complete",
+    )
+    raw = intake.model_dump(mode="json")
+    assert raw["schema_id"] == "agent-review.intake.v1"
+    assert raw["schema_version"] == 1
+    assert "intake_schema_id_missing" not in validate_intake_contract(raw)
 
 
 def test_semantic_chunker_accepts_files_dict_keys() -> None:

@@ -88,7 +88,12 @@ def test_cli_generates_intake_and_redaction_report(tmp_path: Path) -> None:
     assert result.returncode == 0
     intake = json.loads(output.read_text(encoding="utf-8"))
     redaction_report = json.loads(report.read_text(encoding="utf-8"))
-    assert intake["schema_version"] == "agent-review.intake.v1"
+    # Issue #111: a freshly generated intake now emits the canonical
+    # schema_id + integer schema_version form, closing
+    # AgentEscala#675's acceptance criterion #1
+    # (intake_schema_id_missing must not appear for canonical intake).
+    assert intake["schema_id"] == "agent-review.intake.v1"
+    assert intake["schema_version"] == 1
     assert intake["status"] == "complete"
     assert intake["target_repo"] == "mglpsw/AgentEscala"
     assert redaction_report["schema_version"] == "agent-review.redaction-report.v1"
