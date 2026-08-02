@@ -149,6 +149,18 @@ def canonical_semantic_grouping_policy_bytes_v2(
     "reordering rules does not change the bytes" -- the same
     canonical-ordering discipline issue #105's ``PayloadSetV2`` applies to
     its own list-of-payloads field.
+
+    The identical reasoning applies ONE LEVEL DEEPER: each rule's own
+    ``path_patterns``/``contract_ids``/``artifact_ids`` are also lists, and
+    every consumer in this module (``classify_semantic_group_v2``'s
+    ``any(...)`` match, ``bind_semantic_grouping_policy_to_target_profile_v2``'s
+    set-membership checks) already treats each of them as an unordered set
+    -- ``SemanticGroupingRuleV2.validate_rule`` forbids duplicates within
+    each, so sorting cannot silently collapse two distinct entries. Found
+    by independent review: the first revision of this function sorted only
+    the top-level ``rules`` list, so two rules identical except for
+    ``contract_ids=["c1","c2"]`` vs. ``["c2","c1"]`` (the same set) hashed
+    differently -- confirmed directly before this fix.
     """
 
     if isinstance(value, SemanticGroupingPolicyMaterialV2):
@@ -159,7 +171,19 @@ def canonical_semantic_grouping_policy_bytes_v2(
         raw = dict(value)
         raw.pop("policy_sha256", None)
         material = SemanticGroupingPolicyMaterialV2.model_validate(raw).model_dump(mode="json")
-    material = {**material, "rules": sorted(material["rules"], key=lambda rule: rule["rule_id"])}
+
+    def _canonical_rule(rule: Mapping[str, object]) -> dict[str, object]:
+        return {
+            **rule,
+            "path_patterns": sorted(rule["path_patterns"]),
+            "contract_ids": sorted(rule["contract_ids"]),
+            "artifact_ids": sorted(rule["artifact_ids"]),
+        }
+
+    material = {
+        **material,
+        "rules": sorted((_canonical_rule(rule) for rule in material["rules"]), key=lambda rule: rule["rule_id"]),
+    }
     return _canonical_json_bytes_v2(material)
 
 

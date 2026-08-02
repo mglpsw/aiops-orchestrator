@@ -181,6 +181,27 @@ def test_policy_sha256_is_independent_of_rule_list_order() -> None:
     assert forward.policy_sha256 == backward.policy_sha256
 
 
+def test_policy_sha256_is_independent_of_a_rules_own_internal_list_order() -> None:
+    """Found by independent review of PR #137: the first revision sorted
+    only the top-level rules list, so two rules identical except for
+    contract_ids=["c1","c2"] vs. ["c2","c1"] (the same set -- duplicates
+    are forbidden, and every consumer treats these as sets) hashed
+    differently. path_patterns and artifact_ids are the same class of
+    list and must be equally order-independent."""
+
+    rule_forward = _rule(
+        rule_id="r1", path_patterns=["a/*.py", "b/*.py"],
+        contract_ids=["c1", "c2"], artifact_ids=["art-1", "art-2"],
+    )
+    rule_backward = _rule(
+        rule_id="r1", path_patterns=["b/*.py", "a/*.py"],
+        contract_ids=["c2", "c1"], artifact_ids=["art-2", "art-1"],
+    )
+    forward = _policy(rules=[rule_forward])
+    backward = _policy(rules=[rule_backward])
+    assert forward.policy_sha256 == backward.policy_sha256
+
+
 # -- classify_semantic_group_v2 -----------------------------------------------
 
 
