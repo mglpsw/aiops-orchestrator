@@ -1,0 +1,19 @@
+# Synthetic domain-contract fixture for AgentReview v2's dual-target
+# conformance suite (issue #86). Represents, only illustratively, the KIND
+# of independent-rule structure a real shift-scheduling domain contract
+# might declare -- not real AgentEscala product logic or rules.
+rules:
+  - id: shift-24h-independent
+    description: >
+      Synthetic, illustrative rule only: a 24H shift rule must remain
+      independent of, and must not eliminate, an overlapping 12H daytime
+      rule it does not fully cover.
+  - id: shift-10-22h-not-covered-by-24h
+    description: >
+      Synthetic, illustrative rule only: a 10-22H shift must never be
+      reclassified as covered_by_24h.
+  - id: notifications-consume-facts-only
+    description: >
+      Synthetic, illustrative rule only: notification logic consumes
+      already-decided scheduling facts and must never alter the
+      underlying scheduling rule itself.
