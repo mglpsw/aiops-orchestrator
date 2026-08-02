@@ -180,8 +180,14 @@ HEAD `426cd25`.
    uses)** — resolved above under "A naming collision worth flagging
    explicitly". This is the single most likely source of a future
    misdirected PR or misread architecture doc if left unflagged.
-2. **`.caem/policy.json` vs. the generated views' `Policy-SHA256`** —
-   already flagged in #122/RI-A0 (`docs/RI_A0_CAEM_REUSE_MATRIX.md`'s
+2. **`AGENTS.md`'s `Policy-SHA256` vs. `CAEM_CORE.md`'s own `Policy-SHA256`** —
+   a later Codex review of PR #159 corrected `AGENTS.md`'s header to the
+   raw-bytes hash of the vendored `.caem/policy.json`, resolving that
+   header's own prior mismatch against its source; `CAEM_CORE.md`'s
+   separate header still declares the old digest, so the two generated
+   views now disagree with EACH OTHER rather than each independently
+   disagreeing with `.caem/policy.json`. Already flagged, in this
+   narrowed form, in #122/RI-A0 (`docs/RI_A0_CAEM_REUSE_MATRIX.md`'s
    honesty-boundary section); repeated here because it is exactly the
    kind of "fonte de verdade" conflict #118 asks this document to
    surface, not a new finding of this document itself.
