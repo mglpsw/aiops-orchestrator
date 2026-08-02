@@ -8,7 +8,7 @@
       "category": "contract",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 13.562,
+      "duration_ms": 18.687,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -18,7 +18,7 @@
       "fragment_count": 1,
       "manifest_hash": "1e6e19ede70ac0d41f691488afd961097c83782736a081009e0ec4e3655fa90e",
       "payload_hashes": [
-        "2cfe43a8c38862562eb37b2b707a64f73fd0db162ece3c5d66c4aa24901c5028"
+        "8061b40bb24002fc675d2971509beac977aea0b2e7ebef6eacbbce3dd79c0547"
       ],
       "readiness_matches": true,
       "recovered_severities": []
@@ -31,7 +31,7 @@
       "category": "domain",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 10.912,
+      "duration_ms": 13.968,
       "error": null,
       "expected_findings_recovered": 1,
       "expected_findings_total": 1,
@@ -43,7 +43,7 @@
       "fragment_count": 1,
       "manifest_hash": "8590afb6837bcc6c924966f7669a4090763b87a7f827eb62d31ac63fc2cd38ee",
       "payload_hashes": [
-        "57cc374ef6ed531b64e53bdbf25e7e67c5c1bf2f14a042da19880ed06412f946"
+        "4576121a7c548480423d6f6236f9db1ec807aeed1d178cd8376bf0f6fd40bd05"
       ],
       "readiness_matches": true,
       "recovered_severities": [
@@ -58,7 +58,7 @@
       "category": "false-positive",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 11.21,
+      "duration_ms": 11.178,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -68,7 +68,7 @@
       "fragment_count": 1,
       "manifest_hash": "7a0f09b3750963810dce9cea3beaa759e6c96ad7b0ac0f5682370cdd9b1e82b6",
       "payload_hashes": [
-        "abeb4cd9ec785a9374061364bf5f6895a268cb0fff15652f39b70e379af82b53"
+        "7494207d8e8f3a0ca85abd5ee9b25e06bc0dfde8269d44daa484df3e4033ec0b"
       ],
       "readiness_matches": true,
       "recovered_severities": []
@@ -81,7 +81,7 @@
       "category": "security",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 12.851,
+      "duration_ms": 16.9,
       "error": null,
       "expected_findings_recovered": 1,
       "expected_findings_total": 1,
@@ -93,7 +93,7 @@
       "fragment_count": 1,
       "manifest_hash": "b5821d07586d01f92a7e0da7532429dbb2a487d17ff15aa59e0a10df175b96ae",
       "payload_hashes": [
-        "8646f4065cda63281e4f1e42cf24af7a2f165708adbff6089016fb7c0866b15c"
+        "05f55959717e35881c77f1e41d4bd5bf56a3e93e4377277dfd9d4eaa4d47c414"
       ],
       "readiness_matches": true,
       "recovered_severities": [
@@ -108,7 +108,7 @@
       "category": "coverage",
       "chunk_count": 0,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 5.972,
+      "duration_ms": 3.867,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -129,7 +129,7 @@
       "category": "stale",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 9.658,
+      "duration_ms": 11.987,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -139,7 +139,7 @@
       "fragment_count": 1,
       "manifest_hash": "499125e826034e765d5e3bcd76aba2a4286f6c1059ce6bb837a120d559f5a805",
       "payload_hashes": [
-        "cfe82905b78eca4197462982251c2dd13549ea8270a7be33df49d3d2a8bf7eba"
+        "1b04c08644318c6d07f525fe50c720d50b56e2e3aba4916ea727dbd79c190a7c"
       ],
       "readiness_matches": true,
       "recovered_severities": []
@@ -152,7 +152,7 @@
       "category": "domain",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 9.185,
+      "duration_ms": 12.239,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -162,7 +162,7 @@
       "fragment_count": 1,
       "manifest_hash": "24bcc90673a14dffc60b0f81b097747bf423cecbda497110cd5a7a509b7acd24",
       "payload_hashes": [
-        "b6eb4e213e947401b44c5272dd643642343e88a7fe8a9d6550f0a0258fd2f098"
+        "600fa5b88018942cb77ca5b292cc4d6c890ae9849721b9272e15e78603dafd0f"
       ],
       "readiness_matches": true,
       "recovered_severities": []
@@ -175,7 +175,7 @@
       "category": "false-positive",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 9.891,
+      "duration_ms": 9.786,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -183,9 +183,9 @@
       "expected_severities": [],
       "forbidden_findings_leaked": 0,
       "fragment_count": 1,
-      "manifest_hash": "40721f18325f0691e78057c23a7bf4b293e3ff483ffaa5053bd9092af8f36a9e",
+      "manifest_hash": "0d4e2bbd9bbd421df04281f3abf58506f5f3d25c053a1e2c9af23e8826722786",
       "payload_hashes": [
-        "cb0492bcb2b8e2ea0d8ff501c1deea2d6b19ef30a6b2c6b99c9a3d55ca8d28d3"
+        "6468400d7ec54dfc9c1c8fb69281115cd51521fa3a67526b281113791bba75a2"
       ],
       "readiness_matches": true,
       "recovered_severities": []
@@ -198,7 +198,7 @@
       "category": "security",
       "chunk_count": 0,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 3.475,
+      "duration_ms": 4.248,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -243,6 +243,6 @@
     "stale_cases_correct": 1,
     "stale_cases_total": 1,
     "total_cases": 9,
-    "total_duration_ms": 86.717
+    "total_duration_ms": 102.86
   }
 }

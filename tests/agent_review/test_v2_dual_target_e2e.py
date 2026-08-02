@@ -25,6 +25,7 @@ path, never a bespoke detector.
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import re
@@ -328,6 +329,17 @@ def test_two_real_profiles_load_and_differ():
     assert escala.policies.coverage_failure_state == "blocked_pipeline"
     assert leitos.policies.coverage_failure_state == "manual_required"
     assert set(escala.policies.allowed_semantic_groups) != set(leitos.policies.allowed_semantic_groups)
+    # A Codex review of PR #147 found that both profiles previously used
+    # the IDENTICAL "backend/**/*.py" must_review pattern -- meaning a
+    # regression that ignored target-specific must-review selection
+    # entirely could never be caught by this suite, since both targets'
+    # coverage runs exercised the same predicate. Each target's pattern
+    # must be genuinely its own, matching only ITS OWN primary module.
+    assert set(escala.must_review.patterns) != set(leitos.must_review.patterns)
+    assert fnmatch.fnmatchcase("backend/scheduling/shift_rules.py", escala.must_review.patterns[0])
+    assert not fnmatch.fnmatchcase("backend/tenancy/access_scope.py", escala.must_review.patterns[0])
+    assert fnmatch.fnmatchcase("backend/tenancy/access_scope.py", leitos.must_review.patterns[0])
+    assert not fnmatch.fnmatchcase("backend/scheduling/shift_rules.py", leitos.must_review.patterns[0])
 
 
 def test_two_targets_same_engine_different_groups_and_payloads():
@@ -774,6 +786,11 @@ def _conformance_entry(*, target_id: str, profile, manifest, payload_set, readin
         "evidence_no_provider": True,
         "evidence_no_github_write": True,
         "evidence_no_ct102": True,
+        # Part of canonical_output_digest's own preimage above -- persisted
+        # as its own field (not just folded into the digest) so the verify
+        # script can recompute and compare, rather than only checking the
+        # digest's shape (a real gap a Codex review of PR #147 found).
+        "payload_set_sha256": payload_set.payload_set_sha256,
         "canonical_output_digest": canonical_digest,
     }
 
@@ -929,6 +946,31 @@ def test_conformance_verify_script_fails_closed_on_invalid_coverage_status():
     with pytest.raises(module.ConformanceVerificationError) as excinfo:
         module.verify_conformance_matrix(matrix)
     assert excinfo.value.reason_code == "conformance_target_field_invalid"
+
+
+def test_conformance_verify_script_recomputes_digest_and_catches_tampering():
+    """A Codex review of PR #147 found this exact gap: the verify script
+    only checked that canonical_output_digest LOOKS like hex, never
+    recomputed it -- so a stale/tampered matrix (e.g. readiness_state
+    silently changed after the digest was computed) would pass. Proves
+    the digest is now genuinely recomputed from its own real preimage."""
+
+    module = _load_verify_module()
+    matrix = _build_conformance_matrix()
+
+    # Sanity: an untampered, freshly-built matrix passes.
+    module.verify_conformance_matrix(matrix)
+
+    # Tamper readiness_state without updating canonical_output_digest --
+    # exactly the scenario the Codex review described. Target [1]
+    # (interleitos) is genuinely manual_required in this corpus, so
+    # flipping it to "ready" is a real change, not a no-op.
+    tampered = _build_conformance_matrix()
+    assert tampered["targets"][1]["readiness_state"] == "manual_required"
+    tampered["targets"][1]["readiness_state"] = "ready"
+    with pytest.raises(module.ConformanceVerificationError) as excinfo:
+        module.verify_conformance_matrix(tampered)
+    assert excinfo.value.reason_code == "conformance_canonical_output_digest_mismatch"
 
 
 def test_conformance_verify_script_fails_closed_on_non_string_target_id():

@@ -19,7 +19,7 @@ budgets:
 must_review:
   paths: []
   patterns:
-    - "backend/**/*.py"
+    - "backend/scheduling/*.py"
   artifact_ids: []
   minimum_coverage: complete
 policies:
