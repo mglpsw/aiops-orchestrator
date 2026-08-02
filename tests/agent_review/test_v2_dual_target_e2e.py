@@ -708,6 +708,47 @@ def test_interleitos_dlp_block_prior_to_any_synthetic_response():
     assert "backend/tenancy/access_scope.py" in outcome.blocked_reason.affected_paths
 
 
+def test_interleitos_api_schema_contract_required_path_blocks_pipeline():
+    """Codex review of PR #152: narrowing InterLeitos's must_review pattern
+    from the original broad ``backend/**/*.py`` to just
+    ``backend/tenancy/*.py`` (to differentiate it from AgentEscala's
+    ``backend/scheduling/*.py``) silently dropped ``backend/api/*.py`` out
+    of must-review coverage -- an unrepresentable/truncated
+    backend/api/schema_contract.py would no longer be a required_problem_path
+    at all, so the engine would exclude it and continue instead of failing
+    closed, and the dual-target conformance suite would stop exercising
+    fail-closed coverage for the api_schema_contract semantic group
+    entirely. The fixture now keeps ``backend/api/*.py`` in InterLeitos's
+    must_review patterns (alongside ``backend/tenancy/*.py``, which alone
+    still differentiates it from AgentEscala's pattern set) specifically to
+    preserve this case."""
+
+    profile = _load_profile("interleitos")
+    binary_diffs = [
+        _interleitos_diffs()[0],
+        _file_diff(path="backend/api/schema_contract.py", hunks=(), is_binary=True),
+    ]
+
+    outcome = assemble_manifest_from_diff_v2(
+        binary_diffs,
+        profile=profile,
+        grouping_policy=_interleitos_policy(),
+        repo=profile.identity.repo,
+        pr_number=203,
+        base_sha=_BASE_SHA,
+        head_sha=_HEAD_SHA,
+        tested_merge_sha=_TESTED_MERGE_SHA,
+        toolrepo_sha=_TOOLREPO_SHA,
+        evidence_hash=_EVIDENCE_HASH,
+        max_lines_per_chunk=200,
+    )
+
+    assert outcome.state == "blocked_pipeline"
+    assert outcome.manifest is None
+    assert outcome.blocked_reason.reason_code == RUN_ASSEMBLY_REQUIRED_PATH_UNREPRESENTABLE_REASON_V2
+    assert "backend/api/schema_contract.py" in outcome.blocked_reason.affected_paths
+
+
 def test_interleitos_stale_on_identity_divergence():
     profile = _load_profile("interleitos")
     manifest = _assemble(

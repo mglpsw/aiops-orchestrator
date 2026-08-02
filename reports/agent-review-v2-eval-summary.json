@@ -8,7 +8,7 @@
       "category": "contract",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 13.569,
+      "duration_ms": 14.899,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -31,7 +31,7 @@
       "category": "domain",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 10.278,
+      "duration_ms": 11.286,
       "error": null,
       "expected_findings_recovered": 1,
       "expected_findings_total": 1,
@@ -58,7 +58,7 @@
       "category": "false-positive",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 8.754,
+      "duration_ms": 10.578,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -81,7 +81,7 @@
       "category": "security",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 13.58,
+      "duration_ms": 14.408,
       "error": null,
       "expected_findings_recovered": 1,
       "expected_findings_total": 1,
@@ -108,7 +108,7 @@
       "category": "coverage",
       "chunk_count": 0,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 4.883,
+      "duration_ms": 4.349,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -129,7 +129,7 @@
       "category": "stale",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 15.676,
+      "duration_ms": 9.701,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -152,7 +152,7 @@
       "category": "domain",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 14.897,
+      "duration_ms": 10.038,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -162,7 +162,7 @@
       "fragment_count": 1,
       "manifest_hash": "24bcc90673a14dffc60b0f81b097747bf423cecbda497110cd5a7a509b7acd24",
       "payload_hashes": [
-        "600fa5b88018942cb77ca5b292cc4d6c890ae9849721b9272e15e78603dafd0f"
+        "55f8dfb60570364001ebe28ff72291a906cf1ac49344fddc03339df488e75559"
       ],
       "readiness_matches": true,
       "recovered_severities": []
@@ -175,7 +175,7 @@
       "category": "false-positive",
       "chunk_count": 1,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 12.989,
+      "duration_ms": 8.823,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -183,9 +183,9 @@
       "expected_severities": [],
       "forbidden_findings_leaked": 0,
       "fragment_count": 1,
-      "manifest_hash": "0d4e2bbd9bbd421df04281f3abf58506f5f3d25c053a1e2c9af23e8826722786",
+      "manifest_hash": "40721f18325f0691e78057c23a7bf4b293e3ff483ffaa5053bd9092af8f36a9e",
       "payload_hashes": [
-        "6468400d7ec54dfc9c1c8fb69281115cd51521fa3a67526b281113791bba75a2"
+        "34fa7eb80dd3523babcd5bb160d80daeb9e43a11aa9a95e101204d976c50fb76"
       ],
       "readiness_matches": true,
       "recovered_severities": []
@@ -198,7 +198,7 @@
       "category": "security",
       "chunk_count": 0,
       "duplicate_finding_ids_detected": 0,
-      "duration_ms": 6.19,
+      "duration_ms": 3.21,
       "error": null,
       "expected_findings_recovered": 0,
       "expected_findings_total": 0,
@@ -243,6 +243,6 @@
     "stale_cases_correct": 1,
     "stale_cases_total": 1,
     "total_cases": 9,
-    "total_duration_ms": 100.815
+    "total_duration_ms": 87.292
   }
 }
