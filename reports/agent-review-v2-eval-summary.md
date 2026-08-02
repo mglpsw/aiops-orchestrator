@@ -7,7 +7,7 @@
 - expected findings recovered: 2/2
 - forbidden findings leaked: 0
 - duplicate finding_ids detected: 0
-- total duration: 102.9 ms
+- total duration: 100.8 ms
 
 ## Recall by severity
 

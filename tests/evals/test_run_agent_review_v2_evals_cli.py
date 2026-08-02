@@ -232,3 +232,51 @@ rationale: duplicate-id test fixture
     )
     assert result.returncode == 1
     assert "duplicate case_id" in result.stderr
+
+
+def test_fails_closed_on_recall_regression_even_when_readiness_matches(tmp_path: Path):
+    """Regression (Codex review of #149): incomplete recall never failed
+    this gate on its own -- a case declaring an expected_finding that
+    never actually survives, with readiness otherwise matching, would
+    previously write the regressed baseline and exit 0. The documented
+    100% recovery threshold must not be able to silently pass."""
+
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    case_body = """
+case_id: recall-regression-case
+category: contract
+target: agent_escala
+files:
+  - path: tests/scheduling/test_shift_rules.py
+    hunks:
+      - {old_start: 1, old_lines: 3, new_start: 1, new_lines: 6, seed: recall-regression}
+expected_readiness: ready
+expected_findings:
+  - severity: P2
+    file_path: tests/scheduling/test_shift_rules.py
+    line_start: 1
+    line_end: 2
+    invariant: "never actually injected -- proves recall regression is caught"
+    root_cause: "test fixture: an expected finding that will never survive"
+rationale: recall-regression test fixture -- expected_findings declares a
+  finding that is never actually injected, so readiness matches (ready)
+  but recall is 0/1.
+"""
+    (cases_dir / "a.yaml").write_text(case_body, encoding="utf-8")
+    result = _run(
+        [
+            "--cases-dir",
+            str(cases_dir),
+            "--fixtures-root",
+            str(REAL_FIXTURES_ROOT),
+            "--json-output",
+            str(tmp_path / "summary.json"),
+            "--markdown-output",
+            str(tmp_path / "summary.md"),
+        ]
+    )
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["cases"][0]["readiness_matches"] is True
+    assert summary["summary"]["expected_findings_recovered"] < summary["summary"]["expected_findings_total"]
+    assert result.returncode == 1

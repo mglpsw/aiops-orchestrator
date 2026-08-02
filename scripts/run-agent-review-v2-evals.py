@@ -231,11 +231,20 @@ def main(argv: list[str] | None = None) -> int:
     markdown_output.write_text(_render_markdown(results, summary), encoding="utf-8")
 
     print(f"ok: {summary.total_cases} cases, {summary.readiness_matches} readiness matches")
+    # A Codex review found that incomplete recall (overall or per-severity)
+    # never failed this gate: a run where synthesis stopped preserving an
+    # expected finding, with readiness otherwise unchanged, would write the
+    # regressed baseline and exit 0. The documented 100% recovery threshold
+    # (docs/AGENT_REVIEW_V2_BENCHMARK.md) must not be able to silently pass.
+    recall_regressed = summary.expected_findings_recovered < summary.expected_findings_total or any(
+        counts["recovered"] < counts["total"] for counts in summary.recall_by_severity.values()
+    )
     if (
         summary.false_approvals
         or summary.readiness_mismatches
         or summary.forbidden_findings_leaked_total
         or summary.duplicate_finding_ids_total
+        or recall_regressed
     ):
         return 1
     return 0
