@@ -126,7 +126,7 @@ F2/#132 (PayloadSet emission + CLI) consumes:
 
 ## CLI / `source`-literal naming decision (R2)
 
-Verified in code before this decision (measured at `f15fdd0`, current at time
+Verified in code before this decision (measured at `2fa8d3e`, current at time
 of writing):
 
 ```text
@@ -134,7 +134,7 @@ contracts_v2.py:573   ChunkPayloadV2.source     = "aiops-review-build-payloads"
                        <-> scripts/aiops-review-build-payloads.py (v1) ALREADY EXISTS
 contracts_v2.py:1075  ReviewReadinessV2.source  = "aiops-review-quality-gate"
                        <-> scripts/aiops-review-quality-gate.py (v1) ALREADY EXISTS
-manifest_v2.py:194    ManifestV2.source         = "aiops-review-plan-chunks-v2"
+manifest_v2.py:195    ManifestV2.source         = "aiops-review-plan-chunks-v2"
                        <-> "-v2" suffix (the one non-colliding pattern already
                            in this repo)
 ```
