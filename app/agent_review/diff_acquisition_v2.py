@@ -709,6 +709,17 @@ def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     result = subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
         [
             "git", "diff", "--no-ext-diff", "--no-textconv", "--binary",
+            # A Codex review found that an ambient diff.noprefix=true
+            # config (a real, documented git setting) makes git emit
+            # "diff --git my file.bin my file.bin" instead of the
+            # canonical "a/<path> b/<path>" form -- _split_diff_git_
+            # header_paths' fallback only recognizes headers starting
+            # with "a/", so a prefixless binary path with a space would
+            # still resolve to nothing. Forcing the standard prefixes
+            # explicitly, like -l1000 above forces the rename limit,
+            # means acquisition output never depends on ambient runner
+            # configuration.
+            "--src-prefix=a/", "--dst-prefix=b/",
             *_RENAME_COPY_DETECTION_ARGS_V2, f"{base_sha}...{head_sha}",
         ],
         cwd=repo_root,

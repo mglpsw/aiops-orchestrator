@@ -1616,6 +1616,33 @@ def test_acquire_authoritative_diff_resolves_a_real_binary_file_with_a_space(tmp
 
 
 @pytest.mark.requires_network
+def test_acquire_authoritative_diff_ignores_ambient_diff_noprefix(tmp_path: Path) -> None:
+    """Codex review of PR #158 itself: diff.noprefix=true (a real,
+    documented git config) makes git emit "diff --git my file.bin my
+    file.bin" instead of the canonical "a/<path> b/<path>" header --
+    _split_diff_git_header_paths' fallback only recognizes headers
+    starting with "a/", so a prefixless spaced binary path would still
+    resolve to nothing even after the #99 fix. --src-prefix=a/
+    --dst-prefix=b/ are now explicit, fixed arguments so the header
+    format never depends on this ambient config."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+    (repo / "my file.bin").write_bytes(b"\x00\x01\x02binarycontent")
+    head_sha = _commit_all(repo, "add binary with space")
+
+    subprocess.run(["git", "config", "diff.noprefix", "true"], cwd=repo, check=True)
+
+    file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert len(file_diffs) == 1
+    assert file_diffs[0].path == "my file.bin"
+    assert file_diffs[0].change_type == "added"
+    assert file_diffs[0].is_binary
+
+
+@pytest.mark.requires_network
 def test_acquire_authoritative_diff_handles_a_real_rename_and_copy_with_spaces(tmp_path: Path) -> None:
     """A real rename AND a real copy (source also modified, within
     --find-copies' default detection scope), both with spaces on both
