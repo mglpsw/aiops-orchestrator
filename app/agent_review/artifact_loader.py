@@ -129,6 +129,14 @@ def _load_content(path: Path, kind: str) -> tuple[Any, str | None]:
         return None, "json_invalid"
     except yaml.YAMLError:
         return None, "yaml_invalid"
+    except (OSError, UnicodeDecodeError):
+        # A Codex review found that a declared artifact path resolving to a
+        # directory, an unreadable file, or non-UTF-8 content raised an
+        # uncaught OSError/UnicodeDecodeError from path.read_text(), crashing
+        # the intake CLI with a traceback instead of reporting a degraded/
+        # invalid ArtifactStatus like every other malformed-artifact case
+        # here.
+        return None, "artifact_unreadable"
 
 
 def _artifact_limitations(declaration: ArtifactDeclaration, limitations: list[str]) -> list[str]:
