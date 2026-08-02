@@ -1,0 +1,76 @@
+{
+  "$defs": {
+    "EvidenceReferenceV2": {
+      "additionalProperties": false,
+      "description": "One sanitized reference: an id, its kind, and the content ``sha256``\nof its already-sanitized form. Never raw content -- mirrors\n``PayloadContractReferenceV2``'s own reference-by-hash discipline.",
+      "properties": {
+        "detail": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "artifact",
+            "contract"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "reference_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Reference Id",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference_id",
+        "kind",
+        "sha256",
+        "detail"
+      ],
+      "title": "EvidenceReferenceV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "references": {
+      "items": {
+        "$ref": "#/$defs/EvidenceReferenceV2"
+      },
+      "title": "References",
+      "type": "array"
+    },
+    "schema_id": {
+      "const": "agent-review.evidence-bundle.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "aiops-review-evidence-bundle-v2",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "references"
+  ],
+  "title": "EvidenceBundleV2",
+  "type": "object"
+}
