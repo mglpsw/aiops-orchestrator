@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "SemanticGroupV2": {
+      "enum": [
+        "primary_backend_logic",
+        "api_schema_contract",
+        "frontend_ui",
+        "tests",
+        "workflow_aiops",
+        "docs_changelog",
+        "suspicious_out_of_scope",
+        "unknown"
+      ],
+      "title": "SemanticGroupV2",
+      "type": "string"
+    },
+    "SemanticGroupingRuleV2": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Artifact Ids",
+          "type": "array"
+        },
+        "contract_ids": {
+          "items": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+            "type": "string"
+          },
+          "title": "Contract Ids",
+          "type": "array"
+        },
+        "path_patterns": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Path Patterns",
+          "type": "array"
+        },
+        "priority": {
+          "title": "Priority",
+          "type": "integer"
+        },
+        "rule_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "semantic_group": {
+          "$ref": "#/$defs/SemanticGroupV2"
+        }
+      },
+      "required": [
+        "rule_id",
+        "semantic_group",
+        "path_patterns",
+        "contract_ids",
+        "artifact_ids",
+        "priority"
+      ],
+      "title": "SemanticGroupingRuleV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "fallback_group": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SemanticGroupV2"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "policy_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Policy Sha256",
+      "type": "string"
+    },
+    "rules": {
+      "items": {
+        "$ref": "#/$defs/SemanticGroupingRuleV2"
+      },
+      "title": "Rules",
+      "type": "array"
+    },
+    "schema_id": {
+      "const": "agent-review.semantic-grouping-policy.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "repo-semantic-grouping-policy",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "rules",
+    "fallback_group",
+    "policy_sha256"
+  ],
+  "title": "SemanticGroupingPolicyV2",
+  "type": "object"
+}
