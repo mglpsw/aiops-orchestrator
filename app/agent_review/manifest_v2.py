@@ -143,21 +143,22 @@ class ManifestChunkV2(ContractV2Model):
     fragment_ids: list[Sha256]
     # Typed as null-only, not Sha256 | None: payload_builder_v2.
     # build_chunk_payload_v2 always computes its own fresh payload_sha256
-    # and ignores whatever is set here -- there is no non-circular way to
-    # populate this field in advance (see payload_builder_v2's
-    # build_chunk_payloads_v2 docstring: setting it would change
+    # and ignores whatever is set here. Populating THIS field would change
     # manifest_hash, forcing a new identity/run_id, which the payload
-    # material itself embeds, making the just-inserted hash stale again).
-    # A populated value can therefore only ever be stale, forged, or
-    # simply wrong relative to what will actually be built. A previous
-    # revision rejected a non-null value at the model-validator level
-    # (runtime-only), but the exported JSON Schema still advertised
-    # string-or-null, letting a producer validating only against the
-    # published schema believe a populated value was acceptable. Typing
-    # the field itself as null-only makes the schema and the canonical
-    # Python contract agree, and rejects a populated value at the type
-    # level -- earlier and unconditionally, not via a model_validator
-    # that could drift from the field's own declared shape.
+    # material itself embeds, making the just-inserted hash stale again --
+    # so it stays null-only BY DECISION, not for lack of a non-circular way
+    # to populate it: issue #105's PayloadSetV2 (payload_set_v2.py) is that
+    # non-circular resolution, deliberately kept as a separate artifact
+    # bound to a run by run_id + manifest_hash instead of folded back into
+    # this field or into RunIdentityV2 itself. A previous revision rejected
+    # a non-null value at the model-validator level (runtime-only), but the
+    # exported JSON Schema still advertised string-or-null, letting a
+    # producer validating only against the published schema believe a
+    # populated value was acceptable. Typing the field itself as null-only
+    # makes the schema and the canonical Python contract agree, and rejects
+    # a populated value at the type level -- earlier and unconditionally,
+    # not via a model_validator that could drift from the field's own
+    # declared shape.
     payload_sha256: None
 
     @model_validator(mode="after")

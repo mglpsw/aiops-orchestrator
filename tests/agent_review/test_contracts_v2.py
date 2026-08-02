@@ -2486,6 +2486,7 @@ def test_exported_json_schemas_are_stable_and_deny_unknown_objects() -> None:
         "agent-review.manifest.v2.schema.json",
         "agent-review.run-fragment-coverage.v2.schema.json",
         "agent-review.semantic-grouping-policy.v2.schema.json",
+        "agent-review.payload-set.v2.schema.json",
     }
 
     for filename, schema in rendered.items():
