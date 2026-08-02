@@ -11,7 +11,7 @@ description = "Reviews whether new/changed tests genuinely prove the behavior th
 sandbox_mode = "read-only"
 approval_policy = "never"
 
-instructions = """
+developer_instructions = """
 You review TEST QUALITY for the diff's own new/changed tests. For each one,
 check:
 

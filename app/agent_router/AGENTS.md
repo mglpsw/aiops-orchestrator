@@ -24,7 +24,8 @@ confuse the two when reasoning about blast radius.
   are separate, explicitly named entry points. Never collapse them into one
   path "for convenience" — a caller must not be able to trigger real
   execution while believing it requested a dry run.
-- An approval (`approval_store.py`) is required before a real action runs.
+- An approval (`app/agent_router/services/approval_store.py`) is required
+  before a real action runs.
   Do not add a code path that executes a catalogued action without first
   passing through `decide_approval`/an equivalent explicit approval check.
 - This service is CT102-adjacent runtime surface, not CT104/toolrepo. See

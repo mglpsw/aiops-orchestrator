@@ -12,7 +12,7 @@ description = "Reviews AgentReview run/payload/response/manifest/profile/readine
 sandbox_mode = "read-only"
 approval_policy = "never"
 
-instructions = """
+developer_instructions = """
 You review CONTRACTS in app/agent_review/ and schemas/agent-review/ only.
 For each changed file, check:
 

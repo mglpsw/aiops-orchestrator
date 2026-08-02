@@ -21,20 +21,10 @@ sandbox_mode = "read-only"
 [projects.".".sandbox_workspace_write]
 network_access = false
 
-# The four read-only subagents this issue defines. Each has ONE
-# responsibility; none may overlap another's. See .codex/agents/*.toml for
-# the per-agent scope and docs/CODEX_REVIEW_WORKFLOW.md for how to invoke
-# them together via the local /review recipe.
-[agents]
-paths = [
-    "agents/contract-reviewer.toml",
-    "agents/trust-boundary-reviewer.toml",
-    "agents/test-reviewer.toml",
-    "agents/target-integration-reviewer.toml",
-]
-
-# Recommended initial parallelism: 3-4 agents at once, prioritizing
-# independent read-only investigation over concurrent writes. None of these
-# agents write, so this is a throughput/cost knob, not a safety one.
-[agents.defaults]
-max_parallel = 4
+# The four read-only subagents this issue defines
+# (contract-reviewer/trust-boundary-reviewer/test-reviewer/
+# target-integration-reviewer, each with ONE non-overlapping
+# responsibility) are auto-discovered by Codex directly from
+# .codex/agents/*.toml -- no separate registration here. See
+# docs/CODEX_REVIEW_WORKFLOW.md for the per-agent scope and the local
+# /review recipe that invokes them together.

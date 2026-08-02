@@ -71,10 +71,17 @@ network. Each has exactly one responsibility, with no overlap:
 | `test-reviewer` | whether tests genuinely prove what they claim (happy/negative path, mutated-object bypass, stale HEAD/cross-run, partial coverage, byte-reproducibility, v1 preservation, vacuity) | production contract correctness, trust boundaries, target integration |
 | `target-integration-reviewer` | generic profile/review-pack/fixture-driven integration, anti-branching on target name, InterLeitos's DLP/PHI boundary | contract correctness in isolation, general trust boundaries, general test quality |
 
-Recommended initial parallelism: 3–4 agents at once (`.codex/config.toml`'s
-`[agents.defaults].max_parallel`), prioritizing independent read-only
-investigation over concurrent writes — none of the four write, so this is
-a throughput/cost knob, never a safety one.
+Each `.codex/agents/*.toml` file is auto-discovered by Codex from the
+`agents/` directory next to `config.toml` — no separate registration list
+is needed in (or supported by) `config.toml` itself; confirmed directly
+with `codex doctor`, which reports `config.load: ok` with zero startup
+warnings once each file defines `developer_instructions` (not
+`instructions` — an earlier draft of this PR used the wrong field name and
+`codex doctor` silently dropped all four agents as a result, confirmed and
+fixed before merge). Recommended initial parallelism: 3–4 agents at once,
+prioritizing independent read-only investigation over concurrent writes —
+none of the four write, so this is a throughput/cost knob, never a safety
+one.
 
 ## Escopo 3 — reproducible review recipe
 

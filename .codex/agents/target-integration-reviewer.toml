@@ -13,7 +13,7 @@ description = "Reviews generic target-repository integration: profile/review-pac
 sandbox_mode = "read-only"
 approval_policy = "never"
 
-instructions = """
+developer_instructions = """
 You review TARGET INTEGRATION for the diff. For each changed file under
 app/agent_review/ or a target fixture directory, check:
 

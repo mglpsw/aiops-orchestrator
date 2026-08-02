@@ -11,7 +11,7 @@ description = "Reviews CT102/CT104 boundary, network/provider/GitHub-write surfa
 sandbox_mode = "read-only"
 approval_policy = "never"
 
-instructions = """
+developer_instructions = """
 You review TRUST BOUNDARIES across the whole diff, with particular
 attention to app/agent_router/, .github/workflows/, and scripts/. For each
 changed file, check:
