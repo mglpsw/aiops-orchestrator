@@ -57,11 +57,19 @@ from app.agent_review.payload_set_emission_v2 import (
     bind_payload_set_to_payloads_v2,
     emit_payload_set_v2,
 )
+from app.agent_review.payload_set_v2 import (
+    PAYLOAD_SET_CHUNK_SET_MISMATCH_REASON_V2,
+    PAYLOAD_SET_RUN_ID_MISMATCH_REASON_V2,
+)
 from app.agent_review.profile_loader_v2 import load_target_profile_v2
 from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
 from app.agent_review.review_readiness_emission_v2 import emit_review_readiness_v2
-from app.agent_review.run_assembly_v2 import assemble_manifest_from_diff_v2
+from app.agent_review.run_assembly_v2 import (
+    RUN_ASSEMBLY_REQUIRED_PATH_UNREPRESENTABLE_REASON_V2,
+    assemble_manifest_from_diff_v2,
+)
 from app.agent_review.semantic_grouping_policy_v2 import (
+    SEMANTIC_GROUPING_UNKNOWN_GROUP_REASON_V2,
     SemanticGroupingError,
     SemanticGroupingPolicyV2,
     SemanticGroupingRuleV2,
@@ -93,12 +101,12 @@ def _hunk(*, old_start: int, old_lines: int, new_start: int, new_lines: int, see
     )
 
 
-def _file_diff(*, path: str, hunks: tuple[ParsedHunkV2, ...]) -> ParsedFileDiffV2:
+def _file_diff(*, path: str, hunks: tuple[ParsedHunkV2, ...], is_binary: bool = False) -> ParsedFileDiffV2:
     return ParsedFileDiffV2(
         old_path=path,
         new_path=path,
         change_type="modified",
-        is_binary=False,
+        is_binary=is_binary,
         is_submodule=False,
         similarity_index=None,
         old_no_newline_at_eof=False,
@@ -303,7 +311,7 @@ def test_engine_never_branches_on_target_name():
     """
 
     literal_pattern = re.compile(r"""['"][^'"\n]*(agentescala|interleitos)[^'"\n]*['"]""", re.IGNORECASE)
-    for path in (Path(__file__).parent.parent.parent / "app" / "agent_review").glob("*.py"):
+    for path in (Path(__file__).parent.parent.parent / "app" / "agent_review").rglob("*.py"):
         for match in literal_pattern.finditer(path.read_text(encoding="utf-8")):
             pytest.fail(f"{path}: engine must not branch on target-name string literal {match.group(0)!r}")
 
@@ -377,8 +385,9 @@ def test_cross_target_policy_binding_is_rejected():
     leitos_policy = _interleitos_policy()
     escala_profile = _load_profile("agent_escala")
 
-    with pytest.raises(SemanticGroupingError):
+    with pytest.raises(SemanticGroupingError) as excinfo:
         bind_semantic_grouping_policy_to_target_profile_v2(leitos_policy, escala_profile)
+    assert excinfo.value.reason_code == SEMANTIC_GROUPING_UNKNOWN_GROUP_REASON_V2
 
     # the same policy binds cleanly against its own, real target
     leitos_profile = _load_profile("interleitos")
@@ -416,10 +425,13 @@ def test_cross_target_payload_set_binding_is_rejected():
     assert escala_payload_set.manifest_hash == escala_manifest.identity.manifest_hash
 
     # the same payload set cross-checked against InterLeitos's manifest/payloads must fail closed
-    with pytest.raises(PayloadSetBindingError):
+    with pytest.raises(PayloadSetBindingError) as excinfo_1:
         emit_payload_set_v2(leitos_manifest, [b.payload for b in escala_built])
-    with pytest.raises(PayloadSetBindingError):
+    assert excinfo_1.value.reason_code == PAYLOAD_SET_CHUNK_SET_MISMATCH_REASON_V2
+
+    with pytest.raises(PayloadSetBindingError) as excinfo_2:
         bind_payload_set_to_payloads_v2(escala_payload_set, [b.payload for b in leitos_built], leitos_manifest)
+    assert excinfo_2.value.reason_code == PAYLOAD_SET_RUN_ID_MISMATCH_REASON_V2
 
 
 # -- cross-cutting regressions the issue names explicitly ---------------------
@@ -646,6 +658,44 @@ def test_interleitos_manual_required_on_model_uncertainty():
     assert readiness.state == ReadinessStateV2.MANUAL_REQUIRED.value
 
 
+def test_interleitos_dlp_block_prior_to_any_synthetic_response():
+    """InterLeitos's own required minimum case: 'um bloqueio DLP anterior a
+    qualquer response sintética'. Per this suite's own scoping decision, no
+    new PHI/DLP detector is built -- instead, a required must-review path
+    the engine cannot represent AT ALL (binary content) is refused at
+    ASSEMBLY time, before any ChunkPayloadV2 is built and before any
+    synthetic provider response is ever constructed. This stands in for
+    "a suspected-PHI artifact must never even reach a provider" using the
+    engine's own real, existing fail-closed gate, not an invented one."""
+
+    profile = _load_profile("interleitos")
+    binary_diffs = [
+        _file_diff(path="backend/tenancy/access_scope.py", hunks=(), is_binary=True),
+        *_interleitos_diffs()[1:],
+    ]
+
+    outcome = assemble_manifest_from_diff_v2(
+        binary_diffs,
+        profile=profile,
+        grouping_policy=_interleitos_policy(),
+        repo=profile.identity.repo,
+        pr_number=202,
+        base_sha=_BASE_SHA,
+        head_sha=_HEAD_SHA,
+        tested_merge_sha=_TESTED_MERGE_SHA,
+        toolrepo_sha=_TOOLREPO_SHA,
+        evidence_hash=_EVIDENCE_HASH,
+        max_lines_per_chunk=200,
+    )
+
+    # blocked before a manifest, any chunk payload, or any provider response
+    # ever existed -- there is nothing downstream left to build or send.
+    assert outcome.state == "blocked_pipeline"
+    assert outcome.manifest is None
+    assert outcome.blocked_reason.reason_code == RUN_ASSEMBLY_REQUIRED_PATH_UNREPRESENTABLE_REASON_V2
+    assert "backend/tenancy/access_scope.py" in outcome.blocked_reason.affected_paths
+
+
 def test_interleitos_stale_on_identity_divergence():
     profile = _load_profile("interleitos")
     manifest = _assemble(
@@ -694,7 +744,9 @@ def _conformance_entry(*, target_id: str, profile, manifest, payload_set, readin
         "readiness_state": readiness.state.value,
     }
     canonical_digest = hashlib.sha256(
-        json.dumps(canonical_output, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            canonical_output, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
     ).hexdigest()
     return {
         "target_id": target_id,
@@ -799,15 +851,22 @@ def test_conformance_matrix_is_complete_and_deterministic(tmp_path):
     matrix_b = _build_conformance_matrix()
     assert matrix_a == matrix_b
 
-    bytes_a = json.dumps(matrix_a, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    bytes_b = json.dumps(matrix_b, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    bytes_a = json.dumps(
+        matrix_a, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    bytes_b = json.dumps(
+        matrix_b, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
     assert bytes_a == bytes_b
 
     target_ids = {entry["target_id"] for entry in matrix_a["targets"]}
     assert target_ids == {"agent_escala", "interleitos"}
 
     output_path = tmp_path / "agent-review-v2-conformance.json"
-    output_path.write_text(json.dumps(matrix_a, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output_path.write_text(
+        json.dumps(matrix_a, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
 
     result = subprocess.run(
         [sys.executable, str(_VERIFY_SCRIPT), "--conformance", str(output_path)],
@@ -848,3 +907,52 @@ def test_conformance_verify_script_fails_closed_on_missing_evidence_flag():
     with pytest.raises(module.ConformanceVerificationError) as excinfo:
         module.verify_conformance_matrix(matrix)
     assert excinfo.value.reason_code == "conformance_network_or_provider_evidence_missing"
+
+
+def _load_verify_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("verify_agent_review_v2_conformance", _VERIFY_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_conformance_verify_script_fails_closed_on_invalid_coverage_status():
+    """A bogus coverage_status (not a real CoverageStateV2 value) must be
+    rejected, not silently accepted just because the field is present."""
+
+    module = _load_verify_module()
+    matrix = _build_conformance_matrix()
+    matrix["targets"][0]["coverage_status"] = "totally-bogus-not-a-real-enum-value"
+
+    with pytest.raises(module.ConformanceVerificationError) as excinfo:
+        module.verify_conformance_matrix(matrix)
+    assert excinfo.value.reason_code == "conformance_target_field_invalid"
+
+
+def test_conformance_verify_script_fails_closed_on_non_string_target_id():
+    """A type-confused target_id (e.g. a list, unhashable) must fail closed
+    with a stable reason code -- never an unhandled TypeError/traceback."""
+
+    module = _load_verify_module()
+    matrix = _build_conformance_matrix()
+    matrix["targets"][0]["target_id"] = ["not", "a", "string"]
+
+    with pytest.raises(module.ConformanceVerificationError) as excinfo:
+        module.verify_conformance_matrix(matrix)
+    assert excinfo.value.reason_code == "conformance_target_field_invalid"
+
+
+def test_conformance_verify_script_fails_closed_on_local_path_leak():
+    """Proves the sanitization check genuinely catches a local filesystem
+    path (which `redact_content` alone does NOT redact -- only
+    `sanitize_artifact_value` does), not merely a secret-shaped value."""
+
+    module = _load_verify_module()
+    matrix = _build_conformance_matrix()
+    matrix["targets"][0]["repo"] = "/home/mglpsw/.ssh/id_rsa leaked into this field"
+
+    with pytest.raises(module.ConformanceVerificationError) as excinfo:
+        module.verify_conformance_matrix(matrix)
+    assert excinfo.value.reason_code == "conformance_sanitization_leak_detected"

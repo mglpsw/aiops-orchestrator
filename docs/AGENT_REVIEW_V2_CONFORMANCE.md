@@ -44,8 +44,16 @@ profile/policy (real, on-disk, per-target)
   constructs its profile in-memory instead.
 - `contracts/domain-contracts.yaml` — a synthetic, illustrative-only domain
   contract, with a real, freshly computed `sha256` recorded in the profile's
-  own `contracts[].sha256` field (verified: the profile fails to load if
-  either file is edited without updating the other).
+  own `contracts[].sha256` field. Note: `load_target_profile_v2` itself does
+  NOT cross-check this hash against the file's real on-disk content — that
+  check happens downstream, in `build_payload_contract_references_v2`
+  (`payload_references_v2.py`, #131), invoked from
+  `build_chunk_payloads_from_profile_v2`. Verified directly: tampering the
+  contract file's content while leaving the profile's recorded `sha256`
+  unchanged still loads successfully, but fails closed
+  (`PAYLOAD_CONTRACT_SHA256_MISMATCH_REASON_V2`) the moment a chunk payload
+  is built from it — the pipeline is fail-closed overall, just not at the
+  loader stage.
 - `artifacts/full.diff` — a disclaiming placeholder (required by the
   profile's `artifacts` entry so `payload_builder_v2` has real content to
   sanitize/hash); the actual diff hunks exercised by the pipeline are built
@@ -188,12 +196,23 @@ proves the audit artifact a conformance run produced is:
   `secret_like_values_found` fails closed with
   `conformance_sanitization_leak_detected`.
 
+Every field named by the issue's own "campos mínimos" list is checked
+against a real, closed value set where one exists — not merely for
+presence: `readiness_state`/`reason_codes` against the real
+`ReadinessStateV2`/`ReadinessReasonV2` enums, `coverage_status` against the
+real `CoverageStateV2` enum, `binding_result` against its own recognized
+value set, and `target_id`/`repo`/`expected_head_sha`/`evaluated_head_sha`
+as non-empty strings (closing a real type-confusion gap an earlier revision
+had — a non-string `target_id` used to raise an unhandled `TypeError` from
+`set(target_ids)` instead of failing closed with a reason code).
+
 Fails closed (non-zero exit, reason code on stderr) on any structural
-defect — confirmed non-vacuous: a missing required field on one target
-entry, and a `false` `evidence_no_network`, were each mutation-tested
-directly against `verify_conformance_matrix`/the CLI's own guard and
-confirmed to raise the expected `ConformanceVerificationError` before the
-guard was restored.
+defect — confirmed non-vacuous: a missing required field, an invalid
+`coverage_status`, a non-string `target_id`, a `false`
+`evidence_no_network`, and a local-path leak in a free-text field were each
+mutation-tested directly against `verify_conformance_matrix`/the CLI's own
+guards and confirmed to raise the expected `ConformanceVerificationError`
+before the guard was restored.
 
 ## Deliberately out of scope
 
@@ -205,14 +224,19 @@ guard was restored.
 
 ## Tests
 
-`tests/agent_review/test_v2_dual_target_e2e.py` — 16 tests: two profiles
+`tests/agent_review/test_v2_dual_target_e2e.py` — 20 tests: two profiles
 load and differ; same-engine-different-groups/payloads; two cross-target
-rejection proofs; five readiness states across the two targets
-(`ready`, `blocked_code`, `blocked_pipeline`, `manual_required`, `stale`);
-determinism; order-independence; evidence-hash identity sensitivity; and
-three conformance-matrix/CLI tests (complete+deterministic+CLI-verified,
-fail-closed on a missing field, fail-closed on a false evidence flag).
+rejection proofs (each asserting the exact `reason_code`, not merely the
+exception type); five readiness states across the two targets (`ready`,
+`blocked_code`, `blocked_pipeline`, `manual_required`, `stale`); an
+InterLeitos DLP-block-prior-to-any-synthetic-response proof (a required
+binary path refused at assembly time, before any payload or provider
+response ever exists); determinism; order-independence; evidence-hash
+identity sensitivity; and six conformance-matrix/CLI tests
+(complete+deterministic+CLI-verified, fail-closed on a missing field, an
+invalid `coverage_status`, a non-string `target_id`, a false evidence flag,
+and a local-path leak).
 
 The full v1 suite and every pre-existing v2 suite remain green
-(`tests/agent_review` — 1050 passed, up from the pre-slice baseline of 1034
-by exactly this suite's own 16 new tests, zero regressions elsewhere).
+(`tests/agent_review` — 1054 passed, up from the pre-slice baseline of 1034
+by exactly this suite's own 20 new tests, zero regressions elsewhere).

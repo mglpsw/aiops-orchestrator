@@ -11,8 +11,11 @@ or gate decision of its own -- ``ReviewReadinessV2``/``compute_readiness_
 decision_v2`` remain the sole authority for that. It only proves the AUDIT
 ARTIFACT a conformance run produced is structurally complete, internally
 consistent, and free of any secret-like or local-path content -- reusing
-``app.agent_review.redaction``'s own canonical sanitizer for that last
-check, never a bespoke heuristic.
+BOTH of ``app.agent_review.redaction``'s own canonical sanitizers for that
+last check (``redact_content`` for secret-shaped values, and
+``sanitize_artifact_value`` -- the function every other publish-facing
+module in this codebase uses -- for local filesystem paths, which
+``redact_content`` alone does not redact), never a bespoke heuristic.
 """
 
 from __future__ import annotations
@@ -27,8 +30,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.agent_review.contracts_v2 import ReadinessReasonV2, ReadinessStateV2  # noqa: E402
-from app.agent_review.redaction import redact_content  # noqa: E402
+from app.agent_review.contracts_v2 import (  # noqa: E402
+    CoverageStateV2,
+    ReadinessReasonV2,
+    ReadinessStateV2,
+)
+from app.agent_review.redaction import redact_content, sanitize_artifact_value  # noqa: E402
 
 CONFORMANCE_SCHEMA_ID_V2 = "agent-review.v2-conformance-matrix"
 
@@ -78,9 +85,12 @@ _BOOL_FIELDS = (
     "evidence_no_ct102",
 )
 _NONNEGATIVE_INT_FIELDS = ("expected_chunks", "processed_chunks", "expected_fragments", "processed_fragments")
+_NONEMPTY_STRING_FIELDS = ("target_id", "repo", "expected_head_sha", "evaluated_head_sha")
 
 _VALID_READINESS_STATES = {state.value for state in ReadinessStateV2}
 _VALID_REASON_CODES = {code.value for code in ReadinessReasonV2}
+_VALID_COVERAGE_STATES = {state.value for state in CoverageStateV2}
+_VALID_BINDING_RESULTS = {"ok"}
 
 
 class ConformanceVerificationError(ValueError):
@@ -114,6 +124,17 @@ def _verify_target(entry: object) -> None:
     missing = [field for field in _REQUIRED_TARGET_FIELDS if field not in entry]
     if missing:
         raise ConformanceVerificationError(FIELD_MISSING_REASON_V2, f"missing fields: {sorted(missing)}")
+
+    for field in _NONEMPTY_STRING_FIELDS:
+        value = entry[field]
+        if not isinstance(value, str) or not value:
+            raise ConformanceVerificationError(FIELD_INVALID_REASON_V2, f"{field} must be a non-empty string")
+
+    if entry["binding_result"] not in _VALID_BINDING_RESULTS:
+        raise ConformanceVerificationError(FIELD_INVALID_REASON_V2, "binding_result is not a recognized value")
+
+    if entry["coverage_status"] not in _VALID_COVERAGE_STATES:
+        raise ConformanceVerificationError(FIELD_INVALID_REASON_V2, "coverage_status is not a valid CoverageStateV2")
 
     for field in _SHA256_FIELDS:
         value = entry[field]
@@ -166,11 +187,15 @@ def verify_conformance_matrix(matrix: object) -> None:
     if len(target_ids) != len(set(target_ids)):
         raise ConformanceVerificationError(DUPLICATE_TARGET_REASON_V2)
 
-    # Reuse the SAME canonical sanitizer the pipeline itself trusts (never a
-    # bespoke ad hoc PHI/secret heuristic here) to prove nothing sanitizable
-    # slipped into the published artifact.
-    sanitized, report = redact_content(matrix, source="agent-review-v2-conformance-verify")
-    if sanitized != matrix or report.secret_like_values_found:
+    # Reuse the SAME canonical sanitizers every other publish-facing module in
+    # this codebase trusts (never a bespoke ad hoc PHI/secret heuristic here)
+    # to prove nothing sanitizable slipped into the published artifact.
+    # `redact_content` alone does NOT redact local paths (that is
+    # `sanitize_artifact_value`'s own, additional job) -- both are checked so
+    # neither a secret-shaped value nor a local filesystem path can pass.
+    _, report = redact_content(matrix, source="agent-review-v2-conformance-verify")
+    sanitized_paths = sanitize_artifact_value(matrix)
+    if sanitized_paths != matrix or report.secret_like_values_found:
         raise ConformanceVerificationError(SANITIZATION_LEAK_REASON_V2)
 
 
