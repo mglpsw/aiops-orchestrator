@@ -1186,6 +1186,36 @@ def test_parse_raw_diff_z_fails_closed_on_a_rename_missing_its_second_path() -> 
     assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
 
 
+def test_parse_raw_diff_z_fails_closed_when_a_rename_missing_its_second_path_is_followed_by_a_real_record() -> None:
+    """Issue #113: the case above (a rename/copy record missing its second
+    path token) was only caught when it hit end-of-stream -- the
+    `index + 1 >= len(tokens)` guard. When the missing path token is
+    instead followed by a REAL next record, the prior implementation
+    silently consumed that record's own header as if it were the missing
+    path: for the exact stream below, it accepted ONE record with
+    old_path=':100644 100644 3 4 M' (the next record's header, misread as
+    a path) and new_path='b.py', instead of raising
+    DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2) as the function's own
+    docstring promises. Confirmed directly against the prior
+    implementation before this fix (accepted without error, wrong record
+    count and wrong paths)."""
+
+    stream = ":100644 100644 1 2 R100\x00:100644 100644 3 4 M\x00b.py\x00"
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_raw_diff_z(stream)
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
+def test_parse_raw_diff_z_fails_closed_when_a_copy_missing_its_second_path_is_followed_by_a_real_record() -> None:
+    """Same defect, status C instead of R -- both are two-path statuses
+    sharing the vulnerable branch."""
+
+    stream = ":100644 100644 1 2 C066\x00:000000 100644 0 3 A\x00new_file.py\x00"
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        parse_raw_diff_z(stream)
+    assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
 def test_parse_raw_diff_z_decodes_an_accented_utf8_path_exactly() -> None:
     """Equivalence fixture per issue #103's boundary: the GitHub API
     filename is a VERIFICATION value for this exact scenario (AgentEscala
