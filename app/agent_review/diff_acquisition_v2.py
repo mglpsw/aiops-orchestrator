@@ -919,6 +919,17 @@ def parse_raw_diff_z(raw_text: str) -> tuple[RawDiffRecordV2, ...]:
             if index >= len(tokens):
                 raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
             path_token = tokens[index]
+            # Same defect class as the two-path branch above (issue #113):
+            # a record missing its own single path token must not silently
+            # consume the NEXT record's header as if it were that path. A
+            # single missing token only exhausts the stream when exactly
+            # one more record follows; a chain of 2+ further records
+            # instead re-synchronizes on a later header, producing a
+            # wrong-but-plausible-looking record AND silently dropping the
+            # intervening one(s) -- found by independent review of this
+            # same PR, reproduced directly against the unpatched branch.
+            if _RAW_RECORD_HEADER_RE.match(path_token):
+                raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
             index += 1
             if status == "A":
                 old_path, new_path = None, path_token
