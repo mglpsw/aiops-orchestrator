@@ -261,7 +261,15 @@ def _normalize_intake_schema_envelope(raw: dict[str, Any], *, error_class: str) 
     """
     normalized = dict(raw)
     if "schema_id" in raw:
-        if raw.get("schema_id") != INTAKE_SCHEMA or raw.get("schema_version") != 1:
+        schema_version = raw.get("schema_version")
+        # type(...) is int, not isinstance(...)/== alone, deliberately: bool
+        # is a subclass of int in Python (True == 1) and float compares
+        # equal across types (1.0 == 1), so a noncanonical schema_version:
+        # true or schema_version: 1.0 would otherwise pass this check and
+        # then be silently overwritten with the canonical integer 1 below,
+        # before Pydantic ever sees the original invalid value -- a Codex
+        # review of this same PR found this exact gap.
+        if raw.get("schema_id") != INTAKE_SCHEMA or type(schema_version) is not int or schema_version != 1:
             raise PayloadBuildCliError(error_class, "input schema is invalid")
     elif raw.get("schema_version") != INTAKE_SCHEMA:
         raise PayloadBuildCliError(error_class, "input schema is invalid")

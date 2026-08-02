@@ -601,6 +601,32 @@ def test_cli_rejects_modern_envelope_with_unsupported_version(monkeypatch, tmp_p
     assert not (out_root / "chunk-payloads").exists()
 
 
+def test_cli_rejects_a_boolean_or_float_schema_version(monkeypatch, tmp_path: Path) -> None:
+    """Codex review of PR #156 -- schema_version != 1 alone would accept
+    `true` (bool is a subclass of int in Python) or `1.0` (float equality),
+    which _normalize_intake_schema_envelope would then silently overwrite
+    with the canonical integer 1 before Pydantic ever saw the original,
+    invalid value -- making the check meaningless for those two inputs."""
+
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+
+    for sneaky_version in (True, 1.0):
+        paths = _base_artifacts(tmp_path / f"case-{sneaky_version}")
+        intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+        intake["schema_id"] = "agent-review.intake.v1"
+        intake["schema_version"] = sneaky_version
+        _write_json(paths["intake"], intake)
+        out_root = tmp_path / f"out-{sneaky_version}"
+        module = _load_script_module()
+
+        result = _invoke(module, _args(paths, out_root))
+
+        error = _error_payload(result)
+        assert error["error_class"] == "intake_invalid"
+        assert not (out_root / "pr-brief.json").exists()
+
+
 def test_cli_rejects_unknown_schema_id(monkeypatch, tmp_path: Path) -> None:
     for key, value in _dev_env().items():
         monkeypatch.setenv(key, value)
