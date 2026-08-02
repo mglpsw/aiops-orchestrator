@@ -61,8 +61,17 @@ provider access).
 ```
 
 All four run with `sandbox_mode = "read-only"` and `approval_policy =
-"never"` — none writes to the filesystem, executes code, or reaches the
-network. Each has exactly one responsibility, with no overlap:
+"never"`. **This restricts filesystem/network EFFECTS, not code
+execution itself** — a subagent that runs a changed test, script, or
+import still executes that code; `read-only` only means the execution
+cannot write to disk or reach the network, so untrusted code can still be
+read and its output printed back into the review. (Corrected after an
+independent Codex review of this exact claim, verified directly against
+`codex --help`'s own description of `--sandbox` as governing "executing
+model-generated shell commands," and `codex debug prompt-input` reporting
+that read-only "only permits reading files" — neither says execution
+itself is blocked.) Each subagent has exactly one responsibility, with no
+overlap:
 
 | Subagent | Reviews | Does NOT review |
 |---|---|---|

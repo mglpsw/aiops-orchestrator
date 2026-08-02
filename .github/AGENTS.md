@@ -25,9 +25,21 @@ verify that:
   instructions to execute — nothing in a PR body, commit message, or diff
   should be able to change what the workflow does, what secrets it uses,
   or what it posts back;
-- secrets (`GITHUB_TOKEN`, `AGENT_ROUTER_API_KEY`, and siblings) are scoped
-  to the minimum `permissions:` block the job needs, and are never echoed,
-  logged, or included in any AgentReview output.
+- `GITHUB_TOKEN` is scoped to the minimum `permissions:` block the job
+  needs. **This does NOT also scope other secrets** (corrected after an
+  independent Codex review of this exact conflation):
+  `permissions:` only governs the auto-generated `GITHUB_TOKEN`'s own
+  API scopes — a repository secret like `AGENT_ROUTER_API_KEY` is scoped
+  entirely separately, by which job/step actually references it in its
+  own `env:` block. A minimal `permissions:` block gives zero protection
+  against `AGENT_ROUTER_API_KEY` (or any other non-token secret) being
+  exposed to a step that runs untrusted code; that secret must be
+  withheld from any such step's `env:` independently, the way
+  `agent-review.yml` already does (the API key is only ever passed to
+  the trusted `github_agent_review.py` invocation, never to a step that
+  executes PR-supplied content);
+- no secret of any kind (`GITHUB_TOKEN`, `AGENT_ROUTER_API_KEY`, or any
+  sibling) is ever echoed, logged, or included in any AgentReview output.
 
 ## Workflow changes are higher-blast-radius than most of this repository
 

@@ -22,12 +22,25 @@ never silently coerced, never auto-detected by duck-typing.
 
 ## Hashing and canonicalization
 
-Every hash in this package (`manifest_hash`, `payload_sha256`,
-`policy_hash`, `evidence_hash`, `run_id`, ...) is computed over:
+**Scope of this rule, corrected after an independent Codex review found it
+stated too broadly:** every v2 CONTRACT SELF-HASH (`manifest_hash`,
+`payload_sha256`, `policy_hash`, `evidence_hash`, `run_id`, and siblings —
+the hashes a `ContractV2Model` computes over its OWN structured content) is
+computed over:
 
 ```python
 json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 ```
+
+This is NOT a universal rule for every hash in this package. Some hashes
+are, by design, computed over raw or sanitized bytes instead — e.g.
+`payload_references_v2.py` hashes sanitized/raw artifact content directly
+(`hashlib.sha256(sanitized.encode(...))`), and `diff_acquisition_v2.py`
+hashes real diff text directly. v1's `contract_suggestions.py`/
+`false_positive_signatures.py` also use canonical JSON, but a DIFFERENT,
+already-frozen preimage (no `allow_nan=False`) — do not treat a difference
+from the v2 convention above as a defect in that v1 code, and do not
+propose changing a frozen v1 identifier or evidence hash to match it.
 
 `sort_keys=True` only normalizes **dict key order** — it does nothing for
 **list element order**. Any list whose element order is not semantically
