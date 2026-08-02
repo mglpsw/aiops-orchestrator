@@ -72,6 +72,25 @@ Global-optimal cross-group bin-packing is out of scope for this
 foundational slice; "budget global respeitado entre grupos" (the issue's
 own acceptance criterion) means never exceeded, not optimally distributed.
 
+**A group's own auxiliary content can never outgrow its own required
+need.** Found by independent review: `plan_lossless_chunks_v2` best-effort-
+packs *auxiliary* (droppable-by-design) fragments into any leftover bins up
+to whatever `max_chunks` a call is given — so a group with, say, one small
+required fragment and several large auxiliary ones could consume bins far
+beyond what its required content alone needed, starving a *later* group's
+required content of the shared global budget even though the combined
+required content across every group would have fit easily. For a group
+with any required hunks, this module now packs in two passes: first the
+required hunks ALONE, to learn the true minimum bin count they need; then
+the full (required + auxiliary) hunk set, capped to EXACTLY that count —
+auxiliary can only use leftover room inside bins already claimed for
+required content, never an extra one. A group with zero required hunks
+anywhere keeps its original, uncapped behavior (full access to the
+remaining budget) — it carries no coverage obligation to protect, and this
+fix only closes the more surprising case of a group's own auxiliary
+outgrowing its own need, not the already-documented "not globally optimal"
+cross-group ordering trade-off above.
+
 ## Paths that never produce a fragment at all
 
 `ManifestDegradationV2` requires `affected_fragment_ids` — it can only
@@ -121,7 +140,7 @@ compare against.
 
 ## Tests
 
-`tests/agent_review/test_run_assembly_v2.py` — 15 tests: basic assembly
+`tests/agent_review/test_run_assembly_v2.py` — 18 tests: basic assembly
 (real manifest + identity from a single file diff), the issue's own
 explicit acceptance criteria verbatim (two targets with different policies
 producing different groups without engine changes; a material fragment
@@ -132,10 +151,15 @@ orchestration merging two semantic groups into one manifest, byte-identical
 output for identical input, `must_review` resolution (explicit paths,
 patterns, and artifact_ids), the artifact_ids defense-in-depth guard
 (unreachable through any validly-constructed profile, confirmed via
-`model_copy` bypassing that profile's own validator), and paths that never
+`model_copy` bypassing that profile's own validator), paths that never
 produce a fragment (a non-required binary path silently excluded; a
 required binary path blocking the whole assembly; a required path expected
-but missing from the diff blocking the whole assembly).
+but missing from the diff blocking the whole assembly), the
+auxiliary-starvation fix (a group's own auxiliary content never starving a
+later group's required coverage, and a pure-auxiliary group's original
+behavior confirmed unregressed), and a `SemanticGroupingPolicyV2`
+incompatible with the profile raising `RunAssemblyError` rather than a raw
+`SemanticGroupingError`.
 
 **Verification of non-vacuity:** the required-path-blocks guard was
 temporarily disabled and the corresponding test confirmed to fail (the
