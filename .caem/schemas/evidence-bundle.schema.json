@@ -490,21 +490,36 @@
   "additionalProperties": false,
   "allOf": [
     {
-      "$comment": "A Codex review found that identity only required `repository`: a bundle omitting head_sha/tested_sha still validated even though readiness explicitly depends on same-HEAD evidence, so such a bundle could not establish its gates apply to the current HEAD. Require both once any gate_run is for a real, non-documentary surface (documentation-only bundles have no HEAD-bound gate to justify the requirement). A later Codex review of PR #159 found head_sha/tested_sha remained unconstrained plain strings even once required, so an empty string or a placeholder like \"unknown\" still satisfied the requirement; both properties now also carry a full 40-hex-character SHA pattern.",
+      "$comment": "A Codex review found that identity only required `repository`: a bundle omitting head_sha/tested_sha still validated even though readiness explicitly depends on same-HEAD evidence, so such a bundle could not establish its gates apply to the current HEAD. Require both once any gate_run is for a real, non-documentary surface (documentation-only bundles have no HEAD-bound gate to justify the requirement). A later Codex review of PR #159 found head_sha/tested_sha remained unconstrained plain strings even once required, so an empty string or a placeholder like \"unknown\" still satisfied the requirement; both properties now also carry a full 40-hex-character SHA pattern. A further Codex review of the same PR found the trigger trusted `environment.role` alone: a gate_run with `subject.type: \"source\"` (a real code gate) but `environment.role: \"documentation\"` still evaded the requirement, since `environment.role` alone is not proof the underlying subject was documentation. Trigger on any gate_run where `environment.role` and `subject.type` are not BOTH \"documentation\", so either field independently attesting to real content forces the requirement.",
       "if": {
         "properties": {
           "gate_runs": {
             "contains": {
-              "properties": {
-                "environment": {
-                  "properties": {
-                    "role": {
-                      "not": {
-                        "const": "documentation"
+              "not": {
+                "allOf": [
+                  {
+                    "properties": {
+                      "environment": {
+                        "properties": {
+                          "role": {
+                            "const": "documentation"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "properties": {
+                      "subject": {
+                        "properties": {
+                          "type": {
+                            "const": "documentation"
+                          }
+                        }
                       }
                     }
                   }
-                }
+                ]
               }
             }
           }
