@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 
 import pytest
@@ -19,7 +20,11 @@ from app.agent_review.contracts_v2 import (
 )
 from app.agent_review.manifest_v2 import ManifestMaterialV2, ManifestV2, compute_manifest_hash_v2_for
 from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
-from app.agent_review.review_readiness_emission_v2 import emit_review_readiness_v2
+from app.agent_review.review_readiness_emission_v2 import (
+    READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2,
+    ReadinessEmissionError,
+    emit_review_readiness_v2,
+)
 from app.agent_review.run_fragment_coverage_v2 import (
     FragmentCoverageStatusV2,
     RunFragmentCoverageEntryV2,
@@ -237,3 +242,56 @@ def test_ready_state_without_green_checks_fails_closed() -> None:
             pr_state=PullRequestStateV2.OPEN,
             checks=[],
         )
+
+
+def test_emit_review_readiness_rejects_a_decision_replayed_from_a_different_run() -> None:
+    """Issue #145 thread 2 -- a `ready` decision computed for one run must not
+    be combinable with an unrelated run's identity/findings/checks at emission
+    time. Before C1's provenance fields existed, nothing in `emit_review_
+    readiness_v2` could detect this replay."""
+
+    manifest_a, report_a = _fully_reviewed_manifest_and_report("app/a.py")
+    synthesis_a = _synthesis(manifest=manifest_a, coverage_report=report_a)
+    decision_from_run_a = compute_readiness_decision_v2(synthesis=synthesis_a, manifest=manifest_a, policies=_policies())
+    assert decision_from_run_a.state is ReadinessStateV2.READY
+
+    manifest_b, report_b = _fully_reviewed_manifest_and_report("app/b.py")
+    synthesis_b = _synthesis(manifest=manifest_b, coverage_report=report_b)
+
+    with pytest.raises(ReadinessEmissionError) as exc_info:
+        emit_review_readiness_v2(
+            decision=decision_from_run_a,
+            findings=synthesis_b.findings,
+            identity=manifest_b.identity,
+            evaluated_identity=manifest_b.identity,
+            pr_state=PullRequestStateV2.OPEN,
+            checks=[_green_check(manifest_b.identity.head_sha)],
+        )
+
+    assert exc_info.value.reason_code == READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2
+
+
+def test_emit_review_readiness_rejects_a_decision_with_matching_run_id_but_divergent_manifest_hash() -> None:
+    """Same run_id is not enough on its own -- manifest_hash must also match,
+    otherwise a decision computed against a stale/tampered manifest could be
+    replayed against a differently-shaped one that happens to share a run_id
+    collision."""
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+    assert decision.state is ReadinessStateV2.READY
+
+    tampered_decision = dataclasses.replace(decision, manifest_hash="f" * 64)
+
+    with pytest.raises(ReadinessEmissionError) as exc_info:
+        emit_review_readiness_v2(
+            decision=tampered_decision,
+            findings=synthesis.findings,
+            identity=manifest.identity,
+            evaluated_identity=manifest.identity,
+            pr_state=PullRequestStateV2.OPEN,
+            checks=[_green_check(manifest.identity.head_sha)],
+        )
+
+    assert exc_info.value.reason_code == READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2

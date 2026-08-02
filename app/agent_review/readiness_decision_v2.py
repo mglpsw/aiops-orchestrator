@@ -155,13 +155,27 @@ class ReadinessDecisionV2:
     """Plain, freely constructible data value -- like ``SynthesisResultV2``,
     not a wire contract with its own schema/hash. Meant for C2 to fold
     directly into a ``ReviewReadinessV2`` artifact alongside identity,
-    ``pr_state``, and ``checks``."""
+    ``pr_state``, and ``checks``.
+
+    ``run_id``/``manifest_hash`` are this decision's own run provenance --
+    copied directly from the ``ManifestV2`` this decision was actually
+    computed against, per a Codex review of #145 that found the decision
+    file carried no run identity at all: a `ready` decision computed for
+    run A could otherwise be combined with an unrelated run B's identity/
+    findings/checks at emission time, with no invariant able to detect the
+    replay. A caller (C2's own CLI) MUST verify these against the identity
+    it is about to emit against before trusting the decision -- this
+    dataclass only carries the provenance, it does not enforce the check
+    itself (that is `emit_review_readiness_v2`'s job, since only it has
+    both the decision and the identity in hand)."""
 
     state: ReadinessStateV2
     reason_codes: tuple[ReadinessReasonV2, ...]
     blockers: tuple[ReadinessBlockerV2, ...]
     coverage: ChunkCoverageV2
     pipeline: PipelineAssessmentV2
+    run_id: str
+    manifest_hash: str
 
 
 def bridge_fragment_coverage_to_chunk_coverage_v2(
@@ -316,6 +330,8 @@ def compute_readiness_decision_v2(
             blockers=(),
             coverage=coverage,
             pipeline=PipelineAssessmentV2(degraded=False, causes=[]),
+            run_id=manifest.run_id,
+            manifest_hash=manifest.identity.manifest_hash,
         )
 
     blocking_findings = [
@@ -426,4 +442,6 @@ def compute_readiness_decision_v2(
         blockers=tuple(blockers),
         coverage=coverage,
         pipeline=pipeline,
+        run_id=manifest.run_id,
+        manifest_hash=manifest.identity.manifest_hash,
     )

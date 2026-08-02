@@ -2,12 +2,12 @@
 """Emit a real AgentReview v2 ReviewReadinessV2 artifact (issue #130).
 
 Reads an already-computed C1 readiness decision (state/reason_codes/
-blockers/coverage/pipeline -- see
+blockers/coverage/pipeline/run_id/manifest_hash -- see
 app.agent_review.readiness_decision_v2.compute_readiness_decision_v2),
-identity/evaluated-identity, findings, pr_state, and checks, and emits the
-resulting ReviewReadinessV2 -- fail-closed if the combination does not
-satisfy ReviewReadinessV2.validate_state_invariants (the sole authority;
-this CLI never re-implements it, see
+identity/evaluated-identity, findings, pr_state, checks, and the target
+profile, and emits the resulting ReviewReadinessV2 -- fail-closed if the
+combination does not satisfy ReviewReadinessV2.validate_state_invariants
+(the sole authority; this CLI never re-implements it, see
 app.agent_review.review_readiness_emission_v2).
 
 --contract-version v2 is required and explicit, per the CLI naming
@@ -15,15 +15,32 @@ decision registered in #102: a NEW v2 CLI script, using the "-v2" suffix
 convention to avoid colliding with the existing v1
 scripts/aiops-review-quality-gate.py (untouched by this issue).
 
-If --payload and --response are both supplied, they are checked with
-app.agent_review.versioning.select_contract_version BEFORE anything else
-runs -- closing the "sem call site em produção" gap that function's own
-module docstring names. A v1-shaped payload/response fed into a
---contract-version v2 invocation is refused as mixed_contract_versions,
-never silently converted.
+## Fixes from an independent Codex review of PR #145
 
-Acquiring pr_state/checks live from GitHub (e.g. via `gh pr view`/`gh pr
-checks`) is explicitly out of scope here -- see
+1. **Decision-run binding.** The decision file now carries its own
+   ``run_id``/``manifest_hash`` (see ``ReadinessDecisionV2``'s own
+   docstring), and ``emit_review_readiness_v2`` verifies them against
+   ``evaluated_identity`` before emission -- a decision computed for one
+   run can no longer be replayed against an unrelated run's identity/
+   findings/checks.
+2. **Required-checks completeness.** ``--target-profile`` (a trusted
+   repo-root checkout, loaded via ``profile_loader_v2.load_target_
+   profile_v2``, the same strict canonical loader every other v2 module
+   uses) is now required. Its recomputed ``profile_hash`` must match
+   ``evaluated_identity.profile_hash``, and every name in
+   ``profile.policies.required_checks`` must be present in ``--checks``
+   -- a required check silently missing from the submitted list (while
+   every SUBMITTED check is green) no longer passes.
+3. **One-sided version-gate inputs.** ``--payload`` alone is validated
+   immediately as v2 (``select_contract_version`` already supports a
+   missing response); ``--response`` without ``--payload`` is rejected
+   outright, never silently ignored.
+4. **Output/input collision.** ``--output`` is rejected if it resolves to
+   the same file as any supplied input, checked by path BEFORE any input
+   is read or the output is written.
+
+Acquiring pr_state/checks/the target profile live from GitHub (e.g. via
+`gh pr view`/`gh pr checks`) is explicitly out of scope here -- see
 review_readiness_emission_v2.py's module docstring for why. This CLI
 accepts them as already-acquired input, offline, no network.
 """
@@ -53,12 +70,24 @@ from app.agent_review.contracts_v2 import (  # noqa: E402
     ResponseBindingError,
     RunIdentityV2,
 )
+from app.agent_review.profile_loader_v2 import (  # noqa: E402
+    TargetProfileLoadErrorV2,
+    compute_profile_hash_v2,
+    load_target_profile_v2,
+)
 from app.agent_review.readiness_decision_v2 import ReadinessDecisionV2  # noqa: E402
-from app.agent_review.review_readiness_emission_v2 import emit_review_readiness_v2  # noqa: E402
+from app.agent_review.review_readiness_emission_v2 import (  # noqa: E402
+    ReadinessEmissionError,
+    emit_review_readiness_v2,
+)
 from app.agent_review.versioning import select_contract_version  # noqa: E402
 
 CONTRACT_VERSION_INVALID_REASON_V2 = "contract_version_required"
 INPUT_INVALID_REASON_V2 = "gate_input_invalid"
+RESPONSE_WITHOUT_PAYLOAD_REASON_V2 = "gate_response_without_payload"
+OUTPUT_OVERWRITES_INPUT_REASON_V2 = "gate_output_overwrites_input"
+PROFILE_IDENTITY_MISMATCH_REASON_V2 = "gate_profile_identity_mismatch"
+REQUIRED_CHECK_MISSING_REASON_V2 = "gate_required_check_missing"
 
 
 class QualityGateCliError(ValueError):
@@ -70,16 +99,49 @@ class QualityGateCliError(ValueError):
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--contract-version", required=True, help="must be exactly 'v2'")
-    parser.add_argument("--decision", required=True, help="JSON: state/reason_codes/blockers/coverage/pipeline")
+    parser.add_argument("--decision", required=True, help="JSON: state/reason_codes/blockers/coverage/pipeline/run_id/manifest_hash")
     parser.add_argument("--identity", required=True, help="JSON: RunIdentityV2 fields")
     parser.add_argument("--evaluated-identity", required=True, help="JSON: RunIdentityV2 fields")
     parser.add_argument("--findings", required=True, help="JSON array of FindingLifecycleRecordV2")
     parser.add_argument("--pr-state", required=True, choices=["open", "closed", "merged"])
     parser.add_argument("--checks", required=True, help="JSON array of RequiredCheckResultV2")
+    parser.add_argument(
+        "--target-profile",
+        required=True,
+        help="path to a trusted repo-root checkout containing .aiops/target-profile.v2.yaml",
+    )
     parser.add_argument("--payload", help="optional: JSON ChunkPayload for the mixed-contract-version gate")
     parser.add_argument("--response", help="optional: JSON ChunkResponseEnvelope for the same gate")
     parser.add_argument("--output", required=True, help="path to write the emitted ReviewReadinessV2 JSON")
     return parser.parse_args(argv)
+
+
+def _check_no_output_input_collision(args: argparse.Namespace) -> None:
+    """Reject ``--output`` colliding with any supplied input, by RESOLVED
+    PATH, before any input is read or the output is written -- a Codex
+    review of #145 found that a mistyped pipeline argument pointing
+    ``--output`` at one of the inputs would read every input first and
+    then silently overwrite that source artifact with the readiness JSON,
+    returning success. Mirrors the same pattern the v1 quality-gate CLI
+    already uses."""
+
+    input_args = (
+        "decision",
+        "identity",
+        "evaluated_identity",
+        "findings",
+        "checks",
+        "target_profile",
+        "payload",
+        "response",
+    )
+    output_resolved = Path(args.output).resolve()
+    for name in input_args:
+        value = getattr(args, name)
+        if value is None:
+            continue
+        if Path(value).resolve() == output_resolved:
+            raise QualityGateCliError(OUTPUT_OVERWRITES_INPUT_REASON_V2)
 
 
 def _read_json(path: str) -> object:
@@ -94,12 +156,19 @@ def _load_decision(path: str) -> ReadinessDecisionV2:
     if not isinstance(raw, dict):
         raise QualityGateCliError(INPUT_INVALID_REASON_V2)
     try:
+        # run_id/manifest_hash are REQUIRED, not defaulted: a decision file
+        # missing its own run provenance is a real gap a Codex review of
+        # #145 found (see readiness_decision_v2.ReadinessDecisionV2's own
+        # docstring) -- never accept a legacy decision file without it as
+        # if it were conclusive.
         return ReadinessDecisionV2(
             state=ReadinessStateV2(raw["state"]),
             reason_codes=tuple(ReadinessReasonV2(code) for code in raw["reason_codes"]),
             blockers=tuple(ReadinessBlockerV2.model_validate(item) for item in raw["blockers"]),
             coverage=ChunkCoverageV2.model_validate(raw["coverage"]),
             pipeline=PipelineAssessmentV2.model_validate(raw["pipeline"]),
+            run_id=raw["run_id"],
+            manifest_hash=raw["manifest_hash"],
         )
     except (KeyError, ValueError, ValidationError) as exc:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
@@ -132,6 +201,34 @@ def _load_checks(path: str) -> list[RequiredCheckResultV2]:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
 
 
+def _validate_required_checks_complete(
+    *, target_profile_path: str, evaluated_identity: RunIdentityV2, checks: list[RequiredCheckResultV2]
+) -> None:
+    """Confirm the trusted target profile matches the identity being
+    gated, then confirm every one of ITS OWN configured
+    ``required_checks`` is represented in the submitted ``checks`` list --
+    never just that the submitted list is nonempty and individually green
+    (a Codex review of #145 found that a target requiring both `pytest`
+    and `mypy` was satisfied by a submission containing only a green
+    `pytest`). The individual green/red state of each submitted check
+    remains governed entirely by ``ReviewReadinessV2.validate_state_
+    invariants`` -- this function only checks PRESENCE, never duplicates
+    that logic."""
+
+    try:
+        profile = load_target_profile_v2(target_profile_path)
+    except TargetProfileLoadErrorV2 as exc:
+        raise QualityGateCliError(exc.reason_code) from exc
+
+    if compute_profile_hash_v2(profile) != evaluated_identity.profile_hash:
+        raise QualityGateCliError(PROFILE_IDENTITY_MISMATCH_REASON_V2)
+
+    submitted_names = {check.check_name for check in checks}
+    missing = set(profile.policies.required_checks) - submitted_names
+    if missing:
+        raise QualityGateCliError(REQUIRED_CHECK_MISSING_REASON_V2)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
@@ -140,11 +237,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        if args.payload is not None and args.response is not None:
+        _check_no_output_input_collision(args)
+
+        if args.response is not None and args.payload is None:
+            raise QualityGateCliError(RESPONSE_WITHOUT_PAYLOAD_REASON_V2)
+
+        if args.payload is not None:
             payload_raw = _read_json(args.payload)
-            response_raw = _read_json(args.response)
-            if not isinstance(payload_raw, dict) or not isinstance(response_raw, dict):
+            if not isinstance(payload_raw, dict):
                 raise QualityGateCliError(INPUT_INVALID_REASON_V2)
+            response_raw = None
+            if args.response is not None:
+                response_raw = _read_json(args.response)
+                if not isinstance(response_raw, dict):
+                    raise QualityGateCliError(INPUT_INVALID_REASON_V2)
             select_contract_version(requested="v2", payload_raw=payload_raw, response_raw=response_raw)
 
         decision = _load_decision(args.decision)
@@ -152,6 +258,10 @@ def main(argv: list[str] | None = None) -> int:
         evaluated_identity = _load_identity(args.evaluated_identity)
         findings = _load_findings(args.findings)
         checks = _load_checks(args.checks)
+
+        _validate_required_checks_complete(
+            target_profile_path=args.target_profile, evaluated_identity=evaluated_identity, checks=checks
+        )
 
         readiness = emit_review_readiness_v2(
             decision=decision,
@@ -162,6 +272,9 @@ def main(argv: list[str] | None = None) -> int:
             checks=checks,
         )
     except QualityGateCliError as exc:
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return 1
+    except ReadinessEmissionError as exc:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
     except ResponseBindingError as exc:
