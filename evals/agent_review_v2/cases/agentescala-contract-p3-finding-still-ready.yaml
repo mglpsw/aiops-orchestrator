@@ -1,0 +1,27 @@
+# AIOps contract case: a P3 (informational) finding is NOT in the blocking
+# severity set (P0/P1/P2 only) -- readiness must still resolve to `ready`,
+# proving low-severity findings never silently block a run, matching
+# readiness_decision_v2's own documented precedence.
+case_id: agentescala-contract-p3-finding-still-ready
+category: contract
+target: agent_escala
+files:
+  - path: backend/scheduling/shift_rules.py
+    hunks:
+      - {old_start: 10, old_lines: 6, new_start: 10, new_lines: 8, seed: p3-finding-shift-rules}
+injected_findings:
+  - file_path: backend/scheduling/shift_rules.py
+    severity: P3
+    line_start: 12
+    line_end: 13
+    title: "synthetic: informational style note, not a defect"
+expected_readiness: ready
+expected_findings: []
+forbidden_findings: []
+safe_counterexample: false
+rationale: >
+  Synthetic-only. P3 is intentionally excluded from
+  readiness_decision_v2's blocking-severity set (P0/P1/P2 only); a run with
+  only a P3 finding must still resolve to `ready`. `expected_findings` is
+  deliberately empty here -- this case exists to prove ABSENCE of
+  blocking, not to prove the P3 finding's own identity is preserved.

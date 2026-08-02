@@ -1,0 +1,17 @@
+# AgentEscala false-positive case: an unrelated, benign test-only change
+# must never generate a finding or degrade readiness.
+case_id: agentescala-false-positive-unrelated-change
+category: false-positive
+target: agent_escala
+files:
+  - path: tests/scheduling/test_shift_rules.py
+    hunks:
+      - {old_start: 1, old_lines: 3, new_start: 1, new_lines: 6, seed: unrelated-test-only-change}
+expected_readiness: ready
+expected_findings: []
+forbidden_findings: []
+safe_counterexample: true
+rationale: >
+  Synthetic-only. A test-file-only change with zero injected findings and
+  complete coverage must resolve to `ready` -- proves the pipeline does not
+  invent noise from an unremarkable diff.

@@ -1,0 +1,22 @@
+# InterLeitos false-positive safe counterexample: a change touching only
+# the api_schema_contract group, with zero injected findings/limitations,
+# must resolve to `ready` -- proves synthetic, clearly-fictional clinical
+# vocabulary already present in this fixture's own contract file does not,
+# by itself, cause any spurious finding or degradation.
+case_id: interleitos-false-positive-synthetic-clinical-terms
+category: false-positive
+target: interleitos
+files:
+  - path: backend/api/schema_contract.py
+    hunks:
+      - {old_start: 1, old_lines: 3, new_start: 1, new_lines: 6, seed: safe-clinical-terms-schema-contract}
+expected_readiness: ready
+expected_findings: []
+forbidden_findings: []
+safe_counterexample: true
+rationale: >
+  Synthetic-only, no real patient/institution/professional data. An
+  unremarkable API-schema-only change must resolve to `ready` with zero
+  findings -- the synthetic clinical vocabulary already present in this
+  fixture's own domain-contracts.yaml must not, by mere proximity, produce
+  a false positive.

@@ -1,0 +1,23 @@
+# InterLeitos security case: a required must-review path the engine cannot
+# represent (binary) must block the WHOLE assembly BEFORE any payload or
+# synthetic provider response ever exists -- stands in for "a
+# suspected-PHI artifact must never even reach a provider", per #86's own
+# precedent, without inventing new PHI-detection infrastructure.
+case_id: interleitos-security-blocked-prior-to-response
+category: security
+target: interleitos
+files:
+  - path: backend/tenancy/access_scope.py
+    is_binary: true
+  - path: backend/api/schema_contract.py
+    hunks:
+      - {old_start: 1, old_lines: 3, new_start: 1, new_lines: 6, seed: blocked-prior-schema-contract}
+expected_readiness: blocked_pipeline
+expected_findings: []
+forbidden_findings: []
+safe_counterexample: false
+rationale: >
+  Synthetic-only. `backend/tenancy/access_scope.py` matches
+  must_review.patterns and is unrepresentable; the whole assembly is
+  refused before any chunk payload or synthetic response is ever built --
+  the real engine-level fail-closed gate the PHI/DLP concern is modeled on.
