@@ -51,15 +51,25 @@ conformant instance data behind `REPOSITORY_REGISTRY.md`. So the
 this repo** — only the generator/validator programs, and the specific
 `policy/`/`tooling/` paths the header names, are external.
 
-Neither the raw bytes nor this repo's own canonical-JSON convention
+**Update (a later Codex review of PR #159):** `AGENTS.md`'s header
+previously cited a `Policy-SHA256` (`9aa4949a...`) that reproduced
+neither the raw bytes nor this repo's own canonical-JSON convention
 (`json.dumps(d, ensure_ascii=False, sort_keys=True,
-separators=(",",":"))`) applied to `.caem/policy.json` reproduce the
-`Policy-SHA256` (`9aa4949a...`) declared in `AGENTS.md`'s header —
-meaning `.caem/policy.json` is not confirmed to be the exact input that
-produced the CURRENT `AGENTS.md`/`CAEM_CORE.md` snapshot. This is itself
-a real, previously-undetected drift signal between two artifacts already
-committed to this repo, only surfaced by checking the hash rather than
-trusting that a same-directory JSON file must be current.
+separators=(",",":"))`) applied to `.caem/policy.json`. That header was
+corrected to the actual raw-bytes SHA-256 of the vendored
+`.caem/policy.json` (`5f8d1368...`), so `AGENTS.md`'s own declared hash
+now matches its own vendored source by construction. This repo's
+canonical-JSON convention applied to the same file still produces a
+different hash (`524a2b5f...`) — expected, since the header is scoped to
+"the vendored `.caem/policy.json` above" (raw bytes), not a
+canonicalized reinterpretation of it, not a remaining defect. However,
+the root `CLAUDE.md` and `docs/engineering/{CAEM_CORE.md,
+PROJECT_OVERLAY.md}` headers all still declare the OLD digest
+(`9aa4949a...`) and were not part of that fix — so the drift this
+section flags has narrowed from "AGENTS.md vs. its own source" to
+"AGENTS.md's header vs. the other three generated-view headers", a
+real, still-open inconsistency, not fabricated or resolved by this
+note. See #118 for the same status.
 
 **2. No application/script code consumes any of this today.** `grep -rli
 caem app/ scripts/` returns zero hits: no application or script code in
@@ -86,7 +96,7 @@ document's whole value is being an accurate inventory.)*
 | Handoff | `docs/engineering/CAEM_CORE.md` "Handoff transfere contexto, nunca autoridade"; `.caem/schemas/handoff.schema.json` | Fields: `handoff_id`, `task_id`, `generated_at`, `from`, ... | Any RI work that spans multiple sessions/agents (e.g. a suggestion drafted in one session, reviewed in another) uses this shape to pass context | None structural | Do not invent an "RI session note" with different semantics that could be mistaken for authority transfer | N/A observed beyond the schema itself | A real cross-session RI handoff validates against the schema and, per CAEM_CORE's own invariant, carries zero grant fields that imply authority |
 | Repository profile / registry | `docs/engineering/REPOSITORY_REGISTRY.md`; `.caem/schemas/repository-profile.schema.json`, `repository-registry.schema.json` | Fields: `profile_id`, `project`, `caem_version`, `repository`, ...; `registry_id`, `caem_version`, `observed_at`, `source`, ... | RI's "repository isolation" overlay concern (see below) is this primitive, not a new concept: each target repo (AgentEscala, InterLeitos, aiops-orchestrator itself) already has a canonical registry entry | RI must READ the existing registry entry for a target rather than re-deriving repo role/identity locally | Do not maintain a second, RI-local list of "known repositories and their roles" | `REPOSITORY_REGISTRY.md`'s own rule: "branches e HEADs... são checkpoint; revalidar antes de qualquer ação" — RI must revalidate, never cache indefinitely | A registry lookup for a real target repo used by an RI feature matches `REPOSITORY_REGISTRY.md`'s own entry (post-revalidation) |
 | Runtime equivalence | `.caem/schemas/runtime-equivalence.schema.json` | Fields: `manifest_id`, `source_identity`, `environments`, `invariants`, ... | Out of scope for RI's own review/memory/eval work (this primitive concerns CT102/CT104 runtime parity, a deployment concern) | None — RI does not touch runtime equivalence | RI must not redefine "environment invariant" for its own review-run concept; use `RunIdentityV2` (AgentReview v2, already merged) for that instead | N/A | N/A for RI directly; noted here only to mark the boundary explicitly |
-| `caem-policy` (the policy object itself) | `.caem/policy.json` (real instance data, present in-repo); `.caem/schemas/caem-policy.schema.json` (its schema); root `AGENTS.md`'s header (`Policy-SHA256: 9aa4949a...`) | `.caem/policy.json`'s real top-level keys: `metadata, canonicality, precedence, evidence_classes, principles, execution_axes, presets, deprecated_aliases, state_vector, protected_actions, failure_classes, surfaces, gate_catalog, governance` — matches the schema's property list exactly | RI can read `.caem/policy.json` **directly, as structured JSON**, rather than parsing the markdown prose of the generated views — this is a materially more useful consumption path than this document's own first draft assumed | Confirm (outside this doc) whether `.caem/policy.json` is kept in sync with the generated views before relying on it as authoritative; its hash does not currently match `Policy-SHA256` (see honesty-boundary section) — a real, open drift signal | Never hand-edit `.caem/policy.json` or any generated view directly; a change must come from whatever regenerates both | `Policy-SHA256` is the only drift-detection mechanism currently visible in this repo, and it does not currently match `.caem/policy.json`'s own hash under either raw bytes or this repo's canonical-JSON convention; there is no `--check` command available here (`tooling/validate.py` itself does not exist in-repo) | A conformance check comparing `.caem/policy.json`'s content against `CAEM_CORE.md`'s rendered tables (execution axes, presets, failure classes) already passes by direct inspection; a BYTE-level hash check against `Policy-SHA256` currently fails and is flagged, not silently skipped |
+| `caem-policy` (the policy object itself) | `.caem/policy.json` (real instance data, present in-repo); `.caem/schemas/caem-policy.schema.json` (its schema); root `AGENTS.md`'s header (`Policy-SHA256: 5f8d1368...`, corrected by a later Codex review of PR #159 to the raw-bytes hash of the vendored file above it — see honesty-boundary section) | `.caem/policy.json`'s real top-level keys: `metadata, canonicality, precedence, evidence_classes, principles, execution_axes, presets, deprecated_aliases, state_vector, protected_actions, failure_classes, surfaces, gate_catalog, governance` — matches the schema's property list exactly | RI can read `.caem/policy.json` **directly, as structured JSON**, rather than parsing the markdown prose of the generated views — this is a materially more useful consumption path than this document's own first draft assumed | Confirm (outside this doc) whether `.caem/policy.json` is kept in sync with the generated views before relying on it as authoritative; `AGENTS.md`'s header now matches its raw bytes, but `CAEM_CORE.md`'s own separate header still declares the old digest — the drift is now between the two generated views, not resolved outright | Never hand-edit `.caem/policy.json` or any generated view directly; a change must come from whatever regenerates both | `Policy-SHA256` is the only drift-detection mechanism currently visible in this repo; `AGENTS.md`'s header now matches `.caem/policy.json`'s raw-bytes hash (not its canonical-JSON reinterpretation, which is a different, expected value), while `CLAUDE.md`, `CAEM_CORE.md` and `PROJECT_OVERLAY.md`'s own headers still do not match either; there is no `--check` command available here (`tooling/validate.py` itself does not exist in-repo) | A conformance check comparing `.caem/policy.json`'s content against `CAEM_CORE.md`'s rendered tables (execution axes, presets, failure classes) already passes by direct inspection; a BYTE-level hash check against `AGENTS.md`'s `Policy-SHA256` now passes, and against `CLAUDE.md`, `CAEM_CORE.md` and `PROJECT_OVERLAY.md`'s still fails and is flagged, not silently skipped |
 | Reason codes (closed, fail-closed) | `docs/engineering/CAEM_CORE.md` "Classificação de falhas" table (`product`/`regression`/`preexisting`/`environment`/`gate_unavailable`/`contract`/`authority`/`security`/`data_integrity`/`unknown`) | Table itself (markdown, not a machine-checked enum in this repo) | RI's own failure classification (e.g. classifying why a suggestion was rejected) should map onto this SAME closed set, not invent parallel categories | RI-specific detail goes in the record's own free-text/`detail` field (matching AgentReview v2's own reason-code discipline, e.g. `ReadinessReasonV2`), never a new top-level category | Do not add an eleventh top-level failure class for RI without a normative CAEM change first | The table itself is markdown prose, not a versioned schema/enum in this repo — **gap**: no machine-checked `FailureClassV2`-equivalent exists for this table today | N/A until such an enum exists; recommended follow-up under #119 |
 | Execution axes / presets | `docs/engineering/CAEM_CORE.md` "Eixos de execução e presets" (`operation`, `work_unit`, `validation_scope`, `environment_role`, `risk`, `lifecycle_phase`; presets `docs`/`pr-fast`/`pr-full`/`dev-iterate`/`slice-close`/`release`) | Table itself (markdown) | Every RI slice (this one included) should be describable by these axes — this document itself is `operation=document`, `work_unit=documentation`, `validation_scope=documentary`, `environment_role=documentation`, `risk=low`, `lifecycle_phase=implementation`, matching the `docs` preset exactly | None | Do not invent an RI-specific preset vocabulary parallel to this one | Markdown prose, not machine-checked in this repo | N/A (descriptive, not enforced by code) |
 | Stop conditions | `docs/engineering/CAEM_CORE.md`; this session's own executable prompt (`ScheduleWakeup`-adjacent conventions) | Prose list | RI must stop, not silently proceed, on: real provider/secret need, PHI risk, target-repo write without a nominal grant, migration/release/deploy/production — all already established, unchanged, by #86/#87/#88's own precedent this session | None | Do not weaken any listed stop condition for RI's own convenience | N/A | Already exercised concretely: #88's Lane 2/3 deferral is a real, lived instance of this exact stop condition |
@@ -107,7 +117,7 @@ Options considered, per #122's own list:
 | Versioned package/library dependency on a CAEM tooling package | Not adopted for this repo today: no such package is referenced in `requirements.txt`/`requirements-dev.txt` (checked: no hit for "caem" in either file), and introducing one is itself a normative dependency-strategy change requiring its own ADR sign-off, not something this documentation-only slice should decide unilaterally |
 | Checkout/toolrepo pinned by SHA | This is exactly what the AgentReview v2 convergence effort already does for `mglpsw/AgentEscala`/`mglpsw/interleitos` as TARGET repos (pin by full SHA, never branch/tag) — the same discipline, if a live CAEM SOURCE repo (as opposed to the instance data already vendored here) exists, should pin it by full SHA, never a moving branch, matching CAEM_CORE.md's own explicit rule ("Branch ou tag móvel não é identidade suficiente") |
 | Schemas published as artifact/release | `.caem/schemas/*.json` AND `.caem/policy.json`/`.caem/repository-profile.json`/`.caem/repository-registry.json` are already vendored as static files directly in this repo (`.caem/`) — this IS "artifact vendoring", already done, just without an accompanying `--check`/regeneration script in this repo today |
-| Generation vendorized only if byte-verified | `AGENTS.md`'s own header (`Policy-SHA256`) already establishes the INTENT of byte-verified vendoring — but the vendored `.caem/policy.json` does NOT currently match that declared hash (see honesty-boundary section), so the intent is not currently met; the verification tool itself (`tooling/validate.py`) is external and not currently runnable from within this checkout |
+| Generation vendorized only if byte-verified | `AGENTS.md`'s own header (`Policy-SHA256`) establishes the INTENT of byte-verified vendoring, and now matches the vendored `.caem/policy.json`'s raw-bytes hash (corrected by a later Codex review of PR #159; see honesty-boundary section) — but the root `CLAUDE.md` and `docs/engineering/{CAEM_CORE.md, PROJECT_OVERLAY.md}` headers still declare the old digest, so the intent is met for `AGENTS.md` alone, not across all four generated views; the verification tool itself (`tooling/validate.py`) is external and not currently runnable from within this checkout |
 
 **Chosen approach:** RI consumes CAEM through the already-vendored
 STRUCTURED data (`.caem/policy.json`, `.caem/repository-registry.json`,
@@ -121,14 +131,19 @@ ISOLATION" rule. RI does **not** introduce a new package dependency, a new
 toolrepo checkout, or a new vendoring mechanism in this slice.
 
 **Real, open gap requiring #118's own authority to resolve, not guessed
-at here:** `.caem/policy.json`'s hash does not match the `Policy-SHA256`
-declared in the generated views' own header — meaning either
-`.caem/policy.json` is stale relative to the views, the views are stale
-relative to it, or the hash covers a different canonicalization than this
-document assumed. Any RI code that consumes `.caem/policy.json` should
-treat this drift as a live risk (verify the specific fields it depends on
-against `CAEM_CORE.md`'s own rendered tables at point of use) until #118
-resolves which artifact is authoritative and how they are kept in sync.
+at here:** a later Codex review of PR #159 corrected `AGENTS.md`'s header
+to the raw-bytes `Policy-SHA256` of the vendored `.caem/policy.json`
+(`5f8d1368...`), resolving that specific mismatch — but
+`docs/engineering/CAEM_CORE.md`'s own separate header still declares the
+old digest (`9aa4949a...`) and was not part of that fix. The open gap is
+now: `AGENTS.md` and `CAEM_CORE.md`'s headers disagree with EACH OTHER,
+meaning at least one of the two generated views is stale relative to
+`.caem/policy.json`, or the two headers cover different
+canonicalizations than either document assumed. Any RI code that
+consumes `.caem/policy.json` should treat this narrower drift as a live
+risk (verify the specific fields it depends on against `CAEM_CORE.md`'s
+own rendered tables at point of use) until #118 resolves which artifact
+is authoritative and how all three are kept in sync.
 
 **Update/rollback strategy:** since regeneration cannot happen from within
 this repo today (the generator itself is external), any update to

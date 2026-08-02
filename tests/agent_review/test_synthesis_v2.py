@@ -183,9 +183,10 @@ def _coverage(paths: list[str], *, reviewed: list[str] = (), partial: list[str] 
         missing = missing + [p for p in paths if p not in covered]
     status = "complete" if not partial and not missing else "partial"
     return ChunkCoverageV2(
-        status=status, expected_files=paths, reviewed_files=reviewed, partially_reviewed_files=partial,
-        missing_files=missing, must_review_files=paths, missing_must_review_files=[p for p in paths if p in (partial + missing)],
-        degradation_causes=[],
+        status=status, expected_files=tuple(paths), reviewed_files=tuple(reviewed), partially_reviewed_files=tuple(partial),
+        missing_files=tuple(missing), must_review_files=tuple(paths),
+        missing_must_review_files=tuple(p for p in paths if p in (partial + missing)),
+        degradation_causes=(),
     )
 
 
@@ -205,7 +206,7 @@ def _finding(
     return ChunkFindingV2(
         finding_id=finding_id, severity=severity, title="finding", file_path=path,
         line_start=line_start, line_end=line_end, evidence="ev", impact="impact",
-        confidence=FindingConfidenceV2.HIGH, contract_ids=list(contract_ids), disposition=FindingDispositionV2.NEW,
+        confidence=FindingConfidenceV2.HIGH, contract_ids=tuple(contract_ids), disposition=FindingDispositionV2.NEW,
     )
 
 
@@ -463,8 +464,8 @@ def test_rejects_a_chunk_result_claiming_must_review_for_a_path_the_manifest_nev
     chunk_id = manifest.chunks[0].chunk_id
     assert manifest.must_review_files == ["app/a.py"]
     coverage = ChunkCoverageV2(
-        status="complete", expected_files=["app/a.py"], reviewed_files=["app/a.py"], partially_reviewed_files=[],
-        missing_files=[], must_review_files=[], missing_must_review_files=[], degradation_causes=[],
+        status="complete", expected_files=("app/a.py",), reviewed_files=("app/a.py",), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
     )
     result = _result(run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha, coverage=coverage)
     with pytest.raises(SynthesisErrorV2) as excinfo:

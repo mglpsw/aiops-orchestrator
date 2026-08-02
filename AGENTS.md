@@ -1,8 +1,14 @@
 <!-- GENERATED VIEW — DO NOT EDIT IN ISOLATION
-Source: policy/caem-policy.json
+Source: .caem/policy.json (vendored copy; the canonical generator/tooling
+that produces it, policy/caem-policy.json + tooling/generate.py +
+tooling/validate.py, is external and not committed to this repository —
+a Codex review found the previous paths/digest below did not correspond
+to anything in this checkout).
 CAEM: 2.1.0
-Policy-SHA256: 9aa4949a0a9b865ae3b9a589fdf4dbadd1254cfad8c11f3db26efce10303ba60
-Regenerate/validate: python tooling/generate.py && python tooling/validate.py
+Policy-SHA256 (of the vendored .caem/policy.json above): 5f8d13688555633a7b26124c81f390bdcc4ddda2ccb40d4a45427b95cbcb9928
+Regenerate/validate: run the external CAEM generator/validator against
+.caem/policy.json; this repository has no local tooling/generate.py or
+tooling/validate.py to invoke directly.
 -->
 
 # AGENTS.md — AIOps-AgentReview sob CAEM v2.1.0

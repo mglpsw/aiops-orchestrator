@@ -332,17 +332,17 @@ def test_bridge_produces_complete_coverage_when_everything_is_reviewed() -> None
     manifest, report = _fully_reviewed_manifest_and_report()
     coverage = bridge_fragment_coverage_to_chunk_coverage_v2(coverage_report=report, manifest=manifest)
     assert coverage.status is CoverageStateV2.COMPLETE
-    assert coverage.reviewed_files == ["app/a.py"]
-    assert coverage.missing_must_review_files == []
-    assert coverage.degradation_causes == []
+    assert coverage.reviewed_files == ("app/a.py",)
+    assert coverage.missing_must_review_files == ()
+    assert coverage.degradation_causes == ()
 
 
 def test_bridge_produces_partial_coverage_for_a_plain_structural_split() -> None:
     manifest, report = _plain_split_manifest_and_report()
     coverage = bridge_fragment_coverage_to_chunk_coverage_v2(coverage_report=report, manifest=manifest)
     assert coverage.status is CoverageStateV2.PARTIAL
-    assert coverage.partially_reviewed_files == ["app/a.py"]
-    assert coverage.degradation_causes == []
+    assert coverage.partially_reviewed_files == ("app/a.py",)
+    assert coverage.degradation_causes == ()
 
 
 def test_bridge_produces_degraded_coverage_for_the_split_plus_degraded_fixture() -> None:
@@ -354,10 +354,10 @@ def test_bridge_produces_degraded_coverage_for_the_split_plus_degraded_fixture()
     manifest, report = _split_and_degraded_manifest_and_report()
     coverage = bridge_fragment_coverage_to_chunk_coverage_v2(coverage_report=report, manifest=manifest)
     assert coverage.status is CoverageStateV2.DEGRADED
-    assert coverage.missing_files == ["app/a.py"] or coverage.partially_reviewed_files == ["app/a.py"]
+    assert coverage.missing_files == ("app/a.py",) or coverage.partially_reviewed_files == ("app/a.py",)
     assert len(coverage.degradation_causes) == 1
     assert coverage.degradation_causes[0].reason_code.value == "budget_exhausted"
-    assert coverage.degradation_causes[0].affected_files == ["app/a.py"]
+    assert coverage.degradation_causes[0].affected_files == ("app/a.py",)
 
 
 def test_bridge_rejects_a_coverage_report_that_does_not_match_the_manifest() -> None:

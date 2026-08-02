@@ -55,13 +55,13 @@ def _coverage(
     must_review = list(files) if must_review is None else list(must_review)
     return {
         "status": "complete",
-        "expected_files": files,
-        "reviewed_files": files,
-        "partially_reviewed_files": [],
-        "missing_files": [],
-        "must_review_files": must_review,
-        "missing_must_review_files": [],
-        "degradation_causes": [],
+        "expected_files": tuple(files),
+        "reviewed_files": tuple(files),
+        "partially_reviewed_files": (),
+        "missing_files": (),
+        "must_review_files": tuple(must_review),
+        "missing_must_review_files": (),
+        "degradation_causes": (),
     }
 
 
@@ -107,7 +107,7 @@ def _finding(
         "evidence": "non-disjoint-counters",
         "impact": "double-counting",
         "confidence": "high",
-        "contract_ids": [],
+        "contract_ids": (),
         "disposition": "new",
     }
 
@@ -265,20 +265,32 @@ def test_bind_rejects_a_payload_model_copy_with_a_stale_hash() -> None:
 
 
 def test_bind_result_is_immune_to_nested_mutation_of_the_caller_payload_after_binding() -> None:
+    """The caller's own payload.coverage.reviewed_files can no longer be
+    mutated at all (tuple, not list -- Codex review of #97), which by
+    itself already guarantees the bound result cannot be corrupted through
+    this vector; confirmed directly rather than through an "attempt then
+    check unaffected" pattern that no longer applies once the attempt
+    itself raises."""
+
     payload = _payload()
     envelope = _success_envelope_raw(payload, findings=[_finding()])
-    bound = bind_chunk_response_v2(envelope=envelope, payload=payload)
+    bind_chunk_response_v2(envelope=envelope, payload=payload)
 
-    payload.coverage.reviewed_files.append("app/other.py")
-
-    assert bound.coverage.expected_files == ["app/service.py"]
-    assert "app/other.py" not in bound.coverage.expected_files
+    with pytest.raises(AttributeError):
+        payload.coverage.reviewed_files.append("app/other.py")
 
 
 # -- 7. envelope mutated --------------------------------------------------------
 
 
 def test_bind_result_is_immune_to_nested_mutation_of_the_caller_envelope_after_binding() -> None:
+    """Unlike ChunkCoverageV2/ChunkFindingV2 (Codex review of #97),
+    ChunkReviewResultV2.findings itself is still a genuinely mutable
+    list[ChunkFindingV2] -- out of that finding's scope -- so this
+    mutation is still possible and must still be defended against by
+    bind_chunk_response_v2 building its own bound state rather than
+    aliasing the caller's envelope."""
+
     payload = _payload()
     envelope = validate_chunk_response_envelope_v2(
         _success_envelope_raw(payload, findings=[_finding()])
@@ -297,20 +309,20 @@ def test_bind_result_is_immune_to_nested_mutation_of_the_caller_envelope_after_b
 def test_bind_rejects_coverage_promoted_from_missing_to_reviewed() -> None:
     payload_coverage = {
         "status": "partial",
-        "expected_files": ["app/service.py", "app/other.py"],
-        "reviewed_files": ["app/service.py"],
-        "partially_reviewed_files": [],
-        "missing_files": ["app/other.py"],
-        "must_review_files": ["app/service.py", "app/other.py"],
-        "missing_must_review_files": ["app/other.py"],
-        "degradation_causes": [],
+        "expected_files": ("app/service.py", "app/other.py"),
+        "reviewed_files": ("app/service.py",),
+        "partially_reviewed_files": (),
+        "missing_files": ("app/other.py",),
+        "must_review_files": ("app/service.py", "app/other.py"),
+        "missing_must_review_files": ("app/other.py",),
+        "degradation_causes": (),
     }
     payload = _payload(coverage=payload_coverage)
     response_coverage = dict(payload_coverage)
     response_coverage["status"] = "complete"
-    response_coverage["reviewed_files"] = ["app/service.py", "app/other.py"]
-    response_coverage["missing_files"] = []
-    response_coverage["missing_must_review_files"] = []
+    response_coverage["reviewed_files"] = ("app/service.py", "app/other.py")
+    response_coverage["missing_files"] = ()
+    response_coverage["missing_must_review_files"] = ()
     envelope = _success_envelope_raw(payload, findings=[], coverage=response_coverage)
     with pytest.raises(ResponseBindingError) as excinfo:
         bind_chunk_response_v2(envelope=envelope, payload=payload)
@@ -320,13 +332,13 @@ def test_bind_rejects_coverage_promoted_from_missing_to_reviewed() -> None:
 def test_bind_rejects_coverage_promoted_from_partial_to_reviewed() -> None:
     payload_coverage = {
         "status": "partial",
-        "expected_files": ["app/service.py", "app/other.py"],
-        "reviewed_files": ["app/service.py"],
-        "partially_reviewed_files": ["app/other.py"],
-        "missing_files": [],
-        "must_review_files": ["app/service.py", "app/other.py"],
-        "missing_must_review_files": ["app/other.py"],
-        "degradation_causes": [],
+        "expected_files": ("app/service.py", "app/other.py"),
+        "reviewed_files": ("app/service.py",),
+        "partially_reviewed_files": ("app/other.py",),
+        "missing_files": (),
+        "must_review_files": ("app/service.py", "app/other.py"),
+        "missing_must_review_files": ("app/other.py",),
+        "degradation_causes": (),
     }
     payload = _payload(coverage=payload_coverage)
     response_coverage = dict(payload_coverage)
@@ -539,33 +551,31 @@ def test_reason_codes_never_interpolate_raw_content_and_stay_within_a_closed_lis
 # -- post-merge findings (Codex review of PR #97) --------------------------
 
 
-def test_bound_coverage_property_returns_an_isolated_copy_on_each_access() -> None:
-    """A bound object's own coverage must not be corruptible through its own
-    returned reference: frozen=True on ChunkCoverageV2 blocks reassigning
-    the `reviewed_files` field, but not mutating the list object it already
-    holds. Every `.coverage` access must hand out a disposable copy."""
+def test_bound_coverage_property_string_lists_are_genuinely_immutable() -> None:
+    """A Codex review found that a bound object's own coverage was
+    corruptible through its own returned reference: frozen=True on
+    ChunkCoverageV2 blocked reassigning the `reviewed_files` field, but not
+    mutating the list object it already held (`.reviewed_files.append(...)`
+    silently succeeded). `.coverage`'s existing `model_copy(deep=True)`
+    defense limited the blast radius to that one access, but the mutation
+    itself was still possible. Fields are now tuple[...], so the mutation
+    is impossible at the type level -- stronger than copy isolation alone."""
 
     payload = _payload()
     envelope = _success_envelope_raw(payload, findings=[_finding()])
     bound = bind_chunk_response_v2(envelope=envelope, payload=payload)
 
-    first_read = bound.coverage
-    first_read.reviewed_files.append("app/injected.py")
-
-    second_read = bound.coverage
-    assert "app/injected.py" not in second_read.reviewed_files
+    with pytest.raises(AttributeError):
+        bound.coverage.reviewed_files.append("app/injected.py")
 
 
-def test_bound_finding_property_returns_isolated_copies_on_each_access() -> None:
+def test_bound_finding_property_contract_ids_are_genuinely_immutable() -> None:
     payload = _payload()
     envelope = _success_envelope_raw(payload, findings=[_finding()])
     bound = bind_chunk_response_v2(envelope=envelope, payload=payload)
 
-    first_read = bound.findings
-    first_read[0].contract_ids.append("injected-contract")
-
-    second_read = bound.findings
-    assert "injected-contract" not in second_read[0].contract_ids
+    with pytest.raises(AttributeError):
+        bound.findings[0].contract_ids.append("injected-contract")
 
 
 def test_load_and_bind_rejects_invalid_utf8_in_the_response_file(tmp_path: Path) -> None:

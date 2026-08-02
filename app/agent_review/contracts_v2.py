@@ -252,7 +252,16 @@ def _require_json_value(value: object, *, path: str = "$") -> None:
         if not math.isfinite(value):
             raise ValueError(f"{path} contains a non-finite number")
         return
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
+        # A tuple is exactly as valid a JSON-array source as a list --
+        # json.dumps() below serializes both identically. Accepting it
+        # here matters now that ChunkCoverageV2/ChunkFindingV2's list-
+        # typed fields were tightened to tuple[...] (immutability fix,
+        # Codex review of #97): a raw dict built directly from an
+        # already-validated model's own tuple fields (rather than via
+        # .model_dump(mode="json"), which converts tuples to lists) must
+        # not be rejected as "non-JSON" merely for using the more precise
+        # Python type.
         for index, item in enumerate(value):
             _require_json_value(item, path=f"{path}[{index}]")
         return
@@ -285,7 +294,12 @@ def _validate_manifest_object_keys(value: object) -> None:
                 raise TypeError("manifest contains a non-string object key")
             _reject_sensitive_value(key)
             _validate_manifest_object_keys(item)
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
+        # A Codex review of PR #159 found that _require_json_value accepting
+        # tuples (the #97 fix) left this sibling walker only recursing
+        # through list, so a tuple of dicts could carry a sensitive key past
+        # this sanitization boundary even though the equivalent list shape
+        # is rejected. Tuples must be walked identically to lists here.
         for item in value:
             _validate_manifest_object_keys(item)
 
@@ -470,7 +484,7 @@ class AgentReviewRunV2(ContractV2Model):
 
 class CoverageDegradationV2(ContractV2Model):
     reason_code: CoverageDegradationReasonValue
-    affected_files: list[RelativePath]
+    affected_files: tuple[RelativePath, ...]
     detail: SafeText
 
     @model_validator(mode="after")
@@ -484,13 +498,13 @@ class CoverageDegradationV2(ContractV2Model):
 
 class ChunkCoverageV2(ContractV2Model):
     status: CoverageStateValue
-    expected_files: list[RelativePath]
-    reviewed_files: list[RelativePath]
-    partially_reviewed_files: list[RelativePath]
-    missing_files: list[RelativePath]
-    must_review_files: list[RelativePath]
-    missing_must_review_files: list[RelativePath]
-    degradation_causes: list[CoverageDegradationV2]
+    expected_files: tuple[RelativePath, ...]
+    reviewed_files: tuple[RelativePath, ...]
+    partially_reviewed_files: tuple[RelativePath, ...]
+    missing_files: tuple[RelativePath, ...]
+    must_review_files: tuple[RelativePath, ...]
+    missing_must_review_files: tuple[RelativePath, ...]
+    degradation_causes: tuple[CoverageDegradationV2, ...]
 
     @model_validator(mode="after")
     def validate_partition(self) -> ChunkCoverageV2:
@@ -609,7 +623,19 @@ def _chunk_payload_material(value: ChunkPayloadMaterialV2 | Mapping[str, object]
         raise TypeError("chunk payload must be a model or mapping")
     raw = dict(value)
     raw.pop("payload_sha256", None)
-    material = ChunkPayloadMaterialV2.model_validate(raw)
+    # model_validate_json, not model_validate(raw): this function's whole
+    # purpose is to produce a JSON-hashable dict, and every caller already
+    # supplies JSON-primitive content (built via .model_dump(mode="json")
+    # on nested models, e.g. coverage=ChunkCoverageV2(...).model_dump(...)).
+    # ChunkCoverageV2/ChunkFindingV2's tuple-typed fields (expected_files,
+    # contract_ids, etc.) serialize to plain JSON arrays either way, but
+    # model_validate on an already-parsed dict enforces strict=True's
+    # Python-level tuple/list distinction on the NESTED value directly,
+    # rejecting the list a JSON round-trip already produced -- whereas
+    # model_validate_json (parsing raw JSON text) is exactly as permissive
+    # about a JSON array becoming either a list or a tuple field as any
+    # other JSON deserialization in this codebase.
+    material = ChunkPayloadMaterialV2.model_validate_json(json.dumps(raw))
     return material.model_dump(mode="json")
 
 
@@ -640,7 +666,7 @@ class ChunkFindingV2(ContractV2Model):
     evidence: SafeText
     impact: SafeText
     confidence: FindingConfidenceValue
-    contract_ids: list[SafeIdentifier]
+    contract_ids: tuple[SafeIdentifier, ...]
     disposition: FindingDispositionValue
 
     @model_validator(mode="after")

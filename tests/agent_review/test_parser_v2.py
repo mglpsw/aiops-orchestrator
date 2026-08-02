@@ -34,13 +34,13 @@ def _identity() -> dict[str, object]:
 def _coverage() -> dict[str, object]:
     return {
         "status": "complete",
-        "expected_files": ["app/service.py"],
-        "reviewed_files": ["app/service.py"],
-        "partially_reviewed_files": [],
-        "missing_files": [],
-        "must_review_files": ["app/service.py"],
-        "missing_must_review_files": [],
-        "degradation_causes": [],
+        "expected_files": ("app/service.py",),
+        "reviewed_files": ("app/service.py",),
+        "partially_reviewed_files": (),
+        "missing_files": (),
+        "must_review_files": ("app/service.py",),
+        "missing_must_review_files": (),
+        "degradation_causes": (),
     }
 
 

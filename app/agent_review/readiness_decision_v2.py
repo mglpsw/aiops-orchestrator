@@ -271,7 +271,7 @@ def bridge_fragment_coverage_to_chunk_coverage_v2(
         degradation_causes = [
             CoverageDegradationV2(
                 reason_code=reason,
-                affected_files=sorted(files),
+                affected_files=tuple(sorted(files)),
                 detail="; ".join(sorted(details_by_reason[reason])),
             )
             for reason, files in sorted(files_by_reason.items(), key=lambda item: item[0].value)
@@ -279,13 +279,13 @@ def bridge_fragment_coverage_to_chunk_coverage_v2(
 
     return ChunkCoverageV2(
         status=status,
-        expected_files=expected_files,
-        reviewed_files=reviewed_files,
-        partially_reviewed_files=partially_reviewed_files,
-        missing_files=missing_files,
-        must_review_files=must_review_files,
-        missing_must_review_files=missing_must_review_files,
-        degradation_causes=degradation_causes,
+        expected_files=tuple(expected_files),
+        reviewed_files=tuple(reviewed_files),
+        partially_reviewed_files=tuple(partially_reviewed_files),
+        missing_files=tuple(missing_files),
+        must_review_files=tuple(must_review_files),
+        missing_must_review_files=tuple(missing_must_review_files),
+        degradation_causes=tuple(degradation_causes),
     )
 
 

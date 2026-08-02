@@ -173,7 +173,15 @@ def _load_decision(path: str) -> ReadinessDecisionV2:
             state=ReadinessStateV2(raw["state"]),
             reason_codes=tuple(ReadinessReasonV2(code) for code in raw["reason_codes"]),
             blockers=tuple(ReadinessBlockerV2.model_validate(item) for item in raw["blockers"]),
-            coverage=ChunkCoverageV2.model_validate(raw["coverage"]),
+            # model_validate_json, not model_validate(dict): raw["coverage"]
+            # is an already-parsed dict from json.loads, so ChunkCoverageV2's
+            # tuple-typed fields (expected_files etc., Codex review of #97)
+            # would otherwise be rejected as "should be tuple, got list" --
+            # a JSON array is exactly as valid a source for a tuple field as
+            # for a list field, but model_validate on an already-parsed
+            # Python dict enforces strict=True's Python-level distinction
+            # directly, unlike parsing raw JSON text.
+            coverage=ChunkCoverageV2.model_validate_json(json.dumps(raw["coverage"])),
             pipeline=PipelineAssessmentV2.model_validate(raw["pipeline"]),
             run_id=raw["run_id"],
             manifest_hash=raw["manifest_hash"],
