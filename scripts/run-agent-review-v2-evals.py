@@ -218,6 +218,15 @@ def main(argv: list[str] | None = None) -> int:
         if _without_durations(existing_payload) != _without_durations(fresh_payload):
             print("error: eval_summary_drift (committed report no longer matches a fresh run)", file=sys.stderr)
             return 1
+        # A Codex review found that this branch returned 0 right here,
+        # before _regression_detected was ever evaluated below -- a
+        # committed report that already reflected regressed recall (or any
+        # other regression) would keep matching a fresh run and pass
+        # --check forever. The same gate the write path applies must run
+        # here too, before either path can return success.
+        if _regression_detected(summary):
+            print("error: eval_summary_regression (committed report reflects a recall/readiness/leak/duplicate regression)", file=sys.stderr)
+            return 1
         print(f"ok: {json_output} matches a fresh run (durations excluded)")
         return 0
 
@@ -231,23 +240,30 @@ def main(argv: list[str] | None = None) -> int:
     markdown_output.write_text(_render_markdown(results, summary), encoding="utf-8")
 
     print(f"ok: {summary.total_cases} cases, {summary.readiness_matches} readiness matches")
-    # A Codex review found that incomplete recall (overall or per-severity)
-    # never failed this gate: a run where synthesis stopped preserving an
-    # expected finding, with readiness otherwise unchanged, would write the
-    # regressed baseline and exit 0. The documented 100% recovery threshold
-    # (docs/AGENT_REVIEW_V2_BENCHMARK.md) must not be able to silently pass.
+    if _regression_detected(summary):
+        return 1
+    return 0
+
+
+def _regression_detected(summary) -> bool:
+    """Shared by both the ``--check`` path and the write path, so neither
+    can bypass it. A Codex review found that incomplete recall (overall or
+    per-severity) never failed the write-path gate either: a run where
+    synthesis stopped preserving an expected finding, with readiness
+    otherwise unchanged, would write the regressed baseline and exit 0.
+    The documented 100% recovery threshold (docs/AGENT_REVIEW_V2_BENCHMARK.md)
+    must not be able to silently pass through either mode."""
+
     recall_regressed = summary.expected_findings_recovered < summary.expected_findings_total or any(
         counts["recovered"] < counts["total"] for counts in summary.recall_by_severity.values()
     )
-    if (
+    return bool(
         summary.false_approvals
         or summary.readiness_mismatches
         or summary.forbidden_findings_leaked_total
         or summary.duplicate_finding_ids_total
         or recall_regressed
-    ):
-        return 1
-    return 0
+    )
 
 
 if __name__ == "__main__":

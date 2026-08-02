@@ -21,19 +21,30 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.agent_review.contracts_v2 import GitSha, PositiveInt, Repository
+
 
 class ExternalObservationV2(BaseModel):
     """Plain, freely constructible external observation. Strict/closed like
     every contract in this codebase, but explicitly NOT a `ContractV2Model`
     -- it never enters that registry, is never hashed, and is never bound
-    to a canonical run identity the way `ChunkPayloadV2`/`ManifestV2` are."""
+    to a canonical run identity the way `ChunkPayloadV2`/`ManifestV2` are.
+
+    `repo`/`pr_number`/`head_sha` reuse the same `Repository`/`PositiveInt`/
+    `GitSha` annotated types every canonical contract validates identity
+    with -- lightweight type aliases only, never the hashing machinery this
+    module's own docstring says it must not need. Without this, a
+    placeholder value (an empty repo, PR 0, `head_sha="unknown"`) could
+    coincidentally equal another placeholder from an unrelated run in
+    `correlate_observation_v2`'s equality check, reporting a false shared-run
+    match -- a real gap a Codex review of #154 found."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     source: Literal["codex_local", "codex_github", "human"]
-    repo: str
-    pr_number: int
-    head_sha: str
+    repo: Repository
+    pr_number: PositiveInt
+    head_sha: GitSha
     file_path: str
     fragment_id: str | None = None
     severity_claimed: Literal["P0", "P1", "P2", "P3"]
@@ -50,19 +61,21 @@ class AiopsFindingReferenceV2(BaseModel):
     a location-based comparison.
 
     Carries `repo`/`pr_number`/`head_sha` -- the same identity
-    `ExternalObservationV2` carries -- so `correlate_observation_v2` can
-    require a shared run identity before correlating. Without this, an
-    observation from a different repository, PR, HEAD, or a stale run
-    could be compared against this run's own findings and report a
-    coincidental cross-run match (a real gap a Codex review of #149
-    found)."""
+    `ExternalObservationV2` carries, validated with the same `Repository`/
+    `PositiveInt`/`GitSha` annotated types -- so `correlate_observation_v2`
+    can require a shared, well-formed run identity before correlating.
+    Without this, an observation from a different repository, PR, HEAD, or
+    a stale run could be compared against this run's own findings and
+    report a coincidental cross-run match (a real gap a Codex review of
+    #149 found), or two unrelated runs sharing a malformed placeholder
+    identity could be treated as the same run (#154)."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     finding_id: str
-    repo: str
-    pr_number: int
-    head_sha: str
+    repo: Repository
+    pr_number: PositiveInt
+    head_sha: GitSha
     file_path: str
     line_start: int | None = None
     line_end: int | None = None

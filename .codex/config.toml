@@ -12,9 +12,13 @@
 # remediates anything by itself.
 
 [projects."."]
-# Read-only by default: no code execution, no filesystem writes, no network,
-# unless a human explicitly re-runs a specific command with different
-# settings for a specific, scoped investigation.
+# Read-only by default: no filesystem writes, no network. This does NOT
+# block code execution itself -- a subagent can still run a changed test,
+# script, or import; read-only only means that execution cannot write to
+# disk or reach the network. See docs/CODEX_REVIEW_WORKFLOW.md's own
+# corrected description of this exact distinction. Broader settings apply
+# only when a human explicitly re-runs a specific command differently, for
+# a specific, scoped investigation.
 approval_policy = "untrusted"
 sandbox_mode = "read-only"
 

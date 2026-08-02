@@ -125,3 +125,36 @@ def test_correlate_rejects_cross_run_identity_mismatch():
     same_identity = _finding()
     result = correlate_observation_v2(obs, aiops_findings=[same_identity])
     assert result.disposition == "matched"
+
+
+def test_construction_rejects_malformed_placeholder_identities():
+    """Codex review of PR #154: repo/pr_number/head_sha were plain str/int
+    fields with no format validation, so two unrelated runs that both
+    happened to carry a degenerate placeholder identity (an empty repo,
+    PR 0, head_sha="unknown") would coincidentally compare equal in
+    correlate_observation_v2's equality check and report a false shared-run
+    match. The canonical contracts already require owner/name repos,
+    positive PR numbers, and 40-character git SHAs (Repository/PositiveInt/
+    GitSha in contracts_v2.py) -- both ExternalObservationV2 and
+    AiopsFindingReferenceV2 must fail closed at construction time instead,
+    never reaching the correlation comparison at all."""
+
+    for repo, pr_number, head_sha in (
+        ("", _PR_NUMBER, _HEAD_SHA),
+        (_REPO, 0, _HEAD_SHA),
+        (_REPO, _PR_NUMBER, "unknown"),
+        (_REPO, -1, _HEAD_SHA),
+    ):
+        with pytest.raises(ValidationError):
+            ExternalObservationV2.model_validate(_observation(repo=repo, pr_number=pr_number, head_sha=head_sha))
+        with pytest.raises(ValidationError):
+            AiopsFindingReferenceV2.model_validate(
+                {
+                    "finding_id": "f1",
+                    "repo": repo,
+                    "pr_number": pr_number,
+                    "head_sha": head_sha,
+                    "file_path": "app/agent_review/foo.py",
+                    "severity": "P2",
+                }
+            )
