@@ -47,11 +47,22 @@ class AiopsFindingReferenceV2(BaseModel):
     `ChunkFindingV2`/`FindingLifecycleRecordV2` pair to match against an
     `ExternalObservationV2` by location -- never the full contract, since
     this module must not need to import canonical hashing machinery to do
-    a location-based comparison."""
+    a location-based comparison.
+
+    Carries `repo`/`pr_number`/`head_sha` -- the same identity
+    `ExternalObservationV2` carries -- so `correlate_observation_v2` can
+    require a shared run identity before correlating. Without this, an
+    observation from a different repository, PR, HEAD, or a stale run
+    could be compared against this run's own findings and report a
+    coincidental cross-run match (a real gap a Codex review of #149
+    found)."""
 
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
     finding_id: str
+    repo: str
+    pr_number: int
+    head_sha: str
     file_path: str
     line_start: int | None = None
     line_end: int | None = None
@@ -76,17 +87,30 @@ class CorrelationResultV2:
 def correlate_observation_v2(
     observation: ExternalObservationV2, *, aiops_findings: list[AiopsFindingReferenceV2]
 ) -> CorrelationResultV2:
-    """Pure, deterministic correlation by (file_path, severity) -- never by
-    exact wording, per the issue's own tolerance rule ("Correspondência deve
-    tolerar redação diferente, mas não localização/causa distinta"). A
-    genuinely different root cause at the same file/severity cannot be
-    distinguished by this simple structural match alone; that is a real,
-    accepted limitation of this offline correlation, not silently
-    papered over -- disposition stays `inconclusive` whenever the match is
-    ambiguous (more than one AIOps finding at the same file+severity)."""
+    """Pure, deterministic correlation by (repo, pr_number, head_sha,
+    file_path, severity) -- never by exact wording, per the issue's own
+    tolerance rule ("Correspondência deve tolerar redação diferente, mas
+    não localização/causa distinta"). A genuinely different root cause at
+    the same file/severity cannot be distinguished by this simple
+    structural match alone; that is a real, accepted limitation of this
+    offline correlation, not silently papered over -- disposition stays
+    `inconclusive` whenever the match is ambiguous (more than one AIOps
+    finding at the same file+severity for the SAME run).
+
+    The identity fields are REQUIRED to match first: an observation from a
+    different repository, PR, or HEAD (or a finding reference from a stale
+    run) is rejected outright, never coincidentally matched by file/
+    severity alone -- a real gap a Codex review of #149 found and this
+    fixes."""
 
     candidates = [
-        f for f in aiops_findings if f.file_path == observation.file_path and f.severity == observation.severity_claimed
+        f
+        for f in aiops_findings
+        if f.repo == observation.repo
+        and f.pr_number == observation.pr_number
+        and f.head_sha == observation.head_sha
+        and f.file_path == observation.file_path
+        and f.severity == observation.severity_claimed
     ]
     if len(candidates) == 1:
         return CorrelationResultV2(

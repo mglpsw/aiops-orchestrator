@@ -36,7 +36,16 @@ def test_correlates_observations_against_aiops_findings(tmp_path: Path):
             "evidence_summary": "synthetic evidence",
         },
     ]
-    aiops_findings = [{"finding_id": "f1", "file_path": "app/agent_review/foo.py", "severity": "P2"}]
+    aiops_findings = [
+        {
+            "finding_id": "f1",
+            "repo": "mglpsw/aiops-orchestrator",
+            "pr_number": 1,
+            "head_sha": "2" * 40,
+            "file_path": "app/agent_review/foo.py",
+            "severity": "P2",
+        }
+    ]
 
     observations_path = tmp_path / "observations.json"
     observations_path.write_text(json.dumps(observations), encoding="utf-8")

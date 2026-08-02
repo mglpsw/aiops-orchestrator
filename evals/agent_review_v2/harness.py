@@ -221,8 +221,24 @@ def _file_diff(case_file: CaseFileV2) -> ParsedFileDiffV2:
 
 
 def _synthetic_envelope(
-    payload: ChunkPayloadV2, *, findings: list[dict], limitations: list[str]
+    payload: ChunkPayloadV2,
+    *,
+    findings: list[dict],
+    limitations: list[str],
+    must_review_fragments_complete: bool = True,
 ) -> dict:
+    must_review_files = payload.coverage.must_review_files
+    # When a case sets must_review_fragments_complete=False, this chunk's
+    # own must-review files (if any) are reported as genuinely missing --
+    # never silently claimed complete regardless of the flag (a real gap a
+    # Codex review of #149 found: the field was declared but never
+    # consulted, so no case could ever exercise the intended fail-closed
+    # coverage path).
+    incomplete_here = not must_review_fragments_complete and bool(must_review_files)
+    reviewed_files = [f for f in payload.coverage.expected_files if f not in must_review_files] if incomplete_here else payload.coverage.expected_files
+    missing_files = list(must_review_files) if incomplete_here else []
+    coverage_status = "partial" if incomplete_here else "complete"
+
     envelope: dict = {
         "schema_id": "agent-review.chunk-response-envelope.v2",
         "schema_version": 2,
@@ -245,13 +261,13 @@ def _synthetic_envelope(
             "summary": "synthetic-eval-response",
             "findings": findings,
             "coverage": {
-                "status": "complete",
+                "status": coverage_status,
                 "expected_files": payload.coverage.expected_files,
-                "reviewed_files": payload.coverage.expected_files,
+                "reviewed_files": reviewed_files,
                 "partially_reviewed_files": [],
-                "missing_files": [],
-                "must_review_files": payload.coverage.must_review_files,
-                "missing_must_review_files": [],
+                "missing_files": missing_files,
+                "must_review_files": must_review_files,
+                "missing_must_review_files": missing_files,
                 "degradation_causes": [],
             },
             "limitations": limitations,
@@ -355,7 +371,12 @@ def run_eval_case_v2(case: EvalCaseV2, *, fixtures_root: Path, head_sha: str) ->
             for file_path in b.payload.coverage.expected_files:
                 chunk_findings.extend(findings_by_file.get(file_path, []))
             limitations = case.injected_limitations if position == 0 else []
-            envelope = _synthetic_envelope(b.payload, findings=chunk_findings, limitations=limitations)
+            envelope = _synthetic_envelope(
+                b.payload,
+                findings=chunk_findings,
+                limitations=limitations,
+                must_review_fragments_complete=case.must_review_fragments_complete,
+            )
             bound = bind_chunk_response_v2(envelope=envelope, payload=b.payload)
             chunk_results.append(parse_bound_chunk_response_v2(bound))
         return chunk_results

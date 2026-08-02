@@ -76,6 +76,24 @@ def test_binary_required_path_blocks_at_assembly():
     assert result.blocked_reason_code == "run_assembly_required_path_unrepresentable"
 
 
+def test_must_review_fragments_incomplete_degrades_coverage():
+    """Regression (Codex review of #149): must_review_fragments_complete
+    was declared in the schema but never consulted -- every synthetic
+    response claimed complete coverage regardless, so no case could ever
+    exercise the intended fail-closed coverage path. A case with the flag
+    set to False, over a genuinely must-review file
+    (backend/scheduling/shift_rules.py matches agent_escala's own
+    must_review.patterns), must now resolve to the target's own
+    policies.coverage_failure_state (blocked_pipeline for agent_escala),
+    never `ready`."""
+
+    case = EvalCaseV2.model_validate(_base_case(must_review_fragments_complete=False, expected_readiness="blocked_pipeline"))
+    result = run_eval_case_v2(case, fixtures_root=FIXTURES_ROOT, head_sha=_HEAD_SHA)
+    assert not result.blocked_at_assembly
+    assert result.actual_readiness == "blocked_pipeline"
+    assert result.readiness_matches
+
+
 def test_new_finding_resolves_manual_required_and_is_recovered():
     case = EvalCaseV2.model_validate(
         _base_case(
