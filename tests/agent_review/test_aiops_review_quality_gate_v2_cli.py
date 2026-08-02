@@ -459,6 +459,26 @@ def test_cli_rejects_output_colliding_with_target_profile_path(tmp_path: Path) -
     assert "gate_output_overwrites_input" in result.stderr
 
 
+def test_cli_rejects_output_colliding_with_the_target_profiles_nested_file(tmp_path: Path) -> None:
+    """Codex review of PR #156 -- --target-profile is a repo-root directory,
+    but load_target_profile_v2 actually reads
+    <target-profile>/.aiops/target-profile.v2.yaml underneath it. The
+    collision check must catch --output pointing at THAT nested file too,
+    not just the bare root -- otherwise the CLI reads the real profile,
+    computes readiness, and then silently overwrites the profile source on
+    the final write."""
+
+    paths = _write_fixtures(tmp_path)
+    profile_file = paths["target_profile"] / ".aiops" / "target-profile.v2.yaml"
+    original_bytes = profile_file.read_bytes()
+
+    result = _run(_base_args(paths, profile_file))
+
+    assert result.returncode != 0
+    assert "gate_output_overwrites_input" in result.stderr
+    assert profile_file.read_bytes() == original_bytes
+
+
 def test_cli_rejects_output_colliding_with_optional_payload(tmp_path: Path) -> None:
     paths = _write_fixtures(tmp_path)
     payload_path = tmp_path / "payload.json"

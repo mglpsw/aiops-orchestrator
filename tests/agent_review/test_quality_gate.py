@@ -448,6 +448,21 @@ def test_load_intake_rejects_an_unsupported_integer_schema_version(tmp_path: Pat
     assert exc_info.value.error_class == "intake_invalid"
 
 
+def test_load_intake_rejects_an_integer_schema_version_without_a_schema_id(tmp_path: Path) -> None:
+    """Codex review of PR #156 -- schema_version=2 with schema_id absent
+    entirely must also be rejected; the schema-less compatibility form only
+    tolerates the descriptive-string schema_version, never a bare integer."""
+
+    raw = _minimal_intake_raw(schema_version=2)
+    path = tmp_path / "intake.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(QualityGateError) as exc_info:
+        load_intake(path)
+
+    assert exc_info.value.error_class == "intake_invalid"
+
+
 def test_load_intake_rejects_the_hybrid_schema_id_with_descriptive_schema_version(tmp_path: Path) -> None:
     raw = _minimal_intake_raw(schema_id="agent-review.intake.v1", schema_version="agent-review.intake.v1")
     path = tmp_path / "intake.json"

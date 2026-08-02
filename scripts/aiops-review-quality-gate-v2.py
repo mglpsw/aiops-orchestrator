@@ -71,6 +71,7 @@ from app.agent_review.contracts_v2 import (  # noqa: E402
     RunIdentityV2,
 )
 from app.agent_review.profile_loader_v2 import (  # noqa: E402
+    DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
     TargetProfileLoadErrorV2,
     compute_profile_hash_v2,
     load_target_profile_v2,
@@ -123,24 +124,31 @@ def _check_no_output_input_collision(args: argparse.Namespace) -> None:
     ``--output`` at one of the inputs would read every input first and
     then silently overwrite that source artifact with the readiness JSON,
     returning success. Mirrors the same pattern the v1 quality-gate CLI
-    already uses."""
+    already uses.
 
-    input_args = (
-        "decision",
-        "identity",
-        "evaluated_identity",
-        "findings",
-        "checks",
-        "target_profile",
-        "payload",
-        "response",
-    )
+    ``target_profile`` is a repository root, not a file: ``load_target_
+    profile_v2`` actually reads ``<target_profile>/DEFAULT_TARGET_PROFILE_
+    RELATIVE_PATH`` underneath it. Comparing ``--output`` only against the
+    bare root would miss a collision with that nested file -- a Codex
+    review of #156 found exactly this: ``--target-profile /repo``,
+    ``--output /repo/.aiops/target-profile.v2.yaml`` passed the check,
+    then the final write silently corrupted the real profile source.
+    """
+
     output_resolved = Path(args.output).resolve()
-    for name in input_args:
+
+    file_input_args = ("decision", "identity", "evaluated_identity", "findings", "checks", "payload", "response")
+    for name in file_input_args:
         value = getattr(args, name)
         if value is None:
             continue
         if Path(value).resolve() == output_resolved:
+            raise QualityGateCliError(OUTPUT_OVERWRITES_INPUT_REASON_V2)
+
+    if args.target_profile is not None:
+        target_profile_resolved = Path(args.target_profile).resolve()
+        profile_file_resolved = (target_profile_resolved / DEFAULT_TARGET_PROFILE_RELATIVE_PATH).resolve()
+        if output_resolved in (target_profile_resolved, profile_file_resolved):
             raise QualityGateCliError(OUTPUT_OVERWRITES_INPUT_REASON_V2)
 
 

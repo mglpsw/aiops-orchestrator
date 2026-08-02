@@ -185,13 +185,22 @@ def validate_intake_schema_envelope(intake: dict[str, Any]) -> list[str]:
     if schema_id is not None:
         if schema_id != INTAKE_SCHEMA:
             raise IntakeValidationError("intake_schema_id_invalid")
-        if schema_version != 1:
+        if type(schema_version) is not int or schema_version != 1:
+            # type(...) is int, not isinstance(...), deliberately: bool is a
+            # subclass of int in Python, so isinstance(True, int) is True and
+            # True == 1 -- an independent adversarial review of this same PR
+            # found that a hand-crafted schema_version: true or 1.0 would
+            # otherwise pass as if it were the canonical integer 1.
             raise IntakeValidationError("intake_schema_version_invalid")
     elif schema_version == INTAKE_SCHEMA:
         limitations.append("intake_schema_id_missing")
-    elif isinstance(schema_version, int):
-        limitations.append("intake_schema_id_missing")
     else:
+        # No schema_id at all, and schema_version isn't the descriptive
+        # legacy string either -- there is no compatibility form for a
+        # bare integer schema_version without schema_id (an unsupported
+        # version such as 2 must not slip through here just because
+        # schema_id happens to be absent; ReviewIntake's own default would
+        # silently backfill schema_id afterwards, hiding the mismatch).
         raise IntakeValidationError("intake_schema_invalid")
 
     return limitations
