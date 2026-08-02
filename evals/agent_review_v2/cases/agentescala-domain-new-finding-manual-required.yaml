@@ -1,0 +1,33 @@
+# AgentEscala domain case: derived from the SHAPE of AgentEscala #681 (a
+# functional defect found only after independent review) -- entirely
+# synthetic content, no real product logic. A fresh (never-confirmed) P2
+# finding must resolve to `manual_required`, never silently `ready` and
+# never `blocked_code` (confirmation has not happened yet).
+case_id: agentescala-domain-new-finding-manual-required
+category: domain
+target: agent_escala
+files:
+  - path: backend/scheduling/shift_rules.py
+    hunks:
+      - {old_start: 10, old_lines: 6, new_start: 10, new_lines: 8, seed: domain-new-finding-shift-rules}
+injected_findings:
+  - file_path: backend/scheduling/shift_rules.py
+    severity: P2
+    line_start: 12
+    line_end: 13
+    title: "synthetic: 24H shift rule collapses independent 12H daytime rule"
+expected_readiness: manual_required
+expected_findings:
+  - severity: P2
+    file_path: backend/scheduling/shift_rules.py
+    line_start: 12
+    line_end: 13
+    invariant: "a 24H shift rule must remain independent of an overlapping 12H daytime rule it does not fully cover"
+    root_cause: "synthetic: classification logic conflates the two rules instead of keeping them independent"
+forbidden_findings: []
+safe_counterexample: false
+rationale: >
+  Synthetic-only, modeled on the SHAPE of AgentEscala #681, not its real
+  content. A NEW P2 finding pending confirmation must block on
+  `manual_required` with `finding_confirmation_required`, not be silently
+  approved.

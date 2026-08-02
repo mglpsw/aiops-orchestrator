@@ -1,0 +1,30 @@
+# AgentEscala security/domain case: a P1 finding that a prior, revalidated
+# human decision already CONFIRMED must block on `blocked_code`, the
+# strongest state -- never softened to `manual_required`.
+case_id: agentescala-security-confirmed-finding-blocked-code
+category: security
+target: agent_escala
+files:
+  - path: backend/scheduling/shift_rules.py
+    hunks:
+      - {old_start: 10, old_lines: 6, new_start: 10, new_lines: 8, seed: confirmed-finding-shift-rules}
+confirmed_findings:
+  - file_path: backend/scheduling/shift_rules.py
+    severity: P1
+    line_start: 12
+    line_end: 13
+    title: "synthetic: 10-22H shift reclassified as covered_by_24h"
+expected_readiness: blocked_code
+expected_findings:
+  - severity: P1
+    file_path: backend/scheduling/shift_rules.py
+    line_start: 12
+    line_end: 13
+    invariant: "a 10-22H shift must never be reclassified as covered_by_24h"
+    root_cause: "synthetic: classification logic incorrectly folds the 10-22H shift into the 24H bucket"
+forbidden_findings: []
+safe_counterexample: false
+rationale: >
+  Synthetic-only. Proves a finding CONFIRMED by a real, revalidated
+  prior_lifecycle record (never inferred from concordance between chunks or
+  models) round-trips through synthesis and resolves to `blocked_code`.

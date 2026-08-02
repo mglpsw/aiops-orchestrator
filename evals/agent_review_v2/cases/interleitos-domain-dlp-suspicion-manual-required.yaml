@@ -1,0 +1,22 @@
+# InterLeitos domain case: an inconclusive DLP/PHI suspicion must resolve
+# to `manual_required` with a stable reason code, never a silent pass and
+# never a fabricated hard block -- represented via the EXISTING
+# model_uncertainty readiness path, per this benchmark's own scoping
+# decision (no new PHI detector is built here).
+case_id: interleitos-domain-dlp-suspicion-manual-required
+category: domain
+target: interleitos
+files:
+  - path: backend/tenancy/access_scope.py
+    hunks:
+      - {old_start: 8, old_lines: 6, new_start: 8, new_lines: 8, seed: dlp-suspicion-access-scope}
+injected_limitations: [model_uncertainty]
+expected_readiness: manual_required
+expected_findings: []
+forbidden_findings: []
+safe_counterexample: false
+rationale: >
+  Synthetic-only, no real patient/institution/professional data. An
+  inconclusive PHI/DLP suspicion self-reported by the chunk review must
+  fold into `manual_required` via `model_uncertainty`, never silently pass
+  as `ready`.

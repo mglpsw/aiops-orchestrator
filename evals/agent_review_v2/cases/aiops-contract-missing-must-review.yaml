@@ -1,0 +1,21 @@
+# AIOps contract case: a required must-review path that the engine cannot
+# represent at all (binary) must block the WHOLE assembly before any
+# payload or response exists -- never silently excluded, never `ready`.
+case_id: aiops-contract-missing-must-review
+category: coverage
+target: agent_escala
+files:
+  - path: backend/scheduling/shift_rules.py
+    is_binary: true
+  - path: tests/scheduling/test_shift_rules.py
+    hunks:
+      - {old_start: 1, old_lines: 3, new_start: 1, new_lines: 6, seed: missing-must-review-test}
+expected_readiness: blocked_pipeline
+expected_findings: []
+forbidden_findings: []
+safe_counterexample: false
+rationale: >
+  Synthetic-only. `backend/scheduling/shift_rules.py` matches
+  must_review.patterns and is unrepresentable (binary); the assembly must
+  refuse the whole run, matching #86's own conformance proof of the same
+  invariant.

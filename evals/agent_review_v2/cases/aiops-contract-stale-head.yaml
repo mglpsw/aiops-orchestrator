@@ -1,0 +1,19 @@
+# AIOps contract case: a response bound to a HEAD the caller has
+# independently determined is stale must resolve to `stale`, never `ready`
+# -- mirrors ReadinessDecisionV2's own stale short-circuit precedence.
+case_id: aiops-contract-stale-head
+category: stale
+target: agent_escala
+files:
+  - path: backend/scheduling/shift_rules.py
+    hunks:
+      - {old_start: 10, old_lines: 6, new_start: 10, new_lines: 8, seed: stale-head-shift-rules}
+stale_reason_codes: [head_mismatch]
+expected_readiness: stale
+expected_findings: []
+forbidden_findings: []
+safe_counterexample: false
+rationale: >
+  Synthetic-only. Proves the pipeline correctly short-circuits to `stale`
+  when the caller has already determined HEAD divergence, regardless of
+  what coverage or findings the run would otherwise have produced.
