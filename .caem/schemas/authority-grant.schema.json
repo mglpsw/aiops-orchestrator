@@ -182,6 +182,65 @@
     }
   },
   "additionalProperties": false,
+  "allOf": [
+    {
+      "$comment": "A Codex review found target.type was selected independently from action, so a schema-valid grant could authorize deploy_production while targeting an issue or pull_request -- any consumer treating schema validity as the authorization contract could accept a grant whose target cannot delimit the protected environment. These action-specific target-type constraints mirror the authority matrix in docs/engineering/CAEM_CORE.md.",
+      "if": { "properties": { "action": { "const": "commit" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "enum": ["repository", "branch"] } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "push" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "const": "branch" } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "open_change_request" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "const": "repository" } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "enum": ["mark_ready", "resolve_review_thread", "merge", "publish_review"] } } },
+      "then": { "properties": { "target": { "properties": { "type": { "const": "pull_request" } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "close_issue" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "const": "issue" } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "enum": ["deploy_canonical_dev", "deploy_production"] } } },
+      "then": { "properties": { "target": { "properties": { "type": { "const": "environment" } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "apply_migration" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "enum": ["database", "environment"] } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "enum": ["mutate_database", "destructive_database_action"] } } },
+      "then": { "properties": { "target": { "properties": { "type": { "const": "database" } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "restart_service" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "const": "service" } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "invoke_external_provider" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "enum": ["provider", "environment"] } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "modify_proxy_or_dns" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "const": "infrastructure_resource" } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "rotate_secret" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "enum": ["service", "infrastructure_resource"] } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "delete_branch" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "const": "branch" } } } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "start_next_phase" } } },
+      "then": { "properties": { "target": { "properties": { "type": { "const": "phase" } } } } }
+    }
+  ],
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "x-generated-from": "policy/caem-policy.json",
   "x-caem-version": "2.1.0"

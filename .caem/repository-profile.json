@@ -26,8 +26,9 @@
     "target_repository_credentials"
   ],
   "required_overlays": [
-    "overlays/AIOPS_AGENTREVIEW.md",
-    "overlays/HOMELAB.md"
+    "docs/engineering/CAEM_CORE.md",
+    "docs/engineering/PROJECT_OVERLAY.md",
+    "docs/engineering/CURRENT_CHECKPOINT.md"
   ],
   "commands": {},
   "project_rules": [

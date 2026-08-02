@@ -486,6 +486,41 @@
     }
   },
   "additionalProperties": false,
+  "allOf": [
+    {
+      "$comment": "A Codex review found that identity only required `repository`: a bundle omitting head_sha/tested_sha still validated even though readiness explicitly depends on same-HEAD evidence, so such a bundle could not establish its gates apply to the current HEAD. Require both once any gate_run is for a real, non-documentary surface (documentation-only bundles have no HEAD-bound gate to justify the requirement).",
+      "if": {
+        "properties": {
+          "gate_runs": {
+            "contains": {
+              "properties": {
+                "environment": {
+                  "properties": {
+                    "role": {
+                      "not": {
+                        "const": "documentation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "identity": {
+            "required": [
+              "repository",
+              "head_sha",
+              "tested_sha"
+            ]
+          }
+        }
+      }
+    }
+  ],
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "x-generated-from": "policy/caem-policy.json",
   "x-caem-version": "2.1.0"
