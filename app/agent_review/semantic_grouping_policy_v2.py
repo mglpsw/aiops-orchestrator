@@ -293,9 +293,32 @@ def canonical_effective_policy_bytes_v2(bundle: EffectivePolicyBundleV2) -> byte
     ``policy_sha256`` field -- any rule or priority change already changed
     that field, and this hash must change with it, so ``run_id`` changes
     too even when today's diff would classify identically under both
-    policies."""
+    policies.
 
-    return _canonical_json_bytes_v2(bundle.model_dump(mode="json"))
+    ``target_policies.required_checks`` and
+    ``target_policies.allowed_semantic_groups`` are sorted here before
+    hashing -- same reasoning as ``canonical_semantic_grouping_policy_bytes_v2``'s
+    per-rule list sorting (found by the same round of independent review):
+    both are already validated duplicate-free by
+    ``TargetProfileV2.validate_profile_references``
+    (``contracts_v2.py:946-947``), so they are semantically unordered sets,
+    yet a naive JSON dump is order-sensitive. Without this, two profiles
+    that are semantically identical but list these in a different textual
+    order would produce a different effective policy hash. This does NOT
+    touch ``profile_loader_v2.compute_policy_hash_v2`` itself -- that
+    function's own order-sensitivity (a pre-existing characteristic of
+    already-merged, frozen code) is explicitly out of scope for this issue,
+    which forbids silently changing its semantics; this sort applies only
+    to the bytes THIS function hashes.
+    """
+
+    dumped = bundle.model_dump(mode="json")
+    dumped["target_policies"] = {
+        **dumped["target_policies"],
+        "required_checks": sorted(dumped["target_policies"]["required_checks"]),
+        "allowed_semantic_groups": sorted(dumped["target_policies"]["allowed_semantic_groups"]),
+    }
+    return _canonical_json_bytes_v2(dumped)
 
 
 def compute_effective_policy_hash_v2(

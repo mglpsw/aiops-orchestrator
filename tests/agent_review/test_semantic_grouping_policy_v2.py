@@ -57,7 +57,11 @@ def _policy(*, rules: list[SemanticGroupingRuleV2], fallback_group: SemanticGrou
     return SemanticGroupingPolicyV2(**material, policy_sha256=policy_sha256)
 
 
-def _target_profile(*, allowed_semantic_groups: list[str] = ("api_schema_contract", "tests")) -> TargetProfileV2:
+def _target_profile(
+    *,
+    allowed_semantic_groups: list[str] = ("api_schema_contract", "tests"),
+    required_checks: list[str] = ("pytest",),
+) -> TargetProfileV2:
     return TargetProfileV2.model_validate(
         {
             "schema_id": "agent-review.target-profile.v2",
@@ -91,7 +95,7 @@ def _target_profile(*, allowed_semantic_groups: list[str] = ("api_schema_contrac
                 "fail_closed": True,
                 "redaction_required": True,
                 "allow_partial_coverage": False,
-                "required_checks": ["pytest"],
+                "required_checks": list(required_checks),
                 "allowed_semantic_groups": list(allowed_semantic_groups),
                 "coverage_failure_state": "blocked_pipeline",
                 "model_uncertainty_state": "manual_required",
@@ -352,6 +356,29 @@ def test_compute_effective_policy_hash_v2_changes_when_a_rule_changes_even_if_cl
     hash_a = compute_effective_policy_hash_v2(profile.policies, policy_a)
     hash_b = compute_effective_policy_hash_v2(profile.policies, policy_b)
     assert hash_a != hash_b
+
+
+def test_compute_effective_policy_hash_v2_is_independent_of_target_policies_list_order() -> None:
+    """Found by independent review of PR #137, same class as the rule-level
+    fix above: TargetPoliciesV2.required_checks and .allowed_semantic_groups
+    (contracts_v2.py:905-906) are validated duplicate-free/unordered sets by
+    TargetProfileV2's own validator, but canonical_effective_policy_bytes_v2
+    dumped the bundle with no list-sorting, so reordering either list
+    changed the effective hash despite no semantic change. This does NOT
+    touch profile_loader_v2.compute_policy_hash_v2, which stays frozen."""
+
+    forward = _target_profile(
+        allowed_semantic_groups=["api_schema_contract", "tests"],
+        required_checks=["pytest", "lint"],
+    )
+    backward = _target_profile(
+        allowed_semantic_groups=["tests", "api_schema_contract"],
+        required_checks=["lint", "pytest"],
+    )
+    policy = _policy(rules=[_rule(rule_id="r1", semantic_group=SemanticGroupV2.API_SCHEMA_CONTRACT)])
+    assert compute_effective_policy_hash_v2(forward.policies, policy) == compute_effective_policy_hash_v2(
+        backward.policies, policy
+    )
 
 
 def test_compute_policy_hash_v2_semantics_are_unchanged_by_this_module() -> None:
