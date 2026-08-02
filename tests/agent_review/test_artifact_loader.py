@@ -32,6 +32,27 @@ def test_artifact_loader_marks_invalid_json_as_invalid_without_process_crash(tmp
     assert result.artifacts == {}
 
 
+def test_artifact_loader_marks_unreadable_artifact_as_invalid_without_process_crash(tmp_path: Path) -> None:
+    """Codex review of PR #49: a declared path resolving to a directory
+    (or an unreadable file, or non-UTF-8 content) raised an uncaught
+    OSError/UnicodeDecodeError from path.read_text(), crashing the intake
+    CLI with a traceback instead of reporting a degraded/invalid
+    ArtifactStatus like every other malformed-artifact case."""
+
+    (tmp_path / "bad_dir").mkdir()
+
+    result = load_declared_artifacts(
+        agent_dir=tmp_path,
+        declarations=[ArtifactDeclaration(name="bad", path="bad_dir", kind="json", required=True)],
+        redaction_state=RedactionState(),
+    )
+
+    assert result.artifact_status[0].status == "invalid"
+    assert result.artifact_status[0].error_class == "artifact_unreadable"
+    assert result.artifacts == {}
+    assert "artifact_invalid:bad" in result.limitations
+
+
 def test_artifact_loader_rejects_absolute_artifact_path(tmp_path: Path) -> None:
     result = load_declared_artifacts(
         agent_dir=tmp_path,
