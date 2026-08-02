@@ -19,7 +19,7 @@ budgets:
 must_review:
   paths: []
   patterns:
-    - "backend/**/*.py"
+    - "backend/tenancy/*.py"
   artifact_ids: []
   minimum_coverage: complete
 policies:

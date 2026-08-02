@@ -21,6 +21,7 @@ module in this codebase uses -- for local filesystem paths, which
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -47,6 +48,7 @@ FIELD_INVALID_REASON_V2 = "conformance_target_field_invalid"
 NETWORK_OR_PROVIDER_EVIDENCE_MISSING_REASON_V2 = "conformance_network_or_provider_evidence_missing"
 SANITIZATION_LEAK_REASON_V2 = "conformance_sanitization_leak_detected"
 DUPLICATE_TARGET_REASON_V2 = "conformance_duplicate_target_id"
+DIGEST_MISMATCH_REASON_V2 = "conformance_canonical_output_digest_mismatch"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -73,10 +75,18 @@ _REQUIRED_TARGET_FIELDS = (
     "evidence_no_provider",
     "evidence_no_github_write",
     "evidence_no_ct102",
+    "payload_set_sha256",
     "canonical_output_digest",
 )
 
-_SHA256_FIELDS = ("profile_hash", "policy_hash", "manifest_hash", "evidence_hash", "canonical_output_digest")
+_SHA256_FIELDS = (
+    "profile_hash",
+    "policy_hash",
+    "manifest_hash",
+    "evidence_hash",
+    "payload_set_sha256",
+    "canonical_output_digest",
+)
 _BOOL_FIELDS = (
     "must_review_coverage_complete",
     "evidence_no_network",
@@ -167,6 +177,32 @@ def _verify_target(entry: object) -> None:
             NETWORK_OR_PROVIDER_EVIDENCE_MISSING_REASON_V2,
             "every evidence_no_* field must be true -- this suite proves the ABSENCE of network/"
             "provider/GitHub-write/CT102 activity, never merely omits reporting on it",
+        )
+
+    # Recompute canonical_output_digest from its own real preimage, rather
+    # than merely checking it LOOKS like a sha256 hex string (a Codex
+    # review of PR #147 found this exact gap: a stale/corrupted matrix --
+    # e.g. readiness_state silently changed from manual_required to ready,
+    # or the digest copied from a different payload set -- would pass this
+    # verifier if it only checked the digest's shape). The preimage is
+    # test_v2_dual_target_e2e.py's own `_conformance_entry` construction:
+    # {manifest_hash, payload_set_sha256, readiness_state}, canonical-JSON
+    # encoded exactly like every other hash in this codebase.
+    canonical_output = {
+        "manifest_hash": entry["manifest_hash"],
+        "payload_set_sha256": entry["payload_set_sha256"],
+        "readiness_state": entry["readiness_state"],
+    }
+    recomputed_digest = hashlib.sha256(
+        json.dumps(
+            canonical_output, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode("utf-8")
+    ).hexdigest()
+    if recomputed_digest != entry["canonical_output_digest"]:
+        raise ConformanceVerificationError(
+            DIGEST_MISMATCH_REASON_V2,
+            "canonical_output_digest does not match a fresh recomputation from manifest_hash/"
+            "payload_set_sha256/readiness_state -- the artifact is stale, corrupted, or tampered",
         )
 
 
