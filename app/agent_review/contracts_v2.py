@@ -294,7 +294,12 @@ def _validate_manifest_object_keys(value: object) -> None:
                 raise TypeError("manifest contains a non-string object key")
             _reject_sensitive_value(key)
             _validate_manifest_object_keys(item)
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
+        # A Codex review of PR #159 found that _require_json_value accepting
+        # tuples (the #97 fix) left this sibling walker only recursing
+        # through list, so a tuple of dicts could carry a sensitive key past
+        # this sanitization boundary even though the equivalent list shape
+        # is rejected. Tuples must be walked identically to lists here.
         for item in value:
             _validate_manifest_object_keys(item)
 

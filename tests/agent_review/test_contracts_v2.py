@@ -1827,6 +1827,31 @@ def test_manifest_hash_rejects_sensitive_nested_object_keys(unsafe_key: str) -> 
         compute_manifest_hash_v2(manifest)
 
 
+@pytest.mark.parametrize(
+    "unsafe_key",
+    [
+        "/home/runner/.ssh/id_rsa",
+        "Authorization: Bearer abcdefghijklmnop",
+    ],
+)
+def test_manifest_hash_rejects_sensitive_object_keys_nested_in_a_tuple(unsafe_key: str) -> None:
+    """A Codex review of PR #159 found that widening _require_json_value to
+    accept tuples (the #97 fix) opened a gap in the sibling
+    _validate_manifest_object_keys walker, which only recursed through
+    list -- a tuple of dicts containing a sensitive key could reach the
+    canonical hash unsanitized, even though the equivalent list shape is
+    rejected by test_manifest_hash_rejects_sensitive_nested_object_keys
+    above."""
+
+    manifest = {
+        "schema_id": "agent-review.chunk-payload-manifest.v2",
+        "artifacts": ({unsafe_key: "evidence"},),
+    }
+
+    with pytest.raises(ValueError):
+        compute_manifest_hash_v2(manifest)
+
+
 def test_manifest_hash_accepts_relative_path_object_keys() -> None:
     manifest = {
         "schema_id": "agent-review.chunk-payload-manifest.v2",
