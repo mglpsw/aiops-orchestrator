@@ -8,6 +8,7 @@ from app.agent_review.contracts_v2 import RunIdentityV2, compute_run_id
 from app.agent_review.manifest_v2 import ManifestMaterialV2, ManifestV2, compute_manifest_hash_v2_for
 from app.agent_review.payload_builder_v2 import build_chunk_payloads_v2
 from app.agent_review.payload_set_emission_v2 import (
+    PAYLOAD_SET_DUPLICATE_PAYLOAD_REASON_V2,
     PAYLOAD_SET_ENTRY_MISSING_PAYLOAD_REASON_V2,
     PAYLOAD_SET_ENTRY_PAYLOAD_HASH_MISMATCH_REASON_V2,
     PAYLOAD_SET_EXTRA_PAYLOAD_REASON_V2,
@@ -118,6 +119,20 @@ def test_two_different_manifests_produce_different_payload_sets() -> None:
     payload_set_a = emit_payload_set_v2(manifest_a, _real_payloads(manifest_a))
     payload_set_b = emit_payload_set_v2(manifest_b, _real_payloads(manifest_b))
     assert payload_set_a.payload_set_sha256 != payload_set_b.payload_set_sha256
+
+
+def test_emit_rejects_a_duplicate_chunk_id_across_supplied_payloads() -> None:
+    """Found by independent review of PR #144: PAYLOAD_SET_DUPLICATE_PAYLOAD_REASON_V2
+    is a real, reachable guard (two supplied payloads sharing a chunk_id
+    would otherwise silently collapse into one entry in
+    _payloads_by_chunk_id) that had zero direct test coverage, unlike
+    every other clause in this module."""
+
+    manifest = _build_manifest(["app/a.py"])
+    payloads = _real_payloads(manifest)
+    with pytest.raises(PayloadSetBindingError) as excinfo:
+        emit_payload_set_v2(manifest, [payloads[0], payloads[0]])
+    assert excinfo.value.reason_code == PAYLOAD_SET_DUPLICATE_PAYLOAD_REASON_V2
 
 
 # -- bind_payload_set_to_payloads_v2: one regression per cross-validation clause -
