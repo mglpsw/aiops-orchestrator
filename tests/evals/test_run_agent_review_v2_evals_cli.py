@@ -280,3 +280,70 @@ rationale: recall-regression test fixture -- expected_findings declares a
     assert summary["cases"][0]["readiness_matches"] is True
     assert summary["summary"]["expected_findings_recovered"] < summary["summary"]["expected_findings_total"]
     assert result.returncode == 1
+
+
+def test_check_mode_fails_closed_on_a_committed_recall_regression(tmp_path: Path):
+    """Codex review of PR #154 itself: --check's matching-report branch
+    returned 0 as soon as the committed report byte-matched a fresh run,
+    entirely before the recall/readiness/leak/duplicate regression gate
+    below it was ever evaluated. A committed report that already reflected
+    a recall regression (the same fixture as the test above) would
+    therefore keep passing --check forever, even though a plain write-mode
+    run of the identical inputs correctly returns 1."""
+
+    cases_dir = tmp_path / "cases"
+    cases_dir.mkdir()
+    case_body = """
+case_id: recall-regression-case
+category: contract
+target: agent_escala
+files:
+  - path: tests/scheduling/test_shift_rules.py
+    hunks:
+      - {old_start: 1, old_lines: 3, new_start: 1, new_lines: 6, seed: recall-regression}
+expected_readiness: ready
+expected_findings:
+  - severity: P2
+    file_path: tests/scheduling/test_shift_rules.py
+    line_start: 1
+    line_end: 2
+    invariant: "never actually injected -- proves recall regression is caught"
+    root_cause: "test fixture: an expected finding that will never survive"
+rationale: recall-regression test fixture -- expected_findings declares a
+  finding that is never actually injected, so readiness matches (ready)
+  but recall is 0/1.
+"""
+    (cases_dir / "a.yaml").write_text(case_body, encoding="utf-8")
+    json_output = tmp_path / "summary.json"
+    markdown_output = tmp_path / "summary.md"
+
+    write_result = _run(
+        [
+            "--cases-dir",
+            str(cases_dir),
+            "--fixtures-root",
+            str(REAL_FIXTURES_ROOT),
+            "--json-output",
+            str(json_output),
+            "--markdown-output",
+            str(markdown_output),
+        ]
+    )
+    assert write_result.returncode == 1
+    assert json_output.is_file()
+
+    check_result = _run(
+        [
+            "--cases-dir",
+            str(cases_dir),
+            "--fixtures-root",
+            str(REAL_FIXTURES_ROOT),
+            "--json-output",
+            str(json_output),
+            "--markdown-output",
+            str(markdown_output),
+            "--check",
+        ]
+    )
+    assert check_result.returncode == 1
+    assert "eval_summary_regression" in check_result.stderr
