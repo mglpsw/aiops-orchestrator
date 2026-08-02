@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from app.agent_review.contracts_v2 import (
     AgentReviewRunV2,
+    ChunkFindingV2,
     ChunkPayloadV2,
     DispositionEvidenceV2,
     FindingDispositionV2,
@@ -59,13 +60,13 @@ def _identity() -> dict[str, object]:
 def _coverage() -> dict[str, object]:
     return {
         "status": "complete",
-        "expected_files": ["app/service.py"],
-        "reviewed_files": ["app/service.py"],
-        "partially_reviewed_files": [],
-        "missing_files": [],
-        "must_review_files": ["app/service.py"],
-        "missing_must_review_files": [],
-        "degradation_causes": [],
+        "expected_files": ("app/service.py",),
+        "reviewed_files": ("app/service.py",),
+        "partially_reviewed_files": (),
+        "missing_files": (),
+        "must_review_files": ("app/service.py",),
+        "missing_must_review_files": (),
+        "degradation_causes": (),
     }
 
 
@@ -800,16 +801,52 @@ def test_response_binding_normalizes_a_model_copy_with_stale_payload_hash() -> N
     assert raised.value.__cause__ is not None
 
 
-@pytest.mark.parametrize("mutation", ["coverage", "references"])
-def test_response_binding_normalizes_nested_payload_mutations(mutation: str) -> None:
+def test_chunk_coverage_string_lists_are_genuinely_immutable() -> None:
+    """A Codex review found that ChunkCoverageV2's reviewed_files/
+    expected_files/etc. and ChunkFindingV2.contract_ids were typed
+    list[...] even though both models are frozen=True: frozen=True blocks
+    reassigning the field but NOT in-place mutation of a mutable list
+    object -- payload.coverage.reviewed_files.append(...) previously
+    succeeded after construction, and only a downstream re-validation
+    caught the resulting inconsistency (see the "references" case of the
+    former test_response_binding_normalizes_nested_payload_mutations,
+    still exercised as a separate mutation vector below). Fields are now
+    tuple[...], so the mutation itself is impossible at the type level."""
+
+    payload = _validate_json(ChunkPayloadV2, _payload())
+
+    with pytest.raises(AttributeError):
+        payload.coverage.reviewed_files.append("app/unexpected.py")
+    with pytest.raises(AttributeError):
+        payload.coverage.expected_files.append("app/unexpected.py")
+
+    finding = ChunkFindingV2.model_validate_json(
+        json.dumps(
+            {
+                "finding_id": "f1",
+                "severity": "P1",
+                "title": "t",
+                "file_path": "app/a.py",
+                "line_start": 1,
+                "line_end": 2,
+                "evidence": "ev",
+                "impact": "impact",
+                "confidence": "high",
+                "contract_ids": ["c1"],
+                "disposition": "new",
+            }
+        )
+    )
+    with pytest.raises(AttributeError):
+        finding.contract_ids.append("c2")
+
+
+def test_response_binding_normalizes_a_mutated_artifact_reference() -> None:
     envelope = validate_chunk_response_envelope_v2(_success_envelope())
     payload = _validate_json(ChunkPayloadV2, _payload())
-    if mutation == "coverage":
-        payload.coverage.reviewed_files.append("app/unexpected.py")
-    else:
-        payload.artifact_references[0] = payload.artifact_references[0].model_copy(
-            update={"sha256": "0" * 64}
-        )
+    payload.artifact_references[0] = payload.artifact_references[0].model_copy(
+        update={"sha256": "0" * 64}
+    )
 
     with pytest.raises(ResponseBindingError) as raised:
         validate_response_binding_v2(envelope, payload)

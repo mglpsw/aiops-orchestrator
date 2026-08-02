@@ -33,6 +33,7 @@ what ``ChunkCoverageV2``'s existing shape can represent.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -95,13 +96,13 @@ def _build_chunk_coverage(manifest: ManifestV2, chunk: ManifestChunkV2) -> Chunk
 
     return ChunkCoverageV2(
         status=status,
-        expected_files=chunk_paths,
-        reviewed_files=sorted(reviewed),
-        partially_reviewed_files=sorted(partially_reviewed),
-        missing_files=[],
-        must_review_files=must_review,
-        missing_must_review_files=missing_must_review,
-        degradation_causes=[],
+        expected_files=tuple(chunk_paths),
+        reviewed_files=tuple(sorted(reviewed)),
+        partially_reviewed_files=tuple(sorted(partially_reviewed)),
+        missing_files=(),
+        must_review_files=tuple(must_review),
+        missing_must_review_files=tuple(missing_must_review),
+        degradation_causes=(),
     )
 
 
@@ -140,7 +141,13 @@ def _build_chunk_payload(
         "contract_references": [ref.model_dump(mode="json") for ref in contract_references],
     }
     payload_sha256 = compute_payload_sha256_v2(material)
-    return ChunkPayloadV2.model_validate({**material, "payload_sha256": payload_sha256})
+    # model_validate_json, not model_validate(dict): material's nested
+    # "coverage" value is itself a plain dict produced by .model_dump(mode=
+    # "json") above, so ChunkCoverageV2's tuple-typed fields (expected_files
+    # etc.) already round-tripped to JSON arrays -- model_validate on an
+    # already-parsed dict enforces strict=True's Python-level tuple/list
+    # distinction on that nested value directly and would reject it.
+    return ChunkPayloadV2.model_validate_json(json.dumps({**material, "payload_sha256": payload_sha256}))
 
 
 def build_chunk_payload_v2(manifest: ManifestV2, chunk: ManifestChunkV2) -> ChunkPayloadV2:

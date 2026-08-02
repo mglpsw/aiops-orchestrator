@@ -138,9 +138,9 @@ def test_a_chunk_with_every_fragment_of_a_file_reports_it_as_reviewed() -> None:
     assert len(manifest.chunks) == 1
     payload = build_chunk_payload_v2(manifest, manifest.chunks[0])
     assert payload.coverage.status.value == "complete"
-    assert payload.coverage.reviewed_files == ["app/a.py"]
-    assert payload.coverage.partially_reviewed_files == []
-    assert payload.coverage.missing_must_review_files == []
+    assert payload.coverage.reviewed_files == ("app/a.py",)
+    assert payload.coverage.partially_reviewed_files == ()
+    assert payload.coverage.missing_must_review_files == ()
 
 
 # -- coverage: a file split across multiple chunks (the core #84 case) ---------
@@ -163,9 +163,9 @@ def test_a_chunk_with_only_some_of_a_files_fragments_reports_it_as_partial() -> 
     for chunk in manifest.chunks:
         payload = build_chunk_payload_v2(manifest, chunk)
         assert payload.coverage.status.value == "partial"
-        assert payload.coverage.partially_reviewed_files == ["app/big.py"]
-        assert payload.coverage.reviewed_files == []
-        assert payload.coverage.missing_must_review_files == ["app/big.py"]
+        assert payload.coverage.partially_reviewed_files == ("app/big.py",)
+        assert payload.coverage.reviewed_files == ()
+        assert payload.coverage.missing_must_review_files == ("app/big.py",)
 
 
 def test_a_chunk_never_reports_reviewed_for_a_file_it_does_not_fully_own() -> None:

@@ -171,7 +171,7 @@ def _finding(
         evidence="evidence text",
         impact="impact text",
         confidence=FindingConfidenceV2.HIGH,
-        contract_ids=contract_ids,
+        contract_ids=tuple(contract_ids),
         disposition=FindingDispositionV2.NEW,
     )
 
@@ -189,7 +189,7 @@ def _file_level_finding(
         evidence="evidence text",
         impact="impact text",
         confidence=FindingConfidenceV2.HIGH,
-        contract_ids=contract_ids,
+        contract_ids=tuple(contract_ids),
         disposition=FindingDispositionV2.NEW,
     )
 
@@ -197,13 +197,13 @@ def _file_level_finding(
 def _coverage_all_reviewed(paths: list[str]) -> ChunkCoverageV2:
     return ChunkCoverageV2(
         status="complete",
-        expected_files=paths,
-        reviewed_files=paths,
-        partially_reviewed_files=[],
-        missing_files=[],
-        must_review_files=paths,
-        missing_must_review_files=[],
-        degradation_causes=[],
+        expected_files=tuple(paths),
+        reviewed_files=tuple(paths),
+        partially_reviewed_files=(),
+        missing_files=(),
+        must_review_files=tuple(paths),
+        missing_must_review_files=(),
+        degradation_causes=(),
     )
 
 
