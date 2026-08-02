@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.agent_review.final_synthesizer import (
     FinalSynthesizerError,
+    load_intake,
     render_final_review_markdown,
     synthesize_final_review,
     validate_chunk_results,
@@ -319,3 +322,76 @@ def test_redaction_report_not_safe_for_llm_degrades_review() -> None:
     assert review.status == "degraded"
     assert review.verdict == "manual_review_required"
     assert "redaction_report_not_safe_for_llm" in review.limitations
+
+
+def _minimal_intake_raw(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "target_repo": "mglpsw/aiops-orchestrator",
+        "target_profile": {},
+        "artifacts": {},
+        "artifact_status": [],
+        "redaction_summary": {"schema_version": "agent-review.redaction-report.v1"},
+        "status": "complete",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_load_intake_accepts_the_modern_schema_pair(tmp_path) -> None:  # noqa: ANN001
+    raw = _minimal_intake_raw(schema_id="agent-review.intake.v1", schema_version=1)
+    path = tmp_path / "intake.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    intake = load_intake(path)
+
+    assert intake.schema_id == "agent-review.intake.v1"
+    assert intake.schema_version == 1
+
+
+def test_load_intake_accepts_the_legacy_schema_pair_during_the_compatibility_window(tmp_path) -> None:  # noqa: ANN001
+    raw = _minimal_intake_raw(schema_version="agent-review.intake.v1")
+    path = tmp_path / "intake.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    intake = load_intake(path)
+
+    assert intake.status == "complete"
+
+
+def test_load_intake_rejects_an_unsupported_integer_schema_version(tmp_path) -> None:  # noqa: ANN001
+    """Issue #146 thread 7 -- schema_version=2 alongside a correct schema_id
+    must be rejected. Before the fix, this loader's own weaker inline check
+    (``schema_version != INTAKE_SCHEMA and schema_id != INTAKE_SCHEMA``)
+    accepted any schema_version once schema_id matched, letting version 2
+    through."""
+
+    raw = _minimal_intake_raw(schema_id="agent-review.intake.v1", schema_version=2)
+    path = tmp_path / "intake.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(FinalSynthesizerError) as exc_info:
+        load_intake(path)
+
+    assert exc_info.value.error_class == "intake_invalid"
+
+
+def test_load_intake_rejects_the_hybrid_schema_id_with_descriptive_schema_version(tmp_path) -> None:  # noqa: ANN001
+    raw = _minimal_intake_raw(schema_id="agent-review.intake.v1", schema_version="agent-review.intake.v1")
+    path = tmp_path / "intake.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(FinalSynthesizerError) as exc_info:
+        load_intake(path)
+
+    assert exc_info.value.error_class == "intake_invalid"
+
+
+def test_load_intake_rejects_an_unknown_schema_id(tmp_path) -> None:  # noqa: ANN001
+    raw = _minimal_intake_raw(schema_id="agent-review.intake.v2", schema_version=1)
+    path = tmp_path / "intake.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(FinalSynthesizerError) as exc_info:
+        load_intake(path)
+
+    assert exc_info.value.error_class == "intake_invalid"

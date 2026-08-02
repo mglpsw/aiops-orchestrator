@@ -163,22 +163,29 @@ def build_semantic_chunk_plan(
     )
 
 
-def validate_intake_contract(intake: dict[str, Any]) -> list[str]:
-    missing = [
-        field
-        for field in ("target_repo", "artifacts", "artifact_status", "status")
-        if field not in intake
-    ]
-    if missing:
-        raise IntakeValidationError(f"intake_missing:{','.join(missing)}")
+def validate_intake_schema_envelope(intake: dict[str, Any]) -> list[str]:
+    """Single authority for the intake ``schema_id``/``schema_version``
+    envelope, reused by every loader that accepts an intake document
+    (``final_synthesizer.load_intake``, ``quality_gate.load_intake``, and
+    this module's own ``validate_intake_contract``) instead of each keeping
+    its own partially-divergent check.
 
+    Accepts exactly two shapes: the modern pair (``schema_id ==
+    INTAKE_SCHEMA``, ``schema_version == 1``) or, during the compatibility
+    window, the legacy bare form (no ``schema_id`` key, ``schema_version ==
+    INTAKE_SCHEMA`` the descriptive string). Any other combination --
+    including an unsupported integer version such as ``2``, an unknown
+    ``schema_id``, or the hybrid a naive Pydantic default can silently
+    reintroduce -- raises ``IntakeValidationError``. Returns any limitations
+    accumulated along the way (currently only the legacy-form flag).
+    """
     limitations: list[str] = []
     schema_id = intake.get("schema_id")
     schema_version = intake.get("schema_version")
     if schema_id is not None:
         if schema_id != INTAKE_SCHEMA:
             raise IntakeValidationError("intake_schema_id_invalid")
-        if not isinstance(schema_version, int):
+        if schema_version != 1:
             raise IntakeValidationError("intake_schema_version_invalid")
     elif schema_version == INTAKE_SCHEMA:
         limitations.append("intake_schema_id_missing")
@@ -188,6 +195,18 @@ def validate_intake_contract(intake: dict[str, Any]) -> list[str]:
         raise IntakeValidationError("intake_schema_invalid")
 
     return limitations
+
+
+def validate_intake_contract(intake: dict[str, Any]) -> list[str]:
+    missing = [
+        field
+        for field in ("target_repo", "artifacts", "artifact_status", "status")
+        if field not in intake
+    ]
+    if missing:
+        raise IntakeValidationError(f"intake_missing:{','.join(missing)}")
+
+    return validate_intake_schema_envelope(intake)
 
 
 def extract_files_from_intake(intake: dict[str, Any]) -> tuple[list[str], list[str]]:

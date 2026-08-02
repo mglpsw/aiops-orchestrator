@@ -13,7 +13,6 @@ from pydantic import ValidationError
 from app.agent_review.redaction import RedactionState, redact_text, redact_value
 from app.agent_review.schemas import (
     CHUNK_RESULTS_SCHEMA,
-    INTAKE_SCHEMA,
     REDACTION_REPORT_SCHEMA,
     SEMANTIC_CHUNK_PLAN_SCHEMA,
     ChunkResults,
@@ -29,6 +28,7 @@ from app.agent_review.schemas import (
     ReviewIntake,
     SemanticChunkPlan,
 )
+from app.agent_review.semantic_chunker import IntakeValidationError, validate_intake_schema_envelope
 
 
 SEVERITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
@@ -82,8 +82,10 @@ def validate_chunk_results(raw: dict[str, Any]) -> ChunkResults:
 
 def load_intake(path: Path | str) -> ReviewIntake:
     raw = load_json_object(path, error_class="intake_invalid")
-    if raw.get("schema_version") != INTAKE_SCHEMA and raw.get("schema_id") != INTAKE_SCHEMA:
-        raise FinalSynthesizerError("intake_invalid", "intake schema is invalid")
+    try:
+        validate_intake_schema_envelope(raw)
+    except IntakeValidationError as exc:
+        raise FinalSynthesizerError("intake_invalid", "intake schema is invalid") from exc
     try:
         return ReviewIntake.model_validate(raw)
     except ValidationError as exc:

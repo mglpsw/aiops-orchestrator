@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import socket
 
+import pytest
+
 from app.agent_review.semantic_chunker import (
+    IntakeValidationError,
     build_semantic_chunk_plan,
     classify_file,
     extract_files_from_intake,
+    validate_intake_contract,
 )
 
 
@@ -202,6 +206,23 @@ def test_semantic_chunker_accepts_the_new_schema_id_intake_without_the_limitatio
     plan = build_semantic_chunk_plan(intake)
 
     assert "intake_schema_id_missing" not in plan.limitations
+
+
+def test_validate_intake_contract_rejects_an_unsupported_integer_schema_version() -> None:
+    """Issue #146 thread 7 -- before this fix, the check only verified
+    isinstance(schema_version, int), so schema_id + schema_version=2 was
+    silently accepted (and callers reusing this function would have inherited
+    the same gap)."""
+
+    intake = _intake(["backend/api/notification_admin.py"])
+    intake.pop("schema_version")
+    intake["schema_id"] = "agent-review.intake.v1"
+    intake["schema_version"] = 2
+
+    with pytest.raises(IntakeValidationError) as exc_info:
+        validate_intake_contract(intake)
+
+    assert str(exc_info.value) == "intake_schema_version_invalid"
 
 
 def test_a_real_review_intake_no_longer_carries_the_missing_schema_id_limitation() -> None:
