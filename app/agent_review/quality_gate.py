@@ -14,7 +14,6 @@ from app.agent_review.redaction import RedactionState, redact_value
 from app.agent_review.schemas import (
     CHUNK_RESULTS_SCHEMA,
     FINAL_REVIEW_SCHEMA,
-    INTAKE_SCHEMA,
     REDACTION_REPORT_SCHEMA,
     SEMANTIC_CHUNK_PLAN_SCHEMA,
     ChunkResults,
@@ -25,6 +24,7 @@ from app.agent_review.schemas import (
     ReviewQualityGate,
     SemanticChunkPlan,
 )
+from app.agent_review.semantic_chunker import IntakeValidationError, validate_intake_schema_envelope
 
 
 ALLOWED_FINAL_VERDICTS = set(get_args(FinalReviewVerdict))
@@ -159,8 +159,10 @@ def load_chunk_results(path: Path | str) -> ChunkResults:
 
 def load_intake(path: Path | str) -> ReviewIntake:
     raw = load_json_object(path, error_class="intake_invalid")
-    if raw.get("schema_version") != INTAKE_SCHEMA and raw.get("schema_id") != INTAKE_SCHEMA:
-        raise QualityGateError("intake_invalid", "intake schema is invalid")
+    try:
+        validate_intake_schema_envelope(raw)
+    except IntakeValidationError as exc:
+        raise QualityGateError("intake_invalid", "intake schema is invalid") from exc
     try:
         return ReviewIntake.model_validate(raw)
     except ValidationError as exc:

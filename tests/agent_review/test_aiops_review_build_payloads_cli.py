@@ -601,6 +601,32 @@ def test_cli_rejects_modern_envelope_with_unsupported_version(monkeypatch, tmp_p
     assert not (out_root / "chunk-payloads").exists()
 
 
+def test_cli_rejects_a_boolean_or_float_schema_version(monkeypatch, tmp_path: Path) -> None:
+    """Codex review of PR #156 -- schema_version != 1 alone would accept
+    `true` (bool is a subclass of int in Python) or `1.0` (float equality),
+    which _normalize_intake_schema_envelope would then silently overwrite
+    with the canonical integer 1 before Pydantic ever saw the original,
+    invalid value -- making the check meaningless for those two inputs."""
+
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+
+    for sneaky_version in (True, 1.0):
+        paths = _base_artifacts(tmp_path / f"case-{sneaky_version}")
+        intake = json.loads(paths["intake"].read_text(encoding="utf-8"))
+        intake["schema_id"] = "agent-review.intake.v1"
+        intake["schema_version"] = sneaky_version
+        _write_json(paths["intake"], intake)
+        out_root = tmp_path / f"out-{sneaky_version}"
+        module = _load_script_module()
+
+        result = _invoke(module, _args(paths, out_root))
+
+        error = _error_payload(result)
+        assert error["error_class"] == "intake_invalid"
+        assert not (out_root / "pr-brief.json").exists()
+
+
 def test_cli_rejects_unknown_schema_id(monkeypatch, tmp_path: Path) -> None:
     for key, value in _dev_env().items():
         monkeypatch.setenv(key, value)
@@ -670,6 +696,43 @@ def test_cli_emits_byte_identical_outputs_for_legacy_and_modern_envelopes(monkey
     assert (legacy_out / "chunk-payload-manifest.json").read_bytes() == (
         modern_out / "chunk-payload-manifest.json"
     ).read_bytes()
+
+
+def test_cli_never_produces_a_hybrid_intake_envelope_in_output(monkeypatch, tmp_path: Path) -> None:
+    """Issue #146 thread 6 -- the previous _load_intake reused the generic
+    _normalize_schema_envelope, which pops schema_id and sets schema_version
+    to the descriptive string; ReviewIntake.schema_id then defaults right
+    back in during model_validate, producing the invalid hybrid
+    {schema_id: "agent-review.intake.v1", schema_version:
+    "agent-review.intake.v1"} for BOTH legacy and modern input alike (which
+    is also why the byte-identical test above alone could not catch this --
+    both sides were equally, consistently wrong). Only two envelopes may
+    ever be embedded in the real build-payloads output: this test proves the
+    modern pair specifically, for both accepted input shapes."""
+
+    for key, value in _dev_env().items():
+        monkeypatch.setenv(key, value)
+    module = _load_script_module()
+
+    legacy_paths = _base_artifacts(tmp_path / "legacy")
+    legacy_out = tmp_path / "legacy-out"
+    legacy_result = _invoke(module, _args(legacy_paths, legacy_out))
+    _success_payload(legacy_result)
+
+    modern_paths = _base_artifacts(tmp_path / "modern")
+    modern_intake = json.loads(modern_paths["intake"].read_text(encoding="utf-8"))
+    modern_intake["schema_id"] = "agent-review.intake.v1"
+    modern_intake["schema_version"] = 1
+    _write_json(modern_paths["intake"], modern_intake)
+    modern_out = tmp_path / "modern-out"
+    modern_result = _invoke(module, _args(modern_paths, modern_out))
+    _success_payload(modern_result)
+
+    for out_root in (legacy_out, modern_out):
+        brief = json.loads((out_root / "pr-brief.json").read_text(encoding="utf-8"))
+        intake_ref = brief["inputs"]["intake"]
+        assert intake_ref["schema_id"] == "agent-review.intake.v1"
+        assert intake_ref["schema_version"] == 1
 
 
 def test_cli_does_not_call_network_router_or_provider(monkeypatch, tmp_path: Path) -> None:

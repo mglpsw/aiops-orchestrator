@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import socket
 
+import pytest
+
 from app.agent_review.semantic_chunker import (
+    IntakeValidationError,
     build_semantic_chunk_plan,
     classify_file,
     extract_files_from_intake,
+    validate_intake_contract,
 )
 
 
@@ -202,6 +206,59 @@ def test_semantic_chunker_accepts_the_new_schema_id_intake_without_the_limitatio
     plan = build_semantic_chunk_plan(intake)
 
     assert "intake_schema_id_missing" not in plan.limitations
+
+
+def test_validate_intake_contract_rejects_an_unsupported_integer_schema_version() -> None:
+    """Issue #146 thread 7 -- before this fix, the check only verified
+    isinstance(schema_version, int), so schema_id + schema_version=2 was
+    silently accepted (and callers reusing this function would have inherited
+    the same gap)."""
+
+    intake = _intake(["backend/api/notification_admin.py"])
+    intake.pop("schema_version")
+    intake["schema_id"] = "agent-review.intake.v1"
+    intake["schema_version"] = 2
+
+    with pytest.raises(IntakeValidationError) as exc_info:
+        validate_intake_contract(intake)
+
+    assert str(exc_info.value) == "intake_schema_version_invalid"
+
+
+def test_validate_intake_contract_rejects_an_integer_schema_version_without_a_schema_id() -> None:
+    """Codex review of PR #156 -- validate_intake_schema_envelope's
+    schema-less compatibility branch previously accepted ANY integer
+    schema_version (not just the documented descriptive string) once
+    schema_id was absent, via `elif isinstance(schema_version, int)`. That
+    let an unsupported version such as 2 through with no schema_id present
+    -- exactly the gap final_synthesizer.load_intake/quality_gate.load_intake
+    were newly exposed to once they started reusing this shared function."""
+
+    intake = _intake(["backend/api/notification_admin.py"])
+    intake["schema_version"] = 2
+
+    with pytest.raises(IntakeValidationError) as exc_info:
+        validate_intake_contract(intake)
+
+    assert str(exc_info.value) == "intake_schema_invalid"
+
+
+def test_validate_intake_contract_rejects_a_boolean_or_float_schema_version() -> None:
+    """Independent adversarial review of PR #156 -- `schema_version != 1`
+    alone would accept `True` (bool is a subclass of int in Python, and
+    `True == 1`) or `1.0` (float `==` int is also True) as if they were the
+    canonical integer 1."""
+
+    for sneaky_version in (True, 1.0):
+        intake = _intake(["backend/api/notification_admin.py"])
+        intake.pop("schema_version")
+        intake["schema_id"] = "agent-review.intake.v1"
+        intake["schema_version"] = sneaky_version
+
+        with pytest.raises(IntakeValidationError) as exc_info:
+            validate_intake_contract(intake)
+
+        assert str(exc_info.value) == "intake_schema_version_invalid"
 
 
 def test_a_real_review_intake_no_longer_carries_the_missing_schema_id_limitation() -> None:

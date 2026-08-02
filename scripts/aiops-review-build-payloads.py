@@ -235,15 +235,47 @@ def _load_raw_documents(paths: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _load_intake(path: Path) -> ReviewIntake:
     raw = _load_json_object(path, error_class="intake_invalid")
-    normalized = _normalize_schema_envelope(
-        raw,
-        expected_schema_id=INTAKE_SCHEMA,
-        error_class="intake_invalid",
-    )
+    normalized = _normalize_intake_schema_envelope(raw, error_class="intake_invalid")
     try:
         return ReviewIntake.model_validate(normalized)
     except ValidationError as exc:
         raise PayloadBuildCliError("intake_invalid", "intake structure is invalid") from exc
+
+
+def _normalize_intake_schema_envelope(raw: dict[str, Any], *, error_class: str) -> dict[str, Any]:
+    """Accept both the modern pair (``schema_id=INTAKE_SCHEMA``,
+    ``schema_version=1``) and the legacy bare form (no ``schema_id`` key,
+    ``schema_version=INTAKE_SCHEMA`` string), but always construct the
+    complete modern pair.
+
+    ``ReviewIntake.schema_id`` defaults to ``INTAKE_SCHEMA`` (schemas.py), so
+    every dict validated through the model unconditionally ends up with that
+    ``schema_id`` -- there is no way to construct a ``ReviewIntake`` object
+    that actually omits it. Reusing the generic ``_normalize_schema_envelope``
+    here (which pops ``schema_id`` and sets ``schema_version`` to the
+    descriptive string) would leave ``schema_version`` as that string while
+    Pydantic's default silently refills ``schema_id``, producing the invalid
+    hybrid ``{schema_id: INTAKE_SCHEMA, schema_version: INTAKE_SCHEMA-string}``
+    once re-serialized. Intake is normalized separately, atomically, straight
+    to the complete modern pair instead -- never a half-converted shape.
+    """
+    normalized = dict(raw)
+    if "schema_id" in raw:
+        schema_version = raw.get("schema_version")
+        # type(...) is int, not isinstance(...)/== alone, deliberately: bool
+        # is a subclass of int in Python (True == 1) and float compares
+        # equal across types (1.0 == 1), so a noncanonical schema_version:
+        # true or schema_version: 1.0 would otherwise pass this check and
+        # then be silently overwritten with the canonical integer 1 below,
+        # before Pydantic ever sees the original invalid value -- a Codex
+        # review of this same PR found this exact gap.
+        if raw.get("schema_id") != INTAKE_SCHEMA or type(schema_version) is not int or schema_version != 1:
+            raise PayloadBuildCliError(error_class, "input schema is invalid")
+    elif raw.get("schema_version") != INTAKE_SCHEMA:
+        raise PayloadBuildCliError(error_class, "input schema is invalid")
+    normalized["schema_id"] = INTAKE_SCHEMA
+    normalized["schema_version"] = 1
+    return normalized
 
 
 def _load_chunk_plan(path: Path) -> SemanticChunkPlan:

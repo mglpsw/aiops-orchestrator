@@ -90,8 +90,10 @@ from app.agent_review.payload_set_v2 import (
     PayloadSetV2,
     bind_payload_set_to_manifest_v2,
     compute_payload_set_sha256_v2,
+    verify_payload_set_sha256_v2,
 )
 
+PAYLOAD_SET_HASH_TAMPERED_REASON_V2 = "payload_set_hash_tampered"
 PAYLOAD_SET_DUPLICATE_PAYLOAD_REASON_V2 = "payload_set_duplicate_payload"
 PAYLOAD_SET_ENTRY_MISSING_PAYLOAD_REASON_V2 = "payload_set_entry_missing_payload"
 PAYLOAD_SET_EXTRA_PAYLOAD_REASON_V2 = "payload_set_extra_payload"
@@ -118,7 +120,28 @@ def bind_payload_set_to_payloads_v2(
 ) -> None:
     """Full cross-validation: ``payload_set`` <-> ``manifest`` <-> the REAL
     ``payloads`` it attests. See the module docstring for the exact
-    six-clause chain and each clause's reason code."""
+    six-clause chain and each clause's reason code.
+
+    As a FINAL check, after every structural clause below has already
+    passed, the payload set's OWN attestation hash is revalidated via
+    ``verify_payload_set_sha256_v2`` -- a ``PayloadSetV2`` is, like
+    ``ChunkPayloadV2``, a freely constructible plain object with no seal
+    proving it was built through its own constructor's hash validator
+    (e.g. a caller could hand in ``payload_set.model_copy(update=
+    {"payload_set_sha256": "0" * 64})``). This check runs LAST, not
+    first: `run_id`/`manifest_hash` tampering already invalidates the
+    set's own hash too (both fields are part of its preimage), so
+    checking the hash first would mask the more specific
+    ``PAYLOAD_SET_RUN_ID_MISMATCH_REASON_V2``/
+    ``PAYLOAD_SET_MANIFEST_HASH_MISMATCH_REASON_V2`` reason codes
+    ``bind_payload_set_to_manifest_v2`` already provides for those exact
+    cases (confirmed by reproduction: an earlier revision of this fix
+    checked the hash first and broke those two pre-existing regressions).
+    Placed last, this check is reached only when every other clause
+    already agrees the set matches its manifest and payloads -- exactly
+    the residual case a Codex review of #144 found uncovered: the
+    attestation hash itself forged while everything else still lines up.
+    A tampered set is rejected with ``PAYLOAD_SET_HASH_TAMPERED_REASON_V2``."""
 
     bind_payload_set_to_manifest_v2(payload_set, manifest)
 
@@ -145,6 +168,11 @@ def bind_payload_set_to_payloads_v2(
             raise PayloadSetBindingError(PAYLOAD_SET_PAYLOAD_CHUNK_ID_INCOHERENT_REASON_V2)
         if payload.identity.manifest_hash != manifest.identity.manifest_hash:
             raise PayloadSetBindingError(PAYLOAD_SET_PAYLOAD_MANIFEST_HASH_INCOHERENT_REASON_V2)
+
+    try:
+        verify_payload_set_sha256_v2(payload_set)
+    except Exception as exc:
+        raise PayloadSetBindingError(PAYLOAD_SET_HASH_TAMPERED_REASON_V2) from exc
 
 
 def emit_payload_set_v2(manifest: ManifestV2, payloads: Sequence[ChunkPayloadV2]) -> PayloadSetV2:

@@ -51,6 +51,18 @@ from app.agent_review.readiness_decision_v2 import ReadinessDecisionV2
 
 REVIEW_READINESS_SOURCE_V2 = "aiops-review-quality-gate"
 
+READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2 = "readiness_emission_decision_provenance_mismatch"
+
+
+class ReadinessEmissionError(ValueError):
+    """Raised when a `ReadinessDecisionV2` is emitted against an identity it
+    was not actually computed for. Carries a stable `reason_code` only --
+    never decision or identity content."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
 
 def emit_review_readiness_v2(
     *,
@@ -75,7 +87,21 @@ def emit_review_readiness_v2(
     re-implemented -- if the assembled combination does not satisfy
     ``ReviewReadinessV2.validate_state_invariants``. That validator is the
     authority; this function is not.
+
+    Before that, raises ``ReadinessEmissionError`` if ``decision``'s own
+    ``run_id``/``manifest_hash`` provenance does not match
+    ``evaluated_identity`` -- ``evaluated_identity`` is specifically the
+    identity the decision was actually computed against (the same one
+    C1's own ``compute_readiness_decision_v2`` received as ``manifest``),
+    never ``identity`` (which may deliberately diverge from it in the
+    ``STALE`` case). Without this check, a `ready` decision computed for
+    one run could be combined with an unrelated run's identity/findings/
+    checks at emission time with no invariant able to detect the replay --
+    a real gap a Codex review of #145 found.
     """
+
+    if decision.run_id != compute_run_id(evaluated_identity) or decision.manifest_hash != evaluated_identity.manifest_hash:
+        raise ReadinessEmissionError(READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2)
 
     return ReviewReadinessV2(
         schema_id="agent-review.review-readiness.v2",
