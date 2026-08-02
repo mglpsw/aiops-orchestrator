@@ -394,6 +394,72 @@ def test_insufficient_max_chunks_blocks_the_pipeline() -> None:
     assert outcome.blocked_reason.reason_code == RUN_ASSEMBLY_GROUP_PACKING_INFEASIBLE_REASON_V2
 
 
+def test_a_groups_own_auxiliary_content_never_starves_a_later_groups_required_coverage() -> None:
+    """Found by independent review of PR #142: an earlier-processed group's
+    OPTIONAL auxiliary content (which plan_lossless_chunks_v2 best-effort-
+    packs into any leftover bins) could consume bins far beyond what that
+    group's own required content needed, leaving a LATER group's required
+    content with no budget left -- an avoidable blocked_pipeline. The
+    "api_schema_contract" group here has one small required fragment (10
+    lines) plus two large auxiliary fragments (100 lines each, each needing
+    its own bin at this budget); with max_chunks=3 that alone would consume
+    all 3 chunks, starving the "tests" group's own single required
+    fragment. Assembly must still succeed: auxiliary content must never
+    grow a group's bin count beyond what its own required content needs."""
+
+    file_diffs = [
+        _file_diff(path="api/required.py", hunks=(_hunk(old_start=1, old_lines=10, new_start=1, new_lines=10, seed="req1"),)),
+        _file_diff(path="api/aux1.py", hunks=(_hunk(old_start=1, old_lines=100, new_start=1, new_lines=100, seed="aux1"),)),
+        _file_diff(path="api/aux2.py", hunks=(_hunk(old_start=1, old_lines=100, new_start=1, new_lines=100, seed="aux2"),)),
+        _file_diff(path="tests/required_test.py", hunks=(_hunk(old_start=1, old_lines=10, new_start=1, new_lines=10, seed="req2"),)),
+    ]
+    policy = _policy(
+        rules=[
+            _rule(rule_id="api", semantic_group=SemanticGroupV2.API_SCHEMA_CONTRACT, path_patterns=["api/*.py"], priority=1),
+            _rule(rule_id="tests", semantic_group=SemanticGroupV2.TESTS, path_patterns=["tests/*.py"], priority=1),
+        ]
+    )
+    profile = _profile(
+        max_chunks=3,
+        must_review_paths=["api/required.py", "tests/required_test.py"],
+        allowed_semantic_groups=["api_schema_contract", "tests"],
+    )
+    outcome = _assemble(file_diffs=file_diffs, profile=profile, grouping_policy=policy)
+    assert outcome.state == "assembled"
+    assert "api/required.py" in outcome.manifest.expected_files
+    assert "tests/required_test.py" in outcome.manifest.expected_files
+
+
+def test_a_pure_auxiliary_group_with_no_required_content_still_behaves_as_before() -> None:
+    """The auxiliary-starvation fix only caps a group's OWN auxiliary
+    content against its OWN required need. A group with zero must-review
+    hunks anywhere carries no coverage obligation to protect and keeps its
+    original behavior (full access to the remaining budget) -- confirming
+    the fix did not regress the common case where must_review is not
+    configured at all."""
+
+    file_diff = _file_diff(path="app/a.py", hunks=(_hunk(old_start=1, old_lines=5, new_start=1, new_lines=5, seed="a"),))
+    outcome = _assemble(file_diffs=[file_diff], profile=_profile(), grouping_policy=_single_group_policy())
+    assert outcome.state == "assembled"
+    assert outcome.manifest.expected_files == ["app/a.py"]
+
+
+def test_a_semantic_grouping_policy_incompatible_with_the_profile_raises_run_assembly_error() -> None:
+    """Found by independent review of PR #142: the top-level
+    bind_semantic_grouping_policy_to_target_profile_v2 call was unwrapped,
+    leaking a raw SemanticGroupingError instead of this module's own
+    RunAssemblyError -- breaking the module's own documented contract that
+    every configuration/input defect surfaces as RunAssemblyError."""
+
+    file_diff = _file_diff(path="app/a.py", hunks=(_hunk(old_start=1, old_lines=5, new_start=1, new_lines=5, seed="a"),))
+    incompatible_policy = _policy(
+        rules=[_rule(rule_id="all", semantic_group=SemanticGroupV2.TESTS, path_patterns=["*"])]
+    )
+    profile = _profile(allowed_semantic_groups=["primary_backend_logic"])  # excludes "tests"
+    with pytest.raises(RunAssemblyError):
+        _assemble(file_diffs=[file_diff], profile=profile, grouping_policy=incompatible_policy)
+
+
 # -- no repository-name branching -------------------------------------------------
 
 

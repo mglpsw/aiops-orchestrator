@@ -194,7 +194,10 @@ def assemble_manifest_from_diff_v2(
     nothing external to compare against.
     """
 
-    bind_semantic_grouping_policy_to_target_profile_v2(grouping_policy, profile)
+    try:
+        bind_semantic_grouping_policy_to_target_profile_v2(grouping_policy, profile)
+    except SemanticGroupingError as exc:
+        raise RunAssemblyError(exc.reason_code) from exc
 
     must_review_explicit = _resolve_must_review_paths(profile)
     must_review_patterns = tuple(profile.must_review.patterns)
@@ -268,6 +271,8 @@ def assemble_manifest_from_diff_v2(
 
     for group in sorted(hunks_by_group):
         group_hunks = hunks_by_group[group]
+        required_hunks = [hunk for hunk in group_hunks if hunk.must_review]
+
         if remaining_budget < 1:
             return ManifestAssemblyOutcomeV2(
                 state="blocked_pipeline",
@@ -282,27 +287,89 @@ def assemble_manifest_from_diff_v2(
                     ),
                 ),
             )
-        outcome = plan_lossless_chunks_v2(
-            group_hunks,
-            semantic_group=group,
-            max_lines_per_chunk=max_lines_per_chunk,
-            max_chunks=remaining_budget,
-            chunk_id_prefix=f"chunk-{group}",
-        )
-        if outcome.state == "blocked_pipeline":
-            return ManifestAssemblyOutcomeV2(
-                state="blocked_pipeline",
-                manifest=None,
-                excluded_paths=(),
-                blocked_reason=AssemblyBlockedReasonV2(
-                    reason_code=RUN_ASSEMBLY_GROUP_PACKING_INFEASIBLE_REASON_V2,
-                    affected_paths=tuple(sorted({hunk.path for hunk in group_hunks})),
-                    detail=(
-                        f"semantic group {group!r} could not be packed within its remaining "
-                        f"chunk budget of {remaining_budget}"
-                    ),
-                ),
+
+        if not required_hunks:
+            # No coverage obligation in this group at all: behaves exactly
+            # as before this fix (full access to the remaining budget,
+            # first-come-first-served in sorted-group order). This is the
+            # ALREADY-documented "not globally optimal" cross-group
+            # allocation trade-off -- a purely auxiliary group could, in
+            # principle, still leave less budget for a later group's
+            # required content, same as any other group ordering choice.
+            # What this fix closes is the MORE surprising case just below:
+            # a group's OWN auxiliary content outgrowing its OWN required
+            # content's real need.
+            outcome = plan_lossless_chunks_v2(
+                group_hunks,
+                semantic_group=group,
+                max_lines_per_chunk=max_lines_per_chunk,
+                max_chunks=remaining_budget,
+                chunk_id_prefix=f"chunk-{group}",
             )
+            if outcome.state == "blocked_pipeline":
+                return ManifestAssemblyOutcomeV2(
+                    state="blocked_pipeline",
+                    manifest=None,
+                    excluded_paths=(),
+                    blocked_reason=AssemblyBlockedReasonV2(
+                        reason_code=RUN_ASSEMBLY_GROUP_PACKING_INFEASIBLE_REASON_V2,
+                        affected_paths=tuple(sorted({hunk.path for hunk in group_hunks})),
+                        detail=(
+                            f"semantic group {group!r} could not be packed within its remaining "
+                            f"chunk budget of {remaining_budget}"
+                        ),
+                    ),
+                )
+        else:
+            # Required-only pass: determine the true minimum bin count this
+            # group's must-review content needs, ignoring auxiliary
+            # entirely.
+            required_outcome = plan_lossless_chunks_v2(
+                required_hunks,
+                semantic_group=group,
+                max_lines_per_chunk=max_lines_per_chunk,
+                max_chunks=remaining_budget,
+                chunk_id_prefix=f"chunk-{group}",
+            )
+            if required_outcome.state == "blocked_pipeline":
+                return ManifestAssemblyOutcomeV2(
+                    state="blocked_pipeline",
+                    manifest=None,
+                    excluded_paths=(),
+                    blocked_reason=AssemblyBlockedReasonV2(
+                        reason_code=RUN_ASSEMBLY_GROUP_PACKING_INFEASIBLE_REASON_V2,
+                        affected_paths=tuple(sorted({hunk.path for hunk in group_hunks})),
+                        detail=(
+                            f"semantic group {group!r} could not be packed within its remaining "
+                            f"chunk budget of {remaining_budget}"
+                        ),
+                    ),
+                )
+            required_bins = len(required_outcome.chunks)
+
+            # Full pass: required + auxiliary hunks together, but capped to
+            # EXACTLY required_bins -- auxiliary can only use leftover room
+            # inside bins required content already claimed, never an extra
+            # bin (plan_lossless_chunks_v2 only grows bin count for
+            # auxiliary while `len(bins) < max_chunks`, which is now
+            # already false). Found by independent review: without this
+            # cap, a group's own optional auxiliary content could consume
+            # bins far beyond what its own required content needed,
+            # starving a LATER group's required content of shared global
+            # budget -- an avoidable blocked_pipeline. Guaranteed to still
+            # succeed: the required subset and max_chunks are identical to
+            # the required-only pass above, so the same deterministic exact
+            # packer proves the same feasibility again.
+            outcome = plan_lossless_chunks_v2(
+                group_hunks,
+                semantic_group=group,
+                max_lines_per_chunk=max_lines_per_chunk,
+                max_chunks=required_bins,
+                chunk_id_prefix=f"chunk-{group}",
+            )
+            if outcome.state == "blocked_pipeline":
+                raise RunAssemblyError("run_assembly_internal_required_repack_inconsistency")
+
         all_fragments.extend(outcome.fragments)
         for chunk in outcome.chunks:
             all_chunks.append(
