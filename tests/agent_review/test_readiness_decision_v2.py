@@ -27,6 +27,7 @@ from app.agent_review.manifest_v2 import (
 )
 from app.agent_review.readiness_decision_v2 import (
     COVERAGE_BRIDGE_MIXED_DEGRADATION_REASON_V2,
+    COVERAGE_BRIDGE_UNKNOWN_DEGRADATION_REASON_V2,
     READINESS_INVALID_STALE_REASON_CODES_REASON_V2,
     READINESS_SYNTHESIS_MANIFEST_RUN_ID_MISMATCH_REASON_V2,
     ReadinessDecisionError,
@@ -549,3 +550,58 @@ def test_bridge_fails_closed_on_a_run_mixing_a_plain_split_with_an_unrelated_deg
     with pytest.raises(ReadinessDecisionError) as excinfo:
         bridge_fragment_coverage_to_chunk_coverage_v2(coverage_report=report, manifest=manifest)
     assert excinfo.value.reason_code == COVERAGE_BRIDGE_MIXED_DEGRADATION_REASON_V2
+
+
+def test_bridge_fails_closed_on_an_unmapped_manifest_degradation_reason() -> None:
+    """Found by independent review: the manifest-to-coverage degradation
+    reason mapping is a bare dict lookup with no fallback. It is exhaustive
+    over manifest_v2.DegradationReasonValueV2's current 7 literal values
+    today (so this is unreachable through any manifest a real ManifestV2
+    constructor accepts), but must still fail closed with a named reason
+    code -- not a bare KeyError -- if that literal is ever extended without
+    updating the mapping here. ManifestDegradationV2.model_construct
+    bypasses its own Literal validation to simulate exactly that future
+    case without waiting for it to actually happen."""
+
+    path = "app/a.py"
+    fragment = _fragment(path=path, seed=b"unmapped-reason", start=1)
+    material_kwargs = {
+        "schema_id": "agent-review.manifest.v2",
+        "schema_version": 2,
+        "source": "aiops-review-plan-chunks-v2",
+        "expected_files": [path],
+        "must_review_files": [path],
+        "fragments": [fragment],
+        "chunks": [],
+        "max_chunks": 10,
+        "degradation_causes": [
+            ManifestDegradationV2.model_construct(
+                reason_code="a_future_reason_not_yet_mapped",
+                affected_fragment_ids=[fragment.fragment_id],
+                detail="simulates a manifest_v2 literal value added without updating this module",
+            )
+        ],
+    }
+    material = ManifestMaterialV2.model_construct(**material_kwargs)
+    manifest_hash = compute_manifest_hash_v2_for(material)
+    identity = RunIdentityV2.model_validate(_identity(manifest_hash=manifest_hash))
+    manifest = ManifestV2.model_construct(
+        **material_kwargs, run_id=compute_run_id(identity), identity=identity
+    )
+
+    entry = RunFragmentCoverageEntryV2(
+        path=path,
+        expected_fragment_ids=[fragment.fragment_id],
+        assigned_fragment_ids=[],
+        reviewed_fragment_ids=[],
+        partially_reviewed_fragment_ids=[],
+        missing_fragment_ids=[fragment.fragment_id],
+        affected_chunk_ids=[],
+        status=FragmentCoverageStatusV2.MISSING,
+        reason_codes=[FragmentCoverageReasonV2.FRAGMENT_DEGRADED],
+    )
+    report = _report(manifest=manifest, entries=[entry])
+
+    with pytest.raises(ReadinessDecisionError) as excinfo:
+        bridge_fragment_coverage_to_chunk_coverage_v2(coverage_report=report, manifest=manifest)
+    assert excinfo.value.reason_code == COVERAGE_BRIDGE_UNKNOWN_DEGRADATION_REASON_V2

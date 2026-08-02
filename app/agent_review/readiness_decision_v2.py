@@ -118,6 +118,7 @@ from app.agent_review.synthesis_v2 import SynthesisResultV2
 READINESS_SYNTHESIS_MANIFEST_RUN_ID_MISMATCH_REASON_V2 = "readiness_synthesis_manifest_run_id_mismatch"
 READINESS_INVALID_STALE_REASON_CODES_REASON_V2 = "readiness_invalid_stale_reason_codes"
 COVERAGE_BRIDGE_MIXED_DEGRADATION_REASON_V2 = "readiness_coverage_bridge_mixed_degradation_and_plain_partial"
+COVERAGE_BRIDGE_UNKNOWN_DEGRADATION_REASON_V2 = "readiness_coverage_bridge_unknown_manifest_degradation_reason"
 
 _ALLOWED_STALE_REASON_CODES_V2 = frozenset({ReadinessReasonV2.HEAD_MISMATCH, ReadinessReasonV2.IDENTITY_MISMATCH})
 
@@ -211,6 +212,13 @@ def bridge_fragment_coverage_to_chunk_coverage_v2(
     missing_must_review_files = [p for p in must_review_files if p in non_complete]
 
     fragment_path_by_id = {fragment.fragment_id: fragment.path for fragment in manifest.fragments}
+    # The `.get(...) -> None -> skip` pattern here and below is defensive
+    # but, verified by independent review, provably unreachable today:
+    # ManifestMaterialV2.validate_material (manifest_v2.py, already frozen)
+    # rejects any manifest whose degradation_causes reference a
+    # fragment_id outside manifest.fragments before a ManifestV2 can even
+    # be constructed. Kept as defense in depth, not because a dangling
+    # reference is believed reachable through this module's own inputs.
     caused_paths: set[str] = set()
     for cause in manifest.degradation_causes:
         for fragment_id in cause.affected_fragment_ids:
@@ -228,7 +236,15 @@ def bridge_fragment_coverage_to_chunk_coverage_v2(
         files_by_reason: dict[CoverageDegradationReasonV2, set[str]] = {}
         details_by_reason: dict[CoverageDegradationReasonV2, set[str]] = {}
         for cause in manifest.degradation_causes:
-            mapped_reason = _MANIFEST_TO_COVERAGE_DEGRADATION_REASON_V2[cause.reason_code]
+            mapped_reason = _MANIFEST_TO_COVERAGE_DEGRADATION_REASON_V2.get(cause.reason_code)
+            if mapped_reason is None:
+                # Fail closed with a named reason code rather than a bare
+                # KeyError: _MANIFEST_TO_COVERAGE_DEGRADATION_REASON_V2 is
+                # exhaustive over manifest_v2.DegradationReasonValueV2's
+                # current 7 literal values today, but this module must not
+                # silently crash uninformatively if that literal is ever
+                # extended without updating the mapping here.
+                raise ReadinessDecisionError(COVERAGE_BRIDGE_UNKNOWN_DEGRADATION_REASON_V2)
             cause_paths = {
                 fragment_path_by_id[fragment_id]
                 for fragment_id in cause.affected_fragment_ids
