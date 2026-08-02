@@ -172,6 +172,18 @@ def canonical_semantic_grouping_policy_bytes_v2(
         raw.pop("policy_sha256", None)
         material = SemanticGroupingPolicyMaterialV2.model_validate(raw).model_dump(mode="json")
 
+    material = {**material, "rules": _canonical_semantic_grouping_rules_v2(material["rules"])}
+    return _canonical_json_bytes_v2(material)
+
+
+def _canonical_semantic_grouping_rules_v2(rules: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Shared by ``canonical_semantic_grouping_policy_bytes_v2`` and
+    ``canonical_effective_policy_bytes_v2`` -- both hash a dumped ``rules``
+    list and both must be independent of its construction order, at both the
+    top level (list of rules) and one level deeper (each rule's own
+    ``path_patterns``/``contract_ids``/``artifact_ids``, already validated
+    duplicate-free/unordered sets by ``SemanticGroupingRuleV2.validate_rule``)."""
+
     def _canonical_rule(rule: Mapping[str, object]) -> dict[str, object]:
         return {
             **rule,
@@ -180,11 +192,7 @@ def canonical_semantic_grouping_policy_bytes_v2(
             "artifact_ids": sorted(rule["artifact_ids"]),
         }
 
-    material = {
-        **material,
-        "rules": sorted((_canonical_rule(rule) for rule in material["rules"]), key=lambda rule: rule["rule_id"]),
-    }
-    return _canonical_json_bytes_v2(material)
+    return sorted((_canonical_rule(rule) for rule in rules), key=lambda rule: rule["rule_id"])
 
 
 def compute_semantic_grouping_policy_sha256_v2(
@@ -310,6 +318,17 @@ def canonical_effective_policy_bytes_v2(bundle: EffectivePolicyBundleV2) -> byte
     already-merged, frozen code) is explicitly out of scope for this issue,
     which forbids silently changing its semantics; this sort applies only
     to the bytes THIS function hashes.
+
+    ``semantic_grouping_policy.rules`` (and each rule's own internal lists)
+    are canonicalized the SAME way here as in
+    ``canonical_semantic_grouping_policy_bytes_v2`` -- found by a follow-up
+    independent review: ``bundle.model_dump()`` re-embeds the raw,
+    unsorted ``rules`` list alongside the already order-independent
+    ``policy_sha256``, so two policies with an IDENTICAL ``policy_sha256``
+    but rules (or a rule's internal lists) constructed in a different order
+    still produced a different effective hash before this fix -- confirmed
+    directly. Reusing ``_canonical_semantic_grouping_rules_v2`` keeps both
+    call sites' canonicalization from silently drifting apart.
     """
 
     dumped = bundle.model_dump(mode="json")
@@ -317,6 +336,10 @@ def canonical_effective_policy_bytes_v2(bundle: EffectivePolicyBundleV2) -> byte
         **dumped["target_policies"],
         "required_checks": sorted(dumped["target_policies"]["required_checks"]),
         "allowed_semantic_groups": sorted(dumped["target_policies"]["allowed_semantic_groups"]),
+    }
+    dumped["semantic_grouping_policy"] = {
+        **dumped["semantic_grouping_policy"],
+        "rules": _canonical_semantic_grouping_rules_v2(dumped["semantic_grouping_policy"]["rules"]),
     }
     return _canonical_json_bytes_v2(dumped)
 

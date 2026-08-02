@@ -381,6 +381,29 @@ def test_compute_effective_policy_hash_v2_is_independent_of_target_policies_list
     )
 
 
+def test_compute_effective_policy_hash_v2_is_independent_of_the_grouping_policys_rule_order() -> None:
+    """Found by a follow-up independent review: bundle.model_dump() re-embeds
+    the raw, unsorted semantic_grouping_policy.rules list alongside the
+    already order-independent policy_sha256, so two policies with an
+    IDENTICAL policy_sha256 but rules constructed in a different order (or
+    a rule's own internal lists in a different order) still produced a
+    different effective hash. This must vary rule order/internal-list
+    order while holding policy_sha256 equal -- the earlier
+    ...target_policies_list_order test reused the same single-rule policy
+    for both sides and could not have caught this."""
+
+    rule_a = _rule(rule_id="r1", semantic_group=SemanticGroupV2.API_SCHEMA_CONTRACT, path_patterns=["app/*.py"], priority=1)
+    rule_b = _rule(rule_id="r2", semantic_group=SemanticGroupV2.TESTS, path_patterns=["tests/*.py"], priority=2)
+    forward = _policy(rules=[rule_a, rule_b])
+    backward = _policy(rules=[rule_b, rule_a])
+    assert forward.policy_sha256 == backward.policy_sha256
+
+    profile = _target_profile()
+    assert compute_effective_policy_hash_v2(profile.policies, forward) == compute_effective_policy_hash_v2(
+        profile.policies, backward
+    )
+
+
 def test_compute_policy_hash_v2_semantics_are_unchanged_by_this_module() -> None:
     """Issue #106's own requirement: profile_loader_v2.compute_policy_hash_v2
     must not be silently redefined -- it keeps hashing profile.policies
