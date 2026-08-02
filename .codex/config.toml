@@ -1,0 +1,40 @@
+# Project-scoped Codex configuration for mglpsw/aiops-orchestrator (issue #87).
+#
+# Governs LOCAL Codex CLI/VS Code usage against this repository only. Does
+# NOT configure the separate GitHub-hosted "@codex review" surface (see
+# docs/CODEX_REVIEW_WORKFLOW.md for that).
+#
+# Central rule (see the root AGENTS.md and docs/CODEX_REVIEW_WORKFLOW.md):
+# Codex observes and proposes. AIOps AgentReview validates contracts,
+# binding, coverage, and lifecycle. The quality gate (review-quality-gate.json
+# for v1, ReviewReadinessV2 for v2) remains the only automatic authority.
+# Codex output is never a required check and never merges, deploys, or
+# remediates anything by itself.
+
+[projects."."]
+# Read-only by default: no code execution, no filesystem writes, no network,
+# unless a human explicitly re-runs a specific command with different
+# settings for a specific, scoped investigation.
+approval_policy = "untrusted"
+sandbox_mode = "read-only"
+
+[projects.".".sandbox_workspace_write]
+network_access = false
+
+# The four read-only subagents this issue defines. Each has ONE
+# responsibility; none may overlap another's. See .codex/agents/*.toml for
+# the per-agent scope and docs/CODEX_REVIEW_WORKFLOW.md for how to invoke
+# them together via the local /review recipe.
+[agents]
+paths = [
+    "agents/contract-reviewer.toml",
+    "agents/trust-boundary-reviewer.toml",
+    "agents/test-reviewer.toml",
+    "agents/target-integration-reviewer.toml",
+]
+
+# Recommended initial parallelism: 3-4 agents at once, prioritizing
+# independent read-only investigation over concurrent writes. None of these
+# agents write, so this is a throughput/cost knob, not a safety one.
+[agents.defaults]
+max_parallel = 4
