@@ -1,0 +1,20 @@
+# Synthetic domain-contract fixture for AgentReview v2's dual-target
+# conformance suite (issue #86). Represents, only illustratively, the KIND
+# of tenancy/clinical-axis separation a real clinical-operational domain
+# contract might declare -- not real InterLeitos product logic, and never
+# a source of clinical or regulatory authority.
+rules:
+  - id: tenancy-deny-by-default
+    description: >
+      Synthetic, illustrative rule only: cross-institution access is
+      denied by default; no summation of separate role/permission grants
+      may imply a broader one.
+  - id: clinical-axes-separated
+    description: >
+      Synthetic, illustrative rule only: clinical, regulatory, logistic,
+      and communication axes are represented and reasoned about
+      separately, never merged into one undifferentiated status.
+  - id: no-review-finding-creates-clinical-authority
+    description: >
+      Synthetic, illustrative rule only: no AgentReview finding or status
+      ever creates clinical or regulatory authority on its own.

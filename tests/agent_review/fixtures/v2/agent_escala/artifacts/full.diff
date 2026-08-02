@@ -1,0 +1,10 @@
+This is a synthetic, fully fabricated artifact used only to exercise
+AgentReview v2's dual-target conformance suite (issue #86). It contains no
+real AgentEscala product content, no real diff, and no secrets.
+
+The actual synthetic hunks exercised by the conformance suite are
+constructed directly as ParsedFileDiffV2/ParsedHunkV2 objects in
+tests/agent_review/test_v2_dual_target_e2e.py, mirroring the pattern
+already established by issue #129's own test suite -- this file exists
+only so profile.artifacts' required "full-diff" artifact reference has
+real on-disk content to sanitize and hash.
