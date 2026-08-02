@@ -1,0 +1,30 @@
+# Project-scoped Codex configuration for mglpsw/aiops-orchestrator (issue #87).
+#
+# Governs LOCAL Codex CLI/VS Code usage against this repository only. Does
+# NOT configure the separate GitHub-hosted "@codex review" surface (see
+# docs/CODEX_REVIEW_WORKFLOW.md for that).
+#
+# Central rule (see the root AGENTS.md and docs/CODEX_REVIEW_WORKFLOW.md):
+# Codex observes and proposes. AIOps AgentReview validates contracts,
+# binding, coverage, and lifecycle. The quality gate (review-quality-gate.json
+# for v1, ReviewReadinessV2 for v2) remains the only automatic authority.
+# Codex output is never a required check and never merges, deploys, or
+# remediates anything by itself.
+
+[projects."."]
+# Read-only by default: no code execution, no filesystem writes, no network,
+# unless a human explicitly re-runs a specific command with different
+# settings for a specific, scoped investigation.
+approval_policy = "untrusted"
+sandbox_mode = "read-only"
+
+[projects.".".sandbox_workspace_write]
+network_access = false
+
+# The four read-only subagents this issue defines
+# (contract-reviewer/trust-boundary-reviewer/test-reviewer/
+# target-integration-reviewer, each with ONE non-overlapping
+# responsibility) are auto-discovered by Codex directly from
+# .codex/agents/*.toml -- no separate registration here. See
+# docs/CODEX_REVIEW_WORKFLOW.md for the per-agent scope and the local
+# /review recipe that invokes them together.
