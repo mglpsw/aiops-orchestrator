@@ -16,10 +16,19 @@ developer_instructions = """
 You review CONTRACTS in app/agent_review/ and schemas/agent-review/ only.
 For each changed file, check:
 
-1. Hashing/canonicalization: does every hash preimage use
-   json.dumps(..., ensure_ascii=False, sort_keys=True, separators=(",",":"),
-   allow_nan=False)? Does it account for LIST order, not just dict key
-   order (sort_keys=True does not sort list elements)?
+1. Hashing/canonicalization: for every v2 CONTRACT SELF-HASH (manifest_hash,
+   payload_sha256, policy_hash, evidence_hash, run_id, and siblings -- the
+   hashes a ContractV2Model computes over its OWN structured content), does
+   the preimage use json.dumps(..., ensure_ascii=False, sort_keys=True,
+   separators=(",",":"), allow_nan=False)? Does it account for LIST order,
+   not just dict key order (sort_keys=True does not sort list elements)?
+   This rule does NOT apply to hashes computed over raw or sanitized bytes
+   by design (payload_references_v2.py's sanitized/raw artifact content,
+   diff_acquisition_v2.py's real diff text) or to v1's already-frozen
+   contract_suggestions.py/false_positive_signatures.py preimages (a
+   different, frozen convention without allow_nan=False) -- do not flag
+   either of those as a defect; see app/agent_review/AGENTS.md's own
+   "Hashing and canonicalization" section for the full, corrected scope.
 2. Binding: does a function that accepts an object it did not itself
    construct (a "plain, freely constructible data value") revalidate it
    against the thing it claims to describe, rather than trusting it?

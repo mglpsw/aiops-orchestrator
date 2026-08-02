@@ -42,6 +42,14 @@ already-frozen preimage (no `allow_nan=False`) — do not treat a difference
 from the v2 convention above as a defect in that v1 code, and do not
 propose changing a frozen v1 identifier or evidence hash to match it.
 
+**Keep `.codex/agents/contract-reviewer.toml`'s hashing question in sync
+with this exact scope.** An earlier version of that delegated subagent's
+prompt asked the broader, pre-correction question ("does every hash
+preimage use json.dumps(...)?"), which kept producing false positives
+against the raw-byte and frozen-v1 hash sites above even after this
+section was corrected — any future change to this rule must be carried
+into that prompt too, not just here.
+
 `sort_keys=True` only normalizes **dict key order** — it does nothing for
 **list element order**. Any list whose element order is not semantically
 significant (e.g. a set of rules, a set of required checks) must be sorted
