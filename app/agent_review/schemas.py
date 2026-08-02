@@ -125,7 +125,29 @@ class RedactionReport(BaseModel):
 
 
 class ReviewIntake(BaseModel):
-    schema_version: str = INTAKE_SCHEMA
+    # schema_id + integer schema_version is the canonical form
+    # semantic_chunker.validate_intake_contract expects (issue #111):
+    # AgentEscala#675's acceptance criterion #1. The prior canonical form
+    # -- schema_version holding this same string, no schema_id field at
+    # all -- is still accepted during the compatibility window (see
+    # validate_intake_contract's own elif branch), just flagged with the
+    # intake_schema_id_missing limitation it always carried.
+    #
+    # schema_version stays `str | int`, not a hard `int`: scripts/aiops-review-
+    # build-payloads.py's own _normalize_schema_envelope already converts an
+    # incoming schema_id-bearing document's schema_version back to this
+    # descriptive STRING before calling ReviewIntake.model_validate (written
+    # in anticipation of this exact fix) -- so the Pydantic field must keep
+    # accepting the string form even for a "new-shape" document. A permissive
+    # union preserves every existing construction path (old-style raw dicts
+    # built directly with the historical string value) while still letting a
+    # freshly constructed default (`ReviewIntake()`, e.g. cli.py's own call
+    # site, which never sets either field explicitly) emit the new canonical
+    # int form. This default change does not retroactively alter the
+    # `13695c73` pin already in live use, which continues emitting the prior
+    # form until it repins.
+    schema_id: str = INTAKE_SCHEMA
+    schema_version: str | int = 1
     source: str = "aiops-review-intake"
     target_repo: str
     target_profile: dict[str, Any]

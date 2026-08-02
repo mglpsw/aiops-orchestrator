@@ -451,7 +451,23 @@ def _validate_optional_artifact(raw: dict[str, Any], *, name: str) -> dict[str, 
         raise TelemetryError(f"artifact_schema_id_mismatch:{name}", "optional artifact schema_id is incompatible")
     if raw_schema_id is None and raw_schema_version not in {schema_id, schema_version}:
         raise TelemetryError(f"artifact_schema_id_mismatch:{name}", "optional artifact schema_id is incompatible")
-    if raw_schema_version != schema_version:
+    # Issue #111: "intake" may legitimately carry schema_id + an INTEGER
+    # schema_version (the new canonical form closing AgentEscala#675's
+    # acceptance criterion #1) instead of the descriptive-string
+    # schema_version this validator otherwise expects for "intake"/
+    # "redaction_report" (whose (schema_id, schema_version) tuple above
+    # uses the same string for both, unlike the int-versioned
+    # "chunk_results"/"chunk_plan"). Once schema_id is present and already
+    # confirmed correct above, "intake" specifically accepts
+    # schema_version == 1; every other artifact kind keeps the
+    # unconditional descriptive-string/int check unchanged.
+    if raw_schema_id is not None and name == "intake":
+        if raw_schema_version != 1:
+            raise TelemetryError(
+                f"artifact_schema_version_mismatch:{name}",
+                "optional artifact schema_version is incompatible",
+            )
+    elif raw_schema_version != schema_version:
         raise TelemetryError(
             f"artifact_schema_version_mismatch:{name}",
             "optional artifact schema_version is incompatible",

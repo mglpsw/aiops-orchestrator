@@ -197,6 +197,73 @@ def test_review_telemetry_collects_authoritative_gate_and_metrics() -> None:
     assert telemetry.performance["bundle_chars"] == 1234
 
 
+def _intake(**overrides: object) -> dict[str, object]:
+    raw: dict[str, object] = {
+        "source": "aiops-review-intake",
+        "target_repo": "mglpsw/AgentEscala",
+        "target_profile": {},
+        "artifacts": {},
+        "artifact_status": [],
+        "redaction_summary": {"schema_version": "agent-review.redaction-report.v1"},
+        "limitations": [],
+        "completeness": {},
+        "created_at": "2026-06-02T00:00:00Z",
+        "status": "complete",
+    }
+    raw.update(overrides)
+    return raw
+
+
+def test_validate_optional_artifact_accepts_the_new_schema_id_intake_form() -> None:
+    """Issue #111: telemetry's own optional-artifact validator
+    (_validate_optional_artifact, exercised by load_optional_artifact on
+    the real file-loading path scripts/aiops-review-telemetry.py uses --
+    NOT by build_review_telemetry, which trusts its caller already
+    validated) had a latent bug: it unconditionally compared
+    schema_version against the descriptive string INTAKE_SCHEMA even when
+    schema_id was present (the new canonical form uses an integer
+    schema_version instead), always raising
+    artifact_schema_version_mismatch for a real, freshly built intake.
+    Confirmed red-first (temporarily reverted, this exact call raised
+    TelemetryError), fixed in the same change."""
+
+    from app.agent_review.telemetry import _validate_optional_artifact
+
+    intake = _intake(schema_id="agent-review.intake.v1", schema_version=1)
+    validated = _validate_optional_artifact(intake, name="intake")
+    assert validated["schema_id"] == "agent-review.intake.v1"
+    assert validated["schema_version"] == 1
+
+
+def test_validate_optional_artifact_still_accepts_the_prior_string_schema_version_intake_form() -> None:
+    """Backward compatibility, preserved during the #111 compat window:
+    the prior canonical form (schema_version holding the descriptive
+    string, no schema_id) must keep working exactly as before -- this
+    path was never buggy, only the schema_id-present branch was."""
+
+    from app.agent_review.telemetry import _validate_optional_artifact
+
+    intake = _intake(schema_version="agent-review.intake.v1")
+    validated = _validate_optional_artifact(intake, name="intake")
+    assert validated["schema_version"] == "agent-review.intake.v1"
+
+
+def test_load_optional_artifact_end_to_end_accepts_the_new_schema_id_intake_form(tmp_path: Path) -> None:
+    """The real, file-based path scripts/aiops-review-telemetry.py
+    actually uses -- not just the internal validator function directly."""
+
+    from app.agent_review.telemetry import load_optional_artifact
+
+    intake_path = tmp_path / "intake.json"
+    intake_path.write_text(
+        json.dumps(_intake(schema_id="agent-review.intake.v1", schema_version=1)), encoding="utf-8"
+    )
+    document, limitations = load_optional_artifact(intake_path, name="intake")
+    assert limitations == []
+    assert document is not None
+    assert document["schema_id"] == "agent-review.intake.v1"
+
+
 def test_review_telemetry_warns_on_artifact_divergence_without_recalculating_gate() -> None:
     final_review = _final_review(
         verdict="approved",
