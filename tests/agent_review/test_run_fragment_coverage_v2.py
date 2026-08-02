@@ -869,6 +869,176 @@ def test_bind_rejects_an_entry_that_overreports_affected_chunk_ids() -> None:
     assert excinfo.value.reason_code == AFFECTED_CHUNK_SET_MISMATCH_REASON_V2
 
 
+# -- issue #116: a manifest-degraded fragment COMBINED with a real --------
+# -- multi-chunk split on the SAME path. _build_manifest_with_degradation --
+# -- always uses a single chunk; _build_manifest_with_a_two_chunk_split_- --
+# -- path never uses degradation -- this combination was never exercised. -
+
+
+def _build_manifest_with_a_two_chunk_split_and_a_degraded_fragment() -> tuple[ManifestV2, str, str, str]:
+    """One path, three fragments: two real ones genuinely assigned to two
+    DIFFERENT chunks (a real structural split), plus a third that is
+    coverage_required and explicitly degraded -- assigned to no chunk,
+    accounted for by a ManifestDegradationV2 cause. Returns
+    (manifest, fragment_in_chunk_0, fragment_in_chunk_1, degraded_fragment)."""
+
+    from app.agent_review.manifest_v2 import FragmentV2, LineRangeV2, compute_fragment_id_v2
+
+    def _fragment(seed: bytes, start: int) -> FragmentV2:
+        diff_sha = hashlib.sha256(seed).hexdigest()
+        old_range = LineRangeV2(start=start, end=start + 4)
+        new_range = LineRangeV2(start=start, end=start + 4)
+        fragment_id = compute_fragment_id_v2(
+            path="app/a.py", old_range=old_range, new_range=new_range, diff_sha256=diff_sha
+        )
+        return FragmentV2(
+            fragment_id=fragment_id,
+            path="app/a.py",
+            old_range=old_range,
+            new_range=new_range,
+            hunk_indexes=[0],
+            diff_chars=10,
+            diff_sha256=diff_sha,
+            coverage_required=True,
+        )
+
+    fragment_chunk_0 = _fragment(b"combined-split-degraded-1", 1)
+    fragment_chunk_1 = _fragment(b"combined-split-degraded-2", 10)
+    fragment_degraded = _fragment(b"combined-split-degraded-3", 19)
+
+    material_kwargs = {
+        "schema_id": "agent-review.manifest.v2",
+        "schema_version": 2,
+        "source": "aiops-review-plan-chunks-v2",
+        "expected_files": ["app/a.py"],
+        "must_review_files": ["app/a.py"],
+        "fragments": [fragment_chunk_0, fragment_chunk_1, fragment_degraded],
+        "chunks": [
+            ManifestChunkV2(
+                chunk_id="chunk-0",
+                order_index=0,
+                semantic_group="primary_backend_logic",
+                fragment_ids=[fragment_chunk_0.fragment_id],
+                payload_sha256=None,
+            ),
+            ManifestChunkV2(
+                chunk_id="chunk-1",
+                order_index=1,
+                semantic_group="primary_backend_logic",
+                fragment_ids=[fragment_chunk_1.fragment_id],
+                payload_sha256=None,
+            ),
+        ],
+        "max_chunks": 10,
+        "degradation_causes": [
+            ManifestDegradationV2(
+                reason_code="budget_exhausted",
+                affected_fragment_ids=[fragment_degraded.fragment_id],
+                detail="deliberately degraded for the #116 combined split+degradation regression",
+            )
+        ],
+    }
+    material = ManifestMaterialV2.model_validate(material_kwargs)
+    manifest_hash = compute_manifest_hash_v2_for(material)
+    identity = RunIdentityV2.model_validate(_identity(manifest_hash=manifest_hash))
+    manifest = ManifestV2(**material_kwargs, run_id=compute_run_id(identity), identity=identity)
+    return manifest, fragment_chunk_0.fragment_id, fragment_chunk_1.fragment_id, fragment_degraded.fragment_id
+
+
+def test_bind_accepts_an_honest_report_of_a_two_chunk_split_combined_with_a_degraded_fragment() -> None:
+    """Issue #116, found by independent review of PR #114: the code was
+    already correct -- this test proves it, it does not fix a defect. An
+    honest report for this combined shape (both real fragments correctly
+    marked partial due to the split, the degraded fragment correctly
+    marked missing, both real chunks named) must bind cleanly."""
+
+    manifest, fragment_chunk_0, fragment_chunk_1, fragment_degraded = (
+        _build_manifest_with_a_two_chunk_split_and_a_degraded_fragment()
+    )
+    entry = RunFragmentCoverageEntryV2(
+        path="app/a.py",
+        expected_fragment_ids=[fragment_chunk_0, fragment_chunk_1, fragment_degraded],
+        assigned_fragment_ids=[fragment_chunk_0, fragment_chunk_1],
+        reviewed_fragment_ids=[],
+        partially_reviewed_fragment_ids=[fragment_chunk_0, fragment_chunk_1],
+        missing_fragment_ids=[fragment_degraded],
+        affected_chunk_ids=["chunk-0", "chunk-1"],
+        status=FragmentCoverageStatusV2.PARTIAL,
+        reason_codes=[FragmentCoverageReasonV2.STRUCTURAL_SPLIT, FragmentCoverageReasonV2.FRAGMENT_DEGRADED],
+    )
+    material = _report_material(
+        run_id=manifest.run_id, manifest_hash=manifest.identity.manifest_hash, paths=[entry]
+    )
+    sha = compute_coverage_report_sha256_v2(RunFragmentCoverageReportMaterialV2.model_validate(material))
+    report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
+    bind_coverage_report_to_manifest_v2(report, manifest)  # must not raise
+
+
+def test_bind_rejects_underreported_affected_chunk_ids_when_a_fragment_on_the_same_path_is_also_degraded() -> None:
+    """Same combined shape, but the entry hides the real two-chunk split by
+    naming only one of the two real chunks -- must still be rejected, even
+    though a third, unrelated fragment on the same path is validly
+    degraded and validly reported missing."""
+
+    manifest, fragment_chunk_0, fragment_chunk_1, fragment_degraded = (
+        _build_manifest_with_a_two_chunk_split_and_a_degraded_fragment()
+    )
+    entry = RunFragmentCoverageEntryV2(
+        path="app/a.py",
+        expected_fragment_ids=[fragment_chunk_0, fragment_chunk_1, fragment_degraded],
+        assigned_fragment_ids=[fragment_chunk_0, fragment_chunk_1],
+        reviewed_fragment_ids=[],
+        partially_reviewed_fragment_ids=[fragment_chunk_0, fragment_chunk_1],
+        missing_fragment_ids=[fragment_degraded],
+        affected_chunk_ids=["chunk-0"],  # hides chunk-1
+        status=FragmentCoverageStatusV2.PARTIAL,
+        reason_codes=[FragmentCoverageReasonV2.FRAGMENT_DEGRADED],
+    )
+    material = _report_material(
+        run_id=manifest.run_id, manifest_hash=manifest.identity.manifest_hash, paths=[entry]
+    )
+    sha = compute_coverage_report_sha256_v2(RunFragmentCoverageReportMaterialV2.model_validate(material))
+    report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
+    with pytest.raises(FragmentCoverageBindingError) as excinfo:
+        bind_coverage_report_to_manifest_v2(report, manifest)
+    assert excinfo.value.reason_code == AFFECTED_CHUNK_SET_MISMATCH_REASON_V2
+
+
+def test_bind_rejects_a_hidden_degraded_fragment_when_the_same_path_is_also_a_real_split() -> None:
+    """Same combined shape, but the entry hides the degraded fragment by
+    falsely claiming it assigned+partially_reviewed instead of missing --
+    must still be rejected, even though the real two-chunk split on the
+    same path is otherwise honestly reported. Since manifest_v2.py
+    guarantees a degraded fragment is never in any chunk's fragment_ids,
+    claiming it assigned here is already an assigned_fragment_set_mismatch
+    (issue #115) -- caught before the degraded-specific check ever runs,
+    same precedence proven in isolation there, now proven to also hold
+    when a real split coexists on the same path."""
+
+    manifest, fragment_chunk_0, fragment_chunk_1, fragment_degraded = (
+        _build_manifest_with_a_two_chunk_split_and_a_degraded_fragment()
+    )
+    dishonest_entry = RunFragmentCoverageEntryV2(
+        path="app/a.py",
+        expected_fragment_ids=[fragment_chunk_0, fragment_chunk_1, fragment_degraded],
+        assigned_fragment_ids=[fragment_chunk_0, fragment_chunk_1, fragment_degraded],
+        reviewed_fragment_ids=[],
+        partially_reviewed_fragment_ids=[fragment_chunk_0, fragment_chunk_1, fragment_degraded],
+        missing_fragment_ids=[],
+        affected_chunk_ids=["chunk-0", "chunk-1"],
+        status=FragmentCoverageStatusV2.PARTIAL,
+        reason_codes=[FragmentCoverageReasonV2.STRUCTURAL_SPLIT],
+    )
+    material = _report_material(
+        run_id=manifest.run_id, manifest_hash=manifest.identity.manifest_hash, paths=[dishonest_entry]
+    )
+    sha = compute_coverage_report_sha256_v2(RunFragmentCoverageReportMaterialV2.model_validate(material))
+    report = RunFragmentCoverageReportV2.model_validate({**material, "coverage_report_sha256": sha})
+    with pytest.raises(FragmentCoverageBindingError) as excinfo:
+        bind_coverage_report_to_manifest_v2(report, manifest)
+    assert excinfo.value.reason_code == ASSIGNED_FRAGMENT_SET_MISMATCH_REASON_V2
+
+
 def _build_manifest_with_unassigned_auxiliary_fragment() -> tuple[ManifestV2, str]:
     """Issue #115: a hand-built manifest with one auxiliary
     (coverage_required=False) fragment that was never assigned to any
