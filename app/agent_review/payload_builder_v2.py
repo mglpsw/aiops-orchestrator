@@ -34,13 +34,21 @@ what ``ChunkCoverageV2``'s existing shape can represent.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.agent_review.contracts_v2 import (
     ChunkCoverageV2,
     ChunkPayloadV2,
+    PayloadArtifactReferenceV2,
+    PayloadContractReferenceV2,
+    TargetProfileV2,
     compute_payload_sha256_v2,
 )
 from app.agent_review.manifest_v2 import ManifestChunkV2, ManifestV2
+from app.agent_review.payload_references_v2 import (
+    build_payload_artifact_references_v2,
+    build_payload_contract_references_v2,
+)
 
 
 class PayloadBuilderError(ValueError):
@@ -59,6 +67,7 @@ CHUNK_NOT_IN_MANIFEST_REASON_V2 = "chunk_not_in_manifest"
 class BuiltChunkPayloadV2:
     chunk_id: str
     payload: ChunkPayloadV2
+    limitations: tuple[str, ...] = ()
 
 
 def _build_chunk_coverage(manifest: ManifestV2, chunk: ManifestChunkV2) -> ChunkCoverageV2:
@@ -96,13 +105,7 @@ def _build_chunk_coverage(manifest: ManifestV2, chunk: ManifestChunkV2) -> Chunk
     )
 
 
-def build_chunk_payload_v2(manifest: ManifestV2, chunk: ManifestChunkV2) -> ChunkPayloadV2:
-    """Build a single ``ChunkPayloadV2`` for one chunk of a planned
-    manifest. ``artifact_references``/``contract_references`` are empty:
-    populating them with real target-profile-derived contract references
-    is follow-up work integrating with #85's profile loader, not attempted
-    here."""
-
+def _resolve_manifest_chunk(manifest: ManifestV2, chunk: ManifestChunkV2) -> ManifestChunkV2:
     chunk_by_id = {c.chunk_id: c for c in manifest.chunks}
     manifest_chunk = chunk_by_id.get(chunk.chunk_id)
     if manifest_chunk is None or manifest_chunk != chunk:
@@ -113,8 +116,16 @@ def build_chunk_payload_v2(manifest: ManifestV2, chunk: ManifestChunkV2) -> Chun
         # accept under the real manifest's identity. Only the manifest's
         # own chunk record is ever used past this point.
         raise PayloadBuilderError(CHUNK_NOT_IN_MANIFEST_REASON_V2)
-    chunk = manifest_chunk
+    return manifest_chunk
 
+
+def _build_chunk_payload(
+    manifest: ManifestV2,
+    chunk: ManifestChunkV2,
+    *,
+    artifact_references: list[PayloadArtifactReferenceV2],
+    contract_references: list[PayloadContractReferenceV2],
+) -> ChunkPayloadV2:
     coverage = _build_chunk_coverage(manifest, chunk)
     material = {
         "schema_id": "agent-review.chunk-payload.v2",
@@ -125,11 +136,25 @@ def build_chunk_payload_v2(manifest: ManifestV2, chunk: ManifestChunkV2) -> Chun
         "chunk_id": chunk.chunk_id,
         "semantic_group": chunk.semantic_group,
         "coverage": coverage.model_dump(mode="json"),
-        "artifact_references": [],
-        "contract_references": [],
+        "artifact_references": [ref.model_dump(mode="json") for ref in artifact_references],
+        "contract_references": [ref.model_dump(mode="json") for ref in contract_references],
     }
     payload_sha256 = compute_payload_sha256_v2(material)
     return ChunkPayloadV2.model_validate({**material, "payload_sha256": payload_sha256})
+
+
+def build_chunk_payload_v2(manifest: ManifestV2, chunk: ManifestChunkV2) -> ChunkPayloadV2:
+    """Build a single ``ChunkPayloadV2`` for one chunk of a planned
+    manifest, with EMPTY ``artifact_references``/``contract_references``.
+
+    Kept as its own zero-argument-beyond-manifest entry point, unchanged in
+    signature and behavior, for every existing caller that has no
+    ``TargetProfileV2``/checkout to derive real references from. Use
+    ``build_chunk_payload_from_profile_v2`` (#131) when real,
+    profile-derived references are available and required."""
+
+    chunk = _resolve_manifest_chunk(manifest, chunk)
+    return _build_chunk_payload(manifest, chunk, artifact_references=[], contract_references=[])
 
 
 def build_chunk_payloads_v2(manifest: ManifestV2) -> tuple[BuiltChunkPayloadV2, ...]:
@@ -155,5 +180,58 @@ def build_chunk_payloads_v2(manifest: ManifestV2) -> tuple[BuiltChunkPayloadV2, 
 
     return tuple(
         BuiltChunkPayloadV2(chunk_id=chunk.chunk_id, payload=build_chunk_payload_v2(manifest, chunk))
+        for chunk in manifest.chunks
+    )
+
+
+def build_chunk_payload_from_profile_v2(
+    manifest: ManifestV2, chunk: ManifestChunkV2, *, profile: TargetProfileV2, repo_root: Path
+) -> BuiltChunkPayloadV2:
+    """Build a single ``ChunkPayloadV2`` with REAL, profile-derived
+    ``artifact_references``/``contract_references`` (#131), read from
+    ``repo_root`` per ``profile.artifacts``/``profile.contracts``.
+
+    Every chunk of the same manifest+profile shares the identical
+    reference set -- ``TargetArtifactV2``/``TargetContractV2`` are
+    profile-level, not chunk-scoped, and nothing in either type associates
+    a specific chunk or semantic group with a reference, so no per-chunk
+    filtering is attempted here.
+
+    ``limitations`` carries every optional artifact that was missing
+    (``build_payload_artifact_references_v2``'s own return value) --
+    surfaced the same way #107's ``SynthesisResultV2.limitations`` already
+    documents dropped-but-not-fatal facts, never silently absorbed.
+    """
+
+    chunk = _resolve_manifest_chunk(manifest, chunk)
+    artifact_references, limitations = build_payload_artifact_references_v2(profile, repo_root)
+    contract_references = build_payload_contract_references_v2(profile, repo_root)
+    payload = _build_chunk_payload(
+        manifest, chunk, artifact_references=artifact_references, contract_references=contract_references
+    )
+    return BuiltChunkPayloadV2(chunk_id=chunk.chunk_id, payload=payload, limitations=limitations)
+
+
+def build_chunk_payloads_from_profile_v2(
+    manifest: ManifestV2, *, profile: TargetProfileV2, repo_root: Path
+) -> tuple[BuiltChunkPayloadV2, ...]:
+    """Build a ``ChunkPayloadV2`` with real profile-derived references for
+    every chunk in a planned manifest. Reads artifact/contract content from
+    ``repo_root`` exactly once, reused across every chunk -- the reference
+    set does not vary per chunk (see ``build_chunk_payload_from_profile_v2``)."""
+
+    artifact_references, limitations = build_payload_artifact_references_v2(profile, repo_root)
+    contract_references = build_payload_contract_references_v2(profile, repo_root)
+    return tuple(
+        BuiltChunkPayloadV2(
+            chunk_id=chunk.chunk_id,
+            payload=_build_chunk_payload(
+                manifest,
+                _resolve_manifest_chunk(manifest, chunk),
+                artifact_references=artifact_references,
+                contract_references=contract_references,
+            ),
+            limitations=limitations,
+        )
         for chunk in manifest.chunks
     )
