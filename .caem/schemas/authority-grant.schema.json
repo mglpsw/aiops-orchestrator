@@ -209,6 +209,15 @@
       "then": { "properties": { "target": { "properties": { "type": { "const": "environment" } } } } }
     },
     {
+      "$comment": "A Codex review of PR #159 found that binding deploy_canonical_dev/deploy_production only to target.type == \"environment\" left environment_role free, so a grant with action deploy_production and target.type environment but environment_role canonical_dev (or the inverse) still validated -- the environment.type constraint alone cannot delimit which environment is authorized. Bind each deployment action to its matching environment_role.",
+      "if": { "properties": { "action": { "const": "deploy_canonical_dev" } } },
+      "then": { "properties": { "target": { "properties": { "environment_role": { "const": "canonical_dev" } }, "required": ["environment_role"] } } }
+    },
+    {
+      "if": { "properties": { "action": { "const": "deploy_production" } } },
+      "then": { "properties": { "target": { "properties": { "environment_role": { "const": "production" } }, "required": ["environment_role"] } } }
+    },
+    {
       "if": { "properties": { "action": { "const": "apply_migration" } } },
       "then": { "properties": { "target": { "properties": { "type": { "enum": ["database", "environment"] } } } } }
     },

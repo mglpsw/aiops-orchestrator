@@ -479,7 +479,7 @@ class AgentReviewRunV2(ContractV2Model):
 
 class CoverageDegradationV2(ContractV2Model):
     reason_code: CoverageDegradationReasonValue
-    affected_files: list[RelativePath]
+    affected_files: tuple[RelativePath, ...]
     detail: SafeText
 
     @model_validator(mode="after")

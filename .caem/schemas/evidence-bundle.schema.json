@@ -40,10 +40,12 @@
           "type": "string"
         },
         "head_sha": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
         },
         "tested_sha": {
-          "type": "string"
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
         },
         "synthetic_merge_sha": {
           "type": "string"
@@ -488,7 +490,7 @@
   "additionalProperties": false,
   "allOf": [
     {
-      "$comment": "A Codex review found that identity only required `repository`: a bundle omitting head_sha/tested_sha still validated even though readiness explicitly depends on same-HEAD evidence, so such a bundle could not establish its gates apply to the current HEAD. Require both once any gate_run is for a real, non-documentary surface (documentation-only bundles have no HEAD-bound gate to justify the requirement).",
+      "$comment": "A Codex review found that identity only required `repository`: a bundle omitting head_sha/tested_sha still validated even though readiness explicitly depends on same-HEAD evidence, so such a bundle could not establish its gates apply to the current HEAD. Require both once any gate_run is for a real, non-documentary surface (documentation-only bundles have no HEAD-bound gate to justify the requirement). A later Codex review of PR #159 found head_sha/tested_sha remained unconstrained plain strings even once required, so an empty string or a placeholder like \"unknown\" still satisfied the requirement; both properties now also carry a full 40-hex-character SHA pattern.",
       "if": {
         "properties": {
           "gate_runs": {

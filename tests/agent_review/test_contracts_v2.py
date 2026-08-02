@@ -14,6 +14,7 @@ from app.agent_review.contracts_v2 import (
     AgentReviewRunV2,
     ChunkFindingV2,
     ChunkPayloadV2,
+    CoverageDegradationV2,
     DispositionEvidenceV2,
     FindingDispositionV2,
     FindingLifecycleRecordV2,
@@ -839,6 +840,26 @@ def test_chunk_coverage_string_lists_are_genuinely_immutable() -> None:
     )
     with pytest.raises(AttributeError):
         finding.contract_ids.append("c2")
+
+
+def test_coverage_degradation_affected_files_is_genuinely_immutable() -> None:
+    """A Codex review of PR #159 found that CoverageDegradationV2.affected_files
+    was still typed list[RelativePath] even after ChunkCoverageV2's own fields
+    were converted to tuples: degradation_causes is a tuple of
+    CoverageDegradationV2, but each entry's nested affected_files list remained
+    mutable in place, one level deeper than the #97 fix reached."""
+
+    degradation = CoverageDegradationV2.model_validate_json(
+        json.dumps(
+            {
+                "reason_code": "artifact_missing",
+                "affected_files": ["app/a.py"],
+                "detail": "d",
+            }
+        )
+    )
+    with pytest.raises(AttributeError):
+        degradation.affected_files.append("app/unexpected.py")
 
 
 def test_response_binding_normalizes_a_mutated_artifact_reference() -> None:

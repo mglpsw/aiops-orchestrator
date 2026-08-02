@@ -357,7 +357,7 @@ def test_bridge_produces_degraded_coverage_for_the_split_plus_degraded_fixture()
     assert coverage.missing_files == ("app/a.py",) or coverage.partially_reviewed_files == ("app/a.py",)
     assert len(coverage.degradation_causes) == 1
     assert coverage.degradation_causes[0].reason_code.value == "budget_exhausted"
-    assert coverage.degradation_causes[0].affected_files == ["app/a.py"]
+    assert coverage.degradation_causes[0].affected_files == ("app/a.py",)
 
 
 def test_bridge_rejects_a_coverage_report_that_does_not_match_the_manifest() -> None:
