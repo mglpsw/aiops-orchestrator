@@ -12,6 +12,7 @@ from app.agent_review.payload_set_emission_v2 import (
     PAYLOAD_SET_ENTRY_MISSING_PAYLOAD_REASON_V2,
     PAYLOAD_SET_ENTRY_PAYLOAD_HASH_MISMATCH_REASON_V2,
     PAYLOAD_SET_EXTRA_PAYLOAD_REASON_V2,
+    PAYLOAD_SET_HASH_TAMPERED_REASON_V2,
     PAYLOAD_SET_PAYLOAD_RUN_ID_INCOHERENT_REASON_V2,
     PAYLOAD_SET_PAYLOAD_TAMPERED_REASON_V2,
     bind_payload_set_to_payloads_v2,
@@ -103,6 +104,27 @@ def test_emits_a_valid_payload_set_from_a_real_manifest_and_payloads() -> None:
     assert payload_set.manifest_hash == manifest.identity.manifest_hash
     assert {entry.chunk_id for entry in payload_set.payloads} == {chunk.chunk_id for chunk in manifest.chunks}
     verify_payload_set_sha256_v2(payload_set)  # must not raise
+
+
+def test_bind_rejects_a_payload_set_whose_own_attestation_hash_was_tampered() -> None:
+    """Regression (Codex review of PR #144): bind_payload_set_to_payloads_v2
+    revalidated every ChunkPayloadV2 but never called
+    verify_payload_set_sha256_v2 on the PayloadSetV2 itself -- so a caller
+    handing in `payload_set.model_copy(update={"payload_set_sha256": "0" *
+    64})` was accepted whenever the manifest and real payloads still
+    matched (every other clause -- run_id/manifest_hash/chunk-set/entry
+    payload_sha256 -- stays untouched by this exact tamper, so this is the
+    ONLY guard that can catch it). Confirmed real: no payload or manifest
+    is altered to reproduce this."""
+
+    manifest = _build_manifest(["app/a.py"])
+    payloads = _real_payloads(manifest)
+    payload_set = emit_payload_set_v2(manifest, payloads)
+
+    tampered = payload_set.model_copy(update={"payload_set_sha256": "0" * 64})
+    with pytest.raises(PayloadSetBindingError) as excinfo:
+        bind_payload_set_to_payloads_v2(tampered, payloads, manifest)
+    assert excinfo.value.reason_code == PAYLOAD_SET_HASH_TAMPERED_REASON_V2
 
 
 def test_emitted_payload_set_is_byte_reproducible_and_order_independent() -> None:
