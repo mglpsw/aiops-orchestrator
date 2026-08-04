@@ -27,7 +27,7 @@ class EncounterSummaryField:
 ENCOUNTER_SUMMARY_FIELDS: tuple[EncounterSummaryField, ...] = (
     EncounterSummaryField(name="encounter_id", required=True, type_name="string"),
     EncounterSummaryField(name="condition_code_x", required=True, type_name="string"),
-    EncounterSummaryField(name="care_team_ref", required=False, type_name="string"),
+    EncounterSummaryField(name="care_team_ref", required=True, type_name="string"),
 )
 
 
