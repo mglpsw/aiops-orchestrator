@@ -12,6 +12,7 @@ input never raises, it returns ``ReuseManifestLoadResult(ok=False, ...)``.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +21,21 @@ REUSE_STATES: frozenset[str] = frozenset({"reuse", "reference", "not_applicable"
 _REQUIRED_TOP_LEVEL_KEYS = {"contract_id", "schema_version", "states", "entries", "generated_from"}
 _REQUIRED_ENTRY_KEYS = {"contract_id", "owner", "state", "notes", "ri_b0_role", "source_path"}
 _MANIFEST_CONTRACT_ID = "aiops.ri-b0a-2-reuse-manifest.v1"
+_SCHEMA_ID_LITERAL_RE = re.compile(r'schema_id:\s*Literal\["([a-z0-9.-]+)"\]')
+
+
+def _real_agent_review_schema_ids(repo_root: Path) -> frozenset[str]:
+    """Every `schema_id: Literal["..."]` declaration actually present in
+    `app/agent_review/*.py`. Used to verify an entry's `contract_id` isn't
+    a typo/fabrication that merely happens to point at an existing but
+    unrelated file."""
+
+    agent_review_dir = repo_root / "app" / "agent_review"
+    ids: set[str] = set()
+    if agent_review_dir.is_dir():
+        for py_file in agent_review_dir.glob("*.py"):
+            ids.update(_SCHEMA_ID_LITERAL_RE.findall(py_file.read_text(encoding="utf-8")))
+    return frozenset(ids)
 
 
 class ReuseManifestError(ValueError):
@@ -63,7 +79,9 @@ def _require_list(value: object, label: str) -> list:
     return value
 
 
-def _load_entry(raw: object, *, repo_root: Path, index: int) -> ReuseManifestEntry:
+def _load_entry(
+    raw: object, *, repo_root: Path, index: int, real_agent_review_schema_ids: frozenset[str]
+) -> ReuseManifestEntry:
     entry = _require_dict(raw, f"entries[{index}]")
     extra_keys = set(entry.keys()) - _REQUIRED_ENTRY_KEYS
     if extra_keys:
@@ -98,6 +116,13 @@ def _load_entry(raw: object, *, repo_root: Path, index: int) -> ReuseManifestEnt
             raise ReuseManifestError(
                 f"entries[{index}].source_path does not exist: {source_path!r}"
             )
+        if source_path.startswith("schemas/agent-review/v2/"):
+            if contract_id not in real_agent_review_schema_ids:
+                raise ReuseManifestError(
+                    f"entries[{index}].contract_id {contract_id!r} is not a real schema_id "
+                    "declared in app/agent_review/*.py -- source_path exists but does not "
+                    "establish this contract_id"
+                )
 
     return ReuseManifestEntry(
         contract_id=contract_id,
@@ -152,10 +177,16 @@ def load_reuse_manifest(manifest_path: str | Path, *, repo_root: str | Path) -> 
         if not raw_entries:
             raise ReuseManifestError("manifest.entries must be non-empty")
 
+        real_agent_review_schema_ids = _real_agent_review_schema_ids(root_repo)
         entries: list[ReuseManifestEntry] = []
         seen_contract_ids: set[str] = set()
         for index, raw_entry in enumerate(raw_entries):
-            entry = _load_entry(raw_entry, repo_root=root_repo, index=index)
+            entry = _load_entry(
+                raw_entry,
+                repo_root=root_repo,
+                index=index,
+                real_agent_review_schema_ids=real_agent_review_schema_ids,
+            )
             if entry.contract_id in seen_contract_ids:
                 raise ReuseManifestError(f"duplicate entries[].contract_id: {entry.contract_id!r}")
             seen_contract_ids.add(entry.contract_id)

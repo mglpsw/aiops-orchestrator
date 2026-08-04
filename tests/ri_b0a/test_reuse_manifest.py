@@ -236,6 +236,32 @@ def test_source_path_that_does_exist_is_accepted(tmp_path: Path) -> None:
     assert result.entries[0].source_path == "real.json"
 
 
+def test_fabricated_contract_id_pointing_at_unrelated_real_agentreview_schema_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """Correction, found by an independent Codex review of an earlier
+    draft: a typoed/fabricated contract_id whose source_path happens to
+    point at an existing, unrelated schemas/agent-review/v2/ file
+    previously passed (ok=True), because the loader only checked that the
+    path existed, never that the file actually establishes that
+    contract_id. Confirmed genuinely red against the pre-fix loader via a
+    direct repro before this test was added."""
+    (tmp_path / "schemas" / "agent-review" / "v2").mkdir(parents=True)
+    (tmp_path / "schemas" / "agent-review" / "v2" / "agent-review.review-readiness.v2.schema.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    (tmp_path / "app" / "agent_review").mkdir(parents=True)
+    (tmp_path / "app" / "agent_review" / "x.py").write_text(
+        'schema_id: Literal["agent-review.review-readiness.v2"]', encoding="utf-8"
+    )
+    doc = _valid_doc()
+    doc["entries"][0]["contract_id"] = "agent-review.does-not-exist.v2"
+    doc["entries"][0]["source_path"] = "schemas/agent-review/v2/agent-review.review-readiness.v2.schema.json"
+    path = _write(tmp_path, doc)
+    result = load_reuse_manifest(path, repo_root=tmp_path)
+    assert not result.ok
+
+
 def test_loader_never_reads_referenced_schema_file_contents(tmp_path: Path) -> None:
     """The manifest references existing contracts by path/ID; it must never
     copy or depend on a referenced file's own content -- only that the file
