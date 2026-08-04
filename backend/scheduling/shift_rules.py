@@ -4,7 +4,9 @@ Classifies a shift's start/end hour into one of the canonical coverage
 buckets used by scheduling: `covered_by_24h`, `covered_by_12h_day`,
 `covered_by_10_22h`, or `uncovered`. Each bucket is evaluated
 independently; a shift must never be silently folded into a bucket it
-does not fully satisfy.
+does not fully satisfy. See rest_period_rules.py for the companion
+minimum-rest-period check, which is evaluated independently of coverage
+classification.
 """
 
 from __future__ import annotations
