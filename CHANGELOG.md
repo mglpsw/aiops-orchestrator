@@ -4,6 +4,30 @@
 
 ### Added
 
+- AgentReview v2 benchmark (#88): a provider-reviewable synthetic corpus
+  (`evals/agent_review_v2/reviewable_corpus/`, 6 `semantic_positive` + 4
+  `semantic_safe_counterexample` cases with real, behaviorally-verified
+  code and a deterministic materializer), a lane-applicability manifest
+  covering all 15 relevant cases, a corpus-scoped safety gate, an
+  AIOps-side pipeline projection bound to real PR/HEAD identity
+  (`evals/agent_review_v2/aiops_projection.py`), and real Lane 2 (Codex
+  CLI local)/Lane 3 (Codex GitHub shadow) execution against 10 real,
+  ephemeral PRs (closed unmerged, branches deleted after acquisition).
+  Result: 10/10 AIOps pipeline readiness accuracy, 6/6 location recall on
+  both Codex lanes, 0 false positives; disposition `allowed_role: shadow`
+  only (`reports/agent-review-v2-benchmark-summary.md`). Lane 4 (human)
+  deferred to RI-C/RI-D by explicit disposition. Issue #88 closed as
+  completed (refs #88, #177, #188, #189)
+
+- AgentReview v2 release preparation (#133, parent #89): release notes
+  (`docs/RELEASE_V0_21_0.md`), v1/v2 compatibility matrix
+  (`docs/AGENT_REVIEW_V1_V2_COMPATIBILITY.md`), a rollback runbook
+  distinct from the CT102 runtime rollback
+  (`docs/AGENT_REVIEW_V2_ROLLBACK.md`), and a shadow/advisory rollout
+  specification that authorizes no target-repository write
+  (`docs/AGENT_REVIEW_V2_SHADOW_ROLLOUT.md`). No tag, GitHub Release, or
+  target-repository change in this slice (refs #133)
+
 - `config/ri/ri-b0a-2-reuse-manifest.json` + generated view
   `docs/generated/RI_B0A_2_REUSE_REFERENCE.md`: maps all 10 existing
   AgentReview v2 contracts plus the ProjectOps track boundary into one of
