@@ -1,0 +1,14 @@
+[
+  {
+    "source": "codex_local",
+    "repo": "mglpsw/aiops-orchestrator",
+    "pr_number": 183,
+    "head_sha": "bbac0983dce35542022542980e53b8023427dbb4",
+    "file_path": "backend/api/consent_scope.py",
+    "fragment_id": null,
+    "severity_claimed": "P2",
+    "normalized_cause": "Preserve the mandatory regulatory transition",
+    "evidence_summary": "When a caller checks `can_transition_axis(\"clinical\", \"communication\")`, this entry now returns `True`, allowing a case to bypass the regulatory axis that the module defines as mandatory before communication. Remove this direct transition so the regulatory step remains enforced.",
+    "disposition": "unverified"
+  }
+]

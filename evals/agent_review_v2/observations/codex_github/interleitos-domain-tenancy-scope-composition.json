@@ -1,0 +1,14 @@
+[
+  {
+    "source": "codex_github",
+    "repo": "mglpsw/aiops-orchestrator",
+    "pr_number": 185,
+    "head_sha": "caab96e4e6f039d31b94f0549f7c6645a6d316d7",
+    "file_path": "backend/tenancy/access_scope.py",
+    "fragment_id": null,
+    "severity_claimed": "P2",
+    "normalized_cause": "Retain the direct-link requirement for effective scope",
+    "evidence_summary": "When a user has only a `department`, `shift`, or `communication` link whose tenant ID matches the resource, this expression now returns `True`, even though `has_direct_access` explicitly requires `link_type == \"direct\"`. This turns unrelated indirect associations into authorization grants, so the effective decision should preserve the direct-link predicate rather than matching solely on tenant ID.",
+    "disposition": "unverified"
+  }
+]

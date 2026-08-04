@@ -294,3 +294,105 @@ Full suite impact: `tests/agent_review` 1054 passed (unchanged — no
 production code touched), `tests/evals` 30 passed (new), broad
 marker-excluded selection 1601 passed/12 deselected (was 1571, +30 exactly
 this slice's own tests).
+
+## Update — Lane 2/3 execution and #88 closure (rev. 4.1 master plan)
+
+The narrative above describes the Lane 1-only slice as it stood at merge
+time. It is preserved as a historical record; this section documents what
+changed afterward, culminating in #88's closure.
+
+### What was missing, and why
+
+Two blockers stood between the Lane 1 slice above and an honest #88
+closure:
+
+1. **No reviewable code.** The 9 historical `cases/*.yaml` fixtures declare
+   only hunk geometry and a `seed` string (`diff_sha256=sha256(seed)`); the
+   paths they reference do not exist in this repository. Lane 1 measures
+   the deterministic pipeline downstream of an alleged finding, never
+   detection.
+2. **No real identity on the AIOps side.** `ExternalObservationV2` and
+   `AiopsFindingReferenceV2` both require exact `(repo, pr_number,
+   head_sha)` equality before `correlate_observation_v2` will correlate
+   anything; Lane 1 uses a fixed synthetic head SHA constant, and creating
+   real PRs for Codex alone would still leave the AIOps side keyed to that
+   same synthetic identity — every correlation would resolve `rejected` by
+   construction.
+
+### What was built to resolve them
+
+- `evals/agent_review_v2/reviewable_corpus/`: 10 provider-reviewable cases
+  (6 `semantic_positive` — 3 AgentEscala / 3 InterLeitos, severity coverage
+  P1≥2/P2≥2/no P0 — plus 4 `semantic_safe_counterexample`), each with real,
+  behaviorally-verified base code and an inert `mutation.patch`, generated
+  deterministically by `scripts/materialize-benchmark-case.py` and
+  round-trip verified against the real `patch(1)` binary.
+- `evals/agent_review_v2/reviewable_corpus/MANIFEST.yaml`: aggregates
+  lane-applicability for all 15 relevant cases — the 10 provider-applicable
+  ones plus the 5 historical Lane-1-only cases (`pipeline_integrity`/
+  `identity_negative`/`transport_or_dlp_stop`), which ask no detection
+  question and never count as a false negative.
+- **OP-BENCH**: 10 real, ephemeral PRs (`eval/agent-review-v2-shadow/
+  base-*`/`head-*` branch pairs), each diffing only its own case's
+  mutation against its own materialized safe baseline. All 10 were closed
+  unmerged and all 20 branches deleted once acquisition completed.
+- `evals/agent_review_v2/aiops_projection.py`: runs the real v2 pipeline
+  against each PR's REAL diff (via `acquire_diff_v2`/`parse_unified_diff`),
+  bound to that PR's real `(repo, pr_number, base_sha, head_sha)` — the
+  AIOps side of real identity, without which correlation would be
+  vacuous. Explicitly a projector, not a new authority: reuses only
+  already-merged engine functions, adds no gate authority.
+- Lane 2 (Codex CLI local, `codex review --base <real base>`, explicit
+  `sandbox_mode=read-only`/`approval_policy=untrusted` overrides) and
+  Lane 3 (Codex GitHub shadow, `@codex review` on the same real PRs) were
+  both executed for real against all 10 cases.
+- `scripts/generate-benchmark-report.py`: the deterministic half. Reads
+  only already-committed observations (never re-invokes a provider),
+  validates every one against the real, strict `ExternalObservationV2`
+  model, and uses the real, unmodified `correlate_observation_v2` for
+  correlation.
+
+### Result
+
+- **aiops_pipeline** (pipeline correctness, not detection): 10/10
+  readiness accuracy, 6/6 finding preservation, 0 false approvals — all
+  against real PR/HEAD identity.
+- **codex_local_detection**: 6/6 location recall, 3/6 exact severity
+  match against ground truth, 0 false positives on the 4 counterexamples.
+- **codex_github_detection**: 6/6 location recall, 6/6 exact severity
+  match, 0 false positives.
+- **cross_source_overlap**: both lanes independently flagged the same
+  location on 6/6 positive cases.
+
+Full detail: `reports/agent-review-v2-benchmark-summary.md`.
+
+### Disposition
+
+```yaml
+codex_operational_eligibility: eligible
+allowed_role: shadow
+advisory_eligibility: deferred_to_target_observation
+required_check_eligible: false
+readiness_authority: false
+statistical_status: descriptive_provisional_baseline
+promotion_authority: false
+```
+
+n=6 positives / n=4 counterexamples is a descriptive baseline, not a
+statistically powered study — this qualifies Codex for **shadow** only.
+`advisory` requires real shadow-adoption data from the observation window
+(A6), not this benchmark alone.
+
+### Lane 4 (human)
+
+Deferred to RI-C/RI-D by explicit disposition (not fabricated), posted on
+#88: <https://github.com/mglpsw/aiops-orchestrator/issues/88#issuecomment-5183154624>.
+`human_lane.completed` is `false`; this report makes no claim about human
+precision or recall.
+
+### Closure
+
+#88 is closed as `completed` with this update as the closing evidence,
+per `Refs #88` (not `Closes #88` in any commit message, to avoid the
+accidental-auto-close pattern that reopened this issue twice already in
+this repository's history).

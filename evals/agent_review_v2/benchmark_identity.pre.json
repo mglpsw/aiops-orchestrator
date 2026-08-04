@@ -1,0 +1,56 @@
+{
+  "schema_id": "agent-review.benchmark-premanifest.v1",
+  "benchmark_run_id": "agentreview-v2-benchmark-ae758ab039de",
+  "source_master_sha": "ae758ab039def1e791e603efdddc0ad8e370a5be",
+  "corpus_digest": "1570f0dfb999efddb19d4d544110a5498a4302926a16a746c8b9f40fc213752a",
+  "applicability_manifest_digest": "d383bd63345ef34326723990ca3a0c87885697a60d077296462c090ccdd05100",
+  "expected_manifest_digest": "e95176d940404224221db56920c8063c66b1bd178c31b579ec5831cecca477fb",
+  "codex_cli_version": "codex-cli 0.144.6",
+  "rules_digest": "dfb697139ef7037b09cf0134a30fe0341fa19482dcd03deb310f3c27d8667ec2",
+  "normalizer_digest": "9d603ffcc64da01e0185b2b09b7811fbcf5b92a9b47d046ff37d656c0850a345",
+  "planned_cases_by_lane": {
+    "aiops_subject_projection": [
+      "agentescala-domain-new-finding-manual-required",
+      "agentescala-domain-rest-period-violation",
+      "agentescala-false-positive-comment-only-change",
+      "agentescala-false-positive-unrelated-change",
+      "agentescala-security-confirmed-finding-blocked-code",
+      "interleitos-domain-consent-scope-omission",
+      "interleitos-domain-schema-contract-drift",
+      "interleitos-domain-tenancy-scope-composition",
+      "interleitos-false-positive-logging-only-change",
+      "interleitos-false-positive-synthetic-clinical-terms"
+    ],
+    "codex_local": [
+      "agentescala-domain-new-finding-manual-required",
+      "agentescala-domain-rest-period-violation",
+      "agentescala-false-positive-comment-only-change",
+      "agentescala-false-positive-unrelated-change",
+      "agentescala-security-confirmed-finding-blocked-code",
+      "interleitos-domain-consent-scope-omission",
+      "interleitos-domain-schema-contract-drift",
+      "interleitos-domain-tenancy-scope-composition",
+      "interleitos-false-positive-logging-only-change",
+      "interleitos-false-positive-synthetic-clinical-terms"
+    ],
+    "codex_github": [
+      "agentescala-domain-new-finding-manual-required",
+      "agentescala-domain-rest-period-violation",
+      "agentescala-false-positive-comment-only-change",
+      "agentescala-false-positive-unrelated-change",
+      "agentescala-security-confirmed-finding-blocked-code",
+      "interleitos-domain-consent-scope-omission",
+      "interleitos-domain-schema-contract-drift",
+      "interleitos-domain-tenancy-scope-composition",
+      "interleitos-false-positive-logging-only-change",
+      "interleitos-false-positive-synthetic-clinical-terms"
+    ],
+    "human": "deferred_pending_H1_or_H2_disposition"
+  },
+  "attempt_policy": {
+    "attempts_per_case_per_lane": 1,
+    "retry_condition": "documented transport/provider failure only",
+    "retry_forbidden_reason": "obtaining a better result is fabrication of evidence"
+  },
+  "created_before_provider_call": true
+}

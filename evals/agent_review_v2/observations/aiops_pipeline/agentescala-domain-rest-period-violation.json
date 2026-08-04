@@ -1,0 +1,25 @@
+{
+  "case_id": "agentescala-domain-rest-period-violation",
+  "repo": "mglpsw/aiops-orchestrator",
+  "pr_number": 179,
+  "base_sha": "9a483663847ce92d50079efcaf82a2ab3c2d32e5",
+  "head_sha": "fccbbb10bdea812d44068f7877512bc851ccc8b4",
+  "actual_readiness": "manual_required",
+  "expected_readiness": "manual_required",
+  "readiness_matches": true,
+  "expected_finding_preserved": true,
+  "false_approval": false,
+  "manifest_hash": "96cc43d1a1945217b615332485a26ee29f0f6de31ae23ca5fcfe85329d5673e8",
+  "finding_references": [
+    {
+      "finding_id": "2976076efa66fd592d33f5046d67546937c4df4b31492ba2158a0003747b17e8",
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 179,
+      "head_sha": "fccbbb10bdea812d44068f7877512bc851ccc8b4",
+      "file_path": "backend/scheduling/rest_period_rules.py",
+      "line_start": 19,
+      "line_end": 25,
+      "severity": "P1"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "case_id": "agentescala-false-positive-comment-only-change",
+  "repo": "mglpsw/aiops-orchestrator",
+  "pr_number": 180,
+  "base_sha": "bda44855064bde324e1be8196080839f38df5b22",
+  "head_sha": "00f7e51fa31cfbcbd7af771f2517bf682bb25b08",
+  "actual_readiness": "ready",
+  "expected_readiness": "ready",
+  "readiness_matches": true,
+  "expected_finding_preserved": null,
+  "false_approval": false,
+  "manifest_hash": "29c21884374cf0c1f8e221ec35eef3b85f8911ddd1a699aacd4fce1643236de2",
+  "finding_references": []
+}

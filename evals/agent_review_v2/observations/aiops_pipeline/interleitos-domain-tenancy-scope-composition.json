@@ -1,0 +1,25 @@
+{
+  "case_id": "interleitos-domain-tenancy-scope-composition",
+  "repo": "mglpsw/aiops-orchestrator",
+  "pr_number": 185,
+  "base_sha": "34dfa29a71c54ae60b24734fef65c5e673c4eacb",
+  "head_sha": "caab96e4e6f039d31b94f0549f7c6645a6d316d7",
+  "actual_readiness": "manual_required",
+  "expected_readiness": "manual_required",
+  "readiness_matches": true,
+  "expected_finding_preserved": true,
+  "false_approval": false,
+  "manifest_hash": "50c623cfb69290cea39da59b210c07012220ada9d361b74161a8e0b16322b475",
+  "finding_references": [
+    {
+      "finding_id": "acb1388d3fa32b336167cd76ff656587c06dcc7eda0fd8844a705a36bb26686c",
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 185,
+      "head_sha": "caab96e4e6f039d31b94f0549f7c6645a6d316d7",
+      "file_path": "backend/tenancy/access_scope.py",
+      "line_start": 31,
+      "line_end": 34,
+      "severity": "P2"
+    }
+  ]
+}

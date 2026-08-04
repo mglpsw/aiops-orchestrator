@@ -1,0 +1,14 @@
+[
+  {
+    "source": "codex_github",
+    "repo": "mglpsw/aiops-orchestrator",
+    "pr_number": 182,
+    "head_sha": "a3218f6a1c03eb9f2f5b325e983582eb3130f7f3",
+    "file_path": "backend/scheduling/shift_rules.py",
+    "fragment_id": null,
+    "severity_claimed": "P1",
+    "normalized_cause": "Restore equality-only 24-hour detection",
+    "evidence_summary": "For every shift that starts at 10:00 but ends at a different hour\u2014most importantly the canonical `ShiftWindow(10, 22)` recognized by `is_10_22h_shift`\u2014this new disjunct makes `is_24h_shift` return true. Because `classify_shift` checks that predicate first, these shifts now return `covered_by_24h` and never reach the dedicated `covered_by_10_22h` branch, corrupting coverage classification; keep the 24-hour condition limited to equal start and end hours.",
+    "disposition": "unverified"
+  }
+]

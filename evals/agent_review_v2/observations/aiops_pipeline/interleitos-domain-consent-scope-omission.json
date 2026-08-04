@@ -1,0 +1,25 @@
+{
+  "case_id": "interleitos-domain-consent-scope-omission",
+  "repo": "mglpsw/aiops-orchestrator",
+  "pr_number": 183,
+  "base_sha": "6739b942d8868e3c6e127a245dcf956bad4d9939",
+  "head_sha": "bbac0983dce35542022542980e53b8023427dbb4",
+  "actual_readiness": "ready",
+  "expected_readiness": "ready",
+  "readiness_matches": true,
+  "expected_finding_preserved": true,
+  "false_approval": false,
+  "manifest_hash": "2cef130577c11ed909659092ccbd301187f872f310186be98ac069876d5c933a",
+  "finding_references": [
+    {
+      "finding_id": "6090c5b9e7882be7977646556f6377fa3b7ceb850db298b66ee0e184208b80aa",
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 183,
+      "head_sha": "bbac0983dce35542022542980e53b8023427dbb4",
+      "file_path": "backend/api/consent_scope.py",
+      "line_start": 17,
+      "line_end": 23,
+      "severity": "P3"
+    }
+  ]
+}

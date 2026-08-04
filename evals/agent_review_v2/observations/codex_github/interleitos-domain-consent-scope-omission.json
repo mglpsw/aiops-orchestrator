@@ -1,0 +1,14 @@
+[
+  {
+    "source": "codex_github",
+    "repo": "mglpsw/aiops-orchestrator",
+    "pr_number": 183,
+    "head_sha": "bbac0983dce35542022542980e53b8023427dbb4",
+    "file_path": "backend/api/consent_scope.py",
+    "fragment_id": null,
+    "severity_claimed": "P3",
+    "normalized_cause": "Preserve the mandatory regulatory transition",
+    "evidence_summary": "When a record moves from `clinical` directly to `communication`, this entry makes `can_transition_axis()` return `True`, allowing callers to skip the mandatory regulatory step. This contradicts both the module invariant and the function contract, so the direct transition should remain absent from the allowlist.",
+    "disposition": "unverified"
+  }
+]

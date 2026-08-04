@@ -1,0 +1,25 @@
+{
+  "case_id": "agentescala-domain-new-finding-manual-required",
+  "repo": "mglpsw/aiops-orchestrator",
+  "pr_number": 178,
+  "base_sha": "34129f59609a9753ef6221bbfa1a09ca34dc049f",
+  "head_sha": "fc0fc20ec9669e3bcc77983b9bc63bf35b3a6fd2",
+  "actual_readiness": "manual_required",
+  "expected_readiness": "manual_required",
+  "readiness_matches": true,
+  "expected_finding_preserved": true,
+  "false_approval": false,
+  "manifest_hash": "a6f9d5171a89dd43b6f96bf54349573311df4f6b6f3857d7d312d84290bdf7d6",
+  "finding_references": [
+    {
+      "finding_id": "679c88fd8cbd6c71d9847288cf761d05cb084ff3d1f2b03201b886ebca444a56",
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 178,
+      "head_sha": "fc0fc20ec9669e3bcc77983b9bc63bf35b3a6fd2",
+      "file_path": "backend/scheduling/shift_rules.py",
+      "line_start": 20,
+      "line_end": 26,
+      "severity": "P2"
+    }
+  ]
+}

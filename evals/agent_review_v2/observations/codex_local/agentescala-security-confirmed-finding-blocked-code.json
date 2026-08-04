@@ -1,0 +1,14 @@
+[
+  {
+    "source": "codex_local",
+    "repo": "mglpsw/aiops-orchestrator",
+    "pr_number": 182,
+    "head_sha": "a3218f6a1c03eb9f2f5b325e983582eb3130f7f3",
+    "file_path": "backend/scheduling/shift_rules.py",
+    "fragment_id": null,
+    "severity_claimed": "P1",
+    "normalized_cause": "Do not classify every 10:00 shift as 24H",
+    "evidence_summary": "Any shift starting at 10:00 now satisfies the 24H predicate regardless of its end time. In particular, `ShiftWindow(10, 22)` is checked before `is_10_22h_shift` and is therefore returned as `covered_by_24h`, contradicting the independent 10\u201322H bucket and causing its coverage to be overcounted as a full-day shift.",
+    "disposition": "unverified"
+  }
+]

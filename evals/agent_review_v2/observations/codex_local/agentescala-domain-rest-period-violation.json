@@ -1,0 +1,14 @@
+[
+  {
+    "source": "codex_local",
+    "repo": "mglpsw/aiops-orchestrator",
+    "pr_number": 179,
+    "head_sha": "fccbbb10bdea812d44068f7877512bc851ccc8b4",
+    "file_path": "backend/scheduling/rest_period_rules.py",
+    "fragment_id": null,
+    "severity_claimed": "P1",
+    "normalized_cause": "Wrap only negative overnight gaps",
+    "evidence_summary": "When the next shift starts before the previous shift ends, this now returns a negative value instead of wrapping through midnight, so a compliant overnight rest such as 22:00 to 10:00 is rejected. Conversely, a short same-day interval such as 09:00 to 10:00 is inflated to 25 hours and incorrectly passes the 11-hour compliance check.",
+    "disposition": "unverified"
+  }
+]
