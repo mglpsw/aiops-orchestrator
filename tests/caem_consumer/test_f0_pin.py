@@ -324,3 +324,82 @@ def test_pin_identity_errors_cannot_raise() -> None:
     errors = _pin_identity_errors(pathological)
     assert len(errors) == 17  # every EXPECTED_* field mismatches
     assert all(e.reason_code == PinReasonCode.FLOATING_IDENTITY for e in errors)
+
+
+def test_pin_with_always_equal_fields_cannot_bypass_identity_gate(tmp_path: Path) -> None:
+    """Round-2 Codex review found: a directly constructed `CaemF0Pin` could
+    supply objects whose `__eq__`/`__ne__` always claim equality with the
+    expected value, silently defeating `_pin_identity_errors`'s `!=`
+    comparison and letting a self-consistent non-F0 artifact verify
+    successfully. Confirmed red against commit 18dafdc (ok=True with this
+    exact pin). Fixed by checking the exact primitive type (`str`/`bool`)
+    before ever comparing values, so a pathological object's `__eq__` is
+    never invoked."""
+
+    class AlwaysEqual:
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __ne__(self, other: object) -> bool:
+            return False
+
+    root = tmp_path / "root"
+    root.mkdir()
+    build_fixture_interface(root)
+
+    always_equal_fields = {
+        field_name: AlwaysEqual()
+        for field_name in (
+            "target_release",
+            "maturity",
+            "published",
+            "source_sha",
+            "tested_merge_sha",
+            "carrier_sha",
+            "base_policy_digest",
+            "policy_source_bytes_digest",
+            "policy_source_semantic_digest",
+            "contract_registry_digest",
+            "schema_set_digest",
+            "artifact_digest",
+            "artifact_git_projection_digest",
+            "interface_manifest_digest",
+            "transport_archive_digest",
+            "verifier_identity",
+            "toolchain_digest",
+        )
+    }
+    pin = CaemF0Pin(
+        consumer_repository="mglpsw/aiops-orchestrator",
+        normative_repository="mglpsw/caem",
+        normative_writer="caem_only",
+        authority_effect="none",
+        **always_equal_fields,
+    )
+
+    result = load_caem_f0_interface(pin, interface_root=root)
+    assert not result.ok, "an all-AlwaysEqual pin must never verify successfully"
+    assert len(result.errors) == 17
+    assert all(e.reason_code == PinReasonCode.FLOATING_IDENTITY for e in result.errors)
+
+
+def test_none_pin_is_rejected_without_raising() -> None:
+    """Round-2 Codex review found: `load_caem_f0_interface(None, ...)` raised
+    an uncaught `AttributeError` instead of returning
+    `CaemF0LoadResult(ok=False, ...)`, contradicting the function's own
+    documented total/fail-closed guarantee. Confirmed red against commit
+    18dafdc. Fixed via `getattr(pin, field, _MISSING)` plus an outer
+    try/except in `load_caem_f0_interface`."""
+
+    result = load_caem_f0_interface(None, interface_root="/nonexistent")
+    assert not result.ok
+    assert len(result.errors) > 0
+
+
+def test_pin_missing_identity_attribute_is_rejected_without_raising() -> None:
+    class Empty:
+        pass
+
+    result = load_caem_f0_interface(Empty(), interface_root="/nonexistent")
+    assert not result.ok
+    assert all(e.reason_code == PinReasonCode.FLOATING_IDENTITY for e in result.errors)

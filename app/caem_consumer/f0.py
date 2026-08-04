@@ -867,10 +867,21 @@ def load_caem_f0_interface(
     wrongly-typed structural fields, a corrupt/truncated zip, a file that
     disappears between existence and read — returns
     `CaemF0LoadResult(ok=False, errors=...)`. No exception escapes this
-    function.
+    function, including for a malformed `pin` argument itself (`None`, an
+    object missing identity attributes, or one with a pathological
+    `__eq__`): `_pin_identity_errors` is provably total on its own (exact
+    type checks before comparison, `getattr` with a sentinel default), and
+    this call is additionally wrapped here for defense in depth. Found by
+    round-2 Codex review of this PR.
     """
 
-    identity_errors = _pin_identity_errors(pin)
+    try:
+        identity_errors = _pin_identity_errors(pin)
+    except Exception as exc:  # noqa: BLE001 - deliberate total safety net
+        return CaemF0LoadResult(
+            ok=False,
+            errors=(_err(PinReasonCode.UNEXPECTED_ERROR, f"unexpected error while checking pin identity: {exc!r}"),),
+        )
     if identity_errors:
         return CaemF0LoadResult(ok=False, errors=tuple(identity_errors))
 
@@ -879,16 +890,50 @@ def load_caem_f0_interface(
     )
 
 
-def _pin_identity_errors(pin: CaemF0Pin) -> list[CaemF0LoadError]:
+_MISSING = object()
+
+# Every EXPECTED_* field is either str or bool. Enforced as an EXACT type
+# check (`type(x) is expected_type`, not `isinstance`) before any equality
+# comparison — found by round-2 Codex review: a directly constructed
+# `CaemF0Pin` could otherwise supply an object whose own `__eq__`/`__ne__`
+# always claims equality with the expected value, silently defeating the
+# `!=` comparison below. Checking the exact type first, and short-circuiting
+# on mismatch, means a pathological object's `__eq__` is never even invoked.
+_EXPECTED_INTERFACE_TYPES: dict[str, type] = {
+    "target_release": str,
+    "maturity": str,
+    "published": bool,
+    "source_sha": str,
+    "tested_merge_sha": str,
+    "carrier_sha": str,
+    "base_policy_digest": str,
+    "policy_source_bytes_digest": str,
+    "policy_source_semantic_digest": str,
+    "contract_registry_digest": str,
+    "schema_set_digest": str,
+    "artifact_digest": str,
+    "artifact_git_projection_digest": str,
+    "interface_manifest_digest": str,
+    "transport_archive_digest": str,
+    "verifier_identity": str,
+    "toolchain_digest": str,
+}
+
+
+def _pin_identity_errors(pin: object) -> list[CaemF0LoadError]:
     """Check whether `pin`'s interface identity matches the frozen F0
-    `EXPECTED_*` constants. Pure attribute/dict comparisons only — cannot
-    raise. Mirrors the equivalent JSON-level check in `load_caem_f0_pin`,
-    but operates on an already-constructed `CaemF0Pin` object."""
+    `EXPECTED_*` constants, by exact type AND value. Mirrors the equivalent
+    JSON-level check in `load_caem_f0_pin`, but operates on an
+    already-constructed `CaemF0Pin` object (or, defensively, any object —
+    see `type: object` above — since this must never raise, not even for
+    `pin=None` or a value missing the expected attributes; `getattr`'s
+    3-argument form and the `_MISSING` sentinel guarantee that)."""
 
     errors: list[CaemF0LoadError] = []
     for id_field, expected in _EXPECTED_INTERFACE_VALUES.items():
-        actual = getattr(pin, id_field)
-        if actual != expected:
+        actual = getattr(pin, id_field, _MISSING)
+        expected_type = _EXPECTED_INTERFACE_TYPES[id_field]
+        if type(actual) is not expected_type or actual != expected:
             errors.append(
                 _err(
                     PinReasonCode.FLOATING_IDENTITY,
