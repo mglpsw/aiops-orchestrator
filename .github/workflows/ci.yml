@@ -55,3 +55,57 @@ jobs:
           grep -RInE \
             'shell=True|create_subprocess_shell|docker exec|ssh |git push|git pull|docker compose up|docker compose down|docker compose restart|systemctl restart|systemctl start|systemctl stop|systemctl reload' \
             app docs tests config scripts README.md || true
+
+  agent-review-release-gates:
+    name: AgentReview release gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Repository validation (ci_validate.sh)
+        run: bash scripts/ci_validate.sh
+
+      - name: AgentReview v2 schemas byte-identical
+        run: python scripts/export-agent-review-v2-schemas.py --check
+
+      - name: AgentReview v2 Lane 1 evals byte-identical
+        run: python scripts/run-agent-review-v2-evals.py --check
+
+      - name: CAEM 3.0 F0 pin valid
+        run: python scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check
+
+      - name: RI-B0a.2 reuse view in sync
+        run: python scripts/generate-ri-b0a-2-reuse-view.py --check
+
+      - name: Benchmark corpus materializer byte-identical
+        run: python scripts/materialize-benchmark-case.py --check
+
+      - name: Benchmark corpus manifest byte-identical and minimums met
+        run: python scripts/generate-benchmark-corpus-manifest.py --check
+
+      - name: Benchmark premanifest byte-identical
+        run: python scripts/generate-benchmark-premanifest.py --check
+
+      - name: Benchmark final identity structurally complete and frozen fields intact
+        run: python scripts/generate-benchmark-identity-final.py --check
+
+      - name: Benchmark report deterministically reproducible from committed observations
+        run: python scripts/generate-benchmark-report.py --check
+
+      - name: Benchmark corpus safety gate (secrets/paths/identifiers)
+        run: python scripts/validate-benchmark-corpus-safety.py
