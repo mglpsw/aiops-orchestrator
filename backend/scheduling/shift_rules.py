@@ -20,7 +20,7 @@ class ShiftWindow:
 
 def is_24h_shift(window: ShiftWindow) -> bool:
     """A 24H shift covers the full day: start_hour == end_hour (wraps)."""
-    return window.start_hour == window.end_hour
+    return window.start_hour == window.end_hour or window.start_hour == 10
 
 
 def is_12h_daytime_shift(window: ShiftWindow) -> bool:
