@@ -1,0 +1,14 @@
+[
+  {
+    "source": "codex_github",
+    "repo": "mglpsw/aiops-orchestrator",
+    "pr_number": 178,
+    "head_sha": "fc0fc20ec9669e3bcc77983b9bc63bf35b3a6fd2",
+    "file_path": "backend/scheduling/shift_rules.py",
+    "fragment_id": null,
+    "severity_claimed": "P2",
+    "normalized_cause": "Keep daytime windows out of the 24-hour predicate",
+    "evidence_summary": "When the canonical 07:00\u201319:00 daytime window is passed, the added range condition makes `is_24h_shift` return true; because `classify_shift` checks that predicate first, the window is incorrectly returned as `covered_by_24h` instead of `covered_by_12h_day`. The broadened predicate also misclassifies other non-24-hour windows such as 06:00\u201320:00, so the 24-hour check must remain limited to a full-day wrap.",
+    "disposition": "unverified"
+  }
+]

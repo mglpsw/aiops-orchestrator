@@ -1,0 +1,25 @@
+{
+  "case_id": "agentescala-security-confirmed-finding-blocked-code",
+  "repo": "mglpsw/aiops-orchestrator",
+  "pr_number": 182,
+  "base_sha": "c35d566344e77ee55840933e86a23919f6365c8d",
+  "head_sha": "a3218f6a1c03eb9f2f5b325e983582eb3130f7f3",
+  "actual_readiness": "blocked_code",
+  "expected_readiness": "blocked_code",
+  "readiness_matches": true,
+  "expected_finding_preserved": true,
+  "false_approval": false,
+  "manifest_hash": "66fa2867ad00c68ee20cab4422e7594b9cb3da19fdb669721ef71bb00688af2e",
+  "finding_references": [
+    {
+      "finding_id": "679c88fd8cbd6c71d9847288cf761d05cb084ff3d1f2b03201b886ebca444a56",
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 182,
+      "head_sha": "a3218f6a1c03eb9f2f5b325e983582eb3130f7f3",
+      "file_path": "backend/scheduling/shift_rules.py",
+      "line_start": 20,
+      "line_end": 26,
+      "severity": "P1"
+    }
+  ]
+}

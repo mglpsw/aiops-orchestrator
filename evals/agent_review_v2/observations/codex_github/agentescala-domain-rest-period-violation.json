@@ -1,0 +1,14 @@
+[
+  {
+    "source": "codex_github",
+    "repo": "mglpsw/aiops-orchestrator",
+    "pr_number": 179,
+    "head_sha": "fccbbb10bdea812d44068f7877512bc851ccc8b4",
+    "file_path": "backend/scheduling/rest_period_rules.py",
+    "fragment_id": null,
+    "severity_claimed": "P1",
+    "normalized_cause": "Wrap only negative overnight gaps",
+    "evidence_summary": "For any same-day shift pair, this predicate now adds 24 hours to an already valid gap: for example, an 18:00 end followed by a 22:00 start becomes 28 hours instead of 4, so `is_rest_period_compliant` incorrectly accepts a rest period below the 11-hour minimum. Negative overnight gaps are also left unwrapped; restore the negative-only condition so short same-day rests cannot be reported as compliant.",
+    "disposition": "unverified"
+  }
+]

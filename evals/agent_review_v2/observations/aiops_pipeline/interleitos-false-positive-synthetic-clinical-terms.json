@@ -1,0 +1,14 @@
+{
+  "case_id": "interleitos-false-positive-synthetic-clinical-terms",
+  "repo": "mglpsw/aiops-orchestrator",
+  "pr_number": 187,
+  "base_sha": "1bdf581fefe9f0794279a49b1d88c6977160f503",
+  "head_sha": "fe6b53cc9cfb3b9e0975ed577bc7b5d4a87bb6de",
+  "actual_readiness": "ready",
+  "expected_readiness": "ready",
+  "readiness_matches": true,
+  "expected_finding_preserved": null,
+  "false_approval": false,
+  "manifest_hash": "de0475a23b959928dd194e8840c1f9bc9fc8c0cbbb92c9da7e422459e30d50c9",
+  "finding_references": []
+}

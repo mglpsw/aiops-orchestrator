@@ -1,0 +1,216 @@
+{
+  "schema_id": "agent-review.benchmark-premanifest.v1",
+  "benchmark_run_id": "agentreview-v2-benchmark-ae758ab039de",
+  "source_master_sha": "ae758ab039def1e791e603efdddc0ad8e370a5be",
+  "corpus_digest": "1570f0dfb999efddb19d4d544110a5498a4302926a16a746c8b9f40fc213752a",
+  "applicability_manifest_digest": "d383bd63345ef34326723990ca3a0c87885697a60d077296462c090ccdd05100",
+  "expected_manifest_digest": "e95176d940404224221db56920c8063c66b1bd178c31b579ec5831cecca477fb",
+  "codex_cli_version": "codex-cli 0.144.6",
+  "rules_digest": "dfb697139ef7037b09cf0134a30fe0341fa19482dcd03deb310f3c27d8667ec2",
+  "normalizer_digest": "9d603ffcc64da01e0185b2b09b7811fbcf5b92a9b47d046ff37d656c0850a345",
+  "attempt_policy": {
+    "attempts_per_case_per_lane": 1,
+    "retry_condition": "documented transport/provider failure only",
+    "retry_forbidden_reason": "obtaining a better result is fabrication of evidence"
+  },
+  "created_before_provider_call": true,
+  "real_acquisition": {
+    "agentescala-domain-new-finding-manual-required": {
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 178,
+      "base_ref": "eval/agent-review-v2-shadow/base-agentreview-v2-benchmark-1f8b9fd1f8d3-agentescala-domain-new-finding-manual-required",
+      "base_sha": "34129f59609a9753ef6221bbfa1a09ca34dc049f",
+      "head_ref": "eval/agent-review-v2-shadow/head-agentreview-v2-benchmark-1f8b9fd1f8d3-agentescala-domain-new-finding-manual-required",
+      "head_sha": "fc0fc20ec9669e3bcc77983b9bc63bf35b3a6fd2",
+      "patch_digest": "sha256:45a0c58ba6929180b6b4242f070095a3debfa71b68783d171481e5bd4848b8e1",
+      "attempts_used": {
+        "codex_local": 1,
+        "codex_github": 1
+      },
+      "retries": {
+        "codex_local": 0,
+        "codex_github": 0
+      },
+      "pr_closed_unmerged": true,
+      "branches_deleted": true
+    },
+    "agentescala-domain-rest-period-violation": {
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 179,
+      "base_ref": "eval/agent-review-v2-shadow/base-agentreview-v2-benchmark-1f8b9fd1f8d3-agentescala-domain-rest-period-violation",
+      "base_sha": "9a483663847ce92d50079efcaf82a2ab3c2d32e5",
+      "head_ref": "eval/agent-review-v2-shadow/head-agentreview-v2-benchmark-1f8b9fd1f8d3-agentescala-domain-rest-period-violation",
+      "head_sha": "fccbbb10bdea812d44068f7877512bc851ccc8b4",
+      "patch_digest": "sha256:c4aec2531976d5e9b409b742ac8c4f27b10301429b1b80fc4299d98f5fec6133",
+      "attempts_used": {
+        "codex_local": 1,
+        "codex_github": 1
+      },
+      "retries": {
+        "codex_local": 0,
+        "codex_github": 0
+      },
+      "pr_closed_unmerged": true,
+      "branches_deleted": true
+    },
+    "agentescala-false-positive-comment-only-change": {
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 180,
+      "base_ref": "eval/agent-review-v2-shadow/base-agentreview-v2-benchmark-1f8b9fd1f8d3-agentescala-false-positive-comment-only-change",
+      "base_sha": "bda44855064bde324e1be8196080839f38df5b22",
+      "head_ref": "eval/agent-review-v2-shadow/head-agentreview-v2-benchmark-1f8b9fd1f8d3-agentescala-false-positive-comment-only-change",
+      "head_sha": "00f7e51fa31cfbcbd7af771f2517bf682bb25b08",
+      "patch_digest": "sha256:aaa1320862317ddae2c46061cfa06f30265d85c44928ffd44a45347d2f11e5d5",
+      "attempts_used": {
+        "codex_local": 1,
+        "codex_github": 1
+      },
+      "retries": {
+        "codex_local": 0,
+        "codex_github": 0
+      },
+      "pr_closed_unmerged": true,
+      "branches_deleted": true
+    },
+    "agentescala-false-positive-unrelated-change": {
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 181,
+      "base_ref": "eval/agent-review-v2-shadow/base-agentreview-v2-benchmark-1f8b9fd1f8d3-agentescala-false-positive-unrelated-change",
+      "base_sha": "edc52ac50e990bd6dc89ede071ce32b8b326eb9b",
+      "head_ref": "eval/agent-review-v2-shadow/head-agentreview-v2-benchmark-1f8b9fd1f8d3-agentescala-false-positive-unrelated-change",
+      "head_sha": "26a617e67278d647313e274d7863586dd34a942f",
+      "patch_digest": "sha256:15946cb5e1449fdd520d336a7b63b314623f6acac72c7c528ed34ecccd7873b1",
+      "attempts_used": {
+        "codex_local": 1,
+        "codex_github": 1
+      },
+      "retries": {
+        "codex_local": 0,
+        "codex_github": 0
+      },
+      "pr_closed_unmerged": true,
+      "branches_deleted": true
+    },
+    "agentescala-security-confirmed-finding-blocked-code": {
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 182,
+      "base_ref": "eval/agent-review-v2-shadow/base-agentreview-v2-benchmark-1f8b9fd1f8d3-agentescala-security-confirmed-finding-blocked-code",
+      "base_sha": "c35d566344e77ee55840933e86a23919f6365c8d",
+      "head_ref": "eval/agent-review-v2-shadow/head-agentreview-v2-benchmark-1f8b9fd1f8d3-agentescala-security-confirmed-finding-blocked-code",
+      "head_sha": "a3218f6a1c03eb9f2f5b325e983582eb3130f7f3",
+      "patch_digest": "sha256:dcb6a195ab25257e59d7004a46bd2f05efcf0fe1bd7d44219f0c051f82aaf705",
+      "attempts_used": {
+        "codex_local": 1,
+        "codex_github": 1
+      },
+      "retries": {
+        "codex_local": 0,
+        "codex_github": 0
+      },
+      "pr_closed_unmerged": true,
+      "branches_deleted": true
+    },
+    "interleitos-domain-consent-scope-omission": {
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 183,
+      "base_ref": "eval/agent-review-v2-shadow/base-agentreview-v2-benchmark-1f8b9fd1f8d3-interleitos-domain-consent-scope-omission",
+      "base_sha": "6739b942d8868e3c6e127a245dcf956bad4d9939",
+      "head_ref": "eval/agent-review-v2-shadow/head-agentreview-v2-benchmark-1f8b9fd1f8d3-interleitos-domain-consent-scope-omission",
+      "head_sha": "bbac0983dce35542022542980e53b8023427dbb4",
+      "patch_digest": "sha256:2dee37f8389ec548874dcad454bad9df6636d3e384f5f91ec42020aebd8da717",
+      "attempts_used": {
+        "codex_local": 1,
+        "codex_github": 1
+      },
+      "retries": {
+        "codex_local": 0,
+        "codex_github": 0
+      },
+      "pr_closed_unmerged": true,
+      "branches_deleted": true
+    },
+    "interleitos-domain-schema-contract-drift": {
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 184,
+      "base_ref": "eval/agent-review-v2-shadow/base-agentreview-v2-benchmark-1f8b9fd1f8d3-interleitos-domain-schema-contract-drift",
+      "base_sha": "dc57355bdcf15752e8c8b26f12476e64470dfa03",
+      "head_ref": "eval/agent-review-v2-shadow/head-agentreview-v2-benchmark-1f8b9fd1f8d3-interleitos-domain-schema-contract-drift",
+      "head_sha": "97b300797ba601fd705ab276458687c16b20659a",
+      "patch_digest": "sha256:abc7199fb8a152f4767000cc39ec0efa1955768e612f64edec8cb201b7bc50b0",
+      "attempts_used": {
+        "codex_local": 1,
+        "codex_github": 1
+      },
+      "retries": {
+        "codex_local": 0,
+        "codex_github": 0
+      },
+      "pr_closed_unmerged": true,
+      "branches_deleted": true
+    },
+    "interleitos-domain-tenancy-scope-composition": {
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 185,
+      "base_ref": "eval/agent-review-v2-shadow/base-agentreview-v2-benchmark-1f8b9fd1f8d3-interleitos-domain-tenancy-scope-composition",
+      "base_sha": "34dfa29a71c54ae60b24734fef65c5e673c4eacb",
+      "head_ref": "eval/agent-review-v2-shadow/head-agentreview-v2-benchmark-1f8b9fd1f8d3-interleitos-domain-tenancy-scope-composition",
+      "head_sha": "caab96e4e6f039d31b94f0549f7c6645a6d316d7",
+      "patch_digest": "sha256:fcb878aa7fca97ee972d0ad8ba8844092362e67786211abe66e2ae22801d46a7",
+      "attempts_used": {
+        "codex_local": 1,
+        "codex_github": 1
+      },
+      "retries": {
+        "codex_local": 0,
+        "codex_github": 0
+      },
+      "pr_closed_unmerged": true,
+      "branches_deleted": true
+    },
+    "interleitos-false-positive-logging-only-change": {
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 186,
+      "base_ref": "eval/agent-review-v2-shadow/base-agentreview-v2-benchmark-1f8b9fd1f8d3-interleitos-false-positive-logging-only-change",
+      "base_sha": "30982f351711b1d0ed44289c7a54fef4d6af167f",
+      "head_ref": "eval/agent-review-v2-shadow/head-agentreview-v2-benchmark-1f8b9fd1f8d3-interleitos-false-positive-logging-only-change",
+      "head_sha": "d4ba12f724c8d6ac18b016dc63304fff88a041e2",
+      "patch_digest": "sha256:7017666d8e8a93ab8800aabc7f3b52da546f57f0fdd1140aafc504323db80654",
+      "attempts_used": {
+        "codex_local": 1,
+        "codex_github": 1
+      },
+      "retries": {
+        "codex_local": 0,
+        "codex_github": 0
+      },
+      "pr_closed_unmerged": true,
+      "branches_deleted": true
+    },
+    "interleitos-false-positive-synthetic-clinical-terms": {
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 187,
+      "base_ref": "eval/agent-review-v2-shadow/base-agentreview-v2-benchmark-1f8b9fd1f8d3-interleitos-false-positive-synthetic-clinical-terms",
+      "base_sha": "1bdf581fefe9f0794279a49b1d88c6977160f503",
+      "head_ref": "eval/agent-review-v2-shadow/head-agentreview-v2-benchmark-1f8b9fd1f8d3-interleitos-false-positive-synthetic-clinical-terms",
+      "head_sha": "fe6b53cc9cfb3b9e0975ed577bc7b5d4a87bb6de",
+      "patch_digest": "sha256:798de5a38d93fd1078d329d7f375aca8a3a175b6957b5fdc180f066159c2ff2a",
+      "attempts_used": {
+        "codex_local": 1,
+        "codex_github": 1
+      },
+      "retries": {
+        "codex_local": 0,
+        "codex_github": 0
+      },
+      "pr_closed_unmerged": true,
+      "branches_deleted": true
+    }
+  },
+  "human_lane": {
+    "status": "deferred",
+    "destination": "RI-C/RI-D",
+    "completed": false,
+    "disposition_ref": "https://github.com/mglpsw/aiops-orchestrator/issues/88#issuecomment-5183154624"
+  },
+  "acquisition_complete": true
+}

@@ -1,0 +1,14 @@
+{
+  "case_id": "interleitos-false-positive-logging-only-change",
+  "repo": "mglpsw/aiops-orchestrator",
+  "pr_number": 186,
+  "base_sha": "30982f351711b1d0ed44289c7a54fef4d6af167f",
+  "head_sha": "d4ba12f724c8d6ac18b016dc63304fff88a041e2",
+  "actual_readiness": "ready",
+  "expected_readiness": "ready",
+  "readiness_matches": true,
+  "expected_finding_preserved": null,
+  "false_approval": false,
+  "manifest_hash": "0dd9c5dbbb2b8599ce701986f9ee84da44b28b04e5ee549c69b4c263b2a5383d",
+  "finding_references": []
+}

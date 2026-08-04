@@ -1,0 +1,14 @@
+[
+  {
+    "source": "codex_github",
+    "repo": "mglpsw/aiops-orchestrator",
+    "pr_number": 184,
+    "head_sha": "97b300797ba601fd705ab276458687c16b20659a",
+    "file_path": "backend/api/schema_contract.py",
+    "fragment_id": null,
+    "severity_claimed": "P2",
+    "normalized_cause": "Bump the contract version for the required field",
+    "evidence_summary": "When `care_team_ref` becomes required while `CONTRACT_VERSION` remains `\"3\"`, consumers pinned to version 3 are not notified that the accepted shape has changed and may continue omitting this field. Bump `CONTRACT_VERSION` with this change, or keep the field optional, so version-gated consumers can reject or adopt the new contract explicitly.",
+    "disposition": "unverified"
+  }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "source": "codex_local",
+    "repo": "mglpsw/aiops-orchestrator",
+    "pr_number": 184,
+    "head_sha": "97b300797ba601fd705ab276458687c16b20659a",
+    "file_path": "backend/api/schema_contract.py",
+    "fragment_id": null,
+    "severity_claimed": "P1",
+    "normalized_cause": "Bump the contract version for this requiredness change",
+    "evidence_summary": "Changing `care_team_ref` from optional to required is a breaking schema change, but `CONTRACT_VERSION` remains `\"3\"`. Consumers pinned to version 3 will not detect the new requirement and may continue sending or accepting payloads without this field; bump the version alongside this change.",
+    "disposition": "unverified"
+  }
+]

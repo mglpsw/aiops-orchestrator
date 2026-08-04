@@ -25,6 +25,7 @@ from evals.agent_review_v2.corpus_safety import validate_tree  # noqa: E402
 TARGET_DIRS = (
     ROOT_DIR / "evals" / "agent_review_v2" / "case_sources",
     ROOT_DIR / "evals" / "agent_review_v2" / "reviewable_corpus",
+    ROOT_DIR / "evals" / "agent_review_v2" / "observations",
 )
 
 

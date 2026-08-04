@@ -1,0 +1,131 @@
+{
+  "schema_id": "agent-review.benchmark-report.v1",
+  "benchmark_run_id": "agentreview-v2-benchmark-ae758ab039de",
+  "source_master_sha": "ae758ab039def1e791e603efdddc0ad8e370a5be",
+  "aiops_pipeline": {
+    "readiness_accuracy": "10/10",
+    "finding_preservation": "6/6",
+    "stale_rejection": "not_applicable -- no identity_negative case is provider_review_applicable (stale is a Lane 1/2A-only pipeline_integrity question, see MANIFEST.yaml lane1_only_cases)",
+    "coverage_behavior": "complete_manifest_assembly=10/10 (no blocked_pipeline outcome)",
+    "false_approval_count": 0
+  },
+  "codex_local_detection": {
+    "location_recall": "6/6",
+    "severity_exact_match_rate": "3/6",
+    "false_positive_count": 0,
+    "false_positive_denominator": 4,
+    "canonical_correlation_via_correlate_observation_v2": {
+      "matched": 3,
+      "rejected": 3,
+      "inconclusive": 0,
+      "note": "correlate_observation_v2 requires EXACT severity match (never just file_path) -- a location-correct finding whose claimed severity differs from the case's ground truth severity is 'rejected' by this canonical tool, not silently loosened here. See location_recall above for the file-level detection signal independent of severity calibration."
+    },
+    "denominator": 6,
+    "sample_size_caveat": "statistical_status: descriptive_provisional_baseline -- n=6 positives, n=4 counterexamples; no significance or generalization claim.",
+    "per_case": {
+      "agentescala-domain-new-finding-manual-required": {
+        "location_match": true,
+        "severity_claimed": "P2",
+        "severity_expected": "P2"
+      },
+      "agentescala-domain-rest-period-violation": {
+        "location_match": true,
+        "severity_claimed": "P1",
+        "severity_expected": "P1"
+      },
+      "agentescala-security-confirmed-finding-blocked-code": {
+        "location_match": true,
+        "severity_claimed": "P1",
+        "severity_expected": "P1"
+      },
+      "interleitos-domain-consent-scope-omission": {
+        "location_match": true,
+        "severity_claimed": "P2",
+        "severity_expected": "P3"
+      },
+      "interleitos-domain-schema-contract-drift": {
+        "location_match": true,
+        "severity_claimed": "P1",
+        "severity_expected": "P2"
+      },
+      "interleitos-domain-tenancy-scope-composition": {
+        "location_match": true,
+        "severity_claimed": "P1",
+        "severity_expected": "P2"
+      }
+    }
+  },
+  "codex_github_detection": {
+    "location_recall": "6/6",
+    "severity_exact_match_rate": "6/6",
+    "false_positive_count": 0,
+    "false_positive_denominator": 4,
+    "canonical_correlation_via_correlate_observation_v2": {
+      "matched": 6,
+      "rejected": 0,
+      "inconclusive": 0,
+      "note": "correlate_observation_v2 requires EXACT severity match (never just file_path) -- a location-correct finding whose claimed severity differs from the case's ground truth severity is 'rejected' by this canonical tool, not silently loosened here. See location_recall above for the file-level detection signal independent of severity calibration."
+    },
+    "denominator": 6,
+    "sample_size_caveat": "statistical_status: descriptive_provisional_baseline -- n=6 positives, n=4 counterexamples; no significance or generalization claim.",
+    "per_case": {
+      "agentescala-domain-new-finding-manual-required": {
+        "location_match": true,
+        "severity_claimed": "P2",
+        "severity_expected": "P2"
+      },
+      "agentescala-domain-rest-period-violation": {
+        "location_match": true,
+        "severity_claimed": "P1",
+        "severity_expected": "P1"
+      },
+      "agentescala-security-confirmed-finding-blocked-code": {
+        "location_match": true,
+        "severity_claimed": "P1",
+        "severity_expected": "P1"
+      },
+      "interleitos-domain-consent-scope-omission": {
+        "location_match": true,
+        "severity_claimed": "P3",
+        "severity_expected": "P3"
+      },
+      "interleitos-domain-schema-contract-drift": {
+        "location_match": true,
+        "severity_claimed": "P2",
+        "severity_expected": "P2"
+      },
+      "interleitos-domain-tenancy-scope-composition": {
+        "location_match": true,
+        "severity_claimed": "P2",
+        "severity_expected": "P2"
+      }
+    }
+  },
+  "cross_source_overlap": {
+    "canonical_expected_vs_codex": {
+      "both_lanes_location_match": "6/6",
+      "codex_local_only": 0,
+      "codex_github_only": 0,
+      "neither_lane": 0
+    }
+  },
+  "human_lane": {
+    "status": "deferred",
+    "destination": "RI-C/RI-D",
+    "completed": false,
+    "disposition_ref": "https://github.com/mglpsw/aiops-orchestrator/issues/88#issuecomment-5183154624"
+  },
+  "codex_operational_eligibility": "eligible",
+  "allowed_role": "shadow",
+  "advisory_eligibility": "deferred_to_target_observation",
+  "required_check_eligible": false,
+  "readiness_authority": false,
+  "statistical_status": "descriptive_provisional_baseline",
+  "promotion_authority": false,
+  "limitations": [
+    "sample size is 6 semantic_positive / 4 semantic_safe_counterexample cases -- a descriptive baseline, not a statistically powered study",
+    "correlate_observation_v2 requires exact severity match; codex_local's severity calibration diverged from ground truth on 3/6 positive cases in this run (all location-correct) -- see codex_local_detection.canonical_correlation... vs .location_recall for the split",
+    "stale/pipeline_integrity/transport_or_dlp_stop cases are Lane 1/2A-only by design (see MANIFEST.yaml) and are excluded from these detection denominators",
+    "Lane 4 (human) is deferred to RI-C/RI-D per the H2 disposition; no human precision/recall is reported"
+  ]
+}

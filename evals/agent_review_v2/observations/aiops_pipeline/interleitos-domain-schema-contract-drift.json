@@ -1,0 +1,25 @@
+{
+  "case_id": "interleitos-domain-schema-contract-drift",
+  "repo": "mglpsw/aiops-orchestrator",
+  "pr_number": 184,
+  "base_sha": "dc57355bdcf15752e8c8b26f12476e64470dfa03",
+  "head_sha": "97b300797ba601fd705ab276458687c16b20659a",
+  "actual_readiness": "manual_required",
+  "expected_readiness": "manual_required",
+  "readiness_matches": true,
+  "expected_finding_preserved": true,
+  "false_approval": false,
+  "manifest_hash": "5a6fc14df179bd269b5c84873172933c3e271b60020607350852f1df544316ac",
+  "finding_references": [
+    {
+      "finding_id": "5ec1e328aef1e30976caa8090dee78d07b1edf6fbccd2d2df8706cc4b985686b",
+      "repo": "mglpsw/aiops-orchestrator",
+      "pr_number": 184,
+      "head_sha": "97b300797ba601fd705ab276458687c16b20659a",
+      "file_path": "backend/api/schema_contract.py",
+      "line_start": 27,
+      "line_end": 33,
+      "severity": "P2"
+    }
+  ]
+}
