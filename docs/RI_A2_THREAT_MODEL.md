@@ -233,19 +233,28 @@ A proof-carrying bundle or counterexample certificate is asserted without
 the corresponding computation/replay actually having been performed — the
 CAEM-side analogue of "hallucinated test output."
 
-- **[enforced — general principle, already in force]** `docs/engineering/
-  **Correction, found by an independent Codex review:** an earlier draft
-  attributed the quote "Nunca fabrique teste, print, inspeção, estado de
-  PR ou sucesso de deploy" to `docs/engineering/CAEM_CORE.md`; verified
-  that `CAEM_CORE.md` does not contain that text -- like the §1.5
-  correction above, it comes from private operator tooling configuration,
-  not a repo-committed source, so it is not cited here as one. This
-  session followed that discipline literally regardless: every
-  Codex finding in PR #173 was reproduced against the prior commit via
-  `importlib`-loaded old code before being called a real bug, and every fix
-  was re-verified with the same reproduction script before being called
-  fixed (see PR #173's round-3 and round-4-confirmation comments for two
-  concrete instances).
+- **[observed operational practice, not an enforced repo gate]**
+  **Correction, found by an independent Codex review (two rounds):** an
+  earlier draft both attributed the quote "Nunca fabrique teste, print,
+  inspeção, estado de PR ou sucesso de deploy" to
+  `docs/engineering/CAEM_CORE.md` (verified that file does not contain
+  that text -- like the §1.5 correction above, it comes from private
+  operator tooling configuration, not a repo-committed source) *and*
+  labeled this boundary `[enforced]` despite that. Since there is no
+  repo-committed source establishing this rule, it is not an enforced
+  boundary in the sense the other `[enforced]` items in this document
+  are (a real test, schema, or committed policy file); it is an
+  operational practice this session actually followed, observable in PR
+  #173's history, not a gate RI-B0 can rely on being automatically
+  applied. RI-B0 needs its own concrete, enforceable mechanism for this
+  (e.g. a required reproduction artifact attached to any claimed
+  fix/finding) -- this document does not define one, and this practice
+  alone does not substitute for it. Regardless of enforcement status,
+  every Codex finding in PR #173 was reproduced against the prior commit
+  via `importlib`-loaded old code before being called a real bug, and
+  every fix was re-verified with the same reproduction script before
+  being called fixed (see PR #173's round-3 and round-4-confirmation
+  comments for two concrete instances).
 - **[planned — RI-B0, depends on CAEM promoting these from `reserved`]** proof-carrying bundles and
   counterexample certificates are CAEM `reserved` contracts today
   (`caem.proof-certificate.v1`, `caem.counterexample-certificate.v1`,
@@ -277,11 +286,23 @@ finding surfaced by two different chunk fragments, or the same run replayed
 and both copies counted) as if each occurrence were independent corroborating
 evidence, inflating confidence without new information.
 
-- **[enforced]** AgentReview v2's chunk-coverage and fragment-manifest work
-  (this repo's recent `feat(agent-review/v2)` commits — coverage proof,
-  fail-closed policy, synthesis/lifecycle aggregation) already dedupes
-  findings across chunk boundaries by binding them to a canonical
-  `(file, line, finding)` identity rather than counting raw occurrences.
+- **[partially enforced; real gap for file-level findings]**
+  **Correction, found by an independent Codex review of an earlier draft:**
+  this row previously claimed AgentReview v2 "already dedupes findings
+  across chunk boundaries ... rather than counting raw occurrences" as a
+  general, closed boundary. Verified against
+  `app/agent_review/lifecycle_v2.py:aggregate_finding_lifecycle_v2` and its
+  own test `tests/agent_review/test_lifecycle_v2.py::
+  test_file_level_findings_from_two_different_chunks_on_the_same_split_path_are_not_deduplicated`:
+  line-ranged findings dedup correctly by `(file, line range, contract set)`,
+  but **file-level (no-range) findings from two different chunks on the
+  same split path are deliberately NOT deduplicated** — the test asserts
+  `len(findings) == 2` for that exact scenario. So the specific
+  duplicate-amplification scenario this surface names (the same
+  finding surfaced by two different chunk fragments) is *not* fully closed
+  today for file-level findings; it remains a real, currently-open gap,
+  not a solved boundary. Line-ranged dedup is enforced; file-level
+  cross-chunk dedup is not.
 - **[planned — RI-B0]** the accumulation semantics CAEM eventually normalizes for
   variable/evidence combination (duplicate_key, conflict/missing/retraction
   semantics) must be the single mechanism RI-B0 uses to combine
