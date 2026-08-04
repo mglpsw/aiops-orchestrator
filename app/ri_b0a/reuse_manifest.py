@@ -37,6 +37,26 @@ _CANONICAL_FILENAME_EXCEPTIONS: dict[str, str] = {
 }
 
 
+def _duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate JSON object keys instead of silently keeping the
+    last value, matching `app/caem_consumer/f0.py`'s own established
+    discipline for this exact fail-closed contract-loading concern."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ReuseManifestError(f"duplicate JSON key: {key!r}")
+        result[key] = value
+    return result
+
+
+def _is_strict_int(value: object) -> bool:
+    """`True`/`False` are NOT accepted where an integer is required --
+    `bool` is a subclass of `int` in Python (`True == 1`), matching
+    `app/caem_consumer/f0.py`'s own established discipline for this exact
+    concern."""
+    return type(value) is int
+
+
 def _real_agent_review_schema_ids(repo_root: Path) -> frozenset[str]:
     """Every `schema_id: Literal["..."]` declaration actually present in
     `app/agent_review/*.py`. Used to verify an entry's `contract_id` isn't
@@ -176,8 +196,8 @@ def load_reuse_manifest(manifest_path: str | Path, *, repo_root: str | Path) -> 
         except OSError as exc:
             return ReuseManifestLoadResult(ok=False, errors=(f"cannot read manifest: {exc!r}",))
         try:
-            doc = json.loads(raw_text)
-        except json.JSONDecodeError as exc:
+            doc = json.loads(raw_text, object_pairs_hook=_duplicate_keys)
+        except (json.JSONDecodeError, ReuseManifestError) as exc:
             return ReuseManifestLoadResult(ok=False, errors=(f"manifest is not valid JSON: {exc!r}",))
 
         root = _require_dict(doc, "manifest root")
@@ -193,7 +213,7 @@ def load_reuse_manifest(manifest_path: str | Path, *, repo_root: str | Path) -> 
             raise ReuseManifestError(
                 f"manifest.contract_id {contract_id!r} != expected {_MANIFEST_CONTRACT_ID!r}"
             )
-        if root.get("schema_version") != 1:
+        if not _is_strict_int(root.get("schema_version")) or root.get("schema_version") != 1:
             raise ReuseManifestError(f"manifest.schema_version must be 1, got {root.get('schema_version')!r}")
         _require_str(root["generated_from"], "manifest.generated_from")
 
@@ -221,6 +241,17 @@ def load_reuse_manifest(manifest_path: str | Path, *, repo_root: str | Path) -> 
                 raise ReuseManifestError(f"duplicate entries[].contract_id: {entry.contract_id!r}")
             seen_contract_ids.add(entry.contract_id)
             entries.append(entry)
+
+        # Completeness, not just per-entry correctness: this manifest's
+        # whole purpose is to classify EVERY real AgentReview contract, not
+        # merely to be internally consistent about whichever ones it
+        # happens to still mention. Deleting an entry entirely (as opposed
+        # to corrupting one) previously passed silently.
+        missing_ids = real_agent_review_schema_ids - seen_contract_ids
+        if missing_ids:
+            raise ReuseManifestError(
+                f"manifest omits real AgentReview schema_id(s): {sorted(missing_ids)}"
+            )
 
         return ReuseManifestLoadResult(ok=True, entries=tuple(entries))
     except ReuseManifestError as exc:
