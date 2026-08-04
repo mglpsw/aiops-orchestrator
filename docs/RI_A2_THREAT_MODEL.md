@@ -59,9 +59,16 @@ declared identity (path, digest, contract ID) doesn't match its actual bytes,
 attempting to make a later consumer trust forged content under a legitimate
 name.
 
-- **[enforced]** `app/caem_consumer/f0.py`'s loader recomputes every digest
+- **[enforced]** `app/caem_consumer/f0.py`'s loader recomputes and checks
+  every digest against the pin. **Correction, found by an independent
+  Codex review:** an earlier draft said this happens "byte-for-byte" for
+  all four named digests; verified that only each declared artifact
+  *file*'s own digest is a raw-bytes check -- the four aggregate digests
   (`artifact_digest`, `schema_set_digest`, `contract_registry_digest`,
-  `interface_manifest_digest`) byte-for-byte against the pin; a mismatch is
+  `interface_manifest_digest`) are computed via
+  `_canonical_json_digest` (canonical-JSON of a projection), so
+  semantically-identical reformatting of the underlying JSON is accepted,
+  not just literal byte identity. A mismatch in either check is
   `ARTIFACT_DIGEST_MISMATCH`/`INTERFACE_DIGEST_MISMATCH`/
   `CONTRACT_REGISTRY_INVALID`, never silently accepted (proven by
   `tests/caem_consumer/test_f0_interface.py`,
@@ -100,10 +107,18 @@ rules a proof is judged against.
 
 - **[enforced]** the CAEM F0 pin is a single, digest-verified file
   (`config/caem/caem-3.0-f0.pin.json`); nothing in this repo reads a
-  "current branch's policy" — the identity checked is always the pinned
-  carrier, independent of what branch is checked out
-  (`app/caem_consumer/f0.py:_verify_git_projection`, hardened this session —
-  see PR #173's round-4 fix for `git_root` HEAD verification).
+  "current branch's policy" — the *declared* identity checked is always
+  the pinned carrier's exact digests, never a branch-relative policy.
+  **Correction, found by an independent Codex review:** an earlier draft
+  called the underlying git-projection check itself "independent of what
+  branch is checked out"; verified the opposite is true by design --
+  `_verify_git_projection` (hardened this session, PR #173's round-4 fix)
+  explicitly runs `git rev-parse HEAD` and *requires* it to equal
+  `pin.carrier_sha`, rejecting `SOURCE_IDENTITY_MISMATCH` otherwise. That
+  check's whole value depends on the checkout being at the exact pinned
+  revision; it is deliberately branch/checkout-*dependent*, not
+  independent of it -- "independent of what branch" describes the pin's
+  own fixed identity, not this verification mode's requirement.
 - **[planned — RI-B0]** RI-B0's own executor must resolve policy/profile
   from the pinned identity of the *target* being evaluated, never from the
   branch the analysis happens to run on; a profile sourced from an untrusted
@@ -399,9 +414,9 @@ that specific action and target.
    │  ┌───────────────┐   offline, CT104   ┌───────────────────────┐  │
    │  │ AgentReview     │◄──────────────────┤ app/caem_consumer/f0.py │  │
    │  │ runner          │   scoped, no       │ (identity gate,         │  │
-   │  │ (app/agent_review/)│  network, no    │  fail-closed loader)    │  │
+   │  │ (app/agent_review/)│  network, no DB │  fail-closed loader)    │  │
    │  └───────┬───────┘   persistence        └───────────────────────┘  │
-   │          │ manifests/payloads/readiness artifacts (JSON, on disk)  │
+   │          │ manifests/payloads/readiness artifacts (JSON, on disk)   │
    │          ▼                                                          │
    │  ┌───────────────────────┐        ╔══════════════════════════╗   │
    │  │ RI-B0 compiler/executor │◄──────╢  NOT YET IMPLEMENTED       ║   │
@@ -442,6 +457,15 @@ that specific action and target.
                           └─────────────────────────────┘
 ```
 
+**Correction, found by an independent Codex review:** an earlier version
+of this diagram labeled the AgentReview runner box "no ... persistence"
+without qualification, while the very next line of the same diagram shows
+it writing manifests/payloads/readiness artifacts to disk as JSON — an
+internal contradiction. "No persistence" here means **no database or
+RI-B1 persistence specifically**; disk JSON artifacts are a real, distinct
+persistence tier, already covered by this document's own §4 DLP
+requirement (they are exactly the artifacts that requirement gates).
+
 **Naming collision, flagged explicitly (same discipline as RI-A1's own
 finding for "Agent Router"):** the `agent-router-api` **repository**
 (`mglpsw/agent-router-api`, the LLM inference gateway/adaptive router
@@ -476,7 +500,7 @@ case if compromised or buggy), **kill switch** (how to stop it).
 | **future ingestion API/worker** | **planned** (RI-B1, explicitly out of scope for #119-#121) | external inputs destined for RI (real diagnostics, potentially clinical-adjacent per AgentEscala/InterLeitos) | queued/persisted records | **highest-risk data class in this whole model** — potential PHI/clinical narrative, secrets, tokens | ANY persistence or transport of raw, unsanitized input; bypassing DLP (#160) for any reason, including debugging | its own dedicated grant, scoped narrowly, requiring #160's real DLP gate as a precondition, never bundled into a general "RI-B1" grant | full request/response audit trail with DLP-pass evidence attached | worst-case: PHI leak, secret leak, cross-tenant data exposure | must not exist without #160 merged and gating it; if it misbehaves post-launch, the ingestion endpoint itself is disabled at the network/deploy layer (out of this document's scope to specify further — that's a deploy-time control) |
 | **human feedback surface** | **planned**, not implemented | human-authored feedback text | suggestions, F1 change-request drafts (`caem.contract-change-request.v1`, sanitized-evidence-only per §4) | free text from a human — must be treated as untrusted input for DLP purposes, same as any other ingestion path | writing directly to CAEM (F1 is a request, never a direct write); asserting `authority_effect` other than `none` | any grant that would let feedback bypass F1's review-and-accept step | the F1 change request itself, plus whatever DLP pass gated it | a malicious/careless human feedback entry could contain PHI/secrets if unsanitized — same mitigation family as 1.5/1.6 | reject the ingestion path entirely; feedback with no accepted change request has zero effect by construction |
 | **ProjectOps** | real, separate track (per `CURRENT_CHECKPOINT.md`: "ProjectOps v1 permanece trilha separada de inteligência de CI, advisory e fail-safe") | CI signals | advisory CI intelligence output | CI metadata; no RI-specific data | asserting readiness/authority over RI's own gates; being treated as an RI component (it isn't one) | none from RI's side — it's out of this document's authority scope entirely | its own track's evidence, not this document's concern | out of scope for this threat model beyond noting the boundary | out of scope |
-| **`app/agent_router/` (CT102 runtime, "Agent Router" — see naming-collision note above)** | real, this repo | diagnostics, action catalog, approval requests | HTTP responses; JSONL run/approval/audit logs (`var/runs/`, `var/approvals/`, `var/audit/`) | operational diagnostics; NOT clinical data, NOT RI proof data — already isolated by design (no import of `app/agent_review/` in either direction) | executing an unallowlisted command (`command_guardrails.py`); running quarantined SSH/Docker/local-shell adapters (`tests/test_legacy_adapter_quarantine.py` already proves the two paths it tests) | any RI-specific grant — this component doesn't touch RI at all today, and this document does not propose that it should | `var/audit/aiops_audit.jsonl`, existing test suite | worst case is within CT102's own already-documented action-execution blast radius, unrelated to CAEM proof execution | existing `require_api_token` gate + action allowlist; out of this document's scope to redesign |
+| **`app/agent_router/` (CT102 runtime, "Agent Router" — see naming-collision note above)** | real, this repo | diagnostics, action catalog, approval requests | operational diagnostics; NOT RI proof data — already isolated by design (no import of `app/agent_review/` in either direction). **Correction, found by an independent Codex review:** an earlier draft also claimed this component's data is "NOT clinical data ... by design"; verified that `ApprovalCreateRequest.reason` (`app/agent_router/schemas.py`) is an unrestricted free-text string, passed by `request_approval` into `create_approval` (`app/agent_router/services/approval_store.py`), which persists it verbatim to `var/approvals/` via `_persist_snapshot`. A caller can place PHI in an approval reason today; this field must be modeled as untrusted input for DLP purposes, same as any other free-text ingestion path in this document, not assumed non-clinical by design | HTTP responses; JSONL run/approval/audit logs (`var/runs/`, `var/approvals/`, `var/audit/`) | executing an unallowlisted command (`command_guardrails.py`); running quarantined SSH/Docker/local-shell adapters (`tests/test_legacy_adapter_quarantine.py` already proves the two paths it tests) | any RI-specific grant — this component doesn't touch RI at all today, and this document does not propose that it should | `var/audit/aiops_audit.jsonl`, existing test suite | worst case is within CT102's own already-documented action-execution blast radius, unrelated to CAEM proof execution | existing `require_api_token` gate + action allowlist; out of this document's scope to redesign |
 | **publisher** | **planned**, not implemented anywhere in this repo | a readiness decision + the artifact it applies to | a publication action (e.g. posting a review, updating a check) | whatever the artifact being published contains — must already be sanitized upstream | mutating code, deploy, or infrastructure (`PROJECT_OVERLAY.md`: "publisher não altera código, deploy ou infraestrutura"); publishing without revalidating PR/HEAD first | **correction, found by an independent Codex review:** `CAEM_CORE.md`'s real authority matrix has no `publicar`/publish action at all -- only `resolver thread` is real there; the only `publish_review` enum member observed in this checkout is in the quarantined CAEM 2.1 `authority-grant.schema.json`, which this document elsewhere declares non-authoritative. The real, active grant this row can point to today is `resolver thread` only; mapping publication itself onto a specific active grant action is left as a future decision (a new/adapted authority-matrix entry), not prescribed here | the publish action itself (API call, comment, check update) | a stale or wrong publish action misinforms reviewers; mitigated by the mandatory PR/HEAD revalidation immediately before every publish | don't grant the publish action; it is not autonomous by design |
 | **authorized human** | real | everything, subject to their own judgment | grants, ratifications, merges, deploys, releases | full access by design — this is the root of authority, not a component to sandbox | none — this is the actor every other row is bounded relative to | n/a | their own actions' natural GitHub/Git audit trail | full — this is why every grant in this model is scoped, non-transferable, and target-specific, so a human's own mistake stays contained to what they explicitly authorized | n/a |
 
