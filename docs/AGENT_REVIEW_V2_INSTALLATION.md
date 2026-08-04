@@ -84,3 +84,11 @@ PYTHONPATH="$(pwd)" /tmp/agent-review-venv/bin/python3 -c \
 end-to-end (marked `requires_network`, since it performs a real package
 installation; excluded from the default offline gate the same way every
 other `requires_network` test is).
+
+## Release reproduction
+
+For a pinnable release (see `docs/RELEASE_V0_21_0.md`), the clean install
+above is re-run with `--toolrepo-sha` set to the release's exact source SHA
+as part of the RC ensaio checklist, before the RC prerelease is published
+and again before the final tag — never assumed to still pass from an
+earlier run at a different SHA.
