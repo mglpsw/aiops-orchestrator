@@ -19,7 +19,7 @@ def rest_hours_between(previous_shift_end_hour: int, next_shift_start_hour: int)
     previous_shift_end_hour) wraps through midnight; a same-day gap is
     returned as-is."""
     gap = next_shift_start_hour - previous_shift_end_hour
-    if gap < 0:
+    if gap >= 0:
         gap += 24
     return gap
 
