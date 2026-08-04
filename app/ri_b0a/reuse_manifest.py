@@ -126,6 +126,9 @@ def load_reuse_manifest(manifest_path: str | Path, *, repo_root: str | Path) -> 
             return ReuseManifestLoadResult(ok=False, errors=(f"manifest is not valid JSON: {exc!r}",))
 
         root = _require_dict(doc, "manifest root")
+        extra_top = set(root.keys()) - _REQUIRED_TOP_LEVEL_KEYS
+        if extra_top:
+            raise ReuseManifestError(f"manifest has unexpected top-level keys: {sorted(extra_top)}")
         missing_top = _REQUIRED_TOP_LEVEL_KEYS - set(root.keys())
         if missing_top:
             raise ReuseManifestError(f"manifest is missing top-level keys: {sorted(missing_top)}")

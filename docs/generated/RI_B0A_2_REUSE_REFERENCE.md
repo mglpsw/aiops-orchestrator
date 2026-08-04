@@ -21,7 +21,7 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 
 **`agent-review.evidence-bundle.v2`** — AgentReview's own evidence-bundle shape (distinct from CAEM's quarantined .caem/quarantine/caem-2.1/schemas/evidence-bundle.schema.json -- a real naming collision, flagged explicitly per this repo's own established discipline for such collisions, see docs/RI_A2_THREAT_MODEL.md §2). This is the established evidentiary artifact shape already in active use in this repo today.
 
-## Reference — cited for provenance, not consumed directly (4)
+## Reference — cited for provenance, not consumed directly (5)
 
 | Contract ID | Owner | RI-B0 role | Source |
 |---|---|---|---|
@@ -29,6 +29,7 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 | `agent-review.chunk-response-envelope.v2` | aiops-orchestrator (app/agent_review/) | RI-B0 may cite a chunk_id for provenance linking, but does not consume envelope content directly. | `schemas/agent-review/v2/agent-review.chunk-response-envelope.v2.schema.json` |
 | `agent-review.target-profile.v2` | aiops-orchestrator (app/agent_review/) | RI-B0 references the profile identity used by a run for provenance; does not consume or redefine profile content. | `schemas/agent-review/v2/agent-review.target-profile.v2.schema.json` |
 | `agent-review.manifest.v2` | aiops-orchestrator (app/agent_review/) | RI-B0 references manifest identity (run_id) for provenance; does not consume planning content. | `schemas/agent-review/v2/agent-review.manifest.v2.schema.json` |
+| `agent-review.chunk-response.v2` | aiops-orchestrator (app/agent_review/) | RI-B0 may cite a chunk_id/finding identity for provenance linking, but does not consume per-chunk result content directly -- same role as agent-review.chunk-response-envelope.v2. | `schemas/agent-review/v2/agent-review.chunk-response-envelope.v2.schema.json` |
 
 **`agent-review.chunk-payload.v2`** — Per-chunk LLM review input, internal to AgentReview's own diff-splitting pipeline. RI-B0 operates one level above individual chunks; it has no direct need to consume raw chunk payloads.
 
@@ -37,6 +38,8 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 **`agent-review.target-profile.v2`** — Declares which artifacts/paths a review run covers for a given target repository. RI-B0 may need to know which profile produced a given run's evidence, for provenance, but does not own or redefine target-profile semantics itself.
 
 **`agent-review.manifest.v2`** — AgentReview's own run/chunk planning manifest (fragment assignment, expected files). Internal planning artifact; RI-B0 may reference manifest-level identity (run_id) for provenance, but does not consume or redefine planning content.
+
+**`agent-review.chunk-response.v2`** — ChunkReviewResultV2 -- the per-chunk success payload, embedded as a $defs entry inside agent-review.chunk-response-envelope.v2.schema.json (no separate top-level schema file of its own), but carrying its own distinct schema_id literal. Same evidentiary role as its enclosing envelope: internal to AgentReview's own per-chunk review pipeline. Correction, found by an independent Codex review of an earlier draft: this contract was omitted entirely from the manifest, because the manifest's coverage was checked against schema FILES rather than schema_id literals, and this one shares a file with its envelope.
 
 ## Future adapter — needs a translation layer once both sides are real (1)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -58,6 +59,29 @@ def test_real_manifest_covers_all_ten_agentreview_v2_schema_files() -> None:
     assert result.ok, result.errors
     mapped_paths = {e.source_path for e in result.entries if e.source_path is not None}
     assert mapped_paths == real_files
+
+
+def test_real_manifest_covers_every_real_schema_id_literal_not_just_files() -> None:
+    """File-based coverage alone can miss a contract embedded in another
+    file's own $defs (e.g. ChunkReviewResultV2's `agent-review.chunk-
+    response.v2`, which shares a file with its enclosing envelope schema).
+    This test cross-checks against every `schema_id: Literal[...]`
+    declaration in app/agent_review/*.py directly, closing exactly the gap
+    an independent Codex review found in an earlier draft (the manifest
+    omitted agent-review.chunk-response.v2 entirely)."""
+    agent_review_dir = REPO_ROOT / "app" / "agent_review"
+    real_schema_ids: set[str] = set()
+    for py_file in agent_review_dir.glob("*.py"):
+        text = py_file.read_text(encoding="utf-8")
+        real_schema_ids.update(re.findall(r'schema_id:\s*Literal\["([a-z0-9.-]+)"\]', text))
+    assert len(real_schema_ids) >= 10  # sanity: the regex itself still finds real declarations
+
+    result = load_reuse_manifest(REAL_MANIFEST_PATH, repo_root=REPO_ROOT)
+    assert result.ok, result.errors
+    mapped_contract_ids = {e.contract_id for e in result.entries}
+    assert real_schema_ids <= mapped_contract_ids, (
+        f"schema_id literals missing from the manifest: {real_schema_ids - mapped_contract_ids}"
+    )
 
 
 def test_real_manifest_uses_every_declared_state_at_least_once() -> None:
@@ -117,6 +141,19 @@ def test_wrong_contract_id_is_rejected(tmp_path: Path) -> None:
 
 def test_wrong_schema_version_is_rejected(tmp_path: Path) -> None:
     path = _write(tmp_path, _valid_doc(schema_version=2))
+    result = load_reuse_manifest(path, repo_root=tmp_path)
+    assert not result.ok
+
+
+def test_unexpected_top_level_key_is_rejected(tmp_path: Path) -> None:
+    """Correction, found by an independent Codex review of an earlier
+    draft: the loader checked only for MISSING top-level keys, so a
+    manifest with an extra root field (e.g. injected by a bad merge or a
+    tampered revision) silently passed. Confirmed genuinely red against
+    the pre-fix loader before this test was added."""
+    doc = _valid_doc()
+    doc["unexpected_top_level"] = {"silently": "ignored"}
+    path = _write(tmp_path, doc)
     result = load_reuse_manifest(path, repo_root=tmp_path)
     assert not result.ok
 
