@@ -1218,6 +1218,26 @@ def _verify_git_projection(git_root: Path, pin: CaemF0Pin, manifest: Mapping[str
     canonical-JSON digest of the resulting projection to
     `pin.artifact_git_projection_digest`."""
 
+    try:
+        head_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_root,
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return [_err(ReasonCode.SOURCE_IDENTITY_MISMATCH, f"cannot resolve HEAD in {git_root}: {exc}")]
+    head_sha = head_result.stdout.strip()
+    if head_sha != pin.carrier_sha:
+        return [
+            _err(
+                ReasonCode.SOURCE_IDENTITY_MISMATCH,
+                f"git_root HEAD {head_sha} is not checked out at pinned carrier_sha {pin.carrier_sha}; "
+                "reading blobs from the carrier commit object alone would not detect this drift",
+            )
+        ]
+
     projection = []
     for entry in sorted(manifest.get("artifact", {}).get("files", []), key=lambda f: f["path"]):
         rel = entry["path"]
