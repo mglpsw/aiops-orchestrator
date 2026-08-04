@@ -28,8 +28,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
+
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_PATCH_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_EXPECTED_REPO = "mglpsw/aiops-orchestrator"
+_EXPECTED_ATTEMPT_KEYS = frozenset({"codex_local", "codex_github"})
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 PRE_PATH = ROOT_DIR / "evals" / "agent_review_v2" / "benchmark_identity.pre.json"
@@ -122,20 +128,58 @@ def run_check() -> int:
     if human_lane.get("status") != "deferred":
         errors.append("human_lane.status must be 'deferred'")
 
+    # Every case the premanifest PLANNED to acquire must actually appear in
+    # real_acquisition -- a Codex GitHub review of this exact PR found that
+    # checking only "non-empty" lets a silently-incomplete acquisition (some
+    # cases dropped) pass. planned_cases_by_lane's "codex_local" list is the
+    # authoritative full case set (identical across all three provider lanes
+    # by construction -- see generate-benchmark-premanifest.py).
+    planned_case_ids = set(pre.get("planned_cases_by_lane", {}).get("codex_local", []))
     real_acquisition = final.get("real_acquisition", {})
     if not real_acquisition:
         errors.append("real_acquisition is empty")
+    acquired_case_ids = set(real_acquisition.keys())
+    missing_cases = planned_case_ids - acquired_case_ids
+    if missing_cases:
+        errors.append(f"real_acquisition is missing planned case(s): {sorted(missing_cases)}")
+    extra_cases = acquired_case_ids - planned_case_ids
+    if extra_cases:
+        errors.append(f"real_acquisition has unplanned case(s) not in the premanifest: {sorted(extra_cases)}")
+
     for case_id, entry in real_acquisition.items():
         missing = [f for f in _REQUIRED_ACQUISITION_FIELDS if f not in entry]
         if missing:
             errors.append(f"real_acquisition[{case_id!r}] missing fields {missing}")
             continue
+        # A Codex GitHub review of this exact PR found that checking field
+        # PRESENCE alone lets a corrupted value (wrong repo, null pr_number,
+        # empty refs, a malformed patch_digest, empty attempts_used/retries)
+        # pass silently -- validate the actual values, not just their
+        # existence.
+        if entry["repo"] != _EXPECTED_REPO:
+            errors.append(f"real_acquisition[{case_id!r}]: repo is {entry['repo']!r}, expected {_EXPECTED_REPO!r}")
+        if not isinstance(entry["pr_number"], int) or isinstance(entry["pr_number"], bool) or entry["pr_number"] <= 0:
+            errors.append(f"real_acquisition[{case_id!r}]: pr_number is not a positive int")
+        if not entry["base_ref"] or not isinstance(entry["base_ref"], str):
+            errors.append(f"real_acquisition[{case_id!r}]: base_ref is empty or not a string")
+        if not entry["head_ref"] or not isinstance(entry["head_ref"], str):
+            errors.append(f"real_acquisition[{case_id!r}]: head_ref is empty or not a string")
+        if not _SHA_RE.match(entry.get("head_sha", "")):
+            errors.append(f"real_acquisition[{case_id!r}]: head_sha is not a 40-char lowercase hex SHA")
+        if not _SHA_RE.match(entry.get("base_sha", "")):
+            errors.append(f"real_acquisition[{case_id!r}]: base_sha is not a 40-char lowercase hex SHA")
+        if not _PATCH_DIGEST_RE.match(entry.get("patch_digest", "")):
+            errors.append(f"real_acquisition[{case_id!r}]: patch_digest does not match sha256:<64 hex chars>")
+        attempts_used = entry.get("attempts_used") or {}
+        retries = entry.get("retries") or {}
+        if not _EXPECTED_ATTEMPT_KEYS.issubset(attempts_used.keys()):
+            errors.append(f"real_acquisition[{case_id!r}]: attempts_used missing {_EXPECTED_ATTEMPT_KEYS - attempts_used.keys()}")
+        if not _EXPECTED_ATTEMPT_KEYS.issubset(retries.keys()):
+            errors.append(f"real_acquisition[{case_id!r}]: retries missing {_EXPECTED_ATTEMPT_KEYS - retries.keys()}")
         if entry["pr_closed_unmerged"] is not True:
             errors.append(f"real_acquisition[{case_id!r}]: pr_closed_unmerged is not true")
         if entry["branches_deleted"] is not True:
             errors.append(f"real_acquisition[{case_id!r}]: branches_deleted is not true")
-        if len(entry["head_sha"]) != 40 or len(entry["base_sha"]) != 40:
-            errors.append(f"real_acquisition[{case_id!r}]: base_sha/head_sha is not a 40-char SHA")
 
     if errors:
         for e in errors:
