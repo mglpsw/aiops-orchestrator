@@ -28,7 +28,7 @@ from app.caem_consumer.f0 import (
     CaemF0Pin,
     ReasonCode,
     PinReasonCode,
-    load_caem_f0_interface,
+    _verify_artifact_against_pin,
     load_caem_f0_pin,
 )
 from tests.caem_consumer.conftest import (
@@ -55,7 +55,7 @@ def test_missing_registry_file_is_total_and_fail_closed(tmp_path: Path) -> None:
     (root / "interfaces" / "caem-3.0-f0" / "contract-registry.json").unlink()
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.CONTRACT_REGISTRY_INVALID for e in result.errors)
 
@@ -67,7 +67,7 @@ def test_manifest_root_as_list_is_total_and_fail_closed(tmp_path: Path) -> None:
     (root / "interfaces" / "caem-3.0-f0" / "interface-manifest.json").write_bytes(b"[]")
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.INTERFACE_MANIFEST_INVALID for e in result.errors)
 
@@ -79,7 +79,7 @@ def test_registry_root_as_list_is_total_and_fail_closed(tmp_path: Path) -> None:
     (root / "interfaces" / "caem-3.0-f0" / "contract-registry.json").write_bytes(b"[]")
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.CONTRACT_REGISTRY_INVALID for e in result.errors)
 
@@ -93,7 +93,7 @@ def test_invalid_transport_zip_is_total_and_fail_closed(tmp_path: Path) -> None:
     digest = "sha256:" + __import__("hashlib").sha256(zpath.read_bytes()).hexdigest()
     pin = build_fixture_pin(built, transport_archive_digest=digest)
 
-    result = load_caem_f0_interface(pin, transport_zip=zpath)  # must not raise
+    result = _verify_artifact_against_pin(pin, transport_zip=zpath)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.UNEXPECTED_ARTIFACT for e in result.errors)
 
@@ -122,7 +122,7 @@ def test_manifest_artifact_field_wrong_type_is_rejected(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.INTERFACE_MANIFEST_INVALID for e in result.errors)
 
@@ -137,7 +137,7 @@ def test_manifest_schema_set_field_wrong_type_is_rejected(tmp_path: Path) -> Non
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.INTERFACE_MANIFEST_INVALID for e in result.errors)
 
@@ -152,7 +152,7 @@ def test_registry_contracts_field_wrong_type_is_rejected(tmp_path: Path) -> None
     registry_path.write_text(json.dumps(registry, sort_keys=True, separators=(",", ":")))
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.CONTRACT_REGISTRY_INVALID for e in result.errors)
 
@@ -167,7 +167,7 @@ def test_artifact_file_entry_missing_required_keys_is_rejected(tmp_path: Path) -
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.INTERFACE_MANIFEST_INVALID for e in result.errors)
 
@@ -182,7 +182,7 @@ def test_registry_contract_entry_not_an_object_is_rejected(tmp_path: Path) -> No
     registry_path.write_text(json.dumps(registry, sort_keys=True, separators=(",", ":")))
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.CONTRACT_REGISTRY_INVALID for e in result.errors)
 
@@ -194,7 +194,7 @@ def test_missing_manifest_file_is_total_and_fail_closed(tmp_path: Path) -> None:
     built["manifest_path"].unlink()
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.INTERFACE_MANIFEST_INVALID for e in result.errors)
 
@@ -210,7 +210,7 @@ def test_unreadable_manifest_directory_is_total_and_fail_closed(tmp_path: Path) 
     manifest_path.mkdir()
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
 
 
@@ -255,6 +255,6 @@ def test_manifest_non_finite_number_is_rejected(tmp_path: Path) -> None:
     manifest_path.write_text(raw)
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)  # must not raise
+    result = _verify_artifact_against_pin(pin, interface_root=root)  # must not raise
     assert not result.ok
     assert any(e.reason_code == ReasonCode.CANONICAL_JSON_INVALID for e in result.errors)

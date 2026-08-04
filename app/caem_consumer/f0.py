@@ -850,6 +850,18 @@ def load_caem_f0_interface(
     recomputed and compared against `pin.artifact_git_projection_digest`.
     This loader never fetches, clones, or otherwise touches the network.
 
+    Re-validates `pin`'s identity against the frozen F0 `EXPECTED_*`
+    constants before doing anything else — this is deliberate defense in
+    depth: `CaemF0Pin` is a public, plain dataclass, so nothing at the type
+    level stops a caller from constructing one directly (bypassing
+    `load_caem_f0_pin`'s JSON-level identity check entirely) and passing it
+    straight here. Without this second, independent check, a
+    self-consistent but non-F0 pin plus a matching local interface/registry
+    would verify successfully, defeating the whole point of this module:
+    only the exact pinned F0 carrier is ever accepted, regardless of how
+    the caller obtained the `CaemF0Pin` value. (Found by independent Codex
+    review of this PR.)
+
     Total and fail-closed: every recognized malformation of the local
     artifact — missing files, unreadable files, non-object JSON roots,
     wrongly-typed structural fields, a corrupt/truncated zip, a file that
@@ -858,10 +870,91 @@ def load_caem_f0_interface(
     function.
     """
 
+    identity_errors = _pin_identity_errors(pin)
+    if identity_errors:
+        return CaemF0LoadResult(ok=False, errors=tuple(identity_errors))
+
+    return _verify_artifact_against_pin(
+        pin, interface_root=interface_root, transport_zip=transport_zip, git_root=git_root
+    )
+
+
+def _pin_identity_errors(pin: CaemF0Pin) -> list[CaemF0LoadError]:
+    """Check whether `pin`'s interface identity matches the frozen F0
+    `EXPECTED_*` constants. Pure attribute/dict comparisons only — cannot
+    raise. Mirrors the equivalent JSON-level check in `load_caem_f0_pin`,
+    but operates on an already-constructed `CaemF0Pin` object."""
+
+    errors: list[CaemF0LoadError] = []
+    for id_field, expected in _EXPECTED_INTERFACE_VALUES.items():
+        actual = getattr(pin, id_field)
+        if actual != expected:
+            errors.append(
+                _err(
+                    PinReasonCode.FLOATING_IDENTITY,
+                    f"pin.{id_field} does not match the pinned CAEM 3.0 F0 identity "
+                    f"(expected {expected!r}, got {actual!r}); only the exact F0 carrier "
+                    f"{EXPECTED_CARRIER_SHA} may be verified by this consumer",
+                )
+            )
+    return errors
+
+
+def _verify_artifact_against_pin(
+    pin: CaemF0Pin,
+    *,
+    interface_root: str | Path | None = None,
+    transport_zip: str | Path | None = None,
+    git_root: str | Path | None = None,
+) -> CaemF0LoadResult:
+    """INTERNAL. Verifies a local artifact copy against whatever identity
+    `pin` declares, WITHOUT checking whether that identity is really the
+    pinned F0 carrier (that is `load_caem_f0_interface`'s job, via
+    `_pin_identity_errors`, and it is not optional for that public
+    function). This split exists so the artifact/structural verification
+    logic below can be unit-tested in isolation, against small synthetic
+    non-F0 fixtures, without needing to reproduce real F0 bytes. Production
+    code must always go through the public `load_caem_f0_interface`, never
+    this function directly — it provides no identity guarantee by itself.
+
+    Total and fail-closed ON ITS OWN (independent of the caller): every
+    recognized malformation of the local artifact — missing files,
+    unreadable files, non-object JSON roots, wrongly-typed structural
+    fields, a corrupt/truncated zip, a file that disappears between
+    existence and read — returns `CaemF0LoadResult(ok=False, errors=...)`.
+    No exception escapes this function either, so it remains safe to call
+    (and test) directly.
+    """
+
     try:
-        return _load_caem_f0_interface_inner(
-            pin, interface_root=interface_root, transport_zip=transport_zip, git_root=git_root
-        )
+        if (interface_root is None) == (transport_zip is None):
+            return CaemF0LoadResult(
+                ok=False,
+                errors=(
+                    _err(
+                        ReasonCode.INTERFACE_MANIFEST_INVALID,
+                        "exactly one of interface_root or transport_zip must be provided",
+                    ),
+                ),
+            )
+
+        if transport_zip is not None:
+            manifest, registry, _artifact_files_bytes = _load_from_zip(Path(transport_zip), pin)
+        else:
+            manifest, registry, _artifact_files_bytes = _load_from_directory(Path(interface_root), pin)
+
+        errors = _verify_manifest_and_registry(pin, manifest, registry)
+
+        if git_root is not None:
+            errors.extend(_verify_git_projection(Path(git_root), pin, manifest))
+
+        if errors:
+            return CaemF0LoadResult(ok=False, errors=tuple(errors))
+
+        identity = _identity_from_manifest(manifest)
+        contracts = _build_contracts(registry)
+        reason_codes = _registry_reason_codes(registry)
+        return CaemF0LoadResult(ok=True, pin=pin, identity=identity, contracts=contracts, reason_codes=reason_codes)
     except _LoadFailure as failure:
         return CaemF0LoadResult(ok=False, errors=(failure.error,))
     except Exception as exc:  # noqa: BLE001 - deliberate total safety net
@@ -869,43 +962,6 @@ def load_caem_f0_interface(
             ok=False,
             errors=(_err(ReasonCode.INTERFACE_MANIFEST_INVALID, f"unexpected error while verifying interface: {exc!r}"),),
         )
-
-
-def _load_caem_f0_interface_inner(
-    pin: CaemF0Pin,
-    *,
-    interface_root: str | Path | None,
-    transport_zip: str | Path | None,
-    git_root: str | Path | None,
-) -> CaemF0LoadResult:
-    if (interface_root is None) == (transport_zip is None):
-        return CaemF0LoadResult(
-            ok=False,
-            errors=(
-                _err(
-                    ReasonCode.INTERFACE_MANIFEST_INVALID,
-                    "exactly one of interface_root or transport_zip must be provided",
-                ),
-            ),
-        )
-
-    if transport_zip is not None:
-        manifest, registry, _artifact_files_bytes = _load_from_zip(Path(transport_zip), pin)
-    else:
-        manifest, registry, _artifact_files_bytes = _load_from_directory(Path(interface_root), pin)
-
-    errors = _verify_manifest_and_registry(pin, manifest, registry)
-
-    if git_root is not None:
-        errors.extend(_verify_git_projection(Path(git_root), pin, manifest))
-
-    if errors:
-        return CaemF0LoadResult(ok=False, errors=tuple(errors))
-
-    identity = _identity_from_manifest(manifest)
-    contracts = _build_contracts(registry)
-    reason_codes = _registry_reason_codes(registry)
-    return CaemF0LoadResult(ok=True, pin=pin, identity=identity, contracts=contracts, reason_codes=reason_codes)
 
 
 def _resolved_within_root(root: Path, file_path: Path, rel: str) -> None:

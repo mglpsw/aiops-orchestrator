@@ -1,4 +1,4 @@
-"""`load_caem_f0_interface` verification-logic tests, against small synthetic
+"""`_verify_artifact_against_pin` verification-logic tests, against small synthetic
 F0-shaped fixtures (see conftest.py). These exercise byte-level digest
 verification, path safety, and contract-registry structural checks in
 isolation from the `load_caem_f0_pin` floating-identity gate (covered
@@ -15,7 +15,7 @@ import pytest
 from app.caem_consumer.f0 import (
     CaemF0ContractUnavailable,
     ReasonCode,
-    load_caem_f0_interface,
+    _verify_artifact_against_pin,
     require_caem_f0_contract,
 )
 from tests.caem_consumer.conftest import (
@@ -27,7 +27,7 @@ from tests.caem_consumer.conftest import (
 
 
 def test_valid_local_f0_interface_loads(fixture_interface: dict) -> None:
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert result.ok, result.errors
     assert result.identity is not None
     assert result.identity.maturity == "development_freeze"
@@ -36,14 +36,14 @@ def test_valid_local_f0_interface_loads(fixture_interface: dict) -> None:
 
 
 def test_neither_root_nor_zip_is_rejected(fixture_interface: dict) -> None:
-    result = load_caem_f0_interface(fixture_interface["pin"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"])
     assert not result.ok
 
 
 def test_both_root_and_zip_is_rejected(fixture_interface: dict, tmp_path: Path) -> None:
     zpath = tmp_path / "t.zip"
     zpath.write_bytes(b"")
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"], transport_zip=zpath)
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"], transport_zip=zpath)
     assert not result.ok
 
 
@@ -53,7 +53,7 @@ def test_manifest_digest_mismatch_is_rejected(fixture_interface: dict) -> None:
     manifest["target_release"] = "9.9.9"  # any content change moves the digest
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
 
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert not result.ok
     assert any(e.reason_code == ReasonCode.INTERFACE_DIGEST_MISMATCH for e in result.errors)
 
@@ -79,7 +79,7 @@ def test_registry_content_mutation_is_rejected(fixture_interface: dict) -> None:
     )
     registry_path.write_text(json.dumps(registry, sort_keys=True, separators=(",", ":")))
 
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert not result.ok
     assert any(e.reason_code == ReasonCode.ARTIFACT_DIGEST_MISMATCH for e in result.errors)
 
@@ -90,7 +90,7 @@ def test_registry_digest_mismatch_is_rejected(fixture_interface: dict) -> None:
     # forged or corrupted pin (independent of the artifact) exercises.
     wrong_pin = build_fixture_pin(fixture_interface["built"], contract_registry_digest="sha256:" + ("22" * 32))
 
-    result = load_caem_f0_interface(wrong_pin, interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(wrong_pin, interface_root=fixture_interface["root"])
     assert not result.ok
     assert any(e.reason_code == ReasonCode.CONTRACT_REGISTRY_INVALID for e in result.errors)
     assert any(e.reason_code == ReasonCode.MIXED_INTERFACE_IDENTITY for e in result.errors)
@@ -100,7 +100,7 @@ def test_schema_set_digest_mismatch_is_rejected(fixture_interface: dict) -> None
     schema_path = fixture_interface["root"] / "schemas" / "v3.0" / "f0" / "contract-registry.schema.json"
     schema_path.write_bytes(b'{"type":"object","extra":true}')
 
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert not result.ok
     assert any(e.reason_code == ReasonCode.ARTIFACT_DIGEST_MISMATCH for e in result.errors)
 
@@ -109,7 +109,7 @@ def test_artifact_digest_mismatch_is_rejected(fixture_interface: dict) -> None:
     catalog_path = fixture_interface["root"] / "caem_contracts" / "_generated" / "f0_catalog.py"
     catalog_path.write_bytes(b'"""mutated fixture catalog."""\n')
 
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert not result.ok
     assert any(e.reason_code == ReasonCode.ARTIFACT_DIGEST_MISMATCH for e in result.errors)
 
@@ -119,7 +119,7 @@ def test_transport_zip_digest_mismatch_is_rejected(fixture_interface: dict, tmp_
     build_fixture_zip(fixture_interface["root"], fixture_interface["built"], zpath)
     pin = build_fixture_pin(fixture_interface["built"], transport_archive_digest="sha256:" + ("00" * 32))
 
-    result = load_caem_f0_interface(pin, transport_zip=zpath)
+    result = _verify_artifact_against_pin(pin, transport_zip=zpath)
     assert not result.ok
     assert any(e.reason_code == ReasonCode.ARTIFACT_DIGEST_MISMATCH for e in result.errors)
 
@@ -129,7 +129,7 @@ def test_valid_transport_zip_loads(fixture_interface: dict, tmp_path: Path) -> N
     digest = build_fixture_zip(fixture_interface["root"], fixture_interface["built"], zpath)
     pin = build_fixture_pin(fixture_interface["built"], transport_archive_digest=digest)
 
-    result = load_caem_f0_interface(pin, transport_zip=zpath)
+    result = _verify_artifact_against_pin(pin, transport_zip=zpath)
     assert result.ok, result.errors
 
 
@@ -142,7 +142,7 @@ def test_extra_protected_file_in_zip_is_rejected(fixture_interface: dict, tmp_pa
         archive.writestr("interfaces/caem-3.0-f0/SNEAKY_EXTRA.txt", "not declared anywhere")
     pin = build_fixture_pin(fixture_interface["built"], transport_archive_digest=digest_before)
 
-    result = load_caem_f0_interface(pin, transport_zip=zpath)
+    result = _verify_artifact_against_pin(pin, transport_zip=zpath)
     assert not result.ok
     # Either the whole-archive digest moved (since we appended bytes) or, if
     # somehow it still matched, the unexpected-member check must catch it.
@@ -157,7 +157,7 @@ def test_unsafe_absolute_path_in_manifest_is_rejected(fixture_interface: dict) -
     manifest["artifact"]["files"][0]["path"] = "/etc/passwd"
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
 
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert not result.ok
     # digest will also fail since the manifest changed; unsafe-path detection
     # happens as part of the same recomputation pass
@@ -174,7 +174,7 @@ def test_unsafe_parent_traversal_path_is_rejected(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)
+    result = _verify_artifact_against_pin(pin, interface_root=root)
     assert not result.ok
 
 
@@ -188,7 +188,7 @@ def test_unsafe_backslash_path_is_rejected(tmp_path: Path) -> None:
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)
+    result = _verify_artifact_against_pin(pin, interface_root=root)
     assert not result.ok
 
 
@@ -205,7 +205,7 @@ def test_symlink_interface_file_is_rejected(tmp_path: Path) -> None:
     built = build_fixture_interface(tmp_path / "throwaway")
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)
+    result = _verify_artifact_against_pin(pin, interface_root=root)
     assert not result.ok
     assert any(e.reason_code == ReasonCode.UNSAFE_ARTIFACT_PATH for e in result.errors)
 
@@ -224,7 +224,7 @@ def test_symlinked_ancestor_directory_escape_is_rejected(tmp_path: Path) -> None
     (root / "schemas" / "v3.0" / "f0").symlink_to(outside, target_is_directory=True)
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)
+    result = _verify_artifact_against_pin(pin, interface_root=root)
     assert not result.ok
     assert any(e.reason_code == ReasonCode.UNSAFE_ARTIFACT_PATH for e in result.errors)
 
@@ -245,7 +245,7 @@ def test_symlink_member_in_zip_is_rejected(tmp_path: Path) -> None:
     digest = "sha256:" + __import__("hashlib").sha256(zpath.read_bytes()).hexdigest()
     pin = build_fixture_pin(built, transport_archive_digest=digest)
 
-    result = load_caem_f0_interface(pin, transport_zip=zpath)
+    result = _verify_artifact_against_pin(pin, transport_zip=zpath)
     assert not result.ok
     assert any(e.reason_code == ReasonCode.UNSAFE_ARTIFACT_PATH for e in result.errors)
 
@@ -264,7 +264,7 @@ def test_case_collision_in_zip_is_rejected(tmp_path: Path) -> None:
     digest = "sha256:" + __import__("hashlib").sha256(zpath.read_bytes()).hexdigest()
     pin = build_fixture_pin(built, transport_archive_digest=digest)
 
-    result = load_caem_f0_interface(pin, transport_zip=zpath)
+    result = _verify_artifact_against_pin(pin, transport_zip=zpath)
     assert not result.ok
     assert any(e.reason_code == ReasonCode.UNEXPECTED_ARTIFACT for e in result.errors)
 
@@ -275,20 +275,20 @@ def test_dependency_cycle_is_rejected(tmp_path: Path) -> None:
     built = build_fixture_interface(root, contracts=cyclic_fixture_contracts())
     pin = build_fixture_pin(built)
 
-    result = load_caem_f0_interface(pin, interface_root=root)
+    result = _verify_artifact_against_pin(pin, interface_root=root)
     assert not result.ok
     assert any(e.reason_code == ReasonCode.CONTRACT_REGISTRY_INVALID for e in result.errors)
 
 
 def test_implemented_at_f0_contract_is_available(fixture_interface: dict) -> None:
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert result.ok
     record = require_caem_f0_contract(result, "fixture.canonical-json.v1")
     assert record.delivery_status == "implemented_at_f0"
 
 
 def test_reserved_contract_request_is_rejected(fixture_interface: dict) -> None:
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert result.ok
     with pytest.raises(CaemF0ContractUnavailable) as excinfo:
         require_caem_f0_contract(result, "fixture.assertion.v1")
@@ -296,7 +296,7 @@ def test_reserved_contract_request_is_rejected(fixture_interface: dict) -> None:
 
 
 def test_unknown_contract_request_is_rejected(fixture_interface: dict) -> None:
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert result.ok
     with pytest.raises(CaemF0ContractUnavailable) as excinfo:
         require_caem_f0_contract(result, "does.not.exist.v99")
@@ -304,14 +304,14 @@ def test_unknown_contract_request_is_rejected(fixture_interface: dict) -> None:
 
 
 def test_external_reference_contract_is_available(fixture_interface: dict) -> None:
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert result.ok
     record = require_caem_f0_contract(result, "external.readiness.v2")
     assert record.owner_repository == "mglpsw/aiops-orchestrator"
 
 
 def test_delivery_statuses_come_from_verified_registry(fixture_interface: dict) -> None:
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert result.ok
     statuses = {c.delivery_status for c in result.contracts.values()}
     assert statuses == {"implemented_at_f0", "reserved", "legacy_reference", "external_reference"}
@@ -323,7 +323,7 @@ def test_load_result_reason_codes_come_from_the_verified_registry_not_the_mirror
     # list, not copied from the local `ReasonCode` mirror class.
     from tests.caem_consumer.conftest import FIXTURE_REASON_CODES
 
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert result.ok
     assert result.reason_codes == frozenset(FIXTURE_REASON_CODES)
     # The fixture's reason codes are deliberately NOT the same as the
@@ -334,7 +334,7 @@ def test_load_result_reason_codes_come_from_the_verified_registry_not_the_mirror
 
 def test_failed_load_carries_no_reason_codes(fixture_interface: dict) -> None:
     wrong_pin = build_fixture_pin(fixture_interface["built"], contract_registry_digest="sha256:" + ("33" * 32))
-    result = load_caem_f0_interface(wrong_pin, interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(wrong_pin, interface_root=fixture_interface["root"])
     assert not result.ok
     assert result.reason_codes == frozenset()
 
@@ -348,11 +348,11 @@ def test_loader_performs_zero_network_calls(fixture_interface: dict, monkeypatch
     monkeypatch.setattr(socket, "socket", _forbidden)
     monkeypatch.setattr(socket, "create_connection", _forbidden)
 
-    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    result = _verify_artifact_against_pin(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert result.ok
 
     zpath = fixture_interface["root"].parent / "transport.zip"
     digest = build_fixture_zip(fixture_interface["root"], fixture_interface["built"], zpath)
     zip_pin = build_fixture_pin(fixture_interface["built"], transport_archive_digest=digest)
-    zip_result = load_caem_f0_interface(zip_pin, transport_zip=zpath)
+    zip_result = _verify_artifact_against_pin(zip_pin, transport_zip=zpath)
     assert zip_result.ok

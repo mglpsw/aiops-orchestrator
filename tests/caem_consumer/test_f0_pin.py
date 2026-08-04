@@ -34,10 +34,13 @@ from app.caem_consumer.f0 import (
     EXPECTED_TOOLCHAIN_DIGEST,
     EXPECTED_TRANSPORT_ARCHIVE_DIGEST,
     EXPECTED_VERIFIER_IDENTITY,
+    CaemF0Pin,
     ReasonCode,
     PinReasonCode,
+    load_caem_f0_interface,
     load_caem_f0_pin,
 )
+from tests.caem_consumer.conftest import build_fixture_interface, build_fixture_pin
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REAL_PIN_PATH = REPO_ROOT / "config" / "caem" / "caem-3.0-f0.pin.json"
@@ -261,3 +264,63 @@ def test_reason_code_mirror_matches_verified_registry() -> None:
     )
     assert ReasonCode.all() == real_registry_reason_codes
     assert len(ReasonCode.all()) == 22
+
+
+def test_manually_constructed_non_f0_pin_is_rejected_by_load_caem_f0_interface(tmp_path: Path) -> None:
+    """Independent Codex review of this PR found: `CaemF0Pin` is a public,
+    plain dataclass, so a caller can construct one directly — bypassing
+    `load_caem_f0_pin`'s JSON-level identity check entirely — and pass it
+    straight to `load_caem_f0_interface`. Before the fix, a self-consistent
+    but non-F0 pin plus a matching local artifact verified successfully
+    (`ok=True`), silently accepting an identity that was never the pinned
+    F0 carrier. `load_caem_f0_interface` must re-check identity itself,
+    independent of how the pin object was obtained."""
+
+    root = tmp_path / "root"
+    root.mkdir()
+    built = build_fixture_interface(root)
+    # A manually constructed CaemF0Pin, self-consistent with the fixture
+    # artifact, but NOT the pinned CAEM 3.0 F0 identity (placeholder SHAs
+    # and digests, never touching load_caem_f0_pin at all).
+    non_f0_pin = build_fixture_pin(built)
+
+    result = load_caem_f0_interface(non_f0_pin, interface_root=root)
+
+    assert not result.ok, "a manually constructed non-F0 pin must never verify successfully"
+    assert any(e.reason_code == PinReasonCode.FLOATING_IDENTITY for e in result.errors)
+    # And this must be the identity gate firing BEFORE artifact verification
+    # even runs — not an artifact-level digest mismatch.
+    assert not any(e.reason_code == ReasonCode.ARTIFACT_DIGEST_MISMATCH for e in result.errors)
+
+
+def test_pin_identity_errors_cannot_raise() -> None:
+    # _pin_identity_errors is documented as pure attribute comparison that
+    # cannot raise, even given a pin with pathological field values.
+    from app.caem_consumer.f0 import _pin_identity_errors
+
+    pathological = CaemF0Pin(
+        consumer_repository="",
+        normative_repository="",
+        normative_writer="",
+        authority_effect="",
+        target_release="",
+        maturity="",
+        published=True,
+        source_sha="",
+        tested_merge_sha="",
+        carrier_sha="",
+        base_policy_digest="",
+        policy_source_bytes_digest="",
+        policy_source_semantic_digest="",
+        contract_registry_digest="",
+        schema_set_digest="",
+        artifact_digest="",
+        artifact_git_projection_digest="",
+        interface_manifest_digest="",
+        transport_archive_digest="",
+        verifier_identity="",
+        toolchain_digest="",
+    )
+    errors = _pin_identity_errors(pathological)
+    assert len(errors) == 17  # every EXPECTED_* field mismatches
+    assert all(e.reason_code == PinReasonCode.FLOATING_IDENTITY for e in errors)
