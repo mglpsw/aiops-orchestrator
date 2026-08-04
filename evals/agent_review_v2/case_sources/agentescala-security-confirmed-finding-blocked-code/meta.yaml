@@ -1,0 +1,19 @@
+case_id: agentescala-security-confirmed-finding-blocked-code
+target: agent_escala
+family: semantic_positive
+file_path: backend/scheduling/shift_rules.py
+severity: P1
+expected_readiness: blocked_code
+safe_counterexample: false
+invariant: >-
+  a 10-22H shift must never be reclassified as covered_by_24h
+root_cause: >-
+  synthetic: classification logic incorrectly folds the 10-22H shift into
+  the 24H bucket
+rationale: >-
+  Synthetic-only. Proves a finding CONFIRMED by a prior, revalidated
+  human decision must resolve to blocked_code, the strongest state, never
+  softened to manual_required. Reuses the case_id of the historical Lane 1
+  fixture with the same ground truth; this directory adds real,
+  materialized code for the provider-reviewable lanes -- it does not
+  alter evals/agent_review_v2/cases/.

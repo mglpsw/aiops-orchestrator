@@ -1,0 +1,22 @@
+case_id: agentescala-domain-rest-period-violation
+target: agent_escala
+family: semantic_positive
+file_path: backend/scheduling/rest_period_rules.py
+severity: P1
+expected_readiness: manual_required
+safe_counterexample: false
+invariant: >-
+  a shift pair with less than MINIMUM_REST_HOURS of actual rest must
+  never be reported compliant
+root_cause: >-
+  synthetic: the overnight-wrap condition is inverted (`gap >= 0` instead
+  of `gap < 0`), so a same-day gap -- which is already non-negative and
+  must be returned as-is -- is incorrectly padded by 24 hours, masking a
+  real, short rest-period violation as compliant
+rationale: >-
+  Synthetic-only, new/unconfirmed corpus extension added to raise the
+  semantic_positive denominator above the two historical cases (rev. 4.1
+  determination 1). A rest-period safety rule silently reporting a real
+  violation as compliant is a labor/safety-relevant P1 domain defect,
+  independent of the shift_rules.py fixtures. Does not touch
+  evals/agent_review_v2/cases/ (Lane 1 baseline).

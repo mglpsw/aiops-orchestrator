@@ -1,0 +1,10 @@
+case_id: interleitos-domain-schema-contract-drift
+family: semantic_positive
+lane_applicability:
+  lane1_pipeline: not_part_of_baseline
+  aiops_subject_projection: applicable
+  codex_local_detection: applicable
+  codex_github_detection: applicable
+  human_detection: applicable_or_deferred
+reason: provider-reviewable synthetic defect/counterexample over real materialized
+  code

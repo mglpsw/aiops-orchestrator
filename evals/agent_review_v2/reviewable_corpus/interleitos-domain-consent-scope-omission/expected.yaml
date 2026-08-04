@@ -1,0 +1,22 @@
+case_id: interleitos-domain-consent-scope-omission
+target: interleitos
+family: semantic_positive
+expected_readiness: manual_required
+safe_counterexample: false
+patch_sha256: 2dee37f8389ec548874dcad454bad9df6636d3e384f5f91ec42020aebd8da717
+changed_files:
+- backend/api/consent_scope.py
+rationale: 'Synthetic-only, new corpus extension (rev. 4.1 determination 1), derived
+  from the SHAPE of the invalid cross-axis transition scenario in the #88 issue''s
+  own InterLeitos corpus description ("transição inválida entre eixos clínico/regulatório/logístico/comunicação")
+  -- a lower severity, procedural/workflow gap rather than a security boundary, contributing
+  the P3 severity slot to the declared severity coverage. Fabricated axis vocabulary
+  only, no real case/patient data. Does not touch evals/agent_review_v2/cases/.'
+severity: P3
+file_path: backend/api/consent_scope.py
+line_start: 17
+line_end: 23
+invariant: a case record must never transition directly from the clinical axis to
+  the communication axis -- it must pass through the regulatory axis first
+root_cause: 'synthetic: ("clinical", "communication") was added to _ALLOWED_DIRECT_TRANSITIONS,
+  permitting the invalid direct skip'

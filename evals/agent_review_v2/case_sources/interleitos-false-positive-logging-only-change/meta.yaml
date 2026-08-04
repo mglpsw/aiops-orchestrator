@@ -1,0 +1,12 @@
+case_id: interleitos-false-positive-logging-only-change
+target: interleitos
+family: semantic_safe_counterexample
+expected_readiness: ready
+safe_counterexample: true
+rationale: >-
+  Synthetic-only, new corpus extension (rev. 4.1 determination 1). A
+  comment-only change inside a must_review path
+  (backend/tenancy/*.py) with no decision-logic change must resolve to
+  ready with zero findings -- proves that touching a tenancy must_review
+  file without a semantic change stays ready. Does not touch
+  evals/agent_review_v2/cases/.

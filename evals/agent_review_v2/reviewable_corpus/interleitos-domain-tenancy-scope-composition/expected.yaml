@@ -1,0 +1,22 @@
+case_id: interleitos-domain-tenancy-scope-composition
+target: interleitos
+family: semantic_positive
+expected_readiness: manual_required
+safe_counterexample: false
+patch_sha256: fcb878aa7fca97ee972d0ad8ba8844092362e67786211abe66e2ae22801d46a7
+changed_files:
+- backend/tenancy/access_scope.py
+rationale: 'Synthetic-only, new corpus extension (rev. 4.1 determination 1), derived
+  from the SHAPE of the IAM/tenancy composition scenario in the #88 issue''s own InterLeitos
+  corpus description ("acesso por composição indevida de vínculos") -- not real product
+  logic, no real tenant/user data. Does not touch evals/agent_review_v2/cases/.'
+severity: P2
+file_path: backend/tenancy/access_scope.py
+line_start: 31
+line_end: 34
+invariant: a user may access a tenant's resource only via an explicit direct link
+  to that exact tenant; composing access through unrelated indirect link types must
+  never be treated as equivalent to a direct grant
+root_cause: 'synthetic: resolve_effective_scope drops the link_type == "direct" requirement,
+  so any indirect link (department, shift, communication) sharing the same tenant_id
+  is composed into an access grant'
