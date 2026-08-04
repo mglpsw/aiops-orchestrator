@@ -1,7 +1,7 @@
 case_id: interleitos-domain-consent-scope-omission
 target: interleitos
 family: semantic_positive
-expected_readiness: manual_required
+expected_readiness: ready
 safe_counterexample: false
 patch_sha256: 2dee37f8389ec548874dcad454bad9df6636d3e384f5f91ec42020aebd8da717
 changed_files:
@@ -10,8 +10,14 @@ rationale: 'Synthetic-only, new corpus extension (rev. 4.1 determination 1), der
   from the SHAPE of the invalid cross-axis transition scenario in the #88 issue''s
   own InterLeitos corpus description ("transição inválida entre eixos clínico/regulatório/logístico/comunicação")
   -- a lower severity, procedural/workflow gap rather than a security boundary, contributing
-  the P3 severity slot to the declared severity coverage. Fabricated axis vocabulary
-  only, no real case/patient data. Does not touch evals/agent_review_v2/cases/.'
+  the P3 severity slot to the declared severity coverage. expected_readiness is `ready`,
+  not `manual_required`: P3 is intentionally excluded from readiness_decision_v2''s
+  blocking-severity set (P0/P1/P2 only), exactly as the historical Lane 1 case agentescala-contract-p3-finding-still-ready
+  already establishes -- a P3-only finding must never silently block a run. This case
+  still asks a real detection question (can a reviewer find the invalid transition
+  and attribute it correctly); it only proves that AIOps''s OWN readiness precedence
+  for a P3-only finding does not, by itself, force manual_required. Fabricated axis
+  vocabulary only, no real case/patient data. Does not touch evals/agent_review_v2/cases/.'
 severity: P3
 file_path: backend/api/consent_scope.py
 line_start: 17

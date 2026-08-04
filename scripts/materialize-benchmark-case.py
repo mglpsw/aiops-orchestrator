@@ -285,8 +285,21 @@ def materialize_case(case_dir: Path) -> Path:
 
 
 def _diff_trees(a: Path, b: Path) -> list[str]:
-    a_files = {str(p.relative_to(a)) for p in a.rglob("*") if p.is_file()} if a.is_dir() else set()
-    b_files = {str(p.relative_to(b)) for p in b.rglob("*") if p.is_file()} if b.is_dir() else set()
+    """Compare two directory trees for byte-stability. Excludes
+    __pycache__/.git the same way materialize_case's own file discovery
+    does -- local bytecode-cache noise from an unrelated tool invocation
+    (e.g. compileall, or an ad hoc importlib run) in a REUSED worktree
+    must never register as corpus drift."""
+    a_files = {
+        str(p.relative_to(a))
+        for p in a.rglob("*")
+        if p.is_file() and not any(part in _EXCLUDED_DIR_NAMES for part in p.parts)
+    } if a.is_dir() else set()
+    b_files = {
+        str(p.relative_to(b))
+        for p in b.rglob("*")
+        if p.is_file() and not any(part in _EXCLUDED_DIR_NAMES for part in p.parts)
+    } if b.is_dir() else set()
     problems = []
     for missing in sorted(a_files - b_files):
         problems.append(f"missing in regenerated output: {missing}")

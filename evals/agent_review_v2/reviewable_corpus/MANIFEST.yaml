@@ -81,7 +81,7 @@ provider_applicable_cases:
 - case_id: interleitos-domain-consent-scope-omission
   target: interleitos
   family: semantic_positive
-  expected_readiness: manual_required
+  expected_readiness: ready
   lane_applicability:
     lane1_pipeline: not_part_of_baseline
     aiops_subject_projection: applicable
