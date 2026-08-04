@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -259,6 +260,27 @@ def test_fabricated_contract_id_pointing_at_unrelated_real_agentreview_schema_is
     doc["entries"][0]["source_path"] = "schemas/agent-review/v2/agent-review.review-readiness.v2.schema.json"
     path = _write(tmp_path, doc)
     result = load_reuse_manifest(path, repo_root=tmp_path)
+    assert not result.ok
+
+
+def test_swapped_source_paths_between_two_valid_contract_ids_are_rejected() -> None:
+    """Correction, found by an independent Codex review: two contract_ids
+    can each be individually real (both members of
+    real_agent_review_schema_ids), yet have their source_path values
+    SWAPPED between each other -- the earlier membership-only check
+    passed this silently. Confirmed genuinely red against the pre-fix
+    loader via a direct repro (swapping agent-review.run.v2's and
+    agent-review.evidence-bundle.v2's source_path in the real manifest)
+    before this fix was made."""
+    doc = json.loads(REAL_MANIFEST_PATH.read_text(encoding="utf-8"))
+    entry_a = next(e for e in doc["entries"] if e["contract_id"] == "agent-review.run.v2")
+    entry_b = next(e for e in doc["entries"] if e["contract_id"] == "agent-review.evidence-bundle.v2")
+    entry_a["source_path"], entry_b["source_path"] = entry_b["source_path"], entry_a["source_path"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "manifest.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        result = load_reuse_manifest(path, repo_root=REPO_ROOT)
     assert not result.ok
 
 

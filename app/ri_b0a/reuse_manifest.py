@@ -23,6 +23,19 @@ _REQUIRED_ENTRY_KEYS = {"contract_id", "owner", "state", "notes", "ri_b0_role", 
 _MANIFEST_CONTRACT_ID = "aiops.ri-b0a-2-reuse-manifest.v1"
 _SCHEMA_ID_LITERAL_RE = re.compile(r'schema_id:\s*Literal\["([a-z0-9.-]+)"\]')
 
+# Every real AgentReview v2 schema_id maps to a same-named top-level file
+# under schemas/agent-review/v2/ (schema_export_v2.py's own filename
+# convention is exactly f"{schema_id}.schema.json"), EXCEPT
+# agent-review.chunk-response.v2: `ChunkReviewResultV2` has its own
+# schema_id but no top-level file of its own -- it's embedded as a $defs
+# entry inside its enclosing agent-review.chunk-response-envelope.v2
+# schema file. This is the one, currently-true, structural exception;
+# adding a second AgentReview contract this way requires extending this
+# table explicitly, not guessing a filename convention.
+_CANONICAL_FILENAME_EXCEPTIONS: dict[str, str] = {
+    "agent-review.chunk-response.v2": "agent-review.chunk-response-envelope.v2.schema.json",
+}
+
 
 def _real_agent_review_schema_ids(repo_root: Path) -> frozenset[str]:
     """Every `schema_id: Literal["..."]` declaration actually present in
@@ -122,6 +135,23 @@ def _load_entry(
                     f"entries[{index}].contract_id {contract_id!r} is not a real schema_id "
                     "declared in app/agent_review/*.py -- source_path exists but does not "
                     "establish this contract_id"
+                )
+            # Correction, found by an independent Codex review: membership
+            # in real_agent_review_schema_ids alone doesn't stop two valid
+            # contract_ids from having their source_path values SWAPPED
+            # (e.g. agent-review.run.v2 pointed at
+            # agent-review.evidence-bundle.v2.schema.json) -- both IDs are
+            # real, so the set-membership check alone passes either way.
+            # Bind each contract_id to its one specific, correct filename.
+            actual_filename = source_path.rsplit("/", 1)[-1]
+            expected_filename = _CANONICAL_FILENAME_EXCEPTIONS.get(
+                contract_id, f"{contract_id}.schema.json"
+            )
+            if actual_filename != expected_filename:
+                raise ReuseManifestError(
+                    f"entries[{index}].contract_id {contract_id!r} does not match its "
+                    f"source_path's filename: expected {expected_filename!r}, got "
+                    f"{actual_filename!r}"
                 )
 
     return ReuseManifestEntry(
