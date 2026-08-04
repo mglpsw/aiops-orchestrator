@@ -4,6 +4,14 @@
 
 ### Added
 
+- `config/ri/ri-b0a-2-reuse-manifest.json` + generated view
+  `docs/generated/RI_B0A_2_REUSE_REFERENCE.md`: maps all 10 existing
+  AgentReview v2 contracts plus the ProjectOps track boundary into one of
+  four states (`reuse`, `reference`, `future_adapter`, `not_applicable`)
+  for RI-B0, with a fail-closed loader (`app/ri_b0a/reuse_manifest.py`)
+  and a `--check` CI gate. No AgentReview or CAEM schema is copied or
+  redefined (refs #119, slice #119.2)
+
 - `docs/RI_A2_THREAT_MODEL.md`: threat model, data policy, and authority
   boundaries for CAEM proof execution — 15 threat surfaces, a trust-boundary
   diagram, an authority/data matrix across 10 components, stop conditions
