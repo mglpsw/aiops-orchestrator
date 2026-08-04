@@ -30,5 +30,6 @@ def has_direct_access(user_links: tuple[TenantLink, ...], resource_tenant_id: st
 
 def resolve_effective_scope(user_links: tuple[TenantLink, ...], resource_tenant_id: str) -> bool:
     """The effective access decision for a resource belonging to
-    `resource_tenant_id`."""
+    `resource_tenant_id`. Logged at the call site by the caller -- this
+    function itself performs no I/O and must remain side-effect free."""
     return has_direct_access(user_links, resource_tenant_id)
