@@ -321,9 +321,10 @@ def test_pin_identity_errors_cannot_raise() -> None:
         verifier_identity="",
         toolchain_digest="",
     )
-    errors = _pin_identity_errors(pathological)
-    assert len(errors) == 17  # every EXPECTED_* field mismatches
+    errors, snapshot = _pin_identity_errors(pathological)
+    assert len(errors) == 21  # every one of the 21 verified fields mismatches
     assert all(e.reason_code == PinReasonCode.FLOATING_IDENTITY for e in errors)
+    assert snapshot == {}  # nothing verified, so nothing captured
 
 
 def test_pin_with_always_equal_fields_cannot_bypass_identity_gate(tmp_path: Path) -> None:

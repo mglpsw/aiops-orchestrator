@@ -873,10 +873,18 @@ def load_caem_f0_interface(
     type checks before comparison, `getattr` with a sentinel default), and
     this call is additionally wrapped here for defense in depth. Found by
     round-2 Codex review of this PR.
+
+    Re-reads `pin`'s fields EXACTLY ONCE and reconstructs a fresh
+    `CaemF0Pin` from that one-time snapshot; nothing past this point ever
+    reads an attribute from the caller-supplied `pin` object again. Found
+    by round-3 Codex review: without this, a stateful/adversarial pin
+    object could return the genuine F0 values during this check and
+    different, non-F0 values during artifact verification, recreating the
+    identity bypass without needing an overridden `__eq__` at all.
     """
 
     try:
-        identity_errors = _pin_identity_errors(pin)
+        identity_errors, snapshot = _pin_identity_errors(pin)
     except Exception as exc:  # noqa: BLE001 - deliberate total safety net
         return CaemF0LoadResult(
             ok=False,
@@ -885,8 +893,16 @@ def load_caem_f0_interface(
     if identity_errors:
         return CaemF0LoadResult(ok=False, errors=tuple(identity_errors))
 
+    try:
+        verified_pin = CaemF0Pin(**snapshot)
+    except Exception as exc:  # noqa: BLE001 - deliberate total safety net
+        return CaemF0LoadResult(
+            ok=False,
+            errors=(_err(PinReasonCode.UNEXPECTED_ERROR, f"unexpected error while snapshotting pin: {exc!r}"),),
+        )
+
     return _verify_artifact_against_pin(
-        pin, interface_root=interface_root, transport_zip=transport_zip, git_root=git_root
+        verified_pin, interface_root=interface_root, transport_zip=transport_zip, git_root=git_root
     )
 
 
@@ -920,29 +936,62 @@ _EXPECTED_INTERFACE_TYPES: dict[str, type] = {
 }
 
 
-def _pin_identity_errors(pin: object) -> list[CaemF0LoadError]:
-    """Check whether `pin`'s interface identity matches the frozen F0
-    `EXPECTED_*` constants, by exact type AND value. Mirrors the equivalent
-    JSON-level check in `load_caem_f0_pin`, but operates on an
-    already-constructed `CaemF0Pin` object (or, defensively, any object —
-    see `type: object` above — since this must never raise, not even for
+_EXPECTED_AUTHORITY_VALUES = {
+    "consumer_repository": EXPECTED_CONSUMER_REPOSITORY,
+    "normative_repository": EXPECTED_NORMATIVE_REPOSITORY,
+    "normative_writer": "caem_only",
+    "authority_effect": "none",
+}
+_EXPECTED_AUTHORITY_TYPES: dict[str, type] = {
+    "consumer_repository": str,
+    "normative_repository": str,
+    "normative_writer": str,
+    "authority_effect": str,
+}
+# The full set of CaemF0Pin fields whose values are pinned/fixed facts,
+# re-verified on the OBJECT itself (as opposed to `dependencies`-style
+# fields with no fixed expected value — there are none on CaemF0Pin).
+_ALL_VERIFIED_FIELDS: dict[str, object] = {**_EXPECTED_INTERFACE_VALUES, **_EXPECTED_AUTHORITY_VALUES}
+_ALL_VERIFIED_TYPES: dict[str, type] = {**_EXPECTED_INTERFACE_TYPES, **_EXPECTED_AUTHORITY_TYPES}
+
+
+def _pin_identity_errors(pin: object) -> tuple[list[CaemF0LoadError], dict[str, object]]:
+    """Check whether `pin`'s identity (all 21 fixed fields: the 17 F0
+    interface-identity constants plus the 4 authority/consumer constants)
+    matches the frozen expected values, by exact type AND value. Mirrors
+    the equivalent JSON-level check in `load_caem_f0_pin`, but operates on
+    an already-constructed `CaemF0Pin` object (or, defensively, any object
+    — see `type: object` above — since this must never raise, not even for
     `pin=None` or a value missing the expected attributes; `getattr`'s
-    3-argument form and the `_MISSING` sentinel guarantee that)."""
+    3-argument form and the `_MISSING` sentinel guarantee that).
+
+    Returns `(errors, snapshot)`. `snapshot` captures each verified field's
+    value at the EXACT moment of this one read. Round-3 Codex review found
+    that without this, a stateful/adversarial `CaemF0Pin` subclass could
+    return the genuine expected value the first time each attribute is
+    read (here) and a different, non-F0 value the second time (during
+    artifact verification) — passing this check while still substituting a
+    synthetic identity downstream. The caller must reconstruct a fresh,
+    ordinary `CaemF0Pin` from `snapshot` and use ONLY that for everything
+    after this call; it must never read `pin`'s attributes again."""
 
     errors: list[CaemF0LoadError] = []
-    for id_field, expected in _EXPECTED_INTERFACE_VALUES.items():
-        actual = getattr(pin, id_field, _MISSING)
-        expected_type = _EXPECTED_INTERFACE_TYPES[id_field]
+    snapshot: dict[str, object] = {}
+    for field_name, expected in _ALL_VERIFIED_FIELDS.items():
+        actual = getattr(pin, field_name, _MISSING)
+        expected_type = _ALL_VERIFIED_TYPES[field_name]
         if type(actual) is not expected_type or actual != expected:
             errors.append(
                 _err(
                     PinReasonCode.FLOATING_IDENTITY,
-                    f"pin.{id_field} does not match the pinned CAEM 3.0 F0 identity "
+                    f"pin.{field_name} does not match the pinned CAEM 3.0 F0 identity "
                     f"(expected {expected!r}, got {actual!r}); only the exact F0 carrier "
                     f"{EXPECTED_CARRIER_SHA} may be verified by this consumer",
                 )
             )
-    return errors
+        else:
+            snapshot[field_name] = actual
+    return errors, snapshot
 
 
 def _verify_artifact_against_pin(
