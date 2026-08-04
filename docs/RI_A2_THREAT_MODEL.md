@@ -22,10 +22,18 @@ the components that already exist and that RI-B0 will have to interoperate
 with (`app/agent_review/`, `app/agent_router/`, this repo's CAEM consumer
 pin). Where a component is planned but not implemented, this document says so
 explicitly; it does not invent code, schemas, or behavior for components that
-don't exist yet. Where a claim depends on CAEM's own schemas (`authority-grant`,
-`evidence-bundle`, the F0 contract registry), this document references the
-field names and enum values already verified in `docs/RI_A0_CAEM_REUSE_MATRIX.md`
-— it does not redefine or extend them. Where a claim depends instead on this
+don't exist yet. Where a claim depends on CAEM's own active F0 schemas
+(the contract registry, interface manifest), this document references
+field names and enum values already verified against the real pinned
+interface, not redefined here. **Correction, found by an independent
+Codex review:** an earlier draft of this paragraph also named
+`authority-grant` and `evidence-bundle` here, alongside genuinely active
+F0 schemas; verified that neither is part of the active F0 interface --
+both exist only as historical, quarantined CAEM 2.1 material (per PR
+#173's quarantine and §5/§8's own correction notes below). Where this
+document references those two schemas' field shapes, it does so as
+documented local historical reference material, not as active CAEM
+schemas. Where a claim depends instead on this
 repository's own local operational policy (`docs/engineering/CAEM_CORE.md`'s
 authority matrix and failure classification — a historical CAEM 2.1
 projection per that file's own header, `authority_effect=none`, not
@@ -77,8 +85,11 @@ different repository, or a later point in time after the subject changed.
 - **[planned — RI-B0]** every proof obligation and its resolution must carry
   `(repository, subject_sha, run_id)`; a result computed under a different
   triple is `stale` by construction, never merged into a fresh result set.
-  This mirrors `docs/engineering/CAEM_CORE.md`'s own invariant ("Mudança de
-  HEAD torna provas afetadas stale por padrão").
+  **Correction, found by an independent Codex review:** this was
+  previously attributed to `docs/engineering/CAEM_CORE.md`; verified that
+  the quoted invariant actually appears in this repository's own root
+  `CLAUDE.md` ("## Regras": "Mudança de HEAD torna provas afetadas stale
+  por padrão"), not in `CAEM_CORE.md`. This mirrors that rule.
 
 ### 1.3 Untrusted branch/policy as input
 
@@ -122,9 +133,15 @@ surface (GitHub PR/issue, this repo's own generated docs) accidentally
 carries a credential, an internal hostname, a local filesystem path, or an
 environment variable value.
 
-- **[enforced]** `CAEM_CORE.md`'s own guardrail ("Não exponha segredos,
-  tokens, IPs privados desnecessários ou dados pessoais/clínicos"); this
-  session's own PR #173 comments contain zero secrets, tokens, or local
+- **[enforced, operationally]** **Correction, found by an independent
+  Codex review:** an earlier draft attributed the guardrail "Não exponha
+  segredos, tokens, IPs privados desnecessários ou dados pessoais/
+  clínicos" to `docs/engineering/CAEM_CORE.md`; verified that
+  `CAEM_CORE.md` does not contain that text -- it comes from this
+  operator's own private global tooling configuration, not from a file
+  committed to this repository, so it is not cited here as a repo-visible
+  source. What IS verifiable from the repo alone: this session's own PR
+  #173 comments contain zero secrets, tokens, or local
   paths outside the repo's own checkout (`/tmp/caem-work`, itself only a
   disposable clone path, never a credential).
 - **[planned — RI-B0/RI-B1]** any artifact or change request RI-B0 emits
@@ -189,7 +206,9 @@ presenting another repo's identity.
 - **[planned — RI-B0]** every actor writing to a shared artifact
   (registry, manifest, evidence bundle) must be bound to a real,
   independently-verifiable identity (repository + SHA + tool identity, per
-  CAEM_CORE.md's "Identidade mínima de uma execução"), never a free-text
+  `docs/engineering/PROJECT_OVERLAY.md`'s "Identidade mínima de uma
+  execução" -- corrected here from an earlier draft that misattributed
+  this to `CAEM_CORE.md`, which does not contain it), never a free-text
   `actor` string trusted at face value.
 
 ### 1.8 Fraudulent disposition
@@ -215,8 +234,13 @@ the corresponding computation/replay actually having been performed — the
 CAEM-side analogue of "hallucinated test output."
 
 - **[enforced — general principle, already in force]** `docs/engineering/
-  CAEM_CORE.md`: "Nunca fabrique teste, print, inspeção, estado de PR ou
-  sucesso de deploy." This session followed that discipline literally: every
+  **Correction, found by an independent Codex review:** an earlier draft
+  attributed the quote "Nunca fabrique teste, print, inspeção, estado de
+  PR ou sucesso de deploy" to `docs/engineering/CAEM_CORE.md`; verified
+  that `CAEM_CORE.md` does not contain that text -- like the §1.5
+  correction above, it comes from private operator tooling configuration,
+  not a repo-committed source, so it is not cited here as one. This
+  session followed that discipline literally regardless: every
   Codex finding in PR #173 was reproduced against the prior commit via
   `importlib`-loaded old code before being called a real bug, and every fix
   was re-verified with the same reproduction script before being called
@@ -301,9 +325,14 @@ authorized an action (merge, deploy, mutate a database); or a handoff
 between sessions/agents is treated as if it transferred the authority the
 sending session held, rather than just its context.
 
-- **[enforced]** `docs/engineering/CAEM_CORE.md`: "LLM produz hipótese;
-  contratos determinísticos decidem" and "Handoff transfere contexto, nunca
-  autoridade" — both already governing this session's own conduct (every
+- **[enforced, operationally]** **Correction, found by an independent
+  Codex review:** an earlier draft attributed the quotes "LLM produz
+  hipótese; contratos determinísticos decidem" and "Handoff transfere
+  contexto, nunca autoridade" to `docs/engineering/CAEM_CORE.md`; verified
+  that file does not contain either quote -- both come from private
+  operator tooling configuration, not a repo-committed source. The
+  underlying principle already governed this session's own conduct
+  regardless of which document states it (every
   protected action in this session — merge, mark-ready — was gated on a
   real, currently-live authority grant, never inferred from a prior proof or
   a prior session's handoff).
@@ -427,7 +456,7 @@ case if compromised or buggy), **kill switch** (how to stop it).
 | **human feedback surface** | **planned**, not implemented | human-authored feedback text | suggestions, F1 change-request drafts (`caem.contract-change-request.v1`, sanitized-evidence-only per §4) | free text from a human — must be treated as untrusted input for DLP purposes, same as any other ingestion path | writing directly to CAEM (F1 is a request, never a direct write); asserting `authority_effect` other than `none` | any grant that would let feedback bypass F1's review-and-accept step | the F1 change request itself, plus whatever DLP pass gated it | a malicious/careless human feedback entry could contain PHI/secrets if unsanitized — same mitigation family as 1.5/1.6 | reject the ingestion path entirely; feedback with no accepted change request has zero effect by construction |
 | **ProjectOps** | real, separate track (per `CURRENT_CHECKPOINT.md`: "ProjectOps v1 permanece trilha separada de inteligência de CI, advisory e fail-safe") | CI signals | advisory CI intelligence output | CI metadata; no RI-specific data | asserting readiness/authority over RI's own gates; being treated as an RI component (it isn't one) | none from RI's side — it's out of this document's authority scope entirely | its own track's evidence, not this document's concern | out of scope for this threat model beyond noting the boundary | out of scope |
 | **`app/agent_router/` (CT102 runtime, "Agent Router" — see naming-collision note above)** | real, this repo | diagnostics, action catalog, approval requests | HTTP responses; JSONL run/approval/audit logs (`var/runs/`, `var/approvals/`, `var/audit/`) | operational diagnostics; NOT clinical data, NOT RI proof data — already isolated by design (no import of `app/agent_review/` in either direction) | executing an unallowlisted command (`command_guardrails.py`); running quarantined SSH/Docker/local-shell adapters (`tests/test_legacy_adapter_quarantine.py` already proves the two paths it tests) | any RI-specific grant — this component doesn't touch RI at all today, and this document does not propose that it should | `var/audit/aiops_audit.jsonl`, existing test suite | worst case is within CT102's own already-documented action-execution blast radius, unrelated to CAEM proof execution | existing `require_api_token` gate + action allowlist; out of this document's scope to redesign |
-| **publisher** | **planned**, not implemented anywhere in this repo | a readiness decision + the artifact it applies to | a publication action (e.g. posting a review, updating a check) | whatever the artifact being published contains — must already be sanitized upstream | mutating code, deploy, or infrastructure (`PROJECT_OVERLAY.md`: "publisher não altera código, deploy ou infraestrutura"); publishing without revalidating PR/HEAD first | the specific `publicar` / `resolver thread` actions from `CAEM_CORE.md`'s matrix, each independently grant-gated | the publish action itself (API call, comment, check update) | a stale or wrong publish action misinforms reviewers; mitigated by the mandatory PR/HEAD revalidation immediately before every publish | don't grant the publish action; it is not autonomous by design |
+| **publisher** | **planned**, not implemented anywhere in this repo | a readiness decision + the artifact it applies to | a publication action (e.g. posting a review, updating a check) | whatever the artifact being published contains — must already be sanitized upstream | mutating code, deploy, or infrastructure (`PROJECT_OVERLAY.md`: "publisher não altera código, deploy ou infraestrutura"); publishing without revalidating PR/HEAD first | **correction, found by an independent Codex review:** `CAEM_CORE.md`'s real authority matrix has no `publicar`/publish action at all -- only `resolver thread` is real there; the only `publish_review` enum member observed in this checkout is in the quarantined CAEM 2.1 `authority-grant.schema.json`, which this document elsewhere declares non-authoritative. The real, active grant this row can point to today is `resolver thread` only; mapping publication itself onto a specific active grant action is left as a future decision (a new/adapted authority-matrix entry), not prescribed here | the publish action itself (API call, comment, check update) | a stale or wrong publish action misinforms reviewers; mitigated by the mandatory PR/HEAD revalidation immediately before every publish | don't grant the publish action; it is not autonomous by design |
 | **authorized human** | real | everything, subject to their own judgment | grants, ratifications, merges, deploys, releases | full access by design — this is the root of authority, not a component to sandbox | none — this is the actor every other row is bounded relative to | n/a | their own actions' natural GitHub/Git audit trail | full — this is why every grant in this model is scoped, non-transferable, and target-specific, so a human's own mistake stays contained to what they explicitly authorized | n/a |
 
 ---
@@ -436,8 +465,10 @@ case if compromised or buggy), **kill switch** (how to stop it).
 
 - **Classification and isolation by repository.** Every artifact, memory, or
   evidence record RI-B0/RI-B1 ever produce must carry the identity of the
-  repository it concerns (per `CAEM_CORE.md`'s "Identidade mínima de uma
-  execução"); cross-repository queries default-deny unless a query
+  repository it concerns (per `docs/engineering/PROJECT_OVERLAY.md`'s
+  "Identidade mínima de uma execução" -- corrected here from an earlier
+  draft that misattributed this to `CAEM_CORE.md`, which does not contain
+  it); cross-repository queries default-deny unless a query
   explicitly and narrowly opts into cross-repo aggregation for a stated
   reason (e.g. a roadmap-level report), never as the default behavior. This
   directly closes §1.12.
