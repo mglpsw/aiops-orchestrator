@@ -17,6 +17,7 @@ _ALLOWED_DIRECT_TRANSITIONS = {
     ("regulatory", "logistics"),
     ("regulatory", "communication"),
     ("logistics", "communication"),
+    ("clinical", "communication"),
 }
 
 
