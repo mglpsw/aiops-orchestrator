@@ -320,6 +320,35 @@ def test_known_contract_id_with_null_source_path_is_rejected() -> None:
     assert not result.ok
 
 
+def test_fabricated_agent_review_id_with_null_source_path_is_rejected() -> None:
+    """Correction, found by an independent Codex review (confirmation
+    round): a fabricated agent-review.* contract_id with source_path:
+    null bypassed every earlier check, since those were all gated on some
+    property of the SUPPLIED source_path (its prefix, its existence) --
+    which a null source_path trivially has none of. Confirmed genuinely
+    red against the pre-fix loader (three prior rounds' worth of checks,
+    all still bypassable this way) via a direct repro before this fix was
+    made. The fix gates purely on contract_id's own "agent-review."
+    namespace prefix, checked unconditionally regardless of source_path."""
+    doc = json.loads(REAL_MANIFEST_PATH.read_text(encoding="utf-8"))
+    doc["entries"].append(
+        {
+            "contract_id": "agent-review.fabricated.v2",
+            "owner": "x",
+            "state": "reuse",
+            "notes": "x",
+            "ri_b0_role": "x",
+            "source_path": None,
+        }
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "manifest.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        result = load_reuse_manifest(path, repo_root=REPO_ROOT)
+    assert not result.ok
+
+
 def test_loader_never_reads_referenced_schema_file_contents(tmp_path: Path) -> None:
     """The manifest references existing contracts by path/ID; it must never
     copy or depend on a referenced file's own content -- only that the file

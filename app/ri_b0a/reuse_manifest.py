@@ -117,15 +117,21 @@ def _load_entry(
     source_path_raw = entry["source_path"]
     source_path: str | None
 
-    # Correction, found by an independent Codex review: gating the
-    # canonical-filename check on source_path's OWN prefix let a caller
-    # bypass it entirely by pointing a known AgentReview contract_id at any
-    # other existing repo file (e.g. agent-review.run.v2 -> CHANGELOG.md),
-    # since a path with no schemas/agent-review/v2/ prefix skipped the
-    # check altogether. The check must instead be driven by contract_id
-    # membership -- a fact the caller cannot spoof by changing
-    # source_path -- so it can never be routed around this way.
-    if contract_id in real_agent_review_schema_ids:
+    # Correction, found across three independent Codex review rounds: every
+    # earlier version of this check was gated on some property of the
+    # SUPPLIED source_path (its prefix, its existence, its filename) --
+    # which the manifest author fully controls and can therefore always
+    # route around (null it out, point it elsewhere, swap it with another
+    # entry's). The only gate that cannot be spoofed this way is the
+    # contract_id's OWN namespace: if it claims to be an AgentReview
+    # contract at all (the "agent-review." prefix), it is checked in full,
+    # unconditionally on whatever source_path happens to say.
+    if contract_id.startswith("agent-review."):
+        if contract_id not in real_agent_review_schema_ids:
+            raise ReuseManifestError(
+                f"entries[{index}].contract_id {contract_id!r} claims the agent-review. "
+                "namespace but is not a real schema_id declared in app/agent_review/*.py"
+            )
         expected_filename = _CANONICAL_FILENAME_EXCEPTIONS.get(contract_id, f"{contract_id}.schema.json")
         expected_source_path = f"schemas/agent-review/v2/{expected_filename}"
         if source_path_raw != expected_source_path:
@@ -133,16 +139,6 @@ def _load_entry(
                 f"entries[{index}].contract_id {contract_id!r} is a known AgentReview schema_id "
                 f"and must use source_path {expected_source_path!r}, got {source_path_raw!r}"
             )
-    elif isinstance(source_path_raw, str) and source_path_raw.startswith("schemas/agent-review/v2/"):
-        # A contract_id that is NOT a real, independently-observed
-        # schema_id has no business claiming an AgentReview schema path at
-        # all -- this is the fabricated/typoed-ID case (source_path exists
-        # as a file, but doesn't establish this contract_id).
-        raise ReuseManifestError(
-            f"entries[{index}].contract_id {contract_id!r} is not a real schema_id "
-            "declared in app/agent_review/*.py -- source_path exists but does not "
-            "establish this contract_id"
-        )
 
     if source_path_raw is None:
         source_path = None
