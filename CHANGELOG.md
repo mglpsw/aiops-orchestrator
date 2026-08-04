@@ -4,6 +4,13 @@
 
 ### Added
 
+- `docs/RI_A2_THREAT_MODEL.md`: threat model, data policy, and authority
+  boundaries for CAEM proof execution — 15 threat surfaces, a trust-boundary
+  diagram, an authority/data matrix across 10 components, stop conditions
+  for RI-B0/RI-B1, and an adversarial test corpus. Documentation only; no
+  code, DLP detector, executor, auth, database, or deploy change (refs #120,
+  parent #126)
+
 - CAEM 3.0 F0 consumer pin (`config/caem/caem-3.0-f0.pin.json`) and a strict,
   offline, fail-closed loader (`app/caem_consumer/f0.py`,
   `scripts/verify-caem-f0-pin.py`) that verifies the pinned identity against a
