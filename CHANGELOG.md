@@ -4,6 +4,21 @@
 
 ### Added
 
+- CAEM 3.0 F0 consumer pin (`config/caem/caem-3.0-f0.pin.json`) and a strict,
+  offline, fail-closed loader (`app/caem_consumer/f0.py`,
+  `scripts/verify-caem-f0-pin.py`) that verifies the pinned identity against a
+  local artifact copy byte-for-byte; the exact CAEM 3.0 F0 carrier
+  (`28ca73f3…`) is the only identity this consumer accepts — `main`, any
+  branch/tag, and the post-F0 repair carrier (`dee7018e…`) are all rejected
+  (refs mglpsw/aiops-orchestrator#119, slice #119.1)
+- CAEM 2.1.0 material previously vendored under `.caem/` (`policy.json`,
+  `repository-profile.json`, `repository-registry.json`, `schemas/*.json`) is
+  quarantined, read-only, `authority_effect=none`
+  (`.caem/quarantine/caem-2.1/`); `AGENTS.md`, `CLAUDE.md`,
+  `docs/engineering/{CAEM_CORE,PROJECT_OVERLAY,CURRENT_CHECKPOINT}.md` now
+  reference the single consumer pin instead of declaring CAEM 2.1.0/2.2.0
+  digests that no longer correspond to anything in this checkout
+
 - AgentReview v2: explicit v1/v2 contract-version selection
   (`app/agent_review/versioning.py`), rejecting unknown or mixed versions
   fail-closed

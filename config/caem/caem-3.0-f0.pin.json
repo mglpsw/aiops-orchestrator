@@ -1,0 +1,37 @@
+{
+  "schema_id": "aiops.caem-consumer-pin.v1",
+  "schema_version": 1,
+  "consumer": {
+    "repository": "mglpsw/aiops-orchestrator"
+  },
+  "authority": {
+    "normative_repository": "mglpsw/caem",
+    "normative_writer": "caem_only",
+    "authority_effect": "none"
+  },
+  "interface": {
+    "target_release": "3.0.0",
+    "maturity": "development_freeze",
+    "published": false,
+    "source_sha": "8f26930f50eec6d5a9446a9ec4eadfdef2eee69e",
+    "tested_merge_sha": "ad55d79b8813c2ac6d9575a1c2814431386fa50f",
+    "carrier_sha": "28ca73f338417b5c7e9275c6154b6a0eddbb8bc7",
+    "base_policy_digest": "sha256:0fb90b03fb626443e8ed9a85e46b2abea3626132fe15cfe896e0193e48bb8463",
+    "policy_source_bytes_digest": "sha256:81809b3b70879f556bf385a984468319e60e3401d1af35c00b7815e9f7ea8d9c",
+    "policy_source_semantic_digest": "sha256:598ce20e6c93680f4002f4cb7df52ad736becabd513bfb82d89fabdba5f81ff7",
+    "contract_registry_digest": "sha256:cca17eab2280b1c7045a0390f2a7c7e0e036a36be947c17741805f3888ec93c0",
+    "schema_set_digest": "sha256:5ce1461a48394bc0907ef7267f7abfccb2b0df0c8348c08eae392a96ba68e668",
+    "artifact_digest": "sha256:d6e6706a7d33a13f90f05ca97b5501cf5a293bb7becc1ca027dfa644d7864627",
+    "artifact_git_projection_digest": "sha256:8581e3692b5b2d3d2c32296984596b3e40df497eb52ff8d2a213dcd8d17c06c4",
+    "interface_manifest_digest": "sha256:6e2fdff772a16466b8af1934d03b4e29ec03aeae053ccb2bfa0b705f50ab48e5",
+    "transport_archive_digest": "sha256:7056f17c8bcfbc6ef8bafca259bac3068274c148de01abc6196102c9ec6140fc",
+    "verifier_identity": "sha256:b36a3918d3d40ae430e5aed232524c633ab69bef0383db834ffe7b20e6e0371b",
+    "toolchain_digest": "sha256:1e8366f65e3e7c64e1f0fd5021ab4f91d274875a06fe5c345b9dd77406e9416e"
+  },
+  "constraints": {
+    "mixed_interface_versions": "deny",
+    "floating_identity": "deny",
+    "reserved_contract_consumption": "deny",
+    "network_required": false
+  }
+}

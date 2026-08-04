@@ -9,6 +9,7 @@
 #   - sintaxe bash de todos os scripts
 #   - catálogo de actions (YAML + guardrails)
 #   - compose syntax (config --quiet, sem daemon)
+#   - identidade CAEM 3.0 F0 pinada e generated views consistentes
 #   - testes Python unitários offline
 set -euo pipefail
 
@@ -88,8 +89,16 @@ else
     fail "schemas v2 divergentes — regenere no toolchain pinado"
 fi
 
-# ── 5. Testes Python (unit, offline) ─────────────────────────────────────────
-header "5. Testes Python"
+# ── 5. Identidade CAEM 3.0 F0 pinada ─────────────────────────────────────────
+header "5. Identidade CAEM 3.0 F0"
+if python3 scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check; then
+    ok "pin válido e generated views consistentes"
+else
+    fail "pin ausente/incompleto ou generated views divergentes"
+fi
+
+# ── 6. Testes Python (unit, offline) ─────────────────────────────────────────
+header "6. Testes Python"
 if ! command -v python3 &>/dev/null; then
     fail "python3 não encontrado"
 elif ! python3 -m pytest --version &>/dev/null; then

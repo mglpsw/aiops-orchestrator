@@ -1,11 +1,20 @@
 <!-- GENERATED VIEW — DO NOT EDIT IN ISOLATION
-Source: policy/caem-policy.json
-CAEM: 2.1.0
-Policy-SHA256: 9aa4949a0a9b865ae3b9a589fdf4dbadd1254cfad8c11f3db26efce10303ba60
-Regenerate/validate: python tooling/generate.py && python tooling/validate.py
+body_provenance: historical_caem_2_1_projection
+not_a_CAEM_3_0_F0_generated_view: true
+The CAEM 3.0 F0 interface manifest produces only: contract-registry.json,
+3 schemas, a Python catalog, and generated/CAEM_3_0_F0_INTERFACE.md — never
+this file. This document is an AIOps-local operational guide, NOT generated
+by or regenerated from CAEM 3.0 F0.
+Norma pertence a mglpsw/caem, nunca a este repositório. authority_effect=none.
+Single source of CAEM identity: config/caem/caem-3.0-f0.pin.json
+CAEM interface: 3.0.0 F0, maturity=development_freeze, published=false
+Interface manifest digest: sha256:6e2fdff772a16466b8af1934d03b4e29ec03aeae053ccb2bfa0b705f50ab48e5
+Verify: ./.venv/bin/python scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check
+CAEM 2.1.0 material (previously vendored here) is quarantined, read-only,
+authority_effect=none: see .caem/quarantine/caem-2.1/.
 -->
 
-# CLAUDE.md — AIOps-AgentReview sob CAEM v2.1.0
+# CLAUDE.md — AIOps-AgentReview operational guide
 
 @docs/engineering/CAEM_CORE.md
 @docs/engineering/PROJECT_OVERLAY.md
