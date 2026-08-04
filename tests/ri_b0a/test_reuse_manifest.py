@@ -367,3 +367,71 @@ def test_render_view_on_failed_load_raises_reuse_manifest_error() -> None:
     failed = ReuseManifestLoadResult(ok=False, errors=("boom",))
     with pytest.raises(ReuseManifestError):
         render_reuse_view(failed)
+
+
+# ── post-merge conformance audit (master@18a0232): completeness, strict-int,
+#    and duplicate-key rejection ──────────────────────────────────────────
+
+
+def test_omitting_a_real_agentreview_entry_entirely_is_rejected() -> None:
+    """Correction, found by an independent Codex review (post-merge
+    conformance audit): every per-entry check only validated entries that
+    were PRESENT; deleting an entire real agent-review.* entry (as opposed
+    to corrupting one) passed silently, defeating this manifest's whole
+    purpose of classifying every real AgentReview contract. Confirmed
+    genuinely red against the merged master@18a0232 loader via a direct
+    importlib-loaded reproduction before this fix was made."""
+    doc = json.loads(REAL_MANIFEST_PATH.read_text(encoding="utf-8"))
+    doc["entries"] = [e for e in doc["entries"] if e["contract_id"] != "agent-review.run.v2"]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "manifest.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        result = load_reuse_manifest(path, repo_root=REPO_ROOT)
+    assert not result.ok
+
+
+def test_boolean_schema_version_is_rejected_not_silently_accepted(tmp_path: Path) -> None:
+    """Correction, found by an independent Codex review: `True == 1` in
+    Python, so `schema_version: true` was silently accepted as version 1.
+    Confirmed genuinely red against the merged master@18a0232 loader via a
+    direct importlib-loaded reproduction before this fix was made."""
+    doc = _valid_doc(schema_version=True)
+    path = _write(tmp_path, doc)
+    result = load_reuse_manifest(path, repo_root=tmp_path)
+    assert not result.ok
+
+
+def test_duplicate_top_level_json_key_is_rejected() -> None:
+    """Correction, found by an independent Codex review: plain
+    `json.loads` silently keeps the LAST value for a duplicate key.
+    Reproduced with a manifest containing two conflicting `entries`
+    arrays (a single-fixture-entry array, then the real 12-entry array) --
+    the pre-fix loader silently used the last one and returned ok=True,
+    never surfacing that the document contained two different, disagreeing
+    entries blocks (e.g. from a bad merge). Confirmed genuinely red against
+    the merged master@18a0232 loader via a direct reproduction before this
+    fix was made."""
+    real_doc = json.loads(REAL_MANIFEST_PATH.read_text(encoding="utf-8"))
+    fake_entries = [
+        {
+            "contract_id": "fixture.only.v1",
+            "owner": "x",
+            "state": "reuse",
+            "notes": "x",
+            "ri_b0_role": "x",
+            "source_path": None,
+        }
+    ]
+    raw = (
+        '{"contract_id":"aiops.ri-b0a-2-reuse-manifest.v1","schema_version":1,'
+        '"states":["reuse","reference","not_applicable","future_adapter"],'
+        '"generated_from":"x",'
+        f'"entries":{json.dumps(fake_entries)},'
+        f'"entries":{json.dumps(real_doc["entries"])}}}'
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "manifest.json"
+        path.write_text(raw, encoding="utf-8")
+        result = load_reuse_manifest(path, repo_root=REPO_ROOT)
+    assert not result.ok
