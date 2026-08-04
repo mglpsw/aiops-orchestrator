@@ -55,7 +55,19 @@ def _git_head_sha() -> str:
 
 
 def _codex_cli_version() -> str:
-    result = subprocess.run(["codex", "--version"], capture_output=True, text=True)
+    """Best-effort, acquisition-time-only metadata. `codex` is a local
+    developer tool never expected to be installed on a generic CI runner
+    (confirmed: GitHub Actions has no `codex` binary) -- a missing binary
+    is reported as "unavailable", never a crash. This value is frozen at
+    acquisition time and is NOT re-verified for exact equality by
+    `--check` (see `main`'s `_CHECK_EXCLUDED_FIELDS`), for the same reason
+    `run-agent-review-v2-evals.py --check` excludes `duration_ms`: it is
+    legitimate acquisition-environment metadata, not a pure function of
+    committed repo content."""
+    try:
+        result = subprocess.run(["codex", "--version"], capture_output=True, text=True)
+    except (FileNotFoundError, OSError):
+        return "unavailable"
     if result.returncode != 0:
         return "unavailable"
     return result.stdout.strip() or result.stderr.strip()
@@ -104,6 +116,14 @@ def build_premanifest(*, run_id: str, head_sha: str) -> dict:
     }
 
 
+# Fields that are legitimate acquisition-time environment metadata, not a
+# pure function of committed repo content -- excluded from --check's
+# strict equality (mirroring run-agent-review-v2-evals.py --check's own
+# exclusion of duration_ms), but still required to be PRESENT and
+# non-empty in the committed file.
+_CHECK_EXCLUDED_FIELDS = frozenset({"codex_cli_version"})
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", default=None, help="benchmark_run_id (default: derived from HEAD)")
@@ -120,13 +140,28 @@ def main() -> int:
         committed = json.loads(OUTPUT_PATH.read_text(encoding="utf-8"))
         run_id = committed["benchmark_run_id"]
         fresh = build_premanifest(run_id=run_id, head_sha=committed["source_master_sha"])
-        if fresh != committed:
-            print("DRIFT: benchmark_identity.pre.json does not match a fresh generation", file=sys.stderr)
-            for key in fresh:
-                if committed.get(key) != fresh[key]:
-                    print(f"  field {key!r} differs", file=sys.stderr)
+
+        missing_or_empty = [f for f in _CHECK_EXCLUDED_FIELDS if not committed.get(f)]
+        if missing_or_empty:
+            print(f"FAIL: acquisition-time field(s) missing or empty in committed file: {missing_or_empty}", file=sys.stderr)
             return 1
-        print(f"ok: benchmark_identity.pre.json is byte-identical (run_id={run_id})")
+
+        drift = [
+            key
+            for key in fresh
+            if key not in _CHECK_EXCLUDED_FIELDS and committed.get(key) != fresh[key]
+        ]
+        if drift:
+            print("DRIFT: benchmark_identity.pre.json does not match a fresh generation", file=sys.stderr)
+            for key in drift:
+                print(f"  field {key!r} differs", file=sys.stderr)
+            return 1
+        print(
+            f"ok: benchmark_identity.pre.json is byte-identical (run_id={run_id}); "
+            f"{sorted(_CHECK_EXCLUDED_FIELDS)} verified present, not re-derived "
+            f"(acquisition-time environment metadata, e.g. Codex CLI is not "
+            f"installed on this CI runner)"
+        )
         return 0
 
     if run_id is None:
