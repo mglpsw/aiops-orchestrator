@@ -29,6 +29,9 @@ ENCOUNTER_SUMMARY_FIELDS: tuple[EncounterSummaryField, ...] = (
 
 
 def field_by_name(name: str) -> EncounterSummaryField | None:
+    """Look up a declared field by name; returns None for unknown fields --
+    e.g. any further fabricated vocabulary introduced by a future fixture,
+    such as "condition_code_y", must not silently pass."""
     for candidate in ENCOUNTER_SUMMARY_FIELDS:
         if candidate.name == name:
             return candidate
