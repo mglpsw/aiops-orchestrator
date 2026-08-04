@@ -13,6 +13,7 @@
 
 ## Estado de referência
 
+- CAEM: single source of identity é `config/caem/caem-3.0-f0.pin.json` (CAEM 3.0 F0, `development_freeze`, `published=false`); material 2.1.0 anteriormente vendorizado em `.caem/` está em quarantine, `authority_effect=none` (`.caem/quarantine/caem-2.1/`); norma pertence a `mglpsw/caem`;
 - AgentReview v1/release `v0.20.0` permanece baseline operacional, pinada por SHA completo nos target repos;
 - AgentReview v2 está especificado/em consolidação por contracts binding, lossless multi-chunk, target profiles, dual-target conformance e Codex shadow;
 - ProjectOps v1 permanece trilha separada de inteligência de CI, advisory e fail-safe;

@@ -1,0 +1,21 @@
+{
+  "status": "historical_quarantine",
+  "caem_version": "2.1.0",
+  "authority_effect": "none",
+  "read_only": true,
+  "consumer_identity_source": "config/caem/caem-3.0-f0.pin.json",
+  "reason": "superseded_by_exact_CAEM_3_0_F0_consumer_pin",
+  "quarantined_files": [
+    "policy.json",
+    "repository-profile.json",
+    "repository-registry.json",
+    "schemas/authority-grant.schema.json",
+    "schemas/caem-policy.schema.json",
+    "schemas/evidence-bundle.schema.json",
+    "schemas/handoff.schema.json",
+    "schemas/repository-profile.schema.json",
+    "schemas/repository-registry.schema.json",
+    "schemas/runtime-equivalence.schema.json",
+    "schemas/task-contract.schema.json"
+  ]
+}

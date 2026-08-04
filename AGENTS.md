@@ -1,17 +1,15 @@
 <!-- GENERATED VIEW — DO NOT EDIT IN ISOLATION
-Source: .caem/policy.json (vendored copy; the canonical generator/tooling
-that produces it, policy/caem-policy.json + tooling/generate.py +
-tooling/validate.py, is external and not committed to this repository —
-a Codex review found the previous paths/digest below did not correspond
-to anything in this checkout).
-CAEM: 2.1.0
-Policy-SHA256 (of the vendored .caem/policy.json above): 5f8d13688555633a7b26124c81f390bdcc4ddda2ccb40d4a45427b95cbcb9928
-Regenerate/validate: run the external CAEM generator/validator against
-.caem/policy.json; this repository has no local tooling/generate.py or
-tooling/validate.py to invoke directly.
+Norma pertence a mglpsw/caem, nunca a este repositório. Este documento é
+projeção operacional local, authority_effect=none.
+Single source of CAEM identity: config/caem/caem-3.0-f0.pin.json
+CAEM interface: 3.0.0 F0, maturity=development_freeze, published=false
+Interface manifest digest: sha256:6e2fdff772a16466b8af1934d03b4e29ec03aeae053ccb2bfa0b705f50ab48e5
+Verify: ./.venv/bin/python scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check
+CAEM 2.1.0 material (previously vendored here) is quarantined, read-only,
+authority_effect=none: see .caem/quarantine/caem-2.1/.
 -->
 
-# AGENTS.md — AIOps-AgentReview sob CAEM v2.1.0
+# AGENTS.md — AIOps-AgentReview sob CAEM 3.0 F0 (development_freeze)
 
 Leia também:
 
