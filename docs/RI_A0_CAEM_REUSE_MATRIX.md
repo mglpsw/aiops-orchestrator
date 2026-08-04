@@ -9,6 +9,25 @@ only, exactly as #122 requires: no database, no HTTP API, no sync, no
 workers, no deploy, no CT102 change, no AgentReview v2 implementation, no
 normative change to CAEM itself.
 
+> **Erratum (PR #173, slice #119.1), found by an independent Codex review:**
+> every reference below to reading `.caem/policy.json`, `.caem/repository-
+> profile.json`, `.caem/repository-registry.json`, or `.caem/schemas/*.json`
+> **directly at those paths** describes a state this repository no longer has.
+> PR #173 moved that CAEM 2.1.0 material, byte-unchanged, to
+> `.caem/quarantine/caem-2.1/` (`authority_effect: none`, `read_only: true` —
+> see `.caem/quarantine/caem-2.1/metadata.json`) and established
+> `config/caem/caem-3.0-f0.pin.json` (loaded by `app.caem_consumer.f0`,
+> verified by `scripts/verify-caem-f0-pin.py`) as the single active source of
+> CAEM identity for this repository, pinning CAEM 3.0 F0
+> (`mglpsw/caem`, carrier `28ca73f338417b5c7e9275c6154b6a0eddbb8bc7`,
+> `maturity: development_freeze`, `published: false`). Any RI work reading
+> this matrix for structured-JSON consumption guidance must resolve those
+> paths against the quarantine location (historical-only) or the F0 pin
+> (active identity), never against the original `.caem/*` paths, which no
+> longer exist. The body below is preserved unedited as the historical
+> record of this document's own #122 review; it is not itself CAEM-normative
+> and was already documented as observational, not authoritative.
+
 ## Scope and honesty boundary
 
 This matrix inventories CAEM primitives **observable in this repository**
