@@ -116,6 +116,34 @@ def _load_entry(
 
     source_path_raw = entry["source_path"]
     source_path: str | None
+
+    # Correction, found by an independent Codex review: gating the
+    # canonical-filename check on source_path's OWN prefix let a caller
+    # bypass it entirely by pointing a known AgentReview contract_id at any
+    # other existing repo file (e.g. agent-review.run.v2 -> CHANGELOG.md),
+    # since a path with no schemas/agent-review/v2/ prefix skipped the
+    # check altogether. The check must instead be driven by contract_id
+    # membership -- a fact the caller cannot spoof by changing
+    # source_path -- so it can never be routed around this way.
+    if contract_id in real_agent_review_schema_ids:
+        expected_filename = _CANONICAL_FILENAME_EXCEPTIONS.get(contract_id, f"{contract_id}.schema.json")
+        expected_source_path = f"schemas/agent-review/v2/{expected_filename}"
+        if source_path_raw != expected_source_path:
+            raise ReuseManifestError(
+                f"entries[{index}].contract_id {contract_id!r} is a known AgentReview schema_id "
+                f"and must use source_path {expected_source_path!r}, got {source_path_raw!r}"
+            )
+    elif isinstance(source_path_raw, str) and source_path_raw.startswith("schemas/agent-review/v2/"):
+        # A contract_id that is NOT a real, independently-observed
+        # schema_id has no business claiming an AgentReview schema path at
+        # all -- this is the fabricated/typoed-ID case (source_path exists
+        # as a file, but doesn't establish this contract_id).
+        raise ReuseManifestError(
+            f"entries[{index}].contract_id {contract_id!r} is not a real schema_id "
+            "declared in app/agent_review/*.py -- source_path exists but does not "
+            "establish this contract_id"
+        )
+
     if source_path_raw is None:
         source_path = None
     else:
@@ -129,30 +157,6 @@ def _load_entry(
             raise ReuseManifestError(
                 f"entries[{index}].source_path does not exist: {source_path!r}"
             )
-        if source_path.startswith("schemas/agent-review/v2/"):
-            if contract_id not in real_agent_review_schema_ids:
-                raise ReuseManifestError(
-                    f"entries[{index}].contract_id {contract_id!r} is not a real schema_id "
-                    "declared in app/agent_review/*.py -- source_path exists but does not "
-                    "establish this contract_id"
-                )
-            # Correction, found by an independent Codex review: membership
-            # in real_agent_review_schema_ids alone doesn't stop two valid
-            # contract_ids from having their source_path values SWAPPED
-            # (e.g. agent-review.run.v2 pointed at
-            # agent-review.evidence-bundle.v2.schema.json) -- both IDs are
-            # real, so the set-membership check alone passes either way.
-            # Bind each contract_id to its one specific, correct filename.
-            actual_filename = source_path.rsplit("/", 1)[-1]
-            expected_filename = _CANONICAL_FILENAME_EXCEPTIONS.get(
-                contract_id, f"{contract_id}.schema.json"
-            )
-            if actual_filename != expected_filename:
-                raise ReuseManifestError(
-                    f"entries[{index}].contract_id {contract_id!r} does not match its "
-                    f"source_path's filename: expected {expected_filename!r}, got "
-                    f"{actual_filename!r}"
-                )
 
     return ReuseManifestEntry(
         contract_id=contract_id,

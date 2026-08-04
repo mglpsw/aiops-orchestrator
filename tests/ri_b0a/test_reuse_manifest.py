@@ -284,6 +284,42 @@ def test_swapped_source_paths_between_two_valid_contract_ids_are_rejected() -> N
     assert not result.ok
 
 
+def test_known_contract_id_pointed_at_unrelated_real_repo_file_is_rejected() -> None:
+    """Correction, found by an independent Codex review: the canonical-
+    filename check was gated on source_path's OWN prefix
+    (`schemas/agent-review/v2/`), so pointing a KNOWN AgentReview
+    contract_id at any other existing repo file entirely (outside that
+    prefix, e.g. CHANGELOG.md) bypassed the check altogether and returned
+    ok=True. Confirmed genuinely red against the pre-fix loader via a
+    direct repro before this fix was made. The check must be driven by
+    contract_id membership, which the caller cannot spoof by changing
+    source_path."""
+    doc = json.loads(REAL_MANIFEST_PATH.read_text(encoding="utf-8"))
+    entry = next(e for e in doc["entries"] if e["contract_id"] == "agent-review.run.v2")
+    entry["source_path"] = "CHANGELOG.md"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "manifest.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        result = load_reuse_manifest(path, repo_root=REPO_ROOT)
+    assert not result.ok
+
+
+def test_known_contract_id_with_null_source_path_is_rejected() -> None:
+    """A known AgentReview contract_id must always carry its real
+    source_path -- source_path: null would silently drop the provenance
+    binding for a contract this manifest claims to map."""
+    doc = json.loads(REAL_MANIFEST_PATH.read_text(encoding="utf-8"))
+    entry = next(e for e in doc["entries"] if e["contract_id"] == "agent-review.run.v2")
+    entry["source_path"] = None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "manifest.json"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        result = load_reuse_manifest(path, repo_root=REPO_ROOT)
+    assert not result.ok
+
+
 def test_loader_never_reads_referenced_schema_file_contents(tmp_path: Path) -> None:
     """The manifest references existing contracts by path/ID; it must never
     copy or depend on a referenced file's own content -- only that the file
