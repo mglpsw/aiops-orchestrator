@@ -97,8 +97,16 @@ else
     fail "pin ausente/incompleto ou generated views divergentes"
 fi
 
-# ── 6. Testes Python (unit, offline) ─────────────────────────────────────────
-header "6. Testes Python"
+# ── 6. RI-B0a.2 reuse/reference view ─────────────────────────────────────────
+header "6. RI-B0a.2 reuse/reference view"
+if python3 scripts/generate-ri-b0a-2-reuse-view.py --check; then
+    ok "generated view em sincronia com o manifest"
+else
+    fail "docs/generated/RI_B0A_2_REUSE_REFERENCE.md desatualizado — regenere sem --check"
+fi
+
+# ── 7. Testes Python (unit, offline) ─────────────────────────────────────────
+header "7. Testes Python"
 if ! command -v python3 &>/dev/null; then
     fail "python3 não encontrado"
 elif ! python3 -m pytest --version &>/dev/null; then
