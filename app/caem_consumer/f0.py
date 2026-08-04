@@ -1,11 +1,13 @@
 """Strict, offline, fail-closed loader for the pinned CAEM 3.0 F0 interface.
 
 Scope (issue #119, slice #119.1 — AIOPS-RI-B0A-1): pin one exact CAEM 3.0 F0
-identity, verify a locally available copy of that interface byte-for-byte, and
-answer closed questions about which CAEM contracts are available. Nothing in
-this module:
+identity, verify a locally available copy of that interface against the pin,
+and answer closed questions about which CAEM contracts are available.
+Nothing in this module:
 
-* defines, edits, or regenerates a CAEM schema;
+* defines, edits, or regenerates a CAEM schema (a public path-safety regex
+  and CAEM's own `reason_codes` *strings* are reused verbatim — see
+  `ReasonCode` below — but no JSON Schema document is copied into Python);
 * introduces a second, AIOps-local CAEM policy;
 * performs network I/O, GitHub API calls, or CT102 access;
 * accepts a floating identity (branch, tag, or any commit other than the exact
@@ -13,10 +15,33 @@ this module:
 * adopts, or has any notion of, a post-F0 candidate revision (that is a
   separate decision — see CAEM issue #27 / "candidate adoption" in #119.4).
 
-The digest algorithm below was independently reverse-verified in this session
+Identity model — pin is declarative, `EXPECTED_*` is a verifier binding:
+`config/caem/caem-3.0-f0.pin.json` is the single DECLARATIVE source consumed
+by callers. The `EXPECTED_*` constants below are an INDEPENDENT verifier
+binding baked into this module (defense in depth: a compromised or corrupted
+pin file cannot silently repoint the consumer, because the loader also checks
+the pin's declared values against these hardcoded historical facts). They are
+not a second source of truth to keep in sync manually — a test
+(`test_expected_constants_match_the_real_pin_exactly`) proves, field by
+field, that they agree with the shipped pin.
+
+Verification granularity: each individual artifact file's declared digest is
+checked against its own raw bytes (`sha256` of the file's raw content, not a
+JSON reinterpretation). The four AGGREGATE digests (`artifact_digest`,
+`schema_set_digest`, `contract_registry_digest`, `interface_manifest_digest`)
+are canonical-JSON semantic digests of the parsed structures, per the
+canonicalization rule CAEM's own registry documents
+(`sort_keys=True, separators=(",", ":")`) — reverse-verified in this session
 against the real, published CAEM 3.0 F0 artifact (carrier
-28ca73f338417b5c7e9275c6154b6a0eddbb8bc7): every one of the seven digest
-relationships below reproduces the real published values exactly.
+28ca73f338417b5c7e9275c6154b6a0eddbb8bc7): all such relationships reproduce
+the real published values exactly.
+
+Publication state: the CAEM 3.0 F0 *interface* itself remains
+`published: false` (`development_freeze`) — this loader does not change or
+depend on that changing. What has been made available, and what this module
+verifies against, is a *derived checkpoint/export artifact* of that
+unpublished interface (the workflow-produced `caem-3.0-f0-interface.zip` and
+its accompanying digests) — not a normative publication event.
 """
 
 from __future__ import annotations
@@ -26,13 +51,15 @@ import json
 import re
 import subprocess
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 
 # ---------------------------------------------------------------------------
-# CAEM 3.0 F0 — frozen, historical identity constants.
+# CAEM 3.0 F0 — frozen, historical identity constants (verifier binding; see
+# module docstring for how this relates to the pin, which is the declarative
+# source).
 #
 # These values are FACTS about a byte-immutable, already-published interface,
 # verified against the live mglpsw/caem repository at carrier
@@ -55,6 +82,11 @@ EXPECTED_SOURCE_SHA = "8f26930f50eec6d5a9446a9ec4eadfdef2eee69e"
 EXPECTED_TESTED_MERGE_SHA = "ad55d79b8813c2ac6d9575a1c2814431386fa50f"
 EXPECTED_CARRIER_SHA = "28ca73f338417b5c7e9275c6154b6a0eddbb8bc7"
 
+# The eleven digest-shaped identity fields carried by the pin's `interface`
+# block (base_policy_digest, policy_source_bytes_digest,
+# policy_source_semantic_digest, contract_registry_digest, schema_set_digest,
+# artifact_digest, artifact_git_projection_digest, interface_manifest_digest,
+# transport_archive_digest, verifier_identity, toolchain_digest).
 EXPECTED_BASE_POLICY_DIGEST = (
     "sha256:0fb90b03fb626443e8ed9a85e46b2abea3626132fe15cfe896e0193e48bb8463"
 )
@@ -109,8 +141,14 @@ _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 class ReasonCode:
     """String constants reused verbatim from the CAEM 3.0 F0 contract-registry's
     own `reason_codes` enumeration (schemas/v3.0/f0/contract-registry.schema.json,
-    verified against carrier 28ca73f338417b5c7e9275c6154b6a0eddbb8bc7). AIOps
-    never defines a second, divergent CAEM reason-code enum."""
+    verified against carrier 28ca73f338417b5c7e9275c6154b6a0eddbb8bc7). This is
+    a VERIFIED MIRROR, not an independent AIOps-owned enum: AIOps never
+    defines a second, divergent CAEM reason-code enum, and
+    `test_reason_code_mirror_matches_verified_registry` proves this class's
+    22 values are exactly the pinned registry's own `reason_codes` set —
+    every time the interface loads successfully, `CaemF0LoadResult.reason_codes`
+    carries that same set, read live from the verified registry, not from
+    this mirror."""
 
     CANONICAL_JSON_INVALID = "CANONICAL_JSON_INVALID"
     DUPLICATE_JSON_KEY = "DUPLICATE_JSON_KEY"
@@ -135,15 +173,24 @@ class ReasonCode:
     PIN_INCOMPLETE = "PIN_INCOMPLETE"
     ROLLBACK_TARGET_INVALID = "ROLLBACK_TARGET_INVALID"
 
+    @classmethod
+    def all(cls) -> frozenset[str]:
+        """All CAEM-mirrored reason-code string values declared on this class."""
+        return frozenset(v for k, v in vars(cls).items() if not k.startswith("_") and isinstance(v, str))
+
 
 class PinReasonCode:
     """AIOps-local reason codes, explicitly namespaced (`caem_pin_*`) so they
     can never be mistaken for a CAEM-normative reason code. Used only for
-    situations the F0 registry's own enumeration does not name."""
+    situations the F0 registry's own enumeration does not name — always
+    for failures detected BEFORE a registry has even been loaded/verified
+    (pin-level structural/format/identity failures)."""
 
     UNKNOWN_FIELD = "caem_pin_unknown_field"
     FLOATING_IDENTITY = "caem_pin_floating_identity"
     QUARANTINE_AUTHORITY_VIOLATION = "caem_pin_quarantine_authority_violation"
+    MALFORMED_DOCUMENT = "caem_pin_malformed_document"
+    UNEXPECTED_ERROR = "caem_pin_unexpected_error"
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +271,11 @@ class CaemF0LoadResult:
     pin: CaemF0Pin | None = None
     identity: CaemF0InterfaceIdentity | None = None
     contracts: Mapping[str, CaemF0ContractRecord] | None = None
+    # The verified registry's OWN `reason_codes` set, populated only on a
+    # successful interface load (never guessed, never copied from the
+    # `ReasonCode` mirror — read live from the loaded, digest-verified
+    # contract-registry.json).
+    reason_codes: frozenset[str] = field(default_factory=frozenset)
     errors: tuple[CaemF0LoadError, ...] = ()
 
 
@@ -237,6 +289,12 @@ class CaemF0ContractUnavailable(Exception):
         super().__init__(message or f"{reason_code}: {contract_id}")
 
 
+class _LoadFailure(Exception):
+    def __init__(self, error: CaemF0LoadError) -> None:
+        self.error = error
+        super().__init__(error.message)
+
+
 # ---------------------------------------------------------------------------
 # Canonical digest primitives — reverse-verified against the real, published
 # CAEM 3.0 F0 artifact (see module docstring).
@@ -246,10 +304,6 @@ class CaemF0ContractUnavailable(Exception):
 def _canonical_json_digest(value: object) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _raw_file_digest(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _raw_bytes_digest(data: bytes) -> str:
@@ -270,8 +324,39 @@ def _duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def _reject_non_finite(value: str) -> None:
+    raise ValueError(f"CANONICAL_JSON_INVALID: non-finite number {value}")
+
+
 def _strict_json_loads(data: bytes | str) -> object:
-    return json.loads(data, object_pairs_hook=_duplicate_keys)
+    """Parse JSON with duplicate-key rejection and non-finite-number
+    rejection (`NaN`/`Infinity`/`-Infinity`), matching CAEM's own F0 loader
+    (`caem_contracts/f0.py`) discipline. Raises `ValueError` on any violation
+    — never returns a partially-trusted document."""
+
+    return json.loads(data, object_pairs_hook=_duplicate_keys, parse_constant=_reject_non_finite)
+
+
+def _err(reason_code: str, message: str, path: str | None = None) -> CaemF0LoadError:
+    return CaemF0LoadError(reason_code=reason_code, message=message, path=path)
+
+
+def _require_dict(value: object, reason_code: str, message: str) -> dict:
+    if not isinstance(value, dict):
+        raise _LoadFailure(_err(reason_code, message))
+    return value
+
+
+def _require_list(value: object, reason_code: str, message: str) -> list:
+    if not isinstance(value, list):
+        raise _LoadFailure(_err(reason_code, message))
+    return value
+
+
+def _require_str(value: object, reason_code: str, message: str) -> str:
+    if not isinstance(value, str):
+        raise _LoadFailure(_err(reason_code, message))
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -343,19 +428,34 @@ _EXPECTED_INTERFACE_VALUES = {
 }
 
 
-def _err(reason_code: str, message: str, path: str | None = None) -> CaemF0LoadError:
-    return CaemF0LoadError(reason_code=reason_code, message=message, path=path)
+def _is_strict_int(value: object) -> bool:
+    """`True`/`False` are NOT accepted where an integer is required. Plain
+    `isinstance(x, int)` would wrongly accept booleans (`bool` subclasses
+    `int` in Python, so `True == 1`); this loader must not."""
+    return type(value) is int
 
 
 def load_caem_f0_pin(pin_path: str | Path) -> CaemF0LoadResult:
-    """Parse and strictly validate a `caem.aiops-consumer-pin.v1` document.
+    """Parse and strictly validate a `aiops.caem-consumer-pin.v1` document.
 
-    Fail-closed: any missing required field, unknown field, malformed digest
-    or Git SHA, non-F0 identity value, or non-`none` authority effect is
-    rejected. This function never touches the network and never reads
-    anything outside `pin_path`.
+    Fail-closed and total: every recognized malformation returns
+    `CaemF0LoadResult(ok=False, errors=...)` with a deterministic reason code;
+    no exception escapes this function. This function never touches the
+    network and never reads anything outside `pin_path`.
     """
 
+    try:
+        return _load_caem_f0_pin_inner(pin_path)
+    except _LoadFailure as failure:
+        return CaemF0LoadResult(ok=False, errors=(failure.error,))
+    except Exception as exc:  # noqa: BLE001 - deliberate total safety net
+        return CaemF0LoadResult(
+            ok=False,
+            errors=(_err(PinReasonCode.UNEXPECTED_ERROR, f"unexpected error while loading pin: {exc!r}"),),
+        )
+
+
+def _load_caem_f0_pin_inner(pin_path: str | Path) -> CaemF0LoadResult:
     path = Path(pin_path)
     try:
         raw = path.read_bytes()
@@ -376,7 +476,7 @@ def load_caem_f0_pin(pin_path: str | Path) -> CaemF0LoadResult:
     if not isinstance(doc, dict):
         return CaemF0LoadResult(
             ok=False,
-            errors=(_err(ReasonCode.PIN_INCOMPLETE, "pin document must be a JSON object", str(path)),),
+            errors=(_err(PinReasonCode.MALFORMED_DOCUMENT, "pin document root must be a JSON object", str(path)),),
         )
 
     errors: list[CaemF0LoadError] = []
@@ -399,16 +499,20 @@ def load_caem_f0_pin(pin_path: str | Path) -> CaemF0LoadResult:
     interface = doc.get("interface") if isinstance(doc.get("interface"), dict) else {}
     constraints = doc.get("constraints") if isinstance(doc.get("constraints"), dict) else {}
 
-    if "consumer" in doc:
+    for key in ("consumer", "authority", "interface", "constraints"):
+        if key in doc and not isinstance(doc[key], dict):
+            errors.append(_err(PinReasonCode.MALFORMED_DOCUMENT, f"pin field '{key}' must be a JSON object"))
+
+    if "consumer" in doc and isinstance(doc.get("consumer"), dict):
         require(consumer, _PIN_CONSUMER_REQUIRED, "consumer.")
         reject_unknown(consumer, _PIN_CONSUMER_REQUIRED, "consumer.")
-    if "authority" in doc:
+    if "authority" in doc and isinstance(doc.get("authority"), dict):
         require(authority, _PIN_AUTHORITY_REQUIRED, "authority.")
         reject_unknown(authority, _PIN_AUTHORITY_REQUIRED, "authority.")
-    if "interface" in doc:
+    if "interface" in doc and isinstance(doc.get("interface"), dict):
         require(interface, _PIN_INTERFACE_REQUIRED, "interface.")
         reject_unknown(interface, _PIN_INTERFACE_REQUIRED, "interface.")
-    if "constraints" in doc:
+    if "constraints" in doc and isinstance(doc.get("constraints"), dict):
         require(constraints, _PIN_CONSTRAINTS_REQUIRED, "constraints.")
         reject_unknown(constraints, _PIN_CONSTRAINTS_REQUIRED, "constraints.")
 
@@ -417,27 +521,33 @@ def load_caem_f0_pin(pin_path: str | Path) -> CaemF0LoadResult:
 
     if doc.get("schema_id") != "aiops.caem-consumer-pin.v1":
         errors.append(_err(ReasonCode.PIN_INCOMPLETE, "schema_id must be aiops.caem-consumer-pin.v1"))
-    if doc.get("schema_version") != 1:
-        errors.append(_err(ReasonCode.CONTRACT_VERSION_UNSUPPORTED, "schema_version must be 1"))
+    if not _is_strict_int(doc.get("schema_version")) or doc.get("schema_version") != 1:
+        errors.append(
+            _err(
+                ReasonCode.CONTRACT_VERSION_UNSUPPORTED,
+                f"schema_version must be the integer 1, got: {doc.get('schema_version')!r}",
+            )
+        )
 
     # Format validation, before any equality check, so malformed identity
-    # values (short/uppercase SHA, malformed digest) get a precise diagnosis.
-    for field in _GIT_SHA_FIELDS:
-        value = interface.get(field)
+    # values (short/uppercase SHA, malformed digest, or a non-string type
+    # such as a boolean) get a precise diagnosis.
+    for gsha_field in _GIT_SHA_FIELDS:
+        value = interface.get(gsha_field)
         if not isinstance(value, str) or not _GIT_SHA_RE.match(value):
             errors.append(
                 _err(
                     ReasonCode.SOURCE_IDENTITY_MISMATCH,
-                    f"interface.{field} must be exactly 40 lowercase hex characters, got: {value!r}",
+                    f"interface.{gsha_field} must be exactly 40 lowercase hex characters, got: {value!r}",
                 )
             )
-    for field in _DIGEST_FIELDS:
-        value = interface.get(field)
+    for digest_field in _DIGEST_FIELDS:
+        value = interface.get(digest_field)
         if not isinstance(value, str) or not _DIGEST_RE.match(value):
             errors.append(
                 _err(
                     ReasonCode.INTERFACE_DIGEST_MISMATCH,
-                    f"interface.{field} must match sha256:<64 lowercase hex>, got: {value!r}",
+                    f"interface.{digest_field} must match sha256:<64 lowercase hex>, got: {value!r}",
                 )
             )
 
@@ -483,13 +593,13 @@ def load_caem_f0_pin(pin_path: str | Path) -> CaemF0LoadResult:
     # tag, the post-F0 repair carrier, or any other non-F0 identity: this
     # slice's whole purpose is pinning EXACTLY the F0 carrier, never a
     # floating or merely-plausible one.
-    for field, expected in _EXPECTED_INTERFACE_VALUES.items():
-        actual = interface.get(field)
+    for id_field, expected in _EXPECTED_INTERFACE_VALUES.items():
+        actual = interface.get(id_field)
         if actual != expected:
             errors.append(
                 _err(
                     PinReasonCode.FLOATING_IDENTITY,
-                    f"interface.{field} does not match the pinned CAEM 3.0 F0 identity "
+                    f"interface.{id_field} does not match the pinned CAEM 3.0 F0 identity "
                     f"(expected {expected!r}, got {actual!r}); only the exact F0 carrier "
                     f"{EXPECTED_CARRIER_SHA} may be pinned by this consumer",
                 )
@@ -529,6 +639,56 @@ def load_caem_f0_pin(pin_path: str | Path) -> CaemF0LoadResult:
 # ---------------------------------------------------------------------------
 
 
+def _validate_manifest_structure(manifest: object) -> dict:
+    manifest = _require_dict(manifest, ReasonCode.INTERFACE_MANIFEST_INVALID, "interface-manifest.json root must be a JSON object")
+    artifact = _require_dict(
+        manifest.get("artifact"), ReasonCode.INTERFACE_MANIFEST_INVALID, "interface-manifest.artifact must be a JSON object"
+    )
+    _require_list(
+        artifact.get("files"),
+        ReasonCode.INTERFACE_MANIFEST_INVALID,
+        "interface-manifest.artifact.files must be a JSON array",
+    )
+    schema_set = _require_dict(
+        manifest.get("schema_set"),
+        ReasonCode.INTERFACE_MANIFEST_INVALID,
+        "interface-manifest.schema_set must be a JSON object",
+    )
+    _require_list(
+        schema_set.get("files"),
+        ReasonCode.INTERFACE_MANIFEST_INVALID,
+        "interface-manifest.schema_set.files must be a JSON array",
+    )
+    for entry in artifact["files"]:
+        entry_dict = _require_dict(entry, ReasonCode.INTERFACE_MANIFEST_INVALID, "each artifact.files entry must be a JSON object")
+        _require_str(entry_dict.get("path"), ReasonCode.INTERFACE_MANIFEST_INVALID, "artifact file entry missing string 'path'")
+        _require_str(entry_dict.get("sha256"), ReasonCode.INTERFACE_MANIFEST_INVALID, "artifact file entry missing string 'sha256'")
+        if not _is_strict_int(entry_dict.get("size")):
+            raise _LoadFailure(_err(ReasonCode.INTERFACE_MANIFEST_INVALID, "artifact file entry missing integer 'size'"))
+    for entry in schema_set["files"]:
+        entry_dict = _require_dict(entry, ReasonCode.INTERFACE_MANIFEST_INVALID, "each schema_set.files entry must be a JSON object")
+        _require_str(entry_dict.get("contract_id"), ReasonCode.INTERFACE_MANIFEST_INVALID, "schema_set entry missing string 'contract_id'")
+        _require_str(entry_dict.get("path"), ReasonCode.INTERFACE_MANIFEST_INVALID, "schema_set entry missing string 'path'")
+        _require_str(entry_dict.get("sha256"), ReasonCode.INTERFACE_MANIFEST_INVALID, "schema_set entry missing string 'sha256'")
+    return manifest
+
+
+def _validate_registry_structure(registry: object) -> dict:
+    registry = _require_dict(registry, ReasonCode.CONTRACT_REGISTRY_INVALID, "contract-registry.json root must be a JSON object")
+    contracts = _require_list(
+        registry.get("contracts"), ReasonCode.CONTRACT_REGISTRY_INVALID, "contract-registry.contracts must be a JSON array"
+    )
+    for entry in contracts:
+        entry_dict = _require_dict(entry, ReasonCode.CONTRACT_REGISTRY_INVALID, "each registry contract entry must be a JSON object")
+        _require_str(entry_dict.get("contract_id"), ReasonCode.CONTRACT_REGISTRY_INVALID, "registry contract entry missing string 'contract_id'")
+        _require_str(entry_dict.get("delivery_status"), ReasonCode.CONTRACT_REGISTRY_INVALID, "registry contract entry missing string 'delivery_status'")
+        _require_str(entry_dict.get("owner"), ReasonCode.CONTRACT_REGISTRY_INVALID, "registry contract entry missing string 'owner'")
+        deps = entry_dict.get("dependencies", [])
+        if not isinstance(deps, list) or not all(isinstance(d, str) for d in deps):
+            raise _LoadFailure(_err(ReasonCode.CONTRACT_REGISTRY_INVALID, "registry contract 'dependencies' must be a JSON array of strings"))
+    return registry
+
+
 def _build_contracts(registry: Mapping[str, object]) -> dict[str, CaemF0ContractRecord]:
     contracts: dict[str, CaemF0ContractRecord] = {}
     for entry in registry.get("contracts", []):
@@ -536,13 +696,20 @@ def _build_contracts(registry: Mapping[str, object]) -> dict[str, CaemF0Contract
             contract_id=entry["contract_id"],
             delivery_status=entry["delivery_status"],
             owner=entry["owner"],
-            schema_version=entry["schema_version"],
+            schema_version=entry.get("schema_version"),
             dependencies=tuple(entry.get("dependencies", ())),
             output_path=entry.get("output_path"),
             owner_repository=entry.get("owner_repository"),
             reference_path=entry.get("reference_path"),
         )
     return contracts
+
+
+def _registry_reason_codes(registry: Mapping[str, object]) -> frozenset[str]:
+    codes = registry.get("reason_codes", [])
+    if isinstance(codes, list) and all(isinstance(c, str) for c in codes):
+        return frozenset(codes)
+    return frozenset()
 
 
 def _identity_from_manifest(manifest: Mapping[str, object]) -> CaemF0InterfaceIdentity:
@@ -626,12 +793,13 @@ def _verify_manifest_and_registry(
     if manifest.get("schema_set", {}).get("digest") != pin.schema_set_digest:
         errors.append(_err(ReasonCode.MIXED_INTERFACE_IDENTITY, "interface-manifest.schema_set.digest disagrees with pin"))
 
-    for field in ("base_policy_digest", "policy_source_bytes_digest", "policy_source_semantic_digest"):
-        if manifest.get(field) != getattr(pin, field):
-            errors.append(_err(ReasonCode.POLICY_SOURCE_DIGEST_MISMATCH, f"interface-manifest.{field} disagrees with pin"))
+    for policy_field in ("base_policy_digest", "policy_source_bytes_digest", "policy_source_semantic_digest"):
+        if manifest.get(policy_field) != getattr(pin, policy_field):
+            errors.append(_err(ReasonCode.POLICY_SOURCE_DIGEST_MISMATCH, f"interface-manifest.{policy_field} disagrees with pin"))
 
-    # Registry-level structural invariants (contract IDs unique, reserved
-    # contracts carry no output_path, dependency graph acyclic).
+    # Registry-level structural invariants (contract IDs unique, dependency
+    # graph acyclic). Entry shape itself is already guaranteed by
+    # `_validate_registry_structure`.
     seen_ids: set[str] = set()
     contracts_by_id: dict[str, Mapping[str, object]] = {}
     for entry in registry.get("contracts", []):
@@ -669,7 +837,7 @@ def load_caem_f0_interface(
     git_root: str | Path | None = None,
 ) -> CaemF0LoadResult:
     """Verify a locally available copy of the CAEM 3.0 F0 interface against
-    `pin`, byte for byte, and return the available contract registry.
+    `pin` and return the available contract registry.
 
     Exactly one of `interface_root` (a directory containing, at minimum,
     `interfaces/caem-3.0-f0/{interface-manifest.json,contract-registry.json}`
@@ -681,8 +849,35 @@ def load_caem_f0_interface(
     `pin.carrier_sha`; when present, the artifact's Git blob-OID projection is
     recomputed and compared against `pin.artifact_git_projection_digest`.
     This loader never fetches, clones, or otherwise touches the network.
+
+    Total and fail-closed: every recognized malformation of the local
+    artifact — missing files, unreadable files, non-object JSON roots,
+    wrongly-typed structural fields, a corrupt/truncated zip, a file that
+    disappears between existence and read — returns
+    `CaemF0LoadResult(ok=False, errors=...)`. No exception escapes this
+    function.
     """
 
+    try:
+        return _load_caem_f0_interface_inner(
+            pin, interface_root=interface_root, transport_zip=transport_zip, git_root=git_root
+        )
+    except _LoadFailure as failure:
+        return CaemF0LoadResult(ok=False, errors=(failure.error,))
+    except Exception as exc:  # noqa: BLE001 - deliberate total safety net
+        return CaemF0LoadResult(
+            ok=False,
+            errors=(_err(ReasonCode.INTERFACE_MANIFEST_INVALID, f"unexpected error while verifying interface: {exc!r}"),),
+        )
+
+
+def _load_caem_f0_interface_inner(
+    pin: CaemF0Pin,
+    *,
+    interface_root: str | Path | None,
+    transport_zip: str | Path | None,
+    git_root: str | Path | None,
+) -> CaemF0LoadResult:
     if (interface_root is None) == (transport_zip is None):
         return CaemF0LoadResult(
             ok=False,
@@ -694,13 +889,10 @@ def load_caem_f0_interface(
             ),
         )
 
-    try:
-        if transport_zip is not None:
-            manifest, registry, artifact_files_bytes = _load_from_zip(Path(transport_zip), pin)
-        else:
-            manifest, registry, artifact_files_bytes = _load_from_directory(Path(interface_root), pin)
-    except _LoadFailure as failure:
-        return CaemF0LoadResult(ok=False, errors=(failure.error,))
+    if transport_zip is not None:
+        manifest, registry, _artifact_files_bytes = _load_from_zip(Path(transport_zip), pin)
+    else:
+        manifest, registry, _artifact_files_bytes = _load_from_directory(Path(interface_root), pin)
 
     errors = _verify_manifest_and_registry(pin, manifest, registry)
 
@@ -712,13 +904,8 @@ def load_caem_f0_interface(
 
     identity = _identity_from_manifest(manifest)
     contracts = _build_contracts(registry)
-    return CaemF0LoadResult(ok=True, pin=pin, identity=identity, contracts=contracts)
-
-
-class _LoadFailure(Exception):
-    def __init__(self, error: CaemF0LoadError) -> None:
-        self.error = error
-        super().__init__(error.message)
+    reason_codes = _registry_reason_codes(registry)
+    return CaemF0LoadResult(ok=True, pin=pin, identity=identity, contracts=contracts, reason_codes=reason_codes)
 
 
 def _resolved_within_root(root: Path, file_path: Path, rel: str) -> None:
@@ -734,24 +921,42 @@ def _resolved_within_root(root: Path, file_path: Path, rel: str) -> None:
         raise _LoadFailure(_err(ReasonCode.UNSAFE_ARTIFACT_PATH, "path escapes interface root after resolution", rel)) from exc
 
 
+def _read_bytes_or_fail(path: Path, reason_code: str, rel: str) -> bytes:
+    try:
+        return path.read_bytes()
+    except OSError as exc:
+        raise _LoadFailure(_err(reason_code, f"cannot read file: {exc}", rel)) from exc
+
+
 def _load_from_directory(root: Path, pin: CaemF0Pin) -> tuple[dict, dict, dict[str, bytes]]:
     manifest_path = root / F0_MANIFEST_PATH
     registry_path = root / F0_REGISTRY_PATH
     if not manifest_path.is_file():
         raise _LoadFailure(_err(ReasonCode.INTERFACE_MANIFEST_INVALID, "interface-manifest.json not found", str(manifest_path)))
+    if not registry_path.is_file():
+        raise _LoadFailure(_err(ReasonCode.CONTRACT_REGISTRY_INVALID, "contract-registry.json not found", str(registry_path)))
     if manifest_path.is_symlink() or registry_path.is_symlink():
         raise _LoadFailure(_err(ReasonCode.UNSAFE_ARTIFACT_PATH, "symlinked interface files are rejected"))
     _resolved_within_root(root, manifest_path, F0_MANIFEST_PATH)
     _resolved_within_root(root, registry_path, F0_REGISTRY_PATH)
 
+    manifest_bytes = _read_bytes_or_fail(manifest_path, ReasonCode.INTERFACE_MANIFEST_INVALID, F0_MANIFEST_PATH)
+    registry_bytes = _read_bytes_or_fail(registry_path, ReasonCode.CONTRACT_REGISTRY_INVALID, F0_REGISTRY_PATH)
+
     try:
-        manifest = _strict_json_loads(manifest_path.read_bytes())
-        registry = _strict_json_loads(registry_path.read_bytes())
+        manifest = _strict_json_loads(manifest_bytes)
     except ValueError as exc:
-        raise _LoadFailure(_err(ReasonCode.CANONICAL_JSON_INVALID, str(exc))) from exc
+        raise _LoadFailure(_err(ReasonCode.CANONICAL_JSON_INVALID, str(exc), F0_MANIFEST_PATH)) from exc
+    try:
+        registry = _strict_json_loads(registry_bytes)
+    except ValueError as exc:
+        raise _LoadFailure(_err(ReasonCode.CANONICAL_JSON_INVALID, str(exc), F0_REGISTRY_PATH)) from exc
+
+    manifest = _validate_manifest_structure(manifest)
+    registry = _validate_registry_structure(registry)
 
     file_bytes: dict[str, bytes] = {}
-    for entry in manifest.get("artifact", {}).get("files", []):
+    for entry in manifest["artifact"]["files"]:
         rel = entry["path"]
         if not _SAFE_PATH_RE.match(rel) or PurePosixPath(rel).is_absolute():
             raise _LoadFailure(_err(ReasonCode.UNSAFE_ARTIFACT_PATH, "unsafe artifact path", rel))
@@ -761,7 +966,7 @@ def _load_from_directory(root: Path, pin: CaemF0Pin) -> tuple[dict, dict, dict[s
         if not file_path.is_file():
             raise _LoadFailure(_err(ReasonCode.UNEXPECTED_ARTIFACT, "declared artifact file missing", rel))
         _resolved_within_root(root, file_path, rel)
-        data = file_path.read_bytes()
+        data = _read_bytes_or_fail(file_path, ReasonCode.ARTIFACT_DIGEST_MISMATCH, rel)
         actual_digest = _raw_bytes_digest(data)
         if actual_digest != entry["sha256"] or len(data) != entry["size"]:
             raise _LoadFailure(_err(ReasonCode.ARTIFACT_DIGEST_MISMATCH, "artifact file digest/size mismatch", rel))
@@ -774,7 +979,7 @@ def _load_from_zip(zip_path: Path, pin: CaemF0Pin) -> tuple[dict, dict, dict[str
     if not zip_path.is_file():
         raise _LoadFailure(_err(ReasonCode.UNEXPECTED_ARTIFACT, "transport zip not found", str(zip_path)))
 
-    archive_bytes = zip_path.read_bytes()
+    archive_bytes = _read_bytes_or_fail(zip_path, ReasonCode.UNEXPECTED_ARTIFACT, str(zip_path))
     archive_digest = _raw_bytes_digest(archive_bytes)
     if archive_digest != pin.transport_archive_digest:
         raise _LoadFailure(
@@ -784,8 +989,19 @@ def _load_from_zip(zip_path: Path, pin: CaemF0Pin) -> tuple[dict, dict, dict[str
             )
         )
 
-    with zipfile.ZipFile(zip_path) as archive:
-        infos = archive.infolist()
+    try:
+        archive = zipfile.ZipFile(zip_path)
+    except zipfile.BadZipFile as exc:
+        raise _LoadFailure(_err(ReasonCode.UNEXPECTED_ARTIFACT, f"transport zip is not a valid zip archive: {exc}")) from exc
+    except OSError as exc:
+        raise _LoadFailure(_err(ReasonCode.UNEXPECTED_ARTIFACT, f"cannot open transport zip: {exc}")) from exc
+
+    with archive:
+        try:
+            infos = archive.infolist()
+        except (zipfile.BadZipFile, OSError) as exc:
+            raise _LoadFailure(_err(ReasonCode.UNEXPECTED_ARTIFACT, f"transport zip is corrupt or truncated: {exc}")) from exc
+
         names = [info.filename for info in infos]
         if len(names) != len(set(name.casefold() for name in names)):
             raise _LoadFailure(_err(ReasonCode.UNEXPECTED_ARTIFACT, "case-colliding member names in transport zip"))
@@ -801,18 +1017,27 @@ def _load_from_zip(zip_path: Path, pin: CaemF0Pin) -> tuple[dict, dict, dict[str
         if F0_MANIFEST_PATH not in archive.namelist():
             raise _LoadFailure(_err(ReasonCode.INTERFACE_MANIFEST_INVALID, "transport zip missing interface-manifest.json"))
         try:
-            manifest = _strict_json_loads(archive.read(F0_MANIFEST_PATH))
+            manifest_bytes = archive.read(F0_MANIFEST_PATH)
+        except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+            raise _LoadFailure(_err(ReasonCode.UNEXPECTED_ARTIFACT, f"cannot read interface-manifest.json from zip: {exc}")) from exc
+        try:
+            manifest = _strict_json_loads(manifest_bytes)
         except ValueError as exc:
-            raise _LoadFailure(_err(ReasonCode.CANONICAL_JSON_INVALID, str(exc))) from exc
+            raise _LoadFailure(_err(ReasonCode.CANONICAL_JSON_INVALID, str(exc), F0_MANIFEST_PATH)) from exc
+
+        manifest = _validate_manifest_structure(manifest)
 
         expected_members = {F0_MANIFEST_PATH}
         file_bytes: dict[str, bytes] = {}
-        for entry in manifest.get("artifact", {}).get("files", []):
+        for entry in manifest["artifact"]["files"]:
             rel = entry["path"]
             expected_members.add(rel)
             if rel not in archive.namelist():
                 raise _LoadFailure(_err(ReasonCode.UNEXPECTED_ARTIFACT, "declared artifact file missing from zip", rel))
-            data = archive.read(rel)
+            try:
+                data = archive.read(rel)
+            except (zipfile.BadZipFile, RuntimeError, OSError) as exc:
+                raise _LoadFailure(_err(ReasonCode.ARTIFACT_DIGEST_MISMATCH, f"cannot read {rel} from zip: {exc}", rel)) from exc
             actual_digest = _raw_bytes_digest(data)
             if actual_digest != entry["sha256"] or len(data) != entry["size"]:
                 raise _LoadFailure(_err(ReasonCode.ARTIFACT_DIGEST_MISMATCH, "artifact file digest/size mismatch", rel))
@@ -828,7 +1053,9 @@ def _load_from_zip(zip_path: Path, pin: CaemF0Pin) -> tuple[dict, dict, dict[str
         try:
             registry = _strict_json_loads(file_bytes[F0_REGISTRY_PATH])
         except ValueError as exc:
-            raise _LoadFailure(_err(ReasonCode.CANONICAL_JSON_INVALID, str(exc))) from exc
+            raise _LoadFailure(_err(ReasonCode.CANONICAL_JSON_INVALID, str(exc), F0_REGISTRY_PATH)) from exc
+
+        registry = _validate_registry_structure(registry)
 
     return manifest, registry, file_bytes
 
@@ -884,12 +1111,13 @@ def require_caem_f0_contract(load_result: CaemF0LoadResult, contract_id: str) ->
 
 
 # ---------------------------------------------------------------------------
-# Generated-view identity consistency
+# Active-surface identity consistency
 # ---------------------------------------------------------------------------
 
 # The two legacy digests this slice's remediation replaces. They may appear
 # ONLY inside the quarantine directory (as preserved historical bytes), never
-# in any active, non-quarantined file.
+# in any of the ACTIVE surfaces this scanner checks. Note this scanner does
+# NOT claim repository-wide coverage — see its docstring.
 _STALE_IDENTITY_STRINGS = (
     "5f8d13688555633a7b26124c81f390bdcc4ddda2ccb40d4a45427b95cbcb9928",
     "9aa4949a0a9b865ae3b9a589fdf4dbadd1254cfad8c11f3db26efce10303ba60",
@@ -906,16 +1134,19 @@ _ACTIVE_IDENTITY_HEADER_FILES = (
     "docs/engineering/CURRENT_CHECKPOINT.md",
 )
 
-_QUARANTINE_DIR_NAME = ".caem/quarantine"
 
+def scan_active_identity_headers(repository_root: str | Path) -> tuple[tuple[str, str], ...]:
+    """Scan EXACTLY the five active generated-view headers listed in
+    `_ACTIVE_IDENTITY_HEADER_FILES` for the legacy CAEM 2.1 digests or the
+    post-F0 repair carrier used as if it were a pin.
 
-def scan_for_stale_caem_identity(repository_root: str | Path) -> tuple[tuple[str, str], ...]:
-    """Scan `_ACTIVE_IDENTITY_HEADER_FILES` (and, defensively, anything else
-    under the repository root that is not inside `.caem/quarantine/`) for the
-    legacy CAEM 2.1 digests or the post-F0 repair carrier used as if it were a
-    pin. Returns `(relative_path, matched_string)` pairs found OUTSIDE
-    quarantine; an empty tuple means the repository has a single, consistent
-    active CAEM identity."""
+    This is deliberately NOT a repository-wide scan: historical documents
+    (e.g. `docs/RI_A0_CAEM_REUSE_MATRIX.md`, this module's own tests, and
+    `.caem/quarantine/**`) may legitimately mention these strings — as
+    history, as fixtures, or as the exact values a test proves get rejected —
+    without that constituting active, misleading CAEM identity. An empty
+    tuple means these five ACTIVE SURFACES carry no stale identity string;
+    it is not a claim about the whole repository."""
 
     root = Path(repository_root)
     hits: list[tuple[str, str]] = []

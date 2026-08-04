@@ -17,7 +17,23 @@ from pathlib import Path
 import pytest
 
 from app.caem_consumer.f0 import (
+    EXPECTED_ARTIFACT_DIGEST,
+    EXPECTED_ARTIFACT_GIT_PROJECTION_DIGEST,
+    EXPECTED_BASE_POLICY_DIGEST,
     EXPECTED_CARRIER_SHA,
+    EXPECTED_CONTRACT_REGISTRY_DIGEST,
+    EXPECTED_INTERFACE_MANIFEST_DIGEST,
+    EXPECTED_MATURITY,
+    EXPECTED_POLICY_SOURCE_BYTES_DIGEST,
+    EXPECTED_POLICY_SOURCE_SEMANTIC_DIGEST,
+    EXPECTED_PUBLISHED,
+    EXPECTED_SCHEMA_SET_DIGEST,
+    EXPECTED_SOURCE_SHA,
+    EXPECTED_TARGET_RELEASE,
+    EXPECTED_TESTED_MERGE_SHA,
+    EXPECTED_TOOLCHAIN_DIGEST,
+    EXPECTED_TRANSPORT_ARCHIVE_DIGEST,
+    EXPECTED_VERIFIER_IDENTITY,
     ReasonCode,
     PinReasonCode,
     load_caem_f0_pin,
@@ -161,3 +177,87 @@ def test_network_required_constraint_must_be_false(tmp_path: Path) -> None:
     doc["constraints"]["network_required"] = True
     result = load_caem_f0_pin(_write(tmp_path, doc))
     assert not result.ok
+
+
+def test_expected_constants_match_the_real_pin_exactly() -> None:
+    # Model: the pin is the single DECLARATIVE source; EXPECTED_* is an
+    # INDEPENDENT verifier binding (defense in depth), never a second source
+    # to keep in sync by hand. This test is the proof obligation that keeps
+    # that claim true: every EXPECTED_* constant must equal the value the
+    # shipped pin itself declares, field for field.
+    doc = _real_pin_doc()
+    interface = doc["interface"]
+    expected = {
+        "target_release": EXPECTED_TARGET_RELEASE,
+        "maturity": EXPECTED_MATURITY,
+        "published": EXPECTED_PUBLISHED,
+        "source_sha": EXPECTED_SOURCE_SHA,
+        "tested_merge_sha": EXPECTED_TESTED_MERGE_SHA,
+        "carrier_sha": EXPECTED_CARRIER_SHA,
+        "base_policy_digest": EXPECTED_BASE_POLICY_DIGEST,
+        "policy_source_bytes_digest": EXPECTED_POLICY_SOURCE_BYTES_DIGEST,
+        "policy_source_semantic_digest": EXPECTED_POLICY_SOURCE_SEMANTIC_DIGEST,
+        "contract_registry_digest": EXPECTED_CONTRACT_REGISTRY_DIGEST,
+        "schema_set_digest": EXPECTED_SCHEMA_SET_DIGEST,
+        "artifact_digest": EXPECTED_ARTIFACT_DIGEST,
+        "artifact_git_projection_digest": EXPECTED_ARTIFACT_GIT_PROJECTION_DIGEST,
+        "interface_manifest_digest": EXPECTED_INTERFACE_MANIFEST_DIGEST,
+        "transport_archive_digest": EXPECTED_TRANSPORT_ARCHIVE_DIGEST,
+        "verifier_identity": EXPECTED_VERIFIER_IDENTITY,
+        "toolchain_digest": EXPECTED_TOOLCHAIN_DIGEST,
+    }
+    for field_name, constant_value in expected.items():
+        assert interface[field_name] == constant_value, (
+            f"EXPECTED_{field_name.upper()} diverges from the shipped pin's "
+            f"interface.{field_name} — the verifier binding has drifted from "
+            f"its declarative source"
+        )
+    # And nothing in the pin's interface block is left unchecked by this test.
+    assert set(expected.keys()) == set(interface.keys())
+
+
+def test_reason_code_mirror_matches_verified_registry() -> None:
+    """`ReasonCode` is documented as a verified mirror of the real CAEM 3.0 F0
+    registry's own `reason_codes` set, not an independently-defined AIOps
+    enum. No CAEM registry file is bundled in this repository (that would be
+    copying CAEM content, which this module explicitly avoids) — so this
+    test compares the mirror against a verbatim transcription of the real
+    registry's `reason_codes` array as pinned by
+    `config/caem/caem-3.0-f0.pin.json` (`contract_registry_digest`
+    sha256:cca17eab...), independently confirmed live in this session against
+    a real `mglpsw/caem` checkout at the pinned carrier
+    (`ReasonCode.all() == result.reason_codes` after a real
+    `load_caem_f0_interface(..., interface_root=<real caem checkout>)`,
+    22 == 22). The live wiring itself — that `result.reason_codes` comes from
+    whatever registry is actually loaded, not from this mirror — is what
+    `test_load_result_reason_codes_come_from_the_verified_registry_not_the_mirror`
+    proves, against a synthetic fixture whose `reason_codes` deliberately
+    differ from this mirror."""
+    real_registry_reason_codes = frozenset(
+        {
+            "CANONICAL_JSON_INVALID",
+            "DUPLICATE_JSON_KEY",
+            "NON_INTEGER_IDENTITY_NUMBER",
+            "POLICY_SOURCE_INVALID",
+            "POLICY_SOURCE_DIGEST_MISMATCH",
+            "CONTRACT_REGISTRY_INVALID",
+            "CONTRACT_NOT_FOUND",
+            "CONTRACT_VERSION_UNSUPPORTED",
+            "CONTRACT_RESERVED",
+            "CONTRACT_OWNER_MISMATCH",
+            "SCHEMA_DIGEST_MISMATCH",
+            "INTERFACE_MANIFEST_INVALID",
+            "INTERFACE_DIGEST_MISMATCH",
+            "ARTIFACT_DIGEST_MISMATCH",
+            "SOURCE_IDENTITY_MISMATCH",
+            "MIXED_INTERFACE_IDENTITY",
+            "UNSAFE_ARTIFACT_PATH",
+            "UNEXPECTED_ARTIFACT",
+            "CONTRACT_CHANGE_REQUEST_INVALID",
+            "AUTHORITY_EFFECT_FORBIDDEN",
+            "PIN_INCOMPLETE",
+            "ROLLBACK_TARGET_INVALID",
+        }
+    )
+    assert ReasonCode.all() == real_registry_reason_codes
+    assert len(ReasonCode.all()) == 22

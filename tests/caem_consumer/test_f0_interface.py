@@ -310,11 +310,33 @@ def test_external_reference_contract_is_available(fixture_interface: dict) -> No
     assert record.owner_repository == "mglpsw/aiops-orchestrator"
 
 
-def test_reason_codes_come_from_verified_registry(fixture_interface: dict) -> None:
+def test_delivery_statuses_come_from_verified_registry(fixture_interface: dict) -> None:
     result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
     assert result.ok
     statuses = {c.delivery_status for c in result.contracts.values()}
     assert statuses == {"implemented_at_f0", "reserved", "legacy_reference", "external_reference"}
+
+
+def test_load_result_reason_codes_come_from_the_verified_registry_not_the_mirror(fixture_interface: dict) -> None:
+    # This is the actual reason-code parity check: `result.reason_codes` must
+    # be read LIVE from the digest-verified registry's own `reason_codes`
+    # list, not copied from the local `ReasonCode` mirror class.
+    from tests.caem_consumer.conftest import FIXTURE_REASON_CODES
+
+    result = load_caem_f0_interface(fixture_interface["pin"], interface_root=fixture_interface["root"])
+    assert result.ok
+    assert result.reason_codes == frozenset(FIXTURE_REASON_CODES)
+    # The fixture's reason codes are deliberately NOT the same as the
+    # `ReasonCode` mirror — proving the field is not silently backfilled
+    # from the mirror when the registry declares something else.
+    assert result.reason_codes != ReasonCode.all()
+
+
+def test_failed_load_carries_no_reason_codes(fixture_interface: dict) -> None:
+    wrong_pin = build_fixture_pin(fixture_interface["built"], contract_registry_digest="sha256:" + ("33" * 32))
+    result = load_caem_f0_interface(wrong_pin, interface_root=fixture_interface["root"])
+    assert not result.ok
+    assert result.reason_codes == frozenset()
 
 
 def test_loader_performs_zero_network_calls(fixture_interface: dict, monkeypatch: pytest.MonkeyPatch) -> None:

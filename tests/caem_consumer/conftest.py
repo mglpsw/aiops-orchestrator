@@ -39,6 +39,8 @@ _NON_SCHEMA_ARTIFACT_PATHS = (
     "interfaces/caem-3.0-f0/contract-registry.json",
 )
 
+FIXTURE_REASON_CODES = ("FIXTURE_REASON_ONE", "FIXTURE_REASON_TWO")
+
 
 def _canon_digest(value: Any) -> str:
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -154,6 +156,7 @@ def build_fixture_interface(root: Path, *, contracts: list[dict] | None = None) 
         "target_release": "3.0.0",
         "maturity": "development_freeze",
         "published": False,
+        "reason_codes": list(FIXTURE_REASON_CODES),
         "contracts": contracts,
     }
     registry_path = root / "interfaces" / "caem-3.0-f0" / "contract-registry.json"

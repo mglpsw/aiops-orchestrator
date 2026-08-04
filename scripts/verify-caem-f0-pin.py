@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 from app.caem_consumer.f0 import (  # noqa: E402
     load_caem_f0_interface,
     load_caem_f0_pin,
-    scan_for_stale_caem_identity,
+    scan_active_identity_headers,
 )
 
 
@@ -32,7 +32,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="also scan for stale CAEM identity strings outside the quarantine directory",
+        help="also scan the five active generated-view headers (AGENTS.md, CLAUDE.md, "
+        "CAEM_CORE.md, PROJECT_OVERLAY.md, CURRENT_CHECKPOINT.md) for stale CAEM identity "
+        "strings — not a repository-wide scan; historical documents may legitimately "
+        "mention these strings",
     )
     return parser.parse_args(argv)
 
@@ -61,12 +64,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"interface: ok ({len(iface_result.contracts)} contracts)")
 
     if args.check:
-        hits = scan_for_stale_caem_identity(REPO_ROOT)
+        hits = scan_active_identity_headers(REPO_ROOT)
         if hits:
             for path, needle in hits:
                 print(f"STALE_IDENTITY: {path} contains {needle[:16]}...", file=sys.stderr)
             return 1
-        print("generated views: ok (single consistent identity)")
+        print("active generated-view headers: ok (single consistent identity)")
 
     return 0
 
