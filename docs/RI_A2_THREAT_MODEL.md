@@ -25,7 +25,12 @@ explicitly; it does not invent code, schemas, or behavior for components that
 don't exist yet. Where a claim depends on CAEM's own schemas (`authority-grant`,
 `evidence-bundle`, the F0 contract registry), this document references the
 field names and enum values already verified in `docs/RI_A0_CAEM_REUSE_MATRIX.md`
-and `docs/engineering/CAEM_CORE.md` — it does not redefine or extend them.
+— it does not redefine or extend them. Where a claim depends instead on this
+repository's own local operational policy (`docs/engineering/CAEM_CORE.md`'s
+authority matrix and failure classification — a historical CAEM 2.1
+projection per that file's own header, `authority_effect=none`, not
+CAEM-F0-normative content), §8.1 states that distinction explicitly rather
+than presenting local policy as if it were CAEM normative authority.
 
 ---
 
@@ -137,10 +142,20 @@ any pipeline that ingests real diagnostic/action data risks a raw clinical
 narrative, a patient identifier, or a CPF/CNS-shaped string reaching an
 artifact, log, or persisted record.
 
-- **[enforced today]** RI-B0/RI-B1 do not exist; no pipeline in this repo
-  ingests real clinical data for RI purposes. `app/agent_router/`'s existing
-  action-runner path is unrelated (infra diagnostics, not clinical content),
-  and is already redaction-tested (`tests/test_legacy_adapter_quarantine.py`).
+- **[enforced today, operationally, not structurally]** RI-B0/RI-B1 do not
+  exist; no pipeline in this repo ingests real clinical data for RI
+  purposes today. `app/agent_router/`'s existing action-runner path is
+  unrelated (infra diagnostics, not clinical content), and is already
+  redaction-tested (`tests/test_legacy_adapter_quarantine.py`). **Correction,
+  found by an independent Codex review:** the AgentReview runner's own
+  sanitizer (`app/agent_review/redaction.py:sanitize_artifact_value`, see
+  its row in §3) redacts secrets and local paths only, with no PHI
+  detection — so the "no PHI reaches this pipeline" property is true only
+  because AgentReview is not currently pointed at a clinical-target repo,
+  not because the pipeline would refuse or redact clinical content if it
+  were. This is an operational fact, not a structural guarantee, and is the
+  concrete reason #160 is a hard prerequisite (§6) rather than a
+  nice-to-have.
 - **[planned — RI-B0/RI-B1]** this is the single highest-consequence future
   surface. Real DLP/PHI detection (#160) is an explicit prerequisite —
   **not this document's job to implement** — but this document's closure
@@ -198,7 +213,7 @@ CAEM-side analogue of "hallucinated test output."
   was re-verified with the same reproduction script before being called
   fixed (see PR #173's round-3 and round-4-confirmation comments for two
   concrete instances).
-- **[planned — RI-B0, depends on CAEM #14/#15]** proof-carrying bundles and
+- **[planned — RI-B0, depends on CAEM promoting these from `reserved`]** proof-carrying bundles and
   counterexample certificates are CAEM `reserved` contracts today
   (`caem.proof-certificate.v1`, `caem.counterexample-certificate.v1`,
   `caem.proof-carrying-bundle` family) — RI-B0 cannot consume them as
@@ -213,10 +228,11 @@ A component that itself produced a result also certifies that result as
 "independently verified," collapsing the separation between producer and
 verifier that gives independent verification its meaning.
 
-- **[planned — RI-B0, depends on CAEM #15/#16]** "independent verifier"
+- **[planned — RI-B0]** "independent verifier"
   requires a genuinely separate execution context (clean environment,
-  offline, pinned toolchain, per the CAEM_AIOPS reconciliation plan's F2
-  section) from the component whose output is being verified; RI-B0's own
+  offline, pinned toolchain) from the component whose output is being
+  verified — a requirement this document imposes directly, not one it
+  attributes to an external roadmap document. RI-B0's own
   executor can never simultaneously be the verifier for its own run. This
   is a hard separation this document imposes on RI-B0's design, not a
   feature to build here.
@@ -233,10 +249,11 @@ evidence, inflating confidence without new information.
   fail-closed policy, synthesis/lifecycle aggregation) already dedupes
   findings across chunk boundaries by binding them to a canonical
   `(file, line, finding)` identity rather than counting raw occurrences.
-- **[planned — RI-B0]** the accumulation semantics referenced in the
-  CAEM_AIOPS reconciliation plan (D.1: duplicate_key, conflict/missing/
-  retraction semantics) must be the single mechanism RI-B0 uses to combine
-  observations; RI-B0 does not invent a second, ad hoc deduplication scheme.
+- **[planned — RI-B0]** the accumulation semantics CAEM eventually normalizes for
+  variable/evidence combination (duplicate_key, conflict/missing/retraction
+  semantics) must be the single mechanism RI-B0 uses to combine
+  observations, once CAEM defines them; RI-B0 does not invent a second, ad
+  hoc deduplication scheme in the meantime.
 
 ### 1.12 Memory leakage between repositories
 
@@ -394,8 +411,8 @@ case if compromised or buggy), **kill switch** (how to stop it).
 | Component | Status | Read | Write | Data | Denied actions | Grant required for more | Audit | Blast radius | Kill switch |
 |---|---|---|---|---|---|---|---|---|---|
 | **CAEM verifier** | real, external (`mglpsw/caem`) | its own schemas/policy/registry | contract registry, interface manifest, F0/candidate revisions | none (normative grammar only) | writing to any consumer repo; asserting authority over merge/deploy | n/a — CAEM is normative source, not an actor in this repo | CAEM's own repo history + digests | a bad CAEM revision could mis-verify proofs repo-wide | consumers pin an exact digest; a bad revision simply isn't adopted (`candidate adoption` is explicit, never automatic) |
-| **AgentReview runner** | real (`app/agent_review/`, this repo) | diff, checks, existing evidence artifacts (offline, CT104) | manifests, payloads, `ReviewReadinessV2` artifacts (JSON, disk) | diff content, file paths, findings (sanitized text) — no PHI/secrets by design of the surfaces it touches | network calls, git push/merge, provider calls, persistence beyond disk artifacts | any protected action from `CAEM_CORE.md`'s matrix (commit/merge/etc.) — none granted to this component itself | JSON artifacts on disk, `tests/agent_review`/`tests/evals` suites, this repo's own commit history | a bug produces a wrong readiness verdict, consumed as advisory only (`PROJECT_OVERLAY.md`: "Review textual do modelo é advisory") | stop invoking the CLI/harness; readiness gate (`review-readiness` schema) is the only consumable decision, and a `manual_required`/`blocked_*` state is always available |
-| **AIOps RI-B0 compiler/executor** | **planned** (#162-#165, not implemented) | pinned CAEM candidate revision's contracts; AgentReview v2 artifacts | packs/tables/plan/batch results, per contracts RI-B0 will consume once CAEM #13 promotes them | evidence classes per `caem.canonical-variable-catalog.v1` (once implemented) — must exclude raw diff/prompt/PHI per §4 | consuming a `reserved` CAEM contract as implemented; self-verifying its own output (§1.10); persistence writes without RI-B1's own grant | `mutate_database` (once RI-B1 exists), any `deploy_*`/`migration` action | evidence bundle per `evidence-bundle.schema.json`'s real fields (`bundle_id, task_id, identity, gate_runs, sanitization, actions, limitations, worktree, next_action`) | a compromised executor could fabricate proof obligations at scale; contained by verifier independence (§1.10) and per-contract digest binding | its own future feature flag / config toggle; until built, this "kill switch" is simply "it doesn't exist" |
+| **AgentReview runner** | real (`app/agent_review/`, this repo) | diff, checks, existing evidence artifacts (offline, CT104) | manifests, payloads, `ReviewReadinessV2` artifacts (JSON, disk) | diff content, file paths, findings, sanitized against secrets and local paths only. **Correction, found by an independent Codex review of an earlier draft:** this row previously claimed "no PHI/secrets by design of the surfaces it touches" — verified directly that `app/agent_review/redaction.py:sanitize_artifact_value` (called by `chunk_payload_builder.py` and `payload_references_v2.py` before any payload is persisted) only redacts secret-shaped values, private keys, bearer tokens, and local paths; its own docstring is exactly "Redact secrets and local paths before emitting an uploadable artifact" — it has no PHI/clinical-narrative detection. If this runner is ever pointed at a target whose diffs can contain clinical narrative (e.g. AgentEscala/InterLeitos, per `REPOSITORY_REGISTRY.md`), persisted payload JSON can carry that content today. This is a real, currently-existing gap, not a hypothetical one — see the DLP requirement in §4 and the stop condition in §6 | network calls, git push/merge, provider calls, persistence beyond disk artifacts, **and (until #160 exists) any run against a target repository whose diffs may contain clinical narrative** | any protected action from `CAEM_CORE.md`'s matrix (commit/merge/etc.) — none granted to this component itself; a real DLP/PHI gate (#160) before running against clinical-adjacent targets | JSON artifacts on disk, `tests/agent_review`/`tests/evals` suites, this repo's own commit history | a bug produces a wrong readiness verdict, consumed as advisory only (`PROJECT_OVERLAY.md`: "Review textual do modelo é advisory"); **additionally, until #160 lands, a clinical-target run could leak PHI into a persisted JSON artifact** | stop invoking the CLI/harness; readiness gate (`review-readiness` schema) is the only consumable decision, and a `manual_required`/`blocked_*` state is always available |
+| **AIOps RI-B0 compiler/executor** | **planned** (#162-#165, not implemented) | pinned CAEM candidate revision's contracts; AgentReview v2 artifacts | packs/tables/plan/batch results, per contracts RI-B0 will consume once CAEM promotes them from `reserved` | evidence classes per `caem.canonical-variable-catalog.v1` (once implemented) — must exclude raw diff/prompt/PHI per §4 | consuming a `reserved` CAEM contract as implemented; self-verifying its own output (§1.10); persistence writes without RI-B1's own grant | `mutate_database` (once RI-B1 exists), any `deploy_*`/`migration` action | evidence bundle per `evidence-bundle.schema.json`'s real fields (`bundle_id, task_id, identity, gate_runs, sanitization, actions, limitations, worktree, next_action`) | a compromised executor could fabricate proof obligations at scale; contained by verifier independence (§1.10) and per-contract digest binding | its own future feature flag / config toggle; until built, this "kill switch" is simply "it doesn't exist" |
 | **Verification Index** | **planned** (#164, not implemented) | RI-B0's proof results, dependency projection digests | an index of what's been verified, for lookup — not a source of truth itself | proof metadata (hashes, IDs, verdicts) — no raw content | asserting a result it didn't itself observe from RI-B0's real output; being queried as if it were the verifier | none beyond read access to RI-B0's outputs | its own query log | a poisoned index could misdirect which proofs are trusted; mitigated by requiring index entries to carry a `dependency_projection_digest` back to the real artifact | rebuild the index from RI-B0's real artifacts (it must be regenerable, per the same discipline as CAEM's own generated views) |
 | **future ingestion API/worker** | **planned** (RI-B1, explicitly out of scope for #119-#121) | external inputs destined for RI (real diagnostics, potentially clinical-adjacent per AgentEscala/InterLeitos) | queued/persisted records | **highest-risk data class in this whole model** — potential PHI/clinical narrative, secrets, tokens | ANY persistence or transport of raw, unsanitized input; bypassing DLP (#160) for any reason, including debugging | its own dedicated grant, scoped narrowly, requiring #160's real DLP gate as a precondition, never bundled into a general "RI-B1" grant | full request/response audit trail with DLP-pass evidence attached | worst-case: PHI leak, secret leak, cross-tenant data exposure | must not exist without #160 merged and gating it; if it misbehaves post-launch, the ingestion endpoint itself is disabled at the network/deploy layer (out of this document's scope to specify further — that's a deploy-time control) |
 | **human feedback surface** | **planned**, not implemented | human-authored feedback text | suggestions, F1 change-request drafts (`caem.contract-change-request.v1`, sanitized-evidence-only per §4) | free text from a human — must be treated as untrusted input for DLP purposes, same as any other ingestion path | writing directly to CAEM (F1 is a request, never a direct write); asserting `authority_effect` other than `none` | any grant that would let feedback bypass F1's review-and-accept step | the F1 change request itself, plus whatever DLP pass gated it | a malicious/careless human feedback entry could contain PHI/secrets if unsanitized — same mitigation family as 1.5/1.6 | reject the ingestion path entirely; feedback with no accepted change request has zero effect by construction |
@@ -422,15 +439,23 @@ case if compromised or buggy), **kill switch** (how to stop it).
   (disk → network, or process → persistence). An artifact type not on this
   list requires a new version of this document before it's allowed through,
   not an ad hoc exception.
-- **Prohibited fields, verbatim from `docs/engineering/PROJECT_OVERLAY.md`'s
-  own list** (reused here by reference, not redefined): raw diff, raw
-  prompt, raw response, secret/token/header/env, local path, PHI, narrative
-  clínica identificável, CPF/CNS, identidade móvel usada como identidade.
-  Any artifact schema RI-B0 defines must make these fields structurally
-  absent (not merely "usually empty") — the same discipline CAEM's own
+- **Prohibited fields — proposed by this document, not an existing CAEM/
+  AIOps policy.** **Correction, found by an independent Codex review of an
+  earlier draft:** this list was previously presented as "reused verbatim"
+  from `docs/engineering/PROJECT_OVERLAY.md`; verified directly that
+  `PROJECT_OVERLAY.md` contains no such list — it only requires sanitized
+  metrics/logs for the weekly AIOps collection. The list itself (raw diff,
+  raw prompt, raw response, secret/token/header/env, local path, PHI,
+  narrativa clínica identificável, CPF/CNS, identidade móvel usada como
+  identidade) is a reasonable data-policy requirement, but this document is
+  its actual source, not an existing normative document — it requires the
+  same review and approval as any other new policy this document proposes,
+  not the weight of an already-ratified CAEM/AIOps rule. Any artifact
+  schema RI-B0 defines must make these fields structurally absent (not
+  merely "usually empty") — the same *mechanism* CAEM's own
   `evidence-bundle.schema.json` already applies (`additionalProperties:
   false`, closed enums), per `docs/RI_A0_CAEM_REUSE_MATRIX.md`'s verified
-  finding on that schema.
+  finding on that schema, even though the specific field list above is new.
 - **DLP before proof artifact, transport, and persistence.** A real DLP/PHI
   gate (#160, explicitly out of scope for this document to implement) must
   run before any of these three events — emitting a proof artifact,
@@ -499,7 +524,7 @@ one it's producing:
   bound to a verified identity yet (§1.13).
 - **proof** — a result that has actually been computed/verified against a
   stated obligation (CAEM's `caem.assertion.v1`/`caem.proof-obligation.v1`,
-  once promoted from `reserved` by CAEM #12), following the six-state total
+  once promoted from `reserved` by CAEM), following the six-state total
   resolution CAEM F0 already freezes. A proof is stronger than evidence: it's
   evidence that has been run through a specific, named verification
   procedure and produced one of the six total-resolution states.
@@ -537,11 +562,23 @@ field is a design defect against this document, not a stylistic choice.
 
 RI-B0 implementation must stop and escalate, rather than proceed, if:
 
-- a CAEM contract it needs is still `reserved` (per the real, current
-  registry state — 15 of 31 F0 contracts, verified in this repo's own
-  `docs/RI_A0_CAEM_REUSE_MATRIX.md`/`CURRENT_CHECKPOINT.md`) — RI-B0 must
-  request promotion (CAEM's own roadmap, #11-#15) or wait, never
-  reimplement the contract locally;
+- a CAEM contract it needs is still `reserved` — checked live against the
+  currently-pinned interface at the time of the check (`scripts/
+  verify-caem-f0-pin.py` / `app.caem_consumer.f0.load_caem_f0_interface`),
+  never against a count baked into this document. **Correction, found by
+  an independent Codex review of an earlier draft:** this stop condition
+  previously stated "15 of 31 F0 contracts" as a fact this document itself
+  established. That count was real at the time it was checked (loaded via
+  `app.caem_consumer.f0.load_caem_f0_interface` against a full local clone
+  of the pinned carrier: `reserved=15, legacy_reference=11,
+  implemented_at_f0=4, external_reference=1, total=31`), but the clone used
+  to verify it was an ephemeral, session-local checkout outside this
+  repository and its git history — not something a future reader of this
+  document can reproduce from the repo alone, and not something this
+  static document should assert as a persisted fact regardless. RI-B0 must
+  request promotion via CAEM's own live issue tracker (this document does
+  not assert specific issue numbers without live verification at the time
+  of the check) or wait, never reimplement the contract locally;
 - an artifact fails digest verification against its own manifest/registry
   entry (§1.1) — reject, don't quarantine-and-continue;
 - a proof obligation's `(repository, subject_sha, run_id)` doesn't match the
@@ -599,7 +636,7 @@ corpus once RI-B0/RI-B1 exist:
 - a disposition with no evidence/proof reference → schema rejection (§1.8);
 - a fabricated proof/counterexample (asserted without the corresponding
   computation) → rejected at the point of independent verification (§1.9),
-  once CAEM #14/#15 promote those contracts;
+  once CAEM promotes those contracts from `reserved`;
 - a component certifying its own output as "independently verified" → the
   verifier-identity check must distinguish producer from verifier by
   construction, not by convention (§1.10);
@@ -624,27 +661,48 @@ this document, which contains no code.
 
 ## 8. References to CAEM F0 contracts (no redefinition)
 
-This document references, but does not redefine:
+This document references, but does not redefine, CAEM-normative content —
+content that is actually part of the pinned CAEM 3.0 F0 interface:
 
 - `caem.contract-registry.v1` / `caem.interface-manifest.v1` /
   `caem.canonical-json.v1` — `implemented_at_f0`, pinned in this repo by
   `config/caem/caem-3.0-f0.pin.json` (#119.1, PR #173).
 - `caem.contract-change-request.v1` — `implemented_at_f0`; the only channel
   by which RI-B0 may propose a normative change to CAEM (§1.15's F1
-  distinction, per the CAEM_AIOPS reconciliation plan's §I).
-- The 15 `reserved` contracts this repo's own registry already enumerates
+  distinction).
+- The `reserved` contracts named throughout this document
   (`caem.assertion.v1`, `caem.proof-obligation.v1`,
   `caem.canonical-variable-catalog.v1`, `caem.evidence-projection.v1`,
-  `caem.proof-certificate.v1`, `caem.counterexample-certificate.v1`, and the
-  rest) — RI-B0 consumes these once CAEM promotes them; it does not
-  implement its own version of any of them in the meantime.
-- `docs/engineering/CAEM_CORE.md`'s authority matrix and failure
-  classification — reused verbatim throughout this document (§1.15, §6),
-  never re-specified with different semantics.
+  `caem.proof-certificate.v1`, `caem.counterexample-certificate.v1`, and
+  others) are real contract IDs observed in the pinned F0 registry at the
+  time this document was written (see §6's correction note on how that was
+  verified, and its non-reproducibility caveat) — RI-B0 consumes these once
+  CAEM promotes them; it does not implement its own version of any of them
+  in the meantime.
 - `docs/engineering/PROJECT_OVERLAY.md`'s trust architecture and readiness
   states (`ready, blocked_code, blocked_pipeline, manual_required, stale`) —
   the target shape for RI-B0's own future readiness output, not a shape this
   document invents independently.
+
+### 8.1 References to this repository's own local operational policy (not CAEM-normative)
+
+**Correction, found by an independent Codex review:** an earlier draft of
+this section listed `docs/engineering/CAEM_CORE.md`'s authority matrix and
+failure classification alongside the genuinely CAEM-normative content
+above, under the same "References to CAEM F0 contracts" heading. That
+conflates two different sources of authority. `CAEM_CORE.md`'s own header
+(added by this repo's own PR #173) is explicit:
+`body_provenance: historical_caem_2_1_projection`,
+`not_a_CAEM_3_0_F0_generated_view: true`, `authority_effect=none` — its
+body is a preserved historical CAEM 2.1 operational overlay, not F0
+content and not CAEM-normative at all. What this document actually reuses
+from `CAEM_CORE.md` (§1.15, §6) is **this repository's own already-agreed
+local operating discipline for agent conduct** — the authority matrix and
+failure-classification table that govern how work happens in
+`mglpsw/aiops-orchestrator` specifically — not a claim about what CAEM 3.0
+F0 itself specifies. RI-B0/RI-B1 inherit that local discipline because
+they're built in this repository, under the same governance, not because
+CAEM F0 requires it of them.
 
 ---
 
