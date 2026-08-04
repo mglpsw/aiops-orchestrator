@@ -1,0 +1,21 @@
+case_id: agentescala-domain-new-finding-manual-required
+target: agent_escala
+family: semantic_positive
+expected_readiness: manual_required
+safe_counterexample: false
+patch_sha256: 45a0c58ba6929180b6b4242f070095a3debfa71b68783d171481e5bd4848b8e1
+changed_files:
+- backend/scheduling/shift_rules.py
+rationale: 'Synthetic-only, modeled on the SHAPE of AgentEscala #681, not its real
+  content. A NEW P2 finding pending confirmation must block on manual_required with
+  finding_confirmation_required, not be silently approved. Reuses the case_id of the
+  historical Lane 1 fixture with the same ground truth; this directory adds real,
+  materialized code for the provider-reviewable lanes -- it does not alter evals/agent_review_v2/cases/.'
+severity: P2
+file_path: backend/scheduling/shift_rules.py
+line_start: 20
+line_end: 26
+invariant: a 24H shift rule must remain independent of an overlapping 12H daytime
+  rule it does not fully cover
+root_cause: 'synthetic: classification logic conflates the two rules instead of keeping
+  them independent'

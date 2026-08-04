@@ -1,0 +1,22 @@
+case_id: interleitos-domain-schema-contract-drift
+target: interleitos
+family: semantic_positive
+expected_readiness: manual_required
+safe_counterexample: false
+patch_sha256: abc7199fb8a152f4767000cc39ec0efa1955768e612f64edec8cb201b7bc50b0
+changed_files:
+- backend/api/schema_contract.py
+rationale: 'Synthetic-only, new corpus extension (rev. 4.1 determination 1), derived
+  from the SHAPE of the OpenAPI/JSON-Schema/TS-client drift scenario in the #88 issue''s
+  own InterLeitos corpus description ("drift OpenAPI/JSON Schema/client TS") -- fabricated,
+  non-clinical vocabulary only. Does not touch evals/agent_review_v2/cases/.'
+severity: P2
+file_path: backend/api/schema_contract.py
+line_start: 27
+line_end: 33
+invariant: a field's required-ness must never change without a corresponding CONTRACT_VERSION
+  bump -- consumers pinned to the prior version rely on the declared version to know
+  whether the shape they already handle is still accurate
+root_cause: 'synthetic: care_team_ref flips from required=False to required=True while
+  CONTRACT_VERSION stays "3", silently breaking any consumer that still treats the
+  field as optional'

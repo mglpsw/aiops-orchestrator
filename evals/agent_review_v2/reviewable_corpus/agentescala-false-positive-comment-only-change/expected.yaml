@@ -1,0 +1,14 @@
+case_id: agentescala-false-positive-comment-only-change
+target: agent_escala
+family: semantic_safe_counterexample
+expected_readiness: ready
+safe_counterexample: true
+patch_sha256: aaa1320862317ddae2c46061cfa06f30265d85c44928ffd44a45347d2f11e5d5
+changed_files:
+- backend/scheduling/shift_rules.py
+rationale: Synthetic-only, new corpus extension (rev. 4.1 determination 1). A comment/docstring-only
+  change inside a must_review path (backend/scheduling/*.py) must resolve to ready
+  with zero findings -- proves that merely touching a must_review file does not, by
+  itself, generate a finding when the change carries no semantic content. This is
+  a stronger counterexample than the historical test-file-only case, since it lives
+  directly on a must_review pattern. Does not touch evals/agent_review_v2/cases/.

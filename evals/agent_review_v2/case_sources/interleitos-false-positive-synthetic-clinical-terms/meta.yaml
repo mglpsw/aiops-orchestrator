@@ -1,0 +1,14 @@
+case_id: interleitos-false-positive-synthetic-clinical-terms
+target: interleitos
+family: semantic_safe_counterexample
+expected_readiness: ready
+safe_counterexample: true
+rationale: >-
+  Synthetic-only, no real patient/institution/professional data. An
+  unremarkable API-schema-only change (comment/docstring expansion, no
+  contract-shape change) must resolve to ready with zero findings -- the
+  synthetic, clearly-fictional clinical vocabulary already present in
+  this fixture's own contract must not, by mere proximity, produce a
+  false positive. Reuses the case_id of the historical Lane 1 fixture;
+  this directory adds real, materialized code for the provider-reviewable
+  lanes -- it does not alter evals/agent_review_v2/cases/.

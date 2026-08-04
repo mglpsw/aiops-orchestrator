@@ -1,0 +1,172 @@
+schema_id: agent-review.benchmark-corpus-manifest.v1
+declared_minimums:
+  declared_minimum_semantic_positive: 6
+  declared_minimum_semantic_safe_counterexample: 4
+  declared_minimum_provider_applicable_total: 10
+  severity_coverage_requirement:
+    P1: at_least_2
+    P2: at_least_2
+    P0_quota: none
+observed_counts:
+  semantic_positive_count: 6
+  semantic_positive_by_target:
+    agent_escala: 3
+    interleitos: 3
+  semantic_positive_severity_coverage:
+    P0: 0
+    P1: 2
+    P2: 3
+    P3: 1
+  semantic_safe_counterexample_count: 4
+  semantic_safe_counterexample_by_target:
+    agent_escala: 2
+    interleitos: 2
+  provider_applicable_total: 10
+statistical_status: descriptive_provisional_baseline
+promotion_authority: false
+provider_applicable_cases:
+- case_id: agentescala-domain-new-finding-manual-required
+  target: agent_escala
+  family: semantic_positive
+  expected_readiness: manual_required
+  lane_applicability:
+    lane1_pipeline: not_part_of_baseline
+    aiops_subject_projection: applicable
+    codex_local_detection: applicable
+    codex_github_detection: applicable
+    human_detection: applicable_or_deferred
+  severity: P2
+- case_id: agentescala-domain-rest-period-violation
+  target: agent_escala
+  family: semantic_positive
+  expected_readiness: manual_required
+  lane_applicability:
+    lane1_pipeline: not_part_of_baseline
+    aiops_subject_projection: applicable
+    codex_local_detection: applicable
+    codex_github_detection: applicable
+    human_detection: applicable_or_deferred
+  severity: P1
+- case_id: agentescala-false-positive-comment-only-change
+  target: agent_escala
+  family: semantic_safe_counterexample
+  expected_readiness: ready
+  lane_applicability:
+    lane1_pipeline: not_part_of_baseline
+    aiops_subject_projection: applicable
+    codex_local_detection: applicable
+    codex_github_detection: applicable
+    human_detection: applicable_or_deferred
+- case_id: agentescala-false-positive-unrelated-change
+  target: agent_escala
+  family: semantic_safe_counterexample
+  expected_readiness: ready
+  lane_applicability:
+    lane1_pipeline: not_part_of_baseline
+    aiops_subject_projection: applicable
+    codex_local_detection: applicable
+    codex_github_detection: applicable
+    human_detection: applicable_or_deferred
+- case_id: agentescala-security-confirmed-finding-blocked-code
+  target: agent_escala
+  family: semantic_positive
+  expected_readiness: blocked_code
+  lane_applicability:
+    lane1_pipeline: not_part_of_baseline
+    aiops_subject_projection: applicable
+    codex_local_detection: applicable
+    codex_github_detection: applicable
+    human_detection: applicable_or_deferred
+  severity: P1
+- case_id: interleitos-domain-consent-scope-omission
+  target: interleitos
+  family: semantic_positive
+  expected_readiness: manual_required
+  lane_applicability:
+    lane1_pipeline: not_part_of_baseline
+    aiops_subject_projection: applicable
+    codex_local_detection: applicable
+    codex_github_detection: applicable
+    human_detection: applicable_or_deferred
+  severity: P3
+- case_id: interleitos-domain-schema-contract-drift
+  target: interleitos
+  family: semantic_positive
+  expected_readiness: manual_required
+  lane_applicability:
+    lane1_pipeline: not_part_of_baseline
+    aiops_subject_projection: applicable
+    codex_local_detection: applicable
+    codex_github_detection: applicable
+    human_detection: applicable_or_deferred
+  severity: P2
+- case_id: interleitos-domain-tenancy-scope-composition
+  target: interleitos
+  family: semantic_positive
+  expected_readiness: manual_required
+  lane_applicability:
+    lane1_pipeline: not_part_of_baseline
+    aiops_subject_projection: applicable
+    codex_local_detection: applicable
+    codex_github_detection: applicable
+    human_detection: applicable_or_deferred
+  severity: P2
+- case_id: interleitos-false-positive-logging-only-change
+  target: interleitos
+  family: semantic_safe_counterexample
+  expected_readiness: ready
+  lane_applicability:
+    lane1_pipeline: not_part_of_baseline
+    aiops_subject_projection: applicable
+    codex_local_detection: applicable
+    codex_github_detection: applicable
+    human_detection: applicable_or_deferred
+- case_id: interleitos-false-positive-synthetic-clinical-terms
+  target: interleitos
+  family: semantic_safe_counterexample
+  expected_readiness: ready
+  lane_applicability:
+    lane1_pipeline: not_part_of_baseline
+    aiops_subject_projection: applicable
+    codex_local_detection: applicable
+    codex_github_detection: applicable
+    human_detection: applicable_or_deferred
+lane1_only_cases:
+- case_id: agentescala-contract-p3-finding-still-ready
+  family: pipeline_integrity
+  source: evals/agent_review_v2/cases/agentescala-contract-p3-finding-still-ready.yaml
+  lane_applicability: &id001
+    lane1_pipeline: applicable
+    aiops_subject_projection: applicable
+    codex_local_detection: not_applicable
+    codex_github_detection: not_applicable
+    human_detection: not_applicable
+  reason: readiness precedence for a low-severity finding resolving to ready is pipeline
+    synthesis behavior, not a code-review finding
+- case_id: aiops-contract-missing-must-review
+  family: pipeline_integrity
+  source: evals/agent_review_v2/cases/aiops-contract-missing-must-review.yaml
+  lane_applicability: *id001
+  reason: coverage-without-promotion resolving to blocked_pipeline is a pipeline-binding
+    condition, not a code-review finding
+- case_id: aiops-contract-stale-head
+  family: identity_negative
+  source: evals/agent_review_v2/cases/aiops-contract-stale-head.yaml
+  lane_applicability: *id001
+  reason: stale identity is a pipeline-binding condition, not a code-review finding
+- case_id: interleitos-domain-dlp-suspicion-manual-required
+  family: transport_or_dlp_stop
+  source: evals/agent_review_v2/cases/interleitos-domain-dlp-suspicion-manual-required.yaml
+  lane_applicability: *id001
+  reason: 'model_uncertainty forcing manual_required is a pipeline limitation-handling
+    condition, not a code-review finding (provider_invocations_expected: 0)'
+- case_id: interleitos-security-blocked-prior-to-response
+  family: transport_or_dlp_stop
+  source: evals/agent_review_v2/cases/interleitos-security-blocked-prior-to-response.yaml
+  lane_applicability: *id001
+  reason: 'this case measures blocking BEFORE any provider call (provider_invocations_expected:
+    0), not detection recall'
+not_applicable_never_counts_as_false_negative: true
+note: 'This manifest governs OP-BENCH (issue #88). evals/agent_review_v2/cases/ (the
+  Lane 1 harness corpus) is never modified by this manifest or by anything under reviewable_corpus/
+  -- see rev. 4.1 determination 2.'

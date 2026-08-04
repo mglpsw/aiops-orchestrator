@@ -1,0 +1,10 @@
+--- a/backend/api/consent_scope.py
++++ b/backend/api/consent_scope.py
+@@ -17,6 +17,7 @@
+     ("regulatory", "logistics"),
+     ("regulatory", "communication"),
+     ("logistics", "communication"),
++    ("clinical", "communication"),
+ }
+ 
+ 

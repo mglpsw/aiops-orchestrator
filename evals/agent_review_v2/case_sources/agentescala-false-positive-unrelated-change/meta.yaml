@@ -1,0 +1,12 @@
+case_id: agentescala-false-positive-unrelated-change
+target: agent_escala
+family: semantic_safe_counterexample
+expected_readiness: ready
+safe_counterexample: true
+rationale: >-
+  Synthetic-only. A test-file-only change with zero injected findings and
+  complete coverage must resolve to ready -- proves the pipeline does not
+  invent noise from an unremarkable diff. Reuses the case_id of the
+  historical Lane 1 fixture; this directory adds real, materialized code
+  for the provider-reviewable lanes -- it does not alter
+  evals/agent_review_v2/cases/.

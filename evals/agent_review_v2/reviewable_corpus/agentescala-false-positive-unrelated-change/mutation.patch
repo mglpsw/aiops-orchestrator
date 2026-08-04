@@ -1,0 +1,14 @@
+--- a/tests/scheduling/test_shift_rules.py
++++ b/tests/scheduling/test_shift_rules.py
+@@ -4,5 +4,11 @@
+ 
+ 
+ def test_24h_shift_is_classified_as_covered_by_24h() -> None:
++    # regression guard: any wrap-around start==end hour must resolve to 24H
+     window = ShiftWindow(start_hour=6, end_hour=6)
+     assert classify_shift(window) == "covered_by_24h"
++
++
++def test_uncovered_shift_returns_uncovered() -> None:
++    window = ShiftWindow(start_hour=3, end_hour=5)
++    assert classify_shift(window) == "uncovered"

@@ -1,0 +1,11 @@
+--- a/backend/scheduling/rest_period_rules.py
++++ b/backend/scheduling/rest_period_rules.py
+@@ -19,7 +19,7 @@
+     previous_shift_end_hour) wraps through midnight; a same-day gap is
+     returned as-is."""
+     gap = next_shift_start_hour - previous_shift_end_hour
+-    if gap < 0:
++    if gap >= 0:
+         gap += 24
+     return gap
+ 

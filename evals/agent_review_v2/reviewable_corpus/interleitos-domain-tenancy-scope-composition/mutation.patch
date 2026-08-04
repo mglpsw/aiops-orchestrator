@@ -1,0 +1,8 @@
+--- a/backend/tenancy/access_scope.py
++++ b/backend/tenancy/access_scope.py
+@@ -31,4 +31,4 @@
+ def resolve_effective_scope(user_links: tuple[TenantLink, ...], resource_tenant_id: str) -> bool:
+     """The effective access decision for a resource belonging to
+     `resource_tenant_id`."""
+-    return has_direct_access(user_links, resource_tenant_id)
++    return any(link.tenant_id == resource_tenant_id for link in user_links)
