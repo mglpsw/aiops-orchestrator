@@ -2572,6 +2572,7 @@ def test_exported_json_schemas_are_stable_and_deny_unknown_objects() -> None:
         "agent-review.payload-set.v2.schema.json",
         "agent-review.evidence-bundle.v2.schema.json",
         "agent-review.review-content.v2.schema.json",
+        "agent-review.review-transport-envelope.v1.schema.json",
         "agent-review.dlp-policy.v1.schema.json",
     }
 

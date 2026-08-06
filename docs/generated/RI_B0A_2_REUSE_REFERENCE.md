@@ -52,13 +52,14 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 
 **`agent-review.run-fragment-coverage.v2`** — Proves that every diff fragment assigned to a chunk was actually reviewed (this repo's recent fail-closed coverage-proof work). RI-B0 has no concrete, currently-implemented consumer of raw fragment-coverage records today. Once RI-B0's own completeness/canonicality proof work begins (consuming CAEM's caem.assertion.v1/caem.proof-obligation.v1, both currently reserved), RI-B0 will most likely need a small adapter translating this coverage report into a completeness proof obligation -- not a direct reuse, since the two schemas serve different evidentiary roles (chunk-review completeness vs. a CAEM proof obligation's own resolution states).
 
-## Not applicable — no RI-B0 relevance today (4)
+## Not applicable — no RI-B0 relevance today (5)
 
 | Contract ID | Owner | RI-B0 role | Source |
 |---|---|---|---|
 | `agent-review.semantic-grouping-policy.v2` | aiops-orchestrator (app/agent_review/) | none: RI-B0 has no reason to read, cite, or depend on chunk-grouping policy. | `schemas/agent-review/v2/agent-review.semantic-grouping-policy.v2.schema.json` |
 | `agent-review.payload-set.v2` | aiops-orchestrator (app/agent_review/) | none: RI-B0 does not touch payload transport. | `schemas/agent-review/v2/agent-review.payload-set.v2.schema.json` |
 | `projectops.v1-track` | separate track (not this repository's own code, per CURRENT_CHECKPOINT.md) | none today; if/when ProjectOps produces a concrete, versioned contract this repository consumes, that contract must be added to this manifest by name, not assumed by analogy to AgentReview's shapes. | — |
+| `agent-review.review-transport-envelope.v1` | aiops-orchestrator (app/agent_review/) | none: RI-B0 does not touch payload/content transport, same as agent-review.payload-set.v2. | `schemas/agent-review/v2/agent-review.review-transport-envelope.v1.schema.json` |
 | `agent-review.dlp-policy.v1` | aiops-orchestrator (app/agent_review/) | none: RI-B0 has no reason to read, cite, or depend on DLP redaction policy. | `schemas/agent-review/v2/agent-review.dlp-policy.v1.schema.json` |
 
 **`agent-review.semantic-grouping-policy.v2`** — Governs how AgentReview groups diff hunks into chunks for LLM review -- an AgentReview-internal execution-planning detail with no proof-obligation or readiness-decision content relevant to RI-B0.
@@ -66,5 +67,7 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 **`agent-review.payload-set.v2`** — Emission artifact bundling a run's chunk payloads for transport to the inference Router. Purely an AgentReview-side transport concern; RI-B0 has no reason to consume or reference it.
 
 **`projectops.v1-track`** — CURRENT_CHECKPOINT.md documents ProjectOps v1 as a separate track: "trilha separada de inteligência de CI, advisory e fail-safe". As of this manifest, this repository contains zero committed ProjectOps schema, code, or artifact under any path (verified: no file or directory matching *projectops* exists in this checkout). There is therefore no concrete contract to classify contract-by-contract yet; this single entry records the track-level boundary instead of inventing hypothetical ProjectOps contract IDs. The one invariant already established (docs/RI_A2_THREAT_MODEL.md §3, this repo's own authority/data matrix) is that ProjectOps readiness must never become AgentReview readiness, and RI-B0 grants it no authority over its own gates.
+
+**`agent-review.review-transport-envelope.v1`** — Wire-level wrapper (#200-A) that carries the UNMODIFIED agent-review.chunk-response-envelope.v2 union plus an echoed request_sha256/content_sha256 pair the far end must return verbatim, closing the gap where payload_sha256 alone cannot distinguish two review-content sidecars for the same chunk. Purely an AgentReview-side transport concern, own schema_version lineage (v1, unrelated to the v2 chunk-response schema version) -- same evidentiary role as agent-review.payload-set.v2.
 
 **`agent-review.dlp-policy.v1`** — A target's declarative DLP policy (#200-A): inline pattern rules or a reference to a host-owned, digest-pinned detector -- never a module path, import string, or entry point naming code inside the target repository (structurally unrepresentable: this schema has no such field). An AgentReview-internal content-redaction execution-planning detail, analogous to agent-review.semantic-grouping-policy.v2, with no proof-obligation or readiness-decision content relevant to RI-B0.
