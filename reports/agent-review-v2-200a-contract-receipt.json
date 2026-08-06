@@ -1,0 +1,57 @@
+{
+  "note": "Lightweight, human-authored summary of this slice. Not validated by a strict schema/loader -- no such receipt contract exists in this repository yet. Do not treat this as equivalent in authority to a ReviewReadinessV2 artifact or any other ContractV2Model-backed contract.",
+  "repository": "mglpsw/aiops-orchestrator",
+  "epic": 199,
+  "issue": 200,
+  "slice": "200-A",
+  "branch": "feat/200-a-review-content-contract",
+  "base_sha": "273864eaa01dfb708a5a26d3756e16c6cd918a9f",
+  "commits": [
+    {
+      "subject": "feat(agent-review/v2): ReviewContentV2 sidecar contract, declarative DLP policy, and ADR (#200-A)",
+      "files_added": [
+        "app/agent_review/review_content_v2.py",
+        "docs/AGENT_REVIEW_V2_REVIEW_CONTENT.md",
+        "docs/adr/ADR_AGENT_REVIEW_V2_REVIEW_CONTENT.md",
+        "schemas/agent-review/v2/agent-review.dlp-policy.v1.schema.json",
+        "schemas/agent-review/v2/agent-review.review-content.v2.schema.json",
+        "tests/agent_review/test_review_content_v2.py"
+      ]
+    },
+    {
+      "subject": "feat(agent-review/v2): transport envelope closing the content-integrity gap (#200-A)",
+      "files_added": [
+        "app/agent_review/review_transport_contract_v2.py",
+        "schemas/agent-review/v2/agent-review.review-transport-envelope.v1.schema.json",
+        "tests/agent_review/test_review_transport_contract_v2.py"
+      ]
+    }
+  ],
+  "new_schemas": [
+    "agent-review.review-content.v2",
+    "agent-review.review-transport-envelope.v1",
+    "agent-review.dlp-policy.v1"
+  ],
+  "existing_schemas_touched": [],
+  "verification": {
+    "full_suite": {"command": ".venv/bin/python -m pytest -q", "result": "1882 passed, 4 skipped"},
+    "schema_export_check": {
+      "command": ".venv/bin/python scripts/export-agent-review-v2-schemas.py --check",
+      "result": "AgentReview v2 schemas are byte-identical."
+    },
+    "ri_b0a_suite": {"command": ".venv/bin/python -m pytest tests/ri_b0a -q", "result": "33 passed"},
+    "payload_sha256_regression": "zero change across the full suite"
+  },
+  "not_delivered": [
+    "real hunk content extraction (#200-B)",
+    "redaction/DLP engine execution (#200-B)",
+    "Agent Router transport wiring (#200-C)",
+    "semantic review E2E producing a real ReviewReadinessV2 (#200-C)",
+    "any canary review of a real repository (AgentEscala#763-A)"
+  ],
+  "protected_actions_taken": [],
+  "protected_actions_not_taken": [
+    "merge", "release", "tag", "deploy", "target repository write",
+    "branch protection change", "secret/runner creation"
+  ]
+}
