@@ -136,6 +136,35 @@ own dual-target conformance slice per the epic's DAG — this extractor's
 architecture is provably repo-agnostic (nothing branches on repository
 name), but a per-target E2E fixture belongs to that later slice, not here.
 
+## Addendum — second independent pass, same 5 findings confirmed
+
+A second, independent adversarial pass over the same #200-B/#200-C code
+arrived after this fix's first commit, restating all five findings
+above (independently derived, same verdicts) plus one explicit checklist
+item from #200's own "testes obrigatórios" this fix had not yet directly
+exercised: "múltiplos hunks, mesmo arquivo em vários chunks." Verified as
+a genuine gap (no prior test covered it) and closed:
+`test_extract_review_content_handles_two_hunks_of_the_same_file_landing_
+in_different_chunks` proves two well-separated hunks of ONE file split
+across two DIFFERENT chunks extract correctly — exercising ownership
+resolution's global-across-the-manifest key (`(path, hunk_index)`, not
+per-chunk) and hunk-body lookup at a chunk boundary.
+
+The remaining items on that same checklist ("stale HEAD, cross-run,
+cross-target, path/hash divergente, conteúdo fora do manifest") were
+re-verified as already covered, not assumed: `tests/agent_review/
+test_review_content_v2.py`'s own `test_bind_rejects_a_run_id_mismatch`,
+`test_bind_rejects_a_manifest_hash_mismatch`, `test_bind_rejects_a_path_
+diverging_from_the_manifest_fragment`, `test_bind_rejects_a_diff_sha256_
+diverging_from_the_manifest_fragment`, `test_bind_rejects_a_content_
+chunk_absent_from_the_manifest`, and `test_bind_rejects_a_fragment_not_
+in_the_manifest_chunk` — all from `#200-A`, all reused UNCHANGED by
+`extract_review_content_v2`'s own unconditional call to `bind_review_
+content_to_manifest_v2` at the end of every invocation. A stale HEAD or
+cross-target repo both surface as `run_id` divergence (HEAD and repo are
+both embedded in `RunIdentityV2`, which feeds `run_id`'s own computation)
+— the same test covers both without needing a separately-named fixture.
+
 ## Verdict
 
 All 5 findings CONFIRMED real. None demonstrated a contractual

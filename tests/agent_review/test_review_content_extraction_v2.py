@@ -847,3 +847,45 @@ def test_build_fragment_content_refuses_a_window_that_owns_no_real_lines() -> No
         max_chars_per_chunk=1000, owned_line_indices=frozenset(),
     )
     assert result.policy is ReviewContentPolicyV2.UNREPRESENTABLE
+
+
+@pytest.mark.requires_network
+def test_extract_review_content_handles_two_hunks_of_the_same_file_landing_in_different_chunks(
+    tmp_path: Path,
+) -> None:
+    """Two well-separated hunks in ONE file, small enough that neither
+    needs windowing on its own, but far enough apart in the packer's line
+    budget that they land in TWO DIFFERENT chunks -- proving ownership
+    resolution (keyed globally by (path, hunk_index) across the whole
+    manifest, not per chunk) and hunk-body lookup both work correctly when
+    a single file's content is split across chunk boundaries."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    lines = [f"line {i}" for i in range(1, 101)]
+    (repo / "big.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+    lines[4] = "CHANGED near top"
+    lines[94] = "CHANGED near bottom"
+    (repo / "big.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    manifest = _assemble(
+        repo, base_sha, head_sha,
+        profile=_profile(must_review_paths=["big.py"], max_chars_per_chunk=200_000),
+        max_lines_per_chunk=10,
+    )
+    assert len(manifest.chunks) == 2, "fixture must place the two hunks in different chunks"
+    assert len(manifest.fragments) == 2, "fixture must not force windowing on either hunk"
+
+    content = extract_review_content_v2(
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        payload_sha256_by_chunk_id=_payload_shas(manifest), target_budgets=_budgets(max_chars_per_chunk=200_000),
+    )
+    bind_review_content_to_manifest_v2(content, manifest)  # re-verified from the outside
+    assert len(content.chunks) == 2
+    all_fragments = [f for chunk in content.chunks for f in chunk.fragments]
+    assert all(f.path == "big.py" for f in all_fragments)
+    assert all(f.policy is ReviewContentPolicyV2.INCLUDED for f in all_fragments)
+    joined = "\n".join(f.content for f in all_fragments)
+    assert "CHANGED near top" in joined
+    assert "CHANGED near bottom" in joined
