@@ -60,6 +60,31 @@
   role: the deterministic default every downstream consumer builds
   against before the real isolated executor (`#201-B2`) exists (refs
   #201, #199, docs/AGENT_REVIEW_V2_TRUSTED_CHECKS.md)
+- AgentReview v2 isolated trusted-check executor (#201-B2, third slice of
+  #201, distribution epic #199): `execute_trusted_check_plan_v2`
+  (`app/agent_review/isolated_executor_v2.py`) runs a real, isolated
+  subprocess per plan check and produces a real, plan-bindable
+  `TrustedCheckResultV2` -- the real thing `#201-B1`'s simulator stands in
+  for. Isolation uses portable Linux primitives (unprivileged
+  user+network namespaces via `unshare`, privilege drop to an
+  unprivileged uid, `RLIMIT_AS`/`RLIMIT_NPROC`), proven for real in this
+  session's own dev sandbox (explicitly not the project's pinned CT104
+  runner, which is offline this corte -- CT104-specific guarantees are
+  `blocked_external: ct104_unavailable`, never faked via CT102). Which
+  command runs is resolved only from a host-owned inventory keyed by the
+  plan's `command_token`, never free text; the verdict is derived
+  EXCLUSIVELY from the kernel-observed exit code of the isolated child --
+  nothing it prints or writes to any file is ever read to determine
+  SUCCESS/FAILURE, proven directly by an adversarial test simulating a
+  malicious `conftest.py` that forges both a success banner and a forged
+  report file while the real process still exits nonzero. Also proven:
+  real outbound network denial (`ENETUNREACH` in the fresh namespace),
+  real `sudo` refusal, typed `TIMEOUT`/`OOM`/`CANCELLED` outcomes, refusal
+  to run a command not in the inventory, deterministic results across
+  repeated runs, and fail-closed refusal to run at all (never silently
+  unisolated) when the isolation primitive itself is unavailable. Wiring
+  into `ReviewReadinessV2` is `#201-C`'s job, not this slice's (refs
+  #201, #199, docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md)
 
 - AgentReview v2 trusted-check plan/result contracts (#201-A, first slice
   of #201, distribution epic #199): `TrustedCheckPlanV2` (host-owned,

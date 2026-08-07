@@ -17,7 +17,7 @@
 - AgentReview v1/release `v0.20.0` permanece baseline operacional, pinada por SHA completo nos target repos;
 - AgentReview v2 está especificado/em consolidação por contracts binding, lossless multi-chunk, target profiles, dual-target conformance e Codex shadow;
 - distribution epic `#199`, issue `#200` (core content/transport slices A/B/C): `core_synthetic_complete`, hardened por dois replan gates adversariais independentes pós-merge (9 achados confirmados, zero falso-positivo) via PR #211 (squash `f409fd1`) — ver `docs/checkpoints/AGENT_REVIEW_V2_200_ADVERSARIAL_AUDIT_FOLLOWUP.md`; issue `#200` continua OPEN, `partially_completed` pendente do canário do AgentEscala (`#763-A`), não fechada por este hardening;
-- `#201` (trusted-check simulation): slice A (contratos/promotion authority) merged via PR #209 (`f001335`); slice B1 (simulador offline) merged via PR #210 (`bc52aad`); slice B2 (executor isolado CT104-bound) é a próxima ação — ver `docs/checkpoints/AGENT_REVIEW_V2_201B1_SIMULATOR.md`;
+- `#201` (trusted-check simulation): slice A (contratos/promotion authority) merged via PR #209 (`f001335`); slice B1 (simulador offline) merged via PR #210 (`bc52aad`); slice B2 (executor isolado real -- namespaces/rlimits/privilege-drop portáveis, comprovado neste sandbox de dev, NÃO no CT104) implementado, PR aberta em rascunho na branch `feat/201-b2-isolated-executor`, aguardando grant nominal de merge — ver `docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md`; slice C (wiring em `ReviewReadinessV2`) é a próxima ação após o merge de B2;
 - ProjectOps v1 permanece trilha separada de inteligência de CI, advisory e fail-safe;
 - análise por LLM é advisory; `review-quality-gate.json` e CI determinística permanecem autoridades;
 - CT104 executa AgentReview offline/toolrepo; CT102 executa runtime AIOps, nunca AgentReview runner; CT104 offline neste corte — critérios de `#201-B2` que exijam isolamento real do CT104 devem ser marcados `blocked_external: ct104_unavailable`, não falsificados via CT102;
@@ -28,7 +28,7 @@
 - implementação baseline v0.20.0: `completed`;
 - implementação v2/ProjectOps: `in_progress`;
 - `#200` core (A/B/C): `core_synthetic_complete` + hardened (adversarial audit follow-up merged); `partially_completed` no nível da issue (canário AgentEscala pendente);
-- `#201-A`/`#201-B1`: `merged`; `#201-B2`: `in_progress` (próxima ação);
+- `#201-A`/`#201-B1`: `merged`; `#201-B2`: `implemented, PR aberta em rascunho, merge pendente de grant`;
 - validação: `partial`;
 - change request: `not_open` no corte;
 - slice: `in_progress`;
@@ -38,4 +38,4 @@
 
 ## Próxima ação mínima
 
-Implementar `#201-B2` (executor isolado mínimo host-controlled, CT104-bound): HEAD da PR sob teste executado isoladamente como sujeito; harness/seleção de checks/testes de autoridade/serializador vêm da base confiável, pinados por digest. Onde CT104 estiver offline, marcar `blocked_external: ct104_unavailable` explicitamente em vez de usar CT102 ou falsificar prova ambiental — sem reduzir critérios de aceite. Revalidar issues `#80`, `#83–#89` e ProjectOps `#91–#95` antes de qualquer ação sobre essa trilha separada (não bloqueia `#201-B2`).
+Revalidar e mergear a PR de `#201-B2` (grant nominal pendente); em seguida `#201-C` (wiring do resultado real do executor em `review_readiness_emission_v2`/`readiness_decision_v2`). CT104 permanece offline neste corte — a verificação do `harness_digest` contra uma imagem real pinada, e a garantia de isolamento sob o host de produção real, permanecem `blocked_external: ct104_unavailable` até CT104 estar acessível; revalidar quando disponível, não assumir sucesso. Revalidar issues `#80`, `#83–#89` e ProjectOps `#91–#95` antes de qualquer ação sobre essa trilha separada (não bloqueia `#201`).
