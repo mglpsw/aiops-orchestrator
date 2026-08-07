@@ -4,6 +4,28 @@
 
 ### Added
 
+- AgentReview v2 semantic review content contract (#200-A, first slice of
+  the distribution epic #199): `ReviewContentV2`
+  (`app/agent_review/review_content_v2.py`), a sidecar bound to a
+  `ManifestV2` by `run_id`/`manifest_hash` carrying real, redacted fragment
+  content -- never folded into the already-published, already-pinned
+  `ChunkPayloadV2` (zero `payload_sha256` changes). A second integrity
+  anchor closes the gap where `payload_sha256` alone cannot distinguish two
+  content sidecars for the same chunk: `ChunkReviewTransportEnvelopeV1`
+  (`app/agent_review/review_transport_contract_v2.py`) wraps the unmodified
+  `ChunkResponseEnvelopeValueV2` and requires the far end to echo back
+  `content_sha256`/`request_sha256`, verified fail-closed before
+  `consumer_v2.bind_chunk_response_v2` ever sees the response. A
+  `coverage_required` fragment can never be represented without content
+  (construction-time refusal, not a limitation). DLP policy is declarative
+  or a digest-pinned host-owned detector only (`DlpPolicyDeclarationV2`) --
+  structurally no field for a target-owned module/path/import/entrypoint.
+  Three new schemas (`agent-review.review-content.v2`,
+  `agent-review.review-transport-envelope.v1`, `agent-review.dlp-policy.v1`)
+  registered in the RI-B0a.2 reuse manifest. Contract and ADR only --
+  extraction, redaction, DLP execution, and Router wiring are `#200-B`/
+  `#200-C` (refs #200, #199, docs/adr/ADR_AGENT_REVIEW_V2_REVIEW_CONTENT.md)
+
 - AgentReview v2 benchmark (#88): a provider-reviewable synthetic corpus
   (`evals/agent_review_v2/reviewable_corpus/`, 6 `semantic_positive` + 4
   `semantic_safe_counterexample` cases with real, behaviorally-verified

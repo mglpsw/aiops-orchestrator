@@ -1,0 +1,206 @@
+{
+  "$defs": {
+    "ChunkContentV2": {
+      "additionalProperties": false,
+      "description": "One chunk's complete set of fragment contents, with its own\ncontent-derived hash (``content_sha256``) -- the per-chunk half of the\nsecond integrity anchor described in the module docstring (D2).",
+      "properties": {
+        "chunk_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Chunk Id",
+          "type": "string"
+        },
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "fragments": {
+          "items": {
+            "$ref": "#/$defs/FragmentContentV2"
+          },
+          "title": "Fragments",
+          "type": "array"
+        },
+        "payload_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Payload Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chunk_id",
+        "payload_sha256",
+        "fragments",
+        "content_sha256"
+      ],
+      "title": "ChunkContentV2",
+      "type": "object"
+    },
+    "FragmentContentV2": {
+      "additionalProperties": false,
+      "description": "One fragment's redacted, reviewable content -- or the typed reason it\nhas none. Independently verifiable from its own fields alone; matching\n``fragment_id``/``path``/``diff_sha256`` against a SPECIFIC manifest is\n``bind_review_content_to_manifest_v2``'s job, not this model's (a bare\nPydantic model cannot reach out to another object at construction time\n-- the same split every other v2 binder in this codebase already uses).",
+      "properties": {
+        "chars": {
+          "minimum": 0,
+          "title": "Chars",
+          "type": "integer"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "maxLength": 262144,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Content"
+        },
+        "content_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Content Sha256"
+        },
+        "coverage_required": {
+          "title": "Coverage Required",
+          "type": "boolean"
+        },
+        "diff_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Diff Sha256",
+          "type": "string"
+        },
+        "fragment_id": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Fragment Id",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/$defs/ReviewContentPolicyV2"
+        },
+        "redaction_applied": {
+          "title": "Redaction Applied",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "fragment_id",
+        "path",
+        "diff_sha256",
+        "policy",
+        "coverage_required",
+        "content",
+        "content_sha256",
+        "redaction_applied",
+        "chars"
+      ],
+      "title": "FragmentContentV2",
+      "type": "object"
+    },
+    "ReviewContentPolicyV2": {
+      "enum": [
+        "included",
+        "omitted_binary",
+        "omitted_submodule",
+        "omitted_generated",
+        "omitted_minified",
+        "omitted_over_budget",
+        "blocked_by_redaction",
+        "blocked_by_target_dlp",
+        "unrepresentable"
+      ],
+      "title": "ReviewContentPolicyV2",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "chunks": {
+      "items": {
+        "$ref": "#/$defs/ChunkContentV2"
+      },
+      "title": "Chunks",
+      "type": "array"
+    },
+    "content_set_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Set Sha256",
+      "type": "string"
+    },
+    "dlp_policy_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Dlp Policy Digest"
+    },
+    "limitations": {
+      "items": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    },
+    "manifest_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Manifest Hash",
+      "type": "string"
+    },
+    "run_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "agent-review.review-content.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "aiops-review-build-review-content",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "run_id",
+    "manifest_hash",
+    "dlp_policy_digest",
+    "chunks",
+    "limitations",
+    "content_set_sha256"
+  ],
+  "title": "ReviewContentV2",
+  "type": "object"
+}

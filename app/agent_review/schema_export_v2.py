@@ -17,6 +17,8 @@ from app.agent_review.contracts_v2 import (
 from app.agent_review.evidence_hash_v2 import EvidenceBundleV2
 from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.payload_set_v2 import PayloadSetV2
+from app.agent_review.review_content_v2 import DlpPolicyDeclarationV2, ReviewContentV2
+from app.agent_review.review_transport_contract_v2 import ChunkReviewTransportEnvelopeV1
 from app.agent_review.run_fragment_coverage_v2 import RunFragmentCoverageReportV2
 from app.agent_review.semantic_grouping_policy_v2 import SemanticGroupingPolicyV2
 
@@ -145,6 +147,11 @@ def render_v2_json_schemas() -> dict[str, dict[str, object]]:
         ),
         "agent-review.payload-set.v2.schema.json": PayloadSetV2.model_json_schema(mode="validation"),
         "agent-review.evidence-bundle.v2.schema.json": EvidenceBundleV2.model_json_schema(mode="validation"),
+        "agent-review.review-content.v2.schema.json": ReviewContentV2.model_json_schema(mode="validation"),
+        "agent-review.review-transport-envelope.v1.schema.json": (
+            ChunkReviewTransportEnvelopeV1.model_json_schema(mode="validation")
+        ),
+        "agent-review.dlp-policy.v1.schema.json": DlpPolicyDeclarationV2.model_json_schema(mode="validation"),
     }
     schemas = {filename: normalize_v2_json_schema(schema) for filename, schema in schemas.items()}
     for schema in schemas.values():

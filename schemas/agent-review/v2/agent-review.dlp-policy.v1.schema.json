@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "DlpPolicyRuleV2": {
+      "additionalProperties": false,
+      "description": "One declarative DLP rule: a named pattern, evaluated by a host-owned\nengine (#200-B). ``pattern`` is data interpreted by that engine -- never\nexecuted as code, and never a path into the target repository.",
+      "properties": {
+        "action": {
+          "const": "block",
+          "title": "Action",
+          "type": "string"
+        },
+        "detail": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "pattern": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Pattern",
+          "type": "string"
+        },
+        "rule_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Rule Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule_id",
+        "pattern",
+        "action",
+        "detail"
+      ],
+      "title": "DlpPolicyRuleV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A target's declared DLP policy: EITHER inline declarative rules OR a\nreference to a host-owned, digest-pinned detector -- never a module\npath, import string, or entry point naming code inside the target\nrepository. This is enforced structurally: ``ContractV2Model``'s\n``extra=\"forbid\"`` means this class defines the COMPLETE set of fields\na valid document may have, and none of them is ``path``, ``module``,\n``import``, or ``entrypoint`` -- there is nowhere in this schema for a\ntarget to smuggle one in.",
+  "properties": {
+    "detector_digest": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Detector Digest"
+    },
+    "detector_name": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Detector Name"
+    },
+    "rules": {
+      "items": {
+        "$ref": "#/$defs/DlpPolicyRuleV2"
+      },
+      "title": "Rules",
+      "type": "array"
+    },
+    "schema_id": {
+      "const": "agent-review.dlp-policy.v1",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "rules",
+    "detector_name",
+    "detector_digest"
+  ],
+  "title": "DlpPolicyDeclarationV2",
+  "type": "object"
+}
