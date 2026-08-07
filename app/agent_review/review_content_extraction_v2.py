@@ -72,7 +72,7 @@ import re
 import hashlib
 from typing import Mapping, Sequence
 
-from app.agent_review.contracts_v2 import TargetBudgetsV2
+from app.agent_review.contracts_v2 import TargetProfileV2
 from app.agent_review.diff_acquisition_v2 import (
     DiffAcquisitionError,
     HunkBodyV2,
@@ -83,6 +83,7 @@ from app.agent_review.diff_acquisition_v2 import (
     extract_hunk_bodies_v2,
 )
 from app.agent_review.manifest_v2 import FragmentV2, LineRangeV2, ManifestV2
+from app.agent_review.profile_loader_v2 import compute_profile_hash_v2
 from app.agent_review.redaction import _redact_local_paths, redact_text
 from app.agent_review.review_content_v2 import (
     ChunkContentV2,
@@ -105,6 +106,7 @@ CONTENT_REASON_DIFF_ACQUISITION_FAILED_V2 = "diff_acquisition_failed"
 CONTENT_REASON_WINDOW_OWNS_NO_LINES_V2 = "window_owns_no_real_lines"
 CONTENT_REASON_DLP_DETECTOR_NOT_EXECUTED_V2 = "dlp_detector_not_executed"
 CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2 = "chunk_content_over_budget_requires_replan"
+CONTENT_REASON_PROFILE_HASH_MISMATCH_V2 = "target_profile_hash_mismatch"
 
 _GENERATED_PATH_MARKERS_V2: tuple[str, ...] = (
     "/generated/",
@@ -483,13 +485,17 @@ def _enforce_chunk_budget_v2(
 
     - if the chunk's total ``INCLUDED`` chars fit the budget, nothing
       changes;
-    - if they do not, and ANY over-budget-causing ``INCLUDED`` fragment is
-      ``coverage_required``, the WHOLE extraction blocks fail-closed
-      (``CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2``) -- a
-      ``must_review`` fragment is never silently dropped to make room;
-    - otherwise, the largest ``INCLUDED`` auxiliary fragments are degraded
-      to ``OMITTED_OVER_BUDGET`` one at a time (largest first, ties broken
-      by ``fragment_id`` for determinism) until the chunk fits.
+    - if they do not, but every ``coverage_required`` fragment's chars
+      alone (without ANY auxiliary content) fit the budget, the largest
+      ``INCLUDED`` auxiliary fragments are degraded to
+      ``OMITTED_OVER_BUDGET`` one at a time (largest first, ties broken by
+      ``fragment_id`` for determinism) until the chunk fits -- auxiliary
+      content is dropped BEFORE blocking, never the other way round;
+    - only when the ``coverage_required`` fragments alone already exceed
+      the budget -- so no amount of auxiliary-dropping can ever make the
+      chunk fit -- does the WHOLE extraction block fail-closed
+      (``CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2``); a
+      ``must_review`` fragment is never itself dropped to make room.
     """
 
     included = [f for f in fragment_contents if f.policy is ReviewContentPolicyV2.INCLUDED]
@@ -497,7 +503,8 @@ def _enforce_chunk_budget_v2(
     if total_chars <= max_chars_per_chunk:
         return list(fragment_contents)
 
-    if any(f.coverage_required for f in included):
+    required_chars = sum(f.chars for f in included if f.coverage_required)
+    if required_chars > max_chars_per_chunk:
         raise ExtractionBlockedError(CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2, fragment_id=None)
 
     by_id = {f.fragment_id: f for f in fragment_contents}
@@ -524,7 +531,7 @@ def extract_review_content_v2(
     head_sha: str,
     manifest: ManifestV2,
     payload_sha256_by_chunk_id: Mapping[str, str],
-    target_budgets: TargetBudgetsV2,
+    target_profile: TargetProfileV2,
     dlp_policy: DlpPolicyDeclarationV2 | None = None,
 ) -> ReviewContentV2:
     """Extract real, redacted, DLP-checked content for every fragment
@@ -535,12 +542,20 @@ def extract_review_content_v2(
     a partially-covered ``ReviewContentV2`` for a ``coverage_required``
     fragment.
 
-    ``target_budgets`` is a REAL, already-loaded ``TargetBudgetsV2`` (from
-    the target's own ``TargetProfileV2.budgets``) -- ``max_chars_per_chunk``
-    is read from it, never accepted as a bare caller-supplied integer a
-    caller could inflate to silently relax the profile's own limit. Both
-    per-fragment AND per-chunk (the sum of every ``INCLUDED`` fragment in
-    a chunk) are checked against this same value -- see
+    ``target_profile`` must be the SAME ``TargetProfileV2`` that produced
+    ``manifest`` -- proven, not assumed: ``compute_profile_hash_v2(target_
+    profile)`` is checked against ``manifest.identity.profile_hash`` before
+    anything else runs, and a mismatch blocks the whole extraction fail-
+    closed (``CONTENT_REASON_PROFILE_HASH_MISMATCH_V2``). A bare
+    ``TargetBudgetsV2`` was accepted here in an earlier revision, but a
+    caller could construct any ``TargetBudgetsV2`` value with looser limits
+    than the profile that actually planned ``manifest`` -- ``RunIdentityV2.
+    profile_hash`` already carries the real profile's hash for exactly this
+    check, so accepting the full profile and re-deriving the hash closes
+    that gap instead of trusting a caller-supplied budget object. Only once
+    that check passes is ``target_profile.budgets.max_chars_per_chunk``
+    read. Both per-fragment AND per-chunk (the sum of every ``INCLUDED``
+    fragment in a chunk) are checked against this same value -- see
     ``_enforce_chunk_budget_v2``.
 
     ``payload_sha256_by_chunk_id`` must carry the REAL ``payload_sha256`` of
@@ -567,6 +582,9 @@ def extract_review_content_v2(
     slice).
     """
 
+    if compute_profile_hash_v2(target_profile) != manifest.identity.profile_hash:
+        raise ExtractionBlockedError(CONTENT_REASON_PROFILE_HASH_MISMATCH_V2, fragment_id=None)
+
     try:
         file_diffs = acquire_authoritative_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
         diff_text = acquire_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
@@ -588,7 +606,7 @@ def extract_review_content_v2(
         # ValidationError from deep inside model construction below.
         raise ExtractionBlockedError(CONTENT_REASON_NO_REVIEWABLE_CHUNKS_V2, fragment_id=None)
 
-    max_chars_per_chunk = target_budgets.max_chars_per_chunk
+    max_chars_per_chunk = target_profile.budgets.max_chars_per_chunk
     file_diff_by_path = {file_diff.path: file_diff for file_diff in file_diffs}
     hunk_body_by_key = {(body.path, body.hunk_index): body for body in hunk_bodies}
 

@@ -340,10 +340,33 @@ ADVERSARIAL_AUDIT_FOLLOWUP.md` for the full classification:
    `FragmentContentV2`'s constructor (only its own last-line guard caught
    it, as a raw exception) — fixed by applying `_redact_local_paths`.
 
-`extract_review_content_v2`'s signature changed:
+A second, independent adversarial pass over that same fix found three
+more confirmed issues, all closed in the SAME follow-up (no new phase):
+
+6. the `TargetBudgetsV2` from finding 3 above proved values only, not
+   provenance — any caller could still construct a looser one than the
+   profile that actually planned the manifest. `extract_review_content_v2`
+   now takes the full `target_profile: TargetProfileV2` and checks
+   `compute_profile_hash_v2(target_profile) == manifest.identity.
+   profile_hash` before reading `target_profile.budgets` at all;
+7. `_enforce_chunk_budget_v2` blocked the instant ANY `coverage_required`
+   fragment shared an over-budget chunk, even when dropping auxiliary
+   content alone would have made it fit — contradicting the module's own
+   documented doctrine. It now only blocks when the `coverage_required`
+   fragments' chars ALONE exceed the budget; otherwise auxiliaries are
+   still dropped largest-first as originally intended;
+8. the add/modify/delete/rename hardening test asserted a fragment existed
+   for the deleted/renamed path but never checked its actual content, and
+   accepted either the rename's old or new path with a permissive `OR` —
+   now proves the deleted line is really present and that the canonical
+   path is deterministically the new name (`ParsedFileDiffV2.path` is
+   `new_path or old_path`), never the stale one.
+
+`extract_review_content_v2`'s signature changed twice in this follow-up:
 `max_chars_per_chunk: int = 20_000` → `target_budgets: TargetBudgetsV2`
-(required, no default). No production caller outside this repository's
-own tests existed yet.
+(finding 3) → `target_profile: TargetProfileV2` (finding 6, hash-checked
+against `manifest.identity.profile_hash`). No production caller outside
+this repository's own tests existed yet.
 
 ## What is deliberately not here
 

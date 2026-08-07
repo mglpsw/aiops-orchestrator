@@ -37,8 +37,10 @@ verified" and "the CI gate GitHub actually reports."
 
 **Fix:** `scripts/ci_validate.sh` gained a new numbered section (§8) that
 runs `python3 -m pytest -q -m requires_network` explicitly, isolated from
-§7's own filtered run. Proven: §7 (1917 tests) + §8 (36 tests) = 1953,
-matching the full unfiltered `pytest -q` count exactly.
+§7's own filtered run. Proven: §7 + §8 always sums to the same total as
+the full unfiltered `pytest -q` count (re-verified on this PR's final
+HEAD in the Evidence section below, not carried forward from an earlier
+commit).
 
 ### 2. DLP detector-only silently treated as "clean" — real safety gap
 
@@ -66,17 +68,14 @@ never summed across a chunk. Additionally, `max_chars_per_chunk` was a
 bare caller-supplied `int` with a hardcoded default (`20_000`), letting a
 caller silently diverge from the target's own real profile.
 
-**Fix:** `extract_review_content_v2` now requires `target_budgets:
-TargetBudgetsV2` (a real, already-loaded profile budget object — no bare
-int accepted at all, proven structurally by
-`test_target_budgets_cannot_be_relaxed_by_a_bare_int_the_caller_cannot_
-derive`). New `_enforce_chunk_budget_v2` sums every `INCLUDED` fragment's
-`chars` per chunk after building it: a `must_review` fragment among the
-overflow blocks the WHOLE extraction
-(`CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2`); an
-all-auxiliary overflow degrades the largest fragments first (mirrors
-`planner_v2`'s own documented "auxiliary dropped first, must_review never
-dropped" doctrine) until the chunk fits.
+**Fix (first pass):** `extract_review_content_v2` now requires
+`target_budgets: TargetBudgetsV2` (a real, already-loaded profile budget
+object — no bare int accepted at all). New `_enforce_chunk_budget_v2`
+sums every `INCLUDED` fragment's `chars` per chunk after building it.
+**Superseded by findings 6 and 7 in the addendum below** — the
+`TargetBudgetsV2` acceptance was itself replaced by a hash-checked
+`TargetProfileV2`, and the block-vs-drop condition was corrected to only
+block when `coverage_required` content ALONE cannot fit.
 
 ### 4. Windowing repeated-anchor duplication — CONFIRMED, most severe
 
@@ -136,14 +135,77 @@ own dual-target conformance slice per the epic's DAG — this extractor's
 architecture is provably repo-agnostic (nothing branches on repository
 name), but a per-target E2E fixture belongs to that later slice, not here.
 
-## Addendum — second independent pass, same 5 findings confirmed
+## Addendum — second independent pass (4 more points, same PR, no new phase)
 
-A second, independent adversarial pass over the same #200-B/#200-C code
-arrived after this fix's first commit, restating all five findings
-above (independently derived, same verdicts) plus one explicit checklist
-item from #200's own "testes obrigatórios" this fix had not yet directly
-exercised: "múltiplos hunks, mesmo arquivo em vários chunks." Verified as
-a genuine gap (no prior test covered it) and closed:
+A second, independent adversarial pass over the same fix's first commit
+(`c33e490`) confirmed the 5 findings above and their fixes as real and
+CI-green (including the new `requires_network` §8 run), then raised 3
+additional functional points plus 1 evidence-freshness point, all
+addressed in this same PR:
+
+### 6. Budget still not bound to the profile that produced the manifest
+
+**Confirmed.** Finding 3's fix required a real `TargetBudgetsV2`, but that
+proves VALUES only, not PROVENANCE — any caller could still construct a
+`TargetBudgetsV2` with a looser `max_chars_per_chunk` than the profile
+that actually planned the manifest, and nothing checked it against
+`RunIdentityV2.profile_hash` (which `run_assembly_v2` already computes and
+stores for exactly this purpose).
+
+**Fix:** `extract_review_content_v2` now takes the full `target_profile:
+TargetProfileV2` instead of a bare `TargetBudgetsV2`, and checks
+`compute_profile_hash_v2(target_profile) == manifest.identity.
+profile_hash` before anything else runs — a mismatch blocks fail-closed
+(`CONTENT_REASON_PROFILE_HASH_MISMATCH_V2`, new reason code). Only after
+that check passes is `target_profile.budgets.max_chars_per_chunk` read.
+Red-tested by `test_extract_review_content_refuses_a_target_profile_that_
+did_not_plan_the_manifest`: a profile that differs ONLY in
+`max_chars_per_chunk` from the one that planned the manifest is rejected;
+an independently-reconstructed but value-identical profile is accepted
+(proving the check is a real hash comparison, not object identity).
+
+### 7. `_enforce_chunk_budget_v2` blocked before trying to drop auxiliaries
+
+**Confirmed real bug**, contradicting the module's own documented
+doctrine ("auxiliary dropped first; must_review never dropped"). The
+original check was `if any(f.coverage_required for f in included): raise`
+— triggered by the mere PRESENCE of a `coverage_required` fragment in an
+over-budget chunk, before ever attempting to drop auxiliary content. A
+chunk with `required=100 chars + auxiliary=450 chars`, budget `500`,
+would block even though dropping the auxiliary content alone brings the
+chunk to `100 <= 500` — clearly fittable.
+
+**Fix:** the condition is now `required_chars = sum(chars for required
+fragments); if required_chars > max_chars_per_chunk: raise` — only
+blocking when NO amount of auxiliary-dropping could ever make the chunk
+fit. Red-tested by `test_extract_review_content_drops_auxiliaries_to_
+make_room_for_a_mixed_required_chunk`: a chunk with 1 required fragment
+and 20 auxiliary fragments summing over budget now survives with the
+required fragment `INCLUDED` and enough auxiliaries dropped to fit —
+proving the doctrine is followed, not just documented.
+
+### 8. add/modify/delete/rename test didn't prove `delete`, and accepted either rename path
+
+**Confirmed.** The fixture created `deleted.py` and renamed `old_name.py`
+→ `new_name.py`, but only asserted a fragment existed for SOME path
+matching `"new_name.py" in paths_seen or "old_name.py" in paths_seen` —
+never checking the deleted file's actual removed-line content, and the
+`OR` accepted either the canonical or stale rename path.
+
+**Fix:** the test now asserts `"-to be removed" in fragments_by_path[
+"deleted.py"].content` (the real removed line is genuinely extracted, not
+just "a fragment object with this path exists"), and asserts
+`"new_name.py" in fragments_by_path` AND `"old_name.py" not in
+fragments_by_path` — proving the canonical identity deterministically
+(`ParsedFileDiffV2.path` is `new_path or old_path`; a rename always has a
+`new_path`, so it is NEVER filed under the old name).
+
+### One remaining checklist item verified, not a new finding
+
+The second pass also flagged one explicit item from #200's own "testes
+obrigatórios" checklist this fix had not yet directly exercised:
+"múltiplos hunks, mesmo arquivo em vários chunks." Verified as a genuine
+gap (no prior test covered it) and closed:
 `test_extract_review_content_handles_two_hunks_of_the_same_file_landing_
 in_different_chunks` proves two well-separated hunks of ONE file split
 across two DIFFERENT chunks extract correctly — exercising ownership
@@ -165,23 +227,34 @@ cross-target repo both surface as `run_id` divergence (HEAD and repo are
 both embedded in `RunIdentityV2`, which feeds `run_id`'s own computation)
 — the same test covers both without needing a separately-named fixture.
 
+### Evidence freshness (the 4th point)
+
+The second pass also flagged that the PR body/checkpoint/receipt still
+quoted the FIRST commit's numbers (§7 1917 + §8 36 = 1953) after CI had
+already re-run on a later HEAD reporting 1917+37=1954. This addendum adds
+2 more `requires_network` tests (findings 6 and 7's red tests) on top of
+that, so the numbers below are re-measured on THIS commit's real HEAD,
+not carried forward from an earlier one.
+
 ## Verdict
 
-All 5 findings CONFIRMED real. None demonstrated a contractual
-incompatibility requiring a new phase/issue/PR — every fix landed inside
-the existing `#200-B`/`#200-C` contract shape, using only primitives that
-already existed (`planner_v2`'s own emitted ranges, `redaction.py`'s own
-`_redact_local_paths`, `TargetProfileV2.budgets`'s own real object). Per
-the instruction this audit was delivered under, **no merge was performed
-without explicit confirmation** — this PR is opened, gated green, and
-held for review.
+All 5 first-pass findings and all 3 second-pass functional findings (8
+total) CONFIRMED real, zero false positives across both independent
+passes. None demonstrated a contractual incompatibility requiring a new
+phase/issue/PR — every fix landed inside the existing `#200-B`/`#200-C`
+contract shape, using only primitives that already existed (`planner_v2`'s
+own emitted ranges, `redaction.py`'s own `_redact_local_paths`,
+`RunIdentityV2.profile_hash`/`compute_profile_hash_v2` already computed by
+`run_assembly_v2`). Per the instruction both audits were delivered under,
+**no merge was performed without explicit confirmation** — this PR is
+opened, gated green, and held for review.
 
-## Evidence
+## Evidence (re-measured on this commit's HEAD, not carried forward)
 
 ```text
-.venv/bin/python -m pytest -q                    → 1953 passed, 4 skipped
-bash scripts/ci_validate.sh                       → §7: 1917 passed, 4 skipped, 36 deselected
-                                                     §8: 36 passed, 1921 deselected — OK
+.venv/bin/python -m pytest -q                    → 1956 passed, 4 skipped
+bash scripts/ci_validate.sh                       → §7: 1917 passed, 4 skipped, 39 deselected
+                                                     §8: 39 passed, 1921 deselected — OK
 .venv/bin/python scripts/export-agent-review-v2-schemas.py --check → byte-identical (no schema touched)
 .venv/bin/python scripts/verify-caem-f0-pin.py --check → ok
 .venv/bin/python scripts/generate-ri-b0a-2-reuse-view.py --check → byte-identical
