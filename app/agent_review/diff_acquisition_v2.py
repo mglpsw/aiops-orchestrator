@@ -272,6 +272,10 @@ class _FileBlockBuilder:
         self.new_mode: str | None = None
         self.mode: str | None = None
         self.hunks: list[ParsedHunkV2] = []
+        #: Parallel to ``self.hunks`` by index: the exact body text each
+        #: hunk's ``diff_sha256`` was computed over (#200-B). Never copied
+        #: into ``ParsedFileDiffV2``.
+        self.hunk_bodies: list[str] = []
         self.old_no_newline_at_eof = False
         self.new_no_newline_at_eof = False
         self.truncated = False
@@ -327,19 +331,36 @@ class _FileBlockBuilder:
             # newline emit the same body text; without folding this
             # state into the hash preimage they would collide on
             # diff_sha256/fragment_id despite genuinely different content.
-            hasher = hashlib.sha256(body_text.encode("utf-8", errors="replace"))
-            hasher.update(f"\x00old_no_newline_at_eof={self.old_no_newline_at_eof}".encode())
-            hasher.update(f"\x00new_no_newline_at_eof={self.new_no_newline_at_eof}".encode())
+            # compute_hunk_diff_sha256_v2 (defined later in this module) is
+            # the ONE preimage definition; called here by name, not
+            # inlined, so this builder and extract_hunk_bodies_v2's
+            # re-verification can never drift apart into two hashes for
+            # the same body.
+            diff_sha256 = compute_hunk_diff_sha256_v2(
+                body_text,
+                old_no_newline_at_eof=self.old_no_newline_at_eof,
+                new_no_newline_at_eof=self.new_no_newline_at_eof,
+            )
             self.hunks.append(
                 ParsedHunkV2(
                     old_start=current_old_start,
                     old_lines=current_old_lines,
                     new_start=current_new_start,
                     new_lines=current_new_lines,
-                    diff_sha256=hasher.hexdigest(),
+                    diff_sha256=diff_sha256,
                     diff_chars=len(body_text),
                 )
             )
+            # #200-B needs the body text this hunk's diff_sha256 was
+            # computed over. It is retained HERE -- on the builder, beside
+            # the hash that was just derived from it -- and deliberately
+            # NOT on ParsedHunkV2: the parsed contract stays raw-content-
+            # free exactly as this module's header promises, and only
+            # extract_hunk_bodies_v2 (which reuses this very builder, not a
+            # second parser) can reach these strings. Re-deriving the body
+            # in a separate pass would be a second engine whose preimage
+            # could silently drift from this one.
+            self.hunk_bodies.append(body_text)
             current_hunk_body = []
             in_hunk = False
 
@@ -635,6 +656,108 @@ def parse_unified_diff(diff_text: str) -> tuple[ParsedFileDiffV2, ...]:
         file_diffs.append(builder.finish())
 
     return tuple(file_diffs)
+
+
+HUNK_BODY_DIGEST_MISMATCH_REASON_V2 = "hunk_body_digest_mismatch"
+
+
+def compute_hunk_diff_sha256_v2(
+    body_text: str, *, old_no_newline_at_eof: bool, new_no_newline_at_eof: bool
+) -> str:
+    """The ONE definition of a hunk's ``diff_sha256`` preimage, extracted so
+    ``_FileBlockBuilder`` and any consumer that wants to re-derive the hash
+    from a body it holds share the same bytes by construction rather than by
+    two implementations agreeing today and drifting tomorrow."""
+
+    hasher = hashlib.sha256(body_text.encode("utf-8", errors="replace"))
+    hasher.update(f"\x00old_no_newline_at_eof={old_no_newline_at_eof}".encode())
+    hasher.update(f"\x00new_no_newline_at_eof={new_no_newline_at_eof}".encode())
+    return hasher.hexdigest()
+
+
+@dataclass(frozen=True)
+class HunkBodyV2:
+    """One hunk's real body text, keyed by the identity #200-B binds against.
+
+    This is the ONLY structure in this module that carries raw diff content.
+    It is never embedded in ``ParsedFileDiffV2``/``ParsedHunkV2`` and never
+    reaches an artifact: ``review_content_extraction_v2`` redacts before the
+    text is allowed into any contract object. ``old_start``/``new_start`` are
+    carried alongside the body (not just the hash/char-count ``ParsedHunkV2``
+    keeps) because #200-B's per-fragment slicing needs the absolute line
+    numbers each body line represents, not merely proof of which bytes the
+    hunk's own ``diff_sha256`` covers."""
+
+    path: str
+    hunk_index: int
+    diff_sha256: str
+    body_text: str
+    old_start: int
+    old_lines: int
+    new_start: int
+    new_lines: int
+    old_no_newline_at_eof: bool
+    new_no_newline_at_eof: bool
+
+
+def extract_hunk_bodies_v2(diff_text: str) -> tuple[HunkBodyV2, ...]:
+    """Re-parse ``diff_text`` with the SAME ``_FileBlockBuilder`` that
+    ``parse_unified_diff`` uses, returning each hunk's retained body text.
+
+    Not a second parser: the hunks, their ranges, their ``diff_sha256`` and
+    the bodies below all come from one pass of one implementation. Every
+    returned body is additionally re-hashed through
+    ``compute_hunk_diff_sha256_v2`` and checked against the hash the builder
+    derived; a mismatch is impossible through this path today and raises
+    ``DiffAcquisitionError(HUNK_BODY_DIGEST_MISMATCH_REASON_V2)`` rather than
+    handing a caller content whose identity is not provably the parsed one.
+    """
+
+    if diff_text.strip() == "":
+        return ()
+
+    lines = diff_text.split("\n")
+    if lines and lines[-1] == "" and diff_text.endswith("\n"):
+        lines = lines[:-1]
+    if not any(line.startswith("diff --git ") for line in lines):
+        raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
+
+    bodies: list[HunkBodyV2] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.startswith("diff --git "):
+            index += 1
+            continue
+        builder = _FileBlockBuilder(line)
+        index = builder.consume_header(lines, index + 1)
+        file_diff = builder.finish()
+        if len(builder.hunk_bodies) != len(file_diff.hunks):
+            raise DiffAcquisitionError(HUNK_BODY_DIGEST_MISMATCH_REASON_V2)
+        for hunk_index, (hunk, body_text) in enumerate(zip(file_diff.hunks, builder.hunk_bodies)):
+            recomputed = compute_hunk_diff_sha256_v2(
+                body_text,
+                old_no_newline_at_eof=file_diff.old_no_newline_at_eof,
+                new_no_newline_at_eof=file_diff.new_no_newline_at_eof,
+            )
+            if recomputed != hunk.diff_sha256:
+                raise DiffAcquisitionError(HUNK_BODY_DIGEST_MISMATCH_REASON_V2)
+            bodies.append(
+                HunkBodyV2(
+                    path=file_diff.path,
+                    hunk_index=hunk_index,
+                    diff_sha256=hunk.diff_sha256,
+                    body_text=body_text,
+                    old_start=hunk.old_start,
+                    old_lines=hunk.old_lines,
+                    new_start=hunk.new_start,
+                    new_lines=hunk.new_lines,
+                    old_no_newline_at_eof=file_diff.old_no_newline_at_eof,
+                    new_no_newline_at_eof=file_diff.new_no_newline_at_eof,
+                )
+            )
+
+    return tuple(bodies)
 
 
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
