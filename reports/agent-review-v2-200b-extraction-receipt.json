@@ -1,0 +1,64 @@
+{
+  "note": "Lightweight, human-authored summary of this slice. Not validated by a strict schema/loader -- no such receipt contract exists in this repository yet. Do not treat this as equivalent in authority to a ReviewReadinessV2 artifact or any other ContractV2Model-backed contract.",
+  "repository": "mglpsw/aiops-orchestrator",
+  "epic": 199,
+  "issue": 200,
+  "slice": "200-B",
+  "branch": "feat/200-b-review-content-extraction",
+  "base_sha": "717c51eec12b2f5cfeae13400011f8d90b8ecdcc",
+  "commits": [
+    {
+      "subject": "feat(agent-review/v2): real hunk-content extraction, redaction, and declarative DLP evaluation (#200-B)",
+      "files_added": [
+        "app/agent_review/review_content_extraction_v2.py",
+        "docs/checkpoints/AGENT_REVIEW_V2_200B_EXTRACTION.md",
+        "reports/agent-review-v2-200b-extraction-receipt.json",
+        "tests/agent_review/test_review_content_extraction_v2.py"
+      ],
+      "files_modified": [
+        "app/agent_review/diff_acquisition_v2.py",
+        "docs/AGENT_REVIEW_V2_REVIEW_CONTENT.md",
+        "CHANGELOG.md"
+      ]
+    }
+  ],
+  "new_schemas": [],
+  "existing_schemas_touched": [],
+  "diff_acquisition_v2_additions": [
+    "compute_hunk_diff_sha256_v2 -- the one diff_sha256 preimage definition, now called by both the parser and the new extractor",
+    "HunkBodyV2 -- one hunk's real body text, never embedded in ParsedFileDiffV2/ParsedHunkV2",
+    "extract_hunk_bodies_v2 -- reuses _FileBlockBuilder (not a second parser), re-verifies every body against compute_hunk_diff_sha256_v2"
+  ],
+  "verification": {
+    "full_suite": {"command": ".venv/bin/python -m pytest -q", "result": "1896 passed, 4 skipped"},
+    "agent_review_suite": {"command": ".venv/bin/python -m pytest tests/agent_review -q", "result": "1156 passed"},
+    "diff_acquisition_regression": {"command": ".venv/bin/python -m pytest tests/agent_review/test_diff_acquisition_v2.py -q", "result": "86 passed, unchanged from pre-slice count"},
+    "schema_export_check": {
+      "command": ".venv/bin/python scripts/export-agent-review-v2-schemas.py --check",
+      "result": "AgentReview v2 schemas are byte-identical."
+    },
+    "caem_f0_pin_check": {
+      "command": ".venv/bin/python scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check",
+      "result": "ok"
+    },
+    "ri_b0a_2_reuse_view_check": {
+      "command": ".venv/bin/python scripts/generate-ri-b0a-2-reuse-view.py --check",
+      "result": "generated view is byte-identical to the manifest."
+    },
+    "ci_validate_sh": {"command": "bash scripts/ci_validate.sh", "result": "1872 passed, 4 skipped, 24 deselected -- OK"},
+    "git_diff_check": "clean",
+    "real_e2e_smoke": "real temporary git repository, real acquire_authoritative_diff_v2, real assemble_manifest_from_diff_v2, real build_chunk_payload_v2, real extract_review_content_v2, real bind_review_content_to_manifest_v2 -- not mocked"
+  },
+  "not_delivered": [
+    "Agent Router transport wiring (#200-C)",
+    "semantic review E2E producing a real ReviewReadinessV2 (#200-C)",
+    "automatic content-budget-triggered re-planning (explicit limitation, not implemented)",
+    "real out-of-process host-owned DLP detector (detector_name-only policies contribute zero rule coverage)",
+    "any canary review of a real repository (AgentEscala#763-A)"
+  ],
+  "protected_actions_taken": [],
+  "protected_actions_not_taken": [
+    "merge", "release", "tag", "deploy", "target repository write",
+    "branch protection change", "secret/runner creation"
+  ]
+}

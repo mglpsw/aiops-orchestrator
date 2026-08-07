@@ -4,6 +4,26 @@
 
 ### Added
 
+- AgentReview v2 real hunk-content extraction (#200-B, second slice of
+  #200, distribution epic #199): `extract_review_content_v2`
+  (`app/agent_review/review_content_extraction_v2.py`) turns a real diff
+  into a `ReviewContentV2` bound to an already-assembled `ManifestV2`,
+  reusing `diff_acquisition_v2.acquire_authoritative_diff_v2`,
+  `redaction.redact_text`, and `#200-A`'s own contracts/binding -- no
+  second engine. `diff_acquisition_v2` gained `compute_hunk_diff_sha256_v2`
+  (the one preimage definition, shared by the parser and the extractor),
+  `HunkBodyV2`, and `extract_hunk_bodies_v2` (reuses the existing
+  `_FileBlockBuilder`, re-verifies every body against its own hash). A
+  windowed (over-line-budget) fragment's content is reconstructed by a
+  lossless per-line selection rule
+  (`slice_hunk_body_by_range_v2`), proven duplicate-free on a realistic
+  interleaved-hunk fixture. Every `must_review` fail-closed path (DLP
+  match, budget overflow, recomposition failure, empty manifest) raises a
+  stable, typed `ExtractionBlockedError` -- never a silent approval.
+  Automatic content-budget-triggered re-planning is an explicit,
+  documented limitation, not implemented (refs #200, #199,
+  docs/AGENT_REVIEW_V2_REVIEW_CONTENT.md)
+
 - AgentReview v2 semantic review content contract (#200-A, first slice of
   the distribution epic #199): `ReviewContentV2`
   (`app/agent_review/review_content_v2.py`), a sidecar bound to a

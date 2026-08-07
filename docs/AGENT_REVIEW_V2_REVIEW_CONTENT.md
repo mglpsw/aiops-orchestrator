@@ -1,11 +1,19 @@
-# AgentReview v2 — semantic review content contract (#200-A)
+# AgentReview v2 — semantic review content: contract (#200-A) and real extraction (#200-B)
 
-Refs `aiops-orchestrator#200`, first slice of the distribution epic
-`aiops-orchestrator#199`. Design rationale lives in
+Refs `aiops-orchestrator#200`, slices 1 and 2 of the distribution epic
+`aiops-orchestrator#199`. Design rationale for the contract lives in
 `docs/adr/ADR_AGENT_REVIEW_V2_REVIEW_CONTENT.md`; this document is the
-operational reference for the contracts themselves.
+operational reference for the contracts and, as of `#200-B`, the extractor
+that populates them from a real diff.
 
-## Scope of this PR (`#200-A`)
+**Capability state**: this closes real hunk-content extraction, generic
+redaction, and declarative DLP evaluation. It does **not** wire the Agent
+Router or produce a real `ReviewReadinessV2` from a semantic review
+(`#200-C`) — `#200` stays `core_synthetic_complete: false` until that lands
+too. See the epic `#199`'s own nomenclature note: this is still
+`contract_readiness_baseline` work, not `semantic_reviewer_shadow`.
+
+## Scope of `#200-A` (contract and ADR only)
 
 Contract and ADR only. Nothing here extracts real hunk bytes from a diff,
 runs redaction, runs a DLP engine, calls the Agent Router, or touches
@@ -135,13 +143,119 @@ payload-set.v2`'s own classification).
 `UNREPRESENTABLE` are `ReviewContentPolicyV2` enum values, not raised
 exceptions — a caller uses `policy.value` directly for telemetry.
 
+## `#200-B` — real extraction (`app/agent_review/review_content_extraction_v2.py`)
+
+Turns a real diff into a `ReviewContentV2` bound to an already-assembled
+`ManifestV2` (`run_assembly_v2.assemble_manifest_from_diff_v2`). Reuses,
+never reimplements: `diff_acquisition_v2.acquire_authoritative_diff_v2`
+(path/hunk identity), `redaction.redact_text` (generic redaction),
+`review_content_v2`'s own contract, DLP declaration, and manifest binding.
+
+```text
+acquire_authoritative_diff_v2 + extract_hunk_bodies_v2  (real diff, real bodies)
+  -> slice_hunk_body_by_range_v2 per fragment             (lossless line-selection)
+  -> exact diff_sha256 recomposition (whole-hunk fragments only)
+  -> classification (binary / submodule / generated / minified)
+  -> redaction.redact_text
+  -> declarative DLP rule evaluation
+  -> per-chunk char budget (TargetBudgetsV2.max_chars_per_chunk)
+  -> ReviewContentV2, bound to the manifest before returning
+```
+
+### `diff_acquisition_v2` additions this slice needed
+
+`ParsedHunkV2` only ever kept a hunk's `diff_sha256`/`diff_chars` — the
+body text itself was hashed and discarded (by design, per that module's own
+header). Real extraction needs the body back, so `#200-B` extended the
+SAME parser (`_FileBlockBuilder`), not a second one:
+
+- `compute_hunk_diff_sha256_v2(body_text, *, old_no_newline_at_eof,
+  new_no_newline_at_eof)` — the one preimage definition, now called by
+  both `_FileBlockBuilder` (while parsing) and `extract_hunk_bodies_v2`
+  (while re-deriving), so the two can never silently drift into two
+  different hashes for the same body;
+- `HunkBodyV2` — one hunk's real body text, keyed by
+  `path`/`hunk_index`/`diff_sha256`, carrying `old_start`/`old_lines`/
+  `new_start`/`new_lines` too (needed for per-fragment line-range
+  slicing). Never embedded in `ParsedFileDiffV2`/`ParsedHunkV2` — the
+  parsed contract stays raw-content-free exactly as before;
+- `extract_hunk_bodies_v2(diff_text)` — re-parses with the same builder,
+  and re-verifies every returned body against `compute_hunk_diff_sha256_v2`
+  before returning it (`HUNK_BODY_DIGEST_MISMATCH_REASON_V2` on any
+  divergence — unreachable through this path today, kept fail-closed).
+
+### The line-selection rule (why a "window" fragment is not a substring)
+
+A fragment produced by `planner_v2`'s windowing (a hunk larger than the
+per-chunk line budget) has its `old_range`/`new_range` computed
+INDEPENDENTLY per side. For a hunk with a long uninterrupted run of
+deletions followed by a long run of insertions, "window k" on the old side
+and "window k" on the new side can be physically disjoint stretches of the
+hunk body — there is no single contiguous substring that represents a
+window fragment in general.
+
+`slice_hunk_body_by_range_v2` therefore selects per LINE, not per
+substring: every body line whose old or new line number falls inside the
+fragment's declared range, in original order. This is provably lossless
+(every line the fragment claims to cover is included exactly once — proven
+by `test_extract_review_content_windows_a_hunk_larger_than_the_line_budget_
+losslessly`, which asserts zero line is double-counted across windows for a
+realistic interleaved hunk) and, for the whole-hunk case, reproduces the
+entire body byte-for-byte — verified against `diff_sha256`, not assumed.
+
+### `payload_sha256` is caller-supplied, never fabricated
+
+`extract_review_content_v2` requires `payload_sha256_by_chunk_id`: the
+REAL `payload_sha256` of each chunk's already-built `ChunkPayloadV2`
+(`payload_builder_v2.build_chunk_payload_v2`, built from the SAME manifest
+before this function is called). It does not build payloads itself and
+never substitutes a placeholder hash — a missing entry blocks the whole
+extraction fail-closed (`chunk_payload_sha256_unavailable`).
+Cross-checking that this hash actually matches the real payload object
+byte-for-byte remains `#200-C`'s job, per `bind_review_content_to_
+manifest_v2`'s own documented split.
+
+### Fail-closed paths (never a silent approval)
+
+| Condition | Result |
+|---|---|
+| `coverage_required` fragment is binary/submodule/unrepresentable | `ExtractionBlockedError(hunk_body_unavailable)` |
+| `coverage_required` fragment's content matches a DLP rule | `ExtractionBlockedError(transport_blocked_by_dlp)` |
+| `coverage_required` fragment's redacted content exceeds `max_chars_per_chunk` | `ExtractionBlockedError(content_over_budget_requires_replan)` |
+| whole-hunk fragment fails to reproduce `diff_sha256` from its own slice | `ExtractionBlockedError(hunk_recomposition_failed)` |
+| manifest has zero chunks (e.g. every file excluded as non-must-review binary) | `ExtractionBlockedError(no_reviewable_chunks)` |
+| a non-`coverage_required` fragment hits any of the above | typed `ReviewContentPolicyV2` omission instead (never blocks the run) |
+
+Automatic re-planning when extracted content exceeds budget (invoking
+`planner_v2` again with a smaller line budget and retrying in the same
+call) is explicitly **not** implemented here — it needs the original
+`HunkInputV2` list this module does not hold, and blurring it into this
+module's one job (extraction) would reopen `run_assembly_v2`'s territory.
+Named as a limitation, not silently faked.
+
+### Binary/submodule files: a documented reachability gap
+
+`ReviewContentPolicyV2.OMITTED_BINARY`/`OMITTED_SUBMODULE` exist and are
+exercised directly (`test_classify_unrepresentable_marks_binary_and_
+submodule_files_typed`), but are **not reachable through today's real
+pipeline**: a binary file never produces a `ParsedHunkV2` at all, so it
+never produces a `FragmentV2`/`fragment_id` either. A non-must-review
+binary file is silently excluded by `run_assembly_v2` before any fragment
+exists for it (invisible to `ReviewContentV2`, not present with a typed
+omission — see `test_extract_review_content_excludes_a_non_must_review_
+binary_file_entirely`); a must-review one blocks the whole manifest
+assembly before extraction is ever reached. This is defense in depth for a
+future change to that upstream exclusion, not dead code removed here.
+
 ## What is deliberately not here
 
-- extracting real hunk bytes from a diff, redaction, or a DLP engine
-  (`#200-B`);
 - calling the Agent Router or any transport (`#200-C`);
 - cross-checking `ChunkContentV2.payload_sha256` against a real, built
   `ChunkPayloadV2` (`#200-C`, mirrors `payload_set_v2` vs.
   `payload_set_emission_v2`'s own split);
+- automatic content-budget-triggered re-planning (see above);
+- a real out-of-process, host-owned DLP detector (`detector_name`-only
+  policies are accepted but contribute zero rule coverage from this
+  extractor);
 - a canary review of a real repository — the first one is `AgentEscala
-  #763-A`, gated on `#200-B`/`#200-C` landing first.
+  #763-A`, gated on `#200-C` landing too.
