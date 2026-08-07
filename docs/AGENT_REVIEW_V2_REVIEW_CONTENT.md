@@ -1,17 +1,20 @@
-# AgentReview v2 — semantic review content: contract (#200-A) and real extraction (#200-B)
+# AgentReview v2 — semantic review content: contract (#200-A), real extraction (#200-B), and transport/E2E (#200-C)
 
-Refs `aiops-orchestrator#200`, slices 1 and 2 of the distribution epic
+Refs `aiops-orchestrator#200`, all three slices of the distribution epic
 `aiops-orchestrator#199`. Design rationale for the contract lives in
 `docs/adr/ADR_AGENT_REVIEW_V2_REVIEW_CONTENT.md`; this document is the
-operational reference for the contracts and, as of `#200-B`, the extractor
-that populates them from a real diff.
+operational reference for the contracts and the extractor/transport that
+populate and move them.
 
-**Capability state**: this closes real hunk-content extraction, generic
-redaction, and declarative DLP evaluation. It does **not** wire the Agent
-Router or produce a real `ReviewReadinessV2` from a semantic review
-(`#200-C`) — `#200` stays `core_synthetic_complete: false` until that lands
-too. See the epic `#199`'s own nomenclature note: this is still
-`contract_readiness_baseline` work, not `semantic_reviewer_shadow`.
+**Capability state**: `#200` is now `core_synthetic_complete` — the full
+chain from a real diff to a real `ReviewReadinessV2` is proven, offline and
+synthetically. It is **not** `semantic_reviewer_shadow` yet: no live Router
+call has ever been made by this code, and no real repository has been
+canary-reviewed (`AgentEscala#763-A`, gated on a repin to a release
+containing this work and an explicit grant to enable the Router). See the
+epic `#199`'s own nomenclature note: `core_synthetic_complete` and
+`target_adoption_complete`/`semantic_reviewer_shadow` are different,
+independent states — this closes the former only.
 
 ## Scope of `#200-A` (contract and ADR only)
 
@@ -247,15 +250,85 @@ binary_file_entirely`); a must-review one blocks the whole manifest
 assembly before extraction is ever reached. This is defense in depth for a
 future change to that upstream exclusion, not dead code removed here.
 
+## `#200-C` — transport and end-to-end synthesis (`app/agent_review/review_transport_v2.py`)
+
+Wires the fixed order of authority the #199 execution plan's D2 requires:
+
+```text
+ReviewContentV2 (#200-A/#200-B)
+  -> ChunkReviewRequestV2                  (#200-A)
+  -> transport                              (#200-C)
+  -> ChunkReviewTransportEnvelopeV1         (#200-A)
+  -> verify_transport_echo_v1               (#200-A)
+  -> consumer_v2.bind_chunk_response_v2     (already existed)
+  -> parser_v2.parse_bound_chunk_response_v2
+  -> synthesis_v2.synthesize_chunk_results_v2
+  -> readiness_decision_v2.compute_readiness_decision_v2
+  -> review_readiness_emission_v2.emit_review_readiness_v2
+```
+
+`execute_chunk_review_v2` is the single choke point: no finding is
+reachable from a chunk unless transport succeeds, the echo verifies, AND
+the response binds, in that exact order. Every failure mode — transport
+error, tampered echo, malformed response — degrades EXACTLY that chunk to
+`ChunkReviewOutcomeV2(state="manual_required", ...)`; it is never raised
+up as a run-wide exception and never fabricates a result. `run_synthetic_
+review_v2` (the orchestrator) hands `synthesize_chunk_results_v2` only the
+chunks that bound; the existing, unmodified coverage/readiness authority
+(`synthesis_v2`/`readiness_decision_v2`) reflects the gap as real missing
+coverage — proven directly: a run with one tampered-echo chunk never
+reaches `ReadinessStateV2.READY`.
+
+### Transport is an injected callable
+
+`ChunkReviewTransportV2` is a `Protocol`. Two implementations ship:
+
+- `offline_file_transport_v2(responses_dir)` — reads one pre-placed
+  `{chunk_id}.json` transport envelope per chunk. **Default in tests**, and
+  the one this slice's synthetic E2E actually exercises end-to-end,
+  including a real `ReadinessStateV2.READY` outcome from a fully bound,
+  fully covered run;
+- `agent_router_transport_v2(base_url, api_key, model)` — the real Agent
+  Router, locked to EXACTLY `{base_url}/v1/chat/completions` (mirrors
+  `scripts/github_agent_review.py`'s own `call_agent_router_review`
+  discipline — no provider-direct call, no second endpoint). Raises
+  `ChunkTransportError(ROUTER_DISABLED_REASON_V2)` immediately, before any
+  network attempt, if `api_key` is empty — there is no ambient/implicit
+  enablement path. Covered by unit tests against a **mocked** HTTP layer
+  only; this slice never makes a live network call to any Router.
+
+### Failure taxonomy (never a silent approval)
+
+| Condition | Chunk outcome |
+|---|---|
+| response file missing / unreadable | `manual_required` / `transport_failure` |
+| response body is not valid JSON or does not validate | `manual_required` / `transport_invalid_response` |
+| HTTP 5xx / 429 from the real Router | `manual_required` / `transport_unavailable` |
+| network timeout | `manual_required` / `transport_timeout` |
+| tampered `content_sha256`/`request_sha256` echo | `manual_required` / `content_echo_mismatch` or `request_echo_mismatch` |
+| response fails `bind_chunk_response_v2` | `manual_required` / that function's own reason code |
+
+A run with any `manual_required` chunk never reaches `READY` — proven
+directly, not assumed, by
+`test_run_synthetic_review_degrades_a_tampered_echo_chunk_to_manual_required`
+and its missing-file/malformed-JSON siblings.
+
 ## What is deliberately not here
 
-- calling the Agent Router or any transport (`#200-C`);
 - cross-checking `ChunkContentV2.payload_sha256` against a real, built
-  `ChunkPayloadV2` (`#200-C`, mirrors `payload_set_v2` vs.
-  `payload_set_emission_v2`'s own split);
-- automatic content-budget-triggered re-planning (see above);
+  `ChunkPayloadV2` byte-for-byte (the caller — `run_synthetic_review_v2`'s
+  own caller — is responsible for having built `payload_by_chunk_id` from
+  real `payload_builder_v2` output; this module trusts what it is handed,
+  exactly like `bind_review_content_to_manifest_v2` already does for the
+  same field);
+- automatic content-budget-triggered re-planning (see the `#200-B`
+  section above);
 - a real out-of-process, host-owned DLP detector (`detector_name`-only
-  policies are accepted but contribute zero rule coverage from this
+  policies are accepted but contribute zero rule coverage from the
   extractor);
+- a live call to the real Agent Router, from this repository, in this
+  slice — `agent_router_transport_v2` is real, tested code, never
+  exercised against the network;
 - a canary review of a real repository — the first one is `AgentEscala
-  #763-A`, gated on `#200-C` landing too.
+  #763-A`, gated on a repin to a release containing this work and a
+  separate grant to enable `AGENT_REVIEW_V2_ROUTER_ENABLED`.
