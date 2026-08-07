@@ -75,25 +75,48 @@ true, never silently dropped from the list.
 | v1 e modo sem trusted checks preservados | `not_applicable_here` -- this module is purely additive, wires into nothing yet (`#201-C`'s job) |
 | failure ambiental não vira regression de produto | `covered` -- `test_execute_untrusted_advisory_result_still_refuses_promotion` plus the INFRA_FAILURE/TIMEOUT/OOM/CANCELLED tests all produce non-resolved outcomes `promote_trusted_check_to_required_v2` refuses |
 
-## CI-discovered gap, fixed in this same slice (not silently patched over)
+## CI-discovered gaps, fixed in this same slice (not silently patched over)
 
-This slice's own first real `aiops-ci` run on GitHub Actions failed all 8
-new `requires_network` tests: `unshare: write failed /proc/self/uid_map:
-Operation not permitted`. Root cause: the original implementation always
-dropped to `nobody` BEFORE invoking `unshare --user --map-root-user
---net`, forcing the UNPRIVILEGED user-namespace path even though the
-runner's job itself runs as real root -- and that runner's kernel refuses
-unprivileged user-namespace creation outright (a common hardening
-default), independent of who's asking. Fix: `_isolation_wrapped_argv_v2`
-now branches on the REAL starting euid -- real root uses `unshare --net`
-alone (root's own `CAP_SYS_ADMIN`, no unprivileged userns involved at
-all), with privilege drop to `nobody` happening AFTER the namespace
-already exists, via a small inline Python interpreter chained inside it.
-The unprivileged-userns path is now a fallback for callers that start
-already unprivileged, not the primary mechanism. This is exactly the
-class of environment-specific isolation-primitive gap this checkpoint's
-own "not CT104" framing exists to catch -- recorded here as what
-happened, not smoothed over as if the first design had been correct.
+This slice's own first two real `aiops-ci` runs on GitHub Actions each
+failed all 8 new `requires_network` tests, and each failure taught
+something genuinely new about that runner's actual environment rather
+than being fixed by guesswork:
+
+**Run 1**: `unshare: write failed /proc/self/uid_map: Operation not
+permitted`. The original implementation always dropped to `nobody`
+BEFORE invoking `unshare --user --map-root-user --net`, forcing the
+unprivileged-user-namespace path. First fix attempt: branch on the REAL
+starting euid -- if root, use `unshare --net` alone (no unprivileged
+userns needed at all).
+
+**Run 2**: the SAME error, on the SAME `unshare --user --map-root-user`
+command -- proving the "if root" branch was never taken, i.e. this
+project's own GitHub Actions runner does **not** run the job as real
+root (contrary to this slice's own first assumption, stated plainly as a
+wrong guess, not hidden). The job is an ordinary unprivileged account,
+and that account's unprivileged-user-namespace creation is refused by
+the runner's kernel/AppArmor policy.
+
+**Real fix**: `_select_isolation_strategy_v2` now ACTUALLY PROBES a
+short, ordered list of real candidates instead of guessing from euid --
+real-root-direct, then passwordless-`sudo`-elevated (`sudo -n unshare
+--net`, relying on the well-established default that GitHub-hosted
+runner accounts have passwordless sudo), then unprivileged-userns as the
+last resort -- and only proceeds with whichever candidate a live `<prefix>
+-- true` invocation actually returns exit `0` for. Verified locally
+under all three real scenarios this sandbox could reproduce (real root;
+an unprivileged account with passwordless sudo; an unprivileged account
+with neither) -- 19/19 passing in each. If GitHub Actions' runner
+identity or policy changes again and NONE of the three candidates work,
+this now fails closed with a typed `INFRA_FAILURE`
+(`EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2`), same as before -- it does
+not regress to a fourth guess.
+
+This whole sequence is exactly the class of environment-specific
+isolation-primitive gap this checkpoint's own "not CT104" framing exists
+to catch -- recorded here as what actually happened across two real,
+observed CI failures, not smoothed over as if the first (or second)
+design had been correct on the first try.
 
 ## Honest limitations (named, not hidden)
 

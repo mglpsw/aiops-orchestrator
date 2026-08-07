@@ -77,27 +77,32 @@ count) -- and is REAL, working, and adversarially tested in whatever
 Linux host actually runs this test suite (this repository's own CI, or a
 development session's cloud sandbox). It is explicitly **not** CT104:
 
-**How the namespace is created is chosen by the REAL starting uid, not
-guessed.** A caller starting as real root gets ``unshare --net`` alone
-(root's own ``CAP_SYS_ADMIN`` needs no further help), with privilege drop
-to ``nobody`` happening AFTER the namespace exists, via a small inline
-Python interpreter chained inside it (see ``_isolation_wrapped_argv_v2``'s
-own docstring for the full reasoning). A caller already unprivileged
-falls back to an unprivileged user namespace (``--user
---map-root-user``). This split exists because this slice's own first
-real CI run, on this project's GitHub Actions runner, failed outright on
-the naive "always drop to `nobody` first, then `unshare --user
---map-root-user --net`" approach -- ``unshare: write failed
-/proc/self/uid_map: Operation not permitted`` -- because that runner's
-kernel refuses UNPRIVILEGED user namespace creation even though the job
-itself runs as real root, which never needed that mechanism in the first
-place. Recorded here, not silently patched over, because it is exactly
-the kind of environment-specific isolation-primitive availability gap
-this module's own "not CT104" caveat exists to warn about -- this
-specific gap is now closed for "root, but unprivileged userns disabled"
-hosts; a host where even ``unshare --net`` itself is unavailable to real
-root still hits this module's existing fail-closed
-``EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2`` path.
+**How the namespace is created is PROBED for real, never guessed from
+euid alone.** ``_select_isolation_strategy_v2`` tries, in order, real-
+root-direct (``unshare --net``), passwordless-``sudo``-elevated
+(``sudo -n unshare --net``), then unprivileged-user-namespace
+(``unshare --user --map-root-user --net``) -- and only uses whichever
+candidate a live ``<prefix> -- true`` invocation actually exits ``0``
+for. Privilege drop to ``nobody`` (when the chosen candidate started
+privileged) happens AFTER the namespace already exists, via a small
+inline Python interpreter chained inside it (see
+``_isolation_wrapped_argv_v2``'s own docstring for the full reasoning).
+None of the three candidates succeeding at all means fail-closed
+(``EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2``), never a fourth guess and
+never running unisolated.
+
+This exists because guessing was tried first and was wrong TWICE against
+this project's own real GitHub Actions runner: assuming "root implies
+`unshare --net` works" failed because that runner's job does not
+actually run as root; assuming "unprivileged implies `--user
+--map-root-user` works" failed because that runner's kernel/AppArmor
+policy refuses unprivileged user-namespace creation outright. Both
+failures are recorded in
+``docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md``, not
+silently patched over -- exactly the kind of environment-specific
+isolation-primitive availability gap this module's own "not CT104"
+caveat exists to warn about. Probing instead of guessing is what
+actually closed it.
 
 - this module has no way to assert it is running ON the project's real,
   pinned CT104 runner -- that identity is a deployment fact asserted by
@@ -225,8 +230,45 @@ class ExecutedCheckV2:
     diagnostic_reason: str | None
 
 
-def _probe_isolation_available_v2() -> bool:
-    return shutil.which("unshare") is not None
+def _isolation_prefix_candidates_v2() -> tuple[tuple[bool, tuple[str, ...]], ...]:
+    """Ordered ``(drop_to_nobody_inside, prefix_argv)`` candidates, most to
+    least preferred. ``drop_to_nobody_inside`` tells the dropper script
+    whether the namespace was created as REAL root (a subsequent setuid
+    to ``nobody`` is meaningful and will succeed) -- true for the
+    root-direct and sudo-elevated candidates, false for the unprivileged-
+    userns one (see ``_isolation_wrapped_argv_v2``'s own docstring for
+    why that one drops nothing)."""
+
+    if os.geteuid() == 0:
+        return ((True, ("unshare", "--net", "--")),)
+    candidates: list[tuple[bool, tuple[str, ...]]] = []
+    if shutil.which("sudo") is not None:
+        candidates.append((True, ("sudo", "-n", "unshare", "--net", "--")))
+    candidates.append((False, ("unshare", "--user", "--map-root-user", "--net", "--")))
+    return tuple(candidates)
+
+
+def _probe_prefix_works_v2(prefix: tuple[str, ...]) -> bool:
+    try:
+        completed = subprocess.run([*prefix, "true"], capture_output=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
+
+
+def _select_isolation_strategy_v2() -> tuple[bool, tuple[str, ...]] | None:
+    """Actually TESTS each candidate rather than guessing from euid alone
+    -- this project's own GitHub Actions runner is neither real root nor
+    able to create an unprivileged user namespace by default (kernel/
+    AppArmor policy varies by image and changes over time), so guessing
+    wrong here means silently either failing every check or, worse,
+    silently running unisolated. Returns ``None`` if nothing works --
+    the caller must fail closed, never fall back to running unisolated."""
+
+    for drop_to_nobody, prefix in _isolation_prefix_candidates_v2():
+        if _probe_prefix_works_v2(prefix):
+            return drop_to_nobody, prefix
+    return None
 
 
 def _dropper_script_v2(*, drop_to_nobody: bool, max_memory_mb: int, max_processes: int) -> str:
@@ -261,43 +303,57 @@ def _dropper_script_v2(*, drop_to_nobody: bool, max_memory_mb: int, max_processe
 
 def _isolation_wrapped_argv_v2(
     argv: tuple[str, ...], *, max_memory_mb: int, max_processes: int
-) -> list[str]:
+) -> list[str] | None:
     """Wraps ``argv`` so it runs isolated: its own network stack (proven
     by this module's own adversarial test, not merely asserted -- see
     ``test_isolated_executor_v2.py``'s real-outbound-connection-attempt
-    test) and, when starting privileged, dropped to an unprivileged uid
-    before the real command ever execs.
+    test) and, when the chosen strategy started privileged, dropped to an
+    unprivileged uid before the real command ever execs. Returns ``None``
+    if ``_select_isolation_strategy_v2`` finds nothing that actually
+    works -- the caller must fail closed, never fall back to running
+    unisolated.
 
-    Two paths, chosen by the REAL (not namespace-mapped) starting euid:
+    Three candidate strategies, ACTUALLY PROBED (not guessed from euid
+    alone) by ``_select_isolation_strategy_v2``, most to least preferred:
 
-    - **starting as real root**: ``unshare --net`` alone -- real root has
+    - **real root, direct**: ``unshare --net`` alone -- real root has
       ``CAP_SYS_ADMIN`` and needs no unprivileged user namespace at all.
-      This deliberately avoids ``--user``/``--map-root-user``: this
-      project's own GitHub Actions runner refused unprivileged user
-      namespace creation outright (``unshare: write failed /proc/self/
-      uid_map: Operation not permitted``, observed directly in this
-      slice's own first CI run -- kernels commonly disable it via
-      ``kernel.unprivileged_userns_clone=0``) even though it runs the job
-      as real root, which does not need that mechanism in the first
-      place. Privilege drop to ``nobody`` happens INSIDE the new
-      namespace via the dropper script, not before ``unshare`` execs (a
-      preexec-time drop would force the unprivileged-userns path this
-      branch exists specifically to avoid).
-    - **already unprivileged**: the ONLY way left to get a network
-      namespace is an unprivileged user namespace
-      (``--user --map-root-user --net``). No further privilege drop is
-      attempted inside it -- a ``--map-root-user`` namespace maps only
-      the ONE calling uid to namespace-uid 0; ``nobody``'s real uid has
-      no mapping to ``setuid`` to from inside it, and there is nothing to
-      drop from in the first place since the caller was never privileged.
+    - **elevate via passwordless sudo, then direct**: ``sudo -n unshare
+      --net`` -- for a caller that starts unprivileged but has
+      passwordless sudo available (true of this project's own GitHub
+      Actions runner's default account). Same no-unprivileged-userns
+      property as the root-direct case once elevated.
+    - **unprivileged user namespace**: ``unshare --user --map-root-user
+      --net`` -- the last resort when the caller is unprivileged AND has
+      no usable sudo. No privilege drop is attempted inside it: a
+      ``--map-root-user`` namespace maps only the ONE calling uid to
+      namespace-uid 0, ``nobody``'s real uid has no mapping to ``setuid``
+      to from inside it, and there is nothing to drop from in the first
+      place since the caller was never privileged.
+
+    Privilege drop (when applicable) always happens INSIDE the already-
+    created namespace via the dropper script, never before the isolation
+    prefix execs -- a preexec-time drop would force the unprivileged-
+    userns path even when a stronger strategy is available.
+
+    This project's own GitHub Actions runner is neither real root NOR
+    able to create an unprivileged user namespace by default (observed
+    directly across this slice's own first two CI runs: ``unshare: write
+    failed /proc/self/uid_map: Operation not permitted`` even after
+    trying the root-direct path, because that runner's job process is
+    not actually root) -- which is exactly why this is a PROBED chain of
+    real candidates, not a single hardcoded mechanism assumed to exist
+    everywhere.
     """
 
+    strategy = _select_isolation_strategy_v2()
+    if strategy is None:
+        return None
+    drop_to_nobody, prefix = strategy
     dropper = _dropper_script_v2(
-        drop_to_nobody=os.geteuid() == 0, max_memory_mb=max_memory_mb, max_processes=max_processes,
+        drop_to_nobody=drop_to_nobody, max_memory_mb=max_memory_mb, max_processes=max_processes,
     )
-    if os.geteuid() == 0:
-        return ["unshare", "--net", "--", sys.executable, "-c", dropper, *argv]
-    return ["unshare", "--user", "--map-root-user", "--net", "--", sys.executable, "-c", dropper, *argv]
+    return [*prefix, sys.executable, "-c", dropper, *argv]
 
 
 def _classify_completed_process_v2(*, returncode: int) -> tuple[TrustedCheckOutcomeV2, str | None]:
@@ -359,12 +415,11 @@ def _run_isolated_v2(
     setup-time failure (never for the CHECK'S OWN failure/timeout/OOM,
     which are typed outcomes, not exceptions)."""
 
-    if not _probe_isolation_available_v2():
-        raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2)
-
     wrapped = _isolation_wrapped_argv_v2(
         argv, max_memory_mb=max_memory_mb, max_processes=max_processes
     )
+    if wrapped is None:
+        raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2)
 
     try:
         process = subprocess.Popen(

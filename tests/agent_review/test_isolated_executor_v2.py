@@ -199,10 +199,18 @@ def test_execute_refuses_a_command_token_not_in_the_inventory(repo_root):
 
 
 def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, monkeypatch):
-    """Fail-closed proof: if the isolation primitive this module depends
-    on is unavailable, it must NEVER silently fall back to running the
-    check without isolation -- it must refuse with a typed INFRA_FAILURE."""
-    monkeypatch.setattr(shutil, "which", lambda name: None)
+    """Fail-closed proof: if NONE of the isolation strategies this module
+    probes actually work, it must NEVER silently fall back to running
+    the check without isolation -- it must refuse with a typed
+    INFRA_FAILURE. Patches the probe itself (not e.g. shutil.which)
+    because which candidate strategy is even attempted is environment-
+    dependent (this module tries real root, sudo-elevated, and
+    unprivileged-userns in order -- see _select_isolation_strategy_v2);
+    what must hold regardless of environment is "no working candidate ->
+    fail closed", which this proves directly."""
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    monkeypatch.setattr(isolated_executor_module, "_select_isolation_strategy_v2", lambda: None)
     plan = _plan()
     inventory = {"token": _py("import sys; sys.exit(0)")}
     executed = execute_trusted_check_plan_v2(
