@@ -246,8 +246,27 @@ contract shape, using only primitives that already existed (`planner_v2`'s
 own emitted ranges, `redaction.py`'s own `_redact_local_paths`,
 `RunIdentityV2.profile_hash`/`compute_profile_hash_v2` already computed by
 `run_assembly_v2`). Per the instruction both audits were delivered under,
-**no merge was performed without explicit confirmation** — this PR is
-opened, gated green, and held for review.
+**no merge was performed without explicit confirmation**.
+
+## Merge record
+
+Explicit nominal merge grant received for PR #211 specifically. Live
+invariants revalidated immediately before acting (PR still `OPEN`, HEAD
+still exactly `cd42398f8d600880967235a9359cdae3f7f5b914`, base `master`
+unchanged at `bc52aaddb9eedeae232e3abf07bb9efd7b3490e8`, both `aiops-ci`
+jobs `success` on that HEAD, zero blocking review threads) before any
+protected action was taken. PR #211 marked ready for review, then squash-
+merged:
+
+- **squash commit (new `master` HEAD):**
+  `f409fd15e25cd7fcbed31fa8107cec419fd3827e`
+- **PR head merged:** `cd42398f8d600880967235a9359cdae3f7f5b914`
+- **base at merge time:** `bc52aaddb9eedeae232e3abf07bb9efd7b3490e8`
+  (same as `#201-B1`/PR #210's own merge commit — no concurrent `master`
+  change between this branch's creation and merge)
+- No new phase/issue opened for `#200` — this hardening lands as a fix on
+  top of the already-`core_synthetic_complete` `#200-B`/`#200-C` slices,
+  per the instruction under which both audits were delivered.
 
 ## Evidence (re-measured on this commit's HEAD, not carried forward)
 
