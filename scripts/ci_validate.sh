@@ -121,6 +121,29 @@ else
     fi
 fi
 
+# ── 8. Testes de subprocess git real (requires_network) ─────────────────────
+# `requires_network` é a convenção já estabelecida deste repositório para
+# "spawna um subprocess git real" (não acesso literal à rede -- ver o
+# docstring do próprio test_diff_acquisition_v2.py), e a secção 7 acima a
+# exclui por padrão. Uma auditoria adversarial da extração de conteúdo do
+# AgentReview v2 (#200-B/#200-C) encontrou que isso deixava todo teste E2E
+# real (redaction, losslessness de windowing, caminhos fail-closed de DLP)
+# sem execução nesta gate, mesmo com `pytest -q` local (sem filtro de
+# marker) sempre os executando e passando. Esta seção fecha essa lacuna sem
+# tocar o escopo do filtro padrão da seção 7 (nenhuma dependência de
+# docker/prometheus/runtime existe neste runner) -- roda somente os testes
+# desse marker, isolados da execução padrão acima.
+header "8. Testes de subprocess git real (requires_network)"
+if ! command -v python3 &>/dev/null; then
+    fail "python3 não encontrado"
+else
+    if python3 -m pytest -q -m requires_network --tb=short; then
+        ok "todos os testes requires_network passaram"
+    else
+        fail "testes requires_network falharam"
+    fi
+fi
+
 # ── Resultado ────────────────────────────────────────────────────────────────
 echo ""
 if [ $ERRORS -eq 0 ]; then

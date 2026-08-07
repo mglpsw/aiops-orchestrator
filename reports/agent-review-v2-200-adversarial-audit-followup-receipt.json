@@ -1,0 +1,108 @@
+{
+  "note": "Lightweight, human-authored summary of this fix. Not validated by a strict schema/loader.",
+  "repository": "mglpsw/aiops-orchestrator",
+  "epic": 199,
+  "issue": 200,
+  "type": "post-merge adversarial audit follow-up, not a new DAG slice",
+  "branch": "fix/200-adversarial-audit-followup",
+  "base_sha": "bc52aaddb9eedeae232e3abf07bb9efd7b3490e8",
+  "audited_commits": [
+    "717c51eec12b2f5cfeae13400011f8d90b8ecdcc",
+    "c5c07d890800a933d5a0779408a444b366f84635",
+    "71e0c74c828199fb7ea56a45430a7dff80913150"
+  ],
+  "findings": [
+    {
+      "id": 1,
+      "title": "requires_network tests deselected by default CI gates",
+      "verdict": "confirmed",
+      "fix": "scripts/ci_validate.sh section 8: pytest -q -m requires_network"
+    },
+    {
+      "id": 2,
+      "title": "DLP detector-only policy silently treated as clean",
+      "verdict": "confirmed",
+      "fix": "_apply_dlp_v2 unconditionally blocks when detector_name is set (CONTENT_REASON_DLP_DETECTOR_NOT_EXECUTED_V2)"
+    },
+    {
+      "id": 3,
+      "title": "budget enforced per-fragment only, never summed per chunk; bare int accepted",
+      "verdict": "confirmed",
+      "fix": "extract_review_content_v2 requires target_budgets: TargetBudgetsV2; new _enforce_chunk_budget_v2"
+    },
+    {
+      "id": 4,
+      "title": "repeated-anchor windowing duplication -- same real line sent to multiple fragments",
+      "verdict": "confirmed_by_direct_reproduction",
+      "detail": "1 old line replaced by 300 new lines, 15 forced windows: line appeared in 15/15 fragments before the fix, 1/15 after",
+      "fix": "_assign_hunk_line_ownership_v2 + slice_hunk_body_by_owned_lines_v2, using only planner_v2's existing emitted ranges"
+    },
+    {
+      "id": 5,
+      "title": "local paths not redacted before FragmentContentV2 construction; missing scenario coverage",
+      "verdict": "confirmed",
+      "fix": "_redact_local_paths applied after redact_text; add/modify/delete/rename test added"
+    },
+    {
+      "id": 6,
+      "title": "second pass: TargetBudgetsV2 proved values only, not provenance -- could diverge from the profile that planned the manifest",
+      "verdict": "confirmed",
+      "fix": "extract_review_content_v2 now takes target_profile: TargetProfileV2 and checks compute_profile_hash_v2(target_profile) == manifest.identity.profile_hash before reading any budget (CONTENT_REASON_PROFILE_HASH_MISMATCH_V2 on mismatch)"
+    },
+    {
+      "id": 7,
+      "title": "second pass: _enforce_chunk_budget_v2 blocked before trying to drop auxiliaries, contradicting its own documented doctrine",
+      "verdict": "confirmed",
+      "detail": "required=100 + auxiliary=450, budget=500 blocked instead of dropping the auxiliary and fitting at 100",
+      "fix": "block condition changed from 'any coverage_required fragment present' to 'sum of coverage_required chars alone exceeds budget'"
+    },
+    {
+      "id": 8,
+      "title": "second pass: add/modify/delete/rename test didn't prove delete's content or reject the stale rename path",
+      "verdict": "confirmed",
+      "fix": "test now asserts the deleted line's real content and that the canonical rename path is deterministically the new name, not old_name.py"
+    }
+  ],
+  "commits": [
+    {
+      "subject": "fix(agent-review/v2): adversarial audit follow-up on #200-B/#200-C content extraction",
+      "files_modified": [
+        "app/agent_review/review_content_extraction_v2.py",
+        "scripts/ci_validate.sh",
+        "tests/agent_review/test_review_content_extraction_v2.py",
+        "tests/agent_review/test_review_transport_v2.py",
+        "docs/AGENT_REVIEW_V2_REVIEW_CONTENT.md",
+        "docs/checkpoints/AGENT_REVIEW_V2_200_ADVERSARIAL_AUDIT_FOLLOWUP.md",
+        "reports/agent-review-v2-200-adversarial-audit-followup-receipt.json",
+        "CHANGELOG.md"
+      ]
+    }
+  ],
+  "new_schemas": [],
+  "existing_schemas_touched": [],
+  "verification": {
+    "full_suite": {"command": ".venv/bin/python -m pytest -q", "result": "1956 passed, 4 skipped"},
+    "ci_validate_sh": {
+      "command": "bash scripts/ci_validate.sh",
+      "result": "section 7: 1917 passed, 4 skipped, 39 deselected; section 8: 39 passed, 1921 deselected -- OK"
+    },
+    "schema_export_check": {"command": ".venv/bin/python scripts/export-agent-review-v2-schemas.py --check", "result": "byte-identical, no schema touched"},
+    "caem_f0_pin_check": {"command": ".venv/bin/python scripts/verify-caem-f0-pin.py --check", "result": "ok"},
+    "ri_b0a_2_reuse_view_check": {"command": ".venv/bin/python scripts/generate-ri-b0a-2-reuse-view.py --check", "result": "byte-identical"},
+    "git_diff_check": "clean",
+    "ruff": "All checks passed! (modified files)",
+    "note": "numbers re-measured on this receipt's own final commit, not carried forward from the first-pass commit (the second adversarial pass flagged that staleness explicitly)"
+  },
+  "breaking_change": {
+    "function": "extract_review_content_v2",
+    "change": "max_chars_per_chunk: int = 20_000 removed -> target_budgets: TargetBudgetsV2 (required) added (first pass) -> target_profile: TargetProfileV2 (required, hash-checked against manifest.identity.profile_hash) (second pass, finding 6)",
+    "callers_updated": ["tests/agent_review/test_review_content_extraction_v2.py", "tests/agent_review/test_review_transport_v2.py"],
+    "external_callers": "none exist yet -- this function has no production caller outside this repository's own tests as of this commit"
+  },
+  "protected_actions_taken": [],
+  "protected_actions_not_taken": [
+    "merge (explicitly withheld pending user confirmation per this audit's own instruction)",
+    "release", "tag", "deploy", "target repository write", "branch protection change", "secret/runner creation"
+  ],
+  "merge_status": "NOT MERGED -- awaiting explicit grant per the auditor's instruction: \"Não faça merge sem grant nominal de merge aplicável a essa PR.\""
+}

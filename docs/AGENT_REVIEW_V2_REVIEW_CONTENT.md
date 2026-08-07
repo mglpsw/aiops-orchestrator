@@ -313,6 +313,61 @@ directly, not assumed, by
 `test_run_synthetic_review_degrades_a_tampered_echo_chunk_to_manual_required`
 and its missing-file/malformed-JSON siblings.
 
+## Adversarial audit follow-up (post-merge)
+
+A human-authored adversarial replan gate against the live, already-merged
+`#200-B` code found and this repository fixed five confirmed issues
+(zero false positives) — see `docs/checkpoints/AGENT_REVIEW_V2_200_
+ADVERSARIAL_AUDIT_FOLLOWUP.md` for the full classification:
+
+1. `requires_network`-marked E2E tests were silently deselected by both
+   CI gates by default — fixed by `scripts/ci_validate.sh`'s new §8;
+2. a `detector_name`-only DLP policy was silently treated as "clean"
+   instead of "never actually checked" — `_apply_dlp_v2` now blocks
+   unconditionally whenever a detector is declared;
+3. budget was enforced per-fragment only, never summed per chunk, and
+   accepted a bare caller-supplied int — `extract_review_content_v2` now
+   requires a real `TargetBudgetsV2`, and `_enforce_chunk_budget_v2` sums
+   per chunk;
+4. **the most severe**: `planner_v2`'s own documented repeated-anchor
+   exception (a starved side collapsing to the same range across multiple
+   windows) caused the SAME real line of code to be extracted into every
+   window sharing that anchor — confirmed by direct reproduction (15/15
+   fragments carried a duplicated line before the fix) and fixed via
+   `_assign_hunk_line_ownership_v2`, using only `planner_v2`'s own already-
+   emitted fragment ranges, no second parser or planner;
+5. local paths were not actually redacted before content reached
+   `FragmentContentV2`'s constructor (only its own last-line guard caught
+   it, as a raw exception) — fixed by applying `_redact_local_paths`.
+
+A second, independent adversarial pass over that same fix found three
+more confirmed issues, all closed in the SAME follow-up (no new phase):
+
+6. the `TargetBudgetsV2` from finding 3 above proved values only, not
+   provenance — any caller could still construct a looser one than the
+   profile that actually planned the manifest. `extract_review_content_v2`
+   now takes the full `target_profile: TargetProfileV2` and checks
+   `compute_profile_hash_v2(target_profile) == manifest.identity.
+   profile_hash` before reading `target_profile.budgets` at all;
+7. `_enforce_chunk_budget_v2` blocked the instant ANY `coverage_required`
+   fragment shared an over-budget chunk, even when dropping auxiliary
+   content alone would have made it fit — contradicting the module's own
+   documented doctrine. It now only blocks when the `coverage_required`
+   fragments' chars ALONE exceed the budget; otherwise auxiliaries are
+   still dropped largest-first as originally intended;
+8. the add/modify/delete/rename hardening test asserted a fragment existed
+   for the deleted/renamed path but never checked its actual content, and
+   accepted either the rename's old or new path with a permissive `OR` —
+   now proves the deleted line is really present and that the canonical
+   path is deterministically the new name (`ParsedFileDiffV2.path` is
+   `new_path or old_path`), never the stale one.
+
+`extract_review_content_v2`'s signature changed twice in this follow-up:
+`max_chars_per_chunk: int = 20_000` → `target_budgets: TargetBudgetsV2`
+(finding 3) → `target_profile: TargetProfileV2` (finding 6, hash-checked
+against `manifest.identity.profile_hash`). No production caller outside
+this repository's own tests existed yet.
+
 ## What is deliberately not here
 
 - cross-checking `ChunkContentV2.payload_sha256` against a real, built

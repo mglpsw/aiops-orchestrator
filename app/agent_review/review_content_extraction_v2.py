@@ -70,8 +70,9 @@ from __future__ import annotations
 
 import re
 import hashlib
-from typing import Mapping
+from typing import Mapping, Sequence
 
+from app.agent_review.contracts_v2 import TargetProfileV2
 from app.agent_review.diff_acquisition_v2 import (
     DiffAcquisitionError,
     HunkBodyV2,
@@ -82,7 +83,8 @@ from app.agent_review.diff_acquisition_v2 import (
     extract_hunk_bodies_v2,
 )
 from app.agent_review.manifest_v2 import FragmentV2, LineRangeV2, ManifestV2
-from app.agent_review.redaction import redact_text
+from app.agent_review.profile_loader_v2 import compute_profile_hash_v2
+from app.agent_review.redaction import _redact_local_paths, redact_text
 from app.agent_review.review_content_v2 import (
     ChunkContentV2,
     DlpPolicyDeclarationV2,
@@ -101,6 +103,10 @@ CONTENT_REASON_HUNK_BODY_UNAVAILABLE_V2 = "hunk_body_unavailable"
 CONTENT_REASON_HUNK_RECOMPOSITION_FAILED_V2 = "hunk_recomposition_failed"
 CONTENT_REASON_OVER_BUDGET_REQUIRES_REPLAN_V2 = "content_over_budget_requires_replan"
 CONTENT_REASON_DIFF_ACQUISITION_FAILED_V2 = "diff_acquisition_failed"
+CONTENT_REASON_WINDOW_OWNS_NO_LINES_V2 = "window_owns_no_real_lines"
+CONTENT_REASON_DLP_DETECTOR_NOT_EXECUTED_V2 = "dlp_detector_not_executed"
+CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2 = "chunk_content_over_budget_requires_replan"
+CONTENT_REASON_PROFILE_HASH_MISMATCH_V2 = "target_profile_hash_mismatch"
 
 _GENERATED_PATH_MARKERS_V2: tuple[str, ...] = (
     "/generated/",
@@ -176,6 +182,63 @@ def slice_hunk_body_by_range_v2(
     return "\n".join(selected)
 
 
+def _assign_hunk_line_ownership_v2(
+    fragments_for_hunk: Sequence[FragmentV2], hunk_body: HunkBodyV2
+) -> dict[int, str]:
+    """Map body-line-index -> the ONE fragment_id that owns it, so a
+    windowed hunk's real content is never sent twice.
+
+    ``planner_v2._proportional_window`` documents its own exception: when
+    one side of a hunk has fewer real lines than the window count (e.g. 1
+    old line replaced by hundreds of new lines), the starved side's excess
+    windows all collapse to the SAME single-point ``old_range``/
+    ``new_range`` -- "a safe, valid placeholder, not a coverage
+    requirement", per that module's own comment. ``slice_hunk_body_by_
+    range_v2``'s pure range-membership rule does not know that: called
+    independently per fragment, every window sharing that repeated anchor
+    would select the SAME real line, sending one real line of code to the
+    model multiple times under multiple fragment identities.
+
+    This function is the fix, using only information ``planner_v2``/
+    ``manifest_v2`` already produce -- no second parser, no second
+    planner. Ownership is resolved deterministically: for each real body
+    line, the CANDIDATE fragments are every fragment (for this hunk) whose
+    range covers that line; the owner is the one with the smallest
+    ``(old_range.start, new_range.start, fragment_id)`` tuple -- fully
+    order-independent (does not rely on ``fragments_for_hunk``'s input
+    order, on manifest fragment-list order, or on any planner-internal
+    window-construction order the caller might not have preserved)."""
+
+    lines = _walk_hunk_body_lines_v2(hunk_body)
+    ordered_fragments = sorted(
+        fragments_for_hunk,
+        key=lambda fragment: (fragment.old_range.start, fragment.new_range.start, fragment.fragment_id),
+    )
+    owner_by_index: dict[int, str] = {}
+    for index, (_line_text, old_line, new_line) in enumerate(lines):
+        for fragment in ordered_fragments:
+            covers_old = old_line is not None and fragment.old_range.start <= old_line <= fragment.old_range.end
+            covers_new = new_line is not None and fragment.new_range.start <= new_line <= fragment.new_range.end
+            if covers_old or covers_new:
+                owner_by_index[index] = fragment.fragment_id
+                break
+    return owner_by_index
+
+
+def slice_hunk_body_by_owned_lines_v2(body: HunkBodyV2, *, owned_line_indices: frozenset[int]) -> str:
+    """Like ``slice_hunk_body_by_range_v2``, but selecting by explicit,
+    pre-resolved line-index ownership (``_assign_hunk_line_ownership_v2``)
+    instead of raw range membership -- the fix for the repeated-anchor
+    duplication case. For a hunk with exactly one fragment, ownership
+    trivially assigns every matching line to it, so this degenerates to
+    the identical output ``slice_hunk_body_by_range_v2`` would have
+    produced -- proven directly by this module's own test suite."""
+
+    lines = _walk_hunk_body_lines_v2(body)
+    selected = [line_text for index, (line_text, _, _) in enumerate(lines) if index in owned_line_indices]
+    return "\n".join(selected)
+
+
 def _classify_unrepresentable_v2(file_diff: ParsedFileDiffV2 | None) -> ReviewContentPolicyV2 | None:
     """Classify a fragment's OWN file as binary/submodule/generated/
     minified, or ``None`` if it is an ordinary text file eligible for
@@ -212,32 +275,55 @@ def _classify_unrepresentable_v2(file_diff: ParsedFileDiffV2 | None) -> ReviewCo
     return None
 
 
-def _apply_dlp_v2(text: str, *, dlp_policy: DlpPolicyDeclarationV2 | None) -> bool:
+class DlpEvaluationV2:
+    """Result of ``_apply_dlp_v2``. ``blocked`` is ``True`` if the content
+    must not transport; ``reason_code`` distinguishes an actual inline-rule
+    match (``transport_blocked_by_dlp``, the pre-existing behavior) from a
+    ``detector_name``-declared host-owned detector this engine cannot
+    execute (``CONTENT_REASON_DLP_DETECTOR_NOT_EXECUTED_V2``) -- the two
+    are not interchangeable: one proves the content is unsafe, the other
+    proves nothing at all about it."""
+
+    __slots__ = ("blocked", "reason_code")
+
+    def __init__(self, *, blocked: bool, reason_code: str | None) -> None:
+        self.blocked = blocked
+        self.reason_code = reason_code
+
+
+def _apply_dlp_v2(text: str, *, dlp_policy: DlpPolicyDeclarationV2 | None) -> DlpEvaluationV2:
     """Declarative-rule DLP evaluation: ``pattern`` is data the host engine
     interprets as a regular expression, matched against the fragment's own
     (already generically-redacted) text -- never executed as code, never a
     path into the target repository (``DlpPolicyDeclarationV2`` is
-    structurally incapable of naming one; see #200-A). Returns ``True`` if
-    any rule blocks. A ``detector_name``-only policy (host-owned digest-
-    pinned detector, no inline rules) is out of scope for THIS engine call:
-    it is a separate, out-of-process detector #200-B does not implement,
-    and its absence here is not silently treated as "no DLP configured" --
-    a caller supplying a detector-only policy gets zero rule coverage from
-    this function and must be aware of that, documented in the public
-    entry point below."""
+    structurally incapable of naming one; see #200-A).
+
+    A ``detector_name``-declared policy (host-owned digest-pinned
+    detector) names a detector THIS engine does not execute -- #200-B/C
+    implement no out-of-process detector runner. Per the #199 execution
+    plan's own absolute rule ("suspeita inconclusiva não é 'limpa
+    parcialmente e envia'"), a target that declared a detector expects its
+    coverage; silently treating that coverage as "zero matches, therefore
+    clean" would report a false negative as a pass. So `blocked=True` is
+    returned UNCONDITIONALLY whenever `detector_name` is set -- regardless
+    of whether inline `rules` also matched or not -- with a DISTINCT reason
+    code from an actual rule match, so a caller can tell "this content is
+    unsafe" apart from "this content was never actually checked"."""
 
     if dlp_policy is None:
-        return False
+        return DlpEvaluationV2(blocked=False, reason_code=None)
+    if dlp_policy.detector_name is not None:
+        return DlpEvaluationV2(blocked=True, reason_code=CONTENT_REASON_DLP_DETECTOR_NOT_EXECUTED_V2)
     for rule in dlp_policy.rules:
         try:
             if re.search(rule.pattern, text):
-                return True
+                return DlpEvaluationV2(blocked=True, reason_code="transport_blocked_by_dlp")
         except re.error:
             # An unparseable declarative pattern is a policy authoring
             # error, not absence of risk -- fail closed rather than skip
             # the rule silently.
-            return True
-    return False
+            return DlpEvaluationV2(blocked=True, reason_code="transport_blocked_by_dlp")
+    return DlpEvaluationV2(blocked=False, reason_code=None)
 
 
 def _build_fragment_content_v2(
@@ -247,6 +333,7 @@ def _build_fragment_content_v2(
     hunk_body: HunkBodyV2 | None,
     dlp_policy: DlpPolicyDeclarationV2 | None,
     max_chars_per_chunk: int,
+    owned_line_indices: frozenset[int] | None,
 ) -> FragmentContentV2:
     unrepresentable = _classify_unrepresentable_v2(file_diff)
     if unrepresentable is not None:
@@ -289,8 +376,17 @@ def _build_fragment_content_v2(
         and fragment.new_range.start == hunk_body.new_start
         and fragment.new_range.end == hunk_new_end
     )
-    sliced = slice_hunk_body_by_range_v2(
-        hunk_body, old_range=fragment.old_range, new_range=fragment.new_range
+    # Whole-hunk fragments (the overwhelmingly common case, and the ONLY
+    # case that needs to reproduce diff_sha256 below) always use the plain
+    # range slice -- there is exactly one fragment for that hunk, so
+    # ownership is trivially "all of it" and computing it would be pure
+    # overhead. Windowed multi-fragment hunks use the ownership-resolved
+    # slice instead: the fix for the repeated-anchor duplication case (see
+    # _assign_hunk_line_ownership_v2's own docstring).
+    sliced = (
+        slice_hunk_body_by_range_v2(hunk_body, old_range=fragment.old_range, new_range=fragment.new_range)
+        if is_whole_hunk_fragment or owned_line_indices is None
+        else slice_hunk_body_by_owned_lines_v2(hunk_body, owned_line_indices=owned_line_indices)
     )
     if is_whole_hunk_fragment:
         recomposed_sha256 = compute_hunk_diff_sha256_v2(
@@ -302,15 +398,47 @@ def _build_fragment_content_v2(
             raise ExtractionBlockedError(
                 CONTENT_REASON_HUNK_RECOMPOSITION_FAILED_V2, fragment_id=fragment.fragment_id
             )
-
-    redaction_state = RedactionState()
-    redacted = redact_text(sliced, redaction_state)
-    redaction_applied = redaction_state.secret_like_values_found > 0
-
-    if _apply_dlp_v2(redacted, dlp_policy=dlp_policy):
+    elif owned_line_indices is not None and not sliced:
+        # Not reachable through today's real planner_v2 windowing (the
+        # DRIVING side -- whichever of old/new is larger -- always
+        # partitions into >=1 real, distinct line per window; only the
+        # STARVED side ever repeats an anchor, and ownership only removes
+        # duplicate copies of THAT side's line, never a window's entire
+        # content). Kept as an explicit, honestly-labeled outcome rather
+        # than silently falling into the redaction/budget branch below and
+        # being reported as "blocked_by_redaction" for a fragment redaction
+        # never touched -- mirrors this codebase's own "defense in depth,
+        # kept in case a future change reopens it" precedent.
         if fragment.coverage_required:
             raise ExtractionBlockedError(
-                "transport_blocked_by_dlp", fragment_id=fragment.fragment_id
+                CONTENT_REASON_WINDOW_OWNS_NO_LINES_V2, fragment_id=fragment.fragment_id
+            )
+        return FragmentContentV2(
+            fragment_id=fragment.fragment_id, path=fragment.path, diff_sha256=fragment.diff_sha256,
+            policy=ReviewContentPolicyV2.UNREPRESENTABLE, coverage_required=False, content=None,
+            content_sha256=None, redaction_applied=False, chars=0,
+        )
+
+    redaction_state = RedactionState()
+    secret_redacted = redact_text(sliced, redaction_state)
+    # sanitize_artifact_value's own two-stage discipline (redaction.py):
+    # redact_value (secrets, tracked in `redaction_state`) THEN
+    # _redact_local_paths (untracked -- that helper carries no counter of
+    # its own). Applying both here, not just redact_text, matches review_
+    # content_v2's own documented contract ("#200-B's extractor is
+    # required to redact BEFORE calling this constructor") -- omitting the
+    # local-path pass left FragmentContentV2's own last-line
+    # sanitize_artifact_value guard as the only thing catching a leaked
+    # local path, surfacing a raw, unhandled pydantic.ValidationError
+    # instead of this module's own typed, redacted, fail-closed path.
+    redacted = _redact_local_paths(secret_redacted)
+    redaction_applied = redaction_state.secret_like_values_found > 0 or redacted != secret_redacted
+
+    dlp_evaluation = _apply_dlp_v2(redacted, dlp_policy=dlp_policy)
+    if dlp_evaluation.blocked:
+        if fragment.coverage_required:
+            raise ExtractionBlockedError(
+                dlp_evaluation.reason_code, fragment_id=fragment.fragment_id
             )
         return FragmentContentV2(
             fragment_id=fragment.fragment_id, path=fragment.path, diff_sha256=fragment.diff_sha256,
@@ -342,6 +470,60 @@ def _build_fragment_content_v2(
     )
 
 
+def _enforce_chunk_budget_v2(
+    fragment_contents: Sequence[FragmentContentV2], *, max_chars_per_chunk: int
+) -> list[FragmentContentV2]:
+    """Chunk-level budget enforcement -- the fix for the per-fragment-only
+    check that let several individually-small fragments collectively
+    exceed ``max_chars_per_chunk`` without ever being caught.
+
+    Mirrors ``planner_v2``'s own documented doctrine exactly ("Auxiliary
+    (non-``must_review``) hunks are context, not required coverage... are
+    dropped first and silently... ``must_review`` fragments are never
+    dropped -- either they all fit... or planning is refused"), applied
+    here at the CONTENT layer instead of the line-planning layer:
+
+    - if the chunk's total ``INCLUDED`` chars fit the budget, nothing
+      changes;
+    - if they do not, but every ``coverage_required`` fragment's chars
+      alone (without ANY auxiliary content) fit the budget, the largest
+      ``INCLUDED`` auxiliary fragments are degraded to
+      ``OMITTED_OVER_BUDGET`` one at a time (largest first, ties broken by
+      ``fragment_id`` for determinism) until the chunk fits -- auxiliary
+      content is dropped BEFORE blocking, never the other way round;
+    - only when the ``coverage_required`` fragments alone already exceed
+      the budget -- so no amount of auxiliary-dropping can ever make the
+      chunk fit -- does the WHOLE extraction block fail-closed
+      (``CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2``); a
+      ``must_review`` fragment is never itself dropped to make room.
+    """
+
+    included = [f for f in fragment_contents if f.policy is ReviewContentPolicyV2.INCLUDED]
+    total_chars = sum(f.chars for f in included)
+    if total_chars <= max_chars_per_chunk:
+        return list(fragment_contents)
+
+    required_chars = sum(f.chars for f in included if f.coverage_required)
+    if required_chars > max_chars_per_chunk:
+        raise ExtractionBlockedError(CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2, fragment_id=None)
+
+    by_id = {f.fragment_id: f for f in fragment_contents}
+    droppable_order = sorted(
+        (f for f in included if not f.coverage_required),
+        key=lambda f: (-f.chars, f.fragment_id),
+    )
+    for fragment in droppable_order:
+        if total_chars <= max_chars_per_chunk:
+            break
+        total_chars -= fragment.chars
+        by_id[fragment.fragment_id] = FragmentContentV2(
+            fragment_id=fragment.fragment_id, path=fragment.path, diff_sha256=fragment.diff_sha256,
+            policy=ReviewContentPolicyV2.OMITTED_OVER_BUDGET, coverage_required=False,
+            content=None, content_sha256=None, redaction_applied=fragment.redaction_applied, chars=0,
+        )
+    return [by_id[f.fragment_id] for f in fragment_contents]
+
+
 def extract_review_content_v2(
     *,
     repo_root,
@@ -349,8 +531,8 @@ def extract_review_content_v2(
     head_sha: str,
     manifest: ManifestV2,
     payload_sha256_by_chunk_id: Mapping[str, str],
+    target_profile: TargetProfileV2,
     dlp_policy: DlpPolicyDeclarationV2 | None = None,
-    max_chars_per_chunk: int = 20_000,
 ) -> ReviewContentV2:
     """Extract real, redacted, DLP-checked content for every fragment
     ``manifest`` already planned, and bind the result back to that SAME
@@ -359,6 +541,22 @@ def extract_review_content_v2(
     caller). Raises ``ExtractionBlockedError`` fail-closed -- never returns
     a partially-covered ``ReviewContentV2`` for a ``coverage_required``
     fragment.
+
+    ``target_profile`` must be the SAME ``TargetProfileV2`` that produced
+    ``manifest`` -- proven, not assumed: ``compute_profile_hash_v2(target_
+    profile)`` is checked against ``manifest.identity.profile_hash`` before
+    anything else runs, and a mismatch blocks the whole extraction fail-
+    closed (``CONTENT_REASON_PROFILE_HASH_MISMATCH_V2``). A bare
+    ``TargetBudgetsV2`` was accepted here in an earlier revision, but a
+    caller could construct any ``TargetBudgetsV2`` value with looser limits
+    than the profile that actually planned ``manifest`` -- ``RunIdentityV2.
+    profile_hash`` already carries the real profile's hash for exactly this
+    check, so accepting the full profile and re-deriving the hash closes
+    that gap instead of trusting a caller-supplied budget object. Only once
+    that check passes is ``target_profile.budgets.max_chars_per_chunk``
+    read. Both per-fragment AND per-chunk (the sum of every ``INCLUDED``
+    fragment in a chunk) are checked against this same value -- see
+    ``_enforce_chunk_budget_v2``.
 
     ``payload_sha256_by_chunk_id`` must carry the REAL ``payload_sha256`` of
     each chunk's already-built ``ChunkPayloadV2`` (``payload_builder_v2.
@@ -373,11 +571,19 @@ def extract_review_content_v2(
     job (see ``review_content_v2.bind_review_content_to_manifest_v2``'s own
     docstring for why that specific check is deferred there, not here).
 
-    ``dlp_policy`` with a ``detector_name`` (host-owned external detector,
-    no inline rules) is accepted but contributes NO rule coverage here --
-    see ``_apply_dlp_v2``'s docstring. A target relying on that mode alone
-    is not yet covered by this extractor.
+    ``dlp_policy`` with a ``detector_name`` (host-owned external detector)
+    is accepted, but this extractor does not execute that detector -- see
+    ``_apply_dlp_v2``'s docstring. Every fragment such a policy applies to
+    is therefore treated as UNPROVEN, not clean: it blocks fail-closed
+    (``must_review``) or degrades to a typed ``BLOCKED_BY_TARGET_DLP``
+    omission (optional), exactly like an actual inline-rule match. A
+    target relying on a detector-only policy gets zero content reaching
+    the Router until a real detector runner exists (out of scope for this
+    slice).
     """
+
+    if compute_profile_hash_v2(target_profile) != manifest.identity.profile_hash:
+        raise ExtractionBlockedError(CONTENT_REASON_PROFILE_HASH_MISMATCH_V2, fragment_id=None)
 
     try:
         file_diffs = acquire_authoritative_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
@@ -400,10 +606,36 @@ def extract_review_content_v2(
         # ValidationError from deep inside model construction below.
         raise ExtractionBlockedError(CONTENT_REASON_NO_REVIEWABLE_CHUNKS_V2, fragment_id=None)
 
+    max_chars_per_chunk = target_profile.budgets.max_chars_per_chunk
     file_diff_by_path = {file_diff.path: file_diff for file_diff in file_diffs}
     hunk_body_by_key = {(body.path, body.hunk_index): body for body in hunk_bodies}
 
     fragment_by_id = {fragment.fragment_id: fragment for fragment in manifest.fragments}
+
+    # Ownership is resolved ONCE, across every fragment in the manifest --
+    # not per chunk -- because a hunk's windowed fragments can land in
+    # DIFFERENT chunks after packing; ownership must be consistent
+    # regardless of which chunk a given window ends up in. Only hunks with
+    # more than one fragment need it at all (a lone fragment trivially
+    # owns everything in its own range, exactly as before).
+    fragments_by_hunk: dict[tuple[str, int], list[FragmentV2]] = {}
+    for fragment in manifest.fragments:
+        key = (fragment.path, fragment.hunk_indexes[0])
+        fragments_by_hunk.setdefault(key, []).append(fragment)
+    ownership_by_fragment_id: dict[str, frozenset[int]] = {}
+    for hunk_key, hunk_fragments in fragments_by_hunk.items():
+        if len(hunk_fragments) <= 1:
+            continue
+        hunk_body = hunk_body_by_key.get(hunk_key)
+        if hunk_body is None:
+            continue
+        owner_by_index = _assign_hunk_line_ownership_v2(hunk_fragments, hunk_body)
+        per_fragment_indices: dict[str, set[int]] = {f.fragment_id: set() for f in hunk_fragments}
+        for index, owner_fragment_id in owner_by_index.items():
+            per_fragment_indices[owner_fragment_id].add(index)
+        for fragment_id, indices in per_fragment_indices.items():
+            ownership_by_fragment_id[fragment_id] = frozenset(indices)
+
     chunks: list[ChunkContentV2] = []
     for manifest_chunk in manifest.chunks:
         if manifest_chunk.chunk_id not in payload_sha256_by_chunk_id:
@@ -420,9 +652,13 @@ def extract_review_content_v2(
                 ),
                 dlp_policy=dlp_policy,
                 max_chars_per_chunk=max_chars_per_chunk,
+                owned_line_indices=ownership_by_fragment_id.get(fragment_id),
             )
             for fragment_id in manifest_chunk.fragment_ids
         ]
+        fragment_contents = _enforce_chunk_budget_v2(
+            fragment_contents, max_chars_per_chunk=max_chars_per_chunk
+        )
         chunk_content_sha256 = compute_chunk_content_sha256_v2(
             ChunkContentV2.model_construct(
                 chunk_id=manifest_chunk.chunk_id,

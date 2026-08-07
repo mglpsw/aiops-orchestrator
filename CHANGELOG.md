@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### Fixed
+
+- AgentReview v2 content extraction (#200-B/#200-C adversarial audit
+  follow-up, distribution epic #199): a hunk windowed by
+  `planner_v2`'s own documented repeated-anchor exception (a starved side
+  collapsing to the same range across multiple windows, e.g. 1 old line
+  replaced by hundreds of new lines) sent the same real line of code to
+  the model in every window sharing that anchor -- confirmed by direct
+  reproduction and fixed via `_assign_hunk_line_ownership_v2`, a
+  deterministic per-line ownership resolution using only `planner_v2`'s
+  own already-emitted fragment ranges (no second parser or planner). A
+  `detector_name`-only DLP policy was silently treated as "clean" instead
+  of "coverage never actually executed" -- `_apply_dlp_v2` now blocks
+  unconditionally whenever a detector is declared, with a distinct reason
+  code from an actual rule match. Budget was enforced per-fragment only,
+  never summed across a chunk, and accepted a bare caller-supplied int --
+  `extract_review_content_v2` now requires a real `TargetBudgetsV2` (no
+  default) and a new `_enforce_chunk_budget_v2` sums every chunk's
+  `INCLUDED` content, blocking `must_review` overflow fail-closed and
+  dropping the largest auxiliary fragments first otherwise. Local paths
+  were not actually redacted before reaching `FragmentContentV2`'s
+  constructor -- fixed by applying `redaction._redact_local_paths`.
+  `scripts/ci_validate.sh` gained a new §8 running the `requires_network`-
+  marked real-git-subprocess tests that both CI gates were silently
+  deselecting by default, closing the gap between "passed locally" and
+  "the CI gate GitHub actually reports" (refs #200, #199,
+  docs/checkpoints/AGENT_REVIEW_V2_200_ADVERSARIAL_AUDIT_FOLLOWUP.md).
+  A second, independent adversarial pass over that same fix confirmed it
+  and found 3 more real issues, closed in this same follow-up: the
+  `TargetBudgetsV2` from the paragraph above proved values only, not
+  provenance, so a caller could still construct a looser one than the
+  profile that planned the manifest -- `extract_review_content_v2` now
+  takes the full `TargetProfileV2` and checks its hash against
+  `manifest.identity.profile_hash` before reading any budget from it;
+  `_enforce_chunk_budget_v2` blocked the instant ANY `coverage_required`
+  fragment shared an over-budget chunk, even when dropping auxiliary
+  content alone would have made it fit, contradicting its own documented
+  doctrine -- it now only blocks when `coverage_required` content alone
+  exceeds the budget; and the add/modify/delete/rename hardening test
+  asserted a fragment merely existed for the deleted/renamed path instead
+  of proving its real content and canonical identity -- it now does both.
+
 ### Added
 
 - AgentReview v2 offline trusted-check simulator (#201-B1, second slice of

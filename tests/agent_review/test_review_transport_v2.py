@@ -92,9 +92,10 @@ def _build_repo_manifest_and_content(tmp_path: Path):
     (repo / "app.py").write_text("a = 1\nb = CHANGED\nc = 3\n", encoding="utf-8")
     head_sha = _commit_all(repo, "update")
 
+    profile = _profile()
     file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
     outcome = assemble_manifest_from_diff_v2(
-        file_diffs, profile=_profile(), grouping_policy=_grouping_policy(),
+        file_diffs, profile=profile, grouping_policy=_grouping_policy(),
         repo="example/repo", pr_number=1, base_sha=base_sha, head_sha=head_sha,
         tested_merge_sha=head_sha, toolrepo_sha="b" * 40, evidence_hash="c" * 64,
         max_lines_per_chunk=1000,
@@ -105,6 +106,7 @@ def _build_repo_manifest_and_content(tmp_path: Path):
     content = extract_review_content_v2(
         repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
         payload_sha256_by_chunk_id={cid: p.payload_sha256 for cid, p in payload_by_chunk_id.items()},
+        target_profile=profile,
     )
     return manifest, content, payload_by_chunk_id
 
