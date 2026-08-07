@@ -52,7 +52,7 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 
 **`agent-review.run-fragment-coverage.v2`** — Proves that every diff fragment assigned to a chunk was actually reviewed (this repo's recent fail-closed coverage-proof work). RI-B0 has no concrete, currently-implemented consumer of raw fragment-coverage records today. Once RI-B0's own completeness/canonicality proof work begins (consuming CAEM's caem.assertion.v1/caem.proof-obligation.v1, both currently reserved), RI-B0 will most likely need a small adapter translating this coverage report into a completeness proof obligation -- not a direct reuse, since the two schemas serve different evidentiary roles (chunk-review completeness vs. a CAEM proof obligation's own resolution states).
 
-## Not applicable — no RI-B0 relevance today (5)
+## Not applicable — no RI-B0 relevance today (7)
 
 | Contract ID | Owner | RI-B0 role | Source |
 |---|---|---|---|
@@ -61,6 +61,8 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 | `projectops.v1-track` | separate track (not this repository's own code, per CURRENT_CHECKPOINT.md) | none today; if/when ProjectOps produces a concrete, versioned contract this repository consumes, that contract must be added to this manifest by name, not assumed by analogy to AgentReview's shapes. | — |
 | `agent-review.review-transport-envelope.v1` | aiops-orchestrator (app/agent_review/) | none: RI-B0 does not touch payload/content transport, same as agent-review.payload-set.v2. | `schemas/agent-review/v2/agent-review.review-transport-envelope.v1.schema.json` |
 | `agent-review.dlp-policy.v1` | aiops-orchestrator (app/agent_review/) | none: RI-B0 has no reason to read, cite, or depend on DLP redaction policy. | `schemas/agent-review/v2/agent-review.dlp-policy.v1.schema.json` |
+| `agent-review.trusted-check-plan.v2` | aiops-orchestrator (app/agent_review/) | none: RI-B0 has no reason to read, cite, or depend on trusted-check planning. | `schemas/agent-review/v2/agent-review.trusted-check-plan.v2.schema.json` |
+| `agent-review.trusted-check-result.v2` | aiops-orchestrator (app/agent_review/) | none today; #201-B/#201-C may add a reference role once a real executor exists. | `schemas/agent-review/v2/agent-review.trusted-check-result.v2.schema.json` |
 
 **`agent-review.semantic-grouping-policy.v2`** — Governs how AgentReview groups diff hunks into chunks for LLM review -- an AgentReview-internal execution-planning detail with no proof-obligation or readiness-decision content relevant to RI-B0.
 
@@ -71,3 +73,7 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 **`agent-review.review-transport-envelope.v1`** — Wire-level wrapper (#200-A) that carries the UNMODIFIED agent-review.chunk-response-envelope.v2 union plus an echoed request_sha256/content_sha256 pair the far end must return verbatim, closing the gap where payload_sha256 alone cannot distinguish two review-content sidecars for the same chunk. Purely an AgentReview-side transport concern, own schema_version lineage (v1, unrelated to the v2 chunk-response schema version) -- same evidentiary role as agent-review.payload-set.v2.
 
 **`agent-review.dlp-policy.v1`** — A target's declarative DLP policy (#200-A): inline pattern rules or a reference to a host-owned, digest-pinned detector -- never a module path, import string, or entry point naming code inside the target repository (structurally unrepresentable: this schema has no such field). An AgentReview-internal content-redaction execution-planning detail, analogous to agent-review.semantic-grouping-policy.v2, with no proof-obligation or readiness-decision content relevant to RI-B0.
+
+**`agent-review.trusted-check-plan.v2`** — Host-owned plan of allowlisted check commands a (future) isolated executor may run (#201-A, distribution epic #199) -- names checks by a fixed command_token, never a raw argv string, and pins harness_digest/authority_suite_digest. An AgentReview-internal execution-planning detail, analogous to agent-review.semantic-grouping-policy.v2/agent-review.dlp-policy.v1, with no proof-obligation or readiness-decision content relevant to RI-B0.
+
+**`agent-review.trusted-check-result.v2`** — One trusted check's raw outcome (#201-A, distribution epic #199) -- authority (trusted/untrusted_advisory) and outcome (success/failure/timeout/oom/cancelled/infra_failure) BEFORE promotion to the already-published agent-review.review-readiness.v2's RequiredCheckResultV2 (promote_trusted_check_to_required_v2 is the only function that may construct one, and only from a trusted, resolved result). RI-B0 may eventually cite a check_name/outcome for provenance linking once #201-B/#201-C land, but does not consume this sidecar directly today.

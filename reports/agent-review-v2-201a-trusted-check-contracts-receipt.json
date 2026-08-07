@@ -1,0 +1,69 @@
+{
+  "note": "Lightweight, human-authored summary of this slice. Not validated by a strict schema/loader -- no such receipt contract exists in this repository yet. Do not treat this as equivalent in authority to a ReviewReadinessV2 artifact or any other ContractV2Model-backed contract.",
+  "repository": "mglpsw/aiops-orchestrator",
+  "epic": 199,
+  "issue": 201,
+  "slice": "201-A",
+  "branch": "feat/201-a-trusted-check-contracts",
+  "base_sha": "71e0c74c828199fb7ea56a45430a7dff80913150",
+  "commits": [
+    {
+      "subject": "feat(agent-review/v2): trusted-check plan/result contracts and promotion authority (#201-A)",
+      "files_added": [
+        "app/agent_review/trusted_checks_v2.py",
+        "docs/AGENT_REVIEW_V2_TRUSTED_CHECKS.md",
+        "docs/checkpoints/AGENT_REVIEW_V2_201A_TRUSTED_CHECK_CONTRACTS.md",
+        "reports/agent-review-v2-201a-trusted-check-contracts-receipt.json",
+        "schemas/agent-review/v2/agent-review.trusted-check-plan.v2.schema.json",
+        "schemas/agent-review/v2/agent-review.trusted-check-result.v2.schema.json",
+        "tests/agent_review/test_trusted_checks_v2.py"
+      ],
+      "files_modified": [
+        "app/agent_review/schema_export_v2.py",
+        "config/ri/ri-b0a-2-reuse-manifest.json",
+        "docs/generated/RI_B0A_2_REUSE_REFERENCE.md",
+        "tests/agent_review/test_contracts_v2.py",
+        "CHANGELOG.md"
+      ]
+    }
+  ],
+  "new_schemas": [
+    "agent-review.trusted-check-plan.v2",
+    "agent-review.trusted-check-result.v2"
+  ],
+  "existing_schemas_touched": [],
+  "verification": {
+    "full_suite": {"command": ".venv/bin/python -m pytest -q", "result": "1929 passed, 4 skipped"},
+    "trusted_checks_suite": {"command": ".venv/bin/python -m pytest tests/agent_review/test_trusted_checks_v2.py -q", "result": "25 passed"},
+    "schema_export_check": {
+      "command": ".venv/bin/python scripts/export-agent-review-v2-schemas.py --check",
+      "result": "AgentReview v2 schemas are byte-identical."
+    },
+    "caem_f0_pin_check": {
+      "command": ".venv/bin/python scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check",
+      "result": "ok"
+    },
+    "ri_b0a_2_reuse_view_check": {
+      "command": ".venv/bin/python scripts/generate-ri-b0a-2-reuse-view.py --check",
+      "result": "generated view is byte-identical to the manifest."
+    },
+    "ci_validate_sh": {"command": "bash scripts/ci_validate.sh", "result": "1901 passed, 4 skipped, 28 deselected -- OK"},
+    "git_diff_check": "clean"
+  },
+  "existing_test_updated": {
+    "file": "tests/agent_review/test_contracts_v2.py",
+    "reason": "test_exported_json_schemas_are_stable_and_deny_unknown_objects asserts a fixed set of exported schema filenames; added the two new ones. No behavior of any existing contract changed -- confirmed by the full suite's unchanged pass/fail shape otherwise."
+  },
+  "not_delivered": [
+    "offline simulator (#201-B1)",
+    "isolated executor with real process isolation (#201-B2)",
+    "adversarial proof against a real malicious conftest.py/reporter/plugin (#201-B3)",
+    "wiring into run_synthetic_review_v2's checks parameter (#201-C)",
+    "closure of AgentEscala#750 (target-side adoption)"
+  ],
+  "protected_actions_taken": [],
+  "protected_actions_not_taken": [
+    "merge", "release", "tag", "deploy", "target repository write",
+    "branch protection change", "secret/runner creation"
+  ]
+}

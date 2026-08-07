@@ -1,0 +1,103 @@
+{
+  "$defs": {
+    "AllowlistedCheckCommandV2": {
+      "additionalProperties": false,
+      "description": "One check a plan authorizes. `command_token` is a fixed identifier a\nharness resolves against its OWN inventory -- never a raw argv string,\nnever free text a plan author (which may be PR-influenced input feeding\ninto plan construction upstream of this contract) could use to name an\narbitrary command. `network_allowed` is pinned `False`: this contract\ncannot represent a check with network access at all.",
+      "properties": {
+        "check_name": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Check Name",
+          "type": "string"
+        },
+        "command_token": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Command Token",
+          "type": "string"
+        },
+        "max_memory_mb": {
+          "exclusiveMinimum": 0,
+          "title": "Max Memory Mb",
+          "type": "integer"
+        },
+        "max_processes": {
+          "exclusiveMinimum": 0,
+          "title": "Max Processes",
+          "type": "integer"
+        },
+        "network_allowed": {
+          "const": false,
+          "title": "Network Allowed",
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "check_name",
+        "command_token",
+        "timeout_seconds",
+        "max_memory_mb",
+        "max_processes",
+        "network_allowed"
+      ],
+      "title": "AllowlistedCheckCommandV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The host-owned plan of what will run. Never authored, appended to,\nor influenced by anything under the PR's control -- this module does\nnot enforce that (it has no notion of \"who called the constructor\"),\nbut nothing in its shape has a place for PR-supplied content to enter:\nevery field here is either an identity value or a fixed resource\nlimit.",
+  "properties": {
+    "authority_suite_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Authority Suite Digest",
+      "type": "string"
+    },
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/AllowlistedCheckCommandV2"
+      },
+      "title": "Checks",
+      "type": "array"
+    },
+    "harness_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Harness Digest",
+      "type": "string"
+    },
+    "head_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Head Sha",
+      "type": "string"
+    },
+    "run_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "agent-review.trusted-check-plan.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "run_id",
+    "head_sha",
+    "harness_digest",
+    "authority_suite_digest",
+    "checks"
+  ],
+  "title": "TrustedCheckPlanV2",
+  "type": "object"
+}

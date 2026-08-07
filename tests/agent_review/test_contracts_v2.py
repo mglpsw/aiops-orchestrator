@@ -2574,6 +2574,8 @@ def test_exported_json_schemas_are_stable_and_deny_unknown_objects() -> None:
         "agent-review.review-content.v2.schema.json",
         "agent-review.review-transport-envelope.v1.schema.json",
         "agent-review.dlp-policy.v1.schema.json",
+        "agent-review.trusted-check-plan.v2.schema.json",
+        "agent-review.trusted-check-result.v2.schema.json",
     }
 
     for filename, schema in rendered.items():
