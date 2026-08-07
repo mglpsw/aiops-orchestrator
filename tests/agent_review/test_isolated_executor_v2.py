@@ -167,11 +167,19 @@ def test_execute_denies_real_outbound_network_access(repo_root):
     artifact = executed[0].result
     assert artifact.outcome is TrustedCheckOutcomeV2.FAILURE
     # returncode -> errno was smuggled through the process's OWN exit code
-    # for this test's assertion only (not part of the contract).
-    completed = subprocess.run(
-        ["unshare", "--user", "--map-root-user", "--net", "--", sys.executable, "-c", code],
-        capture_output=True, timeout=8,
+    # for this test's assertion only (not part of the contract). Re-wraps
+    # via the module's OWN _isolation_wrapped_argv_v2 -- whichever real
+    # candidate _select_isolation_strategy_v2 actually picked in THIS
+    # environment (root-direct / sudo-elevated / unprivileged-userns) --
+    # rather than hardcoding one specific unshare invocation that may not
+    # be the one this environment's own probe actually selected.
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    wrapped = isolated_executor_module._isolation_wrapped_argv_v2(
+        (sys.executable, "-c", code), max_memory_mb=128, max_processes=16,
     )
+    assert wrapped is not None, "the module's own probe found no working isolation strategy"
+    completed = subprocess.run(wrapped, capture_output=True, timeout=8)
     assert completed.returncode == errno.ENETUNREACH, (
         "expected ENETUNREACH (no route in the isolated namespace), "
         f"got {completed.returncode}"
