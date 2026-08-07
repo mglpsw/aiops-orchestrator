@@ -4,6 +4,24 @@
 
 ### Added
 
+- AgentReview v2 trusted-check plan/result contracts (#201-A, first slice
+  of #201, distribution epic #199): `TrustedCheckPlanV2` (host-owned,
+  never PR-influenced -- checks are named by a fixed `command_token`,
+  never raw argv, and `network_allowed` is pinned `Literal[False]`),
+  `TrustedCheckResultV2` (raw per-check outcome: `authority` (`trusted`/
+  `untrusted_advisory`) and `outcome` (`success`/`failure`/`timeout`/
+  `oom`/`cancelled`/`infra_failure`), self-hashing and bound to a specific
+  plan by `bind_trusted_check_result_to_plan_v2`. `promote_trusted_check_
+  to_required_v2` is the ONLY function permitted to construct the already-
+  published `RequiredCheckResultV2` from this sidecar, and refuses both
+  `untrusted_advisory` authority and every environmental outcome -- proven
+  structurally: `RequiredCheckConclusionV2` has exactly four values and
+  none represents an environmental failure, so promotion cannot invent
+  one. Contract only -- an offline simulator, an isolated executor,
+  adversarial hardening, and wiring into a real readiness computation are
+  `#201-B1`/`#201-B2`/`#201-B3`/`#201-C` (refs #201, #199,
+  docs/AGENT_REVIEW_V2_TRUSTED_CHECKS.md)
+
 - AgentReview v2 Agent Router transport wiring and synthetic end-to-end
   readiness (#200-C, third and final slice of #200, distribution epic
   #199): `run_synthetic_review_v2`

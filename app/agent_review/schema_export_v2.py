@@ -21,6 +21,7 @@ from app.agent_review.review_content_v2 import DlpPolicyDeclarationV2, ReviewCon
 from app.agent_review.review_transport_contract_v2 import ChunkReviewTransportEnvelopeV1
 from app.agent_review.run_fragment_coverage_v2 import RunFragmentCoverageReportV2
 from app.agent_review.semantic_grouping_policy_v2 import SemanticGroupingPolicyV2
+from app.agent_review.trusted_checks_v2 import TrustedCheckPlanV2, TrustedCheckResultV2
 
 
 _STABLE_DEFINITION_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -152,6 +153,8 @@ def render_v2_json_schemas() -> dict[str, dict[str, object]]:
             ChunkReviewTransportEnvelopeV1.model_json_schema(mode="validation")
         ),
         "agent-review.dlp-policy.v1.schema.json": DlpPolicyDeclarationV2.model_json_schema(mode="validation"),
+        "agent-review.trusted-check-plan.v2.schema.json": TrustedCheckPlanV2.model_json_schema(mode="validation"),
+        "agent-review.trusted-check-result.v2.schema.json": TrustedCheckResultV2.model_json_schema(mode="validation"),
     }
     schemas = {filename: normalize_v2_json_schema(schema) for filename, schema in schemas.items()}
     for schema in schemas.values():
