@@ -105,6 +105,7 @@ def _build_repo_manifest_and_content(tmp_path: Path):
     content = extract_review_content_v2(
         repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
         payload_sha256_by_chunk_id={cid: p.payload_sha256 for cid, p in payload_by_chunk_id.items()},
+        target_budgets=_profile().budgets,
     )
     return manifest, content, payload_by_chunk_id
 

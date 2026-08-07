@@ -313,6 +313,38 @@ directly, not assumed, by
 `test_run_synthetic_review_degrades_a_tampered_echo_chunk_to_manual_required`
 and its missing-file/malformed-JSON siblings.
 
+## Adversarial audit follow-up (post-merge)
+
+A human-authored adversarial replan gate against the live, already-merged
+`#200-B` code found and this repository fixed five confirmed issues
+(zero false positives) — see `docs/checkpoints/AGENT_REVIEW_V2_200_
+ADVERSARIAL_AUDIT_FOLLOWUP.md` for the full classification:
+
+1. `requires_network`-marked E2E tests were silently deselected by both
+   CI gates by default — fixed by `scripts/ci_validate.sh`'s new §8;
+2. a `detector_name`-only DLP policy was silently treated as "clean"
+   instead of "never actually checked" — `_apply_dlp_v2` now blocks
+   unconditionally whenever a detector is declared;
+3. budget was enforced per-fragment only, never summed per chunk, and
+   accepted a bare caller-supplied int — `extract_review_content_v2` now
+   requires a real `TargetBudgetsV2`, and `_enforce_chunk_budget_v2` sums
+   per chunk;
+4. **the most severe**: `planner_v2`'s own documented repeated-anchor
+   exception (a starved side collapsing to the same range across multiple
+   windows) caused the SAME real line of code to be extracted into every
+   window sharing that anchor — confirmed by direct reproduction (15/15
+   fragments carried a duplicated line before the fix) and fixed via
+   `_assign_hunk_line_ownership_v2`, using only `planner_v2`'s own already-
+   emitted fragment ranges, no second parser or planner;
+5. local paths were not actually redacted before content reached
+   `FragmentContentV2`'s constructor (only its own last-line guard caught
+   it, as a raw exception) — fixed by applying `_redact_local_paths`.
+
+`extract_review_content_v2`'s signature changed:
+`max_chars_per_chunk: int = 20_000` → `target_budgets: TargetBudgetsV2`
+(required, no default). No production caller outside this repository's
+own tests existed yet.
+
 ## What is deliberately not here
 
 - cross-checking `ChunkContentV2.payload_sha256` against a real, built
