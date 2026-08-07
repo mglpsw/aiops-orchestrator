@@ -75,6 +75,26 @@ true, never silently dropped from the list.
 | v1 e modo sem trusted checks preservados | `not_applicable_here` -- this module is purely additive, wires into nothing yet (`#201-C`'s job) |
 | failure ambiental não vira regression de produto | `covered` -- `test_execute_untrusted_advisory_result_still_refuses_promotion` plus the INFRA_FAILURE/TIMEOUT/OOM/CANCELLED tests all produce non-resolved outcomes `promote_trusted_check_to_required_v2` refuses |
 
+## CI-discovered gap, fixed in this same slice (not silently patched over)
+
+This slice's own first real `aiops-ci` run on GitHub Actions failed all 8
+new `requires_network` tests: `unshare: write failed /proc/self/uid_map:
+Operation not permitted`. Root cause: the original implementation always
+dropped to `nobody` BEFORE invoking `unshare --user --map-root-user
+--net`, forcing the UNPRIVILEGED user-namespace path even though the
+runner's job itself runs as real root -- and that runner's kernel refuses
+unprivileged user-namespace creation outright (a common hardening
+default), independent of who's asking. Fix: `_isolation_wrapped_argv_v2`
+now branches on the REAL starting euid -- real root uses `unshare --net`
+alone (root's own `CAP_SYS_ADMIN`, no unprivileged userns involved at
+all), with privilege drop to `nobody` happening AFTER the namespace
+already exists, via a small inline Python interpreter chained inside it.
+The unprivileged-userns path is now a fallback for callers that start
+already unprivileged, not the primary mechanism. This is exactly the
+class of environment-specific isolation-primitive gap this checkpoint's
+own "not CT104" framing exists to catch -- recorded here as what
+happened, not smoothed over as if the first design had been correct.
+
 ## Honest limitations (named, not hidden)
 
 1. **Exit-code forgery from inside the check's own process is not, and

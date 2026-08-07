@@ -70,13 +70,34 @@ rather than silently assumed accurate.
 
 ## What is proven here, and what is `blocked_external: ct104_unavailable`
 
-This module's isolation is built from portable Linux primitives --
-unprivileged user+network namespaces (``unshare --user --map-root-user
---net``), privilege drop to an unprivileged uid before that (``nobody``),
-and ``resource.setrlimit`` (CPU/address-space/process-count) -- and is
-REAL, working, and adversarially tested in whatever Linux host actually
-runs this test suite (this repository's own CI, or a development
-session's cloud sandbox). It is explicitly **not** CT104:
+This module's isolation is built from portable Linux primitives -- a
+network namespace (``unshare --net``), privilege drop to an unprivileged
+uid (``nobody``), and ``resource.setrlimit`` (address-space/process-
+count) -- and is REAL, working, and adversarially tested in whatever
+Linux host actually runs this test suite (this repository's own CI, or a
+development session's cloud sandbox). It is explicitly **not** CT104:
+
+**How the namespace is created is chosen by the REAL starting uid, not
+guessed.** A caller starting as real root gets ``unshare --net`` alone
+(root's own ``CAP_SYS_ADMIN`` needs no further help), with privilege drop
+to ``nobody`` happening AFTER the namespace exists, via a small inline
+Python interpreter chained inside it (see ``_isolation_wrapped_argv_v2``'s
+own docstring for the full reasoning). A caller already unprivileged
+falls back to an unprivileged user namespace (``--user
+--map-root-user``). This split exists because this slice's own first
+real CI run, on this project's GitHub Actions runner, failed outright on
+the naive "always drop to `nobody` first, then `unshare --user
+--map-root-user --net`" approach -- ``unshare: write failed
+/proc/self/uid_map: Operation not permitted`` -- because that runner's
+kernel refuses UNPRIVILEGED user namespace creation even though the job
+itself runs as real root, which never needed that mechanism in the first
+place. Recorded here, not silently patched over, because it is exactly
+the kind of environment-specific isolation-primitive availability gap
+this module's own "not CT104" caveat exists to warn about -- this
+specific gap is now closed for "root, but unprivileged userns disabled"
+hosts; a host where even ``unshare --net`` itself is unavailable to real
+root still hits this module's existing fail-closed
+``EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2`` path.
 
 - this module has no way to assert it is running ON the project's real,
   pinned CT104 runner -- that identity is a deployment fact asserted by
@@ -107,11 +128,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import pwd
-import resource
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,7 +170,6 @@ _OOM_SIGNATURE_SIGNALS_V2 = frozenset(
     {signal.SIGKILL, signal.SIGSEGV, signal.SIGBUS, signal.SIGABRT}
 )
 
-_NOBODY_USERNAME_V2 = "nobody"
 _TIMEOUT_POLL_INTERVAL_SECONDS_V2 = 0.05
 
 # Mirrors trusted_checks_v2._RESOLVED_OUTCOMES_V2 (module-private there,
@@ -210,42 +229,75 @@ def _probe_isolation_available_v2() -> bool:
     return shutil.which("unshare") is not None
 
 
-def _drop_privileges_and_limit_resources_v2(
-    *, max_memory_mb: int, max_processes: int
-):
-    """Returns a ``preexec_fn`` for ``subprocess.Popen``: drops from root
-    to the unprivileged ``nobody`` account (if currently root -- if
-    already unprivileged, proceeds without a drop, since there is nothing
-    to drop from), then applies ``RLIMIT_AS``/``RLIMIT_NPROC``. Runs in
-    the CHILD after ``fork()`` but before ``exec()`` -- exactly the
-    boundary needed so the isolation-wrapper binary itself (``unshare``)
-    execs already-unprivileged, letting an UNPRIVILEGED user namespace
-    (which the kernel permits for any uid, not just root) provide the
-    net/user isolation from that point on."""
+def _dropper_script_v2(*, drop_to_nobody: bool, max_memory_mb: int, max_processes: int) -> str:
+    """Source for a small inline Python interpreter that runs INSIDE the
+    already-created isolation wrapper (after ``unshare`` has already
+    exec'd it, not before): drops to the unprivileged ``nobody`` account
+    when ``drop_to_nobody`` (only meaningful when we entered as REAL
+    root -- see ``_isolation_wrapped_argv_v2``), applies ``RLIMIT_AS``/
+    ``RLIMIT_NPROC``, then ``execvp``s the real check argv (its own
+    ``sys.argv[1:]``). Values are validated ``PositiveInt`` contract
+    fields (never PR/plan-controlled text), so literal interpolation into
+    this source string is safe -- there is no untrusted content here."""
 
-    def _preexec() -> None:
-        if os.geteuid() == 0:
-            nobody = pwd.getpwnam(_NOBODY_USERNAME_V2)
-            os.setgroups([])
-            os.setgid(nobody.pw_gid)
-            os.setuid(nobody.pw_uid)
-        memory_bytes = max_memory_mb * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
-        resource.setrlimit(resource.RLIMIT_NPROC, (max_processes, max_processes))
+    memory_bytes = max_memory_mb * 1024 * 1024
+    drop_lines = (
+        "nobody = pwd.getpwnam('nobody')\n"
+        "os.setgroups([])\n"
+        "os.setgid(nobody.pw_gid)\n"
+        "os.setuid(nobody.pw_uid)\n"
+        if drop_to_nobody
+        else ""
+    )
+    return (
+        "import os, sys, pwd, resource\n"
+        "argv = sys.argv[1:]\n"
+        f"{drop_lines}"
+        f"resource.setrlimit(resource.RLIMIT_AS, ({memory_bytes}, {memory_bytes}))\n"
+        f"resource.setrlimit(resource.RLIMIT_NPROC, ({max_processes}, {max_processes}))\n"
+        "os.execvp(argv[0], argv)\n"
+    )
 
-    return _preexec
 
+def _isolation_wrapped_argv_v2(
+    argv: tuple[str, ...], *, max_memory_mb: int, max_processes: int
+) -> list[str]:
+    """Wraps ``argv`` so it runs isolated: its own network stack (proven
+    by this module's own adversarial test, not merely asserted -- see
+    ``test_isolated_executor_v2.py``'s real-outbound-connection-attempt
+    test) and, when starting privileged, dropped to an unprivileged uid
+    before the real command ever execs.
 
-def _isolation_wrapped_argv_v2(argv: tuple[str, ...]) -> list[str]:
-    # Unprivileged user+network namespace: the child (and everything it
-    # execs) gets its own network stack with only loopback -- proven by
-    # this module's own adversarial test, not merely asserted (see
-    # test_isolated_executor_v2.py's real-outbound-connection-attempt
-    # test). --map-root-user makes the namespace usable (mount/etc. some
-    # tools expect a mapped uid 0) without granting anything on the REAL
-    # host -- the mapping is entirely contained to the throwaway
-    # namespace this process itself created.
-    return ["unshare", "--user", "--map-root-user", "--net", "--", *argv]
+    Two paths, chosen by the REAL (not namespace-mapped) starting euid:
+
+    - **starting as real root**: ``unshare --net`` alone -- real root has
+      ``CAP_SYS_ADMIN`` and needs no unprivileged user namespace at all.
+      This deliberately avoids ``--user``/``--map-root-user``: this
+      project's own GitHub Actions runner refused unprivileged user
+      namespace creation outright (``unshare: write failed /proc/self/
+      uid_map: Operation not permitted``, observed directly in this
+      slice's own first CI run -- kernels commonly disable it via
+      ``kernel.unprivileged_userns_clone=0``) even though it runs the job
+      as real root, which does not need that mechanism in the first
+      place. Privilege drop to ``nobody`` happens INSIDE the new
+      namespace via the dropper script, not before ``unshare`` execs (a
+      preexec-time drop would force the unprivileged-userns path this
+      branch exists specifically to avoid).
+    - **already unprivileged**: the ONLY way left to get a network
+      namespace is an unprivileged user namespace
+      (``--user --map-root-user --net``). No further privilege drop is
+      attempted inside it -- a ``--map-root-user`` namespace maps only
+      the ONE calling uid to namespace-uid 0; ``nobody``'s real uid has
+      no mapping to ``setuid`` to from inside it, and there is nothing to
+      drop from in the first place since the caller was never privileged.
+    """
+
+    dropper = _dropper_script_v2(
+        drop_to_nobody=os.geteuid() == 0, max_memory_mb=max_memory_mb, max_processes=max_processes,
+    )
+    if os.geteuid() == 0:
+        return ["unshare", "--net", "--", sys.executable, "-c", dropper, *argv]
+    return ["unshare", "--user", "--map-root-user", "--net", "--", sys.executable, "-c", dropper, *argv]
 
 
 def _classify_completed_process_v2(*, returncode: int) -> tuple[TrustedCheckOutcomeV2, str | None]:
@@ -310,16 +362,14 @@ def _run_isolated_v2(
     if not _probe_isolation_available_v2():
         raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2)
 
-    wrapped = _isolation_wrapped_argv_v2(argv)
-    preexec_fn = _drop_privileges_and_limit_resources_v2(
-        max_memory_mb=max_memory_mb, max_processes=max_processes
+    wrapped = _isolation_wrapped_argv_v2(
+        argv, max_memory_mb=max_memory_mb, max_processes=max_processes
     )
 
     try:
         process = subprocess.Popen(
             wrapped,
             cwd=str(repo_root),
-            preexec_fn=preexec_fn,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
