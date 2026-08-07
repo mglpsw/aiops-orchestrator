@@ -1,0 +1,47 @@
+{
+  "note": "Lightweight, human-authored summary of this slice. Not validated by a strict schema/loader -- no such receipt contract exists in this repository yet.",
+  "repository": "mglpsw/aiops-orchestrator",
+  "epic": 199,
+  "issue": 201,
+  "slice": "201-B1",
+  "branch": "feat/201-b1-trusted-check-simulator",
+  "base_sha": "f0013358d599a57a1a20275c54d882559997cbc1",
+  "commits": [
+    {
+      "subject": "feat(agent-review/v2): offline trusted-check simulator (#201-B1)",
+      "files_added": [
+        "app/agent_review/trusted_check_simulator_v2.py",
+        "docs/checkpoints/AGENT_REVIEW_V2_201B1_SIMULATOR.md",
+        "reports/agent-review-v2-201b1-simulator-receipt.json",
+        "tests/agent_review/test_trusted_check_simulator_v2.py"
+      ],
+      "files_modified": [
+        "docs/AGENT_REVIEW_V2_TRUSTED_CHECKS.md",
+        "CHANGELOG.md"
+      ]
+    }
+  ],
+  "new_schemas": [],
+  "existing_schemas_touched": [],
+  "verification": {
+    "full_suite": {"command": ".venv/bin/python -m pytest -q", "result": "1942 passed, 4 skipped"},
+    "simulator_suite": {"command": ".venv/bin/python -m pytest tests/agent_review/test_trusted_check_simulator_v2.py -q", "result": "13 passed"},
+    "schema_export_check": {"command": ".venv/bin/python scripts/export-agent-review-v2-schemas.py --check", "result": "byte-identical"},
+    "caem_f0_pin_check": {"command": ".venv/bin/python scripts/verify-caem-f0-pin.py --check", "result": "ok"},
+    "ri_b0a_2_reuse_view_check": {"command": ".venv/bin/python scripts/generate-ri-b0a-2-reuse-view.py --check", "result": "byte-identical"},
+    "ci_validate_sh": {"command": "bash scripts/ci_validate.sh", "result": "1914 passed, 4 skipped, 28 deselected -- OK"},
+    "git_diff_check": "clean",
+    "no_subprocess_proof": "subprocess.Popen and subprocess.run patched to raise via monkeypatch; simulate_trusted_check_plan_v2 still succeeds -- proves no process is ever spawned"
+  },
+  "not_delivered": [
+    "isolated executor with real process isolation (#201-B2)",
+    "adversarial proof against a real malicious conftest.py/reporter/plugin (#201-B3)",
+    "wiring into run_synthetic_review_v2's checks parameter (#201-C)",
+    "closure of AgentEscala#750 (target-side adoption)"
+  ],
+  "protected_actions_taken": [],
+  "protected_actions_not_taken": [
+    "merge", "release", "tag", "deploy", "target repository write",
+    "branch protection change", "secret/runner creation"
+  ]
+}

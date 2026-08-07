@@ -90,9 +90,35 @@ values and none represents an environmental failure.
 | `PROMOTION_NOT_TRUSTED_AUTHORITY_REASON_V2` | `promote_trusted_check_to_required_v2` |
 | `PROMOTION_OUTCOME_NOT_RESOLVED_REASON_V2` | `promote_trusted_check_to_required_v2` |
 
+## `#201-B1` — offline simulator (`app/agent_review/trusted_check_simulator_v2.py`)
+
+`simulate_trusted_check_plan_v2(plan, *, fixtures, authority)` produces
+real, fully-validated, plan-bound `TrustedCheckResultV2` instances WITHOUT
+spawning a process, reading a checkout, or touching a filesystem — proven
+directly by a test that patches `subprocess.Popen`/`subprocess.run` to
+raise if ever called. This mirrors `review_transport_v2.offline_file_
+transport_v2`'s own role for the Router transport: the deterministic
+default every downstream consumer (and this repository's own test suite)
+builds against before the real isolated executor (`#201-B2`) exists.
+
+`authority` is a **required** keyword argument with no default — there is
+no way to call this function and get a `TrustedCheckAuthorityV2.TRUSTED`
+result "by accident". A caller stamping simulated output as trusted is
+asserting something about its OWN test context, not something this
+simulator earns or grants.
+
+Every `check_name` the plan authorizes must have a matching `fixtures`
+entry (`SIMULATION_MISSING_FIXTURE_REASON_V2` otherwise); a fixture naming
+a check the plan does NOT authorize is equally rejected
+(`SIMULATION_UNKNOWN_CHECK_REASON_V2`) — the simulator's own inputs are
+held to the same closed-set discipline the real executor will eventually
+need. `artifact_sha256` for a resolved (`success`/`failure`) simulated
+outcome is deterministic — derived only from `(run_id, head_sha,
+check_name, outcome)`, no clock or randomness — proven by a direct
+same-input-same-output test.
+
 ## What is deliberately not here
 
-- an offline simulator producing synthetic results (`#201-B1`);
 - an isolated executor that actually runs a check, with no network, no
   sudo, no docker socket, and a result channel the PR cannot write to
   (`#201-B2`);

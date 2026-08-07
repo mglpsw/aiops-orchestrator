@@ -4,6 +4,21 @@
 
 ### Added
 
+- AgentReview v2 offline trusted-check simulator (#201-B1, second slice of
+  #201, distribution epic #199): `simulate_trusted_check_plan_v2`
+  (`app/agent_review/trusted_check_simulator_v2.py`) produces real,
+  fully-validated, plan-bound `TrustedCheckResultV2` instances without
+  spawning a process, reading a checkout, or touching a filesystem --
+  proven directly (not assumed) by a test that patches
+  `subprocess.Popen`/`subprocess.run` to raise. `authority` is a required
+  keyword argument with no default, so no call site can get a `trusted`
+  result "by accident". Every check the plan authorizes must have a
+  matching fixture; a fixture naming an unauthorized check is equally
+  rejected. Mirrors `review_transport_v2.offline_file_transport_v2`'s own
+  role: the deterministic default every downstream consumer builds
+  against before the real isolated executor (`#201-B2`) exists (refs
+  #201, #199, docs/AGENT_REVIEW_V2_TRUSTED_CHECKS.md)
+
 - AgentReview v2 trusted-check plan/result contracts (#201-A, first slice
   of #201, distribution epic #199): `TrustedCheckPlanV2` (host-owned,
   never PR-influenced -- checks are named by a fixed `command_token`,
