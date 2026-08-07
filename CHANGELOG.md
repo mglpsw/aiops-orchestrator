@@ -4,6 +4,26 @@
 
 ### Added
 
+- AgentReview v2 Agent Router transport wiring and synthetic end-to-end
+  readiness (#200-C, third and final slice of #200, distribution epic
+  #199): `run_synthetic_review_v2`
+  (`app/agent_review/review_transport_v2.py`) wires the fixed order of
+  authority content -> request -> transport -> envelope -> echo -> binding
+  -> parser -> synthesis -> readiness for the first time, proven end-to-end
+  against a real temporary git repository through to a real
+  `ReviewReadinessV2` with `state=READY`. `ChunkReviewTransportV2` is an
+  injected `Protocol`: `offline_file_transport_v2` (default in tests) and
+  `agent_router_transport_v2` (the real Agent Router, locked to exactly
+  `{base_url}/v1/chat/completions`, refuses with no `api_key` before any
+  network attempt, tested against a mocked HTTP layer only -- never called
+  live). A tampered echo, a missing response, or a malformed response all
+  degrade exactly that chunk to `manual_required` and are proven to keep
+  the resulting readiness out of `READY` -- never a silent approval. `#200`
+  closes with this slice: `core_synthetic_complete` is now `true`, though
+  `#199`'s own `semantic_reviewer_shadow` capability state remains `false`
+  until a live canary (`AgentEscala#763-A`) (refs #200, #199,
+  docs/AGENT_REVIEW_V2_REVIEW_CONTENT.md)
+
 - AgentReview v2 real hunk-content extraction (#200-B, second slice of
   #200, distribution epic #199): `extract_review_content_v2`
   (`app/agent_review/review_content_extraction_v2.py`) turns a real diff

@@ -1,0 +1,56 @@
+{
+  "note": "Lightweight, human-authored summary of this slice. Not validated by a strict schema/loader -- no such receipt contract exists in this repository yet. Do not treat this as equivalent in authority to a ReviewReadinessV2 artifact or any other ContractV2Model-backed contract.",
+  "repository": "mglpsw/aiops-orchestrator",
+  "epic": 199,
+  "issue": 200,
+  "slice": "200-C",
+  "branch": "feat/200-c-review-transport-e2e",
+  "base_sha": "c5c07d890800a933d5a0779408a444b366f84635",
+  "commits": [
+    {
+      "subject": "feat(agent-review/v2): Agent Router transport wiring and synthetic end-to-end readiness (#200-C)",
+      "files_added": [
+        "app/agent_review/review_transport_v2.py",
+        "docs/checkpoints/AGENT_REVIEW_V2_200C_TRANSPORT.md",
+        "reports/agent-review-v2-200c-transport-receipt.json",
+        "tests/agent_review/test_review_transport_v2.py"
+      ],
+      "files_modified": [
+        "docs/AGENT_REVIEW_V2_REVIEW_CONTENT.md",
+        "CHANGELOG.md"
+      ]
+    }
+  ],
+  "new_schemas": [],
+  "existing_schemas_touched": [],
+  "verification": {
+    "full_suite": {"command": ".venv/bin/python -m pytest -q", "result": "1904 passed, 4 skipped"},
+    "agent_review_suite": {"command": ".venv/bin/python -m pytest tests/agent_review -q", "result": "1164 passed"},
+    "schema_export_check": {
+      "command": ".venv/bin/python scripts/export-agent-review-v2-schemas.py --check",
+      "result": "AgentReview v2 schemas are byte-identical."
+    },
+    "caem_f0_pin_check": {
+      "command": ".venv/bin/python scripts/verify-caem-f0-pin.py --pin config/caem/caem-3.0-f0.pin.json --check",
+      "result": "ok"
+    },
+    "ri_b0a_2_reuse_view_check": {
+      "command": ".venv/bin/python scripts/generate-ri-b0a-2-reuse-view.py --check",
+      "result": "generated view is byte-identical to the manifest."
+    },
+    "ci_validate_sh": {"command": "bash scripts/ci_validate.sh", "result": "1876 passed, 4 skipped, 28 deselected -- OK"},
+    "git_diff_check": "clean",
+    "real_e2e_smoke": "real temporary git repository, real diff, real manifest, real payload, real content, real offline transport, real echo verification, real binding, real parser, real synthesis, real readiness decision, real emission -- ends in a real ReviewReadinessV2 with state=READY. Not mocked at any step. agent_router_transport_v2 tested against a mocked HTTP layer only -- never a live network call."
+  },
+  "not_delivered": [
+    "any live call to the real Agent Router",
+    "any canary review of a real repository (AgentEscala#763-A)",
+    "cross-checking ChunkContentV2.payload_sha256 byte-for-byte against the real ChunkPayloadV2 object (caller's documented responsibility, unchanged from #200-B)"
+  ],
+  "issue_200_status": "closes -- core_synthetic_complete satisfied by #200-A + #200-B + #200-C together",
+  "protected_actions_taken": [],
+  "protected_actions_not_taken": [
+    "merge", "release", "tag", "deploy", "target repository write",
+    "branch protection change", "secret/runner creation", "live Agent Router call"
+  ]
+}
