@@ -9,7 +9,7 @@
 - Branch padrão: `master`
 - HEAD observado: `57e0b056c2c2a4bf3ddfab12a84f9eb46278c42d` (squash merge de #212, `#201-B2`; base pré-merge `5037a49916decb30ccbce4330c696686d61e56db`, que é por sua vez o squash merge de #214, engine v1, sobre `f409fd15e25cd7fcbed31fa8107cec419fd3827e` = HEAD pós-#211). `master` avançou `f409fd1 → 5037a49 → 57e0b05`, cada avanço um squash exato, verificado via `git merge-base --is-ancestor`.
 - AgentReview é subsistema deste repositório, não repositório separado.
-- PRs abertas no corte: nenhuma (`#214` e `#212` mergeadas neste corte).
+- PRs abertas no corte: `#215` (esta própria PR de reconciliação documental — desaparece desta lista após seu próprio merge) e `#216` (`docs(release): prepare v0.22.0`, trilha docs/release separada, criada por outra sessão; não altera nem bloqueia a sequência `#201-B3` → `#201-C`). `#214` e `#212` mergeadas neste corte.
 
 ## Estado de referência
 
