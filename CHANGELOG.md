@@ -83,24 +83,37 @@
   run a command not in the inventory, deterministic results across
   repeated runs, and fail-closed refusal to run at all (never silently
   unisolated) when the isolation primitive itself is unavailable. Wiring
-  into `ReviewReadinessV2` is `#201-C`'s job, not this slice's. An
-  independent review of the first CI-green commit found 4 more real
-  issues, closed in this same slice: the inventory a caller supplies is
-  now checked against the plan's own `authority_suite_digest` before any
-  `command_token` resolves (`compute_check_command_inventory_digest_v2`,
-  mirroring `#211`'s `target_profile` fix exactly) instead of being
-  accepted unverified; OOM classification -- previously guessed from a
-  signal-death signature that could misclassify a genuine unrelated crash
-  as environmental, hiding a real regression from readiness -- is removed
-  entirely, so every signal death is now the conservative, attributable
-  `FAILURE` (`RLIMIT_AS` enforcement itself is unchanged and still
-  proven); `process.communicate()` after the tracked process exits now
-  has a bounded grace period and kills any lingering descendant holding
-  the output pipe open, instead of risking an indefinite hang; and
-  `authority=TRUSTED` being caller-declared rather than independently
-  verified is now an explicit, prominent rule in the module's own
-  docstring -- do not use it against real adversarial PR code until
-  `#201-B3` closes the still-open exit-code-forgery gap (refs #201, #199,
+  into `ReviewReadinessV2` is `#201-C`'s job, not this slice's. Two
+  further independent reviews of the first CI-green commit found 5 more
+  real issues; 4 closed in this same slice, 1 confirmed as an
+  architectural gap and made explicit rather than papered over: the
+  inventory a caller supplies is now checked against the plan's own
+  `authority_suite_digest` before any `command_token` resolves
+  (`compute_check_command_inventory_digest_v2`, mirroring `#211`'s
+  `target_profile` fix exactly) instead of being accepted unverified,
+  and its dict keys must equal each entry's own `command_token` (a
+  contradictory `{"other_token": spec_whose_token_is_"token"}` is now
+  refused, not silently tolerated); OOM classification -- previously
+  guessed from a signal-death signature that could misclassify a genuine
+  unrelated crash as environmental, hiding a real regression from
+  readiness -- is removed entirely, so every signal death is now the
+  conservative, attributable `FAILURE` (`RLIMIT_AS` enforcement itself is
+  unchanged and still proven); `process.communicate()` after the tracked
+  process exits now has a bounded grace period and kills any lingering
+  descendant holding the output pipe open instead of risking an
+  indefinite hang -- fixed TWICE, since the first attempt used a pgid
+  that could already be reaped/recycled by the time it was needed, and
+  verifying the real fix under the sudo-elevated strategy (the one this
+  project's own GitHub Actions runner actually uses) surfaced a second,
+  deeper bug where `sudo`'s own monitor-process architecture decouples
+  the command's real process group from the one `subprocess.Popen`
+  reports, now solved by having the isolated process report its own
+  real pgid back via a host-controlled file and killing through `sudo`
+  too when that strategy was used; and `authority=TRUSTED` being
+  caller-declared rather than independently verified is now an explicit,
+  prominent rule in the module's own docstring -- do not use it against
+  real adversarial PR code until `#201-B3` closes the still-open
+  exit-code-forgery gap (refs #201, #199,
   docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md)
 
 - AgentReview v2 trusted-check plan/result contracts (#201-A, first slice

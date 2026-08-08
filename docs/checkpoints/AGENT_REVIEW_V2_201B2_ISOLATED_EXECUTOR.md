@@ -20,15 +20,15 @@ state:
   capability_state: real_isolated_execution_in_dev_sandbox_not_ct104
 
 evidence:
-  full_test_suite: "1976 passed, 4 skipped"
-  new_tests_this_slice: 20
-  ci_validate_sh: "sec 7: 1917 passed, 4 skipped, 59 deselected; sec 8: 59 passed, 1921 deselected -- OK"
+  full_test_suite: "1978 passed, 4 skipped"
+  new_tests_this_slice: 22
+  ci_validate_sh: "sec 7: 1917 passed, 4 skipped, 61 deselected; sec 8: 61 passed, 1921 deselected -- OK"
   schema_export_check: "byte-identical (unchanged this slice)"
   caem_f0_pin: "ok"
   ri_b0a_2_reuse_view_check: "byte-identical (unchanged this slice)"
   git_diff_check: clean
   ruff_new_files: "All checks passed! (app/agent_review/isolated_executor_v2.py, tests/agent_review/test_isolated_executor_v2.py)"
-  flakiness_check: "3 consecutive full runs under root, sudo-elevated, and fully-unprivileged accounts, 20/20 passed every time"
+  flakiness_check: "3 consecutive full runs under root; 2 more under sudo-elevated; 1 under fully-unprivileged -- 22/22 passed every time"
   note: "counts re-measured after the independent-review addendum fixes; superseded prior counts (19 tests / 1975) not carried forward"
 ```
 
@@ -119,13 +119,18 @@ to catch -- recorded here as what actually happened across two real,
 observed CI failures, not smoothed over as if the first (or second)
 design had been correct on the first try.
 
-## Addendum — independent review, 4 real findings closed in this same slice
+## Addendum — independent review, 3 findings closed + 1 confirmed and scoped to `#201-B3`
 
 An independent review of this slice's first CI-green commit (`5f3edc6`)
-found the CI status report accurate but raised 5 further points. 4 were
-confirmed real and closed here, without opening a new phase; the 5th is
-an already-known, architecturally unresolved gap this addendum makes more
-prominent rather than pretending to close.
+found the CI status report accurate but raised 5 further points. **3 were
+confirmed real and closed here, without opening a new phase; 1
+(exit-code forgery, finding 2 below) is an already-known,
+architecturally unresolved gap this addendum makes more prominent rather
+than pretending to close -- a second pass over this SAME addendum's own
+first commit corrected an earlier draft here that had miscounted this as
+"4 closed", conflating "documented as an explicit rule" with "fixed".**
+Precise accounting: 3 closed (findings 1, 3, 5), 1 confirmed-and-scoped-
+open (finding 2), 1 not a code issue (finding 4, cosmetic).
 
 1. **Inventory not bound to the plan's own `authority_suite_digest`
    (confirmed, closed).** `TrustedCheckPlanV2.authority_suite_digest`
@@ -186,12 +191,67 @@ prominent rather than pretending to close.
    forged ... trusts only the real exit code") read as a broader claim
    than it supports.
 5. **`process.communicate()` after the poll loop had no timeout
-   (confirmed, fixed).** The tracked PID exiting does not guarantee no
-   descendant process is still alive holding the inherited stdout/stderr
-   pipe open -- a plain `communicate()` there could hang past the check's
-   own logical deadline. Fix: bounded by a grace period; on timeout, kill
-   the whole process group (reaping any such descendant) and finish
-   reading, now safe.
+   (confirmed, fixed -- first attempt, then found genuinely broken by a
+   second review and fixed for real).** The tracked PID exiting does not
+   guarantee no descendant process is still alive holding the inherited
+   stdout/stderr pipe open -- a plain `communicate()` there could hang
+   past the check's own logical deadline. First fix: bounded by a grace
+   period; on timeout, kill the whole process group via `os.killpg(os.
+   getpgid(process.pid), ...)`. **A second review caught that this first
+   fix was itself unsafe**: by the time it runs, `Popen.poll()` has
+   already reaped the tracked pid internally, and the kernel is free to
+   RECYCLE that pid number for an unrelated process -- `os.getpgid(
+   process.pid)` at that point could resolve to (and `killpg` then
+   silently kill) a completely different process group. Real fix: the
+   pgid is now captured ONCE, at spawn time (`start_new_session=True`
+   guarantees it equals `process.pid` at that exact moment, before any
+   reaping can occur), not re-derived later.
+
+   **Verifying that real fix under the sudo-elevated strategy (the one
+   this project's own GitHub Actions runner actually uses) surfaced a
+   SECOND, deeper bug, caught by this slice's own adversarial testing
+   before ever reaching CI**: `sudo`'s monitor-process architecture
+   forks a genuinely NEW process for the command it runs, decoupled from
+   the pid/pgid `subprocess.Popen` captured for the original `sudo`
+   invocation -- so even the spawn-time-captured value was targeting the
+   WRONG group once sudo was the strategy in use, and a plain
+   `os.killpg()` cannot signal a group `sudo` elevated to root anyway (a
+   real `PermissionError`, reproduced directly, not theorized). Real fix,
+   round two: the dropper script itself now calls `os.setsid()` (falling
+   back to reading the pgid it's already the leader of via
+   `os.getpgrp()` if `setsid()` fails with EPERM, which happens
+   whenever the OUTER `start_new_session=True` already made this exact
+   process a leader through the non-sudo strategies' plain `execve()`
+   chain) and reports its own REAL pgid back to the host via a
+   host-controlled temp file; killing goes through `sudo -n kill -9 --
+   -<pgid>` too when the selected strategy used it. Red-tested by
+   `test_execute_does_not_hang_when_a_descendant_outlives_the_leader_
+   holding_the_pipe_open`, run in a background thread with a hard join
+   timeout so a real regression fails the test cleanly instead of
+   hanging the suite -- verified passing under real root, sudo-elevated,
+   AND fully-unprivileged accounts, not just the one this session
+   happened to start as.
+
+### Second pass — 2 more findings, closed in this same addendum's own commit
+
+6. **Inventory entries admit a contradictory identity (confirmed,
+   closed).** Nothing previously required an inventory's dict key
+   (`Mapping[str, AllowlistedCommandSpecV2]`) to equal the
+   `command_token` field on the `AllowlistedCommandSpecV2` stored under
+   it -- `{"other_token": spec_whose_own_command_token_is_"token"}` was
+   silently tolerated (its digest still committed to *some* bytes either
+   way) despite being ambiguous identity in a system whose whole point is
+   rigorous binding. One of this slice's OWN existing tests had exactly
+   this contradiction in its own fixture, not caught until this review.
+   Fix: `_inventory_keys_match_command_tokens_v2`, checked before the
+   digest itself, fail-closed with a new
+   `EXECUTOR_REASON_INVENTORY_KEY_TOKEN_MISMATCH_V2` on any mismatch (the
+   whole plan refused, mirroring the digest-mismatch discipline exactly).
+   Red-tested by `test_execute_refuses_an_inventory_whose_dict_keys_do_
+   not_match_their_own_command_token`.
+7. **Duplicated `@pytest.mark.skipif` decorator (confirmed, cosmetic,
+   fixed).** No behavioral effect (both decorators evaluated the same
+   condition), just noise -- removed.
 
 A `docs/engineering/CURRENT_CHECKPOINT.md` contradiction the same review
 flagged ("PRs abertas: nenhuma" recorded alongside this very PR being

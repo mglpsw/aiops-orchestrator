@@ -164,6 +164,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -190,9 +191,12 @@ EXECUTOR_REASON_SETUP_FAILED_V2 = "isolated_executor_setup_failed"
 EXECUTOR_REASON_CANCELLED_V2 = "isolated_executor_cancelled"
 EXECUTOR_REASON_TIMEOUT_V2 = "isolated_executor_timeout"
 EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2 = "isolated_executor_inventory_digest_mismatch"
+EXECUTOR_REASON_INVENTORY_KEY_TOKEN_MISMATCH_V2 = "isolated_executor_inventory_key_token_mismatch"
+EXECUTOR_REASON_DESCENDANT_HUNG_V2 = "isolated_executor_descendant_hung"
 
 _TIMEOUT_POLL_INTERVAL_SECONDS_V2 = 0.05
 _COMMUNICATE_GRACE_SECONDS_V2 = 5.0
+_PGID_REPORT_WAIT_SECONDS_V2 = 5.0
 
 # Mirrors trusted_checks_v2._RESOLVED_OUTCOMES_V2 (module-private there,
 # so re-declared here rather than reaching into that module's own
@@ -331,16 +335,27 @@ def _select_isolation_strategy_v2() -> tuple[bool, tuple[str, ...]] | None:
     return None
 
 
-def _dropper_script_v2(*, drop_to_nobody: bool, max_memory_mb: int, max_processes: int) -> str:
+def _dropper_script_v2(
+    *, drop_to_nobody: bool, max_memory_mb: int, max_processes: int, pgid_report_path: str
+) -> str:
     """Source for a small inline Python interpreter that runs INSIDE the
-    already-created isolation wrapper (after ``unshare`` has already
-    exec'd it, not before): drops to the unprivileged ``nobody`` account
+    already-created isolation wrapper (after ``unshare``/``sudo`` have
+    already exec'd it, not before): first ``os.setsid()`` -- making THIS
+    process its own session AND process-group leader, so its pgid is
+    ``os.getpid()`` from this exact point forward, unaffected by
+    whatever session/pgroup ``sudo``'s own monitor-process architecture
+    may have put it in beforehand (see ``_run_isolated_v2``'s own
+    docstring for why that distinction is load-bearing) -- then writes
+    that real pid/pgid to ``pgid_report_path`` so the HOST process (which
+    cannot otherwise learn it -- ``sudo`` decouples the pid it reports
+    for its own invocation from the pid of the command it actually runs)
+    can read it back, THEN drops to the unprivileged ``nobody`` account
     when ``drop_to_nobody`` (only meaningful when we entered as REAL
-    root -- see ``_isolation_wrapped_argv_v2``), applies ``RLIMIT_AS``/
-    ``RLIMIT_NPROC``, then ``execvp``s the real check argv (its own
-    ``sys.argv[1:]``). Values are validated ``PositiveInt`` contract
-    fields (never PR/plan-controlled text), so literal interpolation into
-    this source string is safe -- there is no untrusted content here."""
+    root), applies ``RLIMIT_AS``/``RLIMIT_NPROC``, then ``execvp``s the
+    real check argv (its own ``sys.argv[1:]``). Values are validated
+    ``PositiveInt`` contract fields and ``pgid_report_path`` is a host-
+    generated ``tempfile`` path (never PR/plan-controlled text), so
+    literal interpolation into this source string is safe."""
 
     memory_bytes = max_memory_mb * 1024 * 1024
     drop_lines = (
@@ -354,6 +369,23 @@ def _dropper_script_v2(*, drop_to_nobody: bool, max_memory_mb: int, max_processe
     return (
         "import os, sys, pwd, resource\n"
         "argv = sys.argv[1:]\n"
+        "try:\n"
+        "    os.setsid()\n"
+        "except OSError:\n"
+        # Already a process-group/session leader -- POSIX forbids calling
+        # setsid() again in that case (EPERM), but that failure itself
+        # PROVES os.getpgrp() already equals this process's own pid
+        # (that's what "already a leader" means), so there is nothing
+        # left to do. Happens in the non-sudo strategies: the outer
+        # subprocess.Popen(start_new_session=True) already made the
+        # FIRST spawned process (unshare, or sudo itself) a session
+        # leader, and plain execve() (unshare -> this dropper) preserves
+        # that identity -- only sudo's own monitor-process architecture
+        # forks a genuinely NEW process here, which is why setsid() is
+        # attempted at all rather than assumed unnecessary.
+        "    pass\n"
+        f"with open({pgid_report_path!r}, 'w') as _f:\n"
+        "    _f.write(str(os.getpgrp()))\n"
         f"{drop_lines}"
         f"resource.setrlimit(resource.RLIMIT_AS, ({memory_bytes}, {memory_bytes}))\n"
         f"resource.setrlimit(resource.RLIMIT_NPROC, ({max_processes}, {max_processes}))\n"
@@ -362,9 +394,18 @@ def _dropper_script_v2(*, drop_to_nobody: bool, max_memory_mb: int, max_processe
 
 
 def _isolation_wrapped_argv_v2(
-    argv: tuple[str, ...], *, max_memory_mb: int, max_processes: int
-) -> list[str] | None:
-    """Wraps ``argv`` so it runs isolated: its own network stack (proven
+    argv: tuple[str, ...], *, max_memory_mb: int, max_processes: int, pgid_report_path: str
+) -> tuple[list[str], bool] | None:
+    """Returns ``(wrapped_argv, uses_sudo)``, or ``None`` if
+    ``_select_isolation_strategy_v2`` finds nothing that actually works
+    (the caller must fail closed, never fall back to running unisolated).
+    ``uses_sudo`` tells the caller whether killing the resulting process
+    tree later will ALSO need to go through ``sudo`` -- an unprivileged
+    caller cannot ``kill()``/``killpg()`` a tree that ``sudo`` elevated to
+    root, even though it was the one that spawned it (see
+    ``_run_isolated_v2``'s own docstring).
+
+    Wraps ``argv`` so it runs isolated: its own network stack (proven
     by this module's own adversarial test, not merely asserted -- see
     ``test_isolated_executor_v2.py``'s real-outbound-connection-attempt
     test) and, when the chosen strategy started privileged, dropped to an
@@ -412,8 +453,10 @@ def _isolation_wrapped_argv_v2(
     drop_to_nobody, prefix = strategy
     dropper = _dropper_script_v2(
         drop_to_nobody=drop_to_nobody, max_memory_mb=max_memory_mb, max_processes=max_processes,
+        pgid_report_path=pgid_report_path,
     )
-    return [*prefix, sys.executable, "-c", dropper, *argv]
+    uses_sudo = bool(prefix) and prefix[0] == "sudo"
+    return [*prefix, sys.executable, "-c", dropper, *argv], uses_sudo
 
 
 def _classify_completed_process_v2(*, returncode: int) -> tuple[TrustedCheckOutcomeV2, str | None]:
@@ -479,6 +522,58 @@ def _build_result_v2(
     )
 
 
+def _read_real_pgid_v2(pgid_report_path: str, *, fallback_pid: int) -> int:
+    """Reads the REAL pgid the dropper script's own ``os.setsid()``
+    established (see ``_dropper_script_v2``'s own docstring for why the
+    pgid ``subprocess.Popen`` reports for OUR direct child -- ``sudo``
+    or ``unshare`` -- is not reliably the same pgid the actual isolated
+    command tree ends up running in, specifically when the sudo-elevated
+    strategy is used). Bounded, best-effort: if the file never appears
+    (setup failed before the dropper ever got there, or this is a
+    genuinely slow environment), falls back to ``fallback_pid`` -- worse
+    but no worse than before this fix existed."""
+
+    deadline = time.monotonic() + _PGID_REPORT_WAIT_SECONDS_V2
+    while time.monotonic() < deadline:
+        try:
+            content = Path(pgid_report_path).read_text().strip()
+            if content:
+                return int(content)
+        except (OSError, ValueError):
+            pass
+        time.sleep(_TIMEOUT_POLL_INTERVAL_SECONDS_V2)
+    return fallback_pid
+
+
+def _kill_process_tree_v2(*, real_pgid: int, uses_sudo: bool) -> None:
+    """Best-effort, NEVER RAISES: kills the whole process group
+    ``real_pgid``. Plain ``os.killpg`` cannot signal a group ``sudo``
+    elevated to root -- an unprivileged caller lacks permission
+    (observed directly: a real ``PermissionError`` from exactly this
+    call in this slice's own adversarial testing) -- so when the
+    isolation strategy that spawned this tree used ``sudo``, the kill
+    is ALSO issued via ``sudo`` (which, run fresh for a ``kill``
+    command, executes as root and can signal it). Every failure mode
+    (already dead, permission denied even via sudo, sudo itself
+    unavailable by the time this runs) is swallowed -- this function's
+    contract is "try to clean up", never "raise and crash the
+    executor" for a best-effort reap."""
+
+    if uses_sudo:
+        try:
+            subprocess.run(
+                ["sudo", "-n", "kill", "-9", "--", f"-{real_pgid}"],
+                capture_output=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return
+    try:
+        os.killpg(real_pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 def _run_isolated_v2(
     *,
     argv: tuple[str, ...],
@@ -491,70 +586,101 @@ def _run_isolated_v2(
     """Runs ``argv`` isolated and returns ``(outcome, diagnostic_reason,
     artifact_payload)``. Raises ``IsolatedExecutorError`` only for a
     setup-time failure (never for the CHECK'S OWN failure/timeout/OOM,
-    which are typed outcomes, not exceptions)."""
+    which are typed outcomes, not exceptions).
 
-    wrapped = _isolation_wrapped_argv_v2(
-        argv, max_memory_mb=max_memory_mb, max_processes=max_processes
-    )
-    if wrapped is None:
-        raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2)
+    Tracking the REAL process group to kill later is more subtle than it
+    looks, and got this wrong twice before landing here (both failures
+    caught by this slice's own adversarial tests, not assumed away):
+    ``subprocess.Popen``'s own ``process.pid`` for OUR direct child
+    (``sudo`` or ``unshare``) is not reliably the pgid the actual
+    isolated command tree ends up in once ``sudo``'s monitor-process
+    architecture (or a later ``execve`` chain) reparents things, and a
+    plain ``os.killpg`` cannot signal a group ``sudo`` elevated to root
+    even though WE spawned it. The dropper script itself calls
+    ``os.setsid()`` and reports its own real pid/pgid back to us via a
+    host-controlled temp file (``_read_real_pgid_v2``); killing goes
+    through ``sudo`` too when the selected strategy used it
+    (``_kill_process_tree_v2``)."""
 
+    pgid_report_fd, pgid_report_path = tempfile.mkstemp(prefix="isolated-executor-pgid-")
+    os.close(pgid_report_fd)
     try:
-        process = subprocess.Popen(
-            wrapped,
-            cwd=str(repo_root),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
+        wrapped_and_sudo = _isolation_wrapped_argv_v2(
+            argv, max_memory_mb=max_memory_mb, max_processes=max_processes,
+            pgid_report_path=pgid_report_path,
         )
-    except OSError as exc:
-        raise IsolatedExecutorError(EXECUTOR_REASON_SETUP_FAILED_V2) from exc
+        if wrapped_and_sudo is None:
+            raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2)
+        wrapped, uses_sudo = wrapped_and_sudo
 
-    deadline = time.monotonic() + timeout_seconds
-    cancelled = False
-    timed_out = False
-    while True:
-        returncode = process.poll()
-        if returncode is not None:
-            break
-        if cancel_event is not None and cancel_event.is_set():
-            cancelled = True
-            break
-        if time.monotonic() >= deadline:
-            timed_out = True
-            break
-        time.sleep(_TIMEOUT_POLL_INTERVAL_SECONDS_V2)
+        try:
+            process = subprocess.Popen(
+                wrapped,
+                cwd=str(repo_root),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise IsolatedExecutorError(EXECUTOR_REASON_SETUP_FAILED_V2) from exc
 
-    if cancelled or timed_out:
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:  # pragma: no cover - defensive only
-            pass
-        if cancelled:
-            return TrustedCheckOutcomeV2.CANCELLED, EXECUTOR_REASON_CANCELLED_V2, None
-        return TrustedCheckOutcomeV2.TIMEOUT, EXECUTOR_REASON_TIMEOUT_V2, None
+        deadline = time.monotonic() + timeout_seconds
+        cancelled = False
+        timed_out = False
+        while True:
+            returncode = process.poll()
+            if returncode is not None:
+                break
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            time.sleep(_TIMEOUT_POLL_INTERVAL_SECONDS_V2)
 
-    # The tracked PID has already exited (poll() returned above), but a
-    # DESCENDANT it spawned could still be alive holding the inherited
-    # stdout/stderr pipe write-ends open -- a plain communicate() here
-    # would then block indefinitely waiting for EOF that never comes,
-    # past this check's own logical deadline. Bounded by a grace period;
-    # on timeout, kill the whole process group (reaping any such
-    # descendant) and finish reading, now safe since nothing is left to
-    # write.
-    try:
-        stdout, stderr = process.communicate(timeout=_COMMUNICATE_GRACE_SECONDS_V2)
-    except subprocess.TimeoutExpired:
+        if cancelled or timed_out:
+            real_pgid = _read_real_pgid_v2(pgid_report_path, fallback_pid=process.pid)
+            _kill_process_tree_v2(real_pgid=real_pgid, uses_sudo=uses_sudo)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover - defensive only
+                pass
+            if cancelled:
+                return TrustedCheckOutcomeV2.CANCELLED, EXECUTOR_REASON_CANCELLED_V2, None
+            return TrustedCheckOutcomeV2.TIMEOUT, EXECUTOR_REASON_TIMEOUT_V2, None
+
+        # The tracked PID has already exited (poll() returned above,
+        # which reaps it internally) -- but a DESCENDANT it spawned
+        # could still be alive holding the inherited stdout/stderr pipe
+        # write-ends open, and a plain communicate() here would then
+        # block indefinitely waiting for EOF that never comes, past this
+        # check's own logical deadline. Bounded by a grace period; on
+        # timeout, kill the whole process group (reaping any such
+        # descendant, using the REAL pgid the dropper reported -- not
+        # process.pid, which by this point may already be reaped and
+        # even RECYCLED by the kernel for an unrelated process) and
+        # finish reading, now safe since nothing should be left to
+        # write. A second, equally bounded read guards the residual case
+        # a descendant escaped the process group entirely (e.g. a
+        # double-fork daemonizing itself) and the kill could not reach
+        # it -- if even THAT hangs, this is a genuine environment
+        # failure, not a verdict this module can safely produce.
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-        except ProcessLookupError:
+            stdout, stderr = process.communicate(timeout=_COMMUNICATE_GRACE_SECONDS_V2)
+        except subprocess.TimeoutExpired:
+            real_pgid = _read_real_pgid_v2(pgid_report_path, fallback_pid=process.pid)
+            _kill_process_tree_v2(real_pgid=real_pgid, uses_sudo=uses_sudo)
+            try:
+                stdout, stderr = process.communicate(timeout=_COMMUNICATE_GRACE_SECONDS_V2)
+            except subprocess.TimeoutExpired as exc:
+                raise IsolatedExecutorError(EXECUTOR_REASON_DESCENDANT_HUNG_V2) from exc
+    finally:
+        try:
+            os.unlink(pgid_report_path)
+        except OSError:
             pass
-        stdout, stderr = process.communicate()
 
     outcome, reason = _classify_completed_process_v2(returncode=process.returncode)
     # TrustedCheckResultMaterialV2 (#201-A) requires artifact_sha256 iff
@@ -565,6 +691,31 @@ def _run_isolated_v2(
         else None
     )
     return outcome, reason, artifact_payload
+
+
+def _inventory_keys_match_command_tokens_v2(
+    inventory: Mapping[str, AllowlistedCommandSpecV2],
+) -> bool:
+    return all(token == spec.command_token for token, spec in inventory.items())
+
+
+def _refuse_whole_plan_v2(
+    plan: TrustedCheckPlanV2, *, authority: TrustedCheckAuthorityV2, reason: str
+) -> tuple[ExecutedCheckV2, ...]:
+    """A structural problem with ``inventory`` itself (not any one
+    check) refuses the WHOLE plan: every check gets a typed
+    ``INFRA_FAILURE`` with the same ``reason``, none attempted."""
+
+    return tuple(
+        ExecutedCheckV2(
+            result=_build_result_v2(
+                plan=plan, check_name=check.check_name, authority=authority,
+                outcome=TrustedCheckOutcomeV2.INFRA_FAILURE, artifact_payload=None,
+            ),
+            diagnostic_reason=reason,
+        )
+        for check in plan.checks
+    )
 
 
 def execute_trusted_check_plan_v2(
@@ -594,18 +745,24 @@ def execute_trusted_check_plan_v2(
     the WHOLE plan (every check gets a typed ``INFRA_FAILURE``, none are
     attempted) rather than silently resolving tokens against an inventory
     the plan never actually committed to. See that function's own
-    docstring for exactly what this proves and does not prove."""
+    docstring for exactly what this proves and does not prove.
+
+    Every entry's own dict key must equal its
+    ``AllowlistedCommandSpecV2.command_token`` -- an inventory keyed
+    ``{"other_token": spec_whose_own_command_token_is_"token"}`` is
+    ambiguous identity (which name does this entry actually answer to?)
+    in a system whose whole point is rigorous binding, and is refused
+    fail-closed before the digest is even computed, not merely tolerated
+    because the digest still commits to *some* bytes either way."""
+
+    if not _inventory_keys_match_command_tokens_v2(inventory):
+        return _refuse_whole_plan_v2(
+            plan, authority=authority, reason=EXECUTOR_REASON_INVENTORY_KEY_TOKEN_MISMATCH_V2,
+        )
 
     if compute_check_command_inventory_digest_v2(inventory) != plan.authority_suite_digest:
-        return tuple(
-            ExecutedCheckV2(
-                result=_build_result_v2(
-                    plan=plan, check_name=check.check_name, authority=authority,
-                    outcome=TrustedCheckOutcomeV2.INFRA_FAILURE, artifact_payload=None,
-                ),
-                diagnostic_reason=EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2,
-            )
-            for check in plan.checks
+        return _refuse_whole_plan_v2(
+            plan, authority=authority, reason=EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2,
         )
 
     results: list[ExecutedCheckV2] = []

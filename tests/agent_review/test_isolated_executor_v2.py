@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from threading import Event, Timer
+from threading import Event, Thread, Timer
 
 import pytest
 
@@ -32,6 +32,7 @@ from app.agent_review.isolated_executor_v2 import (
     EXECUTOR_REASON_CANCELLED_V2,
     EXECUTOR_REASON_COMMAND_NOT_IN_INVENTORY_V2,
     EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2,
+    EXECUTOR_REASON_INVENTORY_KEY_TOKEN_MISMATCH_V2,
     EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2,
     EXECUTOR_REASON_TIMEOUT_V2,
     AllowlistedCommandSpecV2,
@@ -187,11 +188,18 @@ def test_execute_denies_real_outbound_network_access(repo_root):
     # be the one this environment's own probe actually selected.
     import app.agent_review.isolated_executor_v2 as isolated_executor_module
 
-    wrapped = isolated_executor_module._isolation_wrapped_argv_v2(
-        (sys.executable, "-c", code), max_memory_mb=128, max_processes=16,
-    )
-    assert wrapped is not None, "the module's own probe found no working isolation strategy"
-    completed = subprocess.run(wrapped, capture_output=True, timeout=8)
+    pgid_fd, pgid_path = tempfile.mkstemp(prefix="test-pgid-")
+    os.close(pgid_fd)
+    try:
+        wrapped_and_sudo = isolated_executor_module._isolation_wrapped_argv_v2(
+            (sys.executable, "-c", code), max_memory_mb=128, max_processes=16,
+            pgid_report_path=pgid_path,
+        )
+        assert wrapped_and_sudo is not None, "the module's own probe found no working isolation strategy"
+        wrapped, _uses_sudo = wrapped_and_sudo
+        completed = subprocess.run(wrapped, capture_output=True, timeout=8)
+    finally:
+        os.unlink(pgid_path)
     assert completed.returncode == errno.ENETUNREACH, (
         "expected ENETUNREACH (no route in the isolated namespace), "
         f"got {completed.returncode}"
@@ -214,7 +222,7 @@ def test_execute_refuses_a_command_token_not_in_the_inventory(repo_root):
     # not the separate "inventory doesn't match the plan at all" case
     # (see test_execute_refuses_an_inventory_that_does_not_match_the_
     # plans_own_digest below).
-    inventory = {"other_token": _py("pass")}
+    inventory = {"other_token": _py("pass", token="other_token")}
     plan = _plan(inventory=inventory, checks=[_command(command_token="not_in_inventory")])
     executed = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
@@ -263,6 +271,67 @@ def test_execute_refuses_an_inventory_that_does_not_match_the_plans_own_digest(r
     assert accepted[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS
 
 
+def test_execute_refuses_an_inventory_whose_dict_keys_do_not_match_their_own_command_token(repo_root):
+    """A review of this slice pointed out a real ambiguity: nothing
+    previously required an inventory's dict key to equal the
+    `command_token` on the `AllowlistedCommandSpecV2` stored under it --
+    `{"other_token": spec_whose_own_command_token_is_"token"}` was
+    silently tolerated as long as its digest happened to match. Refused
+    fail-closed now, before the digest is even computed, regardless of
+    whether the digest would otherwise have matched."""
+    mismatched_inventory = {"other_token": _py("pass", token="token")}
+    canonical_inventory = {"token": _py("pass")}
+    plan = _plan(inventory=canonical_inventory)
+
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=mismatched_inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+    )
+    assert len(executed) == len(plan.checks)
+    for item in executed:
+        assert item.result.outcome is TrustedCheckOutcomeV2.INFRA_FAILURE
+        assert item.diagnostic_reason == EXECUTOR_REASON_INVENTORY_KEY_TOKEN_MISMATCH_V2
+        assert item.result.artifact_sha256 is None
+
+
+def test_execute_does_not_hang_when_a_descendant_outlives_the_leader_holding_the_pipe_open(repo_root):
+    """The exact process-tree scenario a review of this slice flagged: the
+    tracked leader process exits (and is reaped) almost immediately, but
+    a real forked descendant inherits the stdout/stderr pipe write-ends
+    and keeps them open well past that -- a plain communicate() would
+    hang indefinitely waiting for EOF. Run in a background thread with a
+    hard join timeout so a genuine regression FAILS this test cleanly
+    (assertion error) instead of hanging the whole suite."""
+    code = (
+        "import os, sys, time\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    time.sleep(20)\n"  # descendant: outlives the leader, keeps the pipe open
+        "    sys.exit(0)\n"
+        "sys.exit(0)\n"  # leader: exits immediately
+    )
+    inventory = {"token": _py(code)}
+    plan = _plan(inventory=inventory, checks=[_command(timeout_seconds=30)])
+
+    outcome_box: dict[str, object] = {}
+
+    def _run() -> None:
+        outcome_box["executed"] = execute_trusted_check_plan_v2(
+            plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+        )
+
+    thread = Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout=20)
+    assert not thread.is_alive(), (
+        "execute_trusted_check_plan_v2 hung past both communicate() grace periods -- "
+        "the descendant-reap fix regressed"
+    )
+    executed = outcome_box["executed"]
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS, (
+        "the tracked leader itself exited 0 -- the descendant being killed must not change that"
+    )
+
+
 def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, monkeypatch):
     """Fail-closed proof: if NONE of the isolation strategies this module
     probes actually work, it must NEVER silently fall back to running
@@ -309,7 +378,6 @@ def test_execute_produces_a_typed_cancelled_outcome_when_cancel_event_is_set(rep
     assert executed[0].diagnostic_reason == EXECUTOR_REASON_CANCELLED_V2
 
 
-@pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not available in this environment")
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not available in this environment")
 def test_execute_enforces_the_memory_limit_and_classifies_the_kill_as_failure_not_oom(repo_root):
     """RLIMIT_AS really caps address space -- proven here directly: a C
