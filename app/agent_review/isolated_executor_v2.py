@@ -384,8 +384,24 @@ def _dropper_script_v2(
         # forks a genuinely NEW process here, which is why setsid() is
         # attempted at all rather than assumed unnecessary.
         "    pass\n"
-        f"with open({pgid_report_path!r}, 'w') as _f:\n"
-        "    _f.write(str(os.getpgrp()))\n"
+        "try:\n"
+        f"    with open({pgid_report_path!r}, 'w') as _f:\n"
+        "        _f.write(str(os.getpgrp()))\n"
+        "except OSError:\n"
+        # Reporting the real pgid back to the host is a BEST-EFFORT
+        # cleanup aid, never a requirement for the check itself to run
+        # and produce a correct verdict -- observed directly on this
+        # project's real GitHub Actions runner: this write can fail with
+        # a genuine PermissionError under the sudo-elevated strategy
+        # (plausibly PAM/AppArmor session-scoped /tmp confinement tied
+        # to the ORIGINAL unprivileged caller's identity, not a plain
+        # DAC permission-bits problem an elevated root writer would
+        # normally bypass) even though nothing else about running the
+        # command is affected. Swallowing this and proceeding means the
+        # WORST case is a degraded fallback pgid for a later best-effort
+        # kill (see _read_real_pgid_v2's own fallback_pid) -- never a
+        # crashed, falsely-FAILURE-classified check.
+        "    pass\n"
         f"{drop_lines}"
         f"resource.setrlimit(resource.RLIMIT_AS, ({memory_bytes}, {memory_bytes}))\n"
         f"resource.setrlimit(resource.RLIMIT_NPROC, ({max_processes}, {max_processes}))\n"
@@ -604,6 +620,18 @@ def _run_isolated_v2(
 
     pgid_report_fd, pgid_report_path = tempfile.mkstemp(prefix="isolated-executor-pgid-")
     os.close(pgid_report_fd)
+    # tempfile.mkstemp() creates the file mode 0600, owned by THIS
+    # (unprivileged, in the sudo-elevated strategy) process -- but the
+    # dropper script writes to it from a DIFFERENT, elevated identity
+    # (root via sudo, before its own later privilege drop). Observed
+    # directly on this project's real GitHub Actions runner: that write
+    # failed with a genuine PermissionError even though the writer was
+    # root, most likely due to sudo's own AppArmor/session confinement
+    # scoping file access by original ownership rather than a plain DAC
+    # permission-bits check. Chmod'ing world-writable sidesteps whatever
+    # the exact mechanism is -- this is a tiny, ephemeral scratch file
+    # holding nothing but a pid, deleted immediately after use.
+    os.chmod(pgid_report_path, 0o666)
     try:
         wrapped_and_sudo = _isolation_wrapped_argv_v2(
             argv, max_memory_mb=max_memory_mb, max_processes=max_processes,

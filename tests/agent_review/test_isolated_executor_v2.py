@@ -190,6 +190,7 @@ def test_execute_denies_real_outbound_network_access(repo_root):
 
     pgid_fd, pgid_path = tempfile.mkstemp(prefix="test-pgid-")
     os.close(pgid_fd)
+    os.chmod(pgid_path, 0o666)  # see _run_isolated_v2's own comment on this exact chmod
     try:
         wrapped_and_sudo = isolated_executor_module._isolation_wrapped_argv_v2(
             (sys.executable, "-c", code), max_memory_mb=128, max_processes=16,

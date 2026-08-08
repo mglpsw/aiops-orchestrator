@@ -257,6 +257,38 @@ A `docs/engineering/CURRENT_CHECKPOINT.md` contradiction the same review
 flagged ("PRs abertas: nenhuma" recorded alongside this very PR being
 open) is also fixed in this addendum's own commit.
 
+## Third real CI failure on this project's own GitHub Actions runner (fixed)
+
+Pushing the second-pass fix (finding 5's real fix, above) failed EVERY
+`requires_network` test on the real runner -- not just the
+descendant-hang scenario, all of them, including the simplest possible
+"check exits 0". Root cause: the new pgid-report file is created by the
+CALLING (unprivileged) process, mode `0600`; the dropper script then
+tries to WRITE to it from the sudo-elevated (root, before its own later
+privilege drop) identity, and that write raised a genuine, UNCAUGHT
+`PermissionError` on the real runner -- plausibly PAM/AppArmor session-
+scoped `/tmp` confinement tied to the original caller's identity, though
+the exact mechanism could not be reproduced in this session's own
+sandbox (tried directly; the equivalent write succeeded there). Because
+the crash was uncaught, it took down the WHOLE dropper -- and therefore
+the check itself -- turning every outcome into `FAILURE`, regardless of
+what the check would otherwise have done.
+
+Fix: reporting the real pgid back to the host is a BEST-EFFORT cleanup
+aid, never a requirement for the check to run and produce a correct
+verdict -- the write is now wrapped in its own `try/except OSError:
+pass` inside the dropper, so any failure there degrades to
+`_read_real_pgid_v2`'s existing `fallback_pid` behavior (a worse pgid
+for a later best-effort kill, never a crashed check). Also chmod's the
+report file `0666` right after creation as defense-in-depth, in case the
+real cause is closer to a plain ownership/permission-bits problem in
+some environments even if not reproducible in this one. This is exactly
+the class of "verify on the real target, don't assume the fix that
+worked in a dev sandbox actually works everywhere" lesson this
+checkpoint's earlier CI-discovered-gaps sections already document twice
+over -- recorded here as a third instance, not an exception to the
+pattern.
+
 ## Honest limitations (named, not hidden)
 
 1. **Exit-code forgery from inside the check's own process is not, and
