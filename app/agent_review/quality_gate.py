@@ -296,12 +296,6 @@ def evaluate_review_quality_gate(
         blocked_reasons=_dedupe(blocked_reasons),
         warnings=_dedupe(warnings),
         limitations=_dedupe(limitations),
-        # Pass-through only, so a target can publish "what the model said
-        # about its own work" as a section of its own. Nothing above reads
-        # it: not `status`, not `normalized_verdict`, not `quality_score`,
-        # not `manual_review_required`, not `blocked_reasons`
-        # (AgentEscala#675, Fix A).
-        model_reported_limitations=_dedupe(_model_reported_limitations(raw, chunk_results)),
         inputs=_inputs(
             raw,
             chunk_results,
@@ -342,17 +336,6 @@ def _validate_final_review_shape(raw: dict[str, Any]) -> None:
     for field in ("rejected_summary", "coverage", "counts", "inputs"):
         if field in raw and not isinstance(raw.get(field), dict):
             raise QualityGateError("final_review_invalid", f"final review field {field} is invalid")
-
-
-def _model_reported_limitations(raw: dict[str, Any], chunk_results: ChunkResults) -> list[str]:
-    """Collect the model-authored namespace from both inputs, for echoing.
-
-    Deliberately a separate reader from `_initial_limitations`: the two must
-    never converge on one list again (AgentEscala#675, Fix A).
-    """
-    reported = [str(value) for value in raw.get("model_reported_limitations", []) if isinstance(value, str)]
-    reported.extend(chunk_results.model_reported_limitations)
-    return reported
 
 
 def _initial_limitations(raw: dict[str, Any], chunk_results: ChunkResults) -> list[str]:

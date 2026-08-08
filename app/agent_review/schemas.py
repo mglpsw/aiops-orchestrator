@@ -482,12 +482,6 @@ class ReviewQualityGate(BaseModel):
     blocked_reasons: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
-    # Echoed so a target can render "what the model said about its own work"
-    # as its own section, distinct from findings and from deterministic
-    # limitations. Nothing in this gate reads it: it never contributes to
-    # `status`, `normalized_verdict`, `quality_score`,
-    # `manual_review_required` or `blocked_reasons` (AgentEscala#675, Fix A).
-    model_reported_limitations: list[str] = Field(default_factory=list)
     inputs: dict[str, Any] = Field(default_factory=dict)
     created_at: str = Field(default_factory=utc_now_iso)
 

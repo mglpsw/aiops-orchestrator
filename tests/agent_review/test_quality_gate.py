@@ -16,6 +16,7 @@ from app.agent_review.schemas import (
     ChunkResults,
     ChunkResultsCoverage,
     ReviewIntake,
+    ReviewQualityGate,
     SemanticChunk,
     SemanticChunkPlan,
 )
@@ -488,9 +489,23 @@ def test_load_intake_rejects_an_unknown_schema_id(tmp_path: Path) -> None:
 # ── AgentEscala#675 / Fix A: the gate never decides on model text ────────────
 
 
-def test_gate_echoes_model_reported_limitations_without_deciding_on_them() -> None:
-    """The model's self-report reaches the target for rendering, and changes
-    nothing the gate decides: not status, not verdict, not score, not
+def test_quality_gate_does_not_carry_a_model_reported_limitations_field() -> None:
+    """The model's self-report is preserved on `ChunkResults` and rendered
+    from `FinalReview` (`final_synthesizer.render_final_review_markdown`'s
+    "## Observações do modelo" section, published verbatim as
+    `final-review.md` -- the artifact `consume-aiops-quality-gate.py`
+    actually embeds in the comment). No consumer, upstream or target-side,
+    reads a copy of it off `ReviewQualityGate`: adding one here would be a
+    field no code ever looks at. So the gate does not carry one at all
+    (#675 corrective audit, finding 4)."""
+    assert "model_reported_limitations" not in ReviewQualityGate.model_fields
+
+
+def test_gate_ignores_model_reported_limitations_on_the_final_review_input() -> None:
+    """`FinalReview.model_reported_limitations` is a real field on the input
+    this function reads (`raw`), so proving decision-neutrality here means
+    proving the gate is unaffected by its presence -- not that it echoes a
+    copy without deciding on it: not status, not verdict, not score, not
     manual_review_required, not blocked_reasons."""
     clean = _gate(_final_review())
     with_model_text = _gate(
@@ -501,15 +516,12 @@ def test_gate_echoes_model_reported_limitations_without_deciding_on_them() -> No
         )
     )
 
-    assert with_model_text.model_reported_limitations == [
-        "contracts_context_not_relevant:The contracts context was not relevant here.",
-    ]
-    assert with_model_text.limitations == clean.limitations
-    assert with_model_text.status == clean.status
-    assert with_model_text.normalized_verdict == clean.normalized_verdict
-    assert with_model_text.quality_score == clean.quality_score
-    assert with_model_text.manual_review_required == clean.manual_review_required
-    assert with_model_text.blocked_reasons == clean.blocked_reasons
+    assert clean.limitations == with_model_text.limitations
+    assert clean.status == with_model_text.status
+    assert clean.normalized_verdict == with_model_text.normalized_verdict
+    assert clean.quality_score == with_model_text.quality_score
+    assert clean.manual_review_required == with_model_text.manual_review_required
+    assert clean.blocked_reasons == with_model_text.blocked_reasons
 
 
 def test_model_text_cannot_spend_the_gate_quality_score_budget() -> None:
