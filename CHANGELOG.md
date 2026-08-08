@@ -79,12 +79,29 @@
   malicious `conftest.py` that forges both a success banner and a forged
   report file while the real process still exits nonzero. Also proven:
   real outbound network denial (`ENETUNREACH` in the fresh namespace),
-  real `sudo` refusal, typed `TIMEOUT`/`OOM`/`CANCELLED` outcomes, refusal
-  to run a command not in the inventory, deterministic results across
+  real `sudo` refusal, typed `TIMEOUT`/`CANCELLED` outcomes, refusal to
+  run a command not in the inventory, deterministic results across
   repeated runs, and fail-closed refusal to run at all (never silently
   unisolated) when the isolation primitive itself is unavailable. Wiring
-  into `ReviewReadinessV2` is `#201-C`'s job, not this slice's (refs
-  #201, #199, docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md)
+  into `ReviewReadinessV2` is `#201-C`'s job, not this slice's. An
+  independent review of the first CI-green commit found 4 more real
+  issues, closed in this same slice: the inventory a caller supplies is
+  now checked against the plan's own `authority_suite_digest` before any
+  `command_token` resolves (`compute_check_command_inventory_digest_v2`,
+  mirroring `#211`'s `target_profile` fix exactly) instead of being
+  accepted unverified; OOM classification -- previously guessed from a
+  signal-death signature that could misclassify a genuine unrelated crash
+  as environmental, hiding a real regression from readiness -- is removed
+  entirely, so every signal death is now the conservative, attributable
+  `FAILURE` (`RLIMIT_AS` enforcement itself is unchanged and still
+  proven); `process.communicate()` after the tracked process exits now
+  has a bounded grace period and kills any lingering descendant holding
+  the output pipe open, instead of risking an indefinite hang; and
+  `authority=TRUSTED` being caller-declared rather than independently
+  verified is now an explicit, prominent rule in the module's own
+  docstring -- do not use it against real adversarial PR code until
+  `#201-B3` closes the still-open exit-code-forgery gap (refs #201, #199,
+  docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md)
 
 - AgentReview v2 trusted-check plan/result contracts (#201-A, first slice
   of #201, distribution epic #199): `TrustedCheckPlanV2` (host-owned,

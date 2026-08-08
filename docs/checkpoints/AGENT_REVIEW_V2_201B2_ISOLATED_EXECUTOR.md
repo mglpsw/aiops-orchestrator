@@ -20,15 +20,16 @@ state:
   capability_state: real_isolated_execution_in_dev_sandbox_not_ct104
 
 evidence:
-  full_test_suite: "1975 passed, 4 skipped"
-  new_tests_this_slice: 19
-  ci_validate_sh: "sec 7: 1917 passed, 4 skipped, 58 deselected; sec 8: 58 passed, 1921 deselected -- OK"
+  full_test_suite: "1976 passed, 4 skipped"
+  new_tests_this_slice: 20
+  ci_validate_sh: "sec 7: 1917 passed, 4 skipped, 59 deselected; sec 8: 59 passed, 1921 deselected -- OK"
   schema_export_check: "byte-identical (unchanged this slice)"
   caem_f0_pin: "ok"
   ri_b0a_2_reuse_view_check: "byte-identical (unchanged this slice)"
   git_diff_check: clean
   ruff_new_files: "All checks passed! (app/agent_review/isolated_executor_v2.py, tests/agent_review/test_isolated_executor_v2.py)"
-  flakiness_check: "3 consecutive full runs of the new suite, 19/19 passed each time"
+  flakiness_check: "3 consecutive full runs under root, sudo-elevated, and fully-unprivileged accounts, 20/20 passed every time"
+  note: "counts re-measured after the independent-review addendum fixes; superseded prior counts (19 tests / 1975) not carried forward"
 ```
 
 ## CT104 status this corte
@@ -48,7 +49,7 @@ true, never silently dropped from the list.
 | # | Criterion (issue #201's own wording) | Status |
 |---|---|---|
 | 1 | contratos strict de plan/result definidos | `done` -- #201-A, reused unmodified |
-| 2 | harness e serializer ficam fora do alcance da PR | `proven_in_this_sandbox` -- adversarial forged-stdout/forged-report test proves the verdict depends only on the host-observed kernel exit code, never anything the child prints or writes |
+| 2 | harness e serializer ficam fora do alcance da PR | `partially_proven` -- adversarial forged-stdout/forged-report test proves the verdict does NOT depend on anything the child prints or writes. Does NOT prove the child's own EXIT CODE can't be forged by PR-controlled code (e.g. `os._exit(0)` in a `conftest.py` hook) -- an independent review of this slice confirmed this residual gap is real and unresolved; `authority=TRUSTED` must not be used against real adversarial PR code until `#201-B3` closes it (see the module's own docstring and the addendum below) |
 | 3 | isolamento sem rede e sem privilégios comprovado | `proven_in_this_sandbox, not_ct104` -- real `unshare --user --net` (ENETUNREACH proof), real privilege drop to `nobody`, real `sudo` refusal, real `RLIMIT_AS`/`RLIMIT_NPROC` enforcement. **Not** proven on CT104's own pinned/hardened image -- `blocked_external: ct104_unavailable` for that specific host |
 | 4 | canal de resultado não é gravável pela PR | `proven_in_this_sandbox` -- `TrustedCheckResultV2` is constructed entirely inside the parent host process from `Popen.wait()`'s own return value; no file path is ever communicated to or read back from the child for the verdict |
 | 5 | artifact é ligado ao HEAD/tested identity e harness digest | `done` -- `run_id`/`head_sha`/`harness_digest` threaded from `plan` into every result unmodified; bindable via #201-A's `bind_trusted_check_result_to_plan_v2` (exercised directly in this slice's own success test) |
@@ -118,6 +119,84 @@ to catch -- recorded here as what actually happened across two real,
 observed CI failures, not smoothed over as if the first (or second)
 design had been correct on the first try.
 
+## Addendum — independent review, 4 real findings closed in this same slice
+
+An independent review of this slice's first CI-green commit (`5f3edc6`)
+found the CI status report accurate but raised 5 further points. 4 were
+confirmed real and closed here, without opening a new phase; the 5th is
+an already-known, architecturally unresolved gap this addendum makes more
+prominent rather than pretending to close.
+
+1. **Inventory not bound to the plan's own `authority_suite_digest`
+   (confirmed, closed).** `TrustedCheckPlanV2.authority_suite_digest`
+   (#201-A) exists specifically to pin the host-owned material a plan
+   commits to, but `execute_trusted_check_plan_v2` accepted ANY
+   `inventory` a caller handed it -- proving values (each
+   `AllowlistedCommandSpecV2` real and typed) but not provenance (nothing
+   stopped a caller resolving the plan's `command_token`s against a
+   DIFFERENT inventory than the one the plan's own digest names). Fix:
+   new `compute_check_command_inventory_digest_v2(inventory)`, checked
+   against `plan.authority_suite_digest` before a single token resolves;
+   a mismatch refuses the WHOLE plan (every check gets `INFRA_FAILURE`
+   with the new `EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2`, none
+   attempted). Mirrors `#211`'s own `target_profile`/`manifest.identity.
+   profile_hash` fix exactly. Red-tested by
+   `test_execute_refuses_an_inventory_that_does_not_match_the_plans_own_
+   digest`.
+2. **`authority=TRUSTED` is caller-declared, not a property this module
+   independently verifies (confirmed, real limitation, made explicit
+   rather than "fixed").** #201-A's own docstring assigns "enforce WHO
+   sets `TRUSTED`" to `#201-B2`/`#201-B3`. This slice's isolation
+   properties (harness/serializer out of the check's reach, result
+   channel unwritable by it) ARE part of that enforcement, but they do
+   not close the exit-code-forgery gap (finding 4 below) -- so
+   `authority=TRUSTED` still cannot be asserted as SAFE for real
+   adversarial PR code from this slice alone. Rather than attempt an
+   incomplete code fix (a caller-supplied "I promise this is safe" flag
+   would be security theater, not a real control), this addendum makes
+   the rule explicit and prominent in the module's own docstring: **do
+   not use `authority=TRUSTED` against real, untrusted PR code until
+   `#201-B3` closes the exit-code-forgery gap.** `#201-C` must treat this
+   as an open precondition, not a solved one.
+3. **OOM classification risked the exact failure mode #201 forbids, in
+   the OTHER direction (confirmed, fixed by REMOVING the heuristic).**
+   The original signal-signature heuristic
+   (`SIGKILL`/`SIGSEGV`/`SIGBUS`/`SIGABRT` -> `OOM`) could misclassify a
+   genuine, unrelated product crash bug as environmental `OOM` -- which
+   never promotes to `RequiredCheckResultV2`, silently hiding a real
+   regression from readiness instead of surfacing it as `FAILURE`. Fix:
+   `_classify_completed_process_v2` no longer guesses `OOM` at all --
+   EVERY signal death now classifies as the conservative, attributable
+   `FAILURE`. `RLIMIT_AS` enforcement itself (the actual safety property)
+   is unchanged and still proven directly (a compiled C fixture that
+   overflows the limit is genuinely killed by `SIGSEGV`); precisely
+   typing that as `OOM` vs. an unrelated crash would need independent
+   evidence (cgroup `memory.events`) this slice does not implement, named
+   as a limitation rather than guessed at.
+4. **`conftest.py` exit-code forgery is not actually exercised by the
+   existing adversarial test (confirmed -- was already a named
+   limitation, now made more precise).** The forged-stdout/forged-report
+   test proves the verdict ignores what a check PRINTS or WRITES; it does
+   NOT and cannot prove PR-controlled code can't forge the check's own
+   real exit code (e.g. `os._exit(0)` in a hook). This was already named
+   in the module's own "one thing this module cannot defend against"
+   section before this review -- strengthened here with an explicit rule
+   (see finding 2) and the test's own docstring updated to state plainly
+   what it does and does not prove, rather than let its name ("ignores
+   forged ... trusts only the real exit code") read as a broader claim
+   than it supports.
+5. **`process.communicate()` after the poll loop had no timeout
+   (confirmed, fixed).** The tracked PID exiting does not guarantee no
+   descendant process is still alive holding the inherited stdout/stderr
+   pipe open -- a plain `communicate()` there could hang past the check's
+   own logical deadline. Fix: bounded by a grace period; on timeout, kill
+   the whole process group (reaping any such descendant) and finish
+   reading, now safe.
+
+A `docs/engineering/CURRENT_CHECKPOINT.md` contradiction the same review
+flagged ("PRs abertas: nenhuma" recorded alongside this very PR being
+open) is also fixed in this addendum's own commit.
+
 ## Honest limitations (named, not hidden)
 
 1. **Exit-code forgery from inside the check's own process is not, and
@@ -126,16 +205,16 @@ design had been correct on the first try.
    invocation) is influenced by PR-supplied code (`conftest.py`) that
    calls `os._exit(0)` unconditionally, the host-observed exit code
    genuinely is `0`. This is the same trust boundary every real CI system
-   accepts. Named explicitly in the module's own docstring, not silently
-   assumed solved.
-2. **OOM classification is a documented heuristic**, not perfect
-   detection: a runtime that catches its own allocation failure
-   gracefully (Python's `MemoryError` -> exit `1`) is classified
-   `FAILURE`, not `OOM` -- verified directly by this slice's own hands-on
-   testing (a Python `bytearray()` allocation against `RLIMIT_AS`
-   produces exit `1`, not a signal), which is exactly why the OOM test
-   uses a small compiled C fixture instead (a real, unhandled
-   `RLIMIT_AS`-triggered `SIGSEGV`).
+   accepts. **Do not set `authority=TRUSTED` against real adversarial PR
+   code until `#201-B3` closes this** (see the addendum above, finding 2).
+2. **OOM is not classified at all (changed from an earlier, riskier
+   heuristic** -- see the addendum above, finding 3, for why guessing was
+   removed rather than kept): every signal death classifies as `FAILURE`.
+   `RLIMIT_AS` enforcement itself is still proven directly (a compiled C
+   fixture that overflows the limit is genuinely killed by `SIGSEGV`);
+   precisely typing that as `OOM` vs. an unrelated crash needs
+   independent evidence (cgroup `memory.events`) this slice does not
+   implement.
 3. **`harness_digest` binding to a real, running, pinned container image
    is `blocked_external: ct104_unavailable`.** The field is threaded
    through correctly and bindable via #201-A's own mechanism; independent
@@ -162,15 +241,20 @@ design had been correct on the first try.
 
 ## What's next in the DAG
 
+- `#201-B3`: adversarial hardening closing the exit-code-forgery gap
+  (honest limitation 1 above) -- the actual precondition for ever safely
+  setting `authority=TRUSTED` against real, untrusted PR code;
 - `#201-C`: wire `execute_trusted_check_plan_v2`'s real output into
   `review_readiness_emission_v2`, replacing/augmenting whatever currently
-  feeds `required_checks` for a target that opts in;
+  feeds `required_checks` for a target that opts in -- MUST NOT treat
+  `authority=TRUSTED` as safe for real adversarial PRs before `#201-B3`;
 - `#201-D`: target conformance (AgentEscala as reference; a real
   target-owned `CheckCommandInventoryV2` sourced from that target's own
   committed config, not test-local fixtures as here);
-- CT104 coming online reopens item 3 and limitation 3/4 above for
-  re-verification against the real pinned runner -- not automatically
-  assumed to pass just because the portable mechanism does here.
+- CT104 coming online reopens acceptance criterion 3 and limitations 3/4
+  above for re-verification against the real pinned runner -- not
+  automatically assumed to pass just because the portable mechanism does
+  here.
 
 ## Merge record
 

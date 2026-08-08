@@ -20,7 +20,15 @@ own verdict:
   HOST-supplied ``inventory: Mapping[str, AllowlistedCommandSpecV2]`` --
   never a raw string the plan or any PR-influenced input assembles (see
   ``trusted_checks_v2.AllowlistedCheckCommandV2``'s own docstring on why
-  the plan itself already only ever carries a token, never argv);
+  the plan itself already only ever carries a token, never argv). That
+  inventory is itself checked against the plan's own commitment before
+  anything resolves: ``compute_check_command_inventory_digest_v2(
+  inventory) == plan.authority_suite_digest``, refusing the WHOLE plan
+  (typed ``INFRA_FAILURE``, nothing attempted) on any mismatch -- closing
+  a gap a review of this slice found real: an earlier version accepted
+  ANY inventory a caller handed it, proving values but not provenance
+  (see that function's own docstring for exactly what this does and does
+  not prove);
 - **the verdict** (``SUCCESS``/``FAILURE``/``TIMEOUT``/``OOM``/
   ``CANCELLED``/``INFRA_FAILURE``) is derived EXCLUSIVELY from signals the
   HOST observes about the child process via the kernel -- its real exit
@@ -54,19 +62,38 @@ sub-isolation). This is the same trust boundary every real CI system
 relies on (a process's own exit code, as observed by whoever waited on
 it) -- named here explicitly rather than silently assumed solved.
 
-## OOM classification is a documented heuristic, not perfect detection
+**Practical consequence for any caller, stated as a rule, not a footnote:
+do not set ``authority=TRUSTED`` for a check run against real,
+untrusted/adversarial PR code until this gap closes (tracked as
+``#201-B3``).** Everything else this slice proves -- network denial,
+privilege drop, resource limits, the result channel being unwritable by
+the check, the inventory being digest-bound to the plan -- holds
+regardless of who wrote the code under test. This one property does not.
+``#201-C`` (wiring a real result into ``ReviewReadinessV2``) MUST treat
+this as an open precondition, not a solved one, before trusting this
+module's ``TRUSTED``-authority output against real target-repo PRs.
+
+## OOM is not classified -- named as a limitation, not guessed at
 
 ``RLIMIT_AS`` is real and DOES cap a check's address space -- the safety
-property ("limites de CPU/RAM/tempo/processos") holds regardless. But
-WHICH typed outcome a killed check gets is necessarily a heuristic: a
-runtime that catches its own allocation failure and exits cleanly (e.g.
-Python's ``MemoryError`` -> exit code ``1``) is indistinguishable from an
-ordinary product failure and is classified ``FAILURE``, not ``OOM`` --
-this module does not attempt runtime-specific instrumentation to catch
-that case. Only a process actually KILLED by a signal commonly associated
-with allocation failure (``SIGKILL``/``SIGSEGV``/``SIGBUS``/``SIGABRT``)
-is classified ``OOM``. Both directions of this heuristic are named here
-rather than silently assumed accurate.
+property ("limites de CPU/RAM/tempo/processos") holds regardless of what
+typed outcome a killed check gets. An earlier version of this module
+guessed ``OOM`` from a signal-death signature (``SIGKILL``/``SIGSEGV``/
+``SIGBUS``/``SIGABRT``), reasoning those commonly follow an ``RLIMIT_AS``
+hit. A review of this slice pointed out the real, unresolved ambiguity:
+the SAME signals just as commonly follow an ordinary, unrelated crash bug
+(a NULL-pointer dereference from a failed ``malloc`` looks identical,
+signal-wise, to any other NULL-pointer dereference), and guessing ``OOM``
+risked exactly the failure mode issue #201 itself forbids in the OTHER
+direction -- a real product regression silently reclassified as
+environmental (`TrustedCheckOutcomeV2.OOM` never promotes; a misclassified
+regression would vanish from readiness instead of blocking it).
+``_classify_completed_process_v2`` now classifies EVERY signal death as
+``FAILURE`` (attributable, a promotable candidate) -- the conservative,
+safe default. Precisely typing a memory-exhaustion kill as ``OOM``
+requires independent evidence (e.g. cgroup ``memory.events``' own
+``oom_kill`` counter) this slice does not implement; that gap is named,
+not silently patched over with a heuristic that could hide a regression.
 
 ## What is proven here, and what is `blocked_external: ct104_unavailable`
 
@@ -162,20 +189,10 @@ EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2 = "isolated_executor_isolation_unavaila
 EXECUTOR_REASON_SETUP_FAILED_V2 = "isolated_executor_setup_failed"
 EXECUTOR_REASON_CANCELLED_V2 = "isolated_executor_cancelled"
 EXECUTOR_REASON_TIMEOUT_V2 = "isolated_executor_timeout"
-EXECUTOR_REASON_LIKELY_OOM_V2 = "isolated_executor_likely_oom"
-
-# Signals a killed child can die from that this module treats as an OOM
-# signature (see the module docstring's "what is proven / documented
-# limitation" section: a resource-exhaustion failure a runtime instead
-# reports via a normal nonzero exit -- e.g. Python's MemoryError -> exit
-# 1 -- is NOT distinguishable from this list alone and is classified
-# FAILURE, not OOM; this is a documented, honest limitation, not silently
-# assumed solved).
-_OOM_SIGNATURE_SIGNALS_V2 = frozenset(
-    {signal.SIGKILL, signal.SIGSEGV, signal.SIGBUS, signal.SIGABRT}
-)
+EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2 = "isolated_executor_inventory_digest_mismatch"
 
 _TIMEOUT_POLL_INTERVAL_SECONDS_V2 = 0.05
+_COMMUNICATE_GRACE_SECONDS_V2 = 5.0
 
 # Mirrors trusted_checks_v2._RESOLVED_OUTCOMES_V2 (module-private there,
 # so re-declared here rather than reaching into that module's own
@@ -190,10 +207,14 @@ class AllowlistedCommandSpecV2(ContractV2Model):
     plan, from PR-controlled input, or from any model output. A
     ``TrustedCheckPlanV2`` (#201-A) never carries argv at all, only a
     ``command_token``; resolving that token against THIS inventory is the
-    only way an actual command comes to exist, and this inventory itself
-    is asserted to be host/target-repo-owned by whoever constructs it --
-    this module has no way to enforce WHO built it, exactly like
-    #201-A's own ``TrustedCheckPlanV2`` docstring says about ``authority``."""
+    only way an actual command comes to exist.
+
+    Being HOST/target-repo-owned is a provenance claim this class alone
+    cannot prove -- ``execute_trusted_check_plan_v2`` closes HALF of that
+    gap by checking ``compute_check_command_inventory_digest_v2(inventory)
+    == plan.authority_suite_digest`` before ever resolving a single token
+    (see that function's own docstring for exactly what this does and
+    does not prove)."""
 
     command_token: SafeIdentifier
     argv: tuple[str, ...]
@@ -203,6 +224,45 @@ class AllowlistedCommandSpecV2(ContractV2Model):
         if not self.argv:
             raise ValueError("argv must not be empty")
         return self
+
+
+def _canonical_json_bytes_v2(value: object) -> bytes:
+    # Same canonical-JSON discipline used throughout contracts_v2.py,
+    # manifest_v2.py, review_content_v2.py, and trusted_checks_v2.py.
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+
+
+def compute_check_command_inventory_digest_v2(
+    inventory: Mapping[str, AllowlistedCommandSpecV2],
+) -> str:
+    """Canonical sha256 of an entire ``inventory``: ``{command_token:
+    argv}`` for every entry, sorted by token, hashed the same way every
+    other digest in this codebase is computed.
+
+    Closes the gap an earlier review of this slice found real: accepting
+    ``inventory`` as a bare, unverified parameter proved VALUES (each
+    ``AllowlistedCommandSpecV2`` is a real, typed, non-empty-argv object)
+    but not PROVENANCE -- nothing stopped a caller from resolving
+    ``plan.checks``' ``command_token``s against a DIFFERENT inventory than
+    the one whose digest the plan's own ``authority_suite_digest`` names.
+    ``execute_trusted_check_plan_v2`` now checks this digest against
+    ``plan.authority_suite_digest`` before resolving anything, mirroring
+    the exact fix `#211` applied to `extract_review_content_v2`'s
+    ``target_profile``/``manifest.identity.profile_hash`` binding.
+
+    What this does NOT prove, named explicitly: that the digest recorded
+    in ``authority_suite_digest`` when the plan was BUILT was itself
+    computed from a legitimately host-owned inventory in the first place
+    -- that is the same category of external trust ``harness_digest``
+    already carries (see the module docstring's CT104 section). This
+    function proves the inventory a caller hands to THIS execution is the
+    SAME one the plan already committed to, not that the plan's own
+    commitment was honest."""
+
+    entries = {token: spec.model_dump(mode="json") for token, spec in inventory.items()}
+    return hashlib.sha256(_canonical_json_bytes_v2(entries)).hexdigest()
 
 
 class IsolatedExecutorError(RuntimeError):
@@ -357,14 +417,32 @@ def _isolation_wrapped_argv_v2(
 
 
 def _classify_completed_process_v2(*, returncode: int) -> tuple[TrustedCheckOutcomeV2, str | None]:
+    """``returncode == 0`` -> ``SUCCESS``; anything else the process
+    itself produced (a positive exit code, OR a signal death -- e.g.
+    ``SIGSEGV``/``SIGBUS``/``SIGABRT``/``SIGKILL``) -> ``FAILURE``, never
+    ``OOM``.
+
+    An earlier version of this function guessed ``OOM`` from that same
+    signal list, reasoning that ``RLIMIT_AS`` typically kills a process
+    this way. A review of this slice pointed out the real, unresolved
+    ambiguity that guess carried: a signal death from ``RLIMIT_AS``
+    actually hitting its limit is, at the OS level, INDISTINGUISHABLE
+    from a genuine, unrelated product crash (both commonly manifest as a
+    NULL-pointer-dereference ``SIGSEGV`` after a failed allocation, or an
+    unrelated one) without independent evidence (e.g. cgroup ``memory.
+    events``' own ``oom_kill`` counter) this slice does not implement.
+    Guessing ``OOM`` risked exactly the failure mode issue #201 itself
+    names as unacceptable in the OTHER direction: "failure ambiental não
+    vira regression de produto" also means, read the other way, a REAL
+    product regression must never be silently absolved as environmental.
+    Classifying every ambiguous signal death as the attributable, always-
+    promotable-candidate ``FAILURE`` is the conservative, safe default;
+    the ``RLIMIT_AS`` safety property itself (a check genuinely cannot
+    exceed its configured memory) holds regardless of which typed outcome
+    the death gets."""
+
     if returncode == 0:
         return TrustedCheckOutcomeV2.SUCCESS, None
-    if returncode > 0:
-        return TrustedCheckOutcomeV2.FAILURE, None
-    # returncode < 0: died by signal -returncode (POSIX convention).
-    died_signal = -returncode
-    if died_signal in _OOM_SIGNATURE_SIGNALS_V2:
-        return TrustedCheckOutcomeV2.OOM, EXECUTOR_REASON_LIKELY_OOM_V2
     return TrustedCheckOutcomeV2.FAILURE, None
 
 
@@ -461,12 +539,26 @@ def _run_isolated_v2(
             return TrustedCheckOutcomeV2.CANCELLED, EXECUTOR_REASON_CANCELLED_V2, None
         return TrustedCheckOutcomeV2.TIMEOUT, EXECUTOR_REASON_TIMEOUT_V2, None
 
-    stdout, stderr = process.communicate()
+    # The tracked PID has already exited (poll() returned above), but a
+    # DESCENDANT it spawned could still be alive holding the inherited
+    # stdout/stderr pipe write-ends open -- a plain communicate() here
+    # would then block indefinitely waiting for EOF that never comes,
+    # past this check's own logical deadline. Bounded by a grace period;
+    # on timeout, kill the whole process group (reaping any such
+    # descendant) and finish reading, now safe since nothing is left to
+    # write.
+    try:
+        stdout, stderr = process.communicate(timeout=_COMMUNICATE_GRACE_SECONDS_V2)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = process.communicate()
+
     outcome, reason = _classify_completed_process_v2(returncode=process.returncode)
     # TrustedCheckResultMaterialV2 (#201-A) requires artifact_sha256 iff
-    # the outcome is SUCCESS/FAILURE -- OOM (a completed-but-killed
-    # process still reaches this line) must carry no artifact, exactly
-    # like the TIMEOUT/CANCELLED paths above.
+    # the outcome is SUCCESS/FAILURE.
     artifact_payload = (
         {"returncode": process.returncode, "stdout": stdout, "stderr": stderr}
         if outcome in _RESOLVED_OUTCOMES_LOCAL_V2
@@ -495,10 +587,26 @@ def execute_trusted_check_plan_v2(
 
     ``inventory`` must be HOST/target-repo-owned (per issue #201's own
     ownership split: this repository owns the harness/isolation/
-    serializer; the target repo owns the check inventory) -- this
-    function only enforces that every ``command_token`` the plan
-    authorized actually resolves against it; it cannot enforce WHERE the
-    caller sourced ``inventory`` from."""
+    serializer; the target repo owns the check inventory). This is now
+    checked, not merely asserted: ``compute_check_command_inventory_
+    digest_v2(inventory)`` must equal ``plan.authority_suite_digest``
+    before a single ``command_token`` is resolved -- a mismatch refuses
+    the WHOLE plan (every check gets a typed ``INFRA_FAILURE``, none are
+    attempted) rather than silently resolving tokens against an inventory
+    the plan never actually committed to. See that function's own
+    docstring for exactly what this proves and does not prove."""
+
+    if compute_check_command_inventory_digest_v2(inventory) != plan.authority_suite_digest:
+        return tuple(
+            ExecutedCheckV2(
+                result=_build_result_v2(
+                    plan=plan, check_name=check.check_name, authority=authority,
+                    outcome=TrustedCheckOutcomeV2.INFRA_FAILURE, artifact_payload=None,
+                ),
+                diagnostic_reason=EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2,
+            )
+            for check in plan.checks
+        )
 
     results: list[ExecutedCheckV2] = []
     for check in plan.checks:

@@ -31,11 +31,12 @@ import pytest
 from app.agent_review.isolated_executor_v2 import (
     EXECUTOR_REASON_CANCELLED_V2,
     EXECUTOR_REASON_COMMAND_NOT_IN_INVENTORY_V2,
+    EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2,
     EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2,
-    EXECUTOR_REASON_LIKELY_OOM_V2,
     EXECUTOR_REASON_TIMEOUT_V2,
     AllowlistedCommandSpecV2,
     _classify_completed_process_v2,
+    compute_check_command_inventory_digest_v2,
     execute_trusted_check_plan_v2,
 )
 from app.agent_review.trusted_checks_v2 import (
@@ -51,7 +52,6 @@ pytestmark = pytest.mark.requires_network
 RUN = hashlib.sha256(b"run").hexdigest()
 HEAD = "a" * 40
 HARNESS = hashlib.sha256(b"harness").hexdigest()
-SUITE = hashlib.sha256(b"suite").hexdigest()
 
 
 def _command(**overrides) -> AllowlistedCheckCommandV2:
@@ -63,10 +63,18 @@ def _command(**overrides) -> AllowlistedCheckCommandV2:
     return AllowlistedCheckCommandV2(**raw)
 
 
-def _plan(*, checks=None) -> TrustedCheckPlanV2:
+def _plan(*, inventory, checks=None) -> TrustedCheckPlanV2:
+    # authority_suite_digest is a REAL digest of `inventory`, not an
+    # arbitrary constant -- execute_trusted_check_plan_v2 now checks this
+    # before resolving a single command_token (the fix for the inventory-
+    # provenance gap a review of this slice found real), so every test
+    # must build a plan whose digest genuinely matches the inventory it
+    # will call execute_trusted_check_plan_v2 with, unless the test is
+    # SPECIFICALLY exercising a deliberate mismatch.
     return TrustedCheckPlanV2(
         schema_id="agent-review.trusted-check-plan.v2", schema_version=2,
-        run_id=RUN, head_sha=HEAD, harness_digest=HARNESS, authority_suite_digest=SUITE,
+        run_id=RUN, head_sha=HEAD, harness_digest=HARNESS,
+        authority_suite_digest=compute_check_command_inventory_digest_v2(inventory),
         checks=list(checks) if checks is not None else [_command()],
     )
 
@@ -97,8 +105,8 @@ def repo_root():
 
 
 def test_execute_reports_success_for_a_zero_exit_check(repo_root):
-    plan = _plan()
     inventory = {"token": _py("pass")}
+    plan = _plan(inventory=inventory)
     executed = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
     )
@@ -109,8 +117,8 @@ def test_execute_reports_success_for_a_zero_exit_check(repo_root):
 
 
 def test_execute_reports_failure_for_a_nonzero_exit_check(repo_root):
-    plan = _plan()
     inventory = {"token": _py("import sys; sys.exit(1)")}
+    plan = _plan(inventory=inventory)
     executed = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
     )
@@ -118,11 +126,15 @@ def test_execute_reports_failure_for_a_nonzero_exit_check(repo_root):
 
 
 def test_execute_ignores_forged_stdout_and_report_file_and_trusts_only_the_real_exit_code(repo_root):
-    """The exact adversarial scenario issue #201 names: a malicious
-    conftest.py trying to falsify success. Simulated here as a check that
-    prints a fake success banner AND writes a report file claiming
-    success, but whose REAL process exit code is 1 -- the verdict must
-    depend only on that exit code."""
+    """Proves ONE HALF of the "conftest.py malicioso" scenario issue #201
+    names: forging what the check PRINTS or WRITES (stdout, a fake report
+    file) does not change the verdict, because neither is ever read for
+    it. Does NOT prove (and does not claim to -- see isolated_executor_v2
+    .py's own "one thing this module cannot defend against" docstring
+    section) that PR-controlled code cannot forge the check's own EXIT
+    CODE (e.g. a conftest.py hook calling os._exit(0) unconditionally) --
+    that remains open, unresolved, tracked for #201-B3, and MUST NOT be
+    treated as closed by this test passing."""
     report_path = repo_root / "forged_report.json"
     code = (
         "import sys, pathlib\n"
@@ -130,8 +142,8 @@ def test_execute_ignores_forged_stdout_and_report_file_and_trusts_only_the_real_
         f"pathlib.Path({str(report_path)!r}).write_text('{{\"passed\": true}}')\n"
         "sys.exit(1)\n"
     )
-    plan = _plan()
     inventory = {"token": _py(code)}
+    plan = _plan(inventory=inventory)
     executed = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
     )
@@ -159,8 +171,8 @@ def test_execute_denies_real_outbound_network_access(repo_root):
         "except OSError as e:\n"
         "    sys.exit(e.errno if e.errno else 99)\n"
     )
-    plan = _plan()
     inventory = {"token": _py(code)}
+    plan = _plan(inventory=inventory)
     executed = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
     )
@@ -188,8 +200,8 @@ def test_execute_denies_real_outbound_network_access(repo_root):
 
 def test_execute_denies_sudo_inside_the_isolated_check(repo_root):
     code = "import subprocess, sys; r = subprocess.run(['sudo', '-n', 'whoami'], capture_output=True); sys.exit(0 if r.returncode != 0 else 1)"
-    plan = _plan()
     inventory = {"token": _py(code)}
+    plan = _plan(inventory=inventory)
     executed = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
     )
@@ -197,13 +209,58 @@ def test_execute_denies_sudo_inside_the_isolated_check(repo_root):
 
 
 def test_execute_refuses_a_command_token_not_in_the_inventory(repo_root):
-    plan = _plan(checks=[_command(command_token="not_in_inventory")])
+    # The inventory itself is real and matches the plan's own digest --
+    # isolating this test to the SPECIFIC "token not in inventory" case,
+    # not the separate "inventory doesn't match the plan at all" case
+    # (see test_execute_refuses_an_inventory_that_does_not_match_the_
+    # plans_own_digest below).
+    inventory = {"other_token": _py("pass")}
+    plan = _plan(inventory=inventory, checks=[_command(command_token="not_in_inventory")])
     executed = execute_trusted_check_plan_v2(
-        plan, repo_root=repo_root, inventory={}, authority=TrustedCheckAuthorityV2.TRUSTED,
+        plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
     )
     assert executed[0].result.outcome is TrustedCheckOutcomeV2.INFRA_FAILURE
     assert executed[0].diagnostic_reason == EXECUTOR_REASON_COMMAND_NOT_IN_INVENTORY_V2
     assert executed[0].result.artifact_sha256 is None
+
+
+def test_execute_refuses_an_inventory_that_does_not_match_the_plans_own_digest(repo_root):
+    """Red-tests the exact provenance gap a review of this slice found
+    real: TrustedCheckPlanV2.authority_suite_digest exists specifically
+    to pin the host-owned inventory a plan committed to, but nothing
+    previously checked that the inventory a CALLER hands to
+    execute_trusted_check_plan_v2 is actually that same one. A caller
+    could resolve the plan's command_tokens against an entirely
+    different (even otherwise-valid) inventory -- e.g. one with a looser
+    or malicious command for the same token -- and nothing would catch
+    it. Mirrors #211's own target_profile/manifest.identity.profile_hash
+    fix for review_content_extraction_v2 exactly."""
+    planning_inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=planning_inventory)
+
+    divergent_inventory = {"token": _py("import sys; sys.exit(1)")}
+    assert (
+        compute_check_command_inventory_digest_v2(divergent_inventory)
+        != plan.authority_suite_digest
+    )
+
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=divergent_inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+    )
+    assert len(executed) == len(plan.checks)
+    for item in executed:
+        assert item.result.outcome is TrustedCheckOutcomeV2.INFRA_FAILURE
+        assert item.diagnostic_reason == EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2
+        assert item.result.artifact_sha256 is None
+
+    # The SAME (planning) inventory, independently reconstructed, is
+    # accepted -- proving the check is a real digest comparison over
+    # content, not object identity.
+    reconstructed_inventory = {"token": _py("import sys; sys.exit(0)")}
+    accepted = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=reconstructed_inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+    )
+    assert accepted[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS
 
 
 def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, monkeypatch):
@@ -219,8 +276,8 @@ def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, 
     import app.agent_review.isolated_executor_v2 as isolated_executor_module
 
     monkeypatch.setattr(isolated_executor_module, "_select_isolation_strategy_v2", lambda: None)
-    plan = _plan()
     inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
     executed = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
     )
@@ -229,8 +286,8 @@ def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, 
 
 
 def test_execute_produces_a_typed_timeout_outcome_for_a_hanging_check(repo_root):
-    plan = _plan(checks=[_command(timeout_seconds=1)])
     inventory = {"token": _py("import time; time.sleep(60)")}
+    plan = _plan(inventory=inventory, checks=[_command(timeout_seconds=1)])
     executed = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
     )
@@ -240,8 +297,8 @@ def test_execute_produces_a_typed_timeout_outcome_for_a_hanging_check(repo_root)
 
 
 def test_execute_produces_a_typed_cancelled_outcome_when_cancel_event_is_set(repo_root):
-    plan = _plan(checks=[_command(timeout_seconds=30)])
     inventory = {"token": _py("import time; time.sleep(30)")}
+    plan = _plan(inventory=inventory, checks=[_command(timeout_seconds=30)])
     cancel_event = Event()
     Timer(0.5, cancel_event.set).start()
     executed = execute_trusted_check_plan_v2(
@@ -253,14 +310,23 @@ def test_execute_produces_a_typed_cancelled_outcome_when_cancel_event_is_set(rep
 
 
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not available in this environment")
-def test_execute_produces_a_typed_oom_outcome_for_a_process_killed_by_the_memory_limit(repo_root):
-    """RLIMIT_AS really caps address space: a C program that mallocs past
-    the limit and writes to the (failed) allocation without a NULL check
-    is killed by SIGSEGV -- the exact OOM signature this module
-    classifies. (A pure-Python allocator gracefully catches ENOMEM as
-    MemoryError -> a clean nonzero exit classified FAILURE, not OOM --
-    the documented heuristic limitation named in this module's own
-    docstring; this test exercises the signal-death path specifically.)"""
+@pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not available in this environment")
+def test_execute_enforces_the_memory_limit_and_classifies_the_kill_as_failure_not_oom(repo_root):
+    """RLIMIT_AS really caps address space -- proven here directly: a C
+    program that mallocs past the configured limit and writes to the
+    (failed, NULL) allocation is genuinely killed by the kernel
+    (SIGSEGV), proving the SAFETY property holds. The typed OUTCOME is
+    FAILURE, not OOM: an earlier version of this module guessed OOM from
+    exactly this signal, but a review of this slice pointed out that
+    signal alone cannot distinguish "killed because RLIMIT_AS was hit"
+    from "an unrelated real crash bug" without independent evidence
+    (cgroup memory.events) this slice does not implement -- see
+    _classify_completed_process_v2's own docstring. Classifying every
+    ambiguous signal death as FAILURE (attributable, promotable
+    candidate) is the conservative default; it is not proof this
+    specific process died FROM the memory limit rather than some other
+    signal-raising bug, which is exactly the point -- this module no
+    longer claims to know the difference."""
     source = repo_root / "oom.c"
     binary = repo_root / "oom_bin"
     source.write_text(
@@ -269,18 +335,20 @@ def test_execute_produces_a_typed_oom_outcome_for_a_process_killed_by_the_memory
     )
     subprocess.run(["gcc", "-O0", "-o", str(binary), str(source)], check=True, capture_output=True)
 
-    plan = _plan(checks=[_command(max_memory_mb=64)])
     inventory = {"token": AllowlistedCommandSpecV2(command_token="token", argv=(str(binary),))}
+    plan = _plan(inventory=inventory, checks=[_command(max_memory_mb=64)])
     executed = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
     )
-    assert executed[0].result.outcome is TrustedCheckOutcomeV2.OOM
-    assert executed[0].diagnostic_reason == EXECUTOR_REASON_LIKELY_OOM_V2
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.FAILURE
+    assert executed[0].result.artifact_sha256 is not None, (
+        "FAILURE is a resolved outcome -- the captured (empty) stdout/stderr is still a real artifact"
+    )
 
 
 def test_execute_result_is_deterministic_across_two_real_runs(repo_root):
-    plan = _plan()
     inventory = {"token": _py("print('deterministic output'); import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
     first = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
     )
@@ -300,8 +368,8 @@ def test_execute_untrusted_advisory_result_still_refuses_promotion(repo_root):
         promote_trusted_check_to_required_v2,
     )
 
-    plan = _plan()
     inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
     executed = execute_trusted_check_plan_v2(
         plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.UNTRUSTED_ADVISORY,
     )
@@ -311,10 +379,7 @@ def test_execute_untrusted_advisory_result_still_refuses_promotion(repo_root):
 
 
 class TestClassifyCompletedProcessUnit:
-    """Pure-function unit tests for the classification rule itself,
-    independent of whether a real signal-based kill is reproducible in
-    every environment this suite runs in (see the gcc-gated integration
-    test above for the real-subprocess proof)."""
+    """Pure-function unit tests for the classification rule itself."""
 
     def test_zero_returncode_is_success(self):
         outcome, reason = _classify_completed_process_v2(returncode=0)
@@ -325,12 +390,16 @@ class TestClassifyCompletedProcessUnit:
         outcome, reason = _classify_completed_process_v2(returncode=1)
         assert outcome is TrustedCheckOutcomeV2.FAILURE
 
-    @pytest.mark.parametrize("signal_number", [9, 11, 7, 6])  # KILL, SEGV, BUS, ABRT
-    def test_oom_signature_signals_classify_as_oom(self, signal_number):
+    @pytest.mark.parametrize("signal_number", [9, 11, 7, 6, 15])  # KILL, SEGV, BUS, ABRT, TERM
+    def test_every_signal_death_classifies_as_failure_never_oom(self, signal_number):
+        # No signal-based OOM guessing (removed -- see this module's own
+        # _classify_completed_process_v2 docstring for why: a review of
+        # this slice pointed out that a genuine RLIMIT_AS-triggered kill
+        # and an unrelated real crash bug are indistinguishable by signal
+        # alone without independent evidence this slice does not have).
+        # Every signal death -- including the SIGSEGV/SIGBUS/SIGABRT/
+        # SIGKILL signature an earlier version treated as OOM -- is now
+        # the conservative, attributable FAILURE.
         outcome, reason = _classify_completed_process_v2(returncode=-signal_number)
-        assert outcome is TrustedCheckOutcomeV2.OOM
-        assert reason == EXECUTOR_REASON_LIKELY_OOM_V2
-
-    def test_an_unrelated_signal_death_classifies_as_failure_not_oom(self):
-        outcome, reason = _classify_completed_process_v2(returncode=-15)  # SIGTERM
         assert outcome is TrustedCheckOutcomeV2.FAILURE
+        assert reason is None
