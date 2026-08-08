@@ -99,10 +99,19 @@
     "callers_updated": ["tests/agent_review/test_review_content_extraction_v2.py", "tests/agent_review/test_review_transport_v2.py"],
     "external_callers": "none exist yet -- this function has no production caller outside this repository's own tests as of this commit"
   },
-  "protected_actions_taken": [],
-  "protected_actions_not_taken": [
-    "merge (explicitly withheld pending user confirmation per this audit's own instruction)",
-    "release", "tag", "deploy", "target repository write", "branch protection change", "secret/runner creation"
+  "protected_actions_taken": [
+    "mark PR #211 ready for review",
+    "squash merge PR #211 into master"
   ],
-  "merge_status": "NOT MERGED -- awaiting explicit grant per the auditor's instruction: \"Não faça merge sem grant nominal de merge aplicável a essa PR.\""
+  "protected_actions_not_taken": [
+    "release", "tag", "deploy", "target repository write beyond this merge", "branch protection change", "secret/runner creation"
+  ],
+  "merge_status": "MERGED -- explicit nominal grant received for PR #211; live invariants (PR state, HEAD sha, base sha, CI conclusion, review threads) revalidated immediately before merging, per instruction",
+  "merge_record": {
+    "squash_commit_sha": "f409fd15e25cd7fcbed31fa8107cec419fd3827e",
+    "pr_head_sha_merged": "cd42398f8d600880967235a9359cdae3f7f5b914",
+    "base_sha_at_merge": "bc52aaddb9eedeae232e3abf07bb9efd7b3490e8",
+    "merge_method": "squash",
+    "new_master_head": "f409fd15e25cd7fcbed31fa8107cec419fd3827e"
+  }
 }

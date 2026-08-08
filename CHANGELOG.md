@@ -99,6 +99,101 @@
   role: the deterministic default every downstream consumer builds
   against before the real isolated executor (`#201-B2`) exists (refs
   #201, #199, docs/AGENT_REVIEW_V2_TRUSTED_CHECKS.md)
+- AgentReview v2 isolated trusted-check executor (#201-B2, third slice of
+  #201, distribution epic #199): `execute_trusted_check_plan_v2`
+  (`app/agent_review/isolated_executor_v2.py`) runs a real, isolated
+  subprocess per plan check and produces a real, plan-bindable
+  `TrustedCheckResultV2` -- the real thing `#201-B1`'s simulator stands in
+  for. Isolation uses portable Linux primitives (unprivileged
+  user+network namespaces via `unshare`, privilege drop to an
+  unprivileged uid, `RLIMIT_AS`/`RLIMIT_NPROC`), proven for real in this
+  session's own dev sandbox (explicitly not the project's pinned CT104
+  runner, which is offline this corte -- CT104-specific guarantees are
+  `blocked_external: ct104_unavailable`, never faked via CT102). Which
+  command runs is resolved only from a host-owned inventory keyed by the
+  plan's `command_token`, never free text; the verdict is derived
+  EXCLUSIVELY from the kernel-observed exit code of the isolated child --
+  nothing it prints or writes to any file is ever read to determine
+  SUCCESS/FAILURE, proven directly by an adversarial test simulating a
+  malicious `conftest.py` that forges both a success banner and a forged
+  report file while the real process still exits nonzero. Also proven:
+  real outbound network denial (`ENETUNREACH` in the fresh namespace),
+  real `sudo` refusal, typed `TIMEOUT`/`CANCELLED` outcomes, refusal to
+  run a command not in the inventory, deterministic results across
+  repeated runs, and fail-closed refusal to run at all (never silently
+  unisolated) when the isolation primitive itself is unavailable. Wiring
+  into `ReviewReadinessV2` is `#201-C`'s job, not this slice's. Two
+  further independent reviews of the first CI-green commit found 5 more
+  real issues; 4 closed in this same slice, 1 confirmed as an
+  architectural gap and made explicit rather than papered over: the
+  inventory a caller supplies is now checked against the plan's own
+  `authority_suite_digest` before any `command_token` resolves
+  (`compute_check_command_inventory_digest_v2`, mirroring `#211`'s
+  `target_profile` fix exactly) instead of being accepted unverified,
+  and its dict keys must equal each entry's own `command_token` (a
+  contradictory `{"other_token": spec_whose_token_is_"token"}` is now
+  refused, not silently tolerated); OOM classification -- previously
+  guessed from a signal-death signature that could misclassify a genuine
+  unrelated crash as environmental, hiding a real regression from
+  readiness -- is removed entirely, so every signal death is now the
+  conservative, attributable `FAILURE` (`RLIMIT_AS` enforcement itself is
+  unchanged and still proven); `process.communicate()` after the tracked
+  process exits now has a bounded grace period and kills any lingering
+  descendant holding the output pipe open instead of risking an
+  indefinite hang -- fixed TWICE, since the first attempt used a pgid
+  that could already be reaped/recycled by the time it was needed, and
+  verifying the real fix under the sudo-elevated strategy (the one this
+  project's own GitHub Actions runner actually uses) surfaced a second,
+  deeper bug where `sudo`'s own monitor-process architecture decouples
+  the command's real process group from the one `subprocess.Popen`
+  reports, now solved by having the isolated process report its own
+  real pgid back via a host-controlled file and killing through `sudo`
+  too when that strategy was used; and `authority=TRUSTED` being
+  caller-declared rather than independently verified is now an explicit,
+  prominent rule in the module's own docstring -- do not use it against
+  real adversarial PR code until `#201-B3` closes the still-open
+  exit-code-forgery gap. Two further real CI-only failures surfaced and
+  were fixed after that same round: the pgid-report file write inside
+  the dropper script (needed only for later best-effort cleanup) crashed
+  the WHOLE dropper with an uncaught `PermissionError` on the real
+  GitHub Actions runner when written from the sudo-elevated identity --
+  not reproducible in this session's own sandbox despite direct attempts
+  -- fixed by making that write best-effort (`try/except OSError: pass`)
+  plus a defensive `chmod 0666`, since reporting the pgid must never be
+  allowed to invalidate an otherwise-correct verdict; and a leader that
+  exited `0` while an orphaned descendant it never waited on kept the
+  output pipe open past the kill-and-retry grace window was
+  misclassified as `INFRA_FAILURE` instead of `SUCCESS` -- fixed by no
+  longer raising on the second `communicate()` timeout, since the
+  leader's own `returncode` is already known and authoritative by that
+  point and an unrelated orphan's fate has no bearing on it. A second
+  independent review, run against the actual current HEAD, then found a
+  real P1: the `chmod 0666` from the paragraph above never got locked
+  back down, so the pgid-report file stayed world-writable for the
+  ENTIRE lifetime of the isolated check -- letting the untrusted command
+  itself (running as `nobody`, same `/tmp`, well-known filename prefix)
+  overwrite the pgid the host later trusts for a PRIVILEGED kill
+  (`sudo -n kill -9 -- -<pgid>`). Fixed by having the dropper chmod the
+  file back to `0600` immediately after writing it, still under the
+  elevated identity and strictly before dropping to `nobody` and
+  exec'ing the untrusted command, closing the window rather than
+  narrowing it; proven by a new adversarial test that globs for the
+  file from inside the dropped-privilege check itself and asserts every
+  overwrite attempt is denied. A third independent review, again
+  against current HEAD, found that lockdown chmod was itself fail-open
+  (bare `try/except: pass` -- a failed chmod there still let the
+  untrusted command run against a possibly-still-`0666` file) and that
+  the unprivileged-userns fallback isolation strategy (no real uid
+  separation from the host caller) could still back a `TRUSTED` result.
+  Fixed: the dropper now chmod's BEFORE writing content and `os._exit()`s
+  via a dedicated sentinel if that chmod fails, corroborated host-side
+  by the report file still having no valid pgid content so a legitimate
+  check sharing the same exit value is never misclassified; and
+  `execute_trusted_check_plan_v2` now refuses to back `TRUSTED` with the
+  weak fallback (`UNTRUSTED_ADVISORY` can still use it), since that
+  fallback's isolated command runs as the exact same real uid as the
+  host caller (refs #201, #199,
+  docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md)
 
 - AgentReview v2 trusted-check plan/result contracts (#201-A, first slice
   of #201, distribution epic #199): `TrustedCheckPlanV2` (host-owned,
