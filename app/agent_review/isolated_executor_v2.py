@@ -192,9 +192,20 @@ EXECUTOR_REASON_CANCELLED_V2 = "isolated_executor_cancelled"
 EXECUTOR_REASON_TIMEOUT_V2 = "isolated_executor_timeout"
 EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2 = "isolated_executor_inventory_digest_mismatch"
 EXECUTOR_REASON_INVENTORY_KEY_TOKEN_MISMATCH_V2 = "isolated_executor_inventory_key_token_mismatch"
+EXECUTOR_REASON_PGID_LOCKDOWN_FAILED_V2 = "isolated_executor_pgid_report_lockdown_failed"
+EXECUTOR_REASON_ISOLATION_TOO_WEAK_FOR_TRUSTED_V2 = "isolated_executor_isolation_too_weak_for_trusted"
 
 _TIMEOUT_POLL_INTERVAL_SECONDS_V2 = 0.05
 _COMMUNICATE_GRACE_SECONDS_V2 = 5.0
+# Chosen only for readability -- the host never trusts this value ALONE.
+# It is only ever produced by the dropper's own chmod-failure branch,
+# strictly before any content write to the report file, so the host
+# additionally requires the report file to still have NO valid pgid
+# content before treating a matching exit code as a lockdown failure.
+# This means a real check that independently happens to exit with this
+# same value, in a run where lockdown succeeded (and the file therefore
+# does have valid content), is never misclassified.
+_PGID_LOCKDOWN_FAILED_EXIT_CODE_V2 = 97
 _PGID_REPORT_WAIT_SECONDS_V2 = 5.0
 
 # Mirrors trusted_checks_v2._RESOLVED_OUTCOMES_V2 (module-private there,
@@ -384,6 +395,34 @@ def _dropper_script_v2(
         # attempted at all rather than assumed unnecessary.
         "    pass\n"
         "try:\n"
+        f"    os.chmod({pgid_report_path!r}, 0o600)\n"
+        "except OSError:\n"
+        # The host creates this file world-writable (0666) BEFORE spawn,
+        # only because the content write below can otherwise fail under
+        # the sudo-elevated strategy's own confinement (see that write's
+        # comment). Left at 0666 for the isolated command's entire
+        # lifetime, the UNTRUSTED command this dropper is about to exec
+        # (as `nobody`, in the same /tmp) could locate this file by its
+        # well-known prefix and overwrite the pgid the host later trusts
+        # for a PRIVILEGED kill -- a real finding from this slice's own
+        # review, not a hypothetical: an attacker-supplied pgid reaching
+        # `sudo -n kill -9 -- -<pgid>` is privilege-escalation-adjacent,
+        # not merely a flaky test. Unlike that content write, THIS chmod
+        # is the actual security boundary and must be fail-CLOSED, not
+        # best-effort: if we cannot prove the file is no longer world-
+        # writable, we must never let the untrusted command run at all
+        # -- exiting via a dedicated, host-recognized code BEFORE the
+        # content write below (so the report file stays exactly as the
+        # host left it: empty) and BEFORE any drop/exec. The host
+        # correlates this exit code together with the file still having
+        # no valid pgid content -- never the exit code alone -- so a
+        # legitimate check that happens to use this same exit value for
+        # its own purposes is never misclassified: reaching that value
+        # from inside the check's own execution is only possible AFTER
+        # this exact chmod already succeeded, which is exactly the case
+        # the host does not treat as a lockdown failure.
+        f"    os._exit({_PGID_LOCKDOWN_FAILED_EXIT_CODE_V2})\n"
+        "try:\n"
         f"    with open({pgid_report_path!r}, 'w') as _f:\n"
         "        _f.write(str(os.getpgrp()))\n"
         "except OSError:\n"
@@ -399,30 +438,10 @@ def _dropper_script_v2(
         # command is affected. Swallowing this and proceeding means the
         # WORST case is a degraded fallback pgid for a later best-effort
         # kill (see _read_real_pgid_v2's own fallback_pid) -- never a
-        # crashed, falsely-FAILURE-classified check.
-        "    pass\n"
-        "try:\n"
-        f"    os.chmod({pgid_report_path!r}, 0o600)\n"
-        "except OSError:\n"
-        # The host creates this file world-writable (0666) BEFORE spawn,
-        # only because the write above can otherwise fail under the
-        # sudo-elevated strategy's confinement (see the comment on that
-        # write). Left at 0666, the UNTRUSTED command this dropper is
-        # about to exec (as `nobody`, in the same /tmp) could locate this
-        # file by its well-known prefix and overwrite the pgid the host
-        # will later trust for a PRIVILEGED kill -- a real finding from
-        # this slice's own review, not a hypothetical: an attacker-
-        # supplied pgid reaching `sudo -n kill -9 -- -<pgid>` is a
-        # privilege-escalation-adjacent bug, not merely a flaky test.
-        # This chmod runs while WE are still the elevated identity, and
-        # strictly BEFORE the privilege drop and exec below -- the
-        # untrusted command never gets a chance to run while the file is
-        # still world-writable, closing the window completely rather
-        # than narrowing it. Attempted unconditionally (even if the
-        # write above failed) so a degraded pgid never also means a
-        # still-world-writable file. Best-effort like the write itself:
-        # if even chmod is blocked by the same confinement, the fallback
-        # pgid path already accounts for a missing/wrong report file.
+        # crashed, falsely-FAILURE-classified check. Safe to still be
+        # best-effort here, unlike the chmod above: the file is ALREADY
+        # locked down to 0600 by this point regardless of whether this
+        # write itself succeeds.
         "    pass\n"
         f"{drop_lines}"
         f"resource.setrlimit(resource.RLIMIT_AS, ({memory_bytes}, {memory_bytes}))\n"
@@ -432,11 +451,14 @@ def _dropper_script_v2(
 
 
 def _isolation_wrapped_argv_v2(
-    argv: tuple[str, ...], *, max_memory_mb: int, max_processes: int, pgid_report_path: str
+    argv: tuple[str, ...], *, max_memory_mb: int, max_processes: int, pgid_report_path: str,
+    authority: TrustedCheckAuthorityV2,
 ) -> tuple[list[str], bool] | None:
     """Returns ``(wrapped_argv, uses_sudo)``, or ``None`` if
     ``_select_isolation_strategy_v2`` finds nothing that actually works
-    (the caller must fail closed, never fall back to running unisolated).
+    (the caller must fail closed, never fall back to running unisolated)
+    -- OR if the only strategy that DID work is the unprivileged-userns
+    fallback (see its own bullet below) and ``authority`` is ``TRUSTED``.
     ``uses_sudo`` tells the caller whether killing the resulting process
     tree later will ALSO need to go through ``sudo`` -- an unprivileged
     caller cannot ``kill()``/``killpg()`` a tree that ``sudo`` elevated to
@@ -468,7 +490,23 @@ def _isolation_wrapped_argv_v2(
       ``--map-root-user`` namespace maps only the ONE calling uid to
       namespace-uid 0, ``nobody``'s real uid has no mapping to ``setuid``
       to from inside it, and there is nothing to drop from in the first
-      place since the caller was never privileged.
+      place since the caller was never privileged. Concretely, this
+      means the isolated command runs as the EXACT SAME real uid as the
+      host caller itself -- it only APPEARS as root inside its own user
+      namespace. A review of this slice pointed out this is a real,
+      qualitatively different (weaker) property than the other two
+      candidates: any file the host process owns (e.g. the pgid-report
+      handshake file) is trivially writable by the "isolated" command
+      too, regardless of permission bits, because they are the SAME
+      uid. That is fine for ``UNTRUSTED_ADVISORY`` -- never promotable
+      to begin with, so a weaker isolation guarantee behind it changes
+      nothing about what the result can be used for -- but is NOT an
+      acceptable backing for ``TRUSTED``, which #201-A already treats as
+      the sole authority a promotable ``RequiredCheckResultV2`` can come
+      from. This function therefore refuses (returns ``None``, the same
+      fail-closed contract as "no isolation available at all") rather
+      than silently proceeding, whenever this is the only candidate that
+      worked AND the caller asked for ``TRUSTED``.
 
     Privilege drop (when applicable) always happens INSIDE the already-
     created namespace via the dropper script, never before the isolation
@@ -489,6 +527,8 @@ def _isolation_wrapped_argv_v2(
     if strategy is None:
         return None
     drop_to_nobody, prefix = strategy
+    if not drop_to_nobody and authority is TrustedCheckAuthorityV2.TRUSTED:
+        return None
     dropper = _dropper_script_v2(
         drop_to_nobody=drop_to_nobody, max_memory_mb=max_memory_mb, max_processes=max_processes,
         pgid_report_path=pgid_report_path,
@@ -583,6 +623,27 @@ def _read_real_pgid_v2(pgid_report_path: str, *, fallback_pid: int) -> int:
     return fallback_pid
 
 
+def _report_file_has_valid_pgid_v2(pgid_report_path: str) -> bool:
+    """No polling wait, unlike ``_read_real_pgid_v2``: only ever called
+    AFTER the process has already exited, so whatever the dropper was
+    going to write has already been written (or never will be). Used
+    only to corroborate the ``_PGID_LOCKDOWN_FAILED_EXIT_CODE_V2``
+    sentinel -- see that constant's own docstring for why the exit code
+    is checked together with this, never alone."""
+
+    try:
+        content = Path(pgid_report_path).read_text().strip()
+    except OSError:
+        return False
+    if not content:
+        return False
+    try:
+        int(content)
+    except ValueError:
+        return False
+    return True
+
+
 def _kill_process_tree_v2(*, real_pgid: int, uses_sudo: bool) -> None:
     """Best-effort, NEVER RAISES: kills the whole process group
     ``real_pgid``. Plain ``os.killpg`` cannot signal a group ``sudo``
@@ -620,6 +681,7 @@ def _run_isolated_v2(
     max_memory_mb: int,
     max_processes: int,
     cancel_event: Event | None,
+    authority: TrustedCheckAuthorityV2,
 ) -> tuple[TrustedCheckOutcomeV2, str | None, dict[str, object] | None]:
     """Runs ``argv`` isolated and returns ``(outcome, diagnostic_reason,
     artifact_payload)``. Raises ``IsolatedExecutorError`` only for a
@@ -668,9 +730,22 @@ def _run_isolated_v2(
     try:
         wrapped_and_sudo = _isolation_wrapped_argv_v2(
             argv, max_memory_mb=max_memory_mb, max_processes=max_processes,
-            pgid_report_path=pgid_report_path,
+            pgid_report_path=pgid_report_path, authority=authority,
         )
         if wrapped_and_sudo is None:
+            # Distinguish "nothing works at all" from "the only thing
+            # that worked is too weak to back TRUSTED" -- re-probing here
+            # is cheap and, within the same process back-to-back, not
+            # meaningfully racy; it only affects which typed reason code
+            # is reported, never whether execution proceeds (that
+            # decision was already made, fail-closed, above).
+            strategy = _select_isolation_strategy_v2()
+            if (
+                strategy is not None
+                and not strategy[0]
+                and authority is TrustedCheckAuthorityV2.TRUSTED
+            ):
+                raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_TOO_WEAK_FOR_TRUSTED_V2)
             raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2)
         wrapped, uses_sudo = wrapped_and_sudo
 
@@ -755,11 +830,26 @@ def _run_isolated_v2(
                 # output only; never fatal to the check's own outcome.
                 stdout = exc.stdout or ""
                 stderr = exc.stderr or ""
+
+        # Read BEFORE the finally block below unlinks the file. See
+        # _PGID_LOCKDOWN_FAILED_EXIT_CODE_V2's own docstring for why this
+        # is checked together with the returncode, never either alone.
+        report_has_valid_pgid = _report_file_has_valid_pgid_v2(pgid_report_path)
     finally:
         try:
             os.unlink(pgid_report_path)
         except OSError:
             pass
+
+    if process.returncode == _PGID_LOCKDOWN_FAILED_EXIT_CODE_V2 and not report_has_valid_pgid:
+        # The dropper's own chmod-lockdown of the pgid-report file failed
+        # and it refused to proceed -- the untrusted command in `argv`
+        # NEVER RAN. Corroborated by the file having no valid pgid
+        # content, which only happens BEFORE that chmod (the content
+        # write is the very next thing the dropper does AFTER it
+        # succeeds) -- ruling out a legitimate, fully-run check that
+        # merely happens to share this exit code by coincidence.
+        return TrustedCheckOutcomeV2.INFRA_FAILURE, EXECUTOR_REASON_PGID_LOCKDOWN_FAILED_V2, None
 
     outcome, reason = _classify_completed_process_v2(returncode=process.returncode)
     # TrustedCheckResultMaterialV2 (#201-A) requires artifact_sha256 iff
@@ -861,7 +951,7 @@ def execute_trusted_check_plan_v2(
             outcome, reason, artifact_payload = _run_isolated_v2(
                 argv=spec.argv, repo_root=repo_root, timeout_seconds=check.timeout_seconds,
                 max_memory_mb=check.max_memory_mb, max_processes=check.max_processes,
-                cancel_event=cancel_event,
+                cancel_event=cancel_event, authority=authority,
             )
         except IsolatedExecutorError as exc:
             result = _build_result_v2(

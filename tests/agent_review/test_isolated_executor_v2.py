@@ -33,7 +33,9 @@ from app.agent_review.isolated_executor_v2 import (
     EXECUTOR_REASON_COMMAND_NOT_IN_INVENTORY_V2,
     EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2,
     EXECUTOR_REASON_INVENTORY_KEY_TOKEN_MISMATCH_V2,
+    EXECUTOR_REASON_ISOLATION_TOO_WEAK_FOR_TRUSTED_V2,
     EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2,
+    EXECUTOR_REASON_PGID_LOCKDOWN_FAILED_V2,
     EXECUTOR_REASON_TIMEOUT_V2,
     AllowlistedCommandSpecV2,
     _classify_completed_process_v2,
@@ -105,7 +107,34 @@ def repo_root():
         shutil.rmtree(path, ignore_errors=True)
 
 
-def test_execute_reports_success_for_a_zero_exit_check(repo_root):
+@pytest.fixture
+def require_strong_isolation():
+    """A review of this slice found the unprivileged-userns fallback has
+    no real uid separation from the host caller, so execute_trusted_
+    check_plan_v2 now refuses (EXECUTOR_REASON_ISOLATION_TOO_WEAK_FOR_
+    TRUSTED_V2) to back a TRUSTED result with it. Tests that exercise
+    TRUSTED execution MECHANICS (exit-code classification, timeouts,
+    memory limits, etc.) rather than that gating decision itself request
+    this fixture to skip (not fail) on an environment where this
+    fallback is the only thing that works -- exactly mirroring this
+    project's own real target (its GitHub Actions runner always has
+    real root or passwordless sudo, never ONLY this fallback). The
+    gating decision itself has its own dedicated tests that force the
+    scenario via monkeypatch and so run deterministically on ANY
+    account, including one this fixture would skip on."""
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    strategy = isolated_executor_module._select_isolation_strategy_v2()
+    assert strategy is not None, "the module's own probe found no working isolation strategy"
+    drop_to_nobody, _prefix = strategy
+    if not drop_to_nobody:
+        pytest.skip(
+            "this environment's probe selected the unprivileged-userns fallback "
+            "(no real uid separation from the host caller -- see this fixture's own docstring)"
+        )
+
+
+def test_execute_reports_success_for_a_zero_exit_check(repo_root, require_strong_isolation):
     inventory = {"token": _py("pass")}
     plan = _plan(inventory=inventory)
     executed = execute_trusted_check_plan_v2(
@@ -117,7 +146,7 @@ def test_execute_reports_success_for_a_zero_exit_check(repo_root):
     bind_trusted_check_result_to_plan_v2(executed[0].result, plan)  # does not raise
 
 
-def test_execute_reports_failure_for_a_nonzero_exit_check(repo_root):
+def test_execute_reports_failure_for_a_nonzero_exit_check(repo_root, require_strong_isolation):
     inventory = {"token": _py("import sys; sys.exit(1)")}
     plan = _plan(inventory=inventory)
     executed = execute_trusted_check_plan_v2(
@@ -126,7 +155,7 @@ def test_execute_reports_failure_for_a_nonzero_exit_check(repo_root):
     assert executed[0].result.outcome is TrustedCheckOutcomeV2.FAILURE
 
 
-def test_execute_ignores_forged_stdout_and_report_file_and_trusts_only_the_real_exit_code(repo_root):
+def test_execute_ignores_forged_stdout_and_report_file_and_trusts_only_the_real_exit_code(repo_root, require_strong_isolation):
     """Proves ONE HALF of the "conftest.py malicioso" scenario issue #201
     names: forging what the check PRINTS or WRITES (stdout, a fake report
     file) does not change the verdict, because neither is ever read for
@@ -155,7 +184,7 @@ def test_execute_ignores_forged_stdout_and_report_file_and_trusts_only_the_real_
     assert "ALL TESTS PASSED" not in (executed[0].result.model_dump_json())
 
 
-def test_execute_denies_real_outbound_network_access(repo_root):
+def test_execute_denies_real_outbound_network_access(repo_root, require_strong_isolation):
     """Proven by the SPECIFIC failure mode, not just a nonzero exit: a
     fresh, isolated network namespace has no route at all, so a raw-IP
     connection attempt fails with ENETUNREACH -- a stronger, structural
@@ -195,6 +224,12 @@ def test_execute_denies_real_outbound_network_access(repo_root):
         wrapped_and_sudo = isolated_executor_module._isolation_wrapped_argv_v2(
             (sys.executable, "-c", code), max_memory_mb=128, max_processes=16,
             pgid_report_path=pgid_path,
+            # This test proves the isolation MECHANISM denies network
+            # access, independent of the TRUSTED/weak-isolation gating a
+            # review of this slice added -- UNTRUSTED_ADVISORY keeps that
+            # concern out of scope here (see the new dedicated test for
+            # the gating itself).
+            authority=TrustedCheckAuthorityV2.UNTRUSTED_ADVISORY,
         )
         assert wrapped_and_sudo is not None, "the module's own probe found no working isolation strategy"
         wrapped, _uses_sudo = wrapped_and_sudo
@@ -207,7 +242,7 @@ def test_execute_denies_real_outbound_network_access(repo_root):
     )
 
 
-def test_execute_denies_sudo_inside_the_isolated_check(repo_root):
+def test_execute_denies_sudo_inside_the_isolated_check(repo_root, require_strong_isolation):
     code = "import subprocess, sys; r = subprocess.run(['sudo', '-n', 'whoami'], capture_output=True); sys.exit(0 if r.returncode != 0 else 1)"
     inventory = {"token": _py(code)}
     plan = _plan(inventory=inventory)
@@ -233,7 +268,7 @@ def test_execute_refuses_a_command_token_not_in_the_inventory(repo_root):
     assert executed[0].result.artifact_sha256 is None
 
 
-def test_execute_refuses_an_inventory_that_does_not_match_the_plans_own_digest(repo_root):
+def test_execute_refuses_an_inventory_that_does_not_match_the_plans_own_digest(repo_root, require_strong_isolation):
     """Red-tests the exact provenance gap a review of this slice found
     real: TrustedCheckPlanV2.authority_suite_digest exists specifically
     to pin the host-owned inventory a plan committed to, but nothing
@@ -294,7 +329,7 @@ def test_execute_refuses_an_inventory_whose_dict_keys_do_not_match_their_own_com
         assert item.result.artifact_sha256 is None
 
 
-def test_execute_does_not_hang_when_a_descendant_outlives_the_leader_holding_the_pipe_open(repo_root):
+def test_execute_does_not_hang_when_a_descendant_outlives_the_leader_holding_the_pipe_open(repo_root, require_strong_isolation):
     """The exact process-tree scenario a review of this slice flagged: the
     tracked leader process exits (and is reaped) almost immediately, but
     a real forked descendant inherits the stdout/stderr pipe write-ends
@@ -333,7 +368,9 @@ def test_execute_does_not_hang_when_a_descendant_outlives_the_leader_holding_the
     )
 
 
-def test_execute_denies_the_isolated_check_from_tampering_with_its_own_pgid_report_file(repo_root):
+def test_execute_denies_the_isolated_check_from_tampering_with_its_own_pgid_report_file(
+    repo_root, require_strong_isolation,
+):
     """A review of this slice found the pgid-report handshake file was
     briefly world-writable (0666 -- required so the elevated dropper can
     write it under the sudo-elevated strategy's own confinement, see
@@ -364,18 +401,12 @@ def test_execute_denies_the_isolated_check_from_tampering_with_its_own_pgid_repo
     -- the privileged-kill-target finding this test proves fixed simply
     does not apply to that strategy. This is exactly the situation this
     project's own GitHub Actions runner is NOT in (it has passwordless
-    sudo and selects the sudo-elevated, `drop_to_nobody=True` strategy)."""
-    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+    sudo and selects the sudo-elevated, `drop_to_nobody=True` strategy).
 
-    strategy = isolated_executor_module._select_isolation_strategy_v2()
-    assert strategy is not None, "the module's own probe found no working isolation strategy"
-    drop_to_nobody, _prefix = strategy
-    if not drop_to_nobody:
-        pytest.skip(
-            "this environment's probe selected the unprivileged-userns fallback "
-            "(no real uid separation from the host caller -- see this test's own docstring)"
-        )
-
+    Uses the shared ``require_strong_isolation`` fixture rather than its
+    own inline check (which is what this test used before that fixture
+    existed) to skip consistently with every other TRUSTED-mechanics
+    test below."""
     marker_path = str(repo_root / "overwrite-attempt-results.txt")
     code = (
         "import glob\n"
@@ -412,6 +443,133 @@ def test_execute_denies_the_isolated_check_from_tampering_with_its_own_pgid_repo
     )
 
 
+def test_dropper_script_exits_with_the_lockdown_sentinel_when_its_chmod_fails():
+    """A follow-up review of the previous fix pointed out it was itself
+    fail-OPEN: the chmod-to-0600 lockdown was wrapped in a bare
+    try/except that swallowed a failure and let the untrusted command
+    run anyway against a file that might still be 0666. Verifies the
+    dropper's OWN generated source, not a reimplementation of it: execs
+    that exact source in a fresh subprocess with `os.chmod` monkeypatched
+    to fail for this one path, and asserts the process exits via the
+    dedicated sentinel BEFORE ever reaching privilege-drop/exec.
+
+    Does not attempt to engineer a REAL OS-level chmod failure (the
+    actual failure mode observed on this project's own runner is a
+    MAC/session confinement mechanism this sandbox could not reproduce
+    directly even for the sibling write-side fix -- same documented
+    limitation, not a new one)."""
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    pgid_fd, pgid_path = tempfile.mkstemp(prefix="test-pgid-lockdown-")
+    os.close(pgid_fd)
+    try:
+        dropper_source = isolated_executor_module._dropper_script_v2(
+            drop_to_nobody=False, max_memory_mb=128, max_processes=16, pgid_report_path=pgid_path,
+        )
+        harness = (
+            "import os\n"
+            "_real_chmod = os.chmod\n"
+            "def _failing_chmod(path, mode, *a, **kw):\n"
+            f"    if path == {pgid_path!r}:\n"
+            "        raise PermissionError('simulated MAC/session confinement')\n"
+            "    return _real_chmod(path, mode, *a, **kw)\n"
+            "os.chmod = _failing_chmod\n"
+        ) + dropper_source
+        completed = subprocess.run(
+            [sys.executable, "-c", harness, "true"], capture_output=True, timeout=8,
+        )
+        report_content = Path(pgid_path).read_text()
+    finally:
+        os.unlink(pgid_path)
+    assert completed.returncode == isolated_executor_module._PGID_LOCKDOWN_FAILED_EXIT_CODE_V2, (
+        f"expected the dropper to fail closed on a broken chmod, got "
+        f"returncode={completed.returncode!r}, stdout={completed.stdout!r}, stderr={completed.stderr!r}"
+    )
+    assert report_content == "", (
+        "the dropper must not write pgid content when the lockdown chmod itself failed"
+    )
+
+
+def test_execute_reports_infra_failure_when_the_pgid_lockdown_cannot_be_proven(repo_root, monkeypatch):
+    """Host-side half of the fail-closed lockdown: proves
+    execute_trusted_check_plan_v2 correctly classifies the dropper's own
+    fail-closed sentinel (proven to be correctly PRODUCED by the
+    previous test) as INFRA_FAILURE, never as whatever the check's own
+    argv would otherwise have produced -- the untrusted argv here is
+    `sys.exit(0)`, deliberately the OPPOSITE of what gets reported, to
+    prove the host is not merely coincidentally reporting the real
+    check's own outcome. Monkeypatches the dropper generator itself
+    (not a real chmod failure -- see the sibling test's own docstring
+    for why that is not portably reproducible) to always take the exact
+    branch a real lockdown failure takes. Also forces strategy selection
+    to a strong (uid-separating) candidate with an empty prefix, so this
+    test exercises the lockdown-failure classification specifically,
+    deterministically, on ANY account -- not entangled with (and not
+    accidentally skipped or preempted by) the separate TRUSTED-over-
+    weak-isolation gating this same review round added."""
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    def _fake_dropper_always_refuses(*, drop_to_nobody, max_memory_mb, max_processes, pgid_report_path):
+        del drop_to_nobody, max_memory_mb, max_processes, pgid_report_path
+        return f"import os\nos._exit({isolated_executor_module._PGID_LOCKDOWN_FAILED_EXIT_CODE_V2})\n"
+
+    monkeypatch.setattr(isolated_executor_module, "_select_isolation_strategy_v2", lambda: (True, ()))
+    monkeypatch.setattr(isolated_executor_module, "_dropper_script_v2", _fake_dropper_always_refuses)
+
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+    )
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.INFRA_FAILURE
+    assert executed[0].diagnostic_reason == EXECUTOR_REASON_PGID_LOCKDOWN_FAILED_V2
+
+
+def test_execute_refuses_trusted_authority_when_only_weak_isolation_is_available(repo_root, monkeypatch):
+    """A review of this slice pointed out the unprivileged-userns
+    fallback strategy has no real uid separation between the isolated
+    command and the host caller -- it only APPEARS as root inside its
+    own user namespace -- so it must never back a TRUSTED (promotable)
+    result, only UNTRUSTED_ADVISORY. Forces that fallback to be "the
+    only thing that worked" via monkeypatch (which candidate actually
+    gets selected is environment-dependent, same reasoning as the
+    isolation-unavailable test above) and proves TRUSTED is refused."""
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    monkeypatch.setattr(
+        isolated_executor_module, "_select_isolation_strategy_v2", lambda: (False, ())
+    )
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+    )
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.INFRA_FAILURE
+    assert executed[0].diagnostic_reason == EXECUTOR_REASON_ISOLATION_TOO_WEAK_FOR_TRUSTED_V2
+
+
+def test_execute_still_allows_untrusted_advisory_over_weak_isolation(repo_root, monkeypatch):
+    """The other half of the previous test: UNTRUSTED_ADVISORY results
+    are never promotable to begin with (#201-A), so a weaker isolation
+    guarantee behind one changes nothing about what it can be used for
+    -- the weak fallback must still be usable for advisory purposes,
+    not refused outright, or a host with no stronger isolation available
+    would lose even non-authoritative signal."""
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    monkeypatch.setattr(
+        isolated_executor_module, "_select_isolation_strategy_v2", lambda: (False, ())
+    )
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory,
+        authority=TrustedCheckAuthorityV2.UNTRUSTED_ADVISORY,
+    )
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS
+    assert executed[0].result.authority is TrustedCheckAuthorityV2.UNTRUSTED_ADVISORY
+
+
 def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, monkeypatch):
     """Fail-closed proof: if NONE of the isolation strategies this module
     probes actually work, it must NEVER silently fall back to running
@@ -434,7 +592,7 @@ def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, 
     assert executed[0].diagnostic_reason == EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2
 
 
-def test_execute_produces_a_typed_timeout_outcome_for_a_hanging_check(repo_root):
+def test_execute_produces_a_typed_timeout_outcome_for_a_hanging_check(repo_root, require_strong_isolation):
     inventory = {"token": _py("import time; time.sleep(60)")}
     plan = _plan(inventory=inventory, checks=[_command(timeout_seconds=1)])
     executed = execute_trusted_check_plan_v2(
@@ -445,7 +603,7 @@ def test_execute_produces_a_typed_timeout_outcome_for_a_hanging_check(repo_root)
     assert executed[0].result.artifact_sha256 is None
 
 
-def test_execute_produces_a_typed_cancelled_outcome_when_cancel_event_is_set(repo_root):
+def test_execute_produces_a_typed_cancelled_outcome_when_cancel_event_is_set(repo_root, require_strong_isolation):
     inventory = {"token": _py("import time; time.sleep(30)")}
     plan = _plan(inventory=inventory, checks=[_command(timeout_seconds=30)])
     cancel_event = Event()
@@ -459,7 +617,7 @@ def test_execute_produces_a_typed_cancelled_outcome_when_cancel_event_is_set(rep
 
 
 @pytest.mark.skipif(shutil.which("gcc") is None, reason="gcc not available in this environment")
-def test_execute_enforces_the_memory_limit_and_classifies_the_kill_as_failure_not_oom(repo_root):
+def test_execute_enforces_the_memory_limit_and_classifies_the_kill_as_failure_not_oom(repo_root, require_strong_isolation):
     """RLIMIT_AS really caps address space -- proven here directly: a C
     program that mallocs past the configured limit and writes to the
     (failed, NULL) allocation is genuinely killed by the kernel
