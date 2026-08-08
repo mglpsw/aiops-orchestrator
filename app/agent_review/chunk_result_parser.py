@@ -79,6 +79,10 @@ def parse_chunk_results(
     rejected_findings = []
     coverage = ChunkResultsCoverage()
     limitations = list(chunk_plan.limitations)
+    # Kept strictly apart from `limitations` (AgentEscala#675, Fix A). Every
+    # append to `limitations` below is engine-authored; the only model-authored
+    # strings in this function land in `model_reported_limitations`.
+    model_reported_limitations: list[str] = []
     dedupe_state = DedupeState()
 
     if chunk_plan.status == "degraded":
@@ -112,7 +116,7 @@ def parse_chunk_results(
         risks.extend(normalized.risks)
         rejected_findings.extend(normalized.rejected_findings)
         limitations.extend(normalized.limitations)
-        limitations.extend(_response_limitations(response))
+        model_reported_limitations.extend(_response_limitations(response))
         filtered_coverage, coverage_limitations = _filter_coverage_notes(response.coverage_notes, chunk)
         limitations.extend(coverage_limitations)
         coverage.files_reviewed.extend(filtered_coverage.files_reviewed)
@@ -132,6 +136,7 @@ def parse_chunk_results(
         confirmed_findings=confirmed_findings,
         risks=risks,
         limitations=_dedupe(limitations),
+        model_reported_limitations=_dedupe(model_reported_limitations),
         rejected_findings=rejected_findings,
         coverage=coverage,
         status=_result_status(chunk_plan=chunk_plan, parsed_count=len(chunks_parsed), failed_count=len(chunks_failed)),
@@ -210,6 +215,23 @@ def _chunk_plan_ref(chunk_plan: SemanticChunkPlan) -> dict[str, Any]:
 
 
 def _response_limitations(response: ChunkResponse) -> list[str]:
+    """Flatten the model's self-reported limitations, verbatim.
+
+    `ChunkResponseLimitation.type` and `.detail` are both unconstrained
+    `str | None` straight out of the chunk response, so everything this
+    returns is LLM-authored text. It feeds `ChunkResults.model_reported_
+    limitations` and nothing else: routing it into `limitations` -- as this
+    engine did before AgentEscala#675 -- let the model publish prose as
+    though it were a deterministic reason code, and let it double-count a
+    single cause by echoing a real code back with a sentence attached
+    (`X` from the engine plus `X:<prose>` from the model, both surviving a
+    dedupe that compares whole strings).
+
+    Note the flattened `f"{type}:{detail}"` shape is deliberately preserved:
+    the leading token stays the model's claimed code, so a target can still
+    line a model observation up with the deterministic code it refers to
+    without the two ever sharing a namespace.
+    """
     limitations: list[str] = []
     for limitation in response.limitations:
         limitation_type = _clean(limitation.type)

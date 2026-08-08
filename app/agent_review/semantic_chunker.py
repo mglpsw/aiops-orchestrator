@@ -358,11 +358,29 @@ def _plan_status(
     files_partially_covered: list[str],
     files_not_covered: list[str],
 ) -> str:
+    """Plan status is a statement about *coverage*, never about how many
+    limitations were recorded (AgentEscala#675, Fix C).
+
+    This deliberately does not test `limitations` for truthiness. Every
+    limitation this module raises that actually costs coverage already has a
+    structural counterpart in one of the lists checked below --
+    `chunk_budget_exceeded:<group>` always accompanies a non-empty
+    `files_partially_covered`, and `max_blocks_exceeded` always accompanies a
+    non-empty `files_not_covered` -- so nothing coverage-bearing is lost by
+    dropping the truthiness test. What *is* dropped is the false `partial`
+    that a purely informational limitation used to produce:
+    `intake_schema_id_missing` (an intake-envelope fact) or
+    `file_context_fallback_used` (a fallback that still yielded every file)
+    would stamp a fully covered plan as partial, and
+    `final_synthesizer._coverage` then republished it as
+    `chunk_plan_status_partial` -- reading, downstream, as a second and
+    independent coverage failure that had never happened.
+    """
     if "file_context_missing" in limitations or intake_status == "degraded":
         return "degraded"
     if files_not_covered:
         return "degraded"
-    if files_partially_covered or limitations:
+    if files_partially_covered:
         return "partial"
     return "complete"
 

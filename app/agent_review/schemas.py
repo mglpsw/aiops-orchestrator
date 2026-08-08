@@ -369,7 +369,16 @@ class ChunkResults(BaseModel):
     chunks_failed: list[ChunkParseFailure] = Field(default_factory=list)
     confirmed_findings: list[NormalizedFinding] = Field(default_factory=list)
     risks: list[NormalizedRisk] = Field(default_factory=list)
+    # `limitations` is the DETERMINISTIC namespace: reason codes this engine
+    # authored. `model_reported_limitations` is what the model said about its
+    # own work -- preserved verbatim, never authoritative, and never allowed
+    # to create coverage or readiness state (AgentEscala#675, Fix A; see
+    # chunk_result_parser.parse_chunk_results).
+    #
+    # Additive and optional: `schema_version` stays 1 and every existing
+    # consumer keeps reading `limitations` exactly as before.
     limitations: list[str] = Field(default_factory=list)
+    model_reported_limitations: list[str] = Field(default_factory=list)
     rejected_findings: list[RejectedFinding] = Field(default_factory=list)
     coverage: ChunkResultsCoverage = Field(default_factory=ChunkResultsCoverage)
     status: ChunkResultState
@@ -448,7 +457,11 @@ class FinalReview(BaseModel):
     summary: str
     confirmed_findings: list[FinalReviewFinding] = Field(default_factory=list)
     risks: list[FinalReviewRisk] = Field(default_factory=list)
+    # Deterministic namespace vs. model-authored namespace -- see
+    # ChunkResults above. Only `limitations` may drive `status`, `verdict`
+    # or the quality gate (AgentEscala#675, Fix A).
     limitations: list[str] = Field(default_factory=list)
+    model_reported_limitations: list[str] = Field(default_factory=list)
     rejected_summary: FinalReviewRejectedSummary = Field(default_factory=FinalReviewRejectedSummary)
     coverage: FinalReviewCoverage = Field(default_factory=FinalReviewCoverage)
     counts: FinalReviewCounts = Field(default_factory=FinalReviewCounts)

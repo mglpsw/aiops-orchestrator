@@ -103,10 +103,19 @@ def test_plan_chunks_cli_generates_semantic_chunk_plan(tmp_path: Path) -> None:
     assert result.returncode == 0
     payload = json.loads(result.stdout)
     plan = json.loads(output.read_text(encoding="utf-8"))
-    assert payload == {"ok": True, "output_written": True, "status": "partial"}
+    # `complete`, not `partial`: the fixture is the legacy-schema intake, so
+    # the plan does carry the informational `intake_schema_id_missing` -- but
+    # every file is planned in full. Before AgentEscala#675 / Fix C,
+    # `_plan_status` returned `partial` for any non-empty `limitations`, so
+    # this CLI reported a partial plan for a change set it had covered
+    # completely.
+    assert payload == {"ok": True, "output_written": True, "status": "complete"}
     assert plan["schema_id"] == "agent-review.semantic-chunk-plan.v1"
     assert plan["target_repo"] == "mglpsw/AgentEscala"
     assert plan["chunks"]
+    assert "intake_schema_id_missing" in plan["limitations"]
+    assert plan["files_partially_covered"] == []
+    assert plan["files_not_covered"] == []
 
 
 def test_plan_chunks_cli_fails_closed_on_prod_runtime_env(tmp_path: Path) -> None:

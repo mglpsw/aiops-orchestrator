@@ -119,11 +119,65 @@ def _artifact_matrix(intake: ReviewIntake) -> dict[str, Any]:
     }
 
 
+def _declared_requiredness(intake: ReviewIntake) -> dict[str, bool]:
+    """Map artifact name -> declared `required`, from the target profile.
+
+    `ArtifactStatus` does not carry `required`: `artifact_loader` consumes
+    `ArtifactDeclaration.required` and keeps only its effect, in the separate
+    intake-level `limitations` list. The declarations themselves survive on
+    `intake.target_profile["artifacts"]` (serialized by `cli.build_intake`
+    from `TargetProfile.artifacts`, where `required` has a `= False` default
+    and is therefore always emitted), which is the only source complete
+    across all four `ArtifactState` values. Joined by `name`, not `path`:
+    the profile is passed through `redact_value` before it lands here, and a
+    path is likelier than a name to be rewritten by redaction.
+    """
+    profile = intake.target_profile if isinstance(intake.target_profile, dict) else {}
+    declarations = profile.get("artifacts")
+    if not isinstance(declarations, list):
+        return {}
+    requiredness: dict[str, bool] = {}
+    for declaration in declarations:
+        if not isinstance(declaration, dict):
+            continue
+        name = _clean_text(declaration.get("name"))
+        if name is None:
+            continue
+        requiredness[name] = bool(declaration.get("required", False))
+    return requiredness
+
+
 def _artifact_state_limitations(intake: ReviewIntake) -> list[str]:
+    """Classify artifact state as required / optional / invalid.
+
+    AgentEscala#675, Fix B. A `required: false` artifact that was never
+    produced is an evidence-*availability* fact, not a missing input, and
+    collapsing both into `artifact_missing:` is what made the trusted
+    publisher's comment misleading: the trusted recomputation deliberately
+    produces none of the target's five optional artifacts, and each came back
+    indistinguishable from a genuinely absent required one.
+
+    The reason codes are the ones `artifact_loader` already emits
+    (`required_artifact_missing:`, `artifact_invalid:`) plus the
+    `optional_artifact_missing:` form that `aiops-review-build-payloads.py`
+    already passes in as `optional_limitations` -- no new vocabulary.
+
+    Ownership stops here: this says required/optional/invalid/available. *Why*
+    an artifact was not produced is target policy and stays with the target.
+    """
+    requiredness = _declared_requiredness(intake)
     limitations: list[str] = []
     for status in intake.artifact_status:
         if status.status == "missing":
-            limitations.append(f"artifact_missing:{status.name}")
+            if status.name not in requiredness:
+                # No declaration means no policy saying this is optional.
+                # Absent that policy we do not get to assume it, so the
+                # undifferentiated form stays -- fail-closed, as before.
+                limitations.append(f"artifact_missing:{status.name}")
+            elif requiredness[status.name]:
+                limitations.append(f"required_artifact_missing:{status.name}")
+            else:
+                limitations.append(f"optional_artifact_missing:{status.name}")
         elif status.status in {"invalid", "degraded"}:
             limitations.append(f"artifact_invalid:{status.name}")
     return limitations

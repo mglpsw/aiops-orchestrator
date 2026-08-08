@@ -4,6 +4,45 @@
 
 ### Fixed
 
+- **AgentReview v1 evidence taxonomy (AgentEscala#675)**: the v1 engine
+  collapsed five independent axes — model observation, deterministic
+  limitation, artifact availability, file coverage and review status — into a
+  single flat `limitations: list[str]`, so a published verdict could not say
+  what had actually been reviewed. Three fixes, no engine redesign, no new
+  normative contract.
+  - **Provenance.** `chunk_result_parser` flattened the model's own
+    `ChunkResponse.limitations` (`type`/`detail`, both unconstrained free
+    text) into `f"{type}:{detail}"` and `extend`-ed the *same* list that
+    carries engine-authored reason codes. LLM prose was therefore published
+    as if deterministic; a model echoing a real code back with a sentence
+    produced a second, apparently independent cause for one root cause; and —
+    found while auditing this — a model emitting a bare code from
+    `CRITICAL_LIMITATIONS` (e.g. `coverage_missing`, with no `:` suffix to
+    tell it apart) drove `status` to `degraded` and the verdict to
+    `manual_review_required` on a fully covered review. `ChunkResults`,
+    `FinalReview` and `ReviewQualityGate` gain an additive
+    `model_reported_limitations`; `schema_version` stays `1` and consumers
+    reading only `limitations` are unaffected. The rendered markdown gives
+    each namespace its own heading and caps them independently, so model
+    prose can no longer evict deterministic codes from the comment.
+  - **Artifact requiredness.** `pr_brief` emitted `artifact_missing:<name>`
+    for every absent artifact, ignoring the `required: false` already
+    declared in the target profile — which is why a trusted recomputation
+    that legitimately produces none of the target's optional artifacts
+    reported five missing inputs indistinguishable from real ones. It now
+    joins `target_profile.artifacts` by name and emits
+    `required_artifact_missing:` / `optional_artifact_missing:`, reusing the
+    codes `artifact_loader` and `aiops-review-build-payloads.py` already use.
+    With no declaration the conservative `artifact_missing:` form is kept.
+  - **Coverage vs. limitation.** `semantic_chunker._plan_status` returned
+    `partial` whenever `limitations` was non-empty, so an informational
+    `intake_schema_id_missing` stamped a 100%-covered plan as partial, and
+    `final_synthesizer` republished that as `chunk_plan_status_partial` —
+    reading downstream as a second, independent coverage failure that had
+    never happened. Plan status now derives from coverage facts only; every
+    coverage-bearing limitation already has a structural counterpart in
+    `files_partially_covered` / `files_not_covered`, so nothing is lost.
+
 - AgentReview v2 content extraction (#200-B/#200-C adversarial audit
   follow-up, distribution epic #199): a hunk windowed by
   `planner_v2`'s own documented repeated-anchor exception (a starved side
