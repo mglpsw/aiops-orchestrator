@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.22.0 - 2026-08-08 - AgentReview v1 evidence taxonomy and v2 review-content extraction
+
 ### Fixed
 
 - **AgentReview v1 evidence taxonomy (AgentEscala#675)**: the v1 engine
@@ -274,6 +276,15 @@
   registered in the RI-B0a.2 reuse manifest. Contract and ADR only --
   extraction, redaction, DLP execution, and Router wiring are `#200-B`/
   `#200-C` (refs #200, #199, docs/adr/ADR_AGENT_REVIEW_V2_REVIEW_CONTENT.md)
+
+## v0.21.0 - 2026-08-04 - AgentReview v2 Offline and Shadow Adoption
+
+See [`docs/RELEASE_V0_21_0.md`](docs/RELEASE_V0_21_0.md) for the full release
+contract. This section was never split out of `Unreleased` when the tag was
+cut; backfilled here verbatim from the same entries, without rewriting any
+claim, so `CHANGELOG.md` matches the real tag history.
+
+### Added
 
 - AgentReview v2 benchmark (#88): a provider-reviewable synthetic corpus
   (`evals/agent_review_v2/reviewable_corpus/`, 6 `semantic_positive` + 4

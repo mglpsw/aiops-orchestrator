@@ -1,5 +1,42 @@
 # Release Notes
 
+## v0.21.0 - AgentReview v2 Offline and Shadow Adoption
+
+> Backfilled: this entry was never added when the tag was cut on 2026-08-04.
+> See [`RELEASE_V0_21_0.md`](RELEASE_V0_21_0.md) for the full release
+> contract; content here is summarized from that document, not new claims.
+
+### Final identity
+
+- Final tag: `v0.21.0`
+- RC tag: `v0.21.0-rc.1`
+- Shared target SHA: `273864eaa01dfb708a5a26d3756e16c6cd918a9f`
+- Same commit as the RC — no code changed after the RC
+
+### Highlights
+
+- complete AgentReview v2 engine: run/manifest/payload assembly, verified
+  binding, coverage, lifecycle, readiness, quality gate, CLIs, dual-target
+  conformance
+- CAEM 3.0 F0 consumer pin and legacy 2.1 quarantine
+- AgentReview v2 benchmark: provider-reviewable synthetic corpus, AIOps-side
+  pipeline projection, real Codex CLI/GitHub shadow lanes
+  (`reports/agent-review-v2-benchmark-summary.md`)
+- disposition: `allowed_role: shadow` only — does not authorize adoption
+  beyond shadow
+
+### Compatibility
+
+- does not remove, deprecate, or change the v1 consumer contract
+- does not promote v2 to default or required for any target
+- does not write to any consumer repository or touch CT102
+- AgentEscala pin remained `v0.20.0` at release time (unchanged by this
+  release)
+
+See [`RELEASE_V0_21_0.md`](RELEASE_V0_21_0.md) for the complete contract.
+
+---
+
 ## v0.20.0 - AgentReview Quality Gate
 
 ### Final identity
