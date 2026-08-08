@@ -440,4 +440,65 @@ def test_parser_accepts_non_empty_response_following_structured_contract(tmp_pat
     assert results.confirmed_findings[0].source_artifact is None
     assert results.confirmed_findings[0].line_or_hunk == "L42-L48"
     assert results.risks[0].title == "Caller behavior still needs validation"
-    assert "diff_scope:Only the assigned file was reviewed." in results.limitations
+    # The model's own limitation is preserved verbatim -- in the model-reported
+    # namespace, never in the deterministic one (AgentEscala#675, Fix A).
+    assert "diff_scope:Only the assigned file was reviewed." in results.model_reported_limitations
+    assert "diff_scope:Only the assigned file was reviewed." not in results.limitations
+
+
+def test_model_authored_limitations_never_enter_the_deterministic_namespace(tmp_path: Path) -> None:
+    """AgentEscala#675 / Fix A. `ChunkResponse.limitations` is free text from
+    the model: `type` and `detail` are both unconstrained `str | None`.
+
+    Before this fix the parser flattened them to f"{type}:{detail}" and
+    `extend`-ed the *same* list that carries engine-authored reason codes. Two
+    consequences, both observed in production comments: the published
+    "deterministic" limitation list contained sentences the model wrote, and a
+    model that echoed a deterministic code back with prose produced a second,
+    apparently independent entry for one cause.
+    """
+    responses = _responses_dir(tmp_path)
+    chunk = _chunk()
+    _write_response(
+        responses,
+        chunk=chunk,
+        limitations=[
+            # The model echoing a real deterministic code back at us, with prose.
+            {"type": "intake_schema_id_missing", "detail": "The intake schema ID is missing from the payload."},
+            # A pure invention with no deterministic counterpart.
+            {"type": "contracts_context_not_relevant", "detail": "The contracts context was not relevant here."},
+        ],
+    )
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    assert results.model_reported_limitations == [
+        "intake_schema_id_missing:The intake schema ID is missing from the payload.",
+        "contracts_context_not_relevant:The contracts context was not relevant here.",
+    ]
+    # Nothing the model wrote leaks into the deterministic namespace ...
+    assert results.limitations == []
+    # ... and in particular it cannot manufacture a deterministic cause by
+    # naming one.
+    assert not any(item.startswith("intake_schema_id_missing") for item in results.limitations)
+
+
+def test_model_echo_of_a_deterministic_code_is_not_a_second_cause(tmp_path: Path) -> None:
+    """Fix A, dedupe half. When the deterministic code IS present, the model
+    echoing it with free text must not make it count twice."""
+    responses = _responses_dir(tmp_path)
+    chunk = _chunk()
+    _write_response(
+        responses,
+        chunk=chunk,
+        limitations=[{"type": "chunk_plan_status_degraded", "detail": "the plan looked degraded to me"}],
+    )
+
+    # A degraded plan puts the real deterministic code into `limitations`.
+    results = parse_chunk_results(_plan([chunk], status="degraded"), responses_dir=responses)
+
+    assert results.limitations.count("chunk_plan_status_degraded") == 1
+    assert results.limitations == ["chunk_plan_status_degraded"]
+    assert results.model_reported_limitations == [
+        "chunk_plan_status_degraded:the plan looked degraded to me"
+    ]

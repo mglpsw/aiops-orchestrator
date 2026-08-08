@@ -150,6 +150,12 @@ def synthesize_final_review(
         confirmed_findings=findings,
         risks=risks,
         limitations=limitations,
+        # Carried through verbatim so the target can publish it under its own
+        # heading. Deliberately NOT passed to `_review_status`, `_verdict`,
+        # `_counts` or `_has_critical_limitation`: LLM-authored content never
+        # creates deterministic readiness or coverage state
+        # (AgentEscala#675, Fix A).
+        model_reported_limitations=_dedupe(list(chunk_results.model_reported_limitations)),
         rejected_summary=rejected_summary,
         coverage=coverage,
         counts=counts,
@@ -200,6 +206,11 @@ def render_final_review_markdown(
     else:
         lines.append("Nenhum risco ou follow-up relevante.")
 
+    # Two namespaces, two headings, deterministic first (AgentEscala#675,
+    # Fix A). Rendering them together made a sentence the model wrote look
+    # like an engine reason code -- and because the list is capped at
+    # LIMITATION_MD_LIMIT, a chatty model could push real deterministic codes
+    # out of the published comment. The cap now applies per namespace.
     lines.extend(["", "## Limitações", ""])
     if review.limitations:
         for limitation in review.limitations[:LIMITATION_MD_LIMIT]:
@@ -208,6 +219,21 @@ def render_final_review_markdown(
             lines.append(f"- Mais {len(review.limitations) - LIMITATION_MD_LIMIT} limitação(ões) omitida(s) neste resumo.")
     else:
         lines.append("Nenhuma limitação relevante registrada.")
+
+    lines.extend(["", "## Observações do modelo", ""])
+    if review.model_reported_limitations:
+        lines.append(
+            "Reportado pelo modelo sobre o próprio trabalho. "
+            "Não é evidência determinística e não afeta cobertura, status nem veredito."
+        )
+        lines.append("")
+        for limitation in review.model_reported_limitations[:LIMITATION_MD_LIMIT]:
+            lines.append(f"- `{limitation}`")
+        if len(review.model_reported_limitations) > LIMITATION_MD_LIMIT:
+            omitted = len(review.model_reported_limitations) - LIMITATION_MD_LIMIT
+            lines.append(f"- Mais {omitted} observação(ões) omitida(s) neste resumo.")
+    else:
+        lines.append("Nenhuma observação reportada pelo modelo.")
 
     lines.extend(["", "## Observações rejeitadas/rebaixadas", ""])
     if review.rejected_summary.total:

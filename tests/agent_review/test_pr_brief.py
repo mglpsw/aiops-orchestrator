@@ -5,7 +5,13 @@ import json
 import pytest
 
 from app.agent_review.pr_brief import PRBriefError, build_pr_brief
-from app.agent_review.schemas import RedactionReport, ReviewIntake, SemanticChunk, SemanticChunkPlan
+from app.agent_review.schemas import (
+    ArtifactStatus,
+    RedactionReport,
+    ReviewIntake,
+    SemanticChunk,
+    SemanticChunkPlan,
+)
 
 
 def _intake() -> ReviewIntake:
@@ -178,6 +184,102 @@ def test_pr_brief_marks_optional_artifacts_missing() -> None:
 
     assert "optional_artifact_missing:checks" in brief.limitations
     assert "optional_artifact_missing:validation_evidence" in brief.limitations
+
+
+def _intake_with_declared_artifacts() -> ReviewIntake:
+    """The canonical intake shape: `target_profile.artifacts` carries the
+    serialized `ArtifactDeclaration` list, `required` included, exactly as
+    `cli.build_intake` produces it from `TargetProfile.artifacts`."""
+    intake = _intake()
+    intake.target_profile["artifacts"] = [
+        {"name": "checks", "path": "checks.json", "kind": "json", "required": True},
+        {"name": "file-diff-context", "path": "file-diff-context.json", "kind": "json", "required": True},
+        {"name": "project-context", "path": "project-context.json", "kind": "json", "required": False},
+        {"name": "test-intelligence", "path": "test-intelligence.json", "kind": "json", "required": False},
+    ]
+    return intake
+
+
+def _mark_missing(intake: ReviewIntake, name: str) -> None:
+    for status in intake.artifact_status:
+        if status.name == name:
+            status.status = "missing"
+            status.available = False
+            status.valid = False
+            return
+    intake.artifact_status.append(
+        ArtifactStatus(name=name, path=f"{name}.json", available=False, valid=False, status="missing")
+    )
+
+
+def test_pr_brief_distinguishes_required_from_optional_missing_artifacts() -> None:
+    """AgentEscala#675 / Fix B. A declared-optional artifact that was never
+    produced is not the same fact as a required one going missing, and the
+    brief must not flatten both into `artifact_missing:`.
+
+    This is what made the trusted publisher's comment misleading: the trusted
+    recomputation legitimately does not produce the five `required: false`
+    artifacts, and every one came back as a bare `artifact_missing:` --
+    indistinguishable from a genuinely absent required input.
+    """
+    intake = _intake_with_declared_artifacts()
+    _mark_missing(intake, "checks")           # declared required: true
+    _mark_missing(intake, "project-context")  # declared required: false
+
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    assert "required_artifact_missing:checks" in brief.limitations
+    assert "optional_artifact_missing:project-context" in brief.limitations
+    # The flattened form must be gone for both.
+    assert "artifact_missing:checks" not in brief.limitations
+    assert "artifact_missing:project-context" not in brief.limitations
+
+
+def test_pr_brief_optional_missing_artifact_does_not_degrade_file_coverage() -> None:
+    """Fix B, second half: an optional artifact that was never produced is an
+    evidence-availability fact. It must leave the file-coverage axis alone."""
+    intake = _intake_with_declared_artifacts()
+    _mark_missing(intake, "project-context")
+    _mark_missing(intake, "test-intelligence")
+
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    payload = json.loads(brief.model_dump_json())
+    assert payload["coverage"]["files_covered"] == list(_chunk_plan().files_covered)
+    assert payload["coverage"]["files_partially_covered"] == []
+    assert payload["coverage"]["files_not_covered"] == []
+
+
+def test_pr_brief_without_a_declared_profile_stays_fail_closed() -> None:
+    """No `target_profile.artifacts` means no policy saying what is optional.
+    Absent that policy the brief must NOT assume "optional" -- it keeps the
+    conservative, undifferentiated `artifact_missing:` form."""
+    intake = _intake()
+    intake.target_profile.pop("artifacts", None)
+    _mark_missing(intake, "checks")
+
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=_chunk_plan(),
+        redaction_report=_redaction_report(),
+        checks=None,
+        validation_evidence=None,
+    )
+
+    assert "artifact_missing:checks" in brief.limitations
+    assert "optional_artifact_missing:checks" not in brief.limitations
 
 
 def test_pr_brief_marks_invalid_required_artifact() -> None:

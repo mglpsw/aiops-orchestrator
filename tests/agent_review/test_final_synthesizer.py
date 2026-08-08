@@ -66,6 +66,7 @@ def _chunk_results(
     findings: list[NormalizedFinding] | None = None,
     risks: list[NormalizedRisk] | None = None,
     limitations: list[str] | None = None,
+    model_reported_limitations: list[str] | None = None,
     rejected_findings: list[RejectedFinding] | None = None,
     chunks_parsed: list[str] | None = None,
     chunks_failed: list[ChunkParseFailure] | None = None,
@@ -79,6 +80,9 @@ def _chunk_results(
         confirmed_findings=findings if findings is not None else [],
         risks=risks if risks is not None else [],
         limitations=limitations if limitations is not None else [],
+        model_reported_limitations=(
+            model_reported_limitations if model_reported_limitations is not None else []
+        ),
         rejected_findings=rejected_findings if rejected_findings is not None else [],
         coverage=coverage
         if coverage is not None
@@ -410,3 +414,86 @@ def test_load_intake_rejects_an_unknown_schema_id(tmp_path) -> None:  # noqa: AN
         load_intake(path)
 
     assert exc_info.value.error_class == "intake_invalid"
+
+
+# ── AgentEscala#675 / Fix A: provenance at synthesis ─────────────────────────
+
+
+def test_model_reported_limitations_are_propagated_but_never_authoritative() -> None:
+    """The model's self-report must reach the target (so a comment can show
+    it) while contributing nothing to status, verdict, or the deterministic
+    limitation list."""
+    review = synthesize_final_review(
+        _chunk_results(
+            model_reported_limitations=[
+                "contracts_context_not_relevant:The contracts context was not relevant here.",
+            ]
+        )
+    )
+
+    assert review.model_reported_limitations == [
+        "contracts_context_not_relevant:The contracts context was not relevant here.",
+    ]
+    assert review.limitations == []
+    # A clean, fully covered review stays clean.
+    assert review.status == "complete"
+    assert review.verdict == "approved"
+    assert review.counts.limitations_total == 0
+
+
+def test_model_cannot_degrade_the_review_by_naming_a_critical_limitation() -> None:
+    """Regression found while auditing #675: `_has_critical_limitation` tests
+    membership in `CRITICAL_LIMITATIONS` by exact string match over a flat
+    list that used to include model text. A model that emitted the bare code
+    `coverage_missing` -- with no detail, so no `:` suffix to tell it apart --
+    landed verbatim in that list and drove `status` to `degraded` and the
+    verdict to `manual_review_required`, on a review whose coverage was in
+    fact complete."""
+    review = synthesize_final_review(
+        _chunk_results(model_reported_limitations=["coverage_missing"])
+    )
+
+    assert review.status == "complete"
+    assert review.verdict == "approved"
+    assert "coverage_missing" not in review.limitations
+
+
+def test_markdown_renders_deterministic_and_model_reported_separately() -> None:
+    """Acceptance criterion #8: the published comment must distinguish a
+    finding from a limitation from an observation. Rendering both namespaces
+    into one bullet list made a model sentence look like an engine reason
+    code -- and, because the list is truncated at LIMITATION_MD_LIMIT, model
+    prose could push deterministic codes out of the comment entirely."""
+    review = synthesize_final_review(
+        _chunk_results(
+            status="partial",
+            limitations=["chunk_budget_exceeded:primary_backend_logic"],
+            model_reported_limitations=["diff_scope:I only saw one file."],
+        )
+    )
+
+    markdown = render_final_review_markdown(review)
+
+    assert "chunk_budget_exceeded:primary_backend_logic" in markdown
+    assert "diff_scope:I only saw one file." in markdown
+    # The two live under distinct headings, and the deterministic one comes first.
+    assert "## Limitações" in markdown
+    assert "## Observações do modelo" in markdown
+    assert markdown.index("## Limitações") < markdown.index("## Observações do modelo")
+
+
+def test_deterministic_limitations_are_never_crowded_out_by_model_prose() -> None:
+    """The markdown limitation list is capped. That cap must apply to each
+    namespace on its own, so a chatty model can never evict a deterministic
+    reason code from the comment."""
+    review = synthesize_final_review(
+        _chunk_results(
+            status="partial",
+            limitations=["chunk_budget_exceeded:primary_backend_logic"],
+            model_reported_limitations=[f"noise_{index}:padding" for index in range(30)],
+        )
+    )
+
+    markdown = render_final_review_markdown(review)
+
+    assert "chunk_budget_exceeded:primary_backend_logic" in markdown

@@ -184,12 +184,69 @@ def test_semantic_chunker_accepts_current_phase1_intake_schema_with_limitation()
     no schema_id field) must still be accepted during the compatibility
     window (#111) -- flagged with intake_schema_id_missing, exactly as
     before. Never mutate this fixture to the new form; that would defeat
-    the point of this specific regression."""
+    the point of this specific regression.
+
+    The plan status is deliberately NOT asserted here: the schema envelope is
+    an intake-contract fact, not a coverage fact. Which of the two it is
+    allowed to drive is the subject of
+    test_informational_limitation_alone_never_degrades_the_plan below.
+    """
 
     plan = build_semantic_chunk_plan(_intake(["backend/api/notification_admin.py"]))
 
-    assert plan.status == "partial"
     assert "intake_schema_id_missing" in plan.limitations
+
+
+def test_informational_limitation_alone_never_degrades_the_plan() -> None:
+    """AgentEscala#675 / Fix C. A limitation with no coverage consequence
+    must not make the plan `partial`.
+
+    The fixture is the legacy-schema intake, so it carries
+    `intake_schema_id_missing` -- purely informational, about the intake
+    envelope, saying nothing about which files were planned. Every file is
+    fully covered: nothing partial, nothing uncovered. Before this fix
+    `_plan_status` returned "partial" on `or limitations`, and
+    `final_synthesizer._coverage` then republished that as
+    `chunk_plan_status_partial` -- a second, apparently independent cause,
+    with 100% coverage standing behind it.
+    """
+
+    plan = build_semantic_chunk_plan(_intake(["backend/api/notification_admin.py"]))
+
+    # The limitation is still recorded ...
+    assert "intake_schema_id_missing" in plan.limitations
+    # ... and coverage is provably complete ...
+    assert plan.files_covered == ["backend/api/notification_admin.py"]
+    assert plan.files_partially_covered == []
+    assert plan.files_not_covered == []
+    # ... therefore the plan is complete.
+    assert plan.status == "complete"
+
+
+def test_real_coverage_gaps_still_degrade_the_plan() -> None:
+    """Fix C must not become fail-open: a limitation that *does* carry a
+    coverage consequence keeps degrading the plan exactly as before."""
+
+    partial = build_semantic_chunk_plan(
+        _intake(
+            [
+                "backend/services/notification_event_projection.py",
+                "backend/services/another_projection.py",
+            ]
+        ),
+        max_chars_per_block=700,
+    )
+    assert partial.files_partially_covered != []
+    assert partial.status == "partial"
+
+    missing_context = build_semantic_chunk_plan(_intake([]))
+    assert missing_context.status == "degraded"
+    assert "file_context_missing" in missing_context.limitations
+
+    intake_degraded = build_semantic_chunk_plan(
+        _intake(["backend/api/notification_admin.py"], status="degraded")
+    )
+    assert intake_degraded.status == "degraded"
 
 
 def test_semantic_chunker_accepts_the_new_schema_id_intake_without_the_limitation() -> None:

@@ -483,3 +483,74 @@ def test_load_intake_rejects_an_unknown_schema_id(tmp_path: Path) -> None:
         load_intake(path)
 
     assert exc_info.value.error_class == "intake_invalid"
+
+
+# ── AgentEscala#675 / Fix A: the gate never decides on model text ────────────
+
+
+def test_gate_echoes_model_reported_limitations_without_deciding_on_them() -> None:
+    """The model's self-report reaches the target for rendering, and changes
+    nothing the gate decides: not status, not verdict, not score, not
+    manual_review_required, not blocked_reasons."""
+    clean = _gate(_final_review())
+    with_model_text = _gate(
+        _final_review(
+            model_reported_limitations=[
+                "contracts_context_not_relevant:The contracts context was not relevant here.",
+            ]
+        )
+    )
+
+    assert with_model_text.model_reported_limitations == [
+        "contracts_context_not_relevant:The contracts context was not relevant here.",
+    ]
+    assert with_model_text.limitations == clean.limitations
+    assert with_model_text.status == clean.status
+    assert with_model_text.normalized_verdict == clean.normalized_verdict
+    assert with_model_text.quality_score == clean.quality_score
+    assert with_model_text.manual_review_required == clean.manual_review_required
+    assert with_model_text.blocked_reasons == clean.blocked_reasons
+
+
+def test_model_text_cannot_spend_the_gate_quality_score_budget() -> None:
+    """`_quality_score` charges 0.02 per limitation. While model prose shared
+    the deterministic list, a verbose model measurably lowered the score of a
+    review it had not actually found anything wrong with."""
+    clean = _gate(_final_review())
+    chatty = _gate(
+        _final_review(
+            model_reported_limitations=[f"noise_{index}:padding" for index in range(20)]
+        )
+    )
+
+    assert chatty.quality_score == clean.quality_score
+
+
+def test_schema_transport_and_coverage_failures_stay_distinct_causes() -> None:
+    """Acceptance criterion #2: schema mismatch, HTTP 5xx and coverage
+    missing are never aggregated into one failure. They arrive through
+    different producers and must survive as separate reason codes."""
+    gate = _gate(
+        _final_review(
+            status="degraded",
+            verdict="manual_review_required",
+            limitations=["coverage_missing"],
+        ),
+        _chunk_results(
+            status="degraded",
+            limitations=[
+                "agent_router_call_failed:schema_mismatch",
+                "agent_router_call_failed:http_5xx",
+            ],
+            coverage=ChunkResultsCoverage(),
+        ),
+    )
+
+    assert "agent_router_call_failed:schema_mismatch" in gate.limitations
+    assert "agent_router_call_failed:http_5xx" in gate.limitations
+    assert "coverage_missing" in gate.limitations
+    assert len({
+        "agent_router_call_failed:schema_mismatch",
+        "agent_router_call_failed:http_5xx",
+        "coverage_missing",
+    } & set(gate.limitations)) == 3

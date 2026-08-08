@@ -139,6 +139,54 @@ risks, limitations, rejected findings, coverage, parsed chunks, failed chunks,
 and parser status. `chunk_plan_ref` contains schema/status/count metadata only;
 it does not include local absolute paths.
 
+### Limitation provenance
+
+`limitations` and `model_reported_limitations` are two namespaces, and the
+engine never merges them:
+
+- `limitations` is **deterministic** — reason codes this engine authored.
+  Only this list may drive plan status, review status, verdict, quality score
+  or `manual_review_required`.
+- `model_reported_limitations` is what the **model** said about its own work,
+  taken verbatim from `ChunkResponse.limitations` (whose `type` and `detail`
+  are unconstrained free text). It is carried through the parser, the
+  synthesizer and the quality gate so a target can publish it, and is read by
+  no decision anywhere in the pipeline.
+
+The invariant is: *LLM-authored content never creates deterministic coverage
+or readiness state.* Both fields are additive; `schema_version` stays `1`, and
+consumers that only read `limitations` are unaffected.
+
+The rendered markdown gives each namespace its own heading, deterministic
+first, and applies the `LIMITATION_MD_LIMIT` cap per namespace — so model
+prose can never push a deterministic reason code out of the comment.
+
+### Plan status derives from coverage, not from limitation count
+
+`SemanticChunkPlan.status` is a statement about coverage. It is `degraded`
+when file context is missing, when the intake itself is degraded, or when
+files are uncovered; `partial` when files are partially covered; `complete`
+otherwise. An informational limitation with no coverage consequence — such as
+`intake_schema_id_missing` or `file_context_fallback_used` — is still
+recorded, but never degrades the plan.
+
+Every limitation that does cost coverage already has a structural counterpart
+in the plan's own lists: `chunk_budget_exceeded:<group>` always accompanies a
+non-empty `files_partially_covered`, and `max_blocks_exceeded` always
+accompanies a non-empty `files_not_covered`.
+
+### Missing artifacts are classified by declared requiredness
+
+The PR brief reads `target_profile.artifacts` and reports a missing artifact
+as `required_artifact_missing:<name>` or `optional_artifact_missing:<name>`
+according to that declaration's `required` flag; invalid and degraded
+artifacts stay `artifact_invalid:<name>`. Without a declaration there is no
+policy saying an artifact is optional, so the conservative
+`artifact_missing:<name>` form is kept.
+
+The engine classifies availability — required, optional, invalid, available.
+*Why* an artifact was not produced is target policy and belongs to the target.
+
 Confirmed findings remain confirmed only when they include concrete evidence,
 file path, title, impact, and either source artifact or line/hunk context.
 Findings without concrete evidence, speculative language, unsupported test
