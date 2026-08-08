@@ -127,8 +127,21 @@
   misclassified as `INFRA_FAILURE` instead of `SUCCESS` -- fixed by no
   longer raising on the second `communicate()` timeout, since the
   leader's own `returncode` is already known and authoritative by that
-  point and an unrelated orphan's fate has no bearing on it (refs #201,
-  #199, docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md)
+  point and an unrelated orphan's fate has no bearing on it. A second
+  independent review, run against the actual current HEAD, then found a
+  real P1: the `chmod 0666` from the paragraph above never got locked
+  back down, so the pgid-report file stayed world-writable for the
+  ENTIRE lifetime of the isolated check -- letting the untrusted command
+  itself (running as `nobody`, same `/tmp`, well-known filename prefix)
+  overwrite the pgid the host later trusts for a PRIVILEGED kill
+  (`sudo -n kill -9 -- -<pgid>`). Fixed by having the dropper chmod the
+  file back to `0600` immediately after writing it, still under the
+  elevated identity and strictly before dropping to `nobody` and
+  exec'ing the untrusted command, closing the window rather than
+  narrowing it; proven by a new adversarial test that globs for the
+  file from inside the dropped-privilege check itself and asserts every
+  overwrite attempt is denied (refs #201, #199,
+  docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md)
 
 - AgentReview v2 trusted-check plan/result contracts (#201-A, first slice
   of #201, distribution epic #199): `TrustedCheckPlanV2` (host-owned,

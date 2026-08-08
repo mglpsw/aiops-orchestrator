@@ -20,16 +20,16 @@ state:
   capability_state: real_isolated_execution_in_dev_sandbox_not_ct104
 
 evidence:
-  full_test_suite: "1978 passed, 4 skipped"
-  new_tests_this_slice: 22
-  ci_validate_sh: "sec 7: 1917 passed, 4 skipped, 61 deselected; sec 8: 61 passed, 1921 deselected -- OK"
+  full_test_suite: "1979 passed, 4 skipped"
+  new_tests_this_slice: 23
+  ci_validate_sh: "sec 7: 1917 passed, 4 skipped, 62 deselected; sec 8: 62 passed, 1921 deselected -- OK (run as root, so the new pgid-tamper test executes rather than skips)"
   schema_export_check: "byte-identical (unchanged this slice)"
   caem_f0_pin: "ok"
   ri_b0a_2_reuse_view_check: "byte-identical (unchanged this slice)"
   git_diff_check: clean
   ruff_new_files: "All checks passed! (app/agent_review/isolated_executor_v2.py, tests/agent_review/test_isolated_executor_v2.py)"
-  flakiness_check: "3 consecutive full runs under root; 2 more under sudo-elevated; 1 under fully-unprivileged -- 22/22 passed every time"
-  note: "counts re-measured after the independent-review addendum fixes; superseded prior counts (19 tests / 1975) not carried forward"
+  flakiness_check: "root: 23/23 (x1); sudo-elevated via su claude: 23/23 (x2); fully-unprivileged via su ubuntu: 22 passed + 1 correctly skipped (x1) -- every round"
+  note: "counts re-measured after the second-review P1 fix (attacker-writable pgid-report file); superseded prior counts (22 tests / 1978) not carried forward"
 ```
 
 ## CT104 status this corte
@@ -325,6 +325,61 @@ full suite (1978 passed, 4 skipped) and `ci_validate.sh` sections 7-8,
 before pushing. This is the fourth real CI-only failure this slice has
 hit and fixed by verifying on the actual target; recorded here, not
 smoothed over.
+
+## Addendum — second independent review, P1 finding: attacker-writable pgid-report file (fixed)
+
+A second full independent review, run against the actual current HEAD
+rather than a stale snapshot this time, confirmed all four prior fixes
+(inventory-digest binding, key/token identity, OOM-guessing removal, the
+descendant-hang mechanism including its own real CI-caught bug) and
+correctly agreed `#201-B3` is not scope creep. It then found one new,
+real P1: the third-CI-failure fix (best-effort pgid-report write, above)
+made the report file world-writable (`0666`) to work around the
+sudo-elevated write's own confinement, but nothing ever locked it back
+down afterward. It stayed `0666` for the ENTIRE lifetime of the isolated
+check -- not just the brief write window -- meaning the untrusted
+command itself (running as `nobody`, same `/tmp`, well-known
+`isolated-executor-pgid-*` prefix) could locate and overwrite the pgid
+the host later trusts for a PRIVILEGED kill (`sudo -n kill -9 --
+-<pgid>` under the sudo strategy, or a root-owned `os.killpg` under the
+real-root-direct strategy). An attacker-supplied pgid reaching either of
+those is privilege-adjacent, not merely a flaky test -- on a persistent
+host (CT104, once online) this could kill an arbitrary process group as
+root.
+
+Fixed: the dropper script now chmod's the file back to `0600`
+immediately after writing it, still under the elevated identity and
+strictly before dropping to `nobody` and exec'ing the untrusted
+command. The script is single-threaded and sequential, so the untrusted
+command never gets a chance to run while the file is still
+world-writable -- the window is closed, not narrowed. Attempted
+unconditionally, even if the content write itself failed, so a degraded
+fallback pgid never also means a still-writable file.
+
+Added the exact adversarial test the review specified:
+`test_execute_denies_the_isolated_check_from_tampering_with_its_own_pgid_report_file`
+globs for the well-known prefix from INSIDE the isolated, privilege-
+dropped check (discovering its own run's report file the same way a
+real attacker reading this module's source would, not via any
+out-of-band hint) and asserts every overwrite attempt is denied, not
+merely that the overall outcome looks fine. It correctly `pytest.skip`s
+under the unprivileged-userns fallback strategy specifically, where
+there is no real uid separation between the isolated command and the
+host caller to begin with (the isolated process only APPEARS as root
+inside its own user namespace; the file it would try to overwrite is
+already owned by that same real uid) and the cleanup kill is
+unprivileged `os.killpg`, never `sudo` -- a different threat model this
+finding does not apply to. This project's own GitHub Actions runner is
+not in that situation: it has passwordless sudo and always selects the
+sudo-elevated (`drop_to_nobody=True`) strategy, so the fix and its test
+are exercising the actually-relevant path.
+
+Verified under real root (23/23), sudo-elevated via `su claude` (23/23,
+x2), and fully-unprivileged via `su ubuntu` (22 passed, 1 correctly
+skipped -- not silently passed) before pushing. Full suite: 1979
+passed, 4 skipped. `ci_validate.sh` sections 7-8 green (62
+`requires_network` tests, run as root in this session so the new test
+executed rather than skipped).
 
 ## Honest limitations (named, not hidden)
 
