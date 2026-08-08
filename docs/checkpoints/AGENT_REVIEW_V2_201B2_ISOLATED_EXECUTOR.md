@@ -289,6 +289,43 @@ checkpoint's earlier CI-discovered-gaps sections already document twice
 over -- recorded here as a third instance, not an exception to the
 pattern.
 
+## Fourth real CI failure on this project's own GitHub Actions runner (fixed)
+
+Pushing the third-pass fix (best-effort pgid-report write, above) turned
+every OTHER test green, but one new failure appeared:
+`test_execute_does_not_hang_when_a_descendant_outlives_the_leader_holding_the_pipe_open`
+asserted `SUCCESS` and got `INFRA_FAILURE`
+(`isolated_executor_descendant_hung`). Root cause, present since the
+original `communicate()`-hang fix and only now exercised by CI's own
+timing: by the time `_run_isolated_v2` reaches the post-loop
+`communicate()` call, the tracked LEADER has already exited and
+`process.returncode` is already known and authoritative -- the only
+thing still outstanding is draining stdout/stderr, which can block if a
+descendant the leader forked (and never waited on) inherited the pipe
+write-end and is still alive. The existing code killed the process
+group and retried `communicate()` once, but if THAT also timed out (a
+descendant that had already escaped the process group, e.g. via a
+double fork), it raised `IsolatedExecutorError` and discarded the
+already-known, already-successful returncode -- turning a leader that
+exited `0` into `INFRA_FAILURE` purely because of an unrelated orphan.
+That is exactly the failure mode issue #201 forbids in the OTHER
+direction (real success reported as environmental failure), the mirror
+image of the OOM-guessing gap fixed earlier in this same checkpoint.
+
+Fix: the second `communicate()` timeout no longer raises. It falls back
+to whatever partial stdout/stderr the `TimeoutExpired` exception itself
+carries (`exc.stdout`/`exc.stderr`, best-effort only, may be empty) and
+classification proceeds on `process.returncode` exactly as the non-hung
+path does -- an orphaned descendant's fate has no bearing on the
+leader's own exit code. `EXECUTOR_REASON_DESCENDANT_HUNG_V2` is now
+unused by any code path and was removed rather than kept as dead code.
+Verified again under all three local privilege scenarios (root,
+sudo-elevated x2, fully-unprivileged) -- 22/22 every time -- plus the
+full suite (1978 passed, 4 skipped) and `ci_validate.sh` sections 7-8,
+before pushing. This is the fourth real CI-only failure this slice has
+hit and fixed by verifying on the actual target; recorded here, not
+smoothed over.
+
 ## Honest limitations (named, not hidden)
 
 1. **Exit-code forgery from inside the check's own process is not, and

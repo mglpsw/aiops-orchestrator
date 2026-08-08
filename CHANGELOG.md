@@ -113,8 +113,22 @@
   caller-declared rather than independently verified is now an explicit,
   prominent rule in the module's own docstring -- do not use it against
   real adversarial PR code until `#201-B3` closes the still-open
-  exit-code-forgery gap (refs #201, #199,
-  docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md)
+  exit-code-forgery gap. Two further real CI-only failures surfaced and
+  were fixed after that same round: the pgid-report file write inside
+  the dropper script (needed only for later best-effort cleanup) crashed
+  the WHOLE dropper with an uncaught `PermissionError` on the real
+  GitHub Actions runner when written from the sudo-elevated identity --
+  not reproducible in this session's own sandbox despite direct attempts
+  -- fixed by making that write best-effort (`try/except OSError: pass`)
+  plus a defensive `chmod 0666`, since reporting the pgid must never be
+  allowed to invalidate an otherwise-correct verdict; and a leader that
+  exited `0` while an orphaned descendant it never waited on kept the
+  output pipe open past the kill-and-retry grace window was
+  misclassified as `INFRA_FAILURE` instead of `SUCCESS` -- fixed by no
+  longer raising on the second `communicate()` timeout, since the
+  leader's own `returncode` is already known and authoritative by that
+  point and an unrelated orphan's fate has no bearing on it (refs #201,
+  #199, docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md)
 
 - AgentReview v2 trusted-check plan/result contracts (#201-A, first slice
   of #201, distribution epic #199): `TrustedCheckPlanV2` (host-owned,
