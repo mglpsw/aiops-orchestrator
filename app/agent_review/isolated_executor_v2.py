@@ -192,7 +192,6 @@ EXECUTOR_REASON_CANCELLED_V2 = "isolated_executor_cancelled"
 EXECUTOR_REASON_TIMEOUT_V2 = "isolated_executor_timeout"
 EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2 = "isolated_executor_inventory_digest_mismatch"
 EXECUTOR_REASON_INVENTORY_KEY_TOKEN_MISMATCH_V2 = "isolated_executor_inventory_key_token_mismatch"
-EXECUTOR_REASON_DESCENDANT_HUNG_V2 = "isolated_executor_descendant_hung"
 
 _TIMEOUT_POLL_INTERVAL_SECONDS_V2 = 0.05
 _COMMUNICATE_GRACE_SECONDS_V2 = 5.0
@@ -693,8 +692,9 @@ def _run_isolated_v2(
         # write. A second, equally bounded read guards the residual case
         # a descendant escaped the process group entirely (e.g. a
         # double-fork daemonizing itself) and the kill could not reach
-        # it -- if even THAT hangs, this is a genuine environment
-        # failure, not a verdict this module can safely produce.
+        # it -- if even THAT hangs, the LEADER's own already-known exit
+        # code still stands (see the inner comment below); only the
+        # captured output is best-effort at that point, never the verdict.
         try:
             stdout, stderr = process.communicate(timeout=_COMMUNICATE_GRACE_SECONDS_V2)
         except subprocess.TimeoutExpired:
@@ -703,7 +703,24 @@ def _run_isolated_v2(
             try:
                 stdout, stderr = process.communicate(timeout=_COMMUNICATE_GRACE_SECONDS_V2)
             except subprocess.TimeoutExpired as exc:
-                raise IsolatedExecutorError(EXECUTOR_REASON_DESCENDANT_HUNG_V2) from exc
+                # The tracked LEADER already exited before we ever got
+                # here (that's why we're past the poll() loop at all --
+                # ``process.returncode`` is already set and authoritative).
+                # A descendant that escaped the process group entirely
+                # (e.g. a double-fork daemonizing itself) can still hold
+                # the inherited pipe open even after the kill above; that
+                # orphan's fate has NO bearing on the LEADER's own exit
+                # code, which is what this check is actually judged on.
+                # Silently turning a leader that exited 0 into
+                # INFRA_FAILURE just because some unrelated grandchild is
+                # still alive would be exactly the kind of environmental
+                # noise masquerading as a product verdict issue #201
+                # forbids -- caught by this slice's own adversarial test
+                # (a leader that exits 0 while a forked descendant it
+                # does not wait on keeps the pipe open). Partial/absent
+                # output only; never fatal to the check's own outcome.
+                stdout = exc.stdout or ""
+                stderr = exc.stderr or ""
     finally:
         try:
             os.unlink(pgid_report_path)
