@@ -140,7 +140,20 @@
   exec'ing the untrusted command, closing the window rather than
   narrowing it; proven by a new adversarial test that globs for the
   file from inside the dropped-privilege check itself and asserts every
-  overwrite attempt is denied (refs #201, #199,
+  overwrite attempt is denied. A third independent review, again
+  against current HEAD, found that lockdown chmod was itself fail-open
+  (bare `try/except: pass` -- a failed chmod there still let the
+  untrusted command run against a possibly-still-`0666` file) and that
+  the unprivileged-userns fallback isolation strategy (no real uid
+  separation from the host caller) could still back a `TRUSTED` result.
+  Fixed: the dropper now chmod's BEFORE writing content and `os._exit()`s
+  via a dedicated sentinel if that chmod fails, corroborated host-side
+  by the report file still having no valid pgid content so a legitimate
+  check sharing the same exit value is never misclassified; and
+  `execute_trusted_check_plan_v2` now refuses to back `TRUSTED` with the
+  weak fallback (`UNTRUSTED_ADVISORY` can still use it), since that
+  fallback's isolated command runs as the exact same real uid as the
+  host caller (refs #201, #199,
   docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md)
 
 - AgentReview v2 trusted-check plan/result contracts (#201-A, first slice

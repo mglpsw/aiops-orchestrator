@@ -381,6 +381,77 @@ passed, 4 skipped. `ci_validate.sh` sections 7-8 green (62
 `requires_network` tests, run as root in this session so the new test
 executed rather than skipped).
 
+## Addendum — third independent review, two more real findings: fail-open lockdown, weak-isolation TRUSTED gap (both fixed)
+
+A third review, again run against the actual current HEAD, confirmed
+every prior fix (PGID-after-death, key/token identity, descendant hang,
+and the pgid-report P1 itself) and again correctly agreed `#201-B3` is
+not scope creep. It found two more real gaps, both inside the pgid-
+report fix from the previous addendum:
+
+**1. The chmod lockdown was itself fail-open.** `os.chmod(path, 0o600)`
+was wrapped in a bare `try/except OSError: pass` -- if that SPECIFIC
+chmod failed, the untrusted command still ran, against a file that
+could still be `0666`, reopening the exact P1 the previous fix closed.
+Fixed by reordering the dropper (chmod now happens BEFORE the content
+write, not after) and making the chmod failure fail-CLOSED: on
+`OSError`, the dropper `os._exit()`s via a dedicated sentinel
+(`_PGID_LOCKDOWN_FAILED_EXIT_CODE_V2`) before ever writing content,
+dropping privilege, or exec'ing the untrusted command. The host treats
+that exit code as a lockdown failure (`INFRA_FAILURE`,
+`EXECUTOR_REASON_PGID_LOCKDOWN_FAILED_V2`) ONLY together with the
+report file still having no valid pgid content -- never the exit code
+alone -- so a legitimate check that happens to independently use the
+same exit value, in a run where lockdown succeeded, is never
+misclassified: that specific combination (matching exit code AND no
+valid content) is only reachable when lockdown genuinely failed and the
+untrusted command never got to run at all.
+
+**2. The unprivileged-userns fallback strategy could still back a
+`TRUSTED` result.** That fallback has no real uid separation between
+the isolated command and the host caller -- it only APPEARS as root
+inside its own user namespace, so ANY file the host owns, including the
+pgid-report handshake file, is trivially writable by the "isolated"
+command regardless of permission bits, since they are the SAME real
+uid. Acceptable for `UNTRUSTED_ADVISORY` (never promotable to begin
+with -- a weaker isolation guarantee behind it changes nothing about
+what it can be used for), but not for `TRUSTED`, which #201-A already
+treats as the sole authority a promotable `RequiredCheckResultV2` can
+come from. `execute_trusted_check_plan_v2` now refuses
+(`EXECUTOR_REASON_ISOLATION_TOO_WEAK_FOR_TRUSTED_V2`) rather than
+silently proceeding whenever that fallback is the only thing that
+worked and the caller asked for `TRUSTED`; `UNTRUSTED_ADVISORY` can
+still use it.
+
+Four new tests: one execs the dropper's own generated source with
+`os.chmod` monkeypatched to fail, proving it self-refuses (this exact
+OS-level failure mode -- a MAC/session confinement mechanism -- could
+not be reproduced directly in this sandbox, same documented limitation
+as the sibling write-side fix, so the test targets the dropper's own
+logic rather than trying to force a real chmod failure); one proves the
+host-side classification of that sentinel; two prove the
+TRUSTED-vs-`UNTRUSTED_ADVISORY` gating over weak isolation. Introducing
+the new gating surfaced that MANY existing functional tests (exit-code
+classification, timeouts, memory limits) implicitly assumed `TRUSTED`
+could always be backed by whatever isolation was available -- no longer
+true by design. Rather than weakening those tests to `UNTRUSTED_
+ADVISORY` (which would also silently reduce TRUSTED-path coverage on
+environments that DO have strong isolation, i.e. this project's real
+target), they now request a shared `require_strong_isolation` fixture
+that skips them cleanly (not silently) on an environment where only the
+weak fallback works, mirroring the real target's actual capability
+profile (always real root or passwordless sudo, never only this
+fallback).
+
+Verified under real root (27/27), sudo-elevated via `su claude`
+(27/27), and fully-unprivileged via `su ubuntu` (16 passed, 11 TRUSTED-
+mechanics tests correctly skipped -- the 4 new gating/lockdown tests
+still ran and passed under `ubuntu` too, since they force their own
+scenario via monkeypatch rather than depending on the real account's
+capabilities). Full suite: 1983 passed, 4 skipped. `ci_validate.sh`
+sections 7-8 green (66 `requires_network` tests, run as root). Pushed
+as `e1ff796`, CI green on both jobs.
+
 ## Honest limitations (named, not hidden)
 
 1. **Exit-code forgery from inside the check's own process is not, and
@@ -418,6 +489,50 @@ executed rather than skipped).
    it, since nothing the check writes anywhere is ever trusted for the
    verdict. A disposable checkout being writable by its own test process
    is normal in any CI system, not a security gap here.
+6. **A descendant that escapes the tracked process group (e.g. via its
+   own `setsid()`/double-fork, detaching from the inherited pipes before
+   the leader exits) is not guaranteed to be killed, and can outlive the
+   executor's own return.** Confirmed real by a third review of this
+   slice: today's cleanup is process-GROUP based (`killpg` on the pgid
+   the dropper's own `setsid()` established); a process that calls
+   `setsid()` a SECOND time inside itself becomes a new session/group
+   leader and is no longer reachable through that same pgid, regardless
+   of whether the ORIGINAL leader already exited successfully. On this
+   project's actual current target (GitHub Actions' ephemeral runners)
+   the blast radius is bounded by the VM's own lifetime; the concern is
+   real specifically for a PERSISTENT host (CT104, once online), where
+   such a process could linger indefinitely.
+
+   The correct fix is Linux PID namespaces (`unshare --pid --fork`),
+   which give an UNCONDITIONAL kernel guarantee no `setsid()`/double-fork
+   can escape: when a pid namespace's own PID1 dies (for any reason,
+   including a plain successful exit), the kernel immediately SIGKILLs
+   every other process still in that namespace, with no cleanup code
+   needed for that case at all. Implementing this correctly requires
+   also changing how the host learns which pid to actively kill for the
+   TIMEOUT/CANCEL path: `os.getpid()`/`os.getpgrp()` called from INSIDE
+   a new pid namespace return NAMESPACE-RELATIVE values (e.g. the
+   dropper would see itself as pid `1`), not the host-visible value a
+   host-side `kill`/`killpg` call needs -- reading `/proc/self/status`'s
+   `NSpid` field (which lists the pid at every nesting level, outermost
+   first) is the correct way to recover the host-visible value from
+   inside the dropper. Getting this specific substitution wrong is not
+   a cosmetic bug: a namespace-relative pgid like `1` reaching a
+   HOST-side `killpg`/`sudo kill` call has POSIX-defined broadcast
+   semantics for pgid/pid values in that range and could signal far more
+   than intended.
+
+   This was deliberately NOT implemented in this same round, unlike
+   findings 1-2 above: this exact subsystem (process/pgid tracking) has
+   already produced five real, CI-or-review-caught bugs across this
+   slice, several only reproducible on the real GitHub Actions runner
+   and not in this session's own sandbox; CT104 (the actual persistent
+   host this finding matters most for) is offline and cannot be used to
+   validate real pid-namespace teardown behavior before merge. Rushing
+   a kernel-namespace change with a plausible-but-unverified failure
+   mode that feeds an attacker-uncontrollable but easily-mistaken value
+   into a privileged kill call is a worse risk than shipping this
+   named, scoped gap and hardening it as a fast, deliberate follow-up.
 6. **Docker-socket denial is untested, not unproven** -- this sandbox
    simply has no docker socket to attempt reaching in the first place, so
    there is nothing to adversarially prove here; the module never
