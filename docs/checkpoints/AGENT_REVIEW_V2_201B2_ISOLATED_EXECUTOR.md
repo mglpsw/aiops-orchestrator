@@ -50,7 +50,7 @@ true, never silently dropped from the list.
 |---|---|---|
 | 1 | contratos strict de plan/result definidos | `done` -- #201-A, reused unmodified |
 | 2 | harness e serializer ficam fora do alcance da PR | `partially_proven` -- adversarial forged-stdout/forged-report test proves the verdict does NOT depend on anything the child prints or writes. Does NOT prove the child's own EXIT CODE can't be forged by PR-controlled code (e.g. `os._exit(0)` in a `conftest.py` hook) -- an independent review of this slice confirmed this residual gap is real and unresolved; `authority=TRUSTED` must not be used against real adversarial PR code until `#201-B3` closes it (see the module's own docstring and the addendum below) |
-| 3 | isolamento sem rede e sem privilégios comprovado | `proven_in_this_sandbox, not_ct104` -- real `unshare --user --net` (ENETUNREACH proof), real privilege drop to `nobody`, real `sudo` refusal, real `RLIMIT_AS`/`RLIMIT_NPROC` enforcement. **Not** proven on CT104's own pinned/hardened image -- `blocked_external: ct104_unavailable` for that specific host |
+| 3 | isolamento sem rede e sem privilégios comprovado | `proven_in_this_sandbox, not_ct104` -- real `unshare --user --net` (ENETUNREACH proof), real privilege drop to `nobody`, real `sudo` refusal, real `RLIMIT_AS`/`RLIMIT_NPROC` enforcement. **Not** proven on CT104's own pinned/hardened image -- `blocked_external: ct104_unavailable` for that specific host. **Also not yet proven**: process-LIFETIME containment -- a descendant that escapes the tracked process group via its own `setsid()`/double-fork can outlive the executor's own return (honest limitation 6); reclassified as a **mandatory `#201-B3` acceptance criterion**, not a discretionary follow-up -- see "What's next in the DAG" |
 | 4 | canal de resultado não é gravável pela PR | `proven_in_this_sandbox` -- `TrustedCheckResultV2` is constructed entirely inside the parent host process from `Popen.wait()`'s own return value; no file path is ever communicated to or read back from the child for the verdict |
 | 5 | artifact é ligado ao HEAD/tested identity e harness digest | `done` -- `run_id`/`head_sha`/`harness_digest` threaded from `plan` into every result unmodified; bindable via #201-A's `bind_trusted_check_result_to_plan_v2` (exercised directly in this slice's own success test) |
 | 6 | `required_checks` pode alimentar readiness autoritativa | `not_yet -- deferred to #201-C` (wiring into `review_readiness_emission_v2`/`readiness_decision_v2` is explicitly out of this slice per the issue's own slice breakdown) |
@@ -531,22 +531,63 @@ as `e1ff796`, CI green on both jobs.
    validate real pid-namespace teardown behavior before merge. Rushing
    a kernel-namespace change with a plausible-but-unverified failure
    mode that feeds an attacker-uncontrollable but easily-mistaken value
-   into a privileged kill call is a worse risk than shipping this
-   named, scoped gap and hardening it as a fast, deliberate follow-up.
-6. **Docker-socket denial is untested, not unproven** -- this sandbox
+   into a privileged kill call is a worse risk than shipping this named,
+   scoped gap and closing it deliberately in the next slice.
+
+   **Not a discretionary follow-up: reclassified, per a subsequent
+   review of this slice, as a MANDATORY `#201-B3` acceptance criterion**
+   (see "What's next in the DAG" below) -- `#201`'s own definition of an
+   isolated, host-controlled executor is not actually satisfied while a
+   real adversarial process can outlive the executor's own return on a
+   persistent host. `#201-B3` is not considered complete, `#201-C`
+   (wiring into readiness) MUST NOT begin, and CT104 activation for this
+   capability MUST NOT proceed, until PID-namespace (or equivalent)
+   containment is implemented and proven -- zero surviving descendants,
+   verified against real CT104 once reachable, not merely the portable
+   dev-sandbox mechanism. This slice (`#201-B2`) remains mergeable as
+   the isolated-execution FOUNDATION on that explicit condition; it is
+   not, by itself, a complete containment boundary for a persistent
+   host or for real adversarial input.
+7. **Docker-socket denial is untested, not unproven** -- this sandbox
    simply has no docker socket to attempt reaching in the first place, so
    there is nothing to adversarially prove here; the module never
    references one either way.
 
 ## What's next in the DAG
 
-- `#201-B3`: adversarial hardening closing the exit-code-forgery gap
-  (honest limitation 1 above) -- the actual precondition for ever safely
-  setting `authority=TRUSTED` against real, untrusted PR code;
+- `#201-B3`: adversarial hardening. Two MANDATORY acceptance criteria,
+  both required to close this slice, neither optional:
+  1. closing the exit-code-forgery gap (honest limitation 1 above) --
+     the precondition for ever safely setting `authority=TRUSTED`
+     against real, untrusted PR code;
+  2. process-lifetime containment (honest limitation 6 above) -- PID
+     namespace (or equivalent, e.g. cgroup) teardown proving ZERO
+     surviving descendants after the executor returns, including one
+     that escaped via its own `setsid()`/double-fork. Reclassified from
+     an initially-proposed "recommended follow-up" to a mandatory `#201
+     -B3` criterion after a review of this slice pointed out `#201`'s
+     own definition of an isolated, host-controlled executor is not
+     satisfied while a real adversarial process can outlive it on a
+     persistent host. `#201-B3` is NOT considered complete, and `#201-C`
+     MUST NOT start, until this is proven -- including verification
+     against real CT104 once it is back online, not assumed to pass
+     just because the portable mechanism does in a dev sandbox (the
+     same standing rule already applied to every isolation primitive in
+     this slice);
 - `#201-C`: wire `execute_trusted_check_plan_v2`'s real output into
   `review_readiness_emission_v2`, replacing/augmenting whatever currently
   feeds `required_checks` for a target that opts in -- MUST NOT treat
-  `authority=TRUSTED` as safe for real adversarial PRs before `#201-B3`;
+  `authority=TRUSTED` as safe for real adversarial PRs, and MUST NOT
+  invoke this executor against real adversarial PR content under the
+  weak (unprivileged-userns) isolation fallback AT ALL, even for
+  `UNTRUSTED_ADVISORY` -- before both `#201-B3` criteria above close.
+  `UNTRUSTED_ADVISORY` only prevents the RESULT from being promoted; it
+  does nothing to protect the host from what an actually-running
+  adversarial process could do while backed by that weak fallback. The
+  weak fallback remains fine for `UNTRUSTED_ADVISORY` over synthetic,
+  non-adversarial content only (exactly what this slice's own test
+  suite already does) -- never conflate "evidence cannot be promoted"
+  with "the sandbox is safe to run adversarial code in";
 - `#201-D`: target conformance (AgentEscala as reference; a real
   target-owned `CheckCommandInventoryV2` sourced from that target's own
   committed config, not test-local fixtures as here);

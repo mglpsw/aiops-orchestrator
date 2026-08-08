@@ -498,15 +498,28 @@ def _isolation_wrapped_argv_v2(
       candidates: any file the host process owns (e.g. the pgid-report
       handshake file) is trivially writable by the "isolated" command
       too, regardless of permission bits, because they are the SAME
-      uid. That is fine for ``UNTRUSTED_ADVISORY`` -- never promotable
-      to begin with, so a weaker isolation guarantee behind it changes
-      nothing about what the result can be used for -- but is NOT an
-      acceptable backing for ``TRUSTED``, which #201-A already treats as
-      the sole authority a promotable ``RequiredCheckResultV2`` can come
-      from. This function therefore refuses (returns ``None``, the same
-      fail-closed contract as "no isolation available at all") rather
-      than silently proceeding, whenever this is the only candidate that
-      worked AND the caller asked for ``TRUSTED``.
+      uid. This function refuses (returns ``None``, the same fail-closed
+      contract as "no isolation available at all") rather than silently
+      proceeding, whenever this is the only candidate that worked AND
+      the caller asked for ``TRUSTED`` -- that authority is NOT an
+      acceptable backing for this fallback, since #201-A already treats
+      ``TRUSTED`` as the sole authority a promotable
+      ``RequiredCheckResultV2`` can come from.
+
+      CALLER WARNING for ``UNTRUSTED_ADVISORY`` (not enforced by this
+      function, which has no way to know what ``argv`` actually is --
+      recorded here for whoever wires a caller, e.g. ``#201-C``): this
+      fallback IS fine for ``UNTRUSTED_ADVISORY`` over SYNTHETIC, non-
+      adversarial content (exactly what this slice's own tests do) --
+      never promotable to begin with, so a weaker isolation guarantee
+      behind it changes nothing about what the RESULT can be used for.
+      It is NOT fine for ``UNTRUSTED_ADVISORY`` over REAL adversarial PR
+      content: ``UNTRUSTED_ADVISORY`` only blocks promoting the
+      resulting EVIDENCE, it does nothing to protect the host from what
+      an actually-running adversarial process could do while backed by
+      this weak, non-uid-separated fallback. Never conflate "the
+      evidence cannot be promoted" with "the sandbox is safe to run
+      adversarial code in".
 
     Privilege drop (when applicable) always happens INSIDE the already-
     created namespace via the dropper script, never before the isolation
