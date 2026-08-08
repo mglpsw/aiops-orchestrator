@@ -401,6 +401,29 @@ def _dropper_script_v2(
         # kill (see _read_real_pgid_v2's own fallback_pid) -- never a
         # crashed, falsely-FAILURE-classified check.
         "    pass\n"
+        "try:\n"
+        f"    os.chmod({pgid_report_path!r}, 0o600)\n"
+        "except OSError:\n"
+        # The host creates this file world-writable (0666) BEFORE spawn,
+        # only because the write above can otherwise fail under the
+        # sudo-elevated strategy's confinement (see the comment on that
+        # write). Left at 0666, the UNTRUSTED command this dropper is
+        # about to exec (as `nobody`, in the same /tmp) could locate this
+        # file by its well-known prefix and overwrite the pgid the host
+        # will later trust for a PRIVILEGED kill -- a real finding from
+        # this slice's own review, not a hypothetical: an attacker-
+        # supplied pgid reaching `sudo -n kill -9 -- -<pgid>` is a
+        # privilege-escalation-adjacent bug, not merely a flaky test.
+        # This chmod runs while WE are still the elevated identity, and
+        # strictly BEFORE the privilege drop and exec below -- the
+        # untrusted command never gets a chance to run while the file is
+        # still world-writable, closing the window completely rather
+        # than narrowing it. Attempted unconditionally (even if the
+        # write above failed) so a degraded pgid never also means a
+        # still-world-writable file. Best-effort like the write itself:
+        # if even chmod is blocked by the same confinement, the fallback
+        # pgid path already accounts for a missing/wrong report file.
+        "    pass\n"
         f"{drop_lines}"
         f"resource.setrlimit(resource.RLIMIT_AS, ({memory_bytes}, {memory_bytes}))\n"
         f"resource.setrlimit(resource.RLIMIT_NPROC, ({max_processes}, {max_processes}))\n"
@@ -628,8 +651,19 @@ def _run_isolated_v2(
     # root, most likely due to sudo's own AppArmor/session confinement
     # scoping file access by original ownership rather than a plain DAC
     # permission-bits check. Chmod'ing world-writable sidesteps whatever
-    # the exact mechanism is -- this is a tiny, ephemeral scratch file
-    # holding nothing but a pid, deleted immediately after use.
+    # the exact mechanism is -- ONLY for the brief window before the
+    # dropper itself locks it back down. This file's content is NOT
+    # harmless: the host later trusts it as the target of a PRIVILEGED
+    # kill (`sudo -n kill -9 -- -<pgid>` under the sudo strategy), so
+    # leaving it world-writable for the isolated command's entire
+    # lifetime would let that same untrusted command (running as
+    # `nobody`, same /tmp, well-known filename prefix) overwrite the
+    # pgid and redirect that kill -- a real finding from this slice's
+    # own review. The dropper script (`_dropper_script_v2`) chmod's this
+    # path back to 0600 immediately after writing, still as the elevated
+    # identity and strictly before dropping to `nobody` and exec'ing the
+    # untrusted command, so that command never runs while the file is
+    # still world-writable.
     os.chmod(pgid_report_path, 0o666)
     try:
         wrapped_and_sudo = _isolation_wrapped_argv_v2(

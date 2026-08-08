@@ -333,6 +333,85 @@ def test_execute_does_not_hang_when_a_descendant_outlives_the_leader_holding_the
     )
 
 
+def test_execute_denies_the_isolated_check_from_tampering_with_its_own_pgid_report_file(repo_root):
+    """A review of this slice found the pgid-report handshake file was
+    briefly world-writable (0666 -- required so the elevated dropper can
+    write it under the sudo-elevated strategy's own confinement, see
+    isolated_executor_v2.py's comments on that write) for the ENTIRE
+    lifetime of the isolated check, not just that brief window -- meaning
+    the untrusted command this dropper execs (running as `nobody`, same
+    /tmp, well-known `isolated-executor-pgid-*` prefix) could locate and
+    overwrite it, redirecting the PRIVILEGED kill the host later issues
+    against whatever pgid it reads back (`sudo -n kill -9 -- -<pgid>`
+    under the sudo strategy). This does not simulate a hypothetical
+    attacker with inside knowledge of the exact path -- it globs for the
+    prefix exactly as a real attacker reading this module's own source
+    would, discovering THIS run's own report file among the candidates.
+
+    The fix has the dropper chmod the file back to 0600 immediately after
+    writing it, still under the elevated identity and strictly before
+    dropping to `nobody` and exec'ing the untrusted command -- so that
+    command never runs while the file is still world-writable. This test
+    proves the write attempt itself is denied, not merely that the
+    overall outcome happens to look fine.
+
+    Skipped when this environment's own probe selects the unprivileged-
+    userns fallback (`drop_to_nobody=False`): that candidate never
+    separates the isolated command's real uid from the host caller's own
+    (it only APPEARS as root inside its own user namespace; the file it
+    would try to overwrite is already owned by that same real uid), and
+    its cleanup kill is a plain unprivileged `os.killpg`, never `sudo`
+    -- the privileged-kill-target finding this test proves fixed simply
+    does not apply to that strategy. This is exactly the situation this
+    project's own GitHub Actions runner is NOT in (it has passwordless
+    sudo and selects the sudo-elevated, `drop_to_nobody=True` strategy)."""
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    strategy = isolated_executor_module._select_isolation_strategy_v2()
+    assert strategy is not None, "the module's own probe found no working isolation strategy"
+    drop_to_nobody, _prefix = strategy
+    if not drop_to_nobody:
+        pytest.skip(
+            "this environment's probe selected the unprivileged-userns fallback "
+            "(no real uid separation from the host caller -- see this test's own docstring)"
+        )
+
+    marker_path = str(repo_root / "overwrite-attempt-results.txt")
+    code = (
+        "import glob\n"
+        "candidates = sorted(glob.glob('/tmp/isolated-executor-pgid-*'))\n"
+        "results = []\n"
+        "for path in candidates:\n"
+        "    try:\n"
+        "        with open(path, 'w') as f:\n"
+        "            f.write('1')\n"
+        "        results.append('WROTE:' + path)\n"
+        "    except OSError:\n"
+        "        results.append('DENIED:' + path)\n"
+        f"with open({marker_path!r}, 'w') as f:\n"
+        "    f.write(chr(10).join(results))\n"
+    )
+    inventory = {"token": _py(code)}
+    plan = _plan(inventory=inventory, checks=[_command(timeout_seconds=15)])
+
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+    )
+
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS
+    marker = Path(marker_path)
+    assert marker.exists(), "the isolated check itself failed to run -- cannot assert anything about the attempt"
+    lines = [line for line in marker.read_text().splitlines() if line]
+    assert lines, (
+        "expected at least THIS run's own pgid-report file to be discoverable by prefix "
+        "glob, the same way a real attacker reading this module's source would find it"
+    )
+    assert all(line.startswith("DENIED:") for line in lines), (
+        f"the isolated (nobody-dropped) check was able to WRITE to a pgid-report file it "
+        f"must never be able to touch -- this is the attacker-controlled-kill-target finding: {lines}"
+    )
+
+
 def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, monkeypatch):
     """Fail-closed proof: if NONE of the isolation strategies this module
     probes actually work, it must NEVER silently fall back to running
