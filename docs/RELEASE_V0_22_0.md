@@ -23,13 +23,31 @@ grant, not authorized by this document.
 
 ## 2. Numbering rationale
 
-Every real tag in this repository's history (`v0.18.0` → `v0.19.0` →
-`v0.20.0` → `v0.21.0`) is a MINOR bump; none of them is a patch release, and
-no dedicated versioning-policy document in this repo prescribes patch-only
-numbering for a fix-scoped change. `v0.21.1` is therefore not the
-semantically correct next number — `v0.22.0` is, consistent with 100% of the
-observed release history and with `docs/RELEASE_V0_21_0.md`'s own RC→final
-convention (§1, "never move or reuse an existing tag").
+`git tag` on this repository lists exactly 8 tags: `v0.18.0`, `v0.19.0-rc.1`,
+`v0.19.0-rc.2`, `v0.19.0`, `v0.20.0-rc.1`, `v0.20.0`, `v0.21.0-rc.1`,
+`v0.21.0`. Every **final, stable** tag (`v0.18.0` → `v0.19.0` → `v0.20.0` →
+`v0.21.0`) is a MINOR bump; none is a patch release. The `-rc.N` tags are
+excluded from this comparison deliberately, not by omission: each is a
+prerelease of the *same* version number that follows it (e.g.
+`v0.19.0-rc.1`/`v0.19.0-rc.2` both precede `v0.19.0`), so they are not
+independent data points about the next number — they are part of how that
+one number gets published, per `docs/RELEASE_V0_21_0.md`'s own RC→final
+convention.
+
+`docs/RELEASE_NOTES.md` also has a prose entry titled `v0.18.0-hotfix.1`
+("Docker build project name alignment"). It is **not** a real tag — `git
+tag` above has no `hotfix` entry — so it cannot be evidence of an actual
+patch-release convention; it documents a build/deploy correction that was
+never independently tagged.
+
+No dedicated versioning-policy document in this repo prescribes patch-only
+numbering for a fix-scoped change, and the actual tag history is 4-for-4
+MINOR bumps with zero real patch tags. `v0.21.1` is therefore not the
+semantically correct next number — `v0.22.0` is. This is also consistent
+with what's actually shipping (§4): not only the `AgentEscala#675` v1 fix,
+but five accumulated v2 feature slices (#206–#212) that never got their own
+release — a feature-inclusive MINOR bump, not a fix-only patch, regardless
+of how the historical-precedent question above is read.
 
 ## 3. Declaration
 
