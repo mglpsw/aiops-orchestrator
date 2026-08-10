@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Added
+
+- **AgentReview v2 trusted-check adversarial hardening (`#201-B3`)**: closes
+  the two mandatory acceptance criteria `#201-B2` left open.
+  - **Authority boundary.** `trusted_check_authority_v2` classifies every
+    inventory entry as `data_only_host_tool`, `subject_code`, or `unknown`;
+    only `data_only_host_tool` may back `authority=TRUSTED`, refused
+    *before* any process is spawned. `controls(subject, success_signal) =>
+    not authoritative(success_signal)`: isolating PR-controlled code does
+    not make its output authoritative, so pytest and any checkout-authored
+    script can never be `TRUSTED`, no matter how strong the containment.
+  - **Process-lifetime containment.** A real PID namespace
+    (`unshare --pid --fork --kill-child --mount-proc --net`) replaces
+    `#201-B2`'s process-group supervision; the kernel destroys every
+    process in the namespace unconditionally the moment its init dies.
+    Identity is host-discovered and pinned via `pidfd_open` — never
+    trusted from anything the namespace's own occupant reports about
+    itself. Zero survivors is proven (not assumed) across `SUCCESS`,
+    `FAILURE`, `TIMEOUT` and `CANCELLED`.
+  - **Amendment A1 — privileged broker for the sudo-elevated strategy.**
+    This project's own GitHub Actions runner uses passwordless-sudo
+    elevation, under which the host process cannot itself read a
+    root-owned namespace's identity. `trusted_check_broker_v2` — a small,
+    host-owned, stdlib-only process launched via `sudo -n python -I` —
+    performs the same discovery/containment/teardown because it genuinely
+    is root, and answers only a closed, enumerated protocol back to the
+    host: no PID of any kind crosses that channel. A broker crash is
+    contained by the kernel (`PR_SET_PDEATHSIG`), not by broker code that
+    might not get to run.
+  - `#201-B2`'s pgid-report temp-file handshake is deleted, not hardened
+    again. No frozen contract changed; exported v2 schemas byte-identical.
+  - See `docs/checkpoints/AGENT_REVIEW_V2_201B3_ADVERSARIAL_HARDENING.md`.
+
 ## v0.22.0 - 2026-08-08 - AgentReview v1 evidence taxonomy and v2 review-content extraction
 
 ### Fixed

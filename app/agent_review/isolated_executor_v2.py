@@ -1,10 +1,9 @@
-"""Isolated executor for AgentReview v2 trusted checks (#201-B2, third
+"""Isolated executor for AgentReview v2 trusted checks (#201-B2/B3, third
 slice of #201, child of the distribution epic #199).
 
 Executes ONE check from an already-built ``TrustedCheckPlanV2`` (#201-A)
 as a REAL, isolated subprocess and produces a real, plan-bindable
-``TrustedCheckResultV2`` -- the slice ``#201-B1``'s offline simulator
-exists specifically to stand in for.
+``TrustedCheckResultV2``.
 
 ## What this module is NOT allowed to trust
 
@@ -18,118 +17,82 @@ own verdict:
 
 - **which command runs** is resolved from ``command_token`` against a
   HOST-supplied ``inventory: Mapping[str, AllowlistedCommandSpecV2]`` --
-  never a raw string the plan or any PR-influenced input assembles (see
-  ``trusted_checks_v2.AllowlistedCheckCommandV2``'s own docstring on why
-  the plan itself already only ever carries a token, never argv). That
-  inventory is itself checked against the plan's own commitment before
-  anything resolves: ``compute_check_command_inventory_digest_v2(
-  inventory) == plan.authority_suite_digest``, refusing the WHOLE plan
-  (typed ``INFRA_FAILURE``, nothing attempted) on any mismatch -- closing
-  a gap a review of this slice found real: an earlier version accepted
-  ANY inventory a caller handed it, proving values but not provenance
-  (see that function's own docstring for exactly what this does and does
-  not prove);
-- **the verdict** (``SUCCESS``/``FAILURE``/``TIMEOUT``/``OOM``/
-  ``CANCELLED``/``INFRA_FAILURE``) is derived EXCLUSIVELY from signals the
-  HOST observes about the child process via the kernel -- its real exit
-  code (``Popen.wait()``'s own return value, not anything the child
-  writes to a file it controls) and whether the host's own wall-clock
-  deadline, its own cancellation request, or a resource-limit-signature
-  signal was the reason it died. **Nothing the child process prints to
-  stdout/stderr, or writes to any file, is ever read to determine the
-  verdict** -- only captured, sanitized, and attached as
-  non-authoritative diagnostic content (``artifact_sha256``).
-  A malicious ``conftest.py`` that prints ``"ALL TESTS PASSED"`` or writes
-  a forged report file claiming success changes nothing: the verdict this
-  module produces depends only on the real, kernel-observed exit status
-  of the process that was actually asked to run the check.
+  never a raw string the plan or any PR-influenced input assembles;
+- **the verdict** is derived EXCLUSIVELY from signals the HOST observes
+  about the child process via the kernel -- never from anything the
+  subject prints or writes;
+- **authority itself** (#201-B3) is refused BEFORE the process is even
+  created, for any command whose class the subject could control. See
+  ``trusted_check_authority_v2``'s own module docstring for the full
+  argument: isolating PR-controlled code does not make its output
+  authoritative, so ``ExecutionClassV2.SUBJECT_CODE`` (pytest, repository
+  scripts, any checkout-authored process) can never back
+  ``authority=TRUSTED``, no matter how strong the containment around it
+  is. Only ``ExecutionClassV2.DATA_ONLY_HOST_TOOL`` -- a host-owned binary
+  consuming the checkout as data, never as code -- is TRUSTED-eligible.
 
-## The one thing this module cannot defend against, stated honestly
+## Process-lifetime containment (#201-B3)
 
-If the check command itself (the thing named by ``command_token``, e.g.
-``pytest``) is invoked in a way where a PR-supplied ``conftest.py`` can
-make THAT SAME PROCESS exit ``0`` regardless of what it actually observed
-(e.g. by calling ``os._exit(0)`` from a hook), the host-observed exit code
-genuinely is ``0`` -- there is no signal this module (or, in general, any
-single-process CI harness) can use to distinguish "genuinely passed" from
-"forged its own exit code" without a SECOND, independent judge outside
-that same process (e.g. host-side per-test collection/counting, or
-running each test unit in its own subprocess so the blast radius of one
-malicious hook is contained to one check, not the whole suite --
-`AllowlistedCheckCommandV2` is already per-check, not per-suite, which is
-a step in that direction, but this slice does not implement per-test
-sub-isolation). This is the same trust boundary every real CI system
-relies on (a process's own exit code, as observed by whoever waited on
-it) -- named here explicitly rather than silently assumed solved.
+``#201-B2`` supervised a *process group*; a descendant that called
+``setsid()`` or double-forked escaped it and could outlive the executor's
+return. This module now creates a real PID namespace
+(``unshare --pid --fork --kill-child --mount-proc --net``) for every
+check: the kernel destroys EVERY process in that namespace unconditionally
+the moment its init dies. See ``trusted_check_namespace_kernel_v2`` for the
+identity/discovery/teardown primitives, all derived from procfs the CALLER
+holds by construction -- never from anything the namespace's own occupant
+reports about itself (inside the namespace ``os.getpid()`` returns ``1``,
+and ``1`` is exactly the value a privileged kill must never receive).
 
-**Practical consequence for any caller, stated as a rule, not a footnote:
-do not set ``authority=TRUSTED`` for a check run against real,
-untrusted/adversarial PR code until this gap closes (tracked as
-``#201-B3``).** Everything else this slice proves -- network denial,
-privilege drop, resource limits, the result channel being unwritable by
-the check, the inventory being digest-bound to the plan -- holds
-regardless of who wrote the code under test. This one property does not.
-``#201-C`` (wiring a real result into ``ReviewReadinessV2``) MUST treat
-this as an open precondition, not a solved one, before trusting this
-module's ``TRUSTED``-authority output against real target-repo PRs.
+## Amendment A1 -- the sudo-elevated strategy and the privileged broker
+
+The isolation strategy that actually runs in this project's own GitHub
+Actions CI is the sudo-elevated one: the caller is unprivileged, but has
+passwordless ``sudo``, and the namespace's own init ends up owned by root.
+Under that strategy, this module's HOST-SIDE process cannot itself read
+``/proc/<root-owned-pid>/ns/pid`` (``PTRACE_MODE_READ`` denies it) -- so it
+cannot perform the discovery/containment-verification this file otherwise
+does directly for the root-direct and weak-userns strategies.
+
+The fix is not to weaken discovery (never trust the namespace's own
+occupant) and not to demote sudo-elevated to weak/advisory-only (it has
+full uid separation; demoting it would silently degrade every CI run to
+non-authoritative checks). Instead, ``trusted_check_broker_v2`` -- a small,
+host-owned, stdlib-only process launched via ``sudo -n python -I
+<broker>`` -- performs EXACTLY the same discovery/containment/teardown
+this file does for root-direct, because it genuinely IS root. It answers
+only a closed, enumerated protocol back to this (unprivileged) host: never
+a PID, never a signal target this host could redirect. See that module's
+own docstring for the full design, including how a broker CRASH is
+contained by the kernel (``PR_SET_PDEATHSIG``), not by broker code that
+would not get to run.
 
 ## OOM is not classified -- named as a limitation, not guessed at
 
 ``RLIMIT_AS`` is real and DOES cap a check's address space -- the safety
-property ("limites de CPU/RAM/tempo/processos") holds regardless of what
-typed outcome a killed check gets. An earlier version of this module
-guessed ``OOM`` from a signal-death signature (``SIGKILL``/``SIGSEGV``/
-``SIGBUS``/``SIGABRT``), reasoning those commonly follow an ``RLIMIT_AS``
-hit. A review of this slice pointed out the real, unresolved ambiguity:
-the SAME signals just as commonly follow an ordinary, unrelated crash bug
-(a NULL-pointer dereference from a failed ``malloc`` looks identical,
-signal-wise, to any other NULL-pointer dereference), and guessing ``OOM``
-risked exactly the failure mode issue #201 itself forbids in the OTHER
-direction -- a real product regression silently reclassified as
-environmental (`TrustedCheckOutcomeV2.OOM` never promotes; a misclassified
-regression would vanish from readiness instead of blocking it).
-``_classify_completed_process_v2`` now classifies EVERY signal death as
-``FAILURE`` (attributable, a promotable candidate) -- the conservative,
-safe default. Precisely typing a memory-exhaustion kill as ``OOM``
-requires independent evidence (e.g. cgroup ``memory.events``' own
-``oom_kill`` counter) this slice does not implement; that gap is named,
-not silently patched over with a heuristic that could hide a regression.
+property holds regardless of what typed outcome a killed check gets.
+Precisely typing a memory-exhaustion kill as ``OOM`` would require
+independent evidence (e.g. cgroup ``memory.events``' own ``oom_kill``
+counter) this module does not implement; every signal death classifies as
+``FAILURE`` (attributable, a promotable candidate for
+``DATA_ONLY_HOST_TOOL``), the conservative default, rather than guessing
+``OOM`` and risking a real regression being silently reclassified as
+environmental.
 
 ## What is proven here, and what is `blocked_external: ct104_unavailable`
 
-This module's isolation is built from portable Linux primitives -- a
-network namespace (``unshare --net``), privilege drop to an unprivileged
-uid (``nobody``), and ``resource.setrlimit`` (address-space/process-
-count) -- and is REAL, working, and adversarially tested in whatever
-Linux host actually runs this test suite (this repository's own CI, or a
-development session's cloud sandbox). It is explicitly **not** CT104:
+This module's isolation is built from portable Linux primitives and is
+REAL, working, and adversarially tested in whatever Linux host actually
+runs this test suite. It is explicitly **not** CT104:
 
 **How the namespace is created is PROBED for real, never guessed from
-euid alone.** ``_select_isolation_strategy_v2`` tries, in order, real-
-root-direct (``unshare --net``), passwordless-``sudo``-elevated
-(``sudo -n unshare --net``), then unprivileged-user-namespace
-(``unshare --user --map-root-user --net``) -- and only uses whichever
-candidate a live ``<prefix> -- true`` invocation actually exits ``0``
-for. Privilege drop to ``nobody`` (when the chosen candidate started
-privileged) happens AFTER the namespace already exists, via a small
-inline Python interpreter chained inside it (see
-``_isolation_wrapped_argv_v2``'s own docstring for the full reasoning).
-None of the three candidates succeeding at all means fail-closed
+euid alone.** ``_select_isolation_strategy_v2`` tries, in order,
+real-root-direct, passwordless-``sudo``-elevated, then
+unprivileged-user-namespace -- and only uses whichever candidate a live
+``<prefix> -- true`` invocation actually exits ``0`` for. None of the
+three succeeding means fail-closed
 (``EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2``), never a fourth guess and
 never running unisolated.
-
-This exists because guessing was tried first and was wrong TWICE against
-this project's own real GitHub Actions runner: assuming "root implies
-`unshare --net` works" failed because that runner's job does not
-actually run as root; assuming "unprivileged implies `--user
---map-root-user` works" failed because that runner's kernel/AppArmor
-policy refuses unprivileged user-namespace creation outright. Both
-failures are recorded in
-``docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md``, not
-silently patched over -- exactly the kind of environment-specific
-isolation-primitive availability gap this module's own "not CT104"
-caveat exists to warn about. Probing instead of guessing is what
-actually closed it.
 
 - this module has no way to assert it is running ON the project's real,
   pinned CT104 runner -- that identity is a deployment fact asserted by
@@ -137,22 +100,19 @@ actually closed it.
 - ``harness_digest`` (``TrustedCheckPlanV2``, #201-A) is threaded through
   and echoed into the result unmodified, but this module does not
   independently verify it against a real, running, digest-pinned
-  container image -- there is no container runtime to check it against
-  outside CT104. That specific verification is `blocked_external:
+  container image. That verification is `blocked_external:
   ct104_unavailable`, not silently skipped or assumed true;
 - a development sandbox that happens to run this test suite as root with
   broad kernel capabilities is a WEAKER starting point than a properly
   hardened, unprivileged CT104 runner -- isolation demonstrated here
-  proves the MECHANISM is real and does what it claims (network truly
-  unreachable, ``sudo`` truly refused, memory truly capped), not that it
-  would resist a determined container-escape attempt on a host with a
-  materially different threat model. That stronger guarantee is CT104's
-  to provide, not this module's to claim on CT104's behalf.
+  proves the MECHANISM is real, not that it would resist a determined
+  container-escape attempt under CT104's own, materially different threat
+  model.
 
-See ``docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md`` for
-the full, itemized issue #201 acceptance-criteria mapping (proven here /
-proven-in-this-sandbox-not-CT104 / `blocked_external`), preserved without
-silently reducing any criterion.
+See ``docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md`` for the
+#201-B2 acceptance-criteria mapping this module preserves, and
+``docs/checkpoints/AGENT_REVIEW_V2_201B3_ADVERSARIAL_HARDENING.md`` for
+#201-B3's.
 """
 
 from __future__ import annotations
@@ -160,13 +120,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import shutil
-import signal
+import socket
 import subprocess
 import sys
-import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event
 from typing import Mapping
@@ -175,6 +135,41 @@ from pydantic import model_validator
 
 from app.agent_review.contracts_v2 import ContractV2Model, SafeIdentifier
 from app.agent_review.redaction import sanitize_artifact_value
+from app.agent_review.trusted_check_authority_v2 import (
+    STATE_FAILED_V2,
+    STATE_UNKNOWN_V2,
+    STATE_VERIFIED_V2,
+    ExecutionAssessmentV2,
+    ExecutionClassV2,
+    ExecutionClassValueV2,
+    classify_command_spec_v2,
+    compute_promotion_eligibility_v2,
+    coverage_authority_for_class_v2,
+    trusted_refusal_reason_v2,
+    workload_authority_for_class_v2,
+)
+from app.agent_review.trusted_check_broker_v2 import BROKER_PATH_V2, BROKER_PROTOCOL_V2
+from app.agent_review.trusted_check_namespace_kernel_v2 import (
+    NAMESPACE_FLAGS_V2,
+    PIDFD_AVAILABLE_V2,
+    ExecutionIdentityV2,
+    discover_namespace_leader_v2,
+    is_descendant_of_v2,
+    tear_down_execution_v2,
+    verify_containment_v2,
+)
+from app.agent_review.trusted_check_stream_capture_v2 import (
+    CapturedStreamV2,
+    finish_drain_v2,
+    start_drain_v2,
+)
+from app.agent_review.trusted_check_supervisor_v2 import (
+    MAX_MESSAGE_BYTES_V2,
+    SUPERVISOR_PATH_V2,
+    SUPERVISOR_PROTOCOL_V2,
+    canonical_json_bytes_v2 as supervisor_canonical_json_bytes_v2,
+    strict_json_loads_v2,
+)
 from app.agent_review.trusted_checks_v2 import (
     TrustedCheckAuthorityV2,
     TrustedCheckAuthorityValueV2,
@@ -192,21 +187,21 @@ EXECUTOR_REASON_CANCELLED_V2 = "isolated_executor_cancelled"
 EXECUTOR_REASON_TIMEOUT_V2 = "isolated_executor_timeout"
 EXECUTOR_REASON_INVENTORY_DIGEST_MISMATCH_V2 = "isolated_executor_inventory_digest_mismatch"
 EXECUTOR_REASON_INVENTORY_KEY_TOKEN_MISMATCH_V2 = "isolated_executor_inventory_key_token_mismatch"
-EXECUTOR_REASON_PGID_LOCKDOWN_FAILED_V2 = "isolated_executor_pgid_report_lockdown_failed"
 EXECUTOR_REASON_ISOLATION_TOO_WEAK_FOR_TRUSTED_V2 = "isolated_executor_isolation_too_weak_for_trusted"
+EXECUTOR_REASON_PROTOCOL_CHANNEL_INVALID_V2 = "isolated_executor_protocol_channel_invalid"
+EXECUTOR_REASON_PID_NAMESPACE_UNAVAILABLE_V2 = "isolated_executor_pid_namespace_unavailable"
+EXECUTOR_REASON_PIDFD_UNAVAILABLE_V2 = "isolated_executor_pidfd_unavailable"
+EXECUTOR_REASON_HOST_PID_IDENTITY_INVALID_V2 = "isolated_executor_subject_identity_invalid"
+EXECUTOR_REASON_PROCESS_CONTAINMENT_FAILED_V2 = "isolated_executor_process_containment_failed"
 
 _TIMEOUT_POLL_INTERVAL_SECONDS_V2 = 0.05
 _COMMUNICATE_GRACE_SECONDS_V2 = 5.0
-# Chosen only for readability -- the host never trusts this value ALONE.
-# It is only ever produced by the dropper's own chmod-failure branch,
-# strictly before any content write to the report file, so the host
-# additionally requires the report file to still have NO valid pgid
-# content before treating a matching exit code as a lockdown failure.
-# This means a real check that independently happens to exit with this
-# same value, in a run where lockdown succeeded (and the file therefore
-# does have valid content), is never misclassified.
-_PGID_LOCKDOWN_FAILED_EXIT_CODE_V2 = 97
-_PGID_REPORT_WAIT_SECONDS_V2 = 5.0
+_HELLO_WAIT_SECONDS_V2 = 10.0
+_RECORD_WAIT_SECONDS_V2 = 10.0
+_BROKER_READY_WAIT_SECONDS_V2 = 15.0
+_BROKER_TEARDOWN_WAIT_SECONDS_V2 = 10.0
+_BROKER_RESULT_WAIT_SECONDS_V2 = 10.0
+_DISCOVERY_WAIT_SECONDS_V2 = 10.0
 
 # Mirrors trusted_checks_v2._RESOLVED_OUTCOMES_V2 (module-private there,
 # so re-declared here rather than reaching into that module's own
@@ -226,12 +221,26 @@ class AllowlistedCommandSpecV2(ContractV2Model):
     Being HOST/target-repo-owned is a provenance claim this class alone
     cannot prove -- ``execute_trusted_check_plan_v2`` closes HALF of that
     gap by checking ``compute_check_command_inventory_digest_v2(inventory)
-    == plan.authority_suite_digest`` before ever resolving a single token
-    (see that function's own docstring for exactly what this does and
-    does not prove)."""
+    == plan.authority_suite_digest`` before ever resolving a single token.
+
+    Three additive fields (#201-B3) carry the AUTHORITY classification this
+    entry claims. They are host-owned declarations covered by the inventory
+    digest, and a declaration is deliberately not treated as a proof --
+    ``classify_command_spec_v2`` downgrades a ``data_only_host_tool`` claim
+    whenever the entry also admits checkout influence. ``execution_class``
+    defaults to ``UNKNOWN`` so an inventory that predates this field is
+    refused for ``TRUSTED`` rather than silently inheriting it."""
 
     command_token: SafeIdentifier
     argv: tuple[str, ...]
+    execution_class: ExecutionClassValueV2 = ExecutionClassV2.UNKNOWN
+    # Necessary (never sufficient) for `data_only_host_tool`: the tool's own
+    # configuration must come from the host, not from the checkout, or the
+    # subject gets to choose what "pass" means.
+    host_owned_config: bool = False
+    # A tool that loads plugins from the checkout executes checkout code by
+    # definition, whatever the inventory calls it.
+    loads_checkout_plugins: bool = False
 
     @model_validator(mode="after")
     def validate_argv(self) -> AllowlistedCommandSpecV2:
@@ -251,32 +260,21 @@ def _canonical_json_bytes_v2(value: object) -> bytes:
 def compute_check_command_inventory_digest_v2(
     inventory: Mapping[str, AllowlistedCommandSpecV2],
 ) -> str:
-    """Canonical sha256 of an entire ``inventory``: ``{command_token:
-    argv}`` for every entry, sorted by token, hashed the same way every
-    other digest in this codebase is computed.
-
-    Closes the gap an earlier review of this slice found real: accepting
-    ``inventory`` as a bare, unverified parameter proved VALUES (each
-    ``AllowlistedCommandSpecV2`` is a real, typed, non-empty-argv object)
-    but not PROVENANCE -- nothing stopped a caller from resolving
-    ``plan.checks``' ``command_token``s against a DIFFERENT inventory than
-    the one whose digest the plan's own ``authority_suite_digest`` names.
-    ``execute_trusted_check_plan_v2`` now checks this digest against
-    ``plan.authority_suite_digest`` before resolving anything, mirroring
-    the exact fix `#211` applied to `extract_review_content_v2`'s
-    ``target_profile``/``manifest.identity.profile_hash`` binding.
-
-    What this does NOT prove, named explicitly: that the digest recorded
-    in ``authority_suite_digest`` when the plan was BUILT was itself
-    computed from a legitimately host-owned inventory in the first place
-    -- that is the same category of external trust ``harness_digest``
-    already carries (see the module docstring's CT104 section). This
-    function proves the inventory a caller hands to THIS execution is the
-    SAME one the plan already committed to, not that the plan's own
-    commitment was honest."""
+    """Canonical sha256 of an entire ``inventory``: ``{command_token: argv +
+    authority fields}`` for every entry, sorted by token, hashed the same way
+    every other digest in this codebase is computed."""
 
     entries = {token: spec.model_dump(mode="json") for token, spec in inventory.items()}
     return hashlib.sha256(_canonical_json_bytes_v2(entries)).hexdigest()
+
+
+def compute_command_spec_digest_v2(spec: AllowlistedCommandSpecV2) -> str:
+    """Canonical digest of ONE inventory entry, binding a supervisor/broker
+    record to the exact command this execution authorised -- so a record
+    carrying the right nonce but answering a different spec is still
+    refused."""
+
+    return hashlib.sha256(_canonical_json_bytes_v2(spec.model_dump(mode="json"))).hexdigest()
 
 
 class IsolatedExecutorError(RuntimeError):
@@ -298,46 +296,63 @@ class ExecutedCheckV2:
     ``diagnostic_reason`` is NEVER part of the hashed contract material
     (``TrustedCheckResultMaterialV2`` has no such field) -- it exists
     purely for logs/tests to assert WHY an environmental outcome
-    happened, without smuggling free text into the frozen result."""
+    happened, without smuggling free text into the frozen result.
+
+    ``assessment`` (#201-B3) is the vectorial internal assessment, on the
+    same footing: diagnostic, never hashed. It exists so the executor never
+    has to collapse independent facts into one scalar -- a check can have
+    FAILED on product grounds while ALSO having failed containment, and
+    neither may erase the other."""
 
     result: TrustedCheckResultV2
     diagnostic_reason: str | None
+    assessment: ExecutionAssessmentV2 = ExecutionAssessmentV2()
 
 
 def _isolation_prefix_candidates_v2() -> tuple[tuple[bool, tuple[str, ...]], ...]:
     """Ordered ``(drop_to_nobody_inside, prefix_argv)`` candidates, most to
-    least preferred. ``drop_to_nobody_inside`` tells the dropper script
-    whether the namespace was created as REAL root (a subsequent setuid
-    to ``nobody`` is meaningful and will succeed) -- true for the
-    root-direct and sudo-elevated candidates, false for the unprivileged-
-    userns one (see ``_isolation_wrapped_argv_v2``'s own docstring for
-    why that one drops nothing)."""
+    least preferred.
+
+    - **real root, direct**: real root has ``CAP_SYS_ADMIN`` and needs no
+      unprivileged user namespace at all;
+    - **elevate via passwordless sudo**: for a caller that starts
+      unprivileged but has passwordless sudo (this project's own GitHub
+      Actions runner). Identity/containment for this candidate is handled
+      by ``trusted_check_broker_v2`` (amendment A1) -- see the module
+      docstring;
+    - **unprivileged user namespace**: the last resort. No uid separation
+      from the caller at all -- refused for ``TRUSTED`` in
+      ``_isolation_wrapped_argv_v2``.
+
+    This is a PROBED chain, not guessed from euid alone -- this project's
+    own GitHub Actions runner is neither real root nor able to create an
+    unprivileged user namespace by default, observed directly, not assumed."""
 
     if os.geteuid() == 0:
-        return ((True, ("unshare", "--net", "--")),)
+        return ((True, ("unshare", *NAMESPACE_FLAGS_V2, "--")),)
     candidates: list[tuple[bool, tuple[str, ...]]] = []
     if shutil.which("sudo") is not None:
-        candidates.append((True, ("sudo", "-n", "unshare", "--net", "--")))
-    candidates.append((False, ("unshare", "--user", "--map-root-user", "--net", "--")))
+        candidates.append((True, ("sudo", "-n")))
+    candidates.append((False, ("unshare", "--user", "--map-root-user", *NAMESPACE_FLAGS_V2, "--")))
     return tuple(candidates)
 
 
 def _probe_prefix_works_v2(prefix: tuple[str, ...]) -> bool:
+    if prefix and prefix[0] == "sudo":
+        probe = [*prefix, "true"]
+    else:
+        probe = [*prefix, "true"]
     try:
-        completed = subprocess.run([*prefix, "true"], capture_output=True, timeout=5)
+        completed = subprocess.run(probe, capture_output=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):
         return False
     return completed.returncode == 0
 
 
 def _select_isolation_strategy_v2() -> tuple[bool, tuple[str, ...]] | None:
-    """Actually TESTS each candidate rather than guessing from euid alone
-    -- this project's own GitHub Actions runner is neither real root nor
-    able to create an unprivileged user namespace by default (kernel/
-    AppArmor policy varies by image and changes over time), so guessing
-    wrong here means silently either failing every check or, worse,
-    silently running unisolated. Returns ``None`` if nothing works --
-    the caller must fail closed, never fall back to running unisolated."""
+    """Actually TESTS each candidate rather than guessing from euid alone.
+    Returns ``None`` if nothing works -- the caller must fail closed, never
+    fall back to running unisolated."""
 
     for drop_to_nobody, prefix in _isolation_prefix_candidates_v2():
         if _probe_prefix_works_v2(prefix):
@@ -345,196 +360,33 @@ def _select_isolation_strategy_v2() -> tuple[bool, tuple[str, ...]] | None:
     return None
 
 
-def _dropper_script_v2(
-    *, drop_to_nobody: bool, max_memory_mb: int, max_processes: int, pgid_report_path: str
-) -> str:
-    """Source for a small inline Python interpreter that runs INSIDE the
-    already-created isolation wrapper (after ``unshare``/``sudo`` have
-    already exec'd it, not before): first ``os.setsid()`` -- making THIS
-    process its own session AND process-group leader, so its pgid is
-    ``os.getpid()`` from this exact point forward, unaffected by
-    whatever session/pgroup ``sudo``'s own monitor-process architecture
-    may have put it in beforehand (see ``_run_isolated_v2``'s own
-    docstring for why that distinction is load-bearing) -- then writes
-    that real pid/pgid to ``pgid_report_path`` so the HOST process (which
-    cannot otherwise learn it -- ``sudo`` decouples the pid it reports
-    for its own invocation from the pid of the command it actually runs)
-    can read it back, THEN drops to the unprivileged ``nobody`` account
-    when ``drop_to_nobody`` (only meaningful when we entered as REAL
-    root), applies ``RLIMIT_AS``/``RLIMIT_NPROC``, then ``execvp``s the
-    real check argv (its own ``sys.argv[1:]``). Values are validated
-    ``PositiveInt`` contract fields and ``pgid_report_path`` is a host-
-    generated ``tempfile`` path (never PR/plan-controlled text), so
-    literal interpolation into this source string is safe."""
-
-    memory_bytes = max_memory_mb * 1024 * 1024
-    drop_lines = (
-        "nobody = pwd.getpwnam('nobody')\n"
-        "os.setgroups([])\n"
-        "os.setgid(nobody.pw_gid)\n"
-        "os.setuid(nobody.pw_uid)\n"
-        if drop_to_nobody
-        else ""
-    )
-    return (
-        "import os, sys, pwd, resource\n"
-        "argv = sys.argv[1:]\n"
-        "try:\n"
-        "    os.setsid()\n"
-        "except OSError:\n"
-        # Already a process-group/session leader -- POSIX forbids calling
-        # setsid() again in that case (EPERM), but that failure itself
-        # PROVES os.getpgrp() already equals this process's own pid
-        # (that's what "already a leader" means), so there is nothing
-        # left to do. Happens in the non-sudo strategies: the outer
-        # subprocess.Popen(start_new_session=True) already made the
-        # FIRST spawned process (unshare, or sudo itself) a session
-        # leader, and plain execve() (unshare -> this dropper) preserves
-        # that identity -- only sudo's own monitor-process architecture
-        # forks a genuinely NEW process here, which is why setsid() is
-        # attempted at all rather than assumed unnecessary.
-        "    pass\n"
-        "try:\n"
-        f"    os.chmod({pgid_report_path!r}, 0o600)\n"
-        "except OSError:\n"
-        # The host creates this file world-writable (0666) BEFORE spawn,
-        # only because the content write below can otherwise fail under
-        # the sudo-elevated strategy's own confinement (see that write's
-        # comment). Left at 0666 for the isolated command's entire
-        # lifetime, the UNTRUSTED command this dropper is about to exec
-        # (as `nobody`, in the same /tmp) could locate this file by its
-        # well-known prefix and overwrite the pgid the host later trusts
-        # for a PRIVILEGED kill -- a real finding from this slice's own
-        # review, not a hypothetical: an attacker-supplied pgid reaching
-        # `sudo -n kill -9 -- -<pgid>` is privilege-escalation-adjacent,
-        # not merely a flaky test. Unlike that content write, THIS chmod
-        # is the actual security boundary and must be fail-CLOSED, not
-        # best-effort: if we cannot prove the file is no longer world-
-        # writable, we must never let the untrusted command run at all
-        # -- exiting via a dedicated, host-recognized code BEFORE the
-        # content write below (so the report file stays exactly as the
-        # host left it: empty) and BEFORE any drop/exec. The host
-        # correlates this exit code together with the file still having
-        # no valid pgid content -- never the exit code alone -- so a
-        # legitimate check that happens to use this same exit value for
-        # its own purposes is never misclassified: reaching that value
-        # from inside the check's own execution is only possible AFTER
-        # this exact chmod already succeeded, which is exactly the case
-        # the host does not treat as a lockdown failure.
-        f"    os._exit({_PGID_LOCKDOWN_FAILED_EXIT_CODE_V2})\n"
-        "try:\n"
-        f"    with open({pgid_report_path!r}, 'w') as _f:\n"
-        "        _f.write(str(os.getpgrp()))\n"
-        "except OSError:\n"
-        # Reporting the real pgid back to the host is a BEST-EFFORT
-        # cleanup aid, never a requirement for the check itself to run
-        # and produce a correct verdict -- observed directly on this
-        # project's real GitHub Actions runner: this write can fail with
-        # a genuine PermissionError under the sudo-elevated strategy
-        # (plausibly PAM/AppArmor session-scoped /tmp confinement tied
-        # to the ORIGINAL unprivileged caller's identity, not a plain
-        # DAC permission-bits problem an elevated root writer would
-        # normally bypass) even though nothing else about running the
-        # command is affected. Swallowing this and proceeding means the
-        # WORST case is a degraded fallback pgid for a later best-effort
-        # kill (see _read_real_pgid_v2's own fallback_pid) -- never a
-        # crashed, falsely-FAILURE-classified check. Safe to still be
-        # best-effort here, unlike the chmod above: the file is ALREADY
-        # locked down to 0600 by this point regardless of whether this
-        # write itself succeeds.
-        "    pass\n"
-        f"{drop_lines}"
-        f"resource.setrlimit(resource.RLIMIT_AS, ({memory_bytes}, {memory_bytes}))\n"
-        f"resource.setrlimit(resource.RLIMIT_NPROC, ({max_processes}, {max_processes}))\n"
-        "os.execvp(argv[0], argv)\n"
-    )
-
-
 def _isolation_wrapped_argv_v2(
-    argv: tuple[str, ...], *, max_memory_mb: int, max_processes: int, pgid_report_path: str,
-    authority: TrustedCheckAuthorityV2,
-) -> tuple[list[str], bool] | None:
-    """Returns ``(wrapped_argv, uses_sudo)``, or ``None`` if
-    ``_select_isolation_strategy_v2`` finds nothing that actually works
-    (the caller must fail closed, never fall back to running unisolated)
-    -- OR if the only strategy that DID work is the unprivileged-userns
-    fallback (see its own bullet below) and ``authority`` is ``TRUSTED``.
-    ``uses_sudo`` tells the caller whether killing the resulting process
-    tree later will ALSO need to go through ``sudo`` -- an unprivileged
-    caller cannot ``kill()``/``killpg()`` a tree that ``sudo`` elevated to
-    root, even though it was the one that spawned it (see
-    ``_run_isolated_v2``'s own docstring).
+    *, authority: TrustedCheckAuthorityV2,
+) -> tuple[list[str], bool, bool] | None:
+    """Returns ``(wrapped_argv, uses_broker, drop_to_nobody)``, or ``None``
+    if ``_select_isolation_strategy_v2`` finds nothing that actually works,
+    or if the only strategy that DID work is the unprivileged-userns
+    fallback and ``authority`` is ``TRUSTED`` (that fallback has no real uid
+    separation from the host caller, and #201-A treats ``TRUSTED`` as the
+    sole authority a promotable ``RequiredCheckResultV2`` can come from).
 
-    Wraps ``argv`` so it runs isolated: its own network stack (proven
-    by this module's own adversarial test, not merely asserted -- see
-    ``test_isolated_executor_v2.py``'s real-outbound-connection-attempt
-    test) and, when the chosen strategy started privileged, dropped to an
-    unprivileged uid before the real command ever execs. Returns ``None``
-    if ``_select_isolation_strategy_v2`` finds nothing that actually
-    works -- the caller must fail closed, never fall back to running
-    unisolated.
+    ``uses_broker`` tells the caller whether this execution must go through
+    ``trusted_check_broker_v2`` (amendment A1): the sudo-elevated candidate
+    is real strong isolation, but this host process cannot itself perform
+    discovery/containment against a root-owned namespace, so the ENTIRE
+    execution -- not just privilege drop -- is delegated to a small,
+    host-owned, root-privileged broker rather than wrapping ``argv``
+    directly here.
 
-    Three candidate strategies, ACTUALLY PROBED (not guessed from euid
-    alone) by ``_select_isolation_strategy_v2``, most to least preferred:
-
-    - **real root, direct**: ``unshare --net`` alone -- real root has
-      ``CAP_SYS_ADMIN`` and needs no unprivileged user namespace at all.
-    - **elevate via passwordless sudo, then direct**: ``sudo -n unshare
-      --net`` -- for a caller that starts unprivileged but has
-      passwordless sudo available (true of this project's own GitHub
-      Actions runner's default account). Same no-unprivileged-userns
-      property as the root-direct case once elevated.
-    - **unprivileged user namespace**: ``unshare --user --map-root-user
-      --net`` -- the last resort when the caller is unprivileged AND has
-      no usable sudo. No privilege drop is attempted inside it: a
-      ``--map-root-user`` namespace maps only the ONE calling uid to
-      namespace-uid 0, ``nobody``'s real uid has no mapping to ``setuid``
-      to from inside it, and there is nothing to drop from in the first
-      place since the caller was never privileged. Concretely, this
-      means the isolated command runs as the EXACT SAME real uid as the
-      host caller itself -- it only APPEARS as root inside its own user
-      namespace. A review of this slice pointed out this is a real,
-      qualitatively different (weaker) property than the other two
-      candidates: any file the host process owns (e.g. the pgid-report
-      handshake file) is trivially writable by the "isolated" command
-      too, regardless of permission bits, because they are the SAME
-      uid. This function refuses (returns ``None``, the same fail-closed
-      contract as "no isolation available at all") rather than silently
-      proceeding, whenever this is the only candidate that worked AND
-      the caller asked for ``TRUSTED`` -- that authority is NOT an
-      acceptable backing for this fallback, since #201-A already treats
-      ``TRUSTED`` as the sole authority a promotable
-      ``RequiredCheckResultV2`` can come from.
-
-      CALLER WARNING for ``UNTRUSTED_ADVISORY`` (not enforced by this
-      function, which has no way to know what ``argv`` actually is --
-      recorded here for whoever wires a caller, e.g. ``#201-C``): this
-      fallback IS fine for ``UNTRUSTED_ADVISORY`` over SYNTHETIC, non-
-      adversarial content (exactly what this slice's own tests do) --
-      never promotable to begin with, so a weaker isolation guarantee
-      behind it changes nothing about what the RESULT can be used for.
-      It is NOT fine for ``UNTRUSTED_ADVISORY`` over REAL adversarial PR
-      content: ``UNTRUSTED_ADVISORY`` only blocks promoting the
-      resulting EVIDENCE, it does nothing to protect the host from what
-      an actually-running adversarial process could do while backed by
-      this weak, non-uid-separated fallback. Never conflate "the
-      evidence cannot be promoted" with "the sandbox is safe to run
-      adversarial code in".
-
-    Privilege drop (when applicable) always happens INSIDE the already-
-    created namespace via the dropper script, never before the isolation
-    prefix execs -- a preexec-time drop would force the unprivileged-
-    userns path even when a stronger strategy is available.
-
-    This project's own GitHub Actions runner is neither real root NOR
-    able to create an unprivileged user namespace by default (observed
-    directly across this slice's own first two CI runs: ``unshare: write
-    failed /proc/self/uid_map: Operation not permitted`` even after
-    trying the root-direct path, because that runner's job process is
-    not actually root) -- which is exactly why this is a PROBED chain of
-    real candidates, not a single hardcoded mechanism assumed to exist
-    everywhere.
-    """
+    For the root-direct and weak-userns candidates, ``wrapped_argv`` points
+    directly at ``trusted_check_supervisor_v2.py``, launched by absolute
+    path under ``-I`` -- never ``-m`` and never an inline ``-c`` string:
+    with ``-m`` the cwd (the PR checkout) would be searched for importable
+    packages, and a PR shipping its own
+    ``app/agent_review/trusted_check_supervisor_v2.py`` could then hijack
+    the very process meant to supervise it. ``argv`` of the check itself is
+    never part of this command line either way -- it travels over the
+    private channel, established after this function returns."""
 
     strategy = _select_isolation_strategy_v2()
     if strategy is None:
@@ -542,38 +394,16 @@ def _isolation_wrapped_argv_v2(
     drop_to_nobody, prefix = strategy
     if not drop_to_nobody and authority is TrustedCheckAuthorityV2.TRUSTED:
         return None
-    dropper = _dropper_script_v2(
-        drop_to_nobody=drop_to_nobody, max_memory_mb=max_memory_mb, max_processes=max_processes,
-        pgid_report_path=pgid_report_path,
-    )
-    uses_sudo = bool(prefix) and prefix[0] == "sudo"
-    return [*prefix, sys.executable, "-c", dropper, *argv], uses_sudo
+    uses_broker = bool(prefix) and prefix[0] == "sudo"
+    if uses_broker:
+        return ["sudo", "-n", sys.executable, "-I", str(BROKER_PATH_V2)], True, drop_to_nobody
+    return [*prefix, sys.executable, "-I", str(SUPERVISOR_PATH_V2)], False, drop_to_nobody
 
 
 def _classify_completed_process_v2(*, returncode: int) -> tuple[TrustedCheckOutcomeV2, str | None]:
-    """``returncode == 0`` -> ``SUCCESS``; anything else the process
-    itself produced (a positive exit code, OR a signal death -- e.g.
-    ``SIGSEGV``/``SIGBUS``/``SIGABRT``/``SIGKILL``) -> ``FAILURE``, never
-    ``OOM``.
-
-    An earlier version of this function guessed ``OOM`` from that same
-    signal list, reasoning that ``RLIMIT_AS`` typically kills a process
-    this way. A review of this slice pointed out the real, unresolved
-    ambiguity that guess carried: a signal death from ``RLIMIT_AS``
-    actually hitting its limit is, at the OS level, INDISTINGUISHABLE
-    from a genuine, unrelated product crash (both commonly manifest as a
-    NULL-pointer-dereference ``SIGSEGV`` after a failed allocation, or an
-    unrelated one) without independent evidence (e.g. cgroup ``memory.
-    events``' own ``oom_kill`` counter) this slice does not implement.
-    Guessing ``OOM`` risked exactly the failure mode issue #201 itself
-    names as unacceptable in the OTHER direction: "failure ambiental não
-    vira regression de produto" also means, read the other way, a REAL
-    product regression must never be silently absolved as environmental.
-    Classifying every ambiguous signal death as the attributable, always-
-    promotable-candidate ``FAILURE`` is the conservative, safe default;
-    the ``RLIMIT_AS`` safety property itself (a check genuinely cannot
-    exceed its configured memory) holds regardless of which typed outcome
-    the death gets."""
+    """``returncode == 0`` -> ``SUCCESS``; anything else (a positive exit
+    code, OR a signal death) -> ``FAILURE``, never ``OOM`` -- see the module
+    docstring's "OOM is not classified" section."""
 
     if returncode == 0:
         return TrustedCheckOutcomeV2.SUCCESS, None
@@ -613,77 +443,86 @@ def _build_result_v2(
     )
 
 
-def _read_real_pgid_v2(pgid_report_path: str, *, fallback_pid: int) -> int:
-    """Reads the REAL pgid the dropper script's own ``os.setsid()``
-    established (see ``_dropper_script_v2``'s own docstring for why the
-    pgid ``subprocess.Popen`` reports for OUR direct child -- ``sudo``
-    or ``unshare`` -- is not reliably the same pgid the actual isolated
-    command tree ends up running in, specifically when the sudo-elevated
-    strategy is used). Bounded, best-effort: if the file never appears
-    (setup failed before the dropper ever got there, or this is a
-    genuinely slow environment), falls back to ``fallback_pid`` -- worse
-    but no worse than before this fix existed."""
+def _recv_record_v2(channel: socket.socket, *, timeout: float) -> dict | None:
+    """One bounded, strictly-parsed message off a private channel.
+    ``SOCK_SEQPACKET`` preserves message boundaries, so a record is exactly
+    one ``recv``. Returns ``None`` on timeout, malformed JSON, a duplicate
+    key, or an oversized datagram: every one of those is fail-closed for the
+    caller, never a partially trusted document."""
 
-    deadline = time.monotonic() + _PGID_REPORT_WAIT_SECONDS_V2
-    while time.monotonic() < deadline:
-        try:
-            content = Path(pgid_report_path).read_text().strip()
-            if content:
-                return int(content)
-        except (OSError, ValueError):
-            pass
-        time.sleep(_TIMEOUT_POLL_INTERVAL_SECONDS_V2)
-    return fallback_pid
-
-
-def _report_file_has_valid_pgid_v2(pgid_report_path: str) -> bool:
-    """No polling wait, unlike ``_read_real_pgid_v2``: only ever called
-    AFTER the process has already exited, so whatever the dropper was
-    going to write has already been written (or never will be). Used
-    only to corroborate the ``_PGID_LOCKDOWN_FAILED_EXIT_CODE_V2``
-    sentinel -- see that constant's own docstring for why the exit code
-    is checked together with this, never alone."""
-
+    channel.settimeout(timeout)
     try:
-        content = Path(pgid_report_path).read_text().strip()
-    except OSError:
-        return False
-    if not content:
-        return False
+        payload = channel.recv(MAX_MESSAGE_BYTES_V2)
+    except (socket.timeout, OSError):
+        return None
+    if not payload:
+        return None
     try:
-        int(content)
-    except ValueError:
-        return False
-    return True
+        record = strict_json_loads_v2(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
 
 
-def _kill_process_tree_v2(*, real_pgid: int, uses_sudo: bool) -> None:
-    """Best-effort, NEVER RAISES: kills the whole process group
-    ``real_pgid``. Plain ``os.killpg`` cannot signal a group ``sudo``
-    elevated to root -- an unprivileged caller lacks permission
-    (observed directly: a real ``PermissionError`` from exactly this
-    call in this slice's own adversarial testing) -- so when the
-    isolation strategy that spawned this tree used ``sudo``, the kill
-    is ALSO issued via ``sudo`` (which, run fresh for a ``kill``
-    command, executes as root and can signal it). Every failure mode
-    (already dead, permission denied even via sudo, sudo itself
-    unavailable by the time this runs) is swallowed -- this function's
-    contract is "try to clean up", never "raise and crash the
-    executor" for a best-effort reap."""
+def _record_is_bound_v2(record: dict | None, *, kind: str, nonce: str) -> bool:
+    """Every record must name a protocol this executor speaks AND carry this
+    execution's own nonce. The nonce is what makes a replayed record from
+    another run (or another check in the same run) inert rather than merely
+    unlikely."""
 
-    if uses_sudo:
-        try:
-            subprocess.run(
-                ["sudo", "-n", "kill", "-9", "--", f"-{real_pgid}"],
-                capture_output=True, timeout=5,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return
-    try:
-        os.killpg(real_pgid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
+    return (
+        record is not None
+        and record.get("kind") == kind
+        and record.get("protocol") in (SUPERVISOR_PROTOCOL_V2, BROKER_PROTOCOL_V2)
+        and record.get("nonce") == nonce
+    )
+
+
+def _assess_v2(
+    *,
+    classification=None,
+    inventory_binding: str = STATE_UNKNOWN_V2,
+    product_outcome: str = STATE_UNKNOWN_V2,
+    contained: bool | None = None,
+    executed: bool = False,
+    reasons: tuple[str, ...] = (),
+) -> ExecutionAssessmentV2:
+    """Assemble the vectorial assessment and derive ``promotion_eligibility``
+    from the whole conjunction rather than from any single axis.
+
+    Axes this slice cannot yet establish stay ``unknown`` on purpose --
+    ``compute_promotion_eligibility_v2`` treats an unknown premise as a false
+    conjunct, so an axis that is not yet proven can only ever make a result
+    LESS promotable, never more."""
+
+    effective_class = (
+        classification.effective_class if classification is not None else ExecutionClassV2.UNKNOWN
+    )
+    containment = STATE_UNKNOWN_V2
+    if contained is not None:
+        containment = STATE_VERIFIED_V2 if contained else STATE_FAILED_V2
+    # These are established by the act of executing at all: a validated
+    # record arrived over the private channel (protocol), behind a harness
+    # the subject could not substitute (harness), against an execution
+    # identity the host itself discovered and pinned (subject identity),
+    # under enforced rlimits and a bounded output drain (resource boundary).
+    proven = STATE_VERIFIED_V2 if executed else STATE_UNKNOWN_V2
+    assessment = ExecutionAssessmentV2(
+        subject_identity=proven,
+        inventory_binding=inventory_binding,
+        execution_class=effective_class.value,
+        workload_authority=workload_authority_for_class_v2(effective_class),
+        harness_integrity=proven,
+        protocol_integrity=proven,
+        containment=containment,
+        resource_boundary=proven,
+        coverage_authority=coverage_authority_for_class_v2(effective_class),
+        product_outcome=product_outcome,
+        diagnostic_reasons=reasons,
+    )
+    return replace(
+        assessment, promotion_eligibility=compute_promotion_eligibility_v2(assessment)
+    )
 
 
 def _run_isolated_v2(
@@ -695,82 +534,125 @@ def _run_isolated_v2(
     max_processes: int,
     cancel_event: Event | None,
     authority: TrustedCheckAuthorityV2,
-) -> tuple[TrustedCheckOutcomeV2, str | None, dict[str, object] | None]:
+    spec_digest: str,
+) -> tuple[TrustedCheckOutcomeV2, str | None, dict[str, object] | None, bool]:
     """Runs ``argv`` isolated and returns ``(outcome, diagnostic_reason,
-    artifact_payload)``. Raises ``IsolatedExecutorError`` only for a
-    setup-time failure (never for the CHECK'S OWN failure/timeout/OOM,
-    which are typed outcomes, not exceptions).
+    artifact_payload, contained)``. Raises ``IsolatedExecutorError`` only for
+    a setup-time failure (never for the CHECK'S OWN failure/timeout, which
+    are typed outcomes, not exceptions).
 
-    Tracking the REAL process group to kill later is more subtle than it
-    looks, and got this wrong twice before landing here (both failures
-    caught by this slice's own adversarial tests, not assumed away):
-    ``subprocess.Popen``'s own ``process.pid`` for OUR direct child
-    (``sudo`` or ``unshare``) is not reliably the pgid the actual
-    isolated command tree ends up in once ``sudo``'s monitor-process
-    architecture (or a later ``execve`` chain) reparents things, and a
-    plain ``os.killpg`` cannot signal a group ``sudo`` elevated to root
-    even though WE spawned it. The dropper script itself calls
-    ``os.setsid()`` and reports its own real pid/pgid back to us via a
-    host-controlled temp file (``_read_real_pgid_v2``); killing goes
-    through ``sudo`` too when the selected strategy used it
-    (``_kill_process_tree_v2``)."""
+    Branches on ``uses_broker`` (amendment A1): the sudo-elevated strategy
+    delegates the entire execution -- discovery, wait, containment
+    verification, teardown -- to ``trusted_check_broker_v2``, because this
+    host process cannot itself read a root-owned namespace's identity. The
+    root-direct and weak-userns strategies are handled directly here,
+    unchanged from the non-broker design."""
 
-    pgid_report_fd, pgid_report_path = tempfile.mkstemp(prefix="isolated-executor-pgid-")
-    os.close(pgid_report_fd)
-    # tempfile.mkstemp() creates the file mode 0600, owned by THIS
-    # (unprivileged, in the sudo-elevated strategy) process -- but the
-    # dropper script writes to it from a DIFFERENT, elevated identity
-    # (root via sudo, before its own later privilege drop). Observed
-    # directly on this project's real GitHub Actions runner: that write
-    # failed with a genuine PermissionError even though the writer was
-    # root, most likely due to sudo's own AppArmor/session confinement
-    # scoping file access by original ownership rather than a plain DAC
-    # permission-bits check. Chmod'ing world-writable sidesteps whatever
-    # the exact mechanism is -- ONLY for the brief window before the
-    # dropper itself locks it back down. This file's content is NOT
-    # harmless: the host later trusts it as the target of a PRIVILEGED
-    # kill (`sudo -n kill -9 -- -<pgid>` under the sudo strategy), so
-    # leaving it world-writable for the isolated command's entire
-    # lifetime would let that same untrusted command (running as
-    # `nobody`, same /tmp, well-known filename prefix) overwrite the
-    # pgid and redirect that kill -- a real finding from this slice's
-    # own review. The dropper script (`_dropper_script_v2`) chmod's this
-    # path back to 0600 immediately after writing, still as the elevated
-    # identity and strictly before dropping to `nobody` and exec'ing the
-    # untrusted command, so that command never runs while the file is
-    # still world-writable.
-    os.chmod(pgid_report_path, 0o666)
-    try:
-        wrapped_and_sudo = _isolation_wrapped_argv_v2(
-            argv, max_memory_mb=max_memory_mb, max_processes=max_processes,
-            pgid_report_path=pgid_report_path, authority=authority,
+    if not PIDFD_AVAILABLE_V2:
+        # No silent fallback to signalling a bare pid: pid reuse can redirect
+        # that at an unrelated process, and containment we cannot prove is
+        # not containment.
+        raise IsolatedExecutorError(EXECUTOR_REASON_PIDFD_UNAVAILABLE_V2)
+
+    wrapped_and_strategy = _isolation_wrapped_argv_v2(authority=authority)
+    if wrapped_and_strategy is None:
+        strategy = _select_isolation_strategy_v2()
+        if strategy is not None and not strategy[0] and authority is TrustedCheckAuthorityV2.TRUSTED:
+            raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_TOO_WEAK_FOR_TRUSTED_V2)
+        raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2)
+    wrapped, uses_broker, drop_to_nobody = wrapped_and_strategy
+
+    if uses_broker:
+        return _run_isolated_via_broker_v2(
+            wrapped=wrapped, argv=argv, repo_root=repo_root, timeout_seconds=timeout_seconds,
+            max_memory_mb=max_memory_mb, max_processes=max_processes, cancel_event=cancel_event,
+            spec_digest=spec_digest,
         )
-        if wrapped_and_sudo is None:
-            # Distinguish "nothing works at all" from "the only thing
-            # that worked is too weak to back TRUSTED" -- re-probing here
-            # is cheap and, within the same process back-to-back, not
-            # meaningfully racy; it only affects which typed reason code
-            # is reported, never whether execution proceeds (that
-            # decision was already made, fail-closed, above).
-            strategy = _select_isolation_strategy_v2()
-            if (
-                strategy is not None
-                and not strategy[0]
-                and authority is TrustedCheckAuthorityV2.TRUSTED
-            ):
-                raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_TOO_WEAK_FOR_TRUSTED_V2)
-            raise IsolatedExecutorError(EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2)
-        wrapped, uses_sudo = wrapped_and_sudo
+    return _run_isolated_direct_v2(
+        wrapped=wrapped, argv=argv, repo_root=repo_root, timeout_seconds=timeout_seconds,
+        max_memory_mb=max_memory_mb, max_processes=max_processes, cancel_event=cancel_event,
+        spec_digest=spec_digest, drop_to_nobody=drop_to_nobody,
+    )
 
+
+def _run_isolated_direct_v2(
+    *, wrapped: list[str], argv: tuple[str, ...], repo_root: Path, timeout_seconds: int,
+    max_memory_mb: int, max_processes: int, cancel_event: Event | None, spec_digest: str,
+    drop_to_nobody: bool,
+) -> tuple[TrustedCheckOutcomeV2, str | None, dict[str, object] | None, bool]:
+    """Root-direct or weak-userns: this host process performs discovery and
+    containment verification directly, using ``trusted_check_namespace_
+    kernel_v2`` exactly as ``trusted_check_broker_v2`` does internally for
+    the sudo-elevated strategy -- same code, different caller identity."""
+
+    nonce = secrets.token_hex(32)
+    identity: ExecutionIdentityV2 | None = None
+    contained = False
+    host_channel, child_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    record = None
+    try:
         try:
             process = subprocess.Popen(
                 wrapped,
                 cwd=str(repo_root),
+                stdin=child_channel.fileno(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True,
                 start_new_session=True,
             )
+        except OSError as exc:
+            raise IsolatedExecutorError(EXECUTOR_REASON_SETUP_FAILED_V2) from exc
+        finally:
+            child_channel.close()
+
+        drain_state, drain_threads = start_drain_v2(process)
+
+        try:
+            host_channel.send(supervisor_canonical_json_bytes_v2({
+                "kind": "config",
+                "protocol": SUPERVISOR_PROTOCOL_V2,
+                "nonce": nonce,
+                "spec_digest": spec_digest,
+                "argv": list(argv),
+                "cwd": str(repo_root),
+                "max_memory_mb": max_memory_mb,
+                "max_processes": max_processes,
+                "drop_to_nobody": drop_to_nobody,
+            }))
+        except OSError as exc:
+            raise IsolatedExecutorError(EXECUTOR_REASON_SETUP_FAILED_V2) from exc
+
+        hello = _recv_record_v2(host_channel, timeout=_HELLO_WAIT_SECONDS_V2)
+        if _record_is_bound_v2(hello, kind="hello", nonce=nonce):
+            # The supervisor is now BLOCKED waiting for our `ready`, so the
+            # namespace leader is guaranteed alive for the whole of discovery
+            # -- the identity cannot be lost to a fast-finishing subject.
+            identity = discover_namespace_leader_v2(
+                process.pid, deadline=time.monotonic() + _DISCOVERY_WAIT_SECONDS_V2
+            )
+            if identity is not None and not is_descendant_of_v2(identity.host_pid, process.pid):
+                identity.close()  # pragma: no cover - defensive
+                identity = None  # pragma: no cover - defensive
+
+        if identity is None:
+            # Fail closed BEFORE the subject runs: an execution whose
+            # containment we could not establish must not execute at all.
+            tear_down_execution_v2(identity=None, direct_child_pid=process.pid)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+                pass
+            return (
+                TrustedCheckOutcomeV2.INFRA_FAILURE,
+                EXECUTOR_REASON_HOST_PID_IDENTITY_INVALID_V2,
+                None,
+                False,
+            )
+
+        try:
+            host_channel.send(supervisor_canonical_json_bytes_v2({
+                "kind": "ready", "protocol": SUPERVISOR_PROTOCOL_V2, "nonce": nonce,
+            }))
         except OSError as exc:
             raise IsolatedExecutorError(EXECUTOR_REASON_SETUP_FAILED_V2) from exc
 
@@ -790,89 +672,248 @@ def _run_isolated_v2(
             time.sleep(_TIMEOUT_POLL_INTERVAL_SECONDS_V2)
 
         if cancelled or timed_out:
-            real_pgid = _read_real_pgid_v2(pgid_report_path, fallback_pid=process.pid)
-            _kill_process_tree_v2(real_pgid=real_pgid, uses_sudo=uses_sudo)
+            tear_down_execution_v2(identity=identity, direct_child_pid=process.pid)
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:  # pragma: no cover - defensive only
                 pass
+            contained = verify_containment_v2(identity)
             if cancelled:
-                return TrustedCheckOutcomeV2.CANCELLED, EXECUTOR_REASON_CANCELLED_V2, None
-            return TrustedCheckOutcomeV2.TIMEOUT, EXECUTOR_REASON_TIMEOUT_V2, None
+                outcome = TrustedCheckOutcomeV2.CANCELLED
+                reason = EXECUTOR_REASON_CANCELLED_V2
+            else:
+                outcome = TrustedCheckOutcomeV2.TIMEOUT
+                reason = EXECUTOR_REASON_TIMEOUT_V2
+            # An environmental outcome is already non-promotable, so a
+            # containment failure here is reported WITHOUT overwriting it --
+            # neither fact is allowed to erase the other.
+            if not contained:
+                reason = EXECUTOR_REASON_PROCESS_CONTAINMENT_FAILED_V2
+            return outcome, reason, None, contained
 
-        # The tracked PID has already exited (poll() returned above,
-        # which reaps it internally) -- but a DESCENDANT it spawned
-        # could still be alive holding the inherited stdout/stderr pipe
-        # write-ends open, and a plain communicate() here would then
-        # block indefinitely waiting for EOF that never comes, past this
-        # check's own logical deadline. Bounded by a grace period; on
-        # timeout, kill the whole process group (reaping any such
-        # descendant, using the REAL pgid the dropper reported -- not
-        # process.pid, which by this point may already be reaped and
-        # even RECYCLED by the kernel for an unrelated process) and
-        # finish reading, now safe since nothing should be left to
-        # write. A second, equally bounded read guards the residual case
-        # a descendant escaped the process group entirely (e.g. a
-        # double-fork daemonizing itself) and the kill could not reach
-        # it -- if even THAT hangs, the LEADER's own already-known exit
-        # code still stands (see the inner comment below); only the
-        # captured output is best-effort at that point, never the verdict.
+        # The supervisor has exited, but a DESCENDANT could still hold the
+        # inherited pipes open, so the drain is bounded in TIME as well as in
+        # BYTES, and started at spawn time (not here) to avoid a
+        # self-inflicted deadlock -- see trusted_check_stream_capture_v2's
+        # own module docstring.
+        record = _recv_record_v2(host_channel, timeout=_RECORD_WAIT_SECONDS_V2)
+        stdout_capture, stderr_capture = finish_drain_v2(drain_state, drain_threads)
         try:
-            stdout, stderr = process.communicate(timeout=_COMMUNICATE_GRACE_SECONDS_V2)
-        except subprocess.TimeoutExpired:
-            real_pgid = _read_real_pgid_v2(pgid_report_path, fallback_pid=process.pid)
-            _kill_process_tree_v2(real_pgid=real_pgid, uses_sudo=uses_sudo)
-            try:
-                stdout, stderr = process.communicate(timeout=_COMMUNICATE_GRACE_SECONDS_V2)
-            except subprocess.TimeoutExpired as exc:
-                # The tracked LEADER already exited before we ever got
-                # here (that's why we're past the poll() loop at all --
-                # ``process.returncode`` is already set and authoritative).
-                # A descendant that escaped the process group entirely
-                # (e.g. a double-fork daemonizing itself) can still hold
-                # the inherited pipe open even after the kill above; that
-                # orphan's fate has NO bearing on the LEADER's own exit
-                # code, which is what this check is actually judged on.
-                # Silently turning a leader that exited 0 into
-                # INFRA_FAILURE just because some unrelated grandchild is
-                # still alive would be exactly the kind of environmental
-                # noise masquerading as a product verdict issue #201
-                # forbids -- caught by this slice's own adversarial test
-                # (a leader that exits 0 while a forked descendant it
-                # does not wait on keeps the pipe open). Partial/absent
-                # output only; never fatal to the check's own outcome.
-                stdout = exc.stdout or ""
-                stderr = exc.stderr or ""
-
-        # Read BEFORE the finally block below unlinks the file. See
-        # _PGID_LOCKDOWN_FAILED_EXIT_CODE_V2's own docstring for why this
-        # is checked together with the returncode, never either alone.
-        report_has_valid_pgid = _report_file_has_valid_pgid_v2(pgid_report_path)
+            process.wait(timeout=_COMMUNICATE_GRACE_SECONDS_V2)
+        except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+            tear_down_execution_v2(identity=identity, direct_child_pid=process.pid)
+        contained = verify_containment_v2(identity)
     finally:
-        try:
-            os.unlink(pgid_report_path)
-        except OSError:
-            pass
+        host_channel.close()
+        if identity is not None:
+            identity.close()
 
-    if process.returncode == _PGID_LOCKDOWN_FAILED_EXIT_CODE_V2 and not report_has_valid_pgid:
-        # The dropper's own chmod-lockdown of the pgid-report file failed
-        # and it refused to proceed -- the untrusted command in `argv`
-        # NEVER RAN. Corroborated by the file having no valid pgid
-        # content, which only happens BEFORE that chmod (the content
-        # write is the very next thing the dropper does AFTER it
-        # succeeds) -- ruling out a legitimate, fully-run check that
-        # merely happens to share this exit code by coincidence.
-        return TrustedCheckOutcomeV2.INFRA_FAILURE, EXECUTOR_REASON_PGID_LOCKDOWN_FAILED_V2, None
-
-    outcome, reason = _classify_completed_process_v2(returncode=process.returncode)
-    # TrustedCheckResultMaterialV2 (#201-A) requires artifact_sha256 iff
-    # the outcome is SUCCESS/FAILURE.
-    artifact_payload = (
-        {"returncode": process.returncode, "stdout": stdout, "stderr": stderr}
-        if outcome in _RESOLVED_OUTCOMES_LOCAL_V2
-        else None
+    return _classify_from_record_v2(
+        record=record, nonce=nonce, spec_digest=spec_digest, contained=contained,
+        stdout_capture=stdout_capture if record is not None else None,
+        stderr_capture=stderr_capture if record is not None else None,
     )
-    return outcome, reason, artifact_payload
+
+
+def _classify_from_record_v2(
+    *, record: dict | None, nonce: str, spec_digest: str, contained: bool,
+    stdout_capture: CapturedStreamV2 | None, stderr_capture: CapturedStreamV2 | None,
+) -> tuple[TrustedCheckOutcomeV2, str | None, dict[str, object] | None, bool]:
+    """Shared tail: turn a validated `result` record plus a containment
+    verdict into the executor's typed outcome. Used by both the direct and
+    broker paths so their classification logic cannot drift apart."""
+
+    if not _record_is_bound_v2(record, kind="result", nonce=nonce):
+        return (
+            TrustedCheckOutcomeV2.INFRA_FAILURE,
+            EXECUTOR_REASON_PROTOCOL_CHANNEL_INVALID_V2,
+            None,
+            contained,
+        )
+    if record.get("spec_digest") != spec_digest:
+        # A record that answers a DIFFERENT command than the one this
+        # execution authorised, even with the right nonce.
+        return (
+            TrustedCheckOutcomeV2.INFRA_FAILURE,
+            EXECUTOR_REASON_PROTOCOL_CHANNEL_INVALID_V2,
+            None,
+            contained,
+        )
+    exit_status = record.get("exit_status")
+    if not isinstance(exit_status, int) or isinstance(exit_status, bool):
+        return (
+            TrustedCheckOutcomeV2.INFRA_FAILURE,
+            EXECUTOR_REASON_PROTOCOL_CHANNEL_INVALID_V2,
+            None,
+            contained,
+        )
+
+    outcome, reason = _classify_completed_process_v2(returncode=exit_status)
+    if not contained:
+        # Asymmetric on purpose. A SUCCESS whose cleanup cannot be proven
+        # must not stand. A FAILURE is NOT rewritten: turning a real product
+        # regression into an environmental outcome is the exact inversion
+        # issue #201 forbids, and it buys nothing since a FAILURE already
+        # blocks readiness.
+        if outcome is TrustedCheckOutcomeV2.SUCCESS:
+            return (
+                TrustedCheckOutcomeV2.INFRA_FAILURE,
+                EXECUTOR_REASON_PROCESS_CONTAINMENT_FAILED_V2,
+                None,
+                False,
+            )
+        reason = EXECUTOR_REASON_PROCESS_CONTAINMENT_FAILED_V2
+
+    artifact_payload = None
+    if outcome in _RESOLVED_OUTCOMES_LOCAL_V2:
+        stdout_capture = stdout_capture or CapturedStreamV2(b"", 0, hashlib.sha256().hexdigest(), False)
+        stderr_capture = stderr_capture or CapturedStreamV2(b"", 0, hashlib.sha256().hexdigest(), False)
+        artifact_payload = {
+            "returncode": exit_status,
+            "stdout": stdout_capture.excerpt.decode("utf-8", "replace"),
+            "stderr": stderr_capture.excerpt.decode("utf-8", "replace"),
+            "stdout_bytes": stdout_capture.total_bytes,
+            "stderr_bytes": stderr_capture.total_bytes,
+            "stdout_sha256": stdout_capture.sha256,
+            "stderr_sha256": stderr_capture.sha256,
+            "stdout_truncated": stdout_capture.truncated,
+            "stderr_truncated": stderr_capture.truncated,
+        }
+    return outcome, reason, artifact_payload, contained
+
+
+def _run_isolated_via_broker_v2(
+    *, wrapped: list[str], argv: tuple[str, ...], repo_root: Path, timeout_seconds: int,
+    max_memory_mb: int, max_processes: int, cancel_event: Event | None, spec_digest: str,
+) -> tuple[TrustedCheckOutcomeV2, str | None, dict[str, object] | None, bool]:
+    """Amendment A1: delegate the whole execution to
+    ``trusted_check_broker_v2``. This host process never learns a PID from
+    the broker's protocol and never needs to -- every privileged action
+    happens inside the broker, which holds the real kernel identity by
+    having performed the discovery itself, as root."""
+
+    nonce = secrets.token_hex(32)
+    host_channel, child_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    record = None
+    contained = False
+    try:
+        try:
+            process = subprocess.Popen(
+                wrapped, cwd=str(repo_root), stdin=child_channel.fileno(),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+        except OSError as exc:
+            raise IsolatedExecutorError(EXECUTOR_REASON_SETUP_FAILED_V2) from exc
+        finally:
+            child_channel.close()
+
+        try:
+            host_channel.send(supervisor_canonical_json_bytes_v2({
+                "kind": "config",
+                "protocol": BROKER_PROTOCOL_V2,
+                "nonce": nonce,
+                "spec_digest": spec_digest,
+                "argv": list(argv),
+                "cwd": str(repo_root),
+                "max_memory_mb": max_memory_mb,
+                "max_processes": max_processes,
+            }))
+        except OSError as exc:
+            raise IsolatedExecutorError(EXECUTOR_REASON_SETUP_FAILED_V2) from exc
+
+        ready = _recv_record_v2(host_channel, timeout=_BROKER_READY_WAIT_SECONDS_V2)
+        if not _record_is_bound_v2(ready, kind="ready", nonce=nonce):
+            # The broker never established identity (or never even started
+            # cleanly) -- fail closed before trusting anything it might send
+            # later. Best-effort kill; the broker's own crash-containment
+            # (PR_SET_PDEATHSIG on its child) does not depend on this.
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):  # pragma: no cover - defensive
+                pass
+            return (
+                TrustedCheckOutcomeV2.INFRA_FAILURE,
+                EXECUTOR_REASON_PROTOCOL_CHANNEL_INVALID_V2,
+                None,
+                False,
+            )
+
+        deadline = time.monotonic() + timeout_seconds
+        cancelled = False
+        timed_out = False
+        while True:
+            if process.poll() is not None:
+                break
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                break
+            time.sleep(_TIMEOUT_POLL_INTERVAL_SECONDS_V2)
+
+        if cancelled or timed_out:
+            try:
+                host_channel.send(supervisor_canonical_json_bytes_v2({
+                    "kind": "cancel", "protocol": BROKER_PROTOCOL_V2, "nonce": nonce,
+                }))
+            except OSError:  # pragma: no cover - broker already gone
+                pass
+            teardown_record = _recv_record_v2(host_channel, timeout=_BROKER_TEARDOWN_WAIT_SECONDS_V2)
+            if _record_is_bound_v2(teardown_record, kind="result", nonce=nonce):
+                contained = bool(teardown_record.get("contained") is True)
+            else:
+                # The broker did not (or could not) confirm containment.
+                # Containment itself is NOT in doubt -- PR_SET_PDEATHSIG on
+                # the broker's own child guarantees it kernel-side even if
+                # the broker cannot report back -- but this host has no way
+                # to VERIFY that without the broker's cooperation, and an
+                # unverifiable claim is reported as such, not assumed true.
+                contained = False
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):  # pragma: no cover - defensive
+                pass
+            outcome = TrustedCheckOutcomeV2.CANCELLED if cancelled else TrustedCheckOutcomeV2.TIMEOUT
+            reason = EXECUTOR_REASON_CANCELLED_V2 if cancelled else EXECUTOR_REASON_TIMEOUT_V2
+            if not contained:
+                reason = EXECUTOR_REASON_PROCESS_CONTAINMENT_FAILED_V2
+            return outcome, reason, None, contained
+
+        record = _recv_record_v2(host_channel, timeout=_BROKER_RESULT_WAIT_SECONDS_V2)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+            pass
+        if _record_is_bound_v2(record, kind="result", nonce=nonce):
+            contained = bool(record.get("contained") is True)
+    finally:
+        host_channel.close()
+
+    stdout_capture = stderr_capture = None
+    if isinstance(record, dict):
+        stdout_capture = CapturedStreamV2(
+            excerpt=b"",  # See the broker's own module docstring: excerpt
+            # content is not relayed through this path, only integrity
+            # (bytes/sha256/truncated) -- diagnostic text only, never
+            # authoritative, and explicitly out of this amendment's scope.
+            total_bytes=int(record.get("stdout_bytes") or 0),
+            sha256=str(record.get("stdout_sha256") or hashlib.sha256().hexdigest()),
+            truncated=bool(record.get("stdout_truncated")),
+        )
+        stderr_capture = CapturedStreamV2(
+            excerpt=b"",
+            total_bytes=int(record.get("stderr_bytes") or 0),
+            sha256=str(record.get("stderr_sha256") or hashlib.sha256().hexdigest()),
+            truncated=bool(record.get("stderr_truncated")),
+        )
+
+    return _classify_from_record_v2(
+        record=record, nonce=nonce, spec_digest=spec_digest, contained=contained,
+        stdout_capture=stdout_capture, stderr_capture=stderr_capture,
+    )
 
 
 def _inventory_keys_match_command_tokens_v2(
@@ -895,6 +936,7 @@ def _refuse_whole_plan_v2(
                 outcome=TrustedCheckOutcomeV2.INFRA_FAILURE, artifact_payload=None,
             ),
             diagnostic_reason=reason,
+            assessment=_assess_v2(reasons=(reason,)),
         )
         for check in plan.checks
     )
@@ -909,33 +951,20 @@ def execute_trusted_check_plan_v2(
     cancel_event: Event | None = None,
 ) -> tuple[ExecutedCheckV2, ...]:
     """Executes every check in ``plan.checks`` in order, isolated, and
-    returns one ``ExecutedCheckV2`` per check (never fewer -- a check that
-    cannot even be resolved or spawned still produces a typed
-    ``INFRA_FAILURE`` result, never a raised exception the caller must
-    remember to catch per-check). ``authority`` is required with no
-    default, mirroring ``#201-B1``'s own simulator discipline: calling
-    this function with ``TRUSTED`` is the caller asserting ITS OWN
-    deployment context actually is host-controlled -- this module does
-    not infer or upgrade authority on the caller's behalf.
+    returns one ``ExecutedCheckV2`` per check (never fewer). ``authority`` is
+    required with no default: calling this function with ``TRUSTED`` is the
+    caller asserting ITS OWN deployment context actually is host-controlled
+    -- this module does not infer or upgrade authority on the caller's
+    behalf.
 
-    ``inventory`` must be HOST/target-repo-owned (per issue #201's own
-    ownership split: this repository owns the harness/isolation/
-    serializer; the target repo owns the check inventory). This is now
-    checked, not merely asserted: ``compute_check_command_inventory_
-    digest_v2(inventory)`` must equal ``plan.authority_suite_digest``
-    before a single ``command_token`` is resolved -- a mismatch refuses
-    the WHOLE plan (every check gets a typed ``INFRA_FAILURE``, none are
-    attempted) rather than silently resolving tokens against an inventory
-    the plan never actually committed to. See that function's own
-    docstring for exactly what this proves and does not prove.
+    ``inventory`` must be HOST/target-repo-owned. This is checked, not
+    merely asserted: ``compute_check_command_inventory_digest_v2(inventory)``
+    must equal ``plan.authority_suite_digest`` before a single
+    ``command_token`` is resolved -- a mismatch refuses the WHOLE plan.
 
-    Every entry's own dict key must equal its
-    ``AllowlistedCommandSpecV2.command_token`` -- an inventory keyed
-    ``{"other_token": spec_whose_own_command_token_is_"token"}`` is
-    ambiguous identity (which name does this entry actually answer to?)
-    in a system whose whole point is rigorous binding, and is refused
-    fail-closed before the digest is even computed, not merely tolerated
-    because the digest still commits to *some* bytes either way."""
+    Before any process exists, each check's inventory entry is classified
+    (#201-B3): ``TRUSTED`` is refused for any command whose effective class
+    is not ``data_only_host_tool`` -- see ``trusted_check_authority_v2``."""
 
     if not _inventory_keys_match_command_tokens_v2(inventory):
         return _refuse_whole_plan_v2(
@@ -960,24 +989,66 @@ def execute_trusted_check_plan_v2(
             )
             continue
 
+        # THE AUTHORITY BOUNDARY (#201-B3). Classify, and refuse BEFORE any
+        # process exists -- not after running one and discarding the result.
+        classification = classify_command_spec_v2(
+            execution_class=spec.execution_class,
+            host_owned_config=spec.host_owned_config,
+            loads_checkout_plugins=spec.loads_checkout_plugins,
+        )
+        refusal = trusted_refusal_reason_v2(classification=classification, authority=authority)
+        if refusal is not None:
+            result = _build_result_v2(
+                plan=plan, check_name=check.check_name, authority=authority,
+                outcome=TrustedCheckOutcomeV2.INFRA_FAILURE, artifact_payload=None,
+            )
+            results.append(
+                ExecutedCheckV2(
+                    result=result,
+                    diagnostic_reason=refusal,
+                    assessment=_assess_v2(classification=classification, reasons=(refusal,)),
+                )
+            )
+            continue
+
         try:
-            outcome, reason, artifact_payload = _run_isolated_v2(
+            outcome, reason, artifact_payload, contained = _run_isolated_v2(
                 argv=spec.argv, repo_root=repo_root, timeout_seconds=check.timeout_seconds,
                 max_memory_mb=check.max_memory_mb, max_processes=check.max_processes,
                 cancel_event=cancel_event, authority=authority,
+                spec_digest=compute_command_spec_digest_v2(spec),
             )
         except IsolatedExecutorError as exc:
             result = _build_result_v2(
                 plan=plan, check_name=check.check_name, authority=authority,
                 outcome=TrustedCheckOutcomeV2.INFRA_FAILURE, artifact_payload=None,
             )
-            results.append(ExecutedCheckV2(result=result, diagnostic_reason=exc.reason_code))
+            results.append(
+                ExecutedCheckV2(
+                    result=result,
+                    diagnostic_reason=exc.reason_code,
+                    assessment=_assess_v2(
+                        classification=classification, inventory_binding=STATE_VERIFIED_V2,
+                        reasons=(exc.reason_code,),
+                    ),
+                )
+            )
             continue
 
         result = _build_result_v2(
             plan=plan, check_name=check.check_name, authority=authority,
             outcome=outcome, artifact_payload=artifact_payload,
         )
-        results.append(ExecutedCheckV2(result=result, diagnostic_reason=reason))
+        results.append(
+            ExecutedCheckV2(
+                result=result,
+                diagnostic_reason=reason,
+                assessment=_assess_v2(
+                    classification=classification, inventory_binding=STATE_VERIFIED_V2,
+                    product_outcome=outcome.value, contained=contained, executed=True,
+                    reasons=(reason,) if reason is not None else (),
+                ),
+            )
+        )
 
     return tuple(results)
