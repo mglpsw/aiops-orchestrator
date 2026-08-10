@@ -208,6 +208,124 @@ sudo-elevated/broker path specifically, which is untested outside this
 sandbox. CT102 is never a substitute; none of the above is inferred from
 this sandbox's own result.
 
+## Skip inventory (named, not summarized as a bare count)
+
+Baseline (`origin/master` @ `2ce1f45`, re-verified in a clean worktree, not
+assumed from an earlier session): `1998 passed, 4 skipped`, all four
+`tests/evals/test_reviewable_corpus.py:175` (`only semantic_positive cases
+declare defect line ranges`) — unrelated to `#201-B3`, no file in that path
+touched by this diff.
+
+Full suite on this branch under root: `2060 passed, 5 skipped`. The net-new
+skip, identified nominally rather than left as a bare delta:
+
+| Field | Value |
+|---|---|
+| `skipped_test` | `tests/agent_review/test_isolated_executor_v2.py::test_execute_refuses_a_broker_result_carrying_a_foreign_nonce` |
+| `reason` | fixture-gated: this environment (root) selects the direct isolation strategy, not the broker — the test targets `BROKER_PATH_V2`, which root never invokes |
+| `preexisting_or_new` | new — introduced by amendment A1 |
+| `blocks_portable_closure` | no |
+| `blocks_ct104_closure` | no |
+
+This is a central broker test (it proves the broker rejects a `result`
+record carrying a foreign nonce), so per this project's own discipline a
+skip of it would be a blocker **unless it is confirmed executing and
+passing under the account that actually selects the broker strategy** — it
+is not enough for it to merely not appear as failing. Re-verified live in
+this reconciliation round, not assumed from the original three-account
+pass: under the `claude` account (passwordless sudo), this exact test —
+together with the other three central broker tests
+(`test_broker_crash_still_leaves_zero_survivors`,
+`test_broker_reports_a_real_failure_and_still_proves_containment`,
+`test_broker_reaches_ready_then_result_for_a_natural_success`) — passes:
+`4 passed, 86 deselected`. The skip on root is the expected complement of
+the six existing `require_direct_isolation_process`-gated skips that
+already appeared under `#201-B2`'s design (tests whose monkeypatch cannot
+reach a separate broker subprocess), not a new category of gap.
+
+Full B3-focused matrix, all three accounts, `-rs`, re-run live in this
+reconciliation round:
+
+- **root**: `89 passed, 1 skipped` (the broker-nonce test above).
+- **claude** (sudo-elevated): `83 passed, 7 skipped` — six
+  `require_direct_isolation_process` skips (broker strategy selected;
+  direct-only monkeypatches cannot reach it), one network-denial-under-broker
+  skip (documented inline as covered end-to-end elsewhere), one
+  privilege-drop-observability skip (the supervisor does not start
+  privileged under this account, so dropping privilege is not observable —
+  unrelated to `#201-B3`, inherited from `#201-B2`).
+- **ubuntu** (no sudo, weak userns): `50 passed, 40 skipped` — the full set
+  of `TRUSTED`-only mechanics correctly refused/skipped under a strategy
+  with no uid separation from the host caller (unchanged `#201-B2`
+  invariant), plus the seven broker tests (`passwordless sudo is not
+  available in this environment`) and the same privilege-drop
+  non-observability skip.
+
+No skip in any of the three accounts is unexplained, and no skip hides a
+mechanic that does not execute and pass somewhere in the matrix.
+
+## Independent adversarial review of the privileged broker (post-PR reconciliation)
+
+Requested and performed as a second pass, independent of the implementation
+session, against `35ec62f` — the exact commit both `aiops-ci` jobs (`Validate
+repository`, `AgentReview release gates`) report `success` on, confirmed live
+via the PR's check runs, not inferred from an earlier commit.
+
+- **Broker process boundary**: `BROKER_PATH_V2 = Path(__file__).resolve()`
+  (absolute), invoked as `["sudo", "-n", sys.executable, "-I",
+  str(BROKER_PATH_V2)]` — no shell, no free-form argv, no user-controlled
+  `argv[0]`. The check's own `argv` never appears on this command line; it
+  crosses only over the private channel, itself assembled by the host from
+  `spec.argv` (host-owned inventory), never from anything checkout-supplied.
+- **FD hygiene**: the broker does not use `SCM_RIGHTS` at all — `pidfd` and
+  the namespace FD are opened directly inside the broker process by
+  `discover_namespace_leader_v2` (the broker holds real root, so it performs
+  the same discovery the direct path performs, in-process) and never
+  transmitted anywhere; this is simpler than the design allowed for, not an
+  omission. `subprocess.Popen`'s default `close_fds=True` closes the
+  broker's own channel (occupying its fd 0) out of the spawned
+  `unshare`/supervisor chain's table before `dup2` re-establishes fd 0 as
+  the inner channel — verified by inspection of the exact `Popen` call
+  (`trusted_check_broker_v2.py:224-235`) and confirmed independently by
+  `trusted_check_supervisor_v2.py`'s own `_exec_subject_v2`, which closes
+  its channel FIRST, before the subject's `execve`, and separately clears
+  the `O_CLOEXEC`/non-inheritable flag PEP 446 puts on the `/dev/null` fd
+  that lands on fd 0 (the one real gap this design's own tests found, per
+  the module's own docstring).
+- **Broker-death containment**: re-verified live, not re-argued —
+  `test_broker_crash_still_leaves_zero_survivors` passes under `claude`.
+  Mechanism: `PR_SET_PDEATHSIG` via `preexec_fn` on the `unshare` the broker
+  spawns, cascading into the same `--kill-child` chain used everywhere else
+  in this subsystem.
+- **Authority boundary**: `execute_trusted_check_plan_v2` calls
+  `classify_command_spec_v2` and `trusted_refusal_reason_v2` and `continue`s
+  past the check (never calling `_run_isolated_v2`) when refused — inspected
+  directly (`isolated_executor_v2.py:992-1012`), confirming the refusal is
+  structural and pre-spawn, not a post-hoc detector. `data_only_host_tool`
+  eligibility requires both `host_owned_config=True` **and**
+  `loads_checkout_plugins=False` (`trusted_check_authority_v2.py:162-179`) —
+  not a single isolated boolean.
+- **Vectorial assessment**: `compute_promotion_eligibility_v2` requires
+  strict equality to `"verified"` on every premise in
+  `_VERIFIED_PREMISES_V2` (`subject_identity`, `inventory_binding`,
+  `harness_integrity`, `protocol_integrity`, `containment`,
+  `resource_boundary`) — any `unknown`, `failed`, `mismatch`, or
+  `unavailable` value fails the equality check and yields `ineligible`,
+  never optimistically. `test_a_containment_failure_and_a_product_failure_coexist`
+  (`test_isolated_executor_v2.py:933`) confirms both facts survive
+  independently in one execution.
+- **Structural absence**: `killpg(`, every `"sudo", "-n", "kill"`-shaped
+  literal, and `pgid_report`/`pgid-report` are absent from the whole family
+  (grep, zero matches, re-run in this reconciliation round). The only two
+  raw signal call sites in the entire family are `os.kill(target, ...)` and
+  `_signal.pidfd_send_signal(pidfd, ...)`, both inside
+  `signal_host_pid_v2`, both reached only after `assert_killable_host_pid_v2`
+  — there is no second path.
+
+**No findings.** Every item in the review checklist traces to a specific,
+inspected mechanism rather than an assumption; nothing here required a
+code change.
+
 ## Regression discipline
 
 `#201-B2`'s pgid-report temp-file handshake is **deleted**, not hardened
