@@ -1,0 +1,145 @@
+{
+  "$defs": {
+    "AuthoritativeCheckEntryV2": {
+      "additionalProperties": false,
+      "description": "One required check and the single producer entitled to speak for it.",
+      "properties": {
+        "check_name": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Check Name",
+          "type": "string"
+        },
+        "job_name": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Job Name",
+          "type": "string"
+        },
+        "origin_rules": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ExecutedTreeRuleV2"
+          },
+          "propertyNames": {
+            "enum": [
+              "pull_request",
+              "pull_request_target",
+              "manual",
+              "replay"
+            ]
+          },
+          "title": "Origin Rules",
+          "type": "object"
+        },
+        "permitted_conclusions": {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "const": "success",
+              "type": "string"
+            },
+            {
+              "const": "failure",
+              "type": "string"
+            }
+          ],
+          "title": "Permitted Conclusions",
+          "type": "array"
+        },
+        "verifier_identity": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Verifier Identity",
+          "type": "string"
+        },
+        "workflow_path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "title": "Workflow Path",
+          "type": "string"
+        },
+        "workflow_ref": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Workflow Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "check_name",
+        "workflow_path",
+        "workflow_ref",
+        "job_name",
+        "verifier_identity",
+        "permitted_conclusions",
+        "origin_rules"
+      ],
+      "title": "AuthoritativeCheckEntryV2",
+      "type": "object"
+    },
+    "AuthoritativeCheckPolicyIdentityV2": {
+      "additionalProperties": false,
+      "properties": {
+        "repo": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repo",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repo"
+      ],
+      "title": "AuthoritativeCheckPolicyIdentityV2",
+      "type": "object"
+    },
+    "ExecutedTreeRuleV2": {
+      "description": "How the tree a CI run actually executed is bound to the run identity.\n\n`SYNTHETIC_MERGE_PARENTAGE` is GitHub's `pull_request` semantics: the run\nexecutes a synthetic merge commit whose parents are exactly\n`[base_sha, head_sha]`. `EXPLICIT_TESTED_TREE` covers every other origin,\nwhere that assumption does NOT hold and the binding must be stated rather\nthan inherited.",
+      "enum": [
+        "synthetic_merge_parentage",
+        "explicit_tested_tree"
+      ],
+      "title": "ExecutedTreeRuleV2",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "authoritative_checks": {
+      "items": {
+        "$ref": "#/$defs/AuthoritativeCheckEntryV2"
+      },
+      "minItems": 1,
+      "title": "Authoritative Checks",
+      "type": "array"
+    },
+    "identity": {
+      "$ref": "#/$defs/AuthoritativeCheckPolicyIdentityV2"
+    },
+    "schema_id": {
+      "const": "agent-review.authoritative-check-policy.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "repo-policy",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "identity",
+    "authoritative_checks"
+  ],
+  "title": "AuthoritativeCheckPolicyV2",
+  "type": "object"
+}
