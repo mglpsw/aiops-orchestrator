@@ -71,6 +71,7 @@ to run for this property to hold; that is the point.
 from __future__ import annotations
 
 import ctypes
+import functools
 import os
 import signal
 import socket
@@ -136,7 +137,19 @@ _HELLO_WAIT_SECONDS_V2 = 10.0
 _PR_SET_PDEATHSIG = 1
 
 
-def _set_pdeathsig_to_broker_v2() -> None:
+def _pdeathsig_still_bound_to_broker_v2(
+    *, prctl_result: int, actual_parent_pid: int, expected_broker_pid: int
+) -> bool:
+    """Pure predicate, extracted for testability without forking or killing
+    anything: true iff ``PR_SET_PDEATHSIG`` was installed successfully AND
+    this process is still, at that exact moment, a child of the broker that
+    spawned it. False in either case means the death-signal guarantee cannot
+    be relied on -- see ``_set_pdeathsig_to_broker_v2``."""
+
+    return prctl_result == 0 and actual_parent_pid == expected_broker_pid
+
+
+def _set_pdeathsig_to_broker_v2(broker_pid: int) -> None:
     """Runs in the CHILD, after ``fork()`` and before ``exec()`` (this is a
     ``subprocess.Popen(preexec_fn=...)`` callback). Safe here specifically
     because the broker is single-threaded at the point this Popen call is
@@ -145,10 +158,30 @@ def _set_pdeathsig_to_broker_v2() -> None:
 
     ``PR_SET_PDEATHSIG`` persists across the following ``execve`` as long as
     credentials do not change at exec time, which holds here: neither
-    ``unshare`` nor this broker are set-user-ID binaries."""
+    ``unshare`` nor this broker are set-user-ID binaries.
+
+    ``PR_SET_PDEATHSIG`` is NOT retroactive: it is not guaranteed to fire
+    for a parent that already died before this call installs it. Between
+    the kernel's ``fork()`` returning in this child and this exact ``prctl``
+    call running, there is a real (if narrow) window in which the broker
+    could already have died -- an OOM kill, an operator's ``kill -9``,
+    anything. If that happens, this child is reparented BEFORE the
+    ``prctl`` call, and calling ``prctl`` at that point arms the signal
+    against the NEW parent (typically the namespace's own PID-1 or a
+    subreaper that essentially never dies), not the broker that already
+    died -- silently defeating the zero-survivor guarantee this exists to
+    provide, for the exact crash scenario it was built to cover. Checking
+    ``getppid()`` immediately afterward and self-killing on any mismatch
+    (or on the ``prctl`` call itself failing) closes that window: either
+    this process is provably still tethered to the broker with the signal
+    armed, or it does not get to continue un-tethered."""
 
     libc = ctypes.CDLL("libc.so.6", use_errno=True)
-    libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+    prctl_result = libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+    if not _pdeathsig_still_bound_to_broker_v2(
+        prctl_result=prctl_result, actual_parent_pid=os.getppid(), expected_broker_pid=broker_pid,
+    ):
+        os.kill(os.getpid(), signal.SIGKILL)
 
 
 def _canonical_v2(message: dict) -> bytes:
@@ -219,6 +252,8 @@ def main() -> int:
     inner_host, inner_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     identity: kernel.ExecutionIdentityV2 | None = None
     process = None
+    direct_child_pidfd: int | None = None
+    broker_pid = os.getpid()
     try:
         try:
             process = subprocess.Popen(
@@ -230,13 +265,20 @@ def main() -> int:
                 start_new_session=True,
                 # The single line that makes broker-crash containment a
                 # kernel guarantee rather than a hope: see the module
-                # docstring's "Crash containment" section.
-                preexec_fn=_set_pdeathsig_to_broker_v2,
+                # docstring's "Crash containment" section, and
+                # `_set_pdeathsig_to_broker_v2`'s own docstring for the
+                # fork-to-prctl race this closes.
+                preexec_fn=functools.partial(_set_pdeathsig_to_broker_v2, broker_pid),
             )
         except OSError:
             return EXIT_SPAWN_FAILED_V2
         finally:
             inner_child.close()
+
+        try:
+            direct_child_pidfd = os.pidfd_open(process.pid, 0)
+        except OSError:  # pragma: no cover - defensive: the process was just spawned by us
+            direct_child_pidfd = None
 
         drain_state, drain_threads = streams.start_drain_v2(process)
 
@@ -260,7 +302,9 @@ def main() -> int:
 
         hello = _recv_nonblocking_v2(inner_host, timeout=_HELLO_WAIT_SECONDS_V2)
         if not _bound_v2(hello, kind="hello", nonce=nonce):
-            kernel.tear_down_execution_v2(identity=None, direct_child_pid=process.pid)
+            kernel.tear_down_execution_v2(
+                identity=None, direct_child_pid=process.pid, direct_child_pidfd=direct_child_pidfd,
+            )
             return EXIT_IDENTITY_UNAVAILABLE_V2
 
         # The inner supervisor is now BLOCKED waiting for our `ready`, so its
@@ -276,7 +320,9 @@ def main() -> int:
             identity = None  # pragma: no cover - defensive
 
         if identity is None:
-            kernel.tear_down_execution_v2(identity=None, direct_child_pid=process.pid)
+            kernel.tear_down_execution_v2(
+                identity=None, direct_child_pid=process.pid, direct_child_pidfd=direct_child_pidfd,
+            )
             return EXIT_IDENTITY_UNAVAILABLE_V2
 
         try:
@@ -284,7 +330,9 @@ def main() -> int:
                 "kind": "ready", "protocol": SUPERVISOR_PROTOCOL_V2, "nonce": nonce,
             }))
         except OSError:
-            kernel.tear_down_execution_v2(identity=identity, direct_child_pid=process.pid)
+            kernel.tear_down_execution_v2(
+                identity=identity, direct_child_pid=process.pid, direct_child_pidfd=direct_child_pidfd,
+            )
             return EXIT_SPAWN_FAILED_V2
 
         try:
@@ -295,7 +343,9 @@ def main() -> int:
             # Host is gone. Tear down anyway -- crash containment does not
             # depend on the host, but there is no reason to wait for a
             # natural exit when nobody will read the result.
-            kernel.tear_down_execution_v2(identity=identity, direct_child_pid=process.pid)
+            kernel.tear_down_execution_v2(
+                identity=identity, direct_child_pid=process.pid, direct_child_pidfd=direct_child_pidfd,
+            )
             return EXIT_SPAWN_FAILED_V2
 
         # Watch THREE things concurrently, each with a short non-blocking
@@ -323,7 +373,9 @@ def main() -> int:
                 break
 
         if cancelled:
-            kernel.tear_down_execution_v2(identity=identity, direct_child_pid=process.pid)
+            kernel.tear_down_execution_v2(
+                identity=identity, direct_child_pid=process.pid, direct_child_pidfd=direct_child_pidfd,
+            )
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:  # pragma: no cover - defensive
@@ -366,6 +418,8 @@ def main() -> int:
     finally:
         if identity is not None:
             identity.close()
+        if direct_child_pidfd is not None:
+            os.close(direct_child_pidfd)
         inner_host.close()
 
 

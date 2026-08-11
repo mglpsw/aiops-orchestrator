@@ -421,6 +421,58 @@ def test_execute_still_allows_untrusted_advisory_over_weak_isolation(repo_root, 
     assert executed[0].result.authority is TrustedCheckAuthorityV2.UNTRUSTED_ADVISORY
 
 
+def test_probe_prefix_for_sudo_actually_exercises_namespace_creation(monkeypatch):
+    """A review caught that this probe tested ONLY passwordless sudo
+    authentication, not whether the kernel/container policy underneath it
+    permits real namespace creation -- exactly the CT104 risk this
+    subsystem's own docs name (nested PID/user namespaces forbidden by the
+    container profile). If sudo works but namespaces are blocked, the old
+    probe still marked the broker strategy usable, so `_select_isolation_
+    strategy_v2` never fell through to the weak-userns candidate -- every
+    check would then fail at namespace-creation time instead."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    captured: dict[str, list[str]] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        return _FakeCompleted()
+
+    monkeypatch.setattr(isolated_executor_module.subprocess, "run", fake_run)
+    isolated_executor_module._probe_prefix_works_v2(("sudo", "-n"))
+
+    assert captured["argv"][:2] == ["sudo", "-n"]
+    assert "unshare" in captured["argv"]
+    for flag in isolated_executor_module.NAMESPACE_FLAGS_V2:
+        assert flag in captured["argv"], f"probe never exercises {flag!r} for the sudo candidate"
+
+
+def test_probe_prefix_for_non_sudo_candidates_is_unchanged(monkeypatch):
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    captured: dict[str, list[str]] = {}
+
+    class _FakeCompleted:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = list(argv)
+        return _FakeCompleted()
+
+    monkeypatch.setattr(isolated_executor_module.subprocess, "run", fake_run)
+    prefix = (
+        "unshare", "--user", "--map-root-user",
+        *isolated_executor_module.NAMESPACE_FLAGS_V2, "--",
+    )
+    isolated_executor_module._probe_prefix_works_v2(prefix)
+
+    assert captured["argv"] == [*prefix, "true"]
+
+
 def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, monkeypatch):
     import app.agent_review.isolated_executor_v2 as isolated_executor_module
 

@@ -265,38 +265,53 @@ def signal_host_pid_v2(pid: object, *, pidfd: int | None) -> None:
     holds real privilege over the target (either it IS the target's real
     parent/owner, or it is root). Never raises.
 
-    There is no textual-PID fallback here (no ``kill -9 <pid>`` shellout, no
-    ``sudo``): a caller invoking this function is, by construction, already
-    privileged enough to signal the target directly -- ``pidfd_send_signal``
-    when available (immune to pid reuse), plain ``os.kill`` otherwise. The
-    operand is always a positive number that passed
-    ``assert_killable_host_pid_v2``."""
+    Strictly ``pidfd_send_signal``-based -- immune to pid reuse because the
+    kernel resolves the signal target from the ``pidfd`` itself, not from
+    the numeric value. There is deliberately NO fallback to a raw
+    ``os.kill(<pid>, ...)`` if ``pidfd`` is absent or the pidfd-based signal
+    fails: a bare numeric pid can already have been recycled by an unrelated
+    process by the time such a fallback runs, and signalling it would hit
+    that unrelated process, not the one this call was asked to kill -- the
+    exact hazard this whole module exists to close (see the module
+    docstring). If ``pidfd_send_signal`` fails because the target already
+    exited, there is nothing left to signal in the first place, so doing
+    nothing is correct, not merely tolerated. ``pid`` is still passed
+    through ``assert_killable_host_pid_v2`` even though it is no longer used
+    to signal anything, so this remains the single choke point every caller
+    of this function passes through."""
 
     try:
-        target = assert_killable_host_pid_v2(pid)
+        assert_killable_host_pid_v2(pid)
     except ValueError:
         return
-    if pidfd is not None and _signal is not None:
-        try:
-            _signal.pidfd_send_signal(pidfd, _signal.SIGKILL)
-            return
-        except (OSError, ProcessLookupError):
-            pass
+    if pidfd is None or _signal is None:
+        return
     try:
-        os.kill(target, _signal.SIGKILL if _signal is not None else 9)
-    except (ProcessLookupError, PermissionError):
+        _signal.pidfd_send_signal(pidfd, _signal.SIGKILL)
+    except (OSError, ProcessLookupError):
         pass
 
 
-def tear_down_execution_v2(*, identity: ExecutionIdentityV2 | None, direct_child_pid: int) -> None:
+def tear_down_execution_v2(
+    *,
+    identity: ExecutionIdentityV2 | None,
+    direct_child_pid: int,
+    direct_child_pidfd: int | None,
+) -> None:
     """Kill the namespace init when identified, and ALWAYS also the direct
     child the caller spawned -- an identity it holds by construction, whose
     death fires ``--kill-child``'s ``PR_SET_PDEATHSIG`` and collapses the
-    namespace even when the leader itself was not addressable."""
+    namespace even when the leader itself was not addressable.
+
+    ``direct_child_pidfd`` is required from the caller (not opened here) so
+    that a caller which cannot obtain one -- an exceptionally narrow race
+    right after spawn -- can decide for itself whether that is fatal, rather
+    than this function silently downgrading to a pid-reuse-unsafe
+    fallback."""
 
     if identity is not None:
         signal_host_pid_v2(identity.host_pid, pidfd=identity.pidfd)
-    signal_host_pid_v2(direct_child_pid, pidfd=None)
+    signal_host_pid_v2(direct_child_pid, pidfd=direct_child_pidfd)
 
 
 def verify_containment_v2(identity: ExecutionIdentityV2 | None) -> bool:

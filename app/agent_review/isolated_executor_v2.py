@@ -338,8 +338,23 @@ def _isolation_prefix_candidates_v2() -> tuple[tuple[bool, tuple[str, ...]], ...
 
 
 def _probe_prefix_works_v2(prefix: tuple[str, ...]) -> bool:
+    """Exercises the actual namespace-creation capability the candidate
+    would need at runtime, not merely that its prefix authenticates.
+
+    The ``sudo`` candidate's own ``prefix`` is just ``("sudo", "-n")`` --
+    ``trusted_check_broker_v2`` supplies the ``unshare`` invocation itself,
+    so a probe of the bare prefix would only ever confirm passwordless sudo
+    authentication, never that the kernel/container policy underneath it
+    actually permits ``CLONE_NEWPID``/``CLONE_NEWNET``. A container profile
+    that grants sudo but forbids nested namespaces (the exact CT104 risk
+    this subsystem's own docs name) would then have this candidate marked
+    usable, every subsequent check would launch the broker, and every one
+    would fail at namespace-creation time instead of this selection falling
+    through to the next candidate. Probing with the SAME ``unshare``
+    invocation the broker actually runs closes that gap."""
+
     if prefix and prefix[0] == "sudo":
-        probe = [*prefix, "true"]
+        probe = [*prefix, "unshare", *NAMESPACE_FLAGS_V2, "--", "true"]
     else:
         probe = [*prefix, "true"]
     try:
@@ -590,6 +605,7 @@ def _run_isolated_direct_v2(
     contained = False
     host_channel, child_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     record = None
+    direct_child_pidfd: int | None = None
     try:
         try:
             process = subprocess.Popen(
@@ -604,6 +620,11 @@ def _run_isolated_direct_v2(
             raise IsolatedExecutorError(EXECUTOR_REASON_SETUP_FAILED_V2) from exc
         finally:
             child_channel.close()
+
+        try:
+            direct_child_pidfd = os.pidfd_open(process.pid, 0)
+        except OSError:  # pragma: no cover - defensive: the process was just spawned by us
+            direct_child_pidfd = None
 
         drain_state, drain_threads = start_drain_v2(process)
 
@@ -637,7 +658,9 @@ def _run_isolated_direct_v2(
         if identity is None:
             # Fail closed BEFORE the subject runs: an execution whose
             # containment we could not establish must not execute at all.
-            tear_down_execution_v2(identity=None, direct_child_pid=process.pid)
+            tear_down_execution_v2(
+                identity=None, direct_child_pid=process.pid, direct_child_pidfd=direct_child_pidfd,
+            )
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:  # pragma: no cover - defensive
@@ -672,7 +695,9 @@ def _run_isolated_direct_v2(
             time.sleep(_TIMEOUT_POLL_INTERVAL_SECONDS_V2)
 
         if cancelled or timed_out:
-            tear_down_execution_v2(identity=identity, direct_child_pid=process.pid)
+            tear_down_execution_v2(
+                identity=identity, direct_child_pid=process.pid, direct_child_pidfd=direct_child_pidfd,
+            )
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:  # pragma: no cover - defensive only
@@ -701,12 +726,16 @@ def _run_isolated_direct_v2(
         try:
             process.wait(timeout=_COMMUNICATE_GRACE_SECONDS_V2)
         except subprocess.TimeoutExpired:  # pragma: no cover - defensive
-            tear_down_execution_v2(identity=identity, direct_child_pid=process.pid)
+            tear_down_execution_v2(
+                identity=identity, direct_child_pid=process.pid, direct_child_pidfd=direct_child_pidfd,
+            )
         contained = verify_containment_v2(identity)
     finally:
         host_channel.close()
         if identity is not None:
             identity.close()
+        if direct_child_pidfd is not None:
+            os.close(direct_child_pidfd)
 
     return _classify_from_record_v2(
         record=record, nonce=nonce, spec_digest=spec_digest, contained=contained,
