@@ -145,8 +145,13 @@ class ObservedCheckRunV2(ContractV2Model):
 
 
 class AuthoritativeCheckSnapshotV2(ContractV2Model):
-    """The acquirer's output: an internal transport artifact, not a published
-    contract, which is why it is deliberately absent from the schema export."""
+    """The acquirer's output.
+
+    Exported as a published schema even though only the assembler reads it: it
+    crosses a process boundary and lands on disk, which is exactly what the
+    other v2 wire artifacts are given schemas for. Treating it as "internal"
+    would also make it the one cross-process artifact a target pack could not
+    validate independently."""
 
     schema_id: Literal["agent-review.authoritative-check-snapshot.v2"]
     schema_version: Literal[2]

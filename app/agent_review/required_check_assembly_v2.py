@@ -148,7 +148,7 @@ def _require_executed_tree_binding(
     the base-owned policy, and an origin the policy does not mention is
     unsupported rather than assumed."""
 
-    rule = entry.origin_rules.get(origin.event_type)
+    rule = entry.origin_rules.rule_for(origin.event_type)
     if rule is None:
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_ORIGIN_UNSUPPORTED_REASON_V2)
 

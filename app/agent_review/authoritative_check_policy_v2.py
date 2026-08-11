@@ -109,6 +109,49 @@ class ExecutedTreeRuleV2(str, Enum):
 ExecutedTreeRuleValueV2 = Annotated[ExecutedTreeRuleV2, Field(strict=False)]
 
 
+class OriginRulesV2(ContractV2Model):
+    """Which `RunOriginV2` event types this entry may be promoted under.
+
+    An explicit, closed object rather than a free map: an open map would let a
+    target introduce an origin key the engine has never heard of, and it cannot
+    forbid unknown properties in the published schema. `None` means "this
+    origin is not authorised here", which is the fail-closed default -- an
+    origin is opted IN, never assumed."""
+
+    pull_request: ExecutedTreeRuleValueV2 | None = None
+    pull_request_target: ExecutedTreeRuleValueV2 | None = None
+    manual: ExecutedTreeRuleValueV2 | None = None
+    replay: ExecutedTreeRuleValueV2 | None = None
+
+    def rule_for(self, event_type: str) -> ExecutedTreeRuleV2 | None:
+        return getattr(self, event_type, None)
+
+    @model_validator(mode="after")
+    def validate_origin_rules(self) -> OriginRulesV2:
+        declared = {
+            "pull_request": self.pull_request,
+            "pull_request_target": self.pull_request_target,
+            "manual": self.manual,
+            "replay": self.replay,
+        }
+        if all(rule is None for rule in declared.values()):
+            raise ValueError("an entry must authorise at least one origin")
+
+        # `pull_request` is the only origin with GitHub's synthetic-merge
+        # semantics. Letting a target declare anything else for it, or claim
+        # those semantics for an origin that does not have them, would reopen
+        # the tested-tree hole through the policy file.
+        for event_type, rule in declared.items():
+            if rule is None:
+                continue
+            if event_type == "pull_request":
+                if rule is not ExecutedTreeRuleV2.SYNTHETIC_MERGE_PARENTAGE:
+                    raise ValueError("pull_request must use synthetic_merge_parentage")
+            elif rule is ExecutedTreeRuleV2.SYNTHETIC_MERGE_PARENTAGE:
+                raise ValueError("only pull_request has synthetic-merge semantics")
+        return self
+
+
 class AuthoritativeCheckEntryV2(ContractV2Model):
     """One required check and the single producer entitled to speak for it."""
 
@@ -119,30 +162,12 @@ class AuthoritativeCheckEntryV2(ContractV2Model):
     verifier_identity: SafeIdentifier
     # Structurally pinned rather than configurable -- see the module docstring.
     permitted_conclusions: tuple[Literal["success"], Literal["failure"]]
-    origin_rules: dict[
-        Literal["pull_request", "pull_request_target", "manual", "replay"],
-        ExecutedTreeRuleValueV2,
-    ]
+    origin_rules: OriginRulesV2
 
     @model_validator(mode="after")
     def validate_entry(self) -> AuthoritativeCheckEntryV2:
-        if not self.origin_rules:
-            raise ValueError("an entry must declare at least one origin rule")
-
-        # `pull_request` is the only origin with GitHub's synthetic-merge
-        # semantics. Letting a target declare anything else for it, or claim
-        # those semantics for an origin that does not have them, would reopen
-        # the tested-tree hole through the policy file.
-        for event_type, rule in self.origin_rules.items():
-            if event_type == "pull_request":
-                if rule is not ExecutedTreeRuleV2.SYNTHETIC_MERGE_PARENTAGE:
-                    raise ValueError("pull_request must use synthetic_merge_parentage")
-            elif rule is ExecutedTreeRuleV2.SYNTHETIC_MERGE_PARENTAGE:
-                raise ValueError("only pull_request has synthetic-merge semantics")
-
         if not self.workflow_ref.startswith("refs/heads/"):
             raise ValueError("workflow_ref must be a branch ref")
-
         return self
 
 

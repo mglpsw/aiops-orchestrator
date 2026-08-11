@@ -209,7 +209,8 @@ def test_an_explicit_non_pull_request_origin_is_accepted(tmp_path: Path) -> None
     loaded = load_authoritative_check_policy_v2(_write(tmp_path, text))
     entry = loaded.policy.entry_for("pytest")
     assert entry is not None
-    assert entry.origin_rules["replay"] is ExecutedTreeRuleV2.EXPLICIT_TESTED_TREE
+    assert entry.origin_rules.rule_for("replay") is ExecutedTreeRuleV2.EXPLICIT_TESTED_TREE
+    assert entry.origin_rules.rule_for("manual") is None
 
 
 def test_origin_rules_cannot_be_empty(tmp_path: Path) -> None:

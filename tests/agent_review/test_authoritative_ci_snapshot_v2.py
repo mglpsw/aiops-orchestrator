@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from app.agent_review.authoritative_check_policy_v2 import AuthoritativeCheckEntryV2
+from app.agent_review.authoritative_check_policy_v2 import AuthoritativeCheckEntryV2, OriginRulesV2
 from app.agent_review.authoritative_ci_snapshot_v2 import (
     ObservedCheckRunV2,
     compute_observation_digest_v2,
@@ -42,7 +42,7 @@ ENTRY = AuthoritativeCheckEntryV2(
     job_name="Validate repository",
     verifier_identity="github-actions",
     permitted_conclusions=("success", "failure"),
-    origin_rules={"pull_request": "synthetic_merge_parentage"},
+    origin_rules=OriginRulesV2(pull_request="synthetic_merge_parentage"),
 )
 
 

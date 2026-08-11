@@ -5,8 +5,16 @@ import subprocess
 import sys
 from pathlib import Path
 
-from app.agent_review.contracts_v2 import RunIdentityV2, compute_run_id
+from app.agent_review.authoritative_check_policy_v2 import load_authoritative_check_policy_v2
+from app.agent_review.contracts_v2 import RequiredCheckResultV2, RunIdentityV2, compute_run_id
 from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_v2
+from app.agent_review.required_check_provenance_v2 import (
+    AuthorityEffectV2,
+    RequiredCheckSourceKindV2,
+    SemanticClassV2,
+    build_required_check_provenance_v2,
+    compute_required_check_digest_v2,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "aiops-review-quality-gate-v2.py"
@@ -58,6 +66,30 @@ policies:
   model_uncertainty_state: manual_required
 contracts: []
 limitations: []
+""",
+        encoding="utf-8",
+    )
+    entries = "\n".join(
+        f"""  - check_name: {name}
+    workflow_path: .github/workflows/ci.yml
+    workflow_ref: refs/heads/master
+    job_name: Validate repository {name}
+    verifier_identity: github-actions
+    permitted_conclusions:
+      - success
+      - failure
+    origin_rules:
+      pull_request: synthetic_merge_parentage"""
+        for name in checks
+    )
+    (aiops_dir / "authoritative-checks.v2.yaml").write_text(
+        f"""schema_id: agent-review.authoritative-check-policy.v2
+schema_version: 2
+source: repo-policy
+identity:
+  repo: mglpsw/aiops-orchestrator
+authoritative_checks:
+{entries}
 """,
         encoding="utf-8",
     )
@@ -123,18 +155,74 @@ def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None)
     )
     paths["findings"] = tmp_path / "findings.json"
     paths["findings"].write_text(json.dumps([]), encoding="utf-8")
+    check_names = required_checks if required_checks is not None else ["pytest"]
+    check_dicts = [
+        {"check_name": name, "required": True, "deterministic": True, "conclusion": "success", "head_sha": "2" * 40}
+        for name in check_names
+    ]
     paths["checks"] = tmp_path / "checks.json"
-    paths["checks"].write_text(
+    paths["checks"].write_text(json.dumps(check_dicts), encoding="utf-8")
+
+    loaded_policy = load_authoritative_check_policy_v2(target_profile_root)
+    paths["checks_provenance"] = tmp_path / "checks_provenance.json"
+    paths["checks_provenance"].write_text(
         json.dumps(
             [
-                {"check_name": name, "required": True, "deterministic": True, "conclusion": "success", "head_sha": "2" * 40}
-                for name in (required_checks if required_checks is not None else ["pytest"])
+                _provenance_dict(check, identity_obj, loaded_policy)
+                for check in (RequiredCheckResultV2.model_validate(item) for item in check_dicts)
             ]
         ),
         encoding="utf-8",
     )
     paths["target_profile"] = target_profile_root
     return paths
+
+
+def _provenance_dict(
+    check: RequiredCheckResultV2, identity: RunIdentityV2, loaded_policy, **overrides: object
+) -> dict:
+    """Build a sidecar the way a legitimate assembler would.
+
+    Hand-building one here is deliberate, and is not a shortcut: the gate
+    revalidates every field against the base-owned policy and the run identity,
+    so a well-formed sidecar that does not match is still refused. These tests
+    would be weaker, not stronger, if the fixture could only produce records
+    the assembler already blessed."""
+
+    entry = loaded_policy.policy.entry_for(check.check_name)
+    record = build_required_check_provenance_v2(
+        schema_id="agent-review.required-check-provenance.v2",
+        schema_version=2,
+        source="aiops-review-check-provenance",
+        check_name=check.check_name,
+        required_check_digest=compute_required_check_digest_v2(check),
+        source_kind=RequiredCheckSourceKindV2.AUTHORITATIVE_CI,
+        semantic_class=SemanticClassV2.AUTHORITATIVE,
+        authority_effect=AuthorityEffectV2.PROMOTABLE,
+        authority_transfer=False,
+        repository=identity.repo,
+        run_id=compute_run_id(identity),
+        base_sha=identity.base_sha,
+        head_sha=identity.head_sha,
+        tested_merge_sha=identity.tested_merge_sha,
+        event_type="pull_request",
+        event_action="synchronize",
+        verifier_identity=entry.verifier_identity,
+        toolchain_digest="e" * 64,
+        workflow_path=entry.workflow_path,
+        workflow_ref=entry.workflow_ref,
+        job_name=entry.job_name,
+        ci_run_id="900",
+        ci_run_attempt=1,
+        observed_status="completed",
+        observed_conclusion="success" if check.conclusion.value == "success" else "failure",
+        observation_digest="f" * 64,
+        policy_source_bytes_digest=loaded_policy.policy_source_bytes_digest,
+        policy_source_semantic_digest=loaded_policy.policy_source_semantic_digest,
+    )
+    dumped = record.model_dump(mode="json")
+    dumped.update(overrides)
+    return dumped
 
 
 def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "open") -> list[str]:
@@ -146,6 +234,7 @@ def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "op
         "--findings", str(paths["findings"]),
         "--pr-state", pr_state,
         "--checks", str(paths["checks"]),
+        "--checks-provenance", str(paths["checks_provenance"]),
         "--target-profile", str(paths["target_profile"]),
         "--output", str(output_path),
     ]
@@ -492,3 +581,152 @@ def test_cli_rejects_output_colliding_with_optional_payload(tmp_path: Path) -> N
     assert result.returncode != 0
     assert "gate_output_overwrites_input" in result.stderr
     assert payload_path.read_bytes() == original_bytes
+
+
+# ---------------------------------------------------------------------------
+# #201-C0 -- authorised provenance is mandatory (#217)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_requires_checks_provenance(tmp_path: Path) -> None:
+    """Fail-closed by construction: omitting the argument is an argparse
+    error, not a silent legacy path that reinstates the bypass."""
+
+    paths = _write_fixtures(tmp_path)
+    output_path = tmp_path / "out" / "readiness.json"
+    args = [a for a in _base_args(paths, output_path)]
+    index = args.index("--checks-provenance")
+    del args[index : index + 2]
+
+    result = _run(args)
+
+    assert result.returncode != 0
+    assert "--checks-provenance" in result.stderr
+
+
+def test_cli_rejects_a_hand_built_green_check_with_no_provenance(tmp_path: Path) -> None:
+    """The #217 attack end to end: an object named `pytest` with
+    `conclusion=success` used to satisfy the gate by name alone."""
+
+    paths = _write_fixtures(tmp_path)
+    paths["checks_provenance"].write_text(json.dumps([]), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_rejects_provenance_naming_the_right_check_but_a_different_result(tmp_path: Path) -> None:
+    """Name coincidence is not coverage. The submitted check is flipped to
+    `failure` while the sidecar still describes the green one, so the digests
+    no longer agree even though `check_name` does."""
+
+    paths = _write_fixtures(tmp_path)
+    checks = json.loads(paths["checks"].read_text(encoding="utf-8"))
+    checks[0]["conclusion"] = "failure"
+    paths["checks"].write_text(json.dumps(checks), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance_missing" in result.stderr
+
+
+def test_cli_rejects_provenance_from_a_different_run(tmp_path: Path) -> None:
+    paths = _write_fixtures(tmp_path)
+    provenance = json.loads(paths["checks_provenance"].read_text(encoding="utf-8"))
+    provenance[0]["run_id"] = "9" * 64
+    paths["checks_provenance"].write_text(json.dumps(provenance), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    # The self-digest catches the edit before the run binding is even reached.
+    assert "gate_input_invalid" in result.stderr or "required_check_provenance" in result.stderr
+
+
+def test_cli_rejects_a_non_allowlisted_producer(tmp_path: Path) -> None:
+    paths = _write_fixtures(tmp_path)
+    identity_obj = RunIdentityV2.model_validate(json.loads(paths["identity"].read_text(encoding="utf-8")))
+    loaded_policy = load_authoritative_check_policy_v2(paths["target_profile"])
+    check = RequiredCheckResultV2.model_validate(json.loads(paths["checks"].read_text(encoding="utf-8"))[0])
+
+    forged = _provenance_dict(check, identity_obj, loaded_policy)
+    forged["verifier_identity"] = "attacker-app"
+    forged["provenance_digest"] = _redigest_cli(forged)
+    paths["checks_provenance"].write_text(json.dumps([forged]), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance_producer_not_allowlisted" in result.stderr
+
+
+def test_cli_rejects_a_workflow_the_policy_does_not_name(tmp_path: Path) -> None:
+    paths = _write_fixtures(tmp_path)
+    identity_obj = RunIdentityV2.model_validate(json.loads(paths["identity"].read_text(encoding="utf-8")))
+    loaded_policy = load_authoritative_check_policy_v2(paths["target_profile"])
+    check = RequiredCheckResultV2.model_validate(json.loads(paths["checks"].read_text(encoding="utf-8"))[0])
+
+    forged = _provenance_dict(check, identity_obj, loaded_policy)
+    forged["workflow_path"] = ".github/workflows/attacker.yml"
+    forged["provenance_digest"] = _redigest_cli(forged)
+    paths["checks_provenance"].write_text(json.dumps([forged]), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance_workflow_identity_mismatch" in result.stderr
+
+
+def test_cli_rejects_a_missing_authoritative_check_policy(tmp_path: Path) -> None:
+    """A target profile with no policy beside it cannot legitimate anything."""
+
+    paths = _write_fixtures(tmp_path)
+    (paths["target_profile"] / ".aiops" / "authoritative-checks.v2.yaml").unlink()
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "authoritative_check_policy_missing" in result.stderr
+
+
+def test_cli_rejects_output_colliding_with_the_authoritative_check_policy(tmp_path: Path) -> None:
+    paths = _write_fixtures(tmp_path)
+    policy_file = paths["target_profile"] / ".aiops" / "authoritative-checks.v2.yaml"
+    original_bytes = policy_file.read_bytes()
+
+    result = _run(_base_args(paths, policy_file))
+
+    assert result.returncode != 0
+    assert "gate_output_overwrites_input" in result.stderr
+    assert policy_file.read_bytes() == original_bytes
+
+
+def test_cli_still_emits_when_provenance_is_authorised(tmp_path: Path) -> None:
+    """The hardening must not make the legitimate path unreachable."""
+
+    paths = _write_fixtures(tmp_path)
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode == 0, result.stderr
+    emitted = json.loads(output_path.read_text(encoding="utf-8"))
+    assert emitted["state"] == "ready"
+    # C0 legitimates the checks; it does not alter what readiness emits.
+    assert emitted["checks"] == json.loads(paths["checks"].read_text(encoding="utf-8"))
+
+
+def _redigest_cli(payload: dict) -> str:
+    from app.common.strict_json import canonical_json_digest_hex
+
+    return canonical_json_digest_hex({k: v for k, v in payload.items() if k != "provenance_digest"})

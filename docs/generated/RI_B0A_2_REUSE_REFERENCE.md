@@ -52,7 +52,7 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 
 **`agent-review.run-fragment-coverage.v2`** — Proves that every diff fragment assigned to a chunk was actually reviewed (this repo's recent fail-closed coverage-proof work). RI-B0 has no concrete, currently-implemented consumer of raw fragment-coverage records today. Once RI-B0's own completeness/canonicality proof work begins (consuming CAEM's caem.assertion.v1/caem.proof-obligation.v1, both currently reserved), RI-B0 will most likely need a small adapter translating this coverage report into a completeness proof obligation -- not a direct reuse, since the two schemas serve different evidentiary roles (chunk-review completeness vs. a CAEM proof obligation's own resolution states).
 
-## Not applicable — no RI-B0 relevance today (7)
+## Not applicable — no RI-B0 relevance today (10)
 
 | Contract ID | Owner | RI-B0 role | Source |
 |---|---|---|---|
@@ -63,6 +63,9 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 | `agent-review.dlp-policy.v1` | aiops-orchestrator (app/agent_review/) | none: RI-B0 has no reason to read, cite, or depend on DLP redaction policy. | `schemas/agent-review/v2/agent-review.dlp-policy.v1.schema.json` |
 | `agent-review.trusted-check-plan.v2` | aiops-orchestrator (app/agent_review/) | none: RI-B0 has no reason to read, cite, or depend on trusted-check planning. | `schemas/agent-review/v2/agent-review.trusted-check-plan.v2.schema.json` |
 | `agent-review.trusted-check-result.v2` | aiops-orchestrator (app/agent_review/) | none today; #201-B/#201-C may add a reference role once a real executor exists. | `schemas/agent-review/v2/agent-review.trusted-check-result.v2.schema.json` |
+| `agent-review.required-check-provenance.v2` | aiops-orchestrator (app/agent_review/) | Not applicable to RI-B0. Recorded so the provenance sidecar is never mistaken for a finding-level or review-intelligence artifact. | `schemas/agent-review/v2/agent-review.required-check-provenance.v2.schema.json` |
+| `agent-review.authoritative-check-policy.v2` | aiops-orchestrator (app/agent_review/) | Not applicable to RI-B0. RI-B0 never reads or writes target CI policy. | `schemas/agent-review/v2/agent-review.authoritative-check-policy.v2.schema.json` |
+| `agent-review.authoritative-check-snapshot.v2` | aiops-orchestrator (app/agent_review/) | Not applicable to RI-B0. RI-B0 has no role in CI acquisition. | `schemas/agent-review/v2/agent-review.authoritative-check-snapshot.v2.schema.json` |
 
 **`agent-review.semantic-grouping-policy.v2`** — Governs how AgentReview groups diff hunks into chunks for LLM review -- an AgentReview-internal execution-planning detail with no proof-obligation or readiness-decision content relevant to RI-B0.
 
@@ -77,3 +80,9 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 **`agent-review.trusted-check-plan.v2`** — Host-owned plan of allowlisted check commands a (future) isolated executor may run (#201-A, distribution epic #199) -- names checks by a fixed command_token, never a raw argv string, and pins harness_digest/authority_suite_digest. An AgentReview-internal execution-planning detail, analogous to agent-review.semantic-grouping-policy.v2/agent-review.dlp-policy.v1, with no proof-obligation or readiness-decision content relevant to RI-B0.
 
 **`agent-review.trusted-check-result.v2`** — One trusted check's raw outcome (#201-A, distribution epic #199) -- authority (trusted/untrusted_advisory) and outcome (success/failure/timeout/oom/cancelled/infra_failure) BEFORE promotion to the already-published agent-review.review-readiness.v2's RequiredCheckResultV2 (promote_trusted_check_to_required_v2 is the only function that may construct one, and only from a trusted, resolved result). RI-B0 may eventually cite a check_name/outcome for provenance linking once #201-B/#201-C land, but does not consume this sidecar directly today.
+
+**`agent-review.required-check-provenance.v2`** — RI-B0 does not consume required-check provenance: it is the #201-C0 authority boundary for whether a check may reach readiness at all, decided before any finding memory exists. RI-B0 reads the readiness contract, not the proof behind each check.
+
+**`agent-review.authoritative-check-policy.v2`** — Base-owned, target-owned policy naming which CI producer may speak for a required check (#201-C0). Its lifecycle belongs to the target pack (#203), not to RI-B0.
+
+**`agent-review.authoritative-check-snapshot.v2`** — Transport artifact between the host-owned CI acquirer and the offline assembler (#201-C0). An observation, not evidence about findings.

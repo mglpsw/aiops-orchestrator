@@ -2576,6 +2576,11 @@ def test_exported_json_schemas_are_stable_and_deny_unknown_objects() -> None:
         "agent-review.dlp-policy.v1.schema.json",
         "agent-review.trusted-check-plan.v2.schema.json",
         "agent-review.trusted-check-result.v2.schema.json",
+        # #201-C0: additive only. The fifteen above are unchanged, byte for
+        # byte -- this closed set exists so a new export has to be a decision.
+        "agent-review.required-check-provenance.v2.schema.json",
+        "agent-review.authoritative-check-policy.v2.schema.json",
+        "agent-review.authoritative-check-snapshot.v2.schema.json",
     }
 
     for filename, schema in rendered.items():

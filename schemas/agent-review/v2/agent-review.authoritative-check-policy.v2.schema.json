@@ -17,19 +17,7 @@
           "type": "string"
         },
         "origin_rules": {
-          "additionalProperties": {
-            "$ref": "#/$defs/ExecutedTreeRuleV2"
-          },
-          "propertyNames": {
-            "enum": [
-              "pull_request",
-              "pull_request_target",
-              "manual",
-              "replay"
-            ]
-          },
-          "title": "Origin Rules",
-          "type": "object"
+          "$ref": "#/$defs/OriginRulesV2"
         },
         "permitted_conclusions": {
           "maxItems": 2,
@@ -101,6 +89,58 @@
       ],
       "title": "ExecutedTreeRuleV2",
       "type": "string"
+    },
+    "OriginRulesV2": {
+      "additionalProperties": false,
+      "description": "Which `RunOriginV2` event types this entry may be promoted under.\n\nAn explicit, closed object rather than a free map: an open map would let a\ntarget introduce an origin key the engine has never heard of, and it cannot\nforbid unknown properties in the published schema. `None` means \"this\norigin is not authorised here\", which is the fail-closed default -- an\norigin is opted IN, never assumed.",
+      "properties": {
+        "manual": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutedTreeRuleV2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pull_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutedTreeRuleV2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "pull_request_target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutedTreeRuleV2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "replay": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutedTreeRuleV2"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "OriginRulesV2",
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

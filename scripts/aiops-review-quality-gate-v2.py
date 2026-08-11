@@ -70,11 +70,24 @@ from app.agent_review.contracts_v2 import (  # noqa: E402
     ResponseBindingError,
     RunIdentityV2,
 )
+from app.agent_review.authoritative_check_policy_v2 import (  # noqa: E402
+    DEFAULT_AUTHORITATIVE_CHECK_POLICY_RELATIVE_PATH,
+    AuthoritativeCheckPolicyErrorV2,
+    load_authoritative_check_policy_v2,
+    validate_policy_against_profile_v2,
+)
 from app.agent_review.profile_loader_v2 import (  # noqa: E402
     DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
     TargetProfileLoadErrorV2,
     compute_profile_hash_v2,
     load_target_profile_v2,
+)
+from app.agent_review.required_check_assembly_v2 import (  # noqa: E402
+    verify_required_check_provenance_set_v2,
+)
+from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
+    RequiredCheckProvenanceErrorV2,
+    RequiredCheckProvenanceV2,
 )
 from app.agent_review.readiness_decision_v2 import ReadinessDecisionV2  # noqa: E402
 from app.agent_review.review_readiness_emission_v2 import (  # noqa: E402
@@ -107,9 +120,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--pr-state", required=True, choices=["open", "closed", "merged"])
     parser.add_argument("--checks", required=True, help="JSON array of RequiredCheckResultV2")
     parser.add_argument(
+        "--checks-provenance",
+        required=True,
+        help="JSON array of RequiredCheckProvenanceV2, one per --checks entry",
+    )
+    parser.add_argument(
         "--target-profile",
         required=True,
-        help="path to a trusted repo-root checkout containing .aiops/target-profile.v2.yaml",
+        help=(
+            "path to a TRUSTED BASE/DEFAULT repo-root checkout containing "
+            ".aiops/target-profile.v2.yaml and .aiops/authoritative-checks.v2.yaml"
+        ),
     )
     parser.add_argument("--payload", help="optional: JSON ChunkPayload for the mixed-contract-version gate")
     parser.add_argument("--response", help="optional: JSON ChunkResponseEnvelope for the same gate")
@@ -137,7 +158,16 @@ def _check_no_output_input_collision(args: argparse.Namespace) -> None:
 
     output_resolved = Path(args.output).resolve()
 
-    file_input_args = ("decision", "identity", "evaluated_identity", "findings", "checks", "payload", "response")
+    file_input_args = (
+        "decision",
+        "identity",
+        "evaluated_identity",
+        "findings",
+        "checks",
+        "checks_provenance",
+        "payload",
+        "response",
+    )
     for name in file_input_args:
         value = getattr(args, name)
         if value is None:
@@ -147,8 +177,15 @@ def _check_no_output_input_collision(args: argparse.Namespace) -> None:
 
     if args.target_profile is not None:
         target_profile_resolved = Path(args.target_profile).resolve()
-        profile_file_resolved = (target_profile_resolved / DEFAULT_TARGET_PROFILE_RELATIVE_PATH).resolve()
-        if output_resolved in (target_profile_resolved, profile_file_resolved):
+        # The root now carries TWO nested inputs. Comparing only against the
+        # bare root, or against the profile alone, would miss a collision with
+        # the authoritative-check policy and silently corrupt it -- the same
+        # class of bug a Codex review of #156 found for the profile itself.
+        nested = [
+            (target_profile_resolved / DEFAULT_TARGET_PROFILE_RELATIVE_PATH).resolve(),
+            (target_profile_resolved / DEFAULT_AUTHORITATIVE_CHECK_POLICY_RELATIVE_PATH).resolve(),
+        ]
+        if output_resolved in (target_profile_resolved, *nested):
             raise QualityGateCliError(OUTPUT_OVERWRITES_INPUT_REASON_V2)
 
 
@@ -217,6 +254,65 @@ def _load_checks(path: str) -> list[RequiredCheckResultV2]:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
 
 
+def _load_checks_provenance(path: str) -> list[RequiredCheckProvenanceV2]:
+    raw = _read_json(path)
+    if not isinstance(raw, list):
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2)
+    try:
+        return [RequiredCheckProvenanceV2.model_validate(item) for item in raw]
+    except ValidationError as exc:
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
+
+
+def _validate_required_check_provenance(
+    *,
+    target_profile_path: str,
+    evaluated_identity: RunIdentityV2,
+    checks: list[RequiredCheckResultV2],
+    provenance: list[RequiredCheckProvenanceV2],
+) -> None:
+    """Refuse any submitted `RequiredCheckResultV2` that is not covered by
+    authorised provenance bound to THIS run.
+
+    This closes the bypass `#217` describes. Until now the only thing standing
+    between an unverified check and `ready` was that nothing assembled the
+    `checks` array in production: `_validate_required_checks_complete` below
+    matches required checks BY NAME, so any object called `pytest` with
+    `conclusion=success` satisfied the gate regardless of who built it.
+
+    Hardening the gate is deliberately NOT readiness wiring. Nothing here
+    touches `review_readiness_emission_v2` or `readiness_decision_v2`, and
+    nothing here decides a readiness state -- connecting a legitimated check
+    set to `ReviewReadinessV2` remains `#201-C`. This function only answers
+    "may this object be here at all?".
+
+    The authoritative-check policy is read from the SAME `--target-profile`
+    root, which is documented as a trusted base/default checkout. That is the
+    security property: read from a PR working tree, the policy would let the
+    pull request nominate its own producer.
+    """
+
+    try:
+        loaded_policy = load_authoritative_check_policy_v2(target_profile_path)
+        profile = load_target_profile_v2(target_profile_path)
+        validate_policy_against_profile_v2(policy=loaded_policy.policy, profile=profile)
+    except (AuthoritativeCheckPolicyErrorV2, TargetProfileLoadErrorV2) as exc:
+        raise QualityGateCliError(exc.reason_code) from exc
+
+    try:
+        verify_required_check_provenance_set_v2(
+            checks=checks,
+            provenance=provenance,
+            identity=evaluated_identity,
+            loaded_policy=loaded_policy,
+        )
+    except RequiredCheckProvenanceErrorV2 as exc:
+        # Surfaced verbatim: the verifier's reason codes are already stable,
+        # typed and log-safe, so translating them into a second gate-local
+        # vocabulary would only create synonyms.
+        raise QualityGateCliError(exc.reason_code) from exc
+
+
 def _validate_required_checks_complete(
     *, target_profile_path: str, evaluated_identity: RunIdentityV2, checks: list[RequiredCheckResultV2]
 ) -> None:
@@ -274,9 +370,23 @@ def main(argv: list[str] | None = None) -> int:
         evaluated_identity = _load_identity(args.evaluated_identity)
         findings = _load_findings(args.findings)
         checks = _load_checks(args.checks)
+        checks_provenance = _load_checks_provenance(args.checks_provenance)
 
+        # Completeness first, then entitlement. The two answer different
+        # questions -- "is the required set present?" versus "may each
+        # submitted check be here at all?" -- and running completeness first
+        # keeps each failure's diagnosis precise: a genuinely missing required
+        # check reports `gate_required_check_missing` rather than surfacing as
+        # a provenance count mismatch. Neither order is a bypass, because both
+        # run before `emit_review_readiness_v2`.
         _validate_required_checks_complete(
             target_profile_path=args.target_profile, evaluated_identity=evaluated_identity, checks=checks
+        )
+        _validate_required_check_provenance(
+            target_profile_path=args.target_profile,
+            evaluated_identity=evaluated_identity,
+            checks=checks,
+            provenance=checks_provenance,
         )
 
         readiness = emit_review_readiness_v2(
