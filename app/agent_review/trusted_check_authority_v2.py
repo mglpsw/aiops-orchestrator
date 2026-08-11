@@ -76,6 +76,7 @@ EXECUTOR_REASON_SUBJECT_CODE_CANNOT_BE_TRUSTED_V2 = "isolated_executor_subject_c
 EXECUTOR_REASON_EXECUTION_CLASS_UNKNOWN_V2 = "isolated_executor_execution_class_unknown"
 EXECUTOR_REASON_HOST_OWNED_CONFIG_REQUIRED_V2 = "isolated_executor_host_owned_config_required"
 EXECUTOR_REASON_COVERAGE_AUTHORITY_UNAVAILABLE_V2 = "isolated_executor_coverage_authority_unavailable"
+EXECUTOR_REASON_EXECUTABLE_NOT_ABSOLUTE_V2 = "isolated_executor_executable_not_absolute"
 
 # -- vector states ------------------------------------------------------------
 
@@ -138,13 +139,14 @@ def classify_command_spec_v2(
     execution_class: ExecutionClassV2,
     host_owned_config: bool,
     loads_checkout_plugins: bool,
+    executable_is_absolute: bool,
 ) -> ExecutionClassificationV2:
     """Classify one inventory entry, fail-closed.
 
     Takes primitives rather than the spec object so this module never has to
     import ``isolated_executor_v2`` (which imports this one).
 
-    Two ways a ``DATA_ONLY_HOST_TOOL`` declaration is overridden, both
+    Three ways a ``DATA_ONLY_HOST_TOOL`` declaration is overridden, all
     deliberate -- the declaration lives in a host-owned inventory, but a
     declaration is not a proof:
 
@@ -156,7 +158,18 @@ def classify_command_spec_v2(
       actually-consumed config bytes and toolchain must additionally
       reproduce the digests the inventory is bound to (that binding lands
       with ``#201-C0``'s provenance sidecar, which is why this module records
-      the necessary condition and never treats it as the whole proof).
+      the necessary condition and never treats it as the whole proof);
+    - ``executable_is_absolute`` false: a bare executable name (``"ruff"``,
+      not ``"/usr/bin/ruff"``) is resolved by ``execvp`` searching ``$PATH``
+      at the CHECKOUT's own current directory -- a runner whose ``PATH``
+      includes ``.`` (or the checkout itself shipping the tool's own name)
+      would let the PR supply the "host-owned" binary and choose its own
+      exit status, exactly the exit-code forgery this whole subsystem
+      exists to close, just reached through argv[0] resolution instead of
+      config content. Requiring an absolute path removes that resolution
+      step entirely -- it does not, on its own, prove the path's target is
+      genuinely host-owned (that is the same #201-C0 provenance work
+      ``host_owned_config`` above already defers to).
     """
 
     if execution_class is ExecutionClassV2.DATA_ONLY_HOST_TOOL:
@@ -171,6 +184,12 @@ def classify_command_spec_v2(
                 declared_class=execution_class,
                 effective_class=ExecutionClassV2.SUBJECT_CODE,
                 trusted_refusal_reason=EXECUTOR_REASON_HOST_OWNED_CONFIG_REQUIRED_V2,
+            )
+        if not executable_is_absolute:
+            return ExecutionClassificationV2(
+                declared_class=execution_class,
+                effective_class=ExecutionClassV2.SUBJECT_CODE,
+                trusted_refusal_reason=EXECUTOR_REASON_EXECUTABLE_NOT_ABSOLUTE_V2,
             )
         return ExecutionClassificationV2(
             declared_class=execution_class,

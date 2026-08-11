@@ -30,6 +30,7 @@ absent, not merely unused.
 
 from __future__ import annotations
 
+import ctypes
 import os
 import time
 from dataclasses import dataclass
@@ -39,6 +40,8 @@ try:
     import signal as _signal
 except ImportError:  # pragma: no cover - stdlib always has signal on Linux
     _signal = None
+
+_PR_SET_PDEATHSIG = 1
 
 _KERNEL_POLL_INTERVAL_SECONDS_V2 = 0.05
 DISCOVERY_MAX_DEPTH_V2 = 8
@@ -60,6 +63,50 @@ NAMESPACE_FLAGS_V2 = ("--pid", "--fork", "--kill-child", "--mount-proc", "--net"
 PIDFD_AVAILABLE_V2 = (
     hasattr(os, "pidfd_open") and _signal is not None and hasattr(_signal, "pidfd_send_signal")
 )
+
+
+def pdeathsig_still_bound_v2(
+    *, prctl_result: int, actual_parent_pid: int, expected_parent_pid: int
+) -> bool:
+    """Pure predicate, extracted for testability without forking or killing
+    anything: true iff ``PR_SET_PDEATHSIG`` was installed successfully AND
+    the calling process is still, at that exact moment, a child of the
+    process that spawned it. False in either case means the death-signal
+    guarantee cannot be relied on -- see ``set_pdeathsig_to_parent_v2``."""
+
+    return prctl_result == 0 and actual_parent_pid == expected_parent_pid
+
+
+def set_pdeathsig_to_parent_v2(parent_pid: int) -> None:
+    """Runs in a forked CHILD, after ``fork()`` and before ``exec()`` (a
+    ``subprocess.Popen(preexec_fn=...)`` callback) -- the SHARED
+    implementation both the sudo-elevated broker (arming against the
+    broker's own pid) and the root-direct/weak-userns strategies (arming
+    against the executor's own pid) use, so this security-critical logic
+    exists exactly once rather than in two copies that could drift.
+
+    ``PR_SET_PDEATHSIG`` is NOT retroactive: it is not guaranteed to fire
+    for a parent that already died before this call installs it. Between
+    the kernel's ``fork()`` returning in this child and this exact ``prctl``
+    call running, there is a real (if narrow) window in which the intended
+    parent could already have died -- an OOM kill, an operator's
+    ``kill -9``, a higher-level timeout, anything. If that happens, this
+    child is reparented BEFORE the ``prctl`` call, and calling ``prctl`` at
+    that point arms the signal against the NEW parent (typically pid 1 or a
+    subreaper that essentially never dies), not the parent that already
+    died -- silently defeating the crash-containment guarantee for the
+    exact scenario it exists to cover. Checking ``getppid()`` immediately
+    afterward and self-killing on any mismatch (or on the ``prctl`` call
+    itself failing) closes that window: either this process is provably
+    still tethered to its intended parent with the signal armed, or it does
+    not get to continue un-tethered."""
+
+    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    prctl_result = libc.prctl(_PR_SET_PDEATHSIG, _signal.SIGKILL, 0, 0, 0)
+    if not pdeathsig_still_bound_v2(
+        prctl_result=prctl_result, actual_parent_pid=os.getppid(), expected_parent_pid=parent_pid,
+    ):
+        os.kill(os.getpid(), _signal.SIGKILL)
 
 
 def assert_killable_host_pid_v2(pid: object) -> int:

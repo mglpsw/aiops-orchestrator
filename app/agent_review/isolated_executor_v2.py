@@ -117,6 +117,7 @@ See ``docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md`` for the
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import os
@@ -155,6 +156,7 @@ from app.agent_review.trusted_check_namespace_kernel_v2 import (
     ExecutionIdentityV2,
     discover_namespace_leader_v2,
     is_descendant_of_v2,
+    set_pdeathsig_to_parent_v2,
     tear_down_execution_v2,
     verify_containment_v2,
 )
@@ -606,6 +608,7 @@ def _run_isolated_direct_v2(
     host_channel, child_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     record = None
     direct_child_pidfd: int | None = None
+    executor_pid = os.getpid()
     try:
         try:
             process = subprocess.Popen(
@@ -615,6 +618,18 @@ def _run_isolated_direct_v2(
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,
+                # Ties `unshare`'s own lifetime to THIS executor's lifetime,
+                # the direct-path counterpart of the broker's identical
+                # binding (see `set_pdeathsig_to_parent_v2`'s own
+                # docstring). `--kill-child` only cascades DOWNWARD from
+                # `unshare` to the namespace it creates; nothing previously
+                # tied `unshare` itself to the process that spawned it, so
+                # if the executor died -- crash, OOM, a higher-level
+                # timeout -- while a check was still running, `unshare`
+                # (detached into its own session) would be reparented and
+                # keep running, along with the whole namespace under it,
+                # indefinitely and unsupervised.
+                preexec_fn=functools.partial(set_pdeathsig_to_parent_v2, executor_pid),
             )
         except OSError as exc:
             raise IsolatedExecutorError(EXECUTOR_REASON_SETUP_FAILED_V2) from exc
@@ -1034,10 +1049,17 @@ def execute_trusted_check_plan_v2(
 
         # THE AUTHORITY BOUNDARY (#201-B3). Classify, and refuse BEFORE any
         # process exists -- not after running one and discarding the result.
+        # `executable_is_absolute` closes a PATH-resolution route to the
+        # exact exit-code forgery this boundary exists to close: a bare
+        # argv[0] is resolved by `execvp` searching $PATH from the
+        # CHECKOUT's own cwd, so a runner with `.` (or another PR-writable
+        # directory) on PATH could let the PR supply the "host-owned"
+        # binary itself.
         classification = classify_command_spec_v2(
             execution_class=spec.execution_class,
             host_owned_config=spec.host_owned_config,
             loads_checkout_plugins=spec.loads_checkout_plugins,
+            executable_is_absolute=bool(spec.argv) and os.path.isabs(spec.argv[0]),
         )
         refusal = trusted_refusal_reason_v2(classification=classification, authority=authority)
         if refusal is not None:

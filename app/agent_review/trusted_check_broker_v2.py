@@ -70,10 +70,8 @@ to run for this property to hold; that is the point.
 
 from __future__ import annotations
 
-import ctypes
 import functools
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -134,54 +132,14 @@ _POLL_INTERVAL_SECONDS_V2 = 0.05
 _IDENTITY_WAIT_SECONDS_V2 = 10.0
 _HELLO_WAIT_SECONDS_V2 = 10.0
 
-_PR_SET_PDEATHSIG = 1
-
-
-def _pdeathsig_still_bound_to_broker_v2(
-    *, prctl_result: int, actual_parent_pid: int, expected_broker_pid: int
-) -> bool:
-    """Pure predicate, extracted for testability without forking or killing
-    anything: true iff ``PR_SET_PDEATHSIG`` was installed successfully AND
-    this process is still, at that exact moment, a child of the broker that
-    spawned it. False in either case means the death-signal guarantee cannot
-    be relied on -- see ``_set_pdeathsig_to_broker_v2``."""
-
-    return prctl_result == 0 and actual_parent_pid == expected_broker_pid
-
-
-def _set_pdeathsig_to_broker_v2(broker_pid: int) -> None:
-    """Runs in the CHILD, after ``fork()`` and before ``exec()`` (this is a
-    ``subprocess.Popen(preexec_fn=...)`` callback). Safe here specifically
-    because the broker is single-threaded at the point this Popen call is
-    made -- ``preexec_fn`` after a multi-threaded fork can deadlock, which is
-    why threads (the output drain) are only started AFTER this call returns.
-
-    ``PR_SET_PDEATHSIG`` persists across the following ``execve`` as long as
-    credentials do not change at exec time, which holds here: neither
-    ``unshare`` nor this broker are set-user-ID binaries.
-
-    ``PR_SET_PDEATHSIG`` is NOT retroactive: it is not guaranteed to fire
-    for a parent that already died before this call installs it. Between
-    the kernel's ``fork()`` returning in this child and this exact ``prctl``
-    call running, there is a real (if narrow) window in which the broker
-    could already have died -- an OOM kill, an operator's ``kill -9``,
-    anything. If that happens, this child is reparented BEFORE the
-    ``prctl`` call, and calling ``prctl`` at that point arms the signal
-    against the NEW parent (typically the namespace's own PID-1 or a
-    subreaper that essentially never dies), not the broker that already
-    died -- silently defeating the zero-survivor guarantee this exists to
-    provide, for the exact crash scenario it was built to cover. Checking
-    ``getppid()`` immediately afterward and self-killing on any mismatch
-    (or on the ``prctl`` call itself failing) closes that window: either
-    this process is provably still tethered to the broker with the signal
-    armed, or it does not get to continue un-tethered."""
-
-    libc = ctypes.CDLL("libc.so.6", use_errno=True)
-    prctl_result = libc.prctl(_PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
-    if not _pdeathsig_still_bound_to_broker_v2(
-        prctl_result=prctl_result, actual_parent_pid=os.getppid(), expected_broker_pid=broker_pid,
-    ):
-        os.kill(os.getpid(), signal.SIGKILL)
+# Thin aliases onto the SHARED implementation in `trusted_check_namespace_
+# kernel_v2` -- the root-direct/weak-userns strategy needs the identical
+# parent-death-signal binding (see `isolated_executor_v2._run_isolated_
+# direct_v2`), so the logic lives exactly once rather than in two copies
+# that could drift. Kept under these names so this module's own tests and
+# call sites below are unaffected by the move.
+_pdeathsig_still_bound_to_broker_v2 = kernel.pdeathsig_still_bound_v2
+_set_pdeathsig_to_broker_v2 = kernel.set_pdeathsig_to_parent_v2
 
 
 def _canonical_v2(message: dict) -> bytes:

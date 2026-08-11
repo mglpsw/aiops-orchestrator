@@ -26,7 +26,6 @@ from app.agent_review.trusted_check_broker_v2 import (
     BROKER_PATH_V2,
     BROKER_PROTOCOL_V2,
     _host_channel_closed_v2,
-    _pdeathsig_still_bound_to_broker_v2,
     _recv_nonblocking_v2,
 )
 
@@ -35,23 +34,14 @@ pytestmark = pytest.mark.requires_network
 NONCE = "e" * 64
 SPEC_DIGEST = "f" * 64
 
-
-# Pure, no subprocess -- proves the fix for the fork-to-prctl race a review
-# caught: `PR_SET_PDEATHSIG` is not retroactive, so if the broker already
-# died (and this process was already reparented) before `prctl` runs, the
-# signal would arm against the WRONG parent unless this predicate catches
-# the mismatch and the caller self-kills. Carries `requires_network` only by
-# module-level grouping, not because it needs a subprocess.
-def test_pdeathsig_predicate_requires_both_prctl_success_and_matching_parent():
-    assert _pdeathsig_still_bound_to_broker_v2(
-        prctl_result=0, actual_parent_pid=4242, expected_broker_pid=4242,
-    ) is True
-    assert _pdeathsig_still_bound_to_broker_v2(
-        prctl_result=-1, actual_parent_pid=4242, expected_broker_pid=4242,
-    ) is False, "a failed prctl call must never be treated as armed"
-    assert _pdeathsig_still_bound_to_broker_v2(
-        prctl_result=0, actual_parent_pid=1, expected_broker_pid=4242,
-    ) is False, "already reparented (e.g. to pid 1) means the broker died before arming"
+# The pdeathsig predicate/setter this module used to define locally moved to
+# `trusted_check_namespace_kernel_v2` (see that module and
+# `test_trusted_check_namespace_kernel_v2.py` for the pure predicate test) --
+# a review caught that the direct isolation strategy needed the identical
+# parent-death binding, so the logic now lives exactly once. This module
+# still re-exports it under its original name (`_pdeathsig_still_bound_to_
+# broker_v2` / `_set_pdeathsig_to_broker_v2`) as a thin alias for its own
+# `main()`'s call site.
 
 
 # Pure, no sudo -- proves the exact kernel-level assumption the fix for the

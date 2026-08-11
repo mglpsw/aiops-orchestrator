@@ -91,3 +91,26 @@ def test_tear_down_execution_without_a_direct_child_pidfd_does_not_raw_kill(monk
     ))
 
     kernel.tear_down_execution_v2(identity=None, direct_child_pid=777, direct_child_pidfd=None)
+
+
+# `set_pdeathsig_to_parent_v2`/`pdeathsig_still_bound_v2` moved here from
+# `trusted_check_broker_v2.py` -- a review caught that the direct
+# (root/weak-userns) isolation strategy needed the IDENTICAL parent-death
+# binding the broker already had, so the logic now lives exactly once and
+# both `trusted_check_broker_v2.py` (as a thin alias, for its own existing
+# call sites/tests) and `isolated_executor_v2._run_isolated_direct_v2` use
+# this same implementation. The end-to-end kernel mechanism itself (killing
+# the parent and proving zero survivors) is proven by
+# `test_broker_crash_still_leaves_zero_survivors` in
+# `test_trusted_check_broker_v2.py`, which already exercises this exact
+# function; this is the pure predicate.
+def test_pdeathsig_predicate_requires_both_prctl_success_and_matching_parent():
+    assert kernel.pdeathsig_still_bound_v2(
+        prctl_result=0, actual_parent_pid=4242, expected_parent_pid=4242,
+    ) is True
+    assert kernel.pdeathsig_still_bound_v2(
+        prctl_result=-1, actual_parent_pid=4242, expected_parent_pid=4242,
+    ) is False, "a failed prctl call must never be treated as armed"
+    assert kernel.pdeathsig_still_bound_v2(
+        prctl_result=0, actual_parent_pid=1, expected_parent_pid=4242,
+    ) is False, "already reparented (e.g. to pid 1) means the parent died before arming"

@@ -19,6 +19,7 @@ import pytest
 from app.agent_review.trusted_check_authority_v2 import (
     ELIGIBILITY_ELIGIBLE_V2,
     ELIGIBILITY_INELIGIBLE_V2,
+    EXECUTOR_REASON_EXECUTABLE_NOT_ABSOLUTE_V2,
     EXECUTOR_REASON_EXECUTION_CLASS_UNKNOWN_V2,
     EXECUTOR_REASON_HOST_OWNED_CONFIG_REQUIRED_V2,
     EXECUTOR_REASON_SUBJECT_CODE_CANNOT_BE_TRUSTED_V2,
@@ -44,6 +45,7 @@ def _classify(**overrides):
         execution_class=ExecutionClassV2.DATA_ONLY_HOST_TOOL,
         host_owned_config=True,
         loads_checkout_plugins=False,
+        executable_is_absolute=True,
     )
     raw.update(overrides)
     return classify_command_spec_v2(**raw)
@@ -82,6 +84,21 @@ def test_host_owned_data_only_tool_is_the_only_trusted_eligible_class():
     classification = _classify()
     assert classification.effective_class is ExecutionClassV2.DATA_ONLY_HOST_TOOL
     assert classification.trusted_refusal_reason is None
+
+
+def test_a_bare_executable_name_downgrades_a_data_only_tool():
+    """A review caught that a bare argv[0] (e.g. `"ruff"`, not
+    `"/usr/bin/ruff"`) is resolved by `execvp` searching $PATH from the
+    CHECKOUT's own cwd -- a runner with `.` (or another PR-writable
+    directory) on PATH would let the PR supply the "host-owned" binary
+    itself and choose its own exit status, reaching the exact exit-code
+    forgery this class boundary exists to close through argv[0] resolution
+    instead of config content."""
+
+    classification = _classify(executable_is_absolute=False)
+    assert classification.declared_class is ExecutionClassV2.DATA_ONLY_HOST_TOOL
+    assert classification.effective_class is ExecutionClassV2.SUBJECT_CODE
+    assert classification.trusted_refusal_reason == EXECUTOR_REASON_EXECUTABLE_NOT_ABSOLUTE_V2
 
 
 @pytest.mark.parametrize(

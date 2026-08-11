@@ -49,6 +49,7 @@ from app.agent_review.trusted_check_authority_v2 import (
     ELIGIBILITY_ELIGIBLE_V2,
     ELIGIBILITY_INELIGIBLE_V2,
     EXECUTOR_REASON_EXECUTION_CLASS_UNKNOWN_V2,
+    EXECUTOR_REASON_EXECUTABLE_NOT_ABSOLUTE_V2,
     EXECUTOR_REASON_HOST_OWNED_CONFIG_REQUIRED_V2,
     EXECUTOR_REASON_SUBJECT_CODE_CANNOT_BE_TRUSTED_V2,
     STATE_FAILED_V2,
@@ -656,6 +657,29 @@ def test_execute_refuses_trusted_when_the_tool_loads_checkout_plugins(repo_root,
     assert executed[0].diagnostic_reason == EXECUTOR_REASON_SUBJECT_CODE_CANNOT_BE_TRUSTED_V2
 
 
+def test_execute_refuses_trusted_for_a_bare_executable_name_before_spawn(repo_root, forbid_spawn):
+    """A review caught that a bare argv[0] is resolved by `execvp` searching
+    $PATH from the checkout's own cwd -- a runner with `.` (or another
+    PR-writable directory) on PATH would let the PR supply the "host-owned"
+    binary itself. `forbid_spawn` proves this is refused BEFORE any process
+    exists, not detected after the fact."""
+
+    bare = AllowlistedCommandSpecV2(
+        command_token="token",
+        argv=("ruff", "check", "."),
+        execution_class=ExecutionClassV2.DATA_ONLY_HOST_TOOL,
+        host_owned_config=True,
+        loads_checkout_plugins=False,
+    )
+    inventory = {"token": bare}
+    plan = _plan(inventory=inventory)
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+    )
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.INFRA_FAILURE
+    assert executed[0].diagnostic_reason == EXECUTOR_REASON_EXECUTABLE_NOT_ABSOLUTE_V2
+
+
 def test_execute_still_runs_subject_code_under_untrusted_advisory(repo_root, require_strong_isolation):
     inventory = {"token": _py("pass", execution_class=ExecutionClassV2.SUBJECT_CODE)}
     plan = _plan(inventory=inventory)
@@ -1038,6 +1062,97 @@ def test_an_unproven_containment_does_not_let_a_success_stand(repo_root, monkeyp
     )
     assert executed[0].result.outcome is TrustedCheckOutcomeV2.INFRA_FAILURE
     assert executed[0].diagnostic_reason == EXECUTOR_REASON_PROCESS_CONTAINMENT_FAILED_V2
+
+
+def test_direct_isolation_dies_with_the_executor(tmp_path, repo_root, require_direct_isolation_process):
+    """A review caught that nothing tied the direct (root/weak-userns)
+    strategy's `unshare` process to the EXECUTOR's own lifetime --
+    `--kill-child` only cascades DOWNWARD from `unshare` to the namespace it
+    creates, never upward to the process that spawned `unshare` itself. If
+    the executor died -- crash, OOM, a higher-level timeout -- while a check
+    was still running, `unshare` (detached into its own session via
+    `start_new_session=True`) would be reparented and keep running, along
+    with the whole namespace under it, indefinitely and unsupervised.
+
+    Proves the fix end-to-end: runs a REAL executor in a separate process
+    and hard-kills THAT process mid-check, before it ever reaches its own
+    teardown code -- exactly the scenario `--kill-child` alone cannot cover,
+    since it only protects against `unshare` itself dying, not its parent."""
+
+    # The subject runs as `nobody` (dropped privilege) and only ever touches
+    # `repo_root` -- marker files must live INSIDE the `repo_root` FIXTURE
+    # (a shallow, world-traversable `tempfile.mkdtemp()` directory), not
+    # under `tmp_path`, which sits several directories deep under a
+    # root-owned, mode-0700 `pytest-of-root` tree -- chmod'ing only the leaf
+    # would not make the PARENT directories traversable by `nobody` (see
+    # `repo_root`'s own fixture docstring).
+    started = repo_root / "executor-death-started"
+    survived = repo_root / "executor-death-survivor"
+
+    subject_code = (
+        f"import time\n"
+        f"open({str(started)!r}, 'w').write('go')\n"
+        f"time.sleep(5)\n"
+        f"open({str(survived)!r}, 'w').write('survived')\n"
+    )
+    repo_toplevel = Path(__file__).resolve().parents[2]
+    runner = tmp_path / "runner.py"
+    runner.write_text(
+        "import hashlib, sys\n"
+        f"sys.path.insert(0, {str(repo_toplevel)!r})\n"
+        "from pathlib import Path\n"
+        "from app.agent_review.isolated_executor_v2 import (\n"
+        "    AllowlistedCommandSpecV2, compute_check_command_inventory_digest_v2,\n"
+        "    execute_trusted_check_plan_v2,\n"
+        ")\n"
+        "from app.agent_review.trusted_check_authority_v2 import ExecutionClassV2\n"
+        "from app.agent_review.trusted_checks_v2 import (\n"
+        "    AllowlistedCheckCommandV2, TrustedCheckAuthorityV2, TrustedCheckPlanV2,\n"
+        ")\n"
+        "spec = AllowlistedCommandSpecV2(\n"
+        f"    command_token='token', argv=({sys.executable!r}, '-c', {subject_code!r}),\n"
+        "    execution_class=ExecutionClassV2.DATA_ONLY_HOST_TOOL, host_owned_config=True,\n"
+        ")\n"
+        "inventory = {'token': spec}\n"
+        "plan = TrustedCheckPlanV2(\n"
+        "    schema_id='agent-review.trusted-check-plan.v2', schema_version=2,\n"
+        "    run_id=hashlib.sha256(b'run').hexdigest(), head_sha='a' * 40,\n"
+        "    harness_digest=hashlib.sha256(b'harness').hexdigest(),\n"
+        "    authority_suite_digest=compute_check_command_inventory_digest_v2(inventory),\n"
+        "    checks=[AllowlistedCheckCommandV2(\n"
+        "        check_name='check', command_token='token', timeout_seconds=30,\n"
+        "        max_memory_mb=128, max_processes=16, network_allowed=False,\n"
+        "    )],\n"
+        ")\n"
+        f"execute_trusted_check_plan_v2(\n"
+        f"    plan, repo_root=Path({str(repo_root)!r}), inventory=inventory,\n"
+        "    authority=TrustedCheckAuthorityV2.UNTRUSTED_ADVISORY,\n"
+        ")\n"
+    )
+
+    process = subprocess.Popen(
+        [sys.executable, str(runner)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline and not started.exists():
+            time.sleep(0.1)
+        assert started.exists(), "the subject never started"
+
+        # Simulate the executor dying: hard-kill the runner process itself,
+        # mid-check, before it ever reaches its own teardown code.
+        process.kill()
+        process.wait(timeout=10)
+
+        deadline = time.monotonic() + 12.0
+        while time.monotonic() < deadline:
+            assert not survived.exists(), "a descendant survived after the executor died"
+            time.sleep(0.25)
+    finally:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+            pass
 
 
 def test_a_clean_host_owned_check_reaches_full_promotion_eligibility(repo_root, require_strong_isolation):
