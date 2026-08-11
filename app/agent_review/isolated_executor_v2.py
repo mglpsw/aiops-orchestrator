@@ -336,6 +336,18 @@ def _resolve_trusted_binary_v2(name: str) -> str | None:
 # fallback.
 UNSHARE_PATH_V2 = _resolve_trusted_binary_v2("unshare")
 
+# Same hazard, same fix -- a review caught that `sudo` itself was still a
+# bare name even after `unshare` was pinned: `_run_isolated_via_broker_v2`
+# spawns the sudo-elevated candidate with `cwd=str(repo_root)`, so an
+# unresolved `"sudo"` would be searched for on `$PATH` only after the child
+# has already `chdir`'d into the checkout -- letting a PR-controlled `$PATH`
+# entry or a same-named checkout file supply the "sudo" that the broker
+# probe just proved was authorized, and forge a bound `ready`/`result`
+# record instead of ever invoking real sudo or the real broker. `None` if
+# not found, handled as no-sudo-candidate (fail-closed) by
+# `_isolation_prefix_candidates_v2`, never a bare-name fallback.
+SUDO_PATH_V2 = _resolve_trusted_binary_v2("sudo")
+
 
 def _isolation_prefix_candidates_v2() -> tuple[tuple[bool, tuple[str, ...]], ...]:
     """Ordered ``(drop_to_nobody_inside, prefix_argv)`` candidates, most to
@@ -364,8 +376,8 @@ def _isolation_prefix_candidates_v2() -> tuple[tuple[bool, tuple[str, ...]], ...
     if os.geteuid() == 0:
         return ((True, (UNSHARE_PATH_V2, *NAMESPACE_FLAGS_V2, "--")),)
     candidates: list[tuple[bool, tuple[str, ...]]] = []
-    if shutil.which("sudo") is not None:
-        candidates.append((True, ("sudo", "-n")))
+    if SUDO_PATH_V2 is not None:
+        candidates.append((True, (SUDO_PATH_V2, "-n")))
     candidates.append((False, (UNSHARE_PATH_V2, "--user", "--map-root-user", *NAMESPACE_FLAGS_V2, "--")))
     return tuple(candidates)
 
@@ -456,7 +468,7 @@ def _probe_broker_namespace_creation_v2(prefix: tuple[str, ...]) -> bool:
 def _probe_prefix_works_v2(prefix: tuple[str, ...]) -> bool:
     """Confirms the candidate actually works before it is ever selected.
 
-    The ``sudo`` candidate's own ``prefix`` is just ``("sudo", "-n")`` --
+    The ``sudo`` candidate's own ``prefix`` is just ``(SUDO_PATH_V2, "-n")`` --
     ``trusted_check_broker_v2`` supplies the ``unshare`` invocation itself
     once it is root, so a probe of the bare prefix would only ever confirm
     passwordless sudo AUTHENTICATION, never that the exact broker command is
@@ -469,7 +481,7 @@ def _probe_prefix_works_v2(prefix: tuple[str, ...]) -> bool:
     see that function's own docstring for the two successive mistakes this
     replaces."""
 
-    if prefix and prefix[0] == "sudo":
+    if prefix and prefix[0] == SUDO_PATH_V2:
         return _probe_broker_namespace_creation_v2(prefix)
 
     probe = [*prefix, "true"]
@@ -525,9 +537,9 @@ def _isolation_wrapped_argv_v2(
     drop_to_nobody, prefix = strategy
     if not drop_to_nobody and authority is TrustedCheckAuthorityV2.TRUSTED:
         return None
-    uses_broker = bool(prefix) and prefix[0] == "sudo"
+    uses_broker = bool(prefix) and prefix[0] == SUDO_PATH_V2
     if uses_broker:
-        return ["sudo", "-n", sys.executable, "-I", str(BROKER_PATH_V2)], True, drop_to_nobody
+        return [SUDO_PATH_V2, "-n", sys.executable, "-I", str(BROKER_PATH_V2)], True, drop_to_nobody
     return [*prefix, sys.executable, "-I", str(SUPERVISOR_PATH_V2)], False, drop_to_nobody
 
 

@@ -483,11 +483,12 @@ def test_probe_prefix_for_sudo_spawns_the_exact_broker_runtime_command(monkeypat
     monkeypatch.setattr(isolated_executor_module.subprocess, "run", fail_on_run)
     monkeypatch.setattr(isolated_executor_module.subprocess, "Popen", fake_popen)
 
-    result = isolated_executor_module._probe_prefix_works_v2(("sudo", "-n"))
+    sudo_path = isolated_executor_module.SUDO_PATH_V2
+    result = isolated_executor_module._probe_prefix_works_v2((sudo_path, "-n"))
 
     assert result is False
     argv = captured["argv"]
-    assert argv[:2] == ["sudo", "-n"]
+    assert argv[:2] == [sudo_path, "-n"]
     assert argv[2] == sys.executable
     assert "-I" in argv
     assert str(isolated_executor_module.BROKER_PATH_V2) in argv
@@ -522,7 +523,8 @@ def test_probe_prefix_for_sudo_fails_closed_when_the_broker_never_reaches_ready(
         isolated_executor_module, "_recv_record_v2", lambda channel, timeout: None
     )
 
-    assert isolated_executor_module._probe_prefix_works_v2(("sudo", "-n")) is False
+    sudo_path = isolated_executor_module.SUDO_PATH_V2
+    assert isolated_executor_module._probe_prefix_works_v2((sudo_path, "-n")) is False
 
 
 def test_probe_prefix_for_sudo_actually_reaches_ready_end_to_end(
@@ -539,7 +541,8 @@ def test_probe_prefix_for_sudo_actually_reaches_ready_end_to_end(
 
     import app.agent_review.isolated_executor_v2 as isolated_executor_module
 
-    assert isolated_executor_module._probe_prefix_works_v2(("sudo", "-n")) is True
+    sudo_path = isolated_executor_module.SUDO_PATH_V2
+    assert isolated_executor_module._probe_prefix_works_v2((sudo_path, "-n")) is True
 
 
 def test_probe_prefix_for_non_sudo_candidates_is_unchanged(monkeypatch):
@@ -639,6 +642,65 @@ def test_broker_unshare_path_resolves_to_an_absolute_path():
 
     assert broker_module.UNSHARE_PATH_V2 is not None
     assert os.path.isabs(broker_module.UNSHARE_PATH_V2)
+
+
+def test_sudo_path_resolves_to_an_absolute_path_via_a_fixed_search_list():
+    """A review caught the identical hazard one level up from `unshare`:
+    `_run_isolated_via_broker_v2` spawns the sudo-elevated candidate with
+    `cwd=str(repo_root)`, so an unresolved bare `"sudo"` would be searched
+    for on `$PATH` only after the child has already `chdir`'d into the
+    checkout -- letting a PR-controlled `$PATH` entry or a same-named
+    checkout file supply the "sudo" that the broker probe just proved was
+    authorized, and forge a bound `ready`/`result` record instead of ever
+    invoking real sudo or the real broker."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    assert isolated_executor_module.SUDO_PATH_V2 is not None
+    assert os.path.isabs(isolated_executor_module.SUDO_PATH_V2)
+    assert isolated_executor_module._resolve_trusted_binary_v2("sudo") == (
+        isolated_executor_module.SUDO_PATH_V2
+    )
+
+
+def test_isolation_prefix_candidates_offer_no_sudo_candidate_when_sudo_cannot_be_resolved(monkeypatch):
+    """Fail-closed, never a bare-name fallback: if `sudo` cannot be
+    resolved to an absolute path, the sudo-elevated candidate must simply
+    be absent -- never offered with a bare `"sudo"` prefix."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    monkeypatch.setattr(isolated_executor_module, "SUDO_PATH_V2", None)
+    monkeypatch.setattr(isolated_executor_module.os, "geteuid", lambda: 1000)
+
+    candidates = isolated_executor_module._isolation_prefix_candidates_v2()
+
+    assert all(prefix[0] != "sudo" for _drop, prefix in candidates)
+    assert len(candidates) == 1, "only the weak-userns fallback should remain"
+
+
+def test_isolation_wrapped_argv_uses_the_resolved_sudo_path_never_a_bare_name(monkeypatch):
+    """The actual command executed by `_run_isolated_via_broker_v2` (with
+    `cwd` set to the checkout) must never contain the literal string
+    `"sudo"` -- only the resolved absolute path."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    fake_sudo = "/usr/bin/sudo"
+    monkeypatch.setattr(isolated_executor_module, "SUDO_PATH_V2", fake_sudo)
+    monkeypatch.setattr(
+        isolated_executor_module, "_select_isolation_strategy_v2", lambda: (True, (fake_sudo, "-n"))
+    )
+
+    wrapped_and_strategy = isolated_executor_module._isolation_wrapped_argv_v2(
+        authority=TrustedCheckAuthorityV2.UNTRUSTED_ADVISORY,
+    )
+
+    assert wrapped_and_strategy is not None
+    wrapped, uses_broker, _drop = wrapped_and_strategy
+    assert uses_broker is True
+    assert wrapped[0] == fake_sudo
+    assert "sudo" not in wrapped, "must never fall back to the bare, PATH-searched name"
 
 
 def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, monkeypatch):
