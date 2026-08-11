@@ -253,22 +253,47 @@ def main() -> int:
     ):
         return EXIT_CONFIG_INVALID_V2
 
+    # An exec-error pipe -- the same pattern CPython's own `subprocess`
+    # module uses internally. `os.pipe()` fds are non-inheritable (CLOEXEC)
+    # by default (PEP 446); CLOEXEC does not affect `fork()` (both ends
+    # remain valid in the child), only `exec()`. So a SUCCESSFUL `execvp`
+    # closes the write end as a side effect of the exec itself -- the parent
+    # then sees EOF -- while a FAILURE anywhere before `execvp` (privilege
+    # drop, rlimits, or `execvp` itself failing because the allowlisted
+    # binary is missing) writes an explicit marker first. Without this,
+    # `_exec_subject_v2` raising before `execvp` exits the child with
+    # `EXIT_SPAWN_FAILED_V2` (72), which the parent could not distinguish
+    # from a SUBJECT that legitimately exited with status 72 -- a harness
+    # setup failure would then be reported as an ordinary, promotable
+    # `FAILURE` instead of `INFRA_FAILURE`.
+    error_read_fd, error_write_fd = os.pipe()
+
     try:
         child_pid = os.fork()
     except OSError:
+        os.close(error_read_fd)
+        os.close(error_write_fd)
         return EXIT_SPAWN_FAILED_V2
 
     if child_pid == 0:
+        os.close(error_read_fd)
         try:
             _exec_subject_v2(config, channel)
         except BaseException:
+            try:
+                os.write(error_write_fd, b"x")
+            except OSError:  # pragma: no cover - defensive
+                pass
             # The child must never fall back into the supervisor's own code
             # path, and must never run the subject with a partially applied
             # sandbox -- `os._exit` skips every inherited atexit/finally.
             os._exit(EXIT_SPAWN_FAILED_V2)
         os._exit(EXIT_SPAWN_FAILED_V2)  # pragma: no cover - execvp does not return
 
+    os.close(error_write_fd)
     _pid, status = os.waitpid(child_pid, 0)
+    setup_failed = os.read(error_read_fd, 1) != b""
+    os.close(error_read_fd)
     signaled = os.WIFSIGNALED(status)
     exit_status = -os.WTERMSIG(status) if signaled else os.WEXITSTATUS(status)
 
@@ -279,6 +304,7 @@ def main() -> int:
         "spec_digest": config["spec_digest"],
         "exit_status": exit_status,
         "signaled": signaled,
+        "setup_failed": setup_failed,
     })
     return EXIT_OK_V2
 

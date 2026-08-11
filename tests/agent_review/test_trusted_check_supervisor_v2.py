@@ -167,6 +167,28 @@ def test_supervisor_refuses_a_config_with_duplicate_json_keys():
         host.close()
 
 
+def test_supervisor_reports_setup_failed_when_execvp_cannot_find_the_binary():
+    """A review caught that a pre-exec failure (missing allowlisted binary,
+    privilege-drop or rlimit failure) exited the child with the same status
+    (72) an ordinary subject could also legitimately exit with -- making a
+    harness setup failure indistinguishable from a real product FAILURE.
+    The exec-error pipe closes that: `execvp` never returning here means the
+    write end was never closed by a successful exec, so the parent observes
+    the marker this test asserts on."""
+
+    messages, _rc, _out, _err = _run_supervisor(_config(
+        "true", argv=["/nonexistent/definitely-not-a-real-binary-v2", "arg"],
+    ))
+    result = messages[1]
+    assert result["setup_failed"] is True
+    assert result["exit_status"] == 72
+
+
+def test_supervisor_reports_setup_failed_as_false_on_an_ordinary_run():
+    messages, _rc, _out, _err = _run_supervisor(_config("raise SystemExit(0)"))
+    assert messages[1]["setup_failed"] is False
+
+
 def test_supervisor_drops_privilege_for_the_subject_when_asked():
     if os.geteuid() != 0:
         pytest.skip("privilege drop is only observable when the supervisor starts privileged")

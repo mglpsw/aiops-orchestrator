@@ -768,6 +768,20 @@ def _classify_from_record_v2(
             None,
             contained,
         )
+    if record.get("setup_failed") is True:
+        # The supervisor's own pre-exec setup (privilege drop, rlimits, or
+        # `execvp` itself, e.g. a missing allowlisted binary) failed before
+        # the subject ever ran -- the exec-error-pipe signal, not the
+        # subject's own exit status. Distinguished from an ordinary FAILURE
+        # so a broken harness/runner is never misreported as a deterministic
+        # product regression.
+        return (
+            TrustedCheckOutcomeV2.INFRA_FAILURE,
+            EXECUTOR_REASON_SETUP_FAILED_V2,
+            None,
+            contained,
+        )
+
     exit_status = record.get("exit_status")
     if not isinstance(exit_status, int) or isinstance(exit_status, bool):
         return (

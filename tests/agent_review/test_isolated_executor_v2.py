@@ -39,6 +39,7 @@ from app.agent_review.isolated_executor_v2 import (
     EXECUTOR_REASON_PIDFD_UNAVAILABLE_V2,
     EXECUTOR_REASON_PROCESS_CONTAINMENT_FAILED_V2,
     EXECUTOR_REASON_PROTOCOL_CHANNEL_INVALID_V2,
+    EXECUTOR_REASON_SETUP_FAILED_V2,
     AllowlistedCommandSpecV2,
     _classify_completed_process_v2,
     compute_check_command_inventory_digest_v2,
@@ -280,6 +281,34 @@ def test_execute_reports_success_for_a_zero_exit_check(repo_root, require_strong
     assert executed[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS
     assert executed[0].result.artifact_sha256 is not None
     bind_trusted_check_result_to_plan_v2(executed[0].result, plan)  # does not raise
+
+
+def test_execute_reports_infra_failure_when_the_allowlisted_binary_is_missing(
+    repo_root, require_strong_isolation,
+):
+    """A review caught that a pre-exec setup failure inside the namespace
+    (here: `execvp` failing because the allowlisted binary does not exist)
+    exited the supervisor's child with the SAME status a real subject could
+    also legitimately exit with -- misreporting a broken harness/runner as
+    an ordinary, deterministic product FAILURE. End-to-end (not a rogue
+    stand-in), so this exercises whichever isolation strategy this
+    environment actually selects -- direct or via the broker, which now
+    also relays the signal through its own protocol."""
+
+    missing = AllowlistedCommandSpecV2(
+        command_token="token",
+        argv=("/nonexistent/definitely-not-a-real-binary-v2", "arg"),
+        execution_class=ExecutionClassV2.DATA_ONLY_HOST_TOOL,
+        host_owned_config=True,
+        loads_checkout_plugins=False,
+    )
+    inventory = {"token": missing}
+    plan = _plan(inventory=inventory)
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+    )
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.INFRA_FAILURE
+    assert executed[0].diagnostic_reason == EXECUTOR_REASON_SETUP_FAILED_V2
 
 
 def test_execute_reports_failure_for_a_nonzero_exit_check(repo_root, require_strong_isolation):

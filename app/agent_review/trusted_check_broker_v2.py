@@ -366,6 +366,17 @@ def main() -> int:
             if inner_result is not None:
                 break
             if process.poll() is not None:
+                # The supervisor process exited, but SOCK_SEQPACKET data it
+                # already wrote before exiting can still be sitting in the
+                # channel's receive buffer -- the peer exiting does not
+                # discard it. Without this second attempt, a result sent in
+                # the narrow window between the timed-out read above and
+                # this exit check is missed entirely, and the broker reports
+                # a flaky INFRA_FAILURE for what was actually a completed
+                # execution. Zero timeout: if the data is already buffered
+                # this returns immediately, and if it never arrives at all
+                # there is nothing left to wait for -- the process is gone.
+                inner_result = _recv_nonblocking_v2(inner_host, timeout=0.0)
                 break
             control = _recv_nonblocking_v2(channel, timeout=0.0)
             if control is not None and _bound_v2(control, kind="cancel", nonce=nonce):
@@ -392,9 +403,17 @@ def main() -> int:
             # does not need it for these outcomes.
             exit_status = None
             signaled = None
+            setup_failed = False
         else:
             exit_status = inner_result.get("exit_status")
             signaled = inner_result.get("signaled")
+            # Relay the supervisor's own exec-error-pipe signal through --
+            # without this, a harness setup failure (missing allowlisted
+            # binary, privilege-drop/rlimit failure) inside the namespace
+            # would reach the host as an ordinary FAILURE instead of
+            # INFRA_FAILURE, exactly the misreporting the host-side check
+            # for this field exists to prevent.
+            setup_failed = bool(inner_result.get("setup_failed"))
 
         try:
             channel.send(_canonical_v2({
@@ -404,6 +423,7 @@ def main() -> int:
                 "spec_digest": config["spec_digest"],
                 "exit_status": exit_status,
                 "signaled": signaled,
+                "setup_failed": setup_failed,
                 "contained": contained,
                 "stdout_bytes": stdout_capture.total_bytes,
                 "stdout_sha256": stdout_capture.sha256,

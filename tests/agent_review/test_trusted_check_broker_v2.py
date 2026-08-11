@@ -26,6 +26,7 @@ from app.agent_review.trusted_check_broker_v2 import (
     BROKER_PATH_V2,
     BROKER_PROTOCOL_V2,
     _pdeathsig_still_bound_to_broker_v2,
+    _recv_nonblocking_v2,
 )
 
 pytestmark = pytest.mark.requires_network
@@ -50,6 +51,28 @@ def test_pdeathsig_predicate_requires_both_prctl_success_and_matching_parent():
     assert _pdeathsig_still_bound_to_broker_v2(
         prctl_result=0, actual_parent_pid=1, expected_broker_pid=4242,
     ) is False, "already reparented (e.g. to pid 1) means the broker died before arming"
+
+
+# Pure, no sudo -- proves the exact kernel-level assumption the fix for the
+# "read the final result after broker process exit" review finding relies
+# on: SOCK_SEQPACKET data a peer already wrote before closing/exiting stays
+# in the receiving socket's buffer and is still readable afterward. Without
+# a guaranteed final read attempt after observing the peer's exit, a result
+# sent in the narrow window between a timed-out poll and the exit check
+# would be missed even though it was sitting right there.
+def test_recv_nonblocking_retrieves_data_already_buffered_after_peer_closes():
+    host, peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    try:
+        peer.send(json.dumps({
+            "kind": "result", "protocol": BROKER_PROTOCOL_V2, "nonce": NONCE, "exit_status": 0,
+        }).encode())
+        peer.close()  # simulates the supervisor process exiting right after sending
+        record = _recv_nonblocking_v2(host, timeout=0.0)
+        assert record is not None
+        assert record["kind"] == "result"
+        assert record["exit_status"] == 0
+    finally:
+        host.close()
 
 
 def _sudo_available() -> bool:
@@ -113,6 +136,7 @@ def test_broker_reaches_ready_then_result_for_a_natural_success():
         assert result["spec_digest"] == SPEC_DIGEST
         assert result["exit_status"] == 0
         assert result["contained"] is True
+        assert result["setup_failed"] is False
         # The single most important negative property of this protocol:
         # no PID field of any kind ever crosses this channel.
         assert "pid" not in result
@@ -120,6 +144,33 @@ def test_broker_reaches_ready_then_result_for_a_natural_success():
     finally:
         process.wait(timeout=10)
         host.close()
+
+
+@requires_sudo
+def test_broker_reliably_reports_exit_status_for_a_near_instant_subject():
+    """A review caught a race: the watch loop only checked `process.poll()`
+    after a TIMED-OUT read, with no further attempt to read once the
+    supervisor process was observed to have exited -- so a result sent in
+    the narrow window between the timed-out poll and the exit check was
+    missed, and the broker fell back to reporting `exit_status: None`
+    (INFRA_FAILURE downstream) for what was actually a completed,
+    successful execution. A subject that exits essentially immediately
+    maximises the chance of hitting that window; repeating it several times
+    makes a reintroduced race very likely to surface as a flake here rather
+    than only intermittently in production."""
+
+    for _ in range(8):
+        process, host = _spawn_broker()
+        try:
+            host.send(json.dumps(_config([sys.executable, "-c", "pass"])).encode())
+            ready = _recv(host)
+            assert ready is not None and ready["kind"] == "ready"
+            result = _recv(host)
+            assert result is not None, "the broker reported no result at all"
+            assert result["exit_status"] == 0, "a completed success must never be reported as missing"
+        finally:
+            process.wait(timeout=10)
+            host.close()
 
 
 @requires_sudo
@@ -131,6 +182,28 @@ def test_broker_reports_a_real_failure_and_still_proves_containment():
         result = _recv(host)
         assert result["exit_status"] == 1
         assert result["contained"] is True
+    finally:
+        process.wait(timeout=10)
+        host.close()
+
+
+@requires_sudo
+def test_broker_relays_setup_failed_when_the_allowlisted_binary_is_missing():
+    """The supervisor's own exec-error-pipe signal must cross the broker's
+    protocol too, not just the direct (non-broker) path -- otherwise a
+    harness setup failure under the sudo-elevated strategy specifically
+    (this project's own CI strategy) would still be misreported as an
+    ordinary FAILURE."""
+
+    process, host = _spawn_broker()
+    try:
+        host.send(json.dumps(
+            _config(["/nonexistent/definitely-not-a-real-binary-v2", "arg"])
+        ).encode())
+        assert _recv(host)["kind"] == "ready"
+        result = _recv(host)
+        assert result["setup_failed"] is True
+        assert result["exit_status"] == 72
     finally:
         process.wait(timeout=10)
         host.close()
