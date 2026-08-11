@@ -352,13 +352,31 @@ def _probe_prefix_works_v2(prefix: tuple[str, ...]) -> bool:
     this subsystem's own docs name) would then have this candidate marked
     usable, every subsequent check would launch the broker, and every one
     would fail at namespace-creation time instead of this selection falling
-    through to the next candidate. Probing with the SAME ``unshare``
-    invocation the broker actually runs closes that gap."""
+    through to the next candidate.
+
+    Two INDEPENDENT sudoers authorizations can gate a least-privilege
+    runner, and a review caught that testing only one of them is not
+    sufficient: a policy may authorize ``unshare`` directly but not the
+    broker's own command line (or the reverse), since sudoers can restrict
+    by exact command path. The command this strategy actually EXECUTES at
+    runtime (``_isolation_wrapped_argv_v2``) is
+    ``sudo -n <python> -I <broker>`` -- not ``sudo -n unshare ...`` --
+    so that exact command's authorization is checked with ``sudo -n -l --``
+    (list/check, no side effects, no namespace actually created or
+    process actually run) alongside the namespace-creation probe. Both
+    must pass."""
 
     if prefix and prefix[0] == "sudo":
-        probe = [*prefix, "unshare", *NAMESPACE_FLAGS_V2, "--", "true"]
-    else:
-        probe = [*prefix, "true"]
+        broker_probe = [*prefix, "-l", "--", sys.executable, "-I", str(BROKER_PATH_V2)]
+        namespace_probe = [*prefix, "unshare", *NAMESPACE_FLAGS_V2, "--", "true"]
+        try:
+            broker_authorized = subprocess.run(broker_probe, capture_output=True, timeout=5).returncode == 0
+            namespace_ok = subprocess.run(namespace_probe, capture_output=True, timeout=5).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        return broker_authorized and namespace_ok
+
+    probe = [*prefix, "true"]
     try:
         completed = subprocess.run(probe, capture_output=True, timeout=5)
     except (OSError, subprocess.TimeoutExpired):

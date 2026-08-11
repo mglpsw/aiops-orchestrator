@@ -463,22 +463,98 @@ def test_probe_prefix_for_sudo_actually_exercises_namespace_creation(monkeypatch
 
     import app.agent_review.isolated_executor_v2 as isolated_executor_module
 
-    captured: dict[str, list[str]] = {}
+    calls: list[list[str]] = []
 
     class _FakeCompleted:
         returncode = 0
 
     def fake_run(argv, **kwargs):
-        captured["argv"] = list(argv)
+        calls.append(list(argv))
         return _FakeCompleted()
 
     monkeypatch.setattr(isolated_executor_module.subprocess, "run", fake_run)
-    isolated_executor_module._probe_prefix_works_v2(("sudo", "-n"))
+    result = isolated_executor_module._probe_prefix_works_v2(("sudo", "-n"))
 
-    assert captured["argv"][:2] == ["sudo", "-n"]
-    assert "unshare" in captured["argv"]
+    assert result is True
+    namespace_calls = [c for c in calls if "unshare" in c]
+    assert namespace_calls, "the namespace-creation probe must still run"
+    assert namespace_calls[0][:2] == ["sudo", "-n"]
     for flag in isolated_executor_module.NAMESPACE_FLAGS_V2:
-        assert flag in captured["argv"], f"probe never exercises {flag!r} for the sudo candidate"
+        assert flag in namespace_calls[0], f"probe never exercises {flag!r} for the sudo candidate"
+
+
+def test_probe_prefix_for_sudo_also_checks_the_brokers_own_command_is_authorized(monkeypatch):
+    """A review caught that namespace-creation authorization and the
+    broker's own command authorization are TWO INDEPENDENT sudoers grants
+    on a least-privilege runner -- a policy could authorize `unshare`
+    directly but not `python -I <broker>` (or the reverse), since sudoers
+    can restrict by exact command path. The command this strategy actually
+    EXECUTES at runtime is `sudo -n <python> -I <broker>`, not
+    `sudo -n unshare ...`, so that exact command's authorization must be
+    checked too -- via `sudo -n -l --` (list/check, no side effects), not
+    inferred from the unshare probe alone."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    calls: list[list[str]] = []
+
+    class _FakeCompleted:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return _FakeCompleted()
+
+    monkeypatch.setattr(isolated_executor_module.subprocess, "run", fake_run)
+    result = isolated_executor_module._probe_prefix_works_v2(("sudo", "-n"))
+
+    assert result is True
+    broker_calls = [c for c in calls if "-l" in c]
+    assert broker_calls, "the broker command's own sudoers authorization must be checked"
+    assert broker_calls[0][:2] == ["sudo", "-n"]
+    assert str(isolated_executor_module.BROKER_PATH_V2) in broker_calls[0]
+    assert "-I" in broker_calls[0]
+
+
+def test_probe_prefix_for_sudo_fails_when_only_the_broker_command_is_authorized(monkeypatch):
+    """Namespace creation authorized but the broker's own command is NOT --
+    the strategy must still be rejected (not accepted on partial evidence),
+    so selection correctly falls through to the next candidate instead of
+    committing to a broker invocation that would fail at runtime."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    class _FakeCompleted:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    def fake_run(argv, **kwargs):
+        if "-l" in argv:
+            return _FakeCompleted(1)  # broker command not authorized
+        return _FakeCompleted(0)  # namespace creation works fine
+
+    monkeypatch.setattr(isolated_executor_module.subprocess, "run", fake_run)
+    assert isolated_executor_module._probe_prefix_works_v2(("sudo", "-n")) is False
+
+
+def test_probe_prefix_for_sudo_fails_when_only_namespace_creation_is_authorized(monkeypatch):
+    """The reverse of the above: the broker's own command is authorized but
+    namespace creation is blocked (the CT104 risk this subsystem's own docs
+    name) -- must still be rejected."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    class _FakeCompleted:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+    def fake_run(argv, **kwargs):
+        if "-l" in argv:
+            return _FakeCompleted(0)  # broker command authorized
+        return _FakeCompleted(1)  # namespace creation blocked
+
+    monkeypatch.setattr(isolated_executor_module.subprocess, "run", fake_run)
+    assert isolated_executor_module._probe_prefix_works_v2(("sudo", "-n")) is False
 
 
 def test_probe_prefix_for_non_sudo_candidates_is_unchanged(monkeypatch):
