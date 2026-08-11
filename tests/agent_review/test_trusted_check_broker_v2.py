@@ -25,6 +25,7 @@ import pytest
 from app.agent_review.trusted_check_broker_v2 import (
     BROKER_PATH_V2,
     BROKER_PROTOCOL_V2,
+    _host_channel_closed_v2,
     _pdeathsig_still_bound_to_broker_v2,
     _recv_nonblocking_v2,
 )
@@ -73,6 +74,29 @@ def test_recv_nonblocking_retrieves_data_already_buffered_after_peer_closes():
         assert record["exit_status"] == 0
     finally:
         host.close()
+
+
+# Pure, no sudo -- proves the fix for the "tear down the broker workload
+# when the host channel closes" review finding: EOF on the host-facing
+# channel must be distinguishable from "nothing sent yet" (both of which
+# `_recv_nonblocking_v2` collapses to `None`), and detecting it must never
+# consume a real pending message (MSG_PEEK).
+def test_host_channel_closed_detects_eof_without_consuming_pending_data():
+    broker_side, host_side = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    try:
+        assert _host_channel_closed_v2(broker_side) is False, "host still open, nothing sent yet"
+
+        host_side.send(json.dumps({
+            "kind": "cancel", "protocol": BROKER_PROTOCOL_V2, "nonce": NONCE,
+        }).encode())
+        assert _host_channel_closed_v2(broker_side) is False, "a real pending message must not read as EOF"
+        record = _recv_nonblocking_v2(broker_side, timeout=0.0)
+        assert record is not None and record["kind"] == "cancel", "MSG_PEEK must not have consumed it"
+
+        host_side.close()
+        assert _host_channel_closed_v2(broker_side) is True
+    finally:
+        broker_side.close()
 
 
 def _sudo_available() -> bool:
@@ -225,6 +249,42 @@ def test_broker_cancel_command_tears_down_and_reports_containment(tmp_path):
     finally:
         process.wait(timeout=10)
         host.close()
+
+
+@requires_sudo
+def test_broker_tears_down_and_exits_when_the_host_channel_closes(tmp_path):
+    """A review caught that EOF on the broker's own channel to the host was
+    collapsed into the same `None` used for 'nothing sent yet', so if the
+    unprivileged host process died while a check was still running, the
+    broker -- and the whole namespace under it -- would stay alive
+    indefinitely as an unsupervised, privileged, orphaned process tree.
+    `PR_SET_PDEATHSIG` does not help: it ties the spawned unshare child's
+    life to the BROKER's life, not to the (now-dead) host's. Simulates the
+    host dying by closing this test's own end without sending `cancel` or
+    reading a result -- exactly what a crashed/killed host would leave
+    behind."""
+
+    marker = tmp_path / "host-death-survivor"
+    code = f"import time\ntime.sleep(6)\nopen({str(marker)!r}, 'w').write('survived')\n"
+    process, host = _spawn_broker(cwd=str(tmp_path))
+    try:
+        host.send(json.dumps(_config([sys.executable, "-c", code])).encode())
+        ready = _recv(host, timeout=15)
+        assert ready is not None and ready["kind"] == "ready"
+        host.close()  # simulates the host process dying mid-check
+
+        process.wait(timeout=10)
+        assert process.returncode == 0, "the broker must exit cleanly, not hang forever"
+
+        deadline = time.monotonic() + 9.0
+        while time.monotonic() < deadline:
+            assert not marker.exists(), "a descendant survived after the host channel closed"
+            time.sleep(0.25)
+    finally:
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+            pass
 
 
 @requires_sudo

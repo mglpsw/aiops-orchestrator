@@ -226,6 +226,29 @@ def _recv_nonblocking_v2(channel: socket.socket, *, timeout: float) -> dict | No
     return record if isinstance(record, dict) else None
 
 
+def _host_channel_closed_v2(channel: socket.socket) -> bool:
+    """Non-destructive, zero-timeout check for whether the HOST end of this
+    socket has closed -- distinct from "nothing sent yet", which
+    ``_recv_nonblocking_v2`` (used for the same channel to check for a
+    `cancel` command) cannot tell apart from a genuine EOF, since both
+    collapse to ``None``. If the unprivileged host process dies while a
+    check is still running, this broker's own ``channel`` sees EOF -- but
+    nobody is left to ever send `cancel` or read a `result`, and
+    ``PR_SET_PDEATHSIG`` does not help here: it ties the SPAWNED unshare
+    child's life to THIS broker's life, not to the (now-dead) host's.
+    Without this check the broker, and the whole namespace under it, would
+    stay alive indefinitely as an unsupervised, privileged, orphaned
+    process tree. ``MSG_PEEK`` does not consume the datagram, so this can
+    never steal a real message out from under the loop's own reads."""
+
+    channel.settimeout(0.0)
+    try:
+        payload = channel.recv(1, socket.MSG_PEEK)
+    except (BlockingIOError, socket.timeout, OSError):
+        return False
+    return payload == b""
+
+
 def _bound_v2(record: dict | None, *, kind: str, nonce: str) -> bool:
     return (
         record is not None
@@ -380,6 +403,13 @@ def main() -> int:
                 break
             control = _recv_nonblocking_v2(channel, timeout=0.0)
             if control is not None and _bound_v2(control, kind="cancel", nonce=nonce):
+                cancelled = True
+                break
+            if _host_channel_closed_v2(channel):
+                # The host is gone, not merely quiet -- treat exactly like
+                # an explicit cancel so the SAME teardown path applies; a
+                # subsequent `channel.send` below will simply fail (already
+                # caught) since nobody is listening.
                 cancelled = True
                 break
 
