@@ -451,110 +451,95 @@ def test_execute_still_allows_untrusted_advisory_over_weak_isolation(repo_root, 
     assert executed[0].result.authority is TrustedCheckAuthorityV2.UNTRUSTED_ADVISORY
 
 
-def test_probe_prefix_for_sudo_actually_exercises_namespace_creation(monkeypatch):
-    """A review caught that this probe tested ONLY passwordless sudo
-    authentication, not whether the kernel/container policy underneath it
-    permits real namespace creation -- exactly the CT104 risk this
-    subsystem's own docs name (nested PID/user namespaces forbidden by the
-    container profile). If sudo works but namespaces are blocked, the old
-    probe still marked the broker strategy usable, so `_select_isolation_
-    strategy_v2` never fell through to the weak-userns candidate -- every
-    check would then fail at namespace-creation time instead."""
+def test_probe_prefix_for_sudo_spawns_the_exact_broker_runtime_command(monkeypatch):
+    """A review caught that the previous probe tested TWO INDEPENDENT
+    sudoers grants (`sudo -n unshare ...` directly, plus a separate
+    `sudo -n -l -- <broker>` authorization check) instead of the ONE
+    command that actually runs at runtime: `sudo -n <python> -I <broker>`.
+    Once that single command elevates the broker to root, its own internal
+    `unshare` call needs no further sudo authorization at all -- it is a
+    direct child `Popen`, never routed through `sudo` again. A
+    least-privilege policy authorizing ONLY the exact broker command is
+    correct and must not be rejected for lacking a second, unnecessary
+    grant. This asserts the probe never calls `subprocess.run` (the old
+    dual-check shape) and spawns exactly the real runtime command via
+    `Popen`."""
 
     import app.agent_review.isolated_executor_v2 as isolated_executor_module
 
-    calls: list[list[str]] = []
+    captured: dict[str, object] = {}
 
-    class _FakeCompleted:
-        returncode = 0
+    def fail_on_run(*a, **k):
+        raise AssertionError(
+            "the sudo probe must never call subprocess.run -- it must exercise "
+            "the real broker command end-to-end via Popen"
+        )
 
-    def fake_run(argv, **kwargs):
-        calls.append(list(argv))
-        return _FakeCompleted()
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = list(argv)
+        captured["cwd"] = kwargs.get("cwd")
+        raise OSError("sudo: a password is required")
 
-    monkeypatch.setattr(isolated_executor_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(isolated_executor_module.subprocess, "run", fail_on_run)
+    monkeypatch.setattr(isolated_executor_module.subprocess, "Popen", fake_popen)
+
     result = isolated_executor_module._probe_prefix_works_v2(("sudo", "-n"))
 
-    assert result is True
-    namespace_calls = [c for c in calls if "unshare" in c]
-    assert namespace_calls, "the namespace-creation probe must still run"
-    assert namespace_calls[0][:2] == ["sudo", "-n"]
-    for flag in isolated_executor_module.NAMESPACE_FLAGS_V2:
-        assert flag in namespace_calls[0], f"probe never exercises {flag!r} for the sudo candidate"
+    assert result is False
+    argv = captured["argv"]
+    assert argv[:2] == ["sudo", "-n"]
+    assert argv[2] == sys.executable
+    assert "-I" in argv
+    assert str(isolated_executor_module.BROKER_PATH_V2) in argv
+    assert "unshare" not in argv, (
+        "the probe itself must never invoke unshare directly -- only the "
+        "broker's own internal Popen call does that, unauthenticated, once "
+        "the broker is already root"
+    )
 
 
-def test_probe_prefix_for_sudo_also_checks_the_brokers_own_command_is_authorized(monkeypatch):
-    """A review caught that namespace-creation authorization and the
-    broker's own command authorization are TWO INDEPENDENT sudoers grants
-    on a least-privilege runner -- a policy could authorize `unshare`
-    directly but not `python -I <broker>` (or the reverse), since sudoers
-    can restrict by exact command path. The command this strategy actually
-    EXECUTES at runtime is `sudo -n <python> -I <broker>`, not
-    `sudo -n unshare ...`, so that exact command's authorization must be
-    checked too -- via `sudo -n -l --` (list/check, no side effects), not
-    inferred from the unshare probe alone."""
-
-    import app.agent_review.isolated_executor_v2 as isolated_executor_module
-
-    calls: list[list[str]] = []
-
-    class _FakeCompleted:
-        returncode = 0
-
-    def fake_run(argv, **kwargs):
-        calls.append(list(argv))
-        return _FakeCompleted()
-
-    monkeypatch.setattr(isolated_executor_module.subprocess, "run", fake_run)
-    result = isolated_executor_module._probe_prefix_works_v2(("sudo", "-n"))
-
-    assert result is True
-    broker_calls = [c for c in calls if "-l" in c]
-    assert broker_calls, "the broker command's own sudoers authorization must be checked"
-    assert broker_calls[0][:2] == ["sudo", "-n"]
-    assert str(isolated_executor_module.BROKER_PATH_V2) in broker_calls[0]
-    assert "-I" in broker_calls[0]
-
-
-def test_probe_prefix_for_sudo_fails_when_only_the_broker_command_is_authorized(monkeypatch):
-    """Namespace creation authorized but the broker's own command is NOT --
-    the strategy must still be rejected (not accepted on partial evidence),
-    so selection correctly falls through to the next candidate instead of
-    committing to a broker invocation that would fail at runtime."""
+def test_probe_prefix_for_sudo_fails_closed_when_the_broker_never_reaches_ready(monkeypatch):
+    """Authorization and spawn succeed but the broker never reaches
+    `ready` (e.g. kernel/container policy blocks the namespace creation
+    inside it -- the exact CT104 risk this subsystem's own docs name) --
+    the probe must reject the candidate, not accept on a bare successful
+    spawn."""
 
     import app.agent_review.isolated_executor_v2 as isolated_executor_module
 
-    class _FakeCompleted:
-        def __init__(self, returncode):
-            self.returncode = returncode
+    class _FakePopen:
+        def __init__(self, argv, **kwargs):
+            self.argv = list(argv)
 
-    def fake_run(argv, **kwargs):
-        if "-l" in argv:
-            return _FakeCompleted(1)  # broker command not authorized
-        return _FakeCompleted(0)  # namespace creation works fine
+        def wait(self, timeout=None):
+            return 0
 
-    monkeypatch.setattr(isolated_executor_module.subprocess, "run", fake_run)
+        def kill(self):  # pragma: no cover - not exercised here
+            pass
+
+    monkeypatch.setattr(isolated_executor_module.subprocess, "Popen", _FakePopen)
+    monkeypatch.setattr(
+        isolated_executor_module, "_recv_record_v2", lambda channel, timeout: None
+    )
+
     assert isolated_executor_module._probe_prefix_works_v2(("sudo", "-n")) is False
 
 
-def test_probe_prefix_for_sudo_fails_when_only_namespace_creation_is_authorized(monkeypatch):
-    """The reverse of the above: the broker's own command is authorized but
-    namespace creation is blocked (the CT104 risk this subsystem's own docs
-    name) -- must still be rejected."""
+def test_probe_prefix_for_sudo_actually_reaches_ready_end_to_end(
+    require_broker_isolation_process,
+):
+    """Real, unmocked exercise of the exact runtime command against this
+    sandbox's own passwordless-sudo account -- proves the probe's success
+    path genuinely spawns a real broker and observes a real `ready` record,
+    not merely that the mocks above are internally consistent.
+    `require_broker_isolation_process` already establishes (via
+    `_select_isolation_strategy_v2`, which itself calls this same probe)
+    that this account selects the broker strategy, so a direct call must
+    also observe success."""
 
     import app.agent_review.isolated_executor_v2 as isolated_executor_module
 
-    class _FakeCompleted:
-        def __init__(self, returncode):
-            self.returncode = returncode
-
-    def fake_run(argv, **kwargs):
-        if "-l" in argv:
-            return _FakeCompleted(0)  # broker command authorized
-        return _FakeCompleted(1)  # namespace creation blocked
-
-    monkeypatch.setattr(isolated_executor_module.subprocess, "run", fake_run)
-    assert isolated_executor_module._probe_prefix_works_v2(("sudo", "-n")) is False
+    assert isolated_executor_module._probe_prefix_works_v2(("sudo", "-n")) is True
 
 
 def test_probe_prefix_for_non_sudo_candidates_is_unchanged(monkeypatch):
@@ -577,6 +562,83 @@ def test_probe_prefix_for_non_sudo_candidates_is_unchanged(monkeypatch):
     isolated_executor_module._probe_prefix_works_v2(prefix)
 
     assert captured["argv"] == [*prefix, "true"]
+
+
+def test_unshare_path_resolves_to_an_absolute_path_via_a_fixed_search_list():
+    """A review caught that a bare `"unshare"` string handed to
+    `subprocess.Popen(..., cwd=repo_root)` is resolved via PATH search
+    performed AFTER the child has already `chdir`'d into the checkout --
+    letting a PR-controlled `$PATH` entry (e.g. `.`) or a same-named file
+    shipped in the checkout supply the "system" binary that runs as root,
+    before any namespace or privilege drop exists. `_resolve_trusted_
+    binary_v2` must resolve strictly via `os.defpath` (all-absolute
+    entries), so the result never depends on cwd or on an
+    attacker-influenced `$PATH`."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    assert isolated_executor_module.UNSHARE_PATH_V2 is not None
+    assert os.path.isabs(isolated_executor_module.UNSHARE_PATH_V2)
+    assert isolated_executor_module._resolve_trusted_binary_v2("unshare") == (
+        isolated_executor_module.UNSHARE_PATH_V2
+    )
+
+
+def test_resolve_trusted_binary_ignores_a_malicious_path_and_only_uses_defpath(monkeypatch, tmp_path):
+    """Even if `$PATH` is poisoned with a directory placing a rogue
+    `unshare` first, resolution must still land on the real, fixed-list
+    binary -- never the attacker-controlled one."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    rogue = tmp_path / "unshare"
+    rogue.write_text("#!/bin/sh\nexit 0\n")
+    rogue.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ.get('PATH', '')}")
+
+    resolved = isolated_executor_module._resolve_trusted_binary_v2("unshare")
+
+    assert resolved != str(rogue)
+    assert resolved == isolated_executor_module.UNSHARE_PATH_V2
+
+
+def test_isolation_prefix_candidates_is_empty_when_unshare_cannot_be_resolved(monkeypatch):
+    """Fail-closed, never a bare-name fallback: if `unshare` cannot be
+    resolved to an absolute path at all, no candidate -- not even the
+    root-direct one -- may be offered, since every candidate's `Popen`
+    invocation depends on `UNSHARE_PATH_V2`."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    monkeypatch.setattr(isolated_executor_module, "UNSHARE_PATH_V2", None)
+
+    assert isolated_executor_module._isolation_prefix_candidates_v2() == ()
+
+
+def test_isolation_prefix_candidates_use_the_resolved_absolute_path_never_a_bare_name(monkeypatch):
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    fake_absolute = "/usr/bin/unshare"
+    monkeypatch.setattr(isolated_executor_module, "UNSHARE_PATH_V2", fake_absolute)
+    monkeypatch.setattr(isolated_executor_module.os, "geteuid", lambda: 0)
+
+    candidates = isolated_executor_module._isolation_prefix_candidates_v2()
+
+    assert len(candidates) == 1
+    _drop_to_nobody, prefix = candidates[0]
+    assert prefix[0] == fake_absolute
+    assert "unshare" not in prefix, "must never fall back to the bare, PATH-searched name"
+
+
+def test_broker_unshare_path_resolves_to_an_absolute_path():
+    """The broker's own internal `unshare` invocation -- which runs with
+    `cwd` set to the checkout, exactly the same hazard as the executor's
+    direct path -- must be resolved the same way."""
+
+    import app.agent_review.trusted_check_broker_v2 as broker_module
+
+    assert broker_module.UNSHARE_PATH_V2 is not None
+    assert os.path.isabs(broker_module.UNSHARE_PATH_V2)
 
 
 def test_execute_never_runs_unisolated_when_isolation_is_unavailable(repo_root, monkeypatch):

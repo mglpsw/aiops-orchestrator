@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import functools
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -116,6 +117,19 @@ except ImportError:
 
 BROKER_PROTOCOL_V2 = "agent-review.trusted-check-broker.v2"
 BROKER_PATH_V2 = Path(__file__).resolve()
+
+# Resolved ONCE, using ONLY a fixed, hardcoded absolute search list
+# (`os.defpath`, e.g. `/bin:/usr/bin`) -- never the process's own `$PATH`
+# environment variable, and never anything relative. A review caught that a
+# bare "unshare" handed to `subprocess.Popen(..., cwd=config["cwd"])` (the
+# checkout) is resolved via a PATH search performed AFTER this process has
+# already `chdir`'d into it -- so a runner whose `$PATH` contains `.` (or
+# the checkout itself shipping a same-named file) would let a PR supply the
+# "system" binary run as root. `os.defpath` entries are all absolute, so
+# resolution here never depends on cwd or on an environment variable the
+# runner/PR could influence. `None` if not found -- handled as
+# `EXIT_SPAWN_FAILED_V2`, fail-closed, never a bare-name fallback.
+UNSHARE_PATH_V2 = shutil.which("unshare", path=os.defpath)
 
 # Broker exit codes -- never the subject's. A missing `result` on the
 # channel, for ANY of these, is read by the host as fail-closed.
@@ -229,6 +243,13 @@ def main() -> int:
         # prove is not containment.
         return EXIT_PIDFD_UNAVAILABLE_V2
 
+    if UNSHARE_PATH_V2 is None:
+        # No bare-name fallback: resolution failing closed here is strictly
+        # better than falling through to a PATH search performed after this
+        # process's cwd is the checkout -- see UNSHARE_PATH_V2's own
+        # docstring.
+        return EXIT_SPAWN_FAILED_V2
+
     nonce = config["nonce"]
     inner_host, inner_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     identity: kernel.ExecutionIdentityV2 | None = None
@@ -238,7 +259,7 @@ def main() -> int:
     try:
         try:
             process = subprocess.Popen(
-                ["unshare", *kernel.NAMESPACE_FLAGS_V2, "--", sys.executable, "-I", str(SUPERVISOR_PATH_V2)],
+                [UNSHARE_PATH_V2, *kernel.NAMESPACE_FLAGS_V2, "--", sys.executable, "-I", str(SUPERVISOR_PATH_V2)],
                 cwd=config["cwd"],
                 stdin=inner_child.fileno(),
                 stdout=subprocess.PIPE,

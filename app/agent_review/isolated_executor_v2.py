@@ -311,6 +311,32 @@ class ExecutedCheckV2:
     assessment: ExecutionAssessmentV2 = ExecutionAssessmentV2()
 
 
+def _resolve_trusted_binary_v2(name: str) -> str | None:
+    """Resolves ``name`` to an absolute path using ONLY a fixed, hardcoded
+    search list (``os.defpath``, e.g. ``/bin:/usr/bin`` -- never the
+    process's own ``$PATH`` environment variable, and never anything
+    relative). A review caught that a bare command name (``"unshare"``)
+    handed to ``subprocess.Popen(..., cwd=repo_root)`` is resolved via a
+    PATH search performed AFTER the child has already ``chdir``'d into the
+    checkout -- so a runner whose ``$PATH`` contains ``.`` (or the checkout
+    itself shipping a same-named file) would let a PR supply the "system"
+    binary run as root, before any namespace or privilege drop exists.
+    ``os.defpath`` entries are all absolute, so resolution here never
+    depends on cwd OR on an environment variable the runner/PR could
+    influence."""
+
+    return shutil.which(name, path=os.defpath)
+
+
+# Resolved ONCE, using a fixed absolute search list -- see
+# `_resolve_trusted_binary_v2`'s own docstring for why this must never be a
+# bare name threaded through to a `Popen` call that also sets `cwd` to the
+# checkout. `None` if not found on this host, handled as isolation-
+# unavailable (fail-closed) by every caller below, never a bare-name
+# fallback.
+UNSHARE_PATH_V2 = _resolve_trusted_binary_v2("unshare")
+
+
 def _isolation_prefix_candidates_v2() -> tuple[tuple[bool, tuple[str, ...]], ...]:
     """Ordered ``(drop_to_nobody_inside, prefix_argv)`` candidates, most to
     least preferred.
@@ -328,53 +354,123 @@ def _isolation_prefix_candidates_v2() -> tuple[tuple[bool, tuple[str, ...]], ...
 
     This is a PROBED chain, not guessed from euid alone -- this project's
     own GitHub Actions runner is neither real root nor able to create an
-    unprivileged user namespace by default, observed directly, not assumed."""
+    unprivileged user namespace by default, observed directly, not assumed.
 
+    Returns no candidates at all if ``unshare`` could not be resolved to an
+    absolute path -- fail-closed, never a bare-name fallback."""
+
+    if UNSHARE_PATH_V2 is None:
+        return ()
     if os.geteuid() == 0:
-        return ((True, ("unshare", *NAMESPACE_FLAGS_V2, "--")),)
+        return ((True, (UNSHARE_PATH_V2, *NAMESPACE_FLAGS_V2, "--")),)
     candidates: list[tuple[bool, tuple[str, ...]]] = []
     if shutil.which("sudo") is not None:
         candidates.append((True, ("sudo", "-n")))
-    candidates.append((False, ("unshare", "--user", "--map-root-user", *NAMESPACE_FLAGS_V2, "--")))
+    candidates.append((False, (UNSHARE_PATH_V2, "--user", "--map-root-user", *NAMESPACE_FLAGS_V2, "--")))
     return tuple(candidates)
 
 
+def _probe_broker_namespace_creation_v2(prefix: tuple[str, ...]) -> bool:
+    """Exercises namespace creation THROUGH the actual broker invocation --
+    never a synthetic substitute -- so this probe can never test a
+    DIFFERENT command from the one that actually runs.
+
+    A review caught two successive mistakes here. Round 1's probe used
+    ``sudo -n unshare <flags> -- true`` to test namespace-creation
+    capability. Round 5 kept that AND added a separate ``sudo -n -l --
+    <broker>`` authorization check, requiring BOTH. But once the broker
+    process itself is root (via the ONE sudo elevation that actually runs
+    at runtime, ``sudo -n <python> -I <broker>``), its own internal
+    ``unshare`` call needs NO further sudoers grant at all -- it is a
+    direct child ``Popen``, never routed through ``sudo`` again. A
+    least-privilege policy that authorizes ONLY the exact broker command
+    (the security-conscious choice: the minimal grant, not blanket
+    ``unshare`` access) is entirely correct and must not be rejected --
+    but the old two-probe design DID reject it, since ``sudo -n unshare
+    ...`` tests a sudoers grant the real runtime path never needs.
+
+    The only way to test "does namespace creation actually work once
+    elevated via the ONE command that is actually authorized" without
+    risking a command mismatch is to run THAT exact command: spawn a real
+    broker with a trivial, near-instant subject (``true``), and check
+    whether it reaches ``ready`` -- proof that both sudo authorization AND
+    kernel/container namespace-creation capability succeeded -- then
+    cancel immediately rather than waiting for the subject to finish."""
+
+    nonce = secrets.token_hex(32)
+    host_channel, child_channel = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    process = None
+    try:
+        try:
+            process = subprocess.Popen(
+                [*prefix, sys.executable, "-I", str(BROKER_PATH_V2)],
+                cwd="/tmp",
+                stdin=child_channel.fileno(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError:
+            return False
+        finally:
+            child_channel.close()
+
+        try:
+            host_channel.send(supervisor_canonical_json_bytes_v2({
+                "kind": "config",
+                "protocol": BROKER_PROTOCOL_V2,
+                "nonce": nonce,
+                "spec_digest": "0" * 64,
+                "argv": [sys.executable, "-c", "pass"],
+                "cwd": "/tmp",
+                "max_memory_mb": 64,
+                "max_processes": 8,
+            }))
+        except OSError:
+            return False
+
+        ready = _recv_record_v2(host_channel, timeout=_BROKER_READY_WAIT_SECONDS_V2)
+        reached_ready = _record_is_bound_v2(ready, kind="ready", nonce=nonce)
+
+        try:
+            host_channel.send(supervisor_canonical_json_bytes_v2({
+                "kind": "cancel", "protocol": BROKER_PROTOCOL_V2, "nonce": nonce,
+            }))
+        except OSError:  # pragma: no cover - broker already gone
+            pass
+
+        return reached_ready
+    finally:
+        host_channel.close()
+        if process is not None:
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover - defensive
+                try:
+                    process.kill()
+                    process.wait(timeout=5)
+                except (OSError, subprocess.TimeoutExpired):  # pragma: no cover - defensive
+                    pass
+
+
 def _probe_prefix_works_v2(prefix: tuple[str, ...]) -> bool:
-    """Exercises the actual namespace-creation capability the candidate
-    would need at runtime, not merely that its prefix authenticates.
+    """Confirms the candidate actually works before it is ever selected.
 
     The ``sudo`` candidate's own ``prefix`` is just ``("sudo", "-n")`` --
-    ``trusted_check_broker_v2`` supplies the ``unshare`` invocation itself,
-    so a probe of the bare prefix would only ever confirm passwordless sudo
-    authentication, never that the kernel/container policy underneath it
-    actually permits ``CLONE_NEWPID``/``CLONE_NEWNET``. A container profile
-    that grants sudo but forbids nested namespaces (the exact CT104 risk
-    this subsystem's own docs name) would then have this candidate marked
-    usable, every subsequent check would launch the broker, and every one
-    would fail at namespace-creation time instead of this selection falling
-    through to the next candidate.
-
-    Two INDEPENDENT sudoers authorizations can gate a least-privilege
-    runner, and a review caught that testing only one of them is not
-    sufficient: a policy may authorize ``unshare`` directly but not the
-    broker's own command line (or the reverse), since sudoers can restrict
-    by exact command path. The command this strategy actually EXECUTES at
-    runtime (``_isolation_wrapped_argv_v2``) is
-    ``sudo -n <python> -I <broker>`` -- not ``sudo -n unshare ...`` --
-    so that exact command's authorization is checked with ``sudo -n -l --``
-    (list/check, no side effects, no namespace actually created or
-    process actually run) alongside the namespace-creation probe. Both
-    must pass."""
+    ``trusted_check_broker_v2`` supplies the ``unshare`` invocation itself
+    once it is root, so a probe of the bare prefix would only ever confirm
+    passwordless sudo AUTHENTICATION, never that the exact broker command is
+    AUTHORIZED, nor that the kernel/container policy underneath it actually
+    permits ``CLONE_NEWPID``/``CLONE_NEWNET`` (the exact CT104 risk this
+    subsystem's own docs name). Delegates to
+    ``_probe_broker_namespace_creation_v2``, which exercises the real
+    broker invocation end-to-end rather than a synthetic substitute that
+    could authorize a different command than the one that actually runs --
+    see that function's own docstring for the two successive mistakes this
+    replaces."""
 
     if prefix and prefix[0] == "sudo":
-        broker_probe = [*prefix, "-l", "--", sys.executable, "-I", str(BROKER_PATH_V2)]
-        namespace_probe = [*prefix, "unshare", *NAMESPACE_FLAGS_V2, "--", "true"]
-        try:
-            broker_authorized = subprocess.run(broker_probe, capture_output=True, timeout=5).returncode == 0
-            namespace_ok = subprocess.run(namespace_probe, capture_output=True, timeout=5).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        return broker_authorized and namespace_ok
+        return _probe_broker_namespace_creation_v2(prefix)
 
     probe = [*prefix, "true"]
     try:
