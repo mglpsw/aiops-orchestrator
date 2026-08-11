@@ -46,14 +46,21 @@ its accompanying digests) — not a normative publication event.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 import subprocess
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
+
+from app.common.strict_json import (
+    git_blob_oid,
+    prefixed_canonical_json_digest,
+    prefixed_raw_bytes_digest,
+    reject_duplicate_keys,
+    reject_non_finite,
+    strict_json_loads,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -301,40 +308,22 @@ class _LoadFailure(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _canonical_json_digest(value: object) -> str:
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def _raw_bytes_digest(data: bytes) -> str:
-    return "sha256:" + hashlib.sha256(data).hexdigest()
-
-
-def _git_blob_oid(content: bytes) -> str:
-    header = f"blob {len(content)}\0".encode("ascii")
-    return hashlib.sha1(header + content).hexdigest()
-
-
-def _duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError(f"DUPLICATE_JSON_KEY: {key}")
-        result[key] = value
-    return result
-
-
-def _reject_non_finite(value: str) -> None:
-    raise ValueError(f"CANONICAL_JSON_INVALID: non-finite number {value}")
-
-
-def _strict_json_loads(data: bytes | str) -> object:
-    """Parse JSON with duplicate-key rejection and non-finite-number
-    rejection (`NaN`/`Infinity`/`-Infinity`), matching CAEM's own F0 loader
-    (`caem_contracts/f0.py`) discipline. Raises `ValueError` on any violation
-    — never returns a partially-trusted document."""
-
-    return json.loads(data, object_pairs_hook=_duplicate_keys, parse_constant=_reject_non_finite)
+# These six helpers were this repository's reference implementation of strict,
+# fail-closed parsing. They now live in `app.common.strict_json` so that
+# `#201-C0`'s provenance sidecar and policy loader reuse the discipline instead
+# of adding yet another copy. The private names below are kept as aliases --
+# not re-implementations -- because they are part of this module's de-facto
+# surface (`tests/caem_consumer/test_git_projection.py` imports two of them
+# directly) and because every byte of their output is already frozen in the
+# pinned CAEM 3.0 F0 identity. `tests/common/test_strict_json.py` pins the
+# equivalence with golden vectors so a future edit to the shared module cannot
+# silently move a CAEM digest.
+_canonical_json_digest = prefixed_canonical_json_digest
+_raw_bytes_digest = prefixed_raw_bytes_digest
+_git_blob_oid = git_blob_oid
+_duplicate_keys = reject_duplicate_keys
+_reject_non_finite = reject_non_finite
+_strict_json_loads = strict_json_loads
 
 
 def _err(reason_code: str, message: str, path: str | None = None) -> CaemF0LoadError:
