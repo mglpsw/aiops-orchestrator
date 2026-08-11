@@ -1,0 +1,277 @@
+{
+  "$defs": {
+    "AuthorityEffectV2": {
+      "description": "What the observation may DO. `PROMOTABLE` is a CONSEQUENCE of the\nassembler's validation, never a field a caller chooses.",
+      "enum": [
+        "promotable",
+        "none"
+      ],
+      "title": "AuthorityEffectV2",
+      "type": "string"
+    },
+    "RequiredCheckSourceKindV2": {
+      "description": "The two -- and only two -- authorised origins of a required check.\n\nThey are never joined by `check_name`. An `AUTHORITATIVE_CI` record and a\n`TRUSTED_HOST_PROMOTION` record for the same check name describe different\nevents with different trust arguments, and one is never evidence for the\nother.",
+      "enum": [
+        "authoritative_ci",
+        "trusted_host_promotion"
+      ],
+      "title": "RequiredCheckSourceKindV2",
+      "type": "string"
+    },
+    "SemanticClassV2": {
+      "description": "What the observation IS (CAEM 3.0 vocabulary, §19.3 of the `#201-B3`\nrev. 4 spec). Borrowing the vocabulary transfers no authority: the CAEM F0\npin declares `authority_effect: none` and that remains true.",
+      "enum": [
+        "authoritative",
+        "advisory"
+      ],
+      "title": "SemanticClassV2",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Additive sidecar proving where one `RequiredCheckResultV2` came from.\n\nEvery cross-field rule below is structural, enforced by the contract\nitself, so an invalid combination cannot exist as an object at all -- the\nassembler never has to remember to check it.",
+  "properties": {
+    "authority_effect": {
+      "$ref": "#/$defs/AuthorityEffectV2"
+    },
+    "authority_transfer": {
+      "const": false,
+      "title": "Authority Transfer",
+      "type": "boolean"
+    },
+    "base_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Base Sha",
+      "type": "string"
+    },
+    "check_name": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Check Name",
+      "type": "string"
+    },
+    "ci_run_attempt": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Ci Run Attempt"
+    },
+    "ci_run_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Ci Run Id"
+    },
+    "event_action": {
+      "enum": [
+        "opened",
+        "reopened",
+        "synchronize",
+        "ready_for_review",
+        "manual",
+        "replay"
+      ],
+      "title": "Event Action",
+      "type": "string"
+    },
+    "event_type": {
+      "enum": [
+        "pull_request",
+        "pull_request_target",
+        "manual",
+        "replay"
+      ],
+      "title": "Event Type",
+      "type": "string"
+    },
+    "head_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Head Sha",
+      "type": "string"
+    },
+    "job_name": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Job Name"
+    },
+    "observation_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Observation Digest",
+      "type": "string"
+    },
+    "observed_conclusion": {
+      "anyOf": [
+        {
+          "enum": [
+            "success",
+            "failure"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Observed Conclusion"
+    },
+    "observed_status": {
+      "anyOf": [
+        {
+          "const": "completed",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Observed Status"
+    },
+    "policy_source_bytes_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Policy Source Bytes Digest",
+      "type": "string"
+    },
+    "policy_source_semantic_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Policy Source Semantic Digest",
+      "type": "string"
+    },
+    "provenance_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Provenance Digest",
+      "type": "string"
+    },
+    "repository": {
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "title": "Repository",
+      "type": "string"
+    },
+    "required_check_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Required Check Digest",
+      "type": "string"
+    },
+    "run_id": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "agent-review.required-check-provenance.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "semantic_class": {
+      "$ref": "#/$defs/SemanticClassV2"
+    },
+    "source": {
+      "const": "aiops-review-check-provenance",
+      "title": "Source",
+      "type": "string"
+    },
+    "source_kind": {
+      "$ref": "#/$defs/RequiredCheckSourceKindV2"
+    },
+    "tested_merge_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Tested Merge Sha",
+      "type": "string"
+    },
+    "toolchain_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Toolchain Digest",
+      "type": "string"
+    },
+    "verifier_identity": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "Verifier Identity",
+      "type": "string"
+    },
+    "workflow_path": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Workflow Path"
+    },
+    "workflow_ref": {
+      "anyOf": [
+        {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Workflow Ref"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "check_name",
+    "required_check_digest",
+    "source_kind",
+    "semantic_class",
+    "authority_effect",
+    "authority_transfer",
+    "repository",
+    "run_id",
+    "base_sha",
+    "head_sha",
+    "tested_merge_sha",
+    "event_type",
+    "event_action",
+    "verifier_identity",
+    "toolchain_digest",
+    "workflow_path",
+    "workflow_ref",
+    "job_name",
+    "ci_run_id",
+    "ci_run_attempt",
+    "observed_status",
+    "observed_conclusion",
+    "observation_digest",
+    "policy_source_bytes_digest",
+    "policy_source_semantic_digest",
+    "provenance_digest"
+  ],
+  "title": "RequiredCheckProvenanceV2",
+  "type": "object"
+}
