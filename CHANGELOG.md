@@ -4,6 +4,55 @@
 
 ### Added
 
+- **AgentReview v2 authoritative CI provenance bridge (`#201-C0`)**: makes it
+  provable where an authoritative required check came from, before anything is
+  connected to readiness. Closes the provenance bypass `#217` describes, for
+  the path `#201` exercises.
+  - **The gap.** `#201-B3` left `subject_code` checks permanently advisory, so
+    pytest's authoritative verdict must come from deterministic CI — while
+    `RequiredCheckResultV2` carries no producer identity and the quality gate
+    matched required checks **by name**, so any object called `pytest` with
+    `conclusion=success` satisfied it regardless of who built it.
+  - **Typed union of exactly two sources.** `TrustedHostPromotion ∪
+    AuthoritativeCIPromotion`, validated by separate functions and never joined
+    by `check_name`. A green GitHub check named `pytest` is not evidence about
+    an advisory executor result named `pytest`.
+  - **Additive sidecar.** `RequiredCheckProvenanceV2` binds 1:1 to the exact
+    `RequiredCheckResultV2` by digest, in both directions; each matched pair
+    must also agree on `run_id`, `head_sha`, `repository`, `base_sha`,
+    `tested_merge_sha` and `check_name`. `RequiredCheckResultV2` and every
+    other frozen contract are unchanged, and the 15 pre-existing published
+    schemas stay byte-identical.
+  - **Authority is derived, never declared.** There is no `authoritative=True`
+    parameter anywhere; `authority_effect="promotable"` is the output of the
+    checks, not an input, and a sidecar that validates against its own digest
+    is merely well-formed, not entitled.
+  - **Base-owned policy.** `.aiops/authoritative-checks.v2.yaml` names the one
+    producer entitled to speak for each required check as a complete identity
+    tuple (`check_name`, `workflow_path`, `workflow_ref`, `job_name`,
+    `verifier_identity`), read exclusively from the trusted base/default
+    checkout. Both `policy_source_bytes_digest` and
+    `policy_source_semantic_digest` travel into the sidecar.
+  - **HEAD is not the tested tree.** `review_subject_sha = head_sha` versus
+    `execution_subject_sha = tested_merge_sha`, with order-sensitive
+    `[base, head]` parentage proven per origin — `pull_request_target`,
+    `manual` and `replay` never inherit synthetic-merge semantics.
+  - **Deterministic run selection.** Highest `run_attempt` wins outright, so a
+    stale green never outranks a current red; two survivors at the highest
+    attempt is refused rather than resolved. Only `success` and `failure` are
+    promotable — an environmental failure never becomes a product regression,
+    and a product regression never disappears as an environmental failure.
+  - **Gate hardened.** `--checks-provenance` is required (omitting it is an
+    error, not a silent legacy path). `review_readiness_emission_v2` and
+    `readiness_decision_v2` are untouched — wiring remains `#201-C`.
+  - **Known limitation.** GitHub's Actions API reports no field asserting which
+    ref a workflow *definition* was loaded from, and `pull_request` runs
+    execute the workflow file from the pull request's own merge commit. Threat
+    `C0-T4` is therefore not closed by GitHub metadata alone; the acquirer
+    records what actually happened and never asserts a base-owned origin it
+    cannot observe. Resolving it is a target-configuration decision. See
+    `docs/checkpoints/AGENT_REVIEW_V2_201C0_PROVENANCE_BRIDGE.md`.
+
 - **AgentReview v2 trusted-check adversarial hardening (`#201-B3`)**: closes
   the two mandatory acceptance criteria `#201-B2` left open.
   - **Authority boundary.** `trusted_check_authority_v2` classifies every

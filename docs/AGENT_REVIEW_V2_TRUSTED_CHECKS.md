@@ -130,3 +130,35 @@ same-input-same-output test.
   `checks` parameter (`#201-C`);
 - AgentEscala's own adoption and closure of `#750` (target-side, tracked
   in that repository, not here).
+
+## Where an authoritative `RequiredCheckResultV2` comes from (`#201-C0`)
+
+`promote_trusted_check_to_required_v2` remains the only function permitted to
+build a `RequiredCheckResultV2` from a `TrustedCheckResultV2`. `#201-C0` does
+not weaken that; it answers the question the rule leaves open — if pytest can
+never be `TRUSTED` here, where does its authoritative verdict come from?
+
+```text
+RequiredCheck = TrustedHostPromotion  ∪  AuthoritativeCIPromotion
+```
+
+- **`trusted_host_promotion`** — a `data_only_host_tool` result from the
+  `#201-B3` executor, wrapping `promote_trusted_check_to_required_v2` and
+  additionally supplying the toolchain and host-owned-config digests that
+  `trusted_check_authority_v2` explicitly defers to `#201-C0` (a declaration
+  that config is host-owned is necessary, never sufficient).
+- **`authoritative_ci`** — a deterministic CI check run, matched against a
+  base-owned policy naming the full producer identity, bound to `RunIdentityV2`,
+  with an origin-specific proof of which tree actually ran.
+
+The two paths are never joined by `check_name`, and neither is evidence for the
+other. Every promoted check carries a `RequiredCheckProvenanceV2` sidecar bound
+to it 1:1 by digest, and `scripts/aiops-review-quality-gate-v2.py` refuses any
+check that is not covered by one — the bypass `#217` describes.
+
+`RequiredCheckResultV2` itself remains untouched, for the same reason recorded
+above: the proof that does not fit in the frozen contract goes beside it, not
+inside it.
+
+See `docs/checkpoints/AGENT_REVIEW_V2_201C0_PROVENANCE_BRIDGE.md`, including
+the known limitation about base-owned workflow definitions.

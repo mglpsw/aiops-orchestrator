@@ -38,6 +38,35 @@
 - deployment AgentReview: offline/advisory no CT104;
 - observation: métricas/false-positive loop a ampliar.
 
+## Adendo — `#201-C0` implementada nesta sessão
+
+`#201-B3` foi mergeada via PR #218 (squash `865427224b3d10a9ce4858183e5848351672935e`); `master`
+avançou `2ce1f45 → 8654272`. `#201-C0` (authoritative CI provenance bridge, rastreada por `#217`)
+foi **implementada** sobre esse HEAD na branch `claude/c0-provenance-bridge-plan-xx7d34`, em sete
+commits red-first — ver `docs/checkpoints/AGENT_REVIEW_V2_201C0_PROVENANCE_BRIDGE.md` e o plano
+canônico em `#201` (comment 5258778428).
+
+Entrega: sidecar aditivo `RequiredCheckProvenanceV2` ligado 1:1 por digest ao
+`RequiredCheckResultV2` exato; política base-owned `.aiops/authoritative-checks.v2.yaml` lida
+exclusivamente do checkout base; assembler host-owned como único produtor; acquirer separado como
+única camada com rede; e `scripts/aiops-review-quality-gate-v2.py` endurecido para exigir
+proveniência autorizada (`--checks-provenance` obrigatório). `review_readiness_emission_v2.py` e
+`readiness_decision_v2.py` **intocados** — wiring continua sendo `#201-C`.
+
+Nenhum contrato congelado alterado; os 15 schemas v2 pré-existentes permanecem byte-idênticos
+(3 novos, aditivos); pin CAEM F0 verde; `ci_validate.sh` seções 1–8 verdes; regressão offline
+completa verde.
+
+**Limitação conhecida, registrada e não resolvida:** a API do GitHub não expõe de qual ref a
+*definição* de um workflow foi carregada, e runs `pull_request` executam o workflow como ele existe
+no merge commit da própria PR. A ameaça `C0-T4` (workflow alterado pela PR) **não** é fechada por
+metadado do GitHub isoladamente; fechá-la é decisão de configuração do target (`#203`), não de
+código deste repositório. O acquirer registra o que observou e falha fechado em vez de fabricar a
+garantia.
+
+Merge, tag, release, deploy, repin, ativação de capacidade e fechamento de `#201`/`#217`
+permanecem **retidos**.
+
 ## Próxima ação mínima
 
 `#201-B3` está implementada nesta sessão (branch `claude/agentreview-v2-hardening-plan-74kva0`), com os dois critérios obrigatórios fechados e comprovados sob três contas reais (root/direto; sudo-elevado via `trusted_check_broker_v2` — Emenda A1; userns fraco/sem privilégio). Nenhum contrato congelado alterado; exportação de schemas v2 byte-idêntica; `ci_validate.sh` seções 7 e 8 verdes; pin CAEM F0 ok. Merge **não autorizado** nesta rodada — aguarda grant nominal específico, mesma disciplina de `#201-B2`.
