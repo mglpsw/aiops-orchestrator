@@ -764,8 +764,30 @@ def _run_isolated_direct_v2(
 
         try:
             direct_child_pidfd = os.pidfd_open(process.pid, 0)
-        except OSError:  # pragma: no cover - defensive: the process was just spawned by us
-            direct_child_pidfd = None
+        except OSError as exc:
+            # `tear_down_execution_v2` requires a pidfd for the direct
+            # child precisely so a caller unable to obtain one can decide
+            # for itself whether that is fatal (see its own docstring) --
+            # silently continuing with `direct_child_pidfd=None` would make
+            # every LATER teardown call for this target a no-op, leaving
+            # the whole namespace running indefinitely if discovery then
+            # also fails (plausible under the same fd-exhaustion pressure
+            # that made `pidfd_open` fail here). We DO still hold a live,
+            # un-reaped `subprocess.Popen` handle at this exact point,
+            # though: `process.kill()` targets it directly, not a bare
+            # numeric pid pid-reuse could redirect -- we are this
+            # process's real, exclusive OS parent and have not reaped it
+            # yet, so this remains safe even though `tear_down_execution_
+            # v2` itself would refuse a bare pid. `--kill-child` then
+            # cascades this SIGKILL to the whole namespace the same way it
+            # would from any other teardown path. Abort immediately rather
+            # than let anything else in this execution proceed.
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):  # pragma: no cover - defensive
+                pass
+            raise IsolatedExecutorError(EXECUTOR_REASON_PIDFD_UNAVAILABLE_V2) from exc
 
         drain_state, drain_threads = start_drain_v2(process)
 

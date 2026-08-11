@@ -1206,6 +1206,45 @@ def test_execute_fails_closed_when_pidfd_is_unavailable(repo_root, monkeypatch):
     assert executed[0].diagnostic_reason == EXECUTOR_REASON_PIDFD_UNAVAILABLE_V2
 
 
+def test_execute_kills_the_direct_child_and_fails_closed_when_pidfd_open_fails(
+    repo_root, monkeypatch, require_strong_isolation, require_direct_isolation_process,
+):
+    """A review caught that a transient `os.pidfd_open` failure for the
+    direct child (e.g. `EMFILE` under fd exhaustion) was swallowed
+    silently -- execution continued with `direct_child_pidfd=None`, and if
+    namespace discovery then ALSO failed (plausible under the same fd
+    pressure that made `pidfd_open` fail in the first place), every LATER
+    `tear_down_execution_v2` call for this target became a no-op (its own
+    docstring: no pidfd, no signal, never a raw-PID fallback), leaving the
+    whole namespace running indefinitely while the function still returned
+    an ordinary `INFRA_FAILURE`. Must instead treat this as immediately
+    fatal and guarantee the direct child -- and, via `--kill-child`,
+    everything in its namespace -- is actually killed before returning,
+    using `process.kill()` on the live, un-reaped `Popen` handle this
+    function already holds, which remains safe even though a bare,
+    recycled-prone pid would not be."""
+
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    marker = repo_root / "survivor-pidfd-open-failure"
+    code = _survivor_code(marker, escape="double_fork", leader_exit="time.sleep(300)")
+    inventory = {"token": _py(code)}
+    plan = _plan(inventory=inventory)
+
+    monkeypatch.setattr(
+        isolated_executor_module.os, "pidfd_open",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("EMFILE")),
+    )
+
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+    )
+
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.INFRA_FAILURE
+    assert executed[0].diagnostic_reason == EXECUTOR_REASON_PIDFD_UNAVAILABLE_V2
+    _assert_no_survivor(marker)
+
+
 # -- #201-B3 (rev. 4) C4: bounded output, resources, coexisting failures -----
 
 
