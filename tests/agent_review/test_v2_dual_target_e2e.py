@@ -521,7 +521,20 @@ def test_evidence_hash_change_changes_run_id():
     assert outcome_a.manifest.run_id != outcome_b.manifest.run_id
 
 
-# -- 5 readiness states across the two targets --------------------------------
+# -- 5 readiness states across the two targets, Class B composition ----------
+#
+# `#201-C` (plan rev.2.1): every test below calls `_assemble_review_
+# readiness_v2` directly, with `_green_check(...)` standing in for "some
+# already-legitimated required-check set" -- never `produce_review_
+# readiness_v2` or `run_synthetic_review_v2`, and never the real `#201-C0`
+# boundary. This is Class B in the plan's own vocabulary: it proves the pure
+# assembly/precedence logic is genuinely generic across two independent
+# targets, and is never described as -- and never usable as -- proof that
+# any of these states is reachable through real required-check authority.
+# The Class A proof that a REAL, unpatched `#201-C0` boundary produces the
+# honestly-reachable subset of these states, across the SAME two real
+# shipped target fixtures, is the new section below this one.
+# -------------------------------------------------------------------------
 
 
 def test_agent_escala_ready():
@@ -782,6 +795,107 @@ def test_interleitos_stale_on_identity_divergence():
     )
     assert readiness.state == ReadinessStateV2.STALE.value
     assert compute_run_id(readiness.identity) == readiness.run_id
+
+
+# -- fail-closed E2E across both real targets, Class A -----------------------
+#
+# `#201-C` (plan rev.2.1). Every test below goes through `produce_review_
+# readiness_v2` -- the real production entry point -- and the REAL,
+# unpatched `#201-C0` verifier, against the SAME two real shipped
+# `.aiops/authoritative-checks.v2.yaml` policies the fixtures already ship
+# (read in `_load_profile`'s own `FIXTURES_ROOT / target` root). This is
+# what this file's own genericity claim ("the v2 engine is genuinely generic
+# across two independent targets") means for required-check authority
+# specifically: the honestly-reachable state today -- `manual_required` with
+# `policy_failure`, never `ready` -- is proven identical in shape across
+# both targets, not just asserted for one.
+#
+# No monkeypatch of the boundary; no assertion that either result is
+# `ready`/`blocked_pipeline` -- see
+# `test_required_check_readiness_arch_v2.py`'s assert 7, which checks this
+# mechanically for every test in this file too.
+# -------------------------------------------------------------------------
+
+
+def _empty_authority_kwargs(target: str) -> dict:
+    from app.agent_review.authoritative_ci_snapshot_v2 import parse_authoritative_ci_snapshot_v2
+    from app.agent_review.contracts_v2 import RunOriginV2
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import TOOLCHAIN_DIGEST, _snapshot_dict
+
+    return {
+        "checks": [],
+        "provenance": [],
+        "origin": RunOriginV2(event_type="pull_request", event_action="synchronize", delivery_id="delivery-1"),
+        # An empty submission never reaches `assemble_authoritative_ci_
+        # promotion_v2` at all (`verify_required_check_provenance_set_v2`'s
+        # loop is vacuous for empty `checks`), so the snapshot's own content
+        # is irrelevant -- it only needs to parse.
+        "snapshot": parse_authoritative_ci_snapshot_v2(json.dumps(_snapshot_dict([]))),
+        "toolchain_digest": TOOLCHAIN_DIGEST,
+        "target_profile_root": str(FIXTURES_ROOT / target),
+    }
+
+
+def test_agent_escala_manual_required_when_authority_is_not_established():
+    from app.agent_review.review_readiness_emission_v2 import produce_review_readiness_v2
+
+    profile = _load_profile("agent_escala")
+    manifest = _assemble(
+        target="agent_escala",
+        profile=profile,
+        policy=_agent_escala_policy(),
+        file_diffs=_agent_escala_diffs(),
+        pr_number=101,
+    )
+    built = build_chunk_payloads_from_profile_v2(manifest, profile=profile, repo_root=FIXTURES_ROOT / "agent_escala")
+    results = [_run_chunk(b.payload) for b in built]
+    synthesis = synthesize_chunk_results_v2(manifest=manifest, chunk_results=results, evaluated_head_sha=_HEAD_SHA)
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=profile.policies)
+    assert decision.state is ReadinessStateV2.READY
+
+    readiness = produce_review_readiness_v2(
+        decision=decision,
+        findings=synthesis.findings,
+        identity=manifest.identity,
+        evaluated_identity=manifest.identity,
+        pr_state=PullRequestStateV2.OPEN,
+        **_empty_authority_kwargs("agent_escala"),
+    )
+
+    assert readiness.state == ReadinessStateV2.MANUAL_REQUIRED.value
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+    assert readiness.checks == []
+
+
+def test_interleitos_manual_required_when_authority_is_not_established():
+    from app.agent_review.review_readiness_emission_v2 import produce_review_readiness_v2
+
+    profile = _load_profile("interleitos")
+    manifest = _assemble(
+        target="interleitos",
+        profile=profile,
+        policy=_interleitos_policy(),
+        file_diffs=_interleitos_diffs(),
+        pr_number=202,
+    )
+    built = build_chunk_payloads_from_profile_v2(manifest, profile=profile, repo_root=FIXTURES_ROOT / "interleitos")
+    results = [_run_chunk(b.payload) for b in built]
+    synthesis = synthesize_chunk_results_v2(manifest=manifest, chunk_results=results, evaluated_head_sha=_HEAD_SHA)
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=profile.policies)
+    assert decision.state is ReadinessStateV2.READY
+
+    readiness = produce_review_readiness_v2(
+        decision=decision,
+        findings=synthesis.findings,
+        identity=manifest.identity,
+        evaluated_identity=manifest.identity,
+        pr_state=PullRequestStateV2.OPEN,
+        **_empty_authority_kwargs("interleitos"),
+    )
+
+    assert readiness.state == ReadinessStateV2.MANUAL_REQUIRED.value
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+    assert readiness.checks == []
 
 
 # -- conformance matrix artifact -----------------------------------------------
