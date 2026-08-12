@@ -207,6 +207,42 @@ sobre o resultado.
 Um teste fixa a inversão: **um pull ref agora é o caminho promovível normal**, e um workflow
 referenciado em SHA diferente do pinado é recusado.
 
+## Rodada 5 de review adversarial (Codex) — a aquisição real nunca buscava attestations
+
+**Achado (P1) — a rodada 4 fechou o modelo e deixou o caminho vivo aberto.** `_fetch_payload`
+montava `check_runs` e `workflow_runs`, e nunca `producer_attestations`. No caminho vivo toda
+observação saía com `producer_attestation=None`, e o assembler — corretamente — recusava cada
+required check com `..._producer_attestation_missing`. Só o caminho de fixture gravada promovia
+qualquer coisa.
+
+**É a mesma classe de adiamento que a rodada 4 rejeitou**, cometida uma rodada depois: eu havia
+escrito que buscar attestations "é uma preocupação separada de decidir se elas são válidas". Sob a
+decisão ratificada na rodada 4, um modelo capaz de representar um produtor real precisa também
+conseguir *observá-lo*; caso contrário a ponte volta a promover nada.
+
+**Resolução.** O acquirer passou a buscar as attestations dos artifacts do run do produtor:
+
+- `extract_attestation_from_zip_v2()` — limites em todos os eixos que um zip pode ser hostil
+  (tamanho do zip, número de entradas, tamanho do membro), lê **apenas** o membro esperado
+  (`attestation.json`). Ler "o único arquivo que estiver dentro" deixaria o atacante escolher o
+  payload escolhendo o nome do arquivo. Parse estrito, objeto obrigatório, `AcquisitionError`
+  fail-closed com `authoritative_check_attestation_artifact_invalid`;
+- `collect_attestations_v2(*, workflow_runs, list_artifacts, download_artifact)` — a lógica de
+  binding recebe as chamadas injetadas, então é testável sem token e sem rede; artifact expirado
+  ou com outro nome é ignorado, nunca substituído por um default;
+- `_fetch_payload` vivo passou a listar `/actions/runs/{run_id}/artifacts` e baixar
+  `/actions/artifacts/{id}/zip`.
+
+O artifact continua sendo **entrada não confiável**: buscá-lo não o valida. Quem decide se a
+attestation vale é o assembler (`verify_producer_attestation_v2`), inalterado nesta rodada.
+
+Nove testes novos; `extract_attestation_from_zip_v2` verificado por mutação — trocar o match de
+nome de membro por "primeira entrada do zip" falha exatamente `test_only_the_expected_member_is_read`.
+As asserções desses testes afirmam o tipo de exceção e o reason code, não `Exception` genérica: um
+`pytest.raises(Exception)` passaria também com um erro de digitação no próprio teste, que é
+precisamente a classe de asserção vazia que esta PR existe para manter fora do caminho de
+proveniência.
+
 ## Limitação conhecida — `workflow_ref` e workflows base-owned
 
 A API de Actions do GitHub reporta o `path` de um workflow run, mas **nenhum campo** afirma de
@@ -238,7 +274,7 @@ CT104.
 | Gate | Resultado |
 |---|---|
 | testes focados C0-1…C0-6 | verde |
-| regressão offline completa | 2120 passed, 4 skipped |
+| regressão offline completa | 2173 passed, 4 skipped |
 | suíte `requires_network` | verde |
 | `bash scripts/ci_validate.sh` (seções 1–8) | **OK** |
 | `export-agent-review-v2-schemas.py --check` | byte-idêntico |
@@ -247,8 +283,9 @@ CT104.
 | CT104 | `blocked_external: ct104_unavailable` |
 
 Testes verificados como genuínos por mutação: relaxar a ordem dos pais, remover a ambiguidade de
-tentativa e reintroduzir match por nome no verificador falham exatamente o teste escrito para cada
-um, e voltam a passar no restore.
+tentativa, reintroduzir match por nome no verificador e trocar o membro esperado do zip de
+attestation por "primeira entrada" falham exatamente o teste escrito para cada um, e voltam a
+passar no restore.
 
 ## Estado vetorial
 

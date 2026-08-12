@@ -52,14 +52,24 @@ a reusable workflow pinned by the base, or branch protection plus CODEOWNERS on
 the workflow path). Recorded here rather than resolved, because inventing a
 resolution would mean claiming an assurance the platform does not give.
 
-## Producer attestations are acquired, not inferred
+## Producer attestations are FETCHED, not deferred
 
 GitHub exposes no execution-tree SHA, so the producer emits one from a job that
-performs no checkout and runs none of the pull request's code. This script
-carries those attestations through from the acquired payload keyed by workflow
-run id; obtaining them from the run's artifacts is a separate concern that must
-not be conflated with deciding whether they are valid. An absent attestation
-means the check cannot be promoted -- never "assume it ran the merge".
+performs no checkout and runs none of the pull request's code, and uploads it as
+a run artifact. This script downloads that artifact on the live path and binds
+it to its workflow run.
+
+An earlier revision only carried attestations through from a recorded payload
+and described fetching them as "a separate concern". A Codex review pointed out
+the consequence: on the live path every observation would carry
+`producer_attestation=None`, every required check would be refused as
+`producer_attestation_missing`, and only the fixture path could ever promote --
+the same shape of defect as shipping a bridge that promotes nothing.
+
+The artifact is untrusted input: it is bounded in size and entry count, only the
+expected member is read, and it is parsed with the strict parser. Being able to
+read it establishes nothing on its own -- the assembler still checks every field
+against the run identity.
 
 ## Why the queries are scoped to the PR head
 
@@ -82,9 +92,11 @@ the query scope has to be revisited together with that change, not before it.
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -97,11 +109,28 @@ from app.agent_review.authoritative_ci_snapshot_v2 import (  # noqa: E402
 from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
     RequiredCheckProvenanceErrorV2,
 )
-from app.common.strict_json import canonical_json_text, raw_bytes_digest_hex  # noqa: E402
+from app.common.strict_json import (  # noqa: E402
+    canonical_json_text,
+    raw_bytes_digest_hex,
+    strict_json_loads,
+)
 
 ACQUIRER_IDENTITY = "aiops-acquire-authoritative-checks-v2"
 
+# Convention shared with the reusable producer workflow. `#203` owns installing
+# a caller that uploads under exactly this name.
+ATTESTATION_ARTIFACT_NAME = "aiops-authoritative-check-attestation"
+ATTESTATION_MEMBER_NAME = "attestation.json"
+
+# The artifact is produced by a workflow, so it is untrusted input. These bounds
+# exist so a hostile or corrupt zip cannot exhaust memory before the assembler
+# ever gets to reject its contents.
+MAX_ATTESTATION_ZIP_BYTES = 1 * 1024 * 1024
+MAX_ATTESTATION_MEMBER_BYTES = 256 * 1024
+MAX_ATTESTATION_ZIP_ENTRIES = 16
+
 ACQUISITION_FAILED_REASON = "authoritative_check_acquisition_failed"
+ATTESTATION_INVALID_REASON = "authoritative_check_attestation_artifact_invalid"
 GIT_OBSERVATION_FAILED_REASON = "authoritative_check_git_observation_failed"
 
 
@@ -183,15 +212,119 @@ def _fetch_payload(args: argparse.Namespace) -> tuple[dict, bytes]:
 
     client = module.GitHubClient(token, args.repository, args.api_base_url)
     owner, repo = args.repository.split("/", 1)
+    check_runs = client.get_json(
+        f"/repos/{owner}/{repo}/commits/{args.head_sha}/check-runs"
+    ).get("check_runs", [])
+    workflow_runs = client.get_json(
+        f"/repos/{owner}/{repo}/actions/runs?head_sha={args.head_sha}"
+    ).get("workflow_runs", [])
+
+    def list_artifacts(run_id):
+        return client.get_json(f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts").get(
+            "artifacts", []
+        )
+
+    def download_artifact(artifact_id):
+        return _download_bytes(
+            url=f"{args.api_base_url}/repos/{owner}/{repo}/actions/artifacts/{artifact_id}/zip",
+            token=token,
+        )
+
     payload = {
-        "check_runs": client.get_json(f"/repos/{owner}/{repo}/commits/{args.head_sha}/check-runs").get(
-            "check_runs", []
+        "check_runs": check_runs,
+        "workflow_runs": workflow_runs,
+        # Fetched here rather than deferred: without them the live path could
+        # never promote anything, which is exactly the defect a Codex review
+        # found in the previous revision.
+        "producer_attestations": collect_attestations_v2(
+            workflow_runs=workflow_runs,
+            list_artifacts=list_artifacts,
+            download_artifact=download_artifact,
         ),
-        "workflow_runs": client.get_json(
-            f"/repos/{owner}/{repo}/actions/runs?head_sha={args.head_sha}"
-        ).get("workflow_runs", []),
     }
     return payload, json.dumps(payload, sort_keys=True).encode("utf-8")
+
+
+def _download_bytes(*, url: str, token: str) -> bytes:
+    """Raw artifact download. The reviewed `GitHubClient` speaks JSON only, and
+    an artifact is a zip, so this is the one place that reads bytes."""
+
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "aiops-acquire-authoritative-checks/2.0",
+            "Authorization": f"Bearer {token}",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.read(MAX_ATTESTATION_ZIP_BYTES + 1)
+    except (urllib.error.URLError, OSError) as exc:
+        raise AcquisitionError(ACQUISITION_FAILED_REASON) from exc
+
+
+def extract_attestation_from_zip_v2(raw: bytes) -> dict:
+    """Read the attestation out of a downloaded artifact zip, fail-closed.
+
+    Bounded on every axis a zip can be hostile on, and it reads ONLY the
+    expected member -- never "whatever single file is inside", which would let
+    an attacker choose the payload by choosing the filename."""
+
+    if len(raw) > MAX_ATTESTATION_ZIP_BYTES:
+        raise AcquisitionError(ATTESTATION_INVALID_REASON)
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            entries = archive.infolist()
+            if len(entries) > MAX_ATTESTATION_ZIP_ENTRIES:
+                raise AcquisitionError(ATTESTATION_INVALID_REASON)
+            member = next((e for e in entries if e.filename == ATTESTATION_MEMBER_NAME), None)
+            if member is None or member.file_size > MAX_ATTESTATION_MEMBER_BYTES:
+                raise AcquisitionError(ATTESTATION_INVALID_REASON)
+            with archive.open(member) as handle:
+                content = handle.read(MAX_ATTESTATION_MEMBER_BYTES + 1)
+    except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
+        raise AcquisitionError(ATTESTATION_INVALID_REASON) from exc
+
+    if len(content) > MAX_ATTESTATION_MEMBER_BYTES:
+        raise AcquisitionError(ATTESTATION_INVALID_REASON)
+
+    try:
+        document = strict_json_loads(content)
+    except ValueError as exc:
+        raise AcquisitionError(ATTESTATION_INVALID_REASON) from exc
+    if not isinstance(document, dict):
+        raise AcquisitionError(ATTESTATION_INVALID_REASON)
+    return document
+
+
+def collect_attestations_v2(*, workflow_runs: list, list_artifacts, download_artifact) -> dict:
+    """Map each workflow run id to the attestation its run uploaded.
+
+    The two GitHub calls are injected so the binding logic is testable without
+    a token or a network, and so the HTTP plumbing stays in one reviewed place.
+    A run with no attestation is simply absent -- refusing here would conflate
+    "this run published nothing" with "this artifact is malformed"."""
+
+    attestations: dict[str, dict] = {}
+    for run in workflow_runs:
+        run_id = run.get("id")
+        if run_id is None:
+            continue
+        for artifact in list_artifacts(run_id):
+            if artifact.get("name") != ATTESTATION_ARTIFACT_NAME or artifact.get("expired"):
+                continue
+            attestations[str(run_id)] = extract_attestation_from_zip_v2(
+                download_artifact(artifact.get("id"))
+            )
+            break
+    return attestations
 
 
 def _workflow_ref(run: dict) -> str:

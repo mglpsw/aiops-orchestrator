@@ -29,10 +29,22 @@
     is merely well-formed, not entitled.
   - **Base-owned policy.** `.aiops/authoritative-checks.v2.yaml` names the one
     producer entitled to speak for each required check as a complete identity
-    tuple (`check_name`, `workflow_path`, `workflow_ref`, `job_name`,
-    `verifier_identity`), read exclusively from the trusted base/default
-    checkout. Both `policy_source_bytes_digest` and
+    tuple (`check_name`, `workflow_path`, `job_name`, `verifier_identity`,
+    `producer_kind`, `producer_workflow`), read exclusively from the trusted
+    base/default checkout. Both `policy_source_bytes_digest` and
     `policy_source_semantic_digest` travel into the sidecar.
+  - **Producer evidence, separate from review origin.** `RunOriginV2` stays
+    frozen: it types what the *review* is about, not how the producer fired.
+    `AuthoritativeProducerEvidenceV2` separates `producer_trigger`,
+    `workflow_execution_ref`, the immutable producer workflow identity
+    (`path @ 40-char SHA`) and the executed-tree attestation. The first
+    ratified `producer_kind` is `sha_pinned_reusable_workflow`: a pull request
+    can edit its own tree but cannot make a run reference a workflow SHA it did
+    not load. The executed tree is proven by an attestation emitted by a
+    producer job that performs **no checkout and runs no pull-request code** —
+    otherwise the subject would be attesting to its own execution. The
+    acquirer fetches those attestations from the producer run's artifacts,
+    bounded and strictly parsed; fetching them does not validate them.
   - **HEAD is not the tested tree.** `review_subject_sha = head_sha` versus
     `execution_subject_sha = tested_merge_sha`, with order-sensitive
     `[base, head]` parentage proven per origin — `pull_request_target`,

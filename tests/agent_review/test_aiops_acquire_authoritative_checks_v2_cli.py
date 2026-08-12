@@ -308,3 +308,121 @@ def test_a_run_without_a_start_time_is_refused(tmp_path: Path, merge_repo) -> No
     result = _acquire(tmp_path, merge_repo, payload)
     assert result.returncode != 0
     assert not (tmp_path / "snapshot.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Codex round 5 -- the live path must fetch attestations, not defer them
+# ---------------------------------------------------------------------------
+
+
+def _acquirer_module():
+    """Load the CLI as a module so its pure helpers can be tested directly."""
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_acq", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _zip_bytes(members: dict[str, bytes]) -> bytes:
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+    return buffer.getvalue()
+
+
+def _assert_attestation_refused(raw: bytes) -> None:
+    """Assert the exact refusal, not merely "something raised".
+
+    A blind `pytest.raises(Exception)` would also pass on a typo in the test
+    itself, which is precisely the class of vacuous assertion this PR exists to
+    keep out of the provenance path."""
+
+    acq = _acquirer_module()
+    with pytest.raises(acq.AcquisitionError) as exc:
+        acq.extract_attestation_from_zip_v2(raw)
+    assert acq.ATTESTATION_INVALID_REASON in str(exc.value)
+
+
+def test_the_live_payload_includes_producer_attestations() -> None:
+    """The defect Codex round 5 found: `_fetch_payload` built only check_runs
+    and workflow_runs, so every live observation carried no attestation and
+    every required check was refused. Only the fixture path could promote."""
+
+    acq = _acquirer_module()
+    attestation = {"schema_id": "agent-review.producer-attestation.v2", "executed_sha": "d" * 40}
+
+    collected = acq.collect_attestations_v2(
+        workflow_runs=[{"id": 900}, {"id": 901}],
+        list_artifacts=lambda run_id: (
+            [{"id": 7, "name": acq.ATTESTATION_ARTIFACT_NAME, "expired": False}] if run_id == 900 else []
+        ),
+        download_artifact=lambda artifact_id: _zip_bytes(
+            {acq.ATTESTATION_MEMBER_NAME: json.dumps(attestation).encode()}
+        ),
+    )
+
+    assert collected == {"900": attestation}
+
+
+def test_an_expired_artifact_is_ignored() -> None:
+    acq = _acquirer_module()
+    collected = acq.collect_attestations_v2(
+        workflow_runs=[{"id": 900}],
+        list_artifacts=lambda run_id: [
+            {"id": 7, "name": acq.ATTESTATION_ARTIFACT_NAME, "expired": True}
+        ],
+        download_artifact=lambda artifact_id: b"never reached",
+    )
+    assert collected == {}
+
+
+def test_a_differently_named_artifact_is_ignored() -> None:
+    acq = _acquirer_module()
+    collected = acq.collect_attestations_v2(
+        workflow_runs=[{"id": 900}],
+        list_artifacts=lambda run_id: [{"id": 7, "name": "coverage", "expired": False}],
+        download_artifact=lambda artifact_id: b"never reached",
+    )
+    assert collected == {}
+
+
+def test_only_the_expected_member_is_read() -> None:
+    """Reading "whatever single file is inside" would let an attacker choose
+    the payload by choosing the filename."""
+
+    _assert_attestation_refused(_zip_bytes({"something-else.json": b'{"executed_sha": "evil"}'}))
+
+
+def test_a_malformed_zip_is_refused() -> None:
+    _assert_attestation_refused(b"not a zip at all")
+
+
+def test_an_oversized_zip_is_refused_before_parsing() -> None:
+    acq = _acquirer_module()
+    _assert_attestation_refused(b"x" * (acq.MAX_ATTESTATION_ZIP_BYTES + 1))
+
+
+def test_a_zip_with_too_many_entries_is_refused() -> None:
+    acq = _acquirer_module()
+    _assert_attestation_refused(
+        _zip_bytes({f"f{i}.json": b"{}" for i in range(acq.MAX_ATTESTATION_ZIP_ENTRIES + 1)})
+    )
+
+
+def test_the_attestation_member_is_parsed_strictly() -> None:
+    """Duplicate keys in the artifact are refused, like every other input."""
+
+    acq = _acquirer_module()
+    _assert_attestation_refused(_zip_bytes({acq.ATTESTATION_MEMBER_NAME: b'{"a": 1, "a": 2}'}))
+
+
+def test_a_non_object_attestation_is_refused() -> None:
+    acq = _acquirer_module()
+    _assert_attestation_refused(_zip_bytes({acq.ATTESTATION_MEMBER_NAME: b"[1, 2, 3]"}))
