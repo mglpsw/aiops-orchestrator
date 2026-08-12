@@ -1,0 +1,107 @@
+{
+  "note": "Lightweight, human-authored summary of this slice. Not validated by a strict schema/loader -- no such receipt contract exists in this repository yet. Do not treat this as equivalent in authority to a ReviewReadinessV2 artifact or any other ContractV2Model-backed contract.",
+  "repository": "mglpsw/aiops-orchestrator",
+  "epic": 199,
+  "issue": 201,
+  "slice": "201-C",
+  "plan": "Execution-Ready Engineering Specification rev.2.1, audited and approved before implementation",
+  "branch": "feat/201-c-required-check-readiness-wiring",
+  "base_sha": "8b20ae37cb28c52c49f545d15d006de2f6086388",
+  "base_tree": "a4fd4840aaf31a3442f2073991aa4ac679089c43",
+  "commits": [
+    "test(agent-review/v2): red tests for required-check readiness assessment",
+    "feat(agent-review/v2): required-check assessment derived from the trusted profile behind the C0 verifier",
+    "feat(agent-review/v2): required-check precedence in readiness_decision_v2",
+    "feat(agent-review/v2): single production constructor path for ReviewReadinessV2",
+    "test(agent-review/v2): AST proof that the readiness path always traverses the C0 boundary",
+    "test(agent-review/v2): migrate dual-target E2E to fail-closed reality"
+  ],
+  "files_added": [
+    "app/agent_review/required_check_readiness_v2.py",
+    "tests/agent_review/test_required_check_readiness_v2.py",
+    "tests/agent_review/test_required_check_readiness_arch_v2.py",
+    "docs/checkpoints/AGENT_REVIEW_V2_201C_READINESS_WIRING.md",
+    "reports/agent-review-v2-201c-readiness-wiring-receipt.json"
+  ],
+  "files_modified": [
+    "app/agent_review/readiness_decision_v2.py",
+    "app/agent_review/review_readiness_emission_v2.py",
+    "app/agent_review/review_transport_v2.py",
+    "scripts/aiops-review-quality-gate-v2.py",
+    "tests/agent_review/test_readiness_decision_v2.py",
+    "tests/agent_review/test_review_readiness_emission_v2.py",
+    "tests/agent_review/test_review_transport_v2.py",
+    "tests/agent_review/test_aiops_review_quality_gate_v2_cli.py",
+    "tests/agent_review/test_v2_dual_target_e2e.py",
+    "docs/AGENT_REVIEW_V2_REVIEW_READINESS_EMISSION.md",
+    "docs/AGENT_REVIEW_V2_TRUSTED_CHECKS.md",
+    "CHANGELOG.md"
+  ],
+  "new_schemas": [],
+  "existing_schemas_touched": [],
+  "frozen_contracts_touched": [],
+  "renamed_functions": {
+    "app.agent_review.review_readiness_emission_v2.emit_review_readiness_v2": "app.agent_review.review_readiness_emission_v2._assemble_review_readiness_v2 (internal since #201-C; no longer accepts a raw checks array)"
+  },
+  "new_public_entry_point": "app.agent_review.review_readiness_emission_v2.produce_review_readiness_v2",
+  "cli_contract_change": {
+    "before": "a required check with no legitimate submission failed the CLI outright (exit 1, gate_required_check_missing)",
+    "after": "emits a real manual_required + policy_failure artifact and exits 0; a forged/invalid submission still writes nothing and exits 1, unchanged",
+    "blast_radius": "none confirmed -- global search found zero production invocations of scripts/aiops-review-quality-gate-v2.py in this repository as of base_sha"
+  },
+  "verification": {
+    "baseline_at_base_sha": {
+      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/agent_review/ tests/evals/",
+      "result": "1681 passed, 16 skipped, 2 failed (environment: sudo absent in sandbox, test_isolated_executor_v2.py, out of #201-C's scope)"
+    },
+    "final_agent_review_suite": {
+      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/agent_review/",
+      "result": "1727 passed, 16 skipped, 2 failed (same environment class, unchanged)"
+    },
+    "final_evals_suite": {
+      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/evals/",
+      "result": "95 passed, 4 skipped"
+    },
+    "schema_export_check": {
+      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python scripts/export-agent-review-v2-schemas.py --check",
+      "result": "AgentReview v2 schemas are byte-identical."
+    },
+    "caem_f0_pin_check": {
+      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python scripts/verify-caem-f0-pin.py --check",
+      "result": "pin: ok"
+    },
+    "ruff": "not canonical in this repository (absent from requirements-dev.txt and the venv) -- gate skipped, not fabricated",
+    "git_diff_check": "clean",
+    "real_ci": "not yet run -- requires push + PR (task pending at receipt time)"
+  },
+  "architecture_proof": {
+    "file": "tests/agent_review/test_required_check_readiness_arch_v2.py",
+    "asserts": 8,
+    "mutation_verified": [
+      "reintroducing except RequiredCheckProvenanceErrorV2 around the C0 boundary call -- caught",
+      "reintroducing a required_check_names parameter on produce_review_readiness_v2 -- caught"
+    ]
+  },
+  "not_delivered": [
+    "positive READY/BLOCKED_PIPELINE E2E through the real C0 boundary -- no legitimate authority source exists in production today (Path A has no caller; Path B refused unconditionally by verify_independent_semantic_judge_v2). Deferred to #203/CT104, marked temporary_until_203 in the architecture test.",
+    "authentication of ReadinessDecisionV2/findings origin -- preexisting trust assumption from C1/C2, documented, not created or widened by #201-C.",
+    "#217 closure -- the single remaining ungated door (run_synthetic_review_v2) is closed, but #217's own closure condition requires proof of exhaustiveness over the whole defect class, not absence of a known path.",
+    "adversarial review -- not run as of this receipt; see docs/checkpoints/AGENT_REVIEW_V2_201C_READINESS_WIRING.md's state vector."
+  ],
+  "state_vector": {
+    "201_A": "MERGED",
+    "201_B1": "MERGED",
+    "201_B2": "MERGED",
+    "201_B3": "MERGED (operational closure BLOCKED_BY_CT104)",
+    "201_C0": "MERGED",
+    "201_C_implementation": "COMPLETE",
+    "201_C_adversarial_review": "NOT_STARTED",
+    "201_C": "IMPLEMENTED_AWAITING_MERGE_REVIEW",
+    "217": "OPEN_RESIDUAL_NOT_BLOCKING_C",
+    "203": "NOT_STARTED",
+    "ct104_conformance": "NOT_CLAIMED",
+    "authoritative_pytest_promotion": "UNAVAILABLE_BY_DESIGN",
+    "release": "NOT_AUTHORIZED"
+  },
+  "grant_scope": "implementation of #201-C only, per plan rev.2.1. Does not authorize merge, tag, release, deploy, repin, CT104 activation, start of #203, or closing #201/#217/#199."
+}

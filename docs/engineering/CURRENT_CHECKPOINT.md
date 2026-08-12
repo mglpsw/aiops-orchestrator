@@ -1,74 +1,107 @@
 # CURRENT CHECKPOINT — AIOps/AgentReview
 
-**Corte temporal:** 2026-08-08 (America/Sao_Paulo), reconciliado após implementação de `#201-B3`.
+**Corte temporal:** 2026-08-12 (America/Sao_Paulo), reconciliado após implementação de `#201-C`
+(não mergeada neste corte — ver adendo abaixo).
 **Classe:** estado observado/arquitetural; revalidar runs e issues antes de ação.
 
 ## Identidade viva observada
 
 - Repositório canônico: [`mglpsw/aiops-orchestrator`](https://github.com/mglpsw/aiops-orchestrator)
 - Branch padrão: `master`
-- HEAD observado: `57e0b056c2c2a4bf3ddfab12a84f9eb46278c42d` (squash merge de #212, `#201-B2`; base pré-merge `5037a49916decb30ccbce4330c696686d61e56db`, que é por sua vez o squash merge de #214, engine v1, sobre `f409fd15e25cd7fcbed31fa8107cec419fd3827e` = HEAD pós-#211). `master` avançou `f409fd1 → 5037a49 → 57e0b05`, cada avanço um squash exato, verificado via `git merge-base --is-ancestor`.
+- HEAD observado: `8b20ae37cb28c52c49f545d15d006de2f6086388` (squash merge de #219, `#201-C0`;
+  base pré-merge `865427224b3d10a9ce4858183e5848351672935e`, squash merge de #218, `#201-B3`).
+  `master` avançou `8654272 → 8b20ae3` neste corte, verificado ao vivo (parent exato, tree
+  idêntico ao HEAD testado `00fb8b3e`).
 - AgentReview é subsistema deste repositório, não repositório separado.
-- PRs abertas no corte: `#215` (esta própria PR de reconciliação documental — desaparece desta lista após seu próprio merge) e `#216` (`docs(release): prepare v0.22.0`, trilha docs/release separada, criada por outra sessão; não altera nem bloqueia a sequência `#201-B3` → `#201-C`). `#214` e `#212` mergeadas neste corte.
+- PRs abertas no corte: nenhuma. `#201-C` está implementada localmente em worktree isolado
+  (branch `feat/201-c-required-check-readiness-wiring`), ainda **não** empurrada nem em PR.
 
 ## Estado de referência
 
-- CAEM: single source of identity é `config/caem/caem-3.0-f0.pin.json` (CAEM 3.0 F0, `development_freeze`, `published=false`); material 2.1.0 anteriormente vendorizado em `.caem/` está em quarantine, `authority_effect=none` (`.caem/quarantine/caem-2.1/`); norma pertence a `mglpsw/caem`;
-- AgentReview v1/release `v0.20.0` permanece baseline operacional, pinada por SHA completo nos target repos;
-- AgentReview v2 está especificado/em consolidação por contracts binding, lossless multi-chunk, target profiles, dual-target conformance e Codex shadow;
-- distribution epic `#199`, issue `#200` (core content/transport slices A/B/C): `core_synthetic_complete`, hardened por dois replan gates adversariais independentes pós-merge (9 achados confirmados, zero falso-positivo) via PR #211 (squash `f409fd1`) — ver `docs/checkpoints/AGENT_REVIEW_V2_200_ADVERSARIAL_AUDIT_FOLLOWUP.md`; issue `#200` continua OPEN, `partially_completed` pendente do canário do AgentEscala (`#763-A`), não fechada por este hardening;
-- AgentReview v1 (AgentEscala#675): três defeitos de proveniência/evidência corrigidos (prosa do modelo entrando no namespace determinístico, `required` vs `optional` colapsados, `_plan_status` testando `limitations` por truthiness) via PR #214 (squash `5037a49`), v2 intocado, merge/tag/release não autorizados nessa rodada — repin de target segue trabalho separado, bloqueado por release não publicada;
-- `#201` (trusted-check simulation): slice A (contratos/promotion authority) merged via PR #209 (`f001335`); slice B1 (simulador offline) merged via PR #210 (`bc52aad`); slice B2 (executor isolado real) **merged via PR #212 (squash `57e0b05`)**, `foundation_complete` — ver `docs/checkpoints/AGENT_REVIEW_V2_201B2_ISOLATED_EXECUTOR.md`; slice B3 (adversarial hardening — fronteira de autoridade + PID-namespace containment, incluindo a Emenda A1 do broker privilegiado para a estratégia sudo-elevada) **implementada nesta sessão** (branch `claude/agentreview-v2-hardening-plan-74kva0`, ainda não em PR/merge neste corte) — ver `docs/checkpoints/AGENT_REVIEW_V2_201B3_ADVERSARIAL_HARDENING.md`; `#201-B3` fecha os dois critérios obrigatórios que `#201-B2` deixou abertos (forja de exit code, containment de lifetime de processo), comprovados sob três contas reais (root/direto, sudo-elevado via broker, userns fraco) — CT104 permanece `blocked_external: ct104_unavailable` para a prova específica do host persistente; `#201-C` (wiring em `ReviewReadinessV2`) e `#201-C0` (proveniência de CI autoritativa, `#217`) não iniciados; issue `#201` continua OPEN;
-- ProjectOps v1 permanece trilha separada de inteligência de CI, advisory e fail-safe;
-- análise por LLM é advisory; `review-quality-gate.json` e CI determinística permanecem autoridades;
-- CT104 executa AgentReview offline/toolrepo; CT102 executa runtime AIOps, nunca AgentReview runner; CT104 offline neste corte — critérios de `#201-B2` que exijam isolamento real do CT104 devem ser marcados `blocked_external: ct104_unavailable`, não falsificados via CT102;
+- CAEM: single source of identity é `config/caem/caem-3.0-f0.pin.json` (CAEM 3.0 F0,
+  `development_freeze`, `published=false`); material 2.1.0 anteriormente vendorizado em `.caem/`
+  está em quarantine, `authority_effect=none` (`.caem/quarantine/caem-2.1/`); norma pertence a
+  `mglpsw/caem`;
+- AgentReview v1/release `v0.20.0` permanece baseline operacional, pinada por SHA completo nos
+  target repos;
+- distribution epic `#199`, issue `#200` (core content/transport slices A/B/C):
+  `core_synthetic_complete`, hardened — issue `#200` continua OPEN, `partially_completed` pendente
+  do canário do AgentEscala (`#763-A`), não revalidado nesta sessão;
+- `#201` (trusted-check simulation): slices A/B1/B2/B3/C0 **mergeadas** (`f001335`, `bc52aad`,
+  `57e0b05`, `8654272`, `8b20ae3`); `#201-B3` operacionalmente `BLOCKED_BY_CT104` (isolamento real
+  sob host persistente não comprovado fora do sandbox); `#201-C0` fechou o bypass de proveniência
+  exercido pela `#201` (`#217` residual permanece OPEN para a classe completa); `#201-C`
+  (wiring em `ReviewReadinessV2`) **implementada nesta sessão**, não mergeada — ver adendo;
+  issue `#201` continua OPEN;
+- ProjectOps v1 permanece trilha separada de inteligência de CI, advisory e fail-safe, não
+  revalidada nesta sessão;
+- análise por LLM é advisory; `review-quality-gate.json`/`ReviewReadinessV2` e CI determinística
+  permanecem autoridades;
+- CT104 executa AgentReview offline/toolrepo; CT102 executa runtime AIOps, nunca AgentReview
+  runner; CT104 permanece offline neste corte;
 - Router é transporte de inferência por contrato, sem autoridade sobre host ou verdict.
 
 ## Estado vetorial
 
 - implementação baseline v0.20.0: `completed`;
 - implementação v2/ProjectOps: `in_progress`;
-- `#200` core (A/B/C): `core_synthetic_complete` + hardened (adversarial audit follow-up merged); `partially_completed` no nível da issue (canário AgentEscala pendente);
-- AgentReview v1 (AgentEscala#675): `merged` (PR #214, squash `5037a49`), `release_ready` (release/tag/repin não executados);
-- `#201-A`/`#201-B1`/`#201-B2`: `merged`; `#201-B2` = `foundation_complete` (PR #212, squash `57e0b05`); `#201-B3`: `implemented, adversarially_hardened` nesta sessão (não em PR/merge neste corte) — dois critérios obrigatórios fechados (ver `docs/checkpoints/AGENT_REVIEW_V2_201B3_ADVERSARIAL_HARDENING.md`); `#201-C0` (`#217`) e `#201-C`: `not_started`;
+- `#200` core (A/B/C): `core_synthetic_complete` + hardened; `partially_completed` no nível da
+  issue (não revalidado nesta sessão);
+- `#201-A`/`#201-B1`/`#201-B2`/`#201-B3`/`#201-C0`: `merged`; `#201-B3` operational closure
+  `BLOCKED_BY_CT104`; `#217` exercised path `closed_by_pr_219`, residual class `open`;
+- `#201-C`: `implemented_awaiting_merge_review` (branch local, não empurrada; review adversarial
+  não iniciado) — ver adendo;
+- `#203`: `not_started`;
 - validação: `partial`;
 - change request: `not_open` no corte;
 - slice: `in_progress`;
 - release v2: `not_created`;
 - deployment AgentReview: offline/advisory no CT104;
-- observation: métricas/false-positive loop a ampliar.
+- observation: métricas/false-positive loop a ampliar, não revalidado nesta sessão.
 
-## Adendo — `#201-C0` implementada nesta sessão
+## Adendo — `#201-C` implementada nesta sessão, não mergeada
 
-`#201-B3` foi mergeada via PR #218 (squash `865427224b3d10a9ce4858183e5848351672935e`); `master`
-avançou `2ce1f45 → 8654272`. `#201-C0` (authoritative CI provenance bridge, rastreada por `#217`)
-foi **implementada** sobre esse HEAD na branch `claude/c0-provenance-bridge-plan-xx7d34`, em sete
-commits red-first — ver `docs/checkpoints/AGENT_REVIEW_V2_201C0_PROVENANCE_BRIDGE.md` e o plano
-canônico em `#201` (comment 5258778428).
+Grant nominal do dono do repositório, escopado à implementação de `#201-C` conforme a Execution-
+Ready Engineering Specification rev.2.1 (auditada e aprovada em duas rodadas prévias — ver `#201`).
+Implementação feita em worktree novo (`/opt/agent-tools/ar-201-c-readiness-wiring`), a partir de
+`origin/master` @ `8b20ae37`, branch `feat/201-c-required-check-readiness-wiring`, seis commits.
 
-Entrega: sidecar aditivo `RequiredCheckProvenanceV2` ligado 1:1 por digest ao
-`RequiredCheckResultV2` exato; política base-owned `.aiops/authoritative-checks.v2.yaml` lida
-exclusivamente do checkout base; assembler host-owned como único produtor; acquirer separado como
-única camada com rede; e `scripts/aiops-review-quality-gate-v2.py` endurecido para exigir
-proveniência autorizada (`--checks-provenance` obrigatório). `review_readiness_emission_v2.py` e
-`readiness_decision_v2.py` **intocados** — wiring continua sendo `#201-C`.
+Entrega: novo módulo `required_check_readiness_v2.py` como choke point entre `#201-C0` e a
+readiness — deriva `required_check_names` exclusivamente de um `TargetProfileV2` confiável ligado
+a `identity.profile_hash`, nunca do caller; `readiness_decision_v2._apply_required_check_
+assessment_v2` com a precedência ratificada (`STALE` soberano, `CONFIRMED` finding preserva
+`BLOCKED_CODE`, required check não satisfeito força `MANUAL_REQUIRED`+`POLICY_FAILURE`, inclusive
+downgrade deliberado de `BLOCKED_PIPELINE`); `review_readiness_emission_v2.produce_review_
+readiness_v2` como único caminho público de construção de `ReviewReadinessV2` (o antigo
+`emit_review_readiness_v2` virou `_assemble_review_readiness_v2`, interno); `run_synthetic_
+review_v2` perdeu o parâmetro `checks` ungated (a última porta residual que `#217` nomeava);
+`scripts/aiops-review-quality-gate-v2.py` reescrito para emitir artifact `manual_required` real
+(exit 0) em vez de falhar quando um required check não tem submissão legítima
+(`CLI_EXIT_SUCCESS != READINESS_READY`, documentado).
 
-Nenhum contrato congelado alterado; os 15 schemas v2 pré-existentes permanecem byte-idênticos
-(3 novos, aditivos); pin CAEM F0 verde; `ci_validate.sh` seções 1–8 verdes; regressão offline
-completa verde.
+Prova mecânica: `test_required_check_readiness_arch_v2.py`, 8 testes AST/call-graph provando sítio
+único de construção, caller único do assembler, travessia obrigatória de C0, nenhum entry point
+público aceitando assessment ou nomes caller-supplied, nenhum `except` ao redor da recusa de C0, e
+nenhuma fixture criando rota positiva alcançável em produção (`temporary_until_203`). Dois asserts
+verificados por mutação durante a implementação (reintrodução de `except`/parâmetro
+caller-supplied — ambos pegos com a mensagem certa).
 
-**Limitação conhecida, registrada e não resolvida:** a API do GitHub não expõe de qual ref a
-*definição* de um workflow foi carregada, e runs `pull_request` executam o workflow como ele existe
-no merge commit da própria PR. A ameaça `C0-T4` (workflow alterado pela PR) **não** é fechada por
-metadado do GitHub isoladamente; fechá-la é decisão de configuração do target (`#203`), não de
-código deste repositório. O acquirer registra o que observou e falha fechado em vez de fabricar a
-garantia.
+Nenhum contrato congelado alterado; export de schemas byte-idêntico; pin CAEM F0 verde.
+`tests/agent_review/` completo: 1727 passed, 16 skipped, 2 failed (classe `environment` — `sudo`
+ausente no sandbox, `test_isolated_executor_v2.py`, fora do escopo desta slice, idêntico à
+baseline pré-edição). `tests/evals/`: 95 passed, 4 skipped.
 
-Merge, tag, release, deploy, repin, ativação de capacidade e fechamento de `#201`/`#217`
-permanecem **retidos**.
+Detalhes completos: `docs/checkpoints/AGENT_REVIEW_V2_201C_READINESS_WIRING.md` e
+`reports/agent-review-v2-201c-readiness-wiring-receipt.json`.
+
+**Não coberto por este grant:** push, PR, CI real do GitHub, review adversarial, merge, tag,
+release, deploy, repin, ativação de capacidade CT104, início de `#203`, fechamento de
+`#201`/`#217`/`#199`.
 
 ## Próxima ação mínima
 
-`#201-B3` está implementada nesta sessão (branch `claude/agentreview-v2-hardening-plan-74kva0`), com os dois critérios obrigatórios fechados e comprovados sob três contas reais (root/direto; sudo-elevado via `trusted_check_broker_v2` — Emenda A1; userns fraco/sem privilégio). Nenhum contrato congelado alterado; exportação de schemas v2 byte-idêntica; `ci_validate.sh` seções 7 e 8 verdes; pin CAEM F0 ok. Merge **não autorizado** nesta rodada — aguarda grant nominal específico, mesma disciplina de `#201-B2`.
-
-Próxima ação mínima: push da branch, abertura de PR **rascunho** para `#201-B3`, confirmação de CI real do GitHub verde no HEAD final, comentário de reconciliação em `#201`. Após isso, com `#201-B3` operacionalmente fechada (código + CI real + conformidade CT104 quando disponível): (1) `#201-C0` (`#217` — proveniência autorizada para `RequiredCheckResultV2`, união tipada `TrustedHostPromotion ∪ AuthoritativeCIPromotion`, sidecar aditivo, sem tocar contrato congelado); depois (2) `#201-C` (wiring em `ReviewReadinessV2`). Nenhum dos dois deve começar antes do fechamento operacional de `#201-B3`, e ativação de capacidade no CT104 não deve prosseguir antes disso. CT104 permanece offline neste corte — a verificação do `harness_digest` contra uma imagem real pinada, a garantia de isolamento sob o host de produção real (incluindo especificamente o caminho sudo-elevado/broker da Emenda A1, não testado fora deste sandbox), e a permissão do perfil LXC do CT104 para namespaces PID/user aninhados permanecem `blocked_external: ct104_unavailable` até CT104 estar acessível; revalidar quando disponível, não assumir sucesso. Revalidar issues `#80`, `#83–#89` e ProjectOps `#91–#95` antes de qualquer ação sobre essa trilha separada (não bloqueia `#201`).
+Push da branch `feat/201-c-required-check-readiness-wiring`, abertura de PR **rascunho** vinculada
+a `#201`, confirmação de CI real do GitHub verde no HEAD final, solicitação de review adversarial.
+Merge, tag, release, deploy, repin, ativação de capacidade e fechamento de `#201`/`#217`/`#199`
+permanecem retidos, cada um exigindo grant nominal próprio. `#203` não deve começar antes do
+fechamento operacional de `#201-C` (código + CI real + review adversarial estável).
