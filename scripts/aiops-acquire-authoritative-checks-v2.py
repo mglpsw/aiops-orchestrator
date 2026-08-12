@@ -51,6 +51,23 @@ runs the base-owned definition (for example a `workflow_run`-triggered job, or
 a reusable workflow pinned by the base, or branch protection plus CODEOWNERS on
 the workflow path). Recorded here rather than resolved, because inventing a
 resolution would mean claiming an assurance the platform does not give.
+
+## Why the queries are scoped to the PR head
+
+Both requests filter by `--head-sha`, which retrieves exactly the runs GitHub
+associates with the pull request's head -- and `pull_request` is the only origin
+`#201-C0` can promote (see `authoritative_check_policy_v2`: every other origin
+requires `explicit_tested_tree`, which has no verifiable producer evidence and
+is refused when the policy is loaded).
+
+A second Codex review noted that `pull_request_target` runs are associated with
+the BASE commit and so would not be retrieved by a head-scoped query. That is
+true, and it is consistent rather than a gap: such a run cannot be promoted, so
+not retrieving it changes no verdict. Adding a base-scoped query would collect
+evidence for a path that fails closed anyway, and would invite the impression
+that the path works. If a future producer makes `pull_request_target`
+verifiable -- by emitting authenticated evidence of the tree it checked out --
+the query scope has to be revisited together with that change, not before it.
 """
 
 from __future__ import annotations
@@ -279,7 +296,6 @@ def build_snapshot_document(
         "observations": observations,
         "tested_merge_sha": args.tested_merge_sha,
         "tested_merge_parents": parents,
-        "executed_tree_sha": args.tested_merge_sha,
         "observation_bytes_digest": raw_bytes_digest_hex(payload_bytes),
     }
 

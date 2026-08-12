@@ -204,13 +204,17 @@ def test_other_origins_cannot_claim_synthetic_merge_semantics(tmp_path: Path) ->
     assert exc.value.reason_code == POLICY_INVALID_REASON_V2
 
 
-def test_an_explicit_non_pull_request_origin_is_accepted(tmp_path: Path) -> None:
+def test_explicit_tested_tree_is_refused_at_load_time(tmp_path: Path) -> None:
+    """Declarable in the type, not accepted in practice: no producer emits
+    authenticated evidence of the tree it checked out, so accepting it would
+    mean trusting the caller's own `--tested-merge-sha` echoed back. Refused
+    when the policy is WRITTEN, so a target does not discover its policy cannot
+    work only when a review silently never becomes ready."""
+
     text = VALID_POLICY + "      replay: explicit_tested_tree\n"
-    loaded = load_authoritative_check_policy_v2(_write(tmp_path, text))
-    entry = loaded.policy.entry_for("pytest")
-    assert entry is not None
-    assert entry.origin_rules.rule_for("replay") is ExecutedTreeRuleV2.EXPLICIT_TESTED_TREE
-    assert entry.origin_rules.rule_for("manual") is None
+    with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
+        load_authoritative_check_policy_v2(_write(tmp_path, text))
+    assert exc.value.reason_code == POLICY_INVALID_REASON_V2
 
 
 def test_origin_rules_cannot_be_empty(tmp_path: Path) -> None:

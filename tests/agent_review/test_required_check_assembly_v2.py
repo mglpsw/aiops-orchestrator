@@ -124,7 +124,6 @@ def _snapshot(*, observations: list[dict[str, object]] | None = None, **override
         "observations": observations if observations is not None else [_obs()],
         "tested_merge_sha": MERGE,
         "tested_merge_parents": [BASE, HEAD],
-        "executed_tree_sha": MERGE,
         "observation_bytes_digest": "f" * 64,
     }
     payload.update(overrides)
@@ -277,18 +276,17 @@ def test_c0_t7_base_moved_after_the_merge_was_generated() -> None:
     assert _reason(exc) == PROVENANCE_PARENTAGE_MISMATCH_REASON_V2
 
 
-def test_c0_t8_check_on_the_right_head_but_a_different_executed_tree() -> None:
-    """The subtlest version of the attack: correct HEAD, correct producer,
-    wrong tree."""
-
-    snapshot = _snapshot(executed_tree_sha="2" * 40)
-    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
-        _assemble_ci(snapshot)
-    assert _reason(exc) == PROVENANCE_TESTED_MERGE_MISMATCH_REASON_V2
-
-
 def test_c0_t8_snapshot_merge_sha_must_match_the_identity() -> None:
-    snapshot = _snapshot(tested_merge_sha="2" * 40, executed_tree_sha="2" * 40)
+    """C0-T8. The snapshot must describe THIS merge.
+
+    There is deliberately no separate `executed_tree_sha` check any more: a
+    Codex review showed the acquirer could only ever copy the caller's own
+    `--tested-merge-sha` into that field, so comparing it to
+    `identity.tested_merge_sha` compared the caller's input against itself.
+    What actually binds the run to this merge is the run's OWN base/head, which
+    GitHub reports -- see `_require_run_executed_this_merge`."""
+
+    snapshot = _snapshot(tested_merge_sha="2" * 40)
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         _assemble_ci(snapshot)
     assert _reason(exc) == PROVENANCE_TESTED_MERGE_MISMATCH_REASON_V2
@@ -715,3 +713,67 @@ def test_reassembly_refuses_a_trusted_host_record() -> None:
             toolchain_digest=TOOLCHAIN,
         )
     assert _reason(exc) == PROVENANCE_SUBJECT_RESULT_NOT_PROMOTABLE_REASON_V2
+
+
+# =============================================================================
+# Codex review round 2 -- regressions
+# =============================================================================
+
+
+def test_only_synthetic_merge_parentage_can_promote() -> None:
+    """Codex round 2, finding A.
+
+    `explicit_tested_tree` was backed by nothing but the caller's own
+    `--tested-merge-sha` echoed into the snapshot, so the assembler's
+    "the tree that ran must be the tree the identity claims" check compared the
+    caller's input against itself. The field is gone and the rule is refused.
+
+    The policy loader now rejects `explicit_tested_tree` outright, so this is
+    belt-and-braces: even if a policy object were constructed in-process with
+    that rule, the assembler would still refuse to promote from it."""
+
+    from app.agent_review.authoritative_check_policy_v2 import (
+        AuthoritativeCheckEntryV2,
+        ExecutedTreeRuleV2,
+        OriginRulesV2,
+    )
+
+    entry = AuthoritativeCheckEntryV2.model_construct(
+        check_name="pytest",
+        workflow_path=".github/workflows/ci.yml",
+        workflow_ref="refs/heads/master",
+        job_name="Validate repository",
+        verifier_identity="github-actions",
+        permitted_conclusions=("success", "failure"),
+        origin_rules=OriginRulesV2.model_construct(
+            pull_request=None,
+            pull_request_target=ExecutedTreeRuleV2.EXPLICIT_TESTED_TREE,
+            manual=None,
+            replay=None,
+        ),
+    )
+    policy = type(POLICY)(
+        policy=POLICY.policy.model_copy(update={"authoritative_checks": (entry,)}),
+        policy_source_bytes_digest=POLICY.policy_source_bytes_digest,
+        policy_source_semantic_digest=POLICY.policy_source_semantic_digest,
+    )
+    origin = RunOriginV2(event_type="pull_request_target", event_action="synchronize", delivery_id="d-3")
+
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        assemble_authoritative_ci_promotion_v2(
+            check_name="pytest",
+            snapshot=_snapshot(observations=[_obs(run_event="pull_request_target")]),
+            loaded_policy=policy,
+            identity=IDENTITY,
+            origin=origin,
+            toolchain_digest=TOOLCHAIN,
+        )
+    assert _reason(exc) == PROVENANCE_ORIGIN_UNSUPPORTED_REASON_V2
+
+
+def test_the_snapshot_carries_no_self_referential_execution_field() -> None:
+    """The acquirer could only ever copy `--tested-merge-sha` into it, so a
+    field named for an independently observed execution tree would be a
+    tautology wearing the costume of a proof."""
+
+    assert "executed_tree_sha" not in _snapshot().model_dump()

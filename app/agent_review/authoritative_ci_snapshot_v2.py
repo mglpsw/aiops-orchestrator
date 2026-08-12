@@ -192,11 +192,18 @@ class AuthoritativeCheckSnapshotV2(ContractV2Model):
     acquisition: AcquisitionIdentityV2
     observations: tuple[ObservedCheckRunV2, ...]
 
-    # Observed locally with git, not taken from the API: the parents of the
-    # tree the CI run actually executed, and that tree's own sha.
+    # Observed locally with git, not taken from the API: the merge commit this
+    # review is about, and its parents.
+    #
+    # There is deliberately NO `executed_tree_sha`. A Codex review found that
+    # the acquirer could only ever copy the caller's own `--tested-merge-sha`
+    # into it, so the assembler's "the tree that ran must be the tree the
+    # identity claims" check compared the caller's input against itself -- a
+    # tautology wearing the costume of a proof. GitHub exposes no execution-tree
+    # SHA, so the honest binding is the run's OWN base/head recorded on each
+    # observation, and origins where even that is unavailable are refused.
     tested_merge_sha: GitSha
     tested_merge_parents: Annotated[tuple[GitSha, ...], Field(min_length=1, max_length=8)]
-    executed_tree_sha: GitSha
 
     # Raw-bytes digest of the API payload the observations were derived from.
     observation_bytes_digest: Sha256

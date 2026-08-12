@@ -81,7 +81,6 @@ def _snapshot_dict(*observations: dict[str, object]) -> dict[str, object]:
         "observations": list(observations) or [_obs()],
         "tested_merge_sha": MERGE,
         "tested_merge_parents": [BASE, HEAD],
-        "executed_tree_sha": MERGE,
         "observation_bytes_digest": "f" * 64,
     }
 

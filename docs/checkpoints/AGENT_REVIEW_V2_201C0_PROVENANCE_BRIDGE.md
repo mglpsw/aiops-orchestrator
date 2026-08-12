@@ -109,6 +109,36 @@ das formas legítimas** de um target satisfazer a exigência de produtor base-ow
 Eventos de trigger não reconhecidos agora são recusados na aquisição em vez de virarem um valor
 genérico que o código adiante teria de adivinhar.
 
+## Rodada 2 de review adversarial (Codex) — dois achados, ambos válidos
+
+**Achado A (P1) — `executed_tree_sha` era uma tautologia.** O acquirer só conseguia copiar o
+próprio `--tested-merge-sha` do chamador para esse campo, e o assembler então comparava
+`snapshot.executed_tree_sha == identity.tested_merge_sha` — isto é, comparava a entrada do chamador
+consigo mesma. Uma checagem vazia vestida de prova.
+
+Pior: a correção P2 da rodada 1 tornou `pull_request_target` autorizável, e esse evento **faz
+checkout da base por padrão, não do merge**. Logo um run verde de `pull_request_target` poderia
+carregar metadados de base/head corretos e ainda assim ser rotulado como tendo executado o merge.
+A correção da rodada 1 abriu exatamente este buraco.
+
+Correção: o campo `executed_tree_sha` foi **removido** do contrato — um campo que ninguém observa
+convida falsa confiança. O que de fato liga o run a este merge é o `run_base_sha`/`run_head_sha`
+do próprio run, que o GitHub reporta. E `explicit_tested_tree` passa a ser **recusado no load da
+política**, com mensagem própria, para que um target descubra que sua política não funciona ao
+escrevê-la — não quando uma review silenciosamente nunca fica ready.
+
+**Consequência honesta:** hoje **só `pull_request` é promovível**. `pull_request_target`, `manual`
+e `replay` não têm evidência de árvore executada que o C0 possa verificar, e são recusados. Isso
+corrige uma afirmação otimista demais que eu havia feito ao fechar a rodada 1.
+
+**Achado B (P2) — escopo da query para `pull_request_target`.** Válido: runs desse evento são
+associados ao commit da base e não seriam recuperados por uma query escopada ao head. Como esse
+caminho deixou de ser promovível (achado A), a query escopada ao head é **coerente**, não uma
+lacuna — não recuperar esses runs não muda veredito nenhum. Adicionar uma query por base coletaria
+evidência para um caminho que falha fechado de qualquer forma e sugeriria que ele funciona.
+Registrado no docstring do acquirer: se um produtor futuro tornar `pull_request_target`
+verificável, o escopo da query deve ser revisto **junto com** essa mudança, não antes dela.
+
 ## Limitação conhecida — `workflow_ref` e workflows base-owned
 
 A API de Actions do GitHub reporta o `path` de um workflow run, mas **nenhum campo** afirma de

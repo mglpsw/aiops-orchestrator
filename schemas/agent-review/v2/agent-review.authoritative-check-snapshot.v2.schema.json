@@ -187,11 +187,6 @@
     "acquisition": {
       "$ref": "#/$defs/AcquisitionIdentityV2"
     },
-    "executed_tree_sha": {
-      "pattern": "^[0-9a-f]{40}$",
-      "title": "Executed Tree Sha",
-      "type": "string"
-    },
     "observation_bytes_digest": {
       "pattern": "^[0-9a-f]{64}$",
       "title": "Observation Bytes Digest",
@@ -243,7 +238,6 @@
     "observations",
     "tested_merge_sha",
     "tested_merge_parents",
-    "executed_tree_sha",
     "observation_bytes_digest"
   ],
   "title": "AuthoritativeCheckSnapshotV2",

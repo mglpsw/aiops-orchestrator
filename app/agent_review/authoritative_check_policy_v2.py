@@ -149,6 +149,19 @@ class OriginRulesV2(ContractV2Model):
                     raise ValueError("pull_request must use synthetic_merge_parentage")
             elif rule is ExecutedTreeRuleV2.SYNTHETIC_MERGE_PARENTAGE:
                 raise ValueError("only pull_request has synthetic-merge semantics")
+
+        # `explicit_tested_tree` is declarable but not yet verifiable: no
+        # producer emits authenticated evidence of the tree it checked out, and
+        # a second Codex review showed that accepting it meant trusting the
+        # caller's own `--tested-merge-sha` echoed back. Refused at LOAD time
+        # rather than at verdict time, so a target learns its policy cannot work
+        # when it writes it, not when a review silently never becomes ready.
+        if any(
+            rule is ExecutedTreeRuleV2.EXPLICIT_TESTED_TREE
+            for rule in declared.values()
+            if rule is not None
+        ):
+            raise ValueError("explicit_tested_tree has no verifiable producer evidence yet")
         return self
 
 

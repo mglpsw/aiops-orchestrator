@@ -157,18 +157,26 @@ def _require_executed_tree_binding(
 
     if snapshot.tested_merge_sha != identity.tested_merge_sha:
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_TESTED_MERGE_MISMATCH_REASON_V2)
-    # The tree that ran must be the tree the identity claims was tested. A
-    # check attached to the right HEAD but executed against a different tree is
-    # the subtlest version of this whole class of attack.
-    if snapshot.executed_tree_sha != identity.tested_merge_sha:
-        raise RequiredCheckProvenanceErrorV2(PROVENANCE_TESTED_MERGE_MISMATCH_REASON_V2)
 
-    if rule is ExecutedTreeRuleV2.SYNTHETIC_MERGE_PARENTAGE:
-        # Order matters: [base, head], exactly. A merge whose parents are
-        # reversed, or which has a third parent, or whose base is not the base
-        # this run was computed against, is not the merge this review is about.
-        if tuple(snapshot.tested_merge_parents) != (identity.base_sha, identity.head_sha):
-            raise RequiredCheckProvenanceErrorV2(PROVENANCE_PARENTAGE_MISMATCH_REASON_V2)
+    if rule is not ExecutedTreeRuleV2.SYNTHETIC_MERGE_PARENTAGE:
+        # `explicit_tested_tree` has no verifiable meaning today. A second
+        # Codex review found that the only thing standing behind it was the
+        # caller's own `--tested-merge-sha` echoed back, and that a
+        # `pull_request_target` job -- which by default checks out the BASE,
+        # not the merge -- could be green, carry matching PR base/head
+        # metadata, and still be relabelled as having executed the merge.
+        #
+        # Until a producer emits authenticated evidence of the tree it checked
+        # out, the honest answer is refusal. Only GitHub's `pull_request`
+        # semantics, where the run demonstrably executes the merge of the base
+        # and head it records, can be verified from metadata alone.
+        raise RequiredCheckProvenanceErrorV2(PROVENANCE_ORIGIN_UNSUPPORTED_REASON_V2)
+
+    # Order matters: [base, head], exactly. A merge whose parents are reversed,
+    # or which has a third parent, or whose base is not the base this run was
+    # computed against, is not the merge this review is about.
+    if tuple(snapshot.tested_merge_parents) != (identity.base_sha, identity.head_sha):
+        raise RequiredCheckProvenanceErrorV2(PROVENANCE_PARENTAGE_MISMATCH_REASON_V2)
 
 
 def _require_run_executed_this_merge(

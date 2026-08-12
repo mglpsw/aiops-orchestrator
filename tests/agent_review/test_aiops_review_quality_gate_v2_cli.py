@@ -235,7 +235,6 @@ def _snapshot_dict(check_names: list[str], **overrides: object) -> dict:
         "observations": [_observation(name) for name in check_names],
         "tested_merge_sha": "3" * 40,
         "tested_merge_parents": ["1" * 40, "2" * 40],
-        "executed_tree_sha": "3" * 40,
         "observation_bytes_digest": "f" * 64,
     }
     payload.update(overrides)
