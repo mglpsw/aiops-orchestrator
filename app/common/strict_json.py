@@ -92,9 +92,18 @@ def strict_json_loads(data: bytes | str) -> object:
 
 def canonical_json_text(value: object) -> str:
     """The one canonicalisation this repository uses for semantic digests:
-    sorted keys, no whitespace, Unicode left unescaped."""
+    sorted keys, no whitespace, Unicode left unescaped.
 
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    `allow_nan=False` on purpose: `json.dumps` defaults to emitting the
+    non-standard tokens `NaN`/`Infinity`/`-Infinity`, which `strict_json_loads`
+    itself refuses to read back. Without this, a value containing one of them
+    would get a stable, well-formed-looking digest from the same module that
+    refuses to parse the text producing it -- canonicalisation and parsing
+    must agree on what counts as valid JSON."""
+
+    return json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    )
 
 
 def canonical_json_bytes(value: object) -> bytes:

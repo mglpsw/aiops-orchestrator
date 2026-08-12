@@ -114,3 +114,23 @@ def test_malformed_json_still_raises_rather_than_returning_partial_data() -> Non
 
 def test_bytes_and_str_inputs_agree() -> None:
     assert strict_json_loads(b'{"a": 1}') == strict_json_loads('{"a": 1}') == {"a": 1}
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_canonical_json_text_refuses_non_finite_values(value: float) -> None:
+    """The parse side (`strict_json_loads`) already refuses `NaN`/`Infinity`
+    literals. The SERIALISE side did not: `json.dumps` defaults to
+    `allow_nan=True`, so `canonical_json_text({"x": nan})` silently produced
+    `'{"x":NaN}'` -- non-standard JSON that `strict_json_loads` itself would
+    refuse to read back, given a stable-looking digest by the same module
+    that refuses to parse it. Every canonical text and v2 digest must either
+    represent valid JSON or fail closed, not one or the other depending on
+    which direction the data is moving."""
+
+    with pytest.raises(ValueError):
+        canonical_json_text({"x": value})
+
+
+def test_canonical_json_digest_hex_refuses_non_finite_values() -> None:
+    with pytest.raises(ValueError):
+        canonical_json_digest_hex({"x": float("nan")})

@@ -114,6 +114,18 @@
     records what actually happened and never asserts a base-owned origin it
     cannot observe. Resolving it is a target-configuration decision. See
     `docs/checkpoints/AGENT_REVIEW_V2_201C0_PROVENANCE_BRIDGE.md`.
+  - **Strict-parsing discipline closed on four remaining paths**, found by a
+    Codex review after the architectural correction: `--observations` used
+    plain `json.loads` (duplicate keys silently resolved to the last value,
+    unlike every other input in this slice); `canonical_json_text` accepted
+    `NaN`/`Infinity` (the same module's own strict parser would refuse to read
+    the resulting text back); the base-owned policy's YAML loader accepted a
+    duplicate mapping key (an auditor or a different YAML implementation
+    could see a different `verifier_identity` than the one that was actually
+    used to authorise a producer); and the policy's semantic digest depended
+    on `authoritative_checks` entry order, even though the list is
+    semantically a set keyed by `check_name` — entries are now sorted before
+    hashing.
 
 - **AgentReview v2 trusted-check adversarial hardening (`#201-B3`)**: closes
   the two mandatory acceptance criteria `#201-B2` left open.

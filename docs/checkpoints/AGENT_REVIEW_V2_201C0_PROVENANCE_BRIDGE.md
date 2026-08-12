@@ -495,6 +495,48 @@ ACQUIRER_QUERY_SCOPE=KNOWN_LIMITATION_DEFERRED_TO_C0_AMENDMENT
 TEST_ONLY_ESCAPE_HATCH=NONE
 ```
 
+## Rodada 8 de review adversarial (Codex) — quatro achados P2, todos válidos
+
+Primeira rodada do Codex após a correção arquitetural (`c2bca24`/`f78e7b7`); a quota do provedor
+havia bloqueado as rodadas anteriores (rodada 7 → auditoria independente → correção arquitetural
+→ correção sem bypass → quota do Codex volta → esta rodada, sobre `f78e7b7`). Nenhum P1 — a
+superfície arquitetural revisada nas rodadas anteriores não produziu novo achado desta vez.
+Quatro P2, todos em disciplina de parsing estrito que o resto do módulo já segue e esses quatro
+pontos não seguiam.
+
+**`--observations` usava `json.loads` puro, não o parser estrito do módulo.** Chaves JSON
+duplicadas resolvem em silêncio para o último valor; o resto deste slice recusa exatamente essa
+ambiguidade em todo outro input. Corrigido com `strict_json_loads` + exigência de objeto de nível
+superior. Reproduzido antes de corrigir: um payload com `"check_runs"` duplicado, ambos os valores
+individualmente bem-formados, produzia um snapshot com sucesso hoje — a ambiguidade nunca era
+percebida.
+
+**`canonical_json_text`/`canonical_json_digest_hex` aceitavam `NaN`/`Infinity`.** `json.dumps`
+tem `allow_nan=True` por padrão, produzindo tokens não-padrão (`{"x":NaN}`) que o próprio
+`strict_json_loads` do mesmo módulo recusaria ao ler de volta — um valor não-finito recebia um
+digest estável e bem-formado aparente da mesma função que o recusaria na direção contrária.
+Corrigido com `allow_nan=False`. Verificado que o pin CAEM F0 (que aliasa esta função via
+`f0.py`) permanece verde — os vetores dourados nunca codificaram um valor não-finito.
+
+**O loader YAML da política não recusava chaves duplicadas.** `yaml.safe_load` tem o mesmo
+comportamento de last-key-wins silencioso que `json.loads`, e este é um documento de
+autorização: um auditor ou outra implementação YAML lendo os mesmos bytes poderia ver um
+`verifier_identity` diferente do que este loader usou para autorizar um produtor. Corrigido com
+um `SafeLoader` estendido que recusa mapeamento com chave repetida, em qualquer nível de
+aninhamento.
+
+**O digest semântico da política dependia da ordem dos entries.** `authoritative_checks` é
+semanticamente um conjunto chaveado por `check_name` — `validate_unique_check_names` já impõe
+unicidade, e `entry_for()` casa por nome independente de posição. Reordenar dois entries não
+muda nenhum binding de produtor nem resultado de validação, mas mudava o digest semântico —
+um target que reordenasse seu próprio arquivo por legibilidade veria todo sidecar de
+proveniência existente invalidado sem motivo real. Corrigido ordenando os entries por
+`check_name` antes de hashear.
+
+Todos os quatro verificados por reprodução antes de corrigir (não apenas aceitos pelo relato) e
+por mutação depois — reverter cada correção individualmente falha exatamente o teste escrito
+para ela.
+
 ## Limitação conhecida — `workflow_ref` e workflows base-owned
 
 A API de Actions do GitHub reporta o `path` de um workflow run, mas **nenhum campo** afirma de
@@ -526,7 +568,7 @@ CT104.
 | Gate | Resultado |
 |---|---|
 | testes focados C0-1…C0-6 | verde |
-| regressão offline completa | 2211 passed, 4 skipped |
+| regressão offline completa | 2220 passed, 4 skipped |
 | suíte `requires_network` | verde |
 | `bash scripts/ci_validate.sh` (seções 1–8) | **OK** |
 | `export-agent-review-v2-schemas.py --check` | byte-idêntico |
@@ -541,9 +583,11 @@ attestation por "primeira entrada", remover a recusa de runs empatados no horár
 a paginação após a primeira página, desligar cada uma das três guardas da rodada 7 (produtor
 PR-writable, artefato upstream republicado, executed_sha vindo do chamador), remover o header
 `Authorization` do redirect, restaurar a fabricação de identidade a partir de `id` ausente, e
-remover o gate `verify_independent_semantic_judge_v2` — tanto no nível de unidade quanto ponta a
-ponta via o CLI do gate real — falham exatamente o teste escrito para cada um, e voltam a passar no
-restore.
+remover o gate `verify_independent_semantic_judge_v2` (nível de unidade e ponta a ponta via o
+CLI real), reverter `--observations` para `json.loads`, reverter `canonical_json_text` para
+`allow_nan` padrão, reverter o loader YAML da política para `yaml.safe_load`, e reverter o digest
+semântico para não ordenar por `check_name` — todos falham exatamente o teste escrito para cada
+um, e voltam a passar no restore.
 
 ## Estado vetorial
 
@@ -553,6 +597,7 @@ restore.
 #201-C0_IMPLEMENTATION=READY_FOR_REVIEW
 #201-C0_INDEPENDENT_AUDIT=COMPLETE_4_P1_8_P2_CONFIRMED
 #201-C0_SECURITY_BOUNDARY=IMPLEMENTED
+CODEX_ROUND_8=COMPLETE_4_P2_CONFIRMED_AND_FIXED
 #217_EXERCISED_BYPASS=CLOSED
 AUTHORITATIVE_PYTEST_PROMOTION=UNAVAILABLE_BY_DESIGN
 INDEPENDENT_SEMANTIC_JUDGE=REQUIRED
@@ -570,11 +615,11 @@ MERGE_WITHHELD_BY_AUTHORITY
 
 ## Próxima ação mínima
 
-Revisão da PR (Codex round 8, quando a quota do provedor voltar; `NOT_RUN_GATE_UNAVAILABLE` até lá,
-nunca `PENDING_FINDINGS=0` — ausência de rodada não é evidência negativa). Merge segue **NO-GO**:
-`8b7e94c` tinha CI real verde mas não satisfazia o critério load-bearing da rodada 7, que a
-auditoria demonstrou ser falso; o HEAD atual corrige os achados confirmados e revoga essa condição
-explicitamente em vez de forçá-la.
+Round 8 do Codex (sobre `f78e7b7`) chegou após a quota do provedor voltar: 4 P2 confirmados e
+corrigidos, nenhum P1 — a superfície arquitetural revisada nas rodadas anteriores não produziu novo
+achado. Solicitar round 9. Merge segue **NO-GO**: `8b7e94c` tinha CI real verde mas não satisfazia o
+critério load-bearing da rodada 7, que a auditoria independente demonstrou ser falso; o HEAD atual
+corrige os achados confirmados e revoga essa condição explicitamente em vez de forçá-la.
 
 Depois, em ordem, cada um exigindo grant nominal próprio e nenhum iniciável antes do fechamento
 operacional anterior: (1) uma emenda C0 ratificada cobrindo tanto a correção de query-scope do

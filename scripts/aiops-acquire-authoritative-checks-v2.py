@@ -212,7 +212,13 @@ def _observe_parents(git_dir: str, commit: str) -> list[str]:
 def _fetch_payload(args: argparse.Namespace) -> tuple[dict, bytes]:
     if args.observations is not None:
         raw = Path(args.observations).read_bytes()
-        return json.loads(raw), raw
+        try:
+            document = strict_json_loads(raw)
+        except ValueError as exc:
+            raise AcquisitionError(ACQUISITION_FAILED_REASON) from exc
+        if not isinstance(document, dict):
+            raise AcquisitionError(ACQUISITION_FAILED_REASON)
+        return document, raw
 
     import importlib.util
     import os

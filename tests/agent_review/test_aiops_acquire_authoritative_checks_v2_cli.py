@@ -854,3 +854,57 @@ def test_only_workflow_run_triggered_runs_are_offered_for_attestation() -> None:
         {"id": 4, "event": "push"},
     ]
     assert [r["id"] for r in acq.attestable_workflow_runs_v2(runs)] == [3]
+
+
+def test_observations_with_duplicate_keys_are_refused(tmp_path: Path, merge_repo) -> None:
+    """`json.loads` silently keeps the last of two duplicate object keys.
+    `--observations` is recorded acquisition evidence, and the rest of this
+    module refuses ambiguity everywhere else -- a raw payload two different
+    parsers could read two different ways must fail closed here too, the
+    same way every other input in this slice does.
+
+    Both values are individually well-formed and would each let acquisition
+    SUCCEED on their own (proving this is a live ambiguity, not an
+    incidental crash on malformed data): the first has a real check run, the
+    winning second is empty. `json.loads` would silently accept the second
+    and produce a snapshot with no observations, hiding that the file said
+    something else too."""
+
+    repo, _base, head, merge = merge_repo
+    payload_with_duplicate_key = json.dumps(_payload())[:-1] + ', "check_runs": []}'
+    # Confirms the payload really is duplicate-keyed JSON, not just a string
+    # that happens to look like one.
+    assert payload_with_duplicate_key.count('"check_runs"') == 2
+
+    observations = tmp_path / "payload.json"
+    observations.write_text(payload_with_duplicate_key, encoding="utf-8")
+    result = _run(
+        [
+            "--repository", REPO,
+            "--head-sha", head,
+            "--tested-merge-sha", merge,
+            "--git-dir", str(repo),
+            "--observations", str(observations),
+            "--output", str(tmp_path / "snapshot.json"),
+        ]
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "snapshot.json").exists()
+
+
+def test_observations_that_are_not_a_json_object_are_refused(tmp_path: Path, merge_repo) -> None:
+    repo, _base, head, merge = merge_repo
+    observations = tmp_path / "payload.json"
+    observations.write_bytes(b"[1, 2, 3]")
+    result = _run(
+        [
+            "--repository", REPO,
+            "--head-sha", head,
+            "--tested-merge-sha", merge,
+            "--git-dir", str(repo),
+            "--observations", str(observations),
+            "--output", str(tmp_path / "snapshot.json"),
+        ]
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "snapshot.json").exists()

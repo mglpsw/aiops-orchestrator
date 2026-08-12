@@ -97,6 +97,39 @@ class AuthoritativeCheckPolicyErrorV2(ValueError):
         self.reason_code = reason_code
 
 
+def _construct_mapping_rejecting_duplicates_v2(loader: yaml.SafeLoader, node: yaml.Node, deep: bool = False):
+    """Refuse a YAML mapping with a repeated key, instead of PyYAML's default
+    of silently keeping the last one.
+
+    This is an authorization document: an auditor, or a different YAML
+    implementation, reading the same bytes could see a different value for a
+    duplicated key than the one this loader used -- for example a different
+    `verifier_identity` -- and end up validating a producer this loader did
+    not."""
+
+    mapping: dict = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+class _DuplicateKeyRejectingLoaderV2(yaml.SafeLoader):
+    """`yaml.SafeLoader`, except every mapping refuses a duplicate key."""
+
+
+_DuplicateKeyRejectingLoaderV2.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_rejecting_duplicates_v2
+)
+
+
 class ExecutedTreeRuleV2(str, Enum):
     """How the tree a CI run actually executed is bound to the run identity.
 
@@ -268,7 +301,20 @@ class LoadedAuthoritativeCheckPolicyV2:
 
 
 def compute_policy_semantic_digest_v2(policy: AuthoritativeCheckPolicyV2) -> str:
-    return canonical_json_digest_hex(policy.model_dump(mode="json"))
+    """A change in MEANING moves this digest; a change in FILE LAYOUT does not.
+
+    `authoritative_checks` is semantically a SET keyed by `check_name` --
+    `validate_unique_check_names` already enforces that the key is unique,
+    and `entry_for()` matches by name regardless of position. Reordering two
+    entries changes no validation outcome and no producer binding, so it must
+    not move this digest either; the entries are sorted by `check_name`
+    before hashing so position in the source file is not semantic."""
+
+    dumped = policy.model_dump(mode="json")
+    dumped["authoritative_checks"] = sorted(
+        dumped["authoritative_checks"], key=lambda entry: entry["check_name"]
+    )
+    return canonical_json_digest_hex(dumped)
 
 
 def load_authoritative_check_policy_v2(
@@ -294,7 +340,7 @@ def load_authoritative_check_policy_v2(
         raise AuthoritativeCheckPolicyErrorV2(POLICY_UNREADABLE_REASON_V2) from exc
 
     try:
-        raw = yaml.safe_load(raw_bytes.decode("utf-8"))
+        raw = yaml.load(raw_bytes.decode("utf-8"), Loader=_DuplicateKeyRejectingLoaderV2)
     except (yaml.YAMLError, UnicodeDecodeError) as exc:
         raise AuthoritativeCheckPolicyErrorV2(POLICY_UNREADABLE_REASON_V2) from exc
 

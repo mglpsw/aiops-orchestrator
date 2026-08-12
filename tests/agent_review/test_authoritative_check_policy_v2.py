@@ -326,3 +326,77 @@ def test_a_base_owned_producer_must_run_its_own_workflow(tmp_path: Path) -> None
     with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
         load_authoritative_check_policy_v2(_write(tmp_path, text))
     assert exc.value.reason_code == POLICY_INVALID_REASON_V2
+
+
+def test_a_duplicate_top_level_key_is_refused(tmp_path: Path) -> None:
+    """`yaml.safe_load` silently keeps the last of two duplicate mapping
+    keys. For an authorization document, that ambiguity is exactly the kind
+    this module refuses everywhere else: an auditor or a different YAML
+    implementation reading the same bytes could see a different `identity`
+    than the one this loader would have used to authorize a producer."""
+
+    text = VALID_POLICY + "\nidentity:\n  repo: mglpsw/attacker\n"
+    with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
+        load_authoritative_check_policy_v2(_write(tmp_path, text))
+    assert exc.value.reason_code == POLICY_UNREADABLE_REASON_V2
+
+
+def test_a_duplicate_key_inside_an_entry_is_refused(tmp_path: Path) -> None:
+    """The same ambiguity one level down: two `verifier_identity` values for
+    one entry could let a different reader authorize a different producer
+    than the one this loader validates against."""
+
+    text = VALID_POLICY.replace(
+        "    verifier_identity: github-actions\n",
+        "    verifier_identity: github-actions\n    verifier_identity: attacker-app\n",
+    )
+    with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
+        load_authoritative_check_policy_v2(_write(tmp_path, text))
+    assert exc.value.reason_code == POLICY_UNREADABLE_REASON_V2
+
+
+def test_reordering_entries_does_not_move_the_semantic_digest(tmp_path: Path) -> None:
+    """`authoritative_checks` is semantically a SET of entries keyed by
+    `check_name` -- `validate_unique_check_names` already enforces
+    uniqueness, and `entry_for()` matches by name regardless of position.
+    Reordering two entries changes neither which producer is entitled to
+    speak for which check nor any validation outcome, so it must not change
+    the semantic digest either: a target that reorders its own policy file
+    for readability would otherwise find every existing provenance sidecar
+    invalidated for no real reason."""
+
+    second_entry = """\
+  - check_name: mypy
+    workflow_path: .github/workflows/authoritative-checks.yml
+    job_name: authoritative-mypy
+    verifier_identity: github-actions
+    producer_kind: base_owned_workflow_run
+    producer_workflow:
+      repository: mglpsw/AgentEscala
+      path: .github/workflows/authoritative-checks.yml
+      sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
+    producer_workflow_ref: refs/heads/master
+    permitted_conclusions:
+      - success
+      - failure
+    origin_rules:
+      pull_request: synthetic_merge_parentage
+"""
+    forward = VALID_POLICY + second_entry
+    entries_only = forward.split("authoritative_checks:\n", 1)[1]
+    pytest_entry, mypy_entry = entries_only.split("  - check_name: mypy\n", 1)
+    mypy_entry = "  - check_name: mypy\n" + mypy_entry
+    reversed_policy = (
+        forward.split("authoritative_checks:\n", 1)[0]
+        + "authoritative_checks:\n"
+        + mypy_entry
+        + pytest_entry
+    )
+
+    forward_loaded = load_authoritative_check_policy_v2(_write(tmp_path / "a", forward))
+    reversed_loaded = load_authoritative_check_policy_v2(_write(tmp_path / "b", reversed_policy))
+
+    assert {e.check_name for e in forward_loaded.policy.authoritative_checks} == {"pytest", "mypy"}
+    assert {e.check_name for e in reversed_loaded.policy.authoritative_checks} == {"pytest", "mypy"}
+    assert forward_loaded.policy_source_bytes_digest != reversed_loaded.policy_source_bytes_digest
+    assert forward_loaded.policy_source_semantic_digest == reversed_loaded.policy_source_semantic_digest
