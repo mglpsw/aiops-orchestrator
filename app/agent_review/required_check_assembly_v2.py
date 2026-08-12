@@ -59,6 +59,10 @@ from app.agent_review.authoritative_check_policy_v2 import (
     ExecutedTreeRuleV2,
     LoadedAuthoritativeCheckPolicyV2,
 )
+from app.agent_review.authoritative_producer_evidence_v2 import (
+    verify_producer_attestation_v2,
+    verify_producer_workflow_pinned_v2,
+)
 from app.agent_review.authoritative_ci_snapshot_v2 import (
     AuthoritativeCheckSnapshotV2,
     ObservedCheckRunV2,
@@ -267,7 +271,32 @@ def assemble_authoritative_ci_promotion_v2(
         snapshot=snapshot, entry=entry, repository=identity.repo, head_sha=identity.head_sha
     )
     _require_run_executed_this_merge(observation=observation, identity=identity, origin=origin)
+
+    # WHICH producer, immutably: the run must have referenced exactly the
+    # reusable workflow the base-owned policy pinned, by full commit SHA. A
+    # pull request can edit files in its own tree; it cannot make a run
+    # reference a workflow SHA it did not load.
+    verify_producer_workflow_pinned_v2(
+        pinned=entry.producer_workflow, referenced=observation.referenced_workflows
+    )
+
+    # WHICH TREE, attested rather than inferred. GitHub exposes no
+    # execution-tree SHA, so the producer emits one from a checkout-free job.
+    # `executed_sha == identity.tested_merge_sha` is the binding that replaces
+    # the tautological `executed_tree_sha` removed after the second review.
+    attestation = verify_producer_attestation_v2(
+        attestation=observation.producer_attestation,
+        identity=identity,
+        workflow_run_id=observation.workflow_run_id,
+        run_attempt=observation.run_attempt,
+    )
+
     conclusion = resolve_conclusion_v2(observation)
+    if attestation.test_outcome != (observation.conclusion or ""):
+        # The producer and GitHub must agree. Disagreement means one of them is
+        # describing a different execution, and guessing which would be exactly
+        # the kind of inference this module exists to avoid.
+        raise RequiredCheckProvenanceErrorV2(PROVENANCE_INVALID_REASON_V2)
 
     result = RequiredCheckResultV2(
         check_name=check_name,
@@ -297,7 +326,7 @@ def assemble_authoritative_ci_promotion_v2(
         verifier_identity=observation.app_slug,
         toolchain_digest=toolchain_digest,
         workflow_path=observation.workflow_path,
-        workflow_ref=observation.workflow_ref,
+        workflow_ref=observation.workflow_execution_ref,
         job_name=observation.check_run_name,
         ci_run_id=observation.workflow_run_id,
         ci_run_attempt=observation.run_attempt,
@@ -562,9 +591,5 @@ def _verify_against_policy(
     # collapsing them would make a real attack harder to read in the logs.
     if record.verifier_identity != entry.verifier_identity:
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_PRODUCER_NOT_ALLOWLISTED_REASON_V2)
-    if (
-        record.workflow_path != entry.workflow_path
-        or record.workflow_ref != entry.workflow_ref
-        or record.job_name != entry.job_name
-    ):
+    if record.workflow_path != entry.workflow_path or record.job_name != entry.job_name:
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_WORKFLOW_IDENTITY_MISMATCH_REASON_V2)

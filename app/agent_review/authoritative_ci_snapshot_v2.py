@@ -52,6 +52,11 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from app.agent_review.authoritative_check_policy_v2 import AuthoritativeCheckEntryV2
+from app.agent_review.authoritative_producer_evidence_v2 import (
+    ProducerAttestationV2,
+    ProducerTriggerV2,
+    ProducerWorkflowReferenceV2,
+)
 from app.agent_review.contracts_v2 import (
     ContractV2Model,
     GitSha,
@@ -147,7 +152,18 @@ class ObservedCheckRunV2(ContractV2Model):
     conclusion: ObservedConclusionV2 | None
     app_slug: SafeIdentifier
     workflow_path: RelativePath
-    workflow_ref: SafeText
+    # Factual observation of the ref the run executed under. Deliberately NOT
+    # named `workflow_ref` any more, and deliberately not used as evidence of
+    # base ownership: a pull request controls the ref its own runs execute
+    # under. Identity comes from `referenced_workflows`.
+    workflow_execution_ref: SafeText
+    # The reusable workflows this run loaded, each with the full commit SHA
+    # GitHub recorded. This is what a pull request cannot forge.
+    referenced_workflows: tuple[ProducerWorkflowReferenceV2, ...]
+    producer_trigger: ProducerTriggerV2
+    # Emitted by the producer's checkout-free attestation job. Absent for any
+    # run that did not produce one, which simply cannot be promoted.
+    producer_attestation: ProducerAttestationV2 | None
     workflow_run_id: SafeIdentifier
     run_attempt: PositiveInt
     # When THIS workflow run started. `run_attempt` is scoped to a single
@@ -253,12 +269,16 @@ def _matches_producer(observation: ObservedCheckRunV2, entry: AuthoritativeCheck
     `check_run_name` is compared against the policy's `job_name` -- never
     against the required check's own name. That is the whole point: a PR job
     called `pytest` matches nothing unless the base-owned policy says the
-    producer's job is called `pytest`."""
+    producer's job is called `pytest`.
+
+    `workflow_execution_ref` is NOT compared. It is an observation a pull
+    request controls, so requiring a particular value would either reject every
+    real run (as an earlier revision did) or admit the wrong ones. The pinned
+    reusable workflow is checked separately, by SHA."""
 
     return (
         observation.check_run_name == entry.job_name
         and observation.workflow_path == entry.workflow_path
-        and observation.workflow_ref == entry.workflow_ref
         and observation.app_slug == entry.verifier_identity
     )
 

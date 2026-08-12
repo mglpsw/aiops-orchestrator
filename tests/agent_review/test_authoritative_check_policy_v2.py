@@ -18,7 +18,6 @@ from app.agent_review.authoritative_check_policy_v2 import (
     POLICY_PROFILE_MISMATCH_REASON_V2,
     POLICY_REQUIRED_CHECK_UNCOVERED_REASON_V2,
     POLICY_UNREADABLE_REASON_V2,
-    POLICY_WORKFLOW_REF_NOT_BASE_OWNED_REASON_V2,
     AuthoritativeCheckPolicyErrorV2,
     ExecutedTreeRuleV2,
     compute_policy_semantic_digest_v2,
@@ -39,9 +38,13 @@ identity:
 authoritative_checks:
   - check_name: pytest
     workflow_path: .github/workflows/ci.yml
-    workflow_ref: refs/heads/master
     job_name: Validate repository
     verifier_identity: github-actions
+    producer_kind: sha_pinned_reusable_workflow
+    producer_workflow:
+      repository: mglpsw/aiops-orchestrator
+      path: .github/workflows/authoritative-checks.reusable.yml
+      sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
     permitted_conclusions:
       - success
       - failure
@@ -153,7 +156,7 @@ def test_unknown_field_is_refused(tmp_path: Path) -> None:
     assert exc.value.reason_code == POLICY_INVALID_REASON_V2
 
 
-@pytest.mark.parametrize("dropped", ["workflow_path", "job_name", "verifier_identity", "workflow_ref"])
+@pytest.mark.parametrize("dropped", ["workflow_path", "job_name", "verifier_identity", "producer_kind"])
 def test_every_identity_field_is_mandatory(tmp_path: Path, dropped: str) -> None:
     """A check name plus a workflow filename is not identity. Each field of the
     tuple has to be present or the entry does not load at all."""
@@ -258,9 +261,13 @@ def test_an_entry_for_a_non_required_check_is_refused(tmp_path: Path) -> None:
     extra = VALID_POLICY + """\
   - check_name: mypy
     workflow_path: .github/workflows/ci.yml
-    workflow_ref: refs/heads/master
     job_name: Validate repository
     verifier_identity: github-actions
+    producer_kind: sha_pinned_reusable_workflow
+    producer_workflow:
+      repository: mglpsw/aiops-orchestrator
+      path: .github/workflows/authoritative-checks.reusable.yml
+      sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
     permitted_conclusions:
       - success
       - failure
@@ -274,22 +281,15 @@ def test_an_entry_for_a_non_required_check_is_refused(tmp_path: Path) -> None:
     assert exc.value.reason_code == POLICY_ENTRY_NOT_REQUIRED_REASON_V2
 
 
-def test_a_workflow_ref_off_the_default_branch_is_refused(tmp_path: Path) -> None:  # C0-T4
-    """This is what makes "base-owned" checkable rather than aspirational: a
-    workflow resolved from a PR ref can never be an authoritative producer."""
 
-    loaded = load_authoritative_check_policy_v2(
-        _write(tmp_path, VALID_POLICY.replace("refs/heads/master", "refs/heads/attacker-branch"))
-    )
-    profile = load_target_profile_v2(FIXTURES / "agent_escala")
+
+
+
+def test_the_producer_workflow_must_be_pinned_by_a_full_sha(tmp_path: Path) -> None:
+    """Replaces the old base-owned-ref check, which Codex round 4 showed could
+    never be satisfied by a real run. Immutability now comes from the SHA."""
+
+    text = VALID_POLICY.replace('sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"', 'sha: "abc1234"')
     with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
-        validate_policy_against_profile_v2(policy=loaded.policy, profile=profile)
-    assert exc.value.reason_code == POLICY_WORKFLOW_REF_NOT_BASE_OWNED_REASON_V2
-
-
-def test_a_non_branch_ref_is_refused_at_load_time(tmp_path: Path) -> None:
-    with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
-        load_authoritative_check_policy_v2(
-            _write(tmp_path, VALID_POLICY.replace("refs/heads/master", "refs/pull/7/merge"))
-        )
+        load_authoritative_check_policy_v2(_write(tmp_path, text))
     assert exc.value.reason_code == POLICY_INVALID_REASON_V2

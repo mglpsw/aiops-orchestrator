@@ -77,14 +77,47 @@ def _payload(**overrides: object) -> dict:
                 "head_branch": "feature",
                 "run_attempt": 2,
                 "run_started_at": "2026-08-11T10:00:00Z",
+                "referenced_workflows": [
+                    {"path": "mglpsw/aiops-orchestrator/.github/workflows/authoritative-checks.reusable.yml", "sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96", "ref": "refs/heads/master"}
+                ],
                 "pull_requests": [
                     {"number": 7, "base": {"ref": "master", "sha": "b" * 40}, "head": {"sha": "a" * 40}}
                 ],
             }
         ],
     }
+    payload["producer_attestations"] = {"900": _attestation_for(payload)}
     payload.update(overrides)
     return payload
+
+
+def _attestation_for(payload: dict) -> dict:
+    """The producer's checkout-free attestation, keyed by workflow run id."""
+
+    from app.agent_review.authoritative_producer_evidence_v2 import (
+        ProducerAttestationV2,
+        compute_producer_attestation_digest_v2,
+    )
+
+    fields: dict = {
+        "schema_id": "agent-review.producer-attestation.v2",
+        "schema_version": 2,
+        "source": "aiops-authoritative-check-producer",
+        "repository": REPO,
+        "pr_number": 7,
+        "base_sha": "b" * 40,
+        "head_sha": "a" * 40,
+        "executed_sha": "d" * 40,
+        "workflow_run_id": "900",
+        "run_attempt": 2,
+        "test_outcome": "success",
+        "policy_digest": "5" * 64,
+        "toolchain_digest": "6" * 64,
+    }
+    digest = compute_producer_attestation_digest_v2(
+        ProducerAttestationV2.model_construct(**fields, attestation_digest="0" * 64)
+    )
+    return ProducerAttestationV2(**fields, attestation_digest=digest).model_dump(mode="json")
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -143,7 +176,7 @@ def test_pull_request_runs_report_a_pull_ref_not_a_base_ref(tmp_path: Path, merg
 
     _acquire(tmp_path, merge_repo, _payload())
     snapshot = parse_authoritative_ci_snapshot_v2((tmp_path / "snapshot.json").read_bytes())
-    assert snapshot.observations[0].workflow_ref == "refs/pull/7/merge"
+    assert snapshot.observations[0].workflow_execution_ref == "refs/pull/7/merge"
 
 
 def test_branch_runs_report_a_branch_ref(tmp_path: Path, merge_repo) -> None:
@@ -151,7 +184,7 @@ def test_branch_runs_report_a_branch_ref(tmp_path: Path, merge_repo) -> None:
     payload["workflow_runs"][0].update({"event": "push", "pull_requests": []})
     _acquire(tmp_path, merge_repo, payload)
     snapshot = parse_authoritative_ci_snapshot_v2((tmp_path / "snapshot.json").read_bytes())
-    assert snapshot.observations[0].workflow_ref == "refs/heads/feature"
+    assert snapshot.observations[0].workflow_execution_ref == "refs/heads/feature"
 
 
 def test_a_check_run_with_no_matching_workflow_run_is_dropped(tmp_path: Path, merge_repo) -> None:
@@ -225,7 +258,7 @@ def test_pull_request_target_records_the_base_ref_not_a_pull_ref(tmp_path: Path,
     payload["workflow_runs"][0]["event"] = "pull_request_target"
     _acquire(tmp_path, merge_repo, payload)
     snapshot = parse_authoritative_ci_snapshot_v2((tmp_path / "snapshot.json").read_bytes())
-    assert snapshot.observations[0].workflow_ref == "refs/heads/master"
+    assert snapshot.observations[0].workflow_execution_ref == "refs/heads/master"
 
 
 def test_the_runs_own_base_and_head_are_recorded(tmp_path: Path, merge_repo) -> None:

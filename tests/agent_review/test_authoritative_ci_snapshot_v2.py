@@ -20,6 +20,37 @@ from app.agent_review.authoritative_ci_snapshot_v2 import (
     select_observation_v2,
 )
 from app.agent_review.contracts_v2 import RequiredCheckConclusionV2
+def _attestation(repo: str, pr: int, base: str, head: str, merge: str,
+                 run_id: str, attempt: int, outcome: str = "success", **overrides) -> dict:
+    """Attestation emitted by the producer's checkout-free job."""
+
+    from app.agent_review.authoritative_producer_evidence_v2 import (
+        ProducerAttestationV2,
+        compute_producer_attestation_digest_v2,
+    )
+
+    fields: dict = {
+        "schema_id": "agent-review.producer-attestation.v2",
+        "schema_version": 2,
+        "source": "aiops-authoritative-check-producer",
+        "repository": repo,
+        "pr_number": pr,
+        "base_sha": base,
+        "head_sha": head,
+        "executed_sha": merge,
+        "workflow_run_id": run_id,
+        "run_attempt": attempt,
+        "test_outcome": outcome,
+        "policy_digest": "5" * 64,
+        "toolchain_digest": "6" * 64,
+    }
+    fields.update(overrides)
+    digest = compute_producer_attestation_digest_v2(
+        ProducerAttestationV2.model_construct(**fields, attestation_digest="0" * 64)
+    )
+    return ProducerAttestationV2(**fields, attestation_digest=digest).model_dump(mode="json")
+
+
 from app.agent_review.required_check_provenance_v2 import (
     PROVENANCE_CONCLUSION_UNRESOLVED_REASON_V2,
     PROVENANCE_INVALID_REASON_V2,
@@ -38,9 +69,14 @@ BASE = "c" * 40
 ENTRY = AuthoritativeCheckEntryV2(
     check_name="pytest",
     workflow_path=".github/workflows/ci.yml",
-    workflow_ref="refs/heads/master",
     job_name="Validate repository",
     verifier_identity="github-actions",
+    producer_kind="sha_pinned_reusable_workflow",
+    producer_workflow={
+        "repository": "mglpsw/aiops-orchestrator",
+        "path": ".github/workflows/authoritative-checks.reusable.yml",
+        "sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96",
+    },
     permitted_conclusions=("success", "failure"),
     origin_rules=OriginRulesV2(pull_request="synthetic_merge_parentage"),
 )
@@ -56,7 +92,10 @@ def _obs(**overrides: object) -> dict[str, object]:
         "conclusion": "success",
         "app_slug": "github-actions",
         "workflow_path": ".github/workflows/ci.yml",
-        "workflow_ref": "refs/heads/master",
+        "workflow_execution_ref": "refs/pull/7/merge",
+        "referenced_workflows": [{"path": "mglpsw/aiops-orchestrator/.github/workflows/authoritative-checks.reusable.yml", "sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96", "ref": None}],
+        "producer_trigger": "pull_request",
+        "producer_attestation": _attestation(REPO, 7, BASE, HEAD, MERGE, "900", 1),
         "workflow_run_id": "900",
         "run_attempt": 1,
         "run_started_at": "2026-08-11T10:00:00Z",
@@ -88,6 +127,13 @@ def _snapshot_dict(*observations: dict[str, object]) -> dict[str, object]:
 
 def _snapshot(*observations: dict[str, object]):
     return parse_authoritative_ci_snapshot_v2(json.dumps(_snapshot_dict(*observations)))
+
+
+def _observed(record: dict) -> ObservedCheckRunV2:
+    """Through JSON, like the real parser: under strict mode a Python list is
+    not a tuple, but a JSON array is a valid source for a tuple field."""
+
+    return ObservedCheckRunV2.model_validate_json(json.dumps(record), strict=True)
 
 
 def _select(snapshot, head_sha: str = HEAD):
@@ -159,7 +205,6 @@ def test_unfinished_run_carrying_a_conclusion_is_refused() -> None:
     [
         ("check_run_name", "some-other-job"),
         ("workflow_path", ".github/workflows/attacker.yml"),
-        ("workflow_ref", "refs/heads/attacker-branch"),
         ("app_slug", "not-github-actions"),
     ],
 )
@@ -271,7 +316,7 @@ def test_no_other_conclusion_is_promotable(conclusion: str) -> None:  # C0-T12
     """`neutral` and `skipped` in particular are non-verdicts. Treating either
     as success is how a required check silently stops meaning anything."""
 
-    observation = ObservedCheckRunV2.model_validate(_obs(conclusion=conclusion))
+    observation = _observed(_obs(conclusion=conclusion))
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         resolve_conclusion_v2(observation)
     assert exc.value.reason_code == PROVENANCE_CONCLUSION_UNRESOLVED_REASON_V2
@@ -279,7 +324,7 @@ def test_no_other_conclusion_is_promotable(conclusion: str) -> None:  # C0-T12
 
 @pytest.mark.parametrize("status", ["queued", "in_progress", "waiting", "requested", "pending"])
 def test_an_unfinished_run_is_unresolved(status: str) -> None:
-    observation = ObservedCheckRunV2.model_validate(_obs(status=status, conclusion=None))
+    observation = _observed(_obs(status=status, conclusion=None))
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         resolve_conclusion_v2(observation)
     assert exc.value.reason_code == PROVENANCE_CONCLUSION_UNRESOLVED_REASON_V2
@@ -289,7 +334,7 @@ def test_environmental_failure_is_never_reported_as_product_failure() -> None:
     """A cancelled run must not become `FAILURE`, any more than it may become
     `SUCCESS`. Both directions are fabrication."""
 
-    observation = ObservedCheckRunV2.model_validate(_obs(conclusion="cancelled"))
+    observation = _observed(_obs(conclusion="cancelled"))
     with pytest.raises(RequiredCheckProvenanceErrorV2):
         resolve_conclusion_v2(observation)
 
@@ -298,9 +343,9 @@ def test_environmental_failure_is_never_reported_as_product_failure() -> None:
 
 
 def test_observation_digest_is_deterministic_and_discriminating() -> None:
-    first = ObservedCheckRunV2.model_validate(_obs())
-    same = ObservedCheckRunV2.model_validate(_obs())
-    other = ObservedCheckRunV2.model_validate(_obs(conclusion="failure"))
+    first = _observed(_obs())
+    same = _observed(_obs())
+    other = _observed(_obs(conclusion="failure"))
 
     assert compute_observation_digest_v2(first) == compute_observation_digest_v2(same)
     assert compute_observation_digest_v2(first) != compute_observation_digest_v2(other)

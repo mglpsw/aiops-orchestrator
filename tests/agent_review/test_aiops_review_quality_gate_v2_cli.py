@@ -67,9 +67,13 @@ limitations: []
     entries = "\n".join(
         f"""  - check_name: {name}
     workflow_path: .github/workflows/ci.yml
-    workflow_ref: refs/heads/master
     job_name: Validate repository {name}
     verifier_identity: github-actions
+    producer_kind: sha_pinned_reusable_workflow
+    producer_workflow:
+      repository: mglpsw/aiops-orchestrator
+      path: .github/workflows/authoritative-checks.reusable.yml
+      sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
     permitted_conclusions:
       - success
       - failure
@@ -200,6 +204,33 @@ def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None)
 TOOLCHAIN_DIGEST = "e" * 64
 
 
+def _gate_attestation(check_name: str, outcome: str = "success") -> dict:
+    from app.agent_review.authoritative_producer_evidence_v2 import (
+        ProducerAttestationV2,
+        compute_producer_attestation_digest_v2,
+    )
+
+    fields: dict = {
+        "schema_id": "agent-review.producer-attestation.v2",
+        "schema_version": 2,
+        "source": "aiops-authoritative-check-producer",
+        "repository": "mglpsw/aiops-orchestrator",
+        "pr_number": 130,
+        "base_sha": "1" * 40,
+        "head_sha": "2" * 40,
+        "executed_sha": "3" * 40,
+        "workflow_run_id": f"wf-{check_name}",
+        "run_attempt": 1,
+        "test_outcome": outcome,
+        "policy_digest": "5" * 64,
+        "toolchain_digest": "6" * 64,
+    }
+    digest = compute_producer_attestation_digest_v2(
+        ProducerAttestationV2.model_construct(**fields, attestation_digest="0" * 64)
+    )
+    return ProducerAttestationV2(**fields, attestation_digest=digest).model_dump(mode="json")
+
+
 def _observation(check_name: str, **overrides: object) -> dict:
     record: dict = {
         "repository": "mglpsw/aiops-orchestrator",
@@ -210,7 +241,10 @@ def _observation(check_name: str, **overrides: object) -> dict:
         "conclusion": "success",
         "app_slug": "github-actions",
         "workflow_path": ".github/workflows/ci.yml",
-        "workflow_ref": "refs/heads/master",
+        "workflow_execution_ref": "refs/pull/130/merge",
+        "referenced_workflows": [{"path": "mglpsw/aiops-orchestrator/.github/workflows/authoritative-checks.reusable.yml", "sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96", "ref": None}],
+        "producer_trigger": "pull_request",
+        "producer_attestation": _gate_attestation(check_name),
         "workflow_run_id": f"wf-{check_name}",
         "run_attempt": 1,
         "run_started_at": "2026-08-11T10:00:00Z",
@@ -713,6 +747,7 @@ def test_cli_rejects_a_fabricated_green_with_a_self_consistent_sidecar(tmp_path:
     paths = _write_fixtures(tmp_path)
     snapshot = _snapshot_dict(["pytest"])
     snapshot["observations"][0]["conclusion"] = "failure"
+    snapshot["observations"][0]["producer_attestation"] = _gate_attestation("pytest", outcome="failure")
     paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
     output_path = tmp_path / "out" / "readiness.json"
 

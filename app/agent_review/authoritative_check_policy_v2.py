@@ -69,6 +69,10 @@ from app.agent_review.contracts_v2 import (
     SafeText,
     TargetProfileV2,
 )
+from app.agent_review.authoritative_producer_evidence_v2 import (
+    ProducerKindV2,
+    ProducerWorkflowIdentityV2,
+)
 from app.common.strict_json import canonical_json_digest_hex, raw_bytes_digest_hex
 
 AUTHORITATIVE_CHECK_POLICY_SCHEMA_V2 = "agent-review.authoritative-check-policy.v2"
@@ -170,17 +174,27 @@ class AuthoritativeCheckEntryV2(ContractV2Model):
 
     check_name: SafeText
     workflow_path: RelativePath
-    workflow_ref: SafeText
     job_name: SafeText
     verifier_identity: SafeIdentifier
+    # WHICH producer, immutably. A Codex review showed that using the run's
+    # `workflow_ref` as proof of base ownership was unsatisfiable -- genuine
+    # `pull_request` runs execute under a pull ref -- and that the only runs
+    # recording a default-branch ref were `pull_request_target` runs, which
+    # execute the base rather than the merge. Identity now comes from a
+    # reusable workflow pinned by full SHA, which a pull request cannot swap.
+    producer_kind: ProducerKindV2
+    producer_workflow: ProducerWorkflowIdentityV2
     # Structurally pinned rather than configurable -- see the module docstring.
     permitted_conclusions: tuple[Literal["success"], Literal["failure"]]
     origin_rules: OriginRulesV2
 
     @model_validator(mode="after")
     def validate_entry(self) -> AuthoritativeCheckEntryV2:
-        if not self.workflow_ref.startswith("refs/heads/"):
-            raise ValueError("workflow_ref must be a branch ref")
+        # The producer must live in a repository, not in the pull request's own
+        # tree by coincidence of path. Nothing else about the ref is checked --
+        # `workflow_execution_ref` is an observation, never an authority.
+        if self.producer_workflow.repository == "":
+            raise ValueError("a pinned producer workflow needs a repository")
         return self
 
 
@@ -288,9 +302,9 @@ def validate_policy_against_profile_v2(
       every entry must name a required check. A required check with no declared
       authoritative source is a LOAD FAILURE, not a check that silently
       degrades to "no source available" at verdict time;
-    - every entry's `workflow_ref` must be the profile's own default branch.
-      This is what makes "base-owned" checkable rather than aspirational: a
-      workflow resolved from a PR ref can never be an authoritative producer.
+    Base ownership is NOT checked here: it is established per-observation by
+    the SHA-pinned producer workflow and its attestation, not by a ref the
+    policy could merely assert.
     """
 
     if policy.identity.repo != profile.identity.repo:
@@ -304,7 +318,8 @@ def validate_policy_against_profile_v2(
     if declared - required:
         raise AuthoritativeCheckPolicyErrorV2(POLICY_ENTRY_NOT_REQUIRED_REASON_V2)
 
-    expected_ref = f"refs/heads/{profile.identity.default_branch}"
-    for entry in policy.authoritative_checks:
-        if entry.workflow_ref != expected_ref:
-            raise AuthoritativeCheckPolicyErrorV2(POLICY_WORKFLOW_REF_NOT_BASE_OWNED_REASON_V2)
+    # NOTE: there is deliberately no `workflow_ref == refs/heads/<default>`
+    # check any more. It could never be satisfied by a real `pull_request` run,
+    # and the only runs that did satisfy it executed the base rather than the
+    # merge. Base ownership is now established by the SHA-pinned producer
+    # workflow and its attestation -- see `authoritative_producer_evidence_v2`.

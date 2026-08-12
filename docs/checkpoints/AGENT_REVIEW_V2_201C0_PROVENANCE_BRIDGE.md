@@ -166,6 +166,47 @@ Correção: a observação passa a registrar `run_started_at`, e a seleção ord
 Empate nesse par continua sendo ambiguidade recusada. O acquirer **recusa** um run sem timestamp:
 adivinhar ordenação é como um verde obsoleto vence um vermelho atual.
 
+## Rodada 4 de review adversarial (Codex) — a ponte não promovia nada
+
+**Achado (P1) — nenhuma configuração de target era expressível.** A política exigia
+`workflow_ref == refs/heads/<default>` como prova de base-ownership; runs `pull_request` genuínos
+executam sob `refs/pull/<n>/merge`; `pull_request_target` passou a ser recusado na rodada 2. Logo
+**nenhuma observação real podia ser promovida**, e as fixtures só passavam porque combinavam
+`run_event=pull_request` com `workflow_ref=refs/heads/master` — estado que o GitHub nunca emite.
+
+Isso é mais forte do que a limitação registrada antes: não era "configuração de target ainda não
+feita", era "nenhuma configuração de target seria expressível", porque `RunOriginV2` está
+congelado e não admite um trigger de produtor base-owned.
+
+**Resolução ratificada.** `RunOriginV2` permanece **intocado** — é o contrato congelado da origem
+da *revisão*, não do trigger interno do produtor. Foi adicionado um modelo aditivo separado,
+`authoritative_producer_evidence_v2`, que separa cinco fatos antes colapsados em uma string:
+
+```text
+review_origin           o que a REVISÃO é          RunOriginV2 (congelado)
+producer_trigger        como o PRODUTOR disparou   observado, nunca inferido
+workflow_execution_ref  ref sob o qual rodou       observação factual, prova nada
+producer workflow       path @ SHA de 40 chars     identidade imutável
+executed-tree evidence  attestation                prova, não inferência
+```
+
+Primeiro `producer_kind` ratificado: **`sha_pinned_reusable_workflow`**. A autoridade vem do
+reusable workflow pinado por SHA completo — o GitHub registra `referenced_workflows` com o commit
+SHA do workflow que carregou, e uma PR pode editar sua própria árvore mas não pode fazer um run
+referenciar um SHA que ele não carregou.
+
+A árvore executada vem de uma **attestation** emitida por um job do produtor **sem checkout e sem
+executar código da PR** — caso contrário o sujeito estaria atestando a própria execução, que é a
+fronteira da `#201-B3` violada em outro lugar. O assembler exige
+`attested_executed_sha == identity.tested_merge_sha`, e recusa se produtor e GitHub discordarem
+sobre o resultado.
+
+`workflow_ref` **deixou de ser prova de base-ownership**. É registrado como
+`workflow_execution_ref`, observação factual, e não participa da correspondência de produtor.
+
+Um teste fixa a inversão: **um pull ref agora é o caminho promovível normal**, e um workflow
+referenciado em SHA diferente do pinado é recusado.
+
 ## Limitação conhecida — `workflow_ref` e workflows base-owned
 
 A API de Actions do GitHub reporta o `path` de um workflow run, mas **nenhum campo** afirma de

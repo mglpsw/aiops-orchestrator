@@ -35,6 +35,14 @@
           "title": "Permitted Conclusions",
           "type": "array"
         },
+        "producer_kind": {
+          "const": "sha_pinned_reusable_workflow",
+          "title": "Producer Kind",
+          "type": "string"
+        },
+        "producer_workflow": {
+          "$ref": "#/$defs/ProducerWorkflowIdentityV2"
+        },
         "verifier_identity": {
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
           "title": "Verifier Identity",
@@ -46,20 +54,15 @@
           "pattern": "^[^*?\\[\\]]+$",
           "title": "Workflow Path",
           "type": "string"
-        },
-        "workflow_ref": {
-          "maxLength": 512,
-          "minLength": 1,
-          "title": "Workflow Ref",
-          "type": "string"
         }
       },
       "required": [
         "check_name",
         "workflow_path",
-        "workflow_ref",
         "job_name",
         "verifier_identity",
+        "producer_kind",
+        "producer_workflow",
         "permitted_conclusions",
         "origin_rules"
       ],
@@ -140,6 +143,36 @@
         }
       },
       "title": "OriginRulesV2",
+      "type": "object"
+    },
+    "ProducerWorkflowIdentityV2": {
+      "additionalProperties": false,
+      "description": "The immutable identity a base-owned policy pins.\n\n`sha` is a full 40-character commit SHA by type. A short SHA or a branch\nname would be mutable, and the entire point of this contract is that the\nproducer cannot be swapped after the policy was written.",
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "title": "Path",
+          "type": "string"
+        },
+        "repository": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repository",
+          "type": "string"
+        },
+        "sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "path",
+        "sha"
+      ],
+      "title": "ProducerWorkflowIdentityV2",
       "type": "object"
     }
   },

@@ -160,9 +160,17 @@
       "ri_b0_role": "Not applicable to RI-B0. RI-B0 has no role in CI acquisition.",
       "source_path": "schemas/agent-review/v2/agent-review.authoritative-check-snapshot.v2.schema.json",
       "state": "not_applicable"
+    },
+    {
+      "contract_id": "agent-review.producer-attestation.v2",
+      "notes": "Checkout-free attestation emitted by a SHA-pinned reusable workflow, binding the tree a producer actually executed to the run identity (#201-C0). Evidence about CI execution, not about findings.",
+      "owner": "aiops-orchestrator (app/agent_review/)",
+      "ri_b0_role": "Not applicable to RI-B0. RI-B0 consumes readiness, never producer-level execution attestations.",
+      "source_path": "schemas/agent-review/v2/agent-review.producer-attestation.v2.schema.json",
+      "state": "not_applicable"
     }
   ],
-  "generated_from": "live schemas/agent-review/v2/*.json (16 files) and this repository's own CURRENT_CHECKPOINT.md observation of the ProjectOps track boundary",
+  "generated_from": "live schemas/agent-review/v2/*.json (17 files) and this repository's own CURRENT_CHECKPOINT.md observation of the ProjectOps track boundary",
   "schema_version": 1,
   "states": [
     "reuse",

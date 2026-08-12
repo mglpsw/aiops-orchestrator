@@ -6,9 +6,14 @@ identity:
 authoritative_checks:
   - check_name: pytest
     workflow_path: .github/workflows/ci.yml
-    workflow_ref: refs/heads/master
     job_name: Validate repository
     verifier_identity: github-actions
+    producer_kind: sha_pinned_reusable_workflow
+    producer_workflow:
+      repository: mglpsw/aiops-orchestrator
+      path: .github/workflows/authoritative-checks.reusable.yml
+      # Quoted: an all-digit SHA would otherwise parse as an integer.
+      sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
     permitted_conclusions:
       - success
       - failure

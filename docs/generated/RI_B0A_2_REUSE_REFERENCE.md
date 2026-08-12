@@ -52,7 +52,7 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 
 **`agent-review.run-fragment-coverage.v2`** — Proves that every diff fragment assigned to a chunk was actually reviewed (this repo's recent fail-closed coverage-proof work). RI-B0 has no concrete, currently-implemented consumer of raw fragment-coverage records today. Once RI-B0's own completeness/canonicality proof work begins (consuming CAEM's caem.assertion.v1/caem.proof-obligation.v1, both currently reserved), RI-B0 will most likely need a small adapter translating this coverage report into a completeness proof obligation -- not a direct reuse, since the two schemas serve different evidentiary roles (chunk-review completeness vs. a CAEM proof obligation's own resolution states).
 
-## Not applicable — no RI-B0 relevance today (10)
+## Not applicable — no RI-B0 relevance today (11)
 
 | Contract ID | Owner | RI-B0 role | Source |
 |---|---|---|---|
@@ -66,6 +66,7 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 | `agent-review.required-check-provenance.v2` | aiops-orchestrator (app/agent_review/) | Not applicable to RI-B0. Recorded so the provenance sidecar is never mistaken for a finding-level or review-intelligence artifact. | `schemas/agent-review/v2/agent-review.required-check-provenance.v2.schema.json` |
 | `agent-review.authoritative-check-policy.v2` | aiops-orchestrator (app/agent_review/) | Not applicable to RI-B0. RI-B0 never reads or writes target CI policy. | `schemas/agent-review/v2/agent-review.authoritative-check-policy.v2.schema.json` |
 | `agent-review.authoritative-check-snapshot.v2` | aiops-orchestrator (app/agent_review/) | Not applicable to RI-B0. RI-B0 has no role in CI acquisition. | `schemas/agent-review/v2/agent-review.authoritative-check-snapshot.v2.schema.json` |
+| `agent-review.producer-attestation.v2` | aiops-orchestrator (app/agent_review/) | Not applicable to RI-B0. RI-B0 consumes readiness, never producer-level execution attestations. | `schemas/agent-review/v2/agent-review.producer-attestation.v2.schema.json` |
 
 **`agent-review.semantic-grouping-policy.v2`** — Governs how AgentReview groups diff hunks into chunks for LLM review -- an AgentReview-internal execution-planning detail with no proof-obligation or readiness-decision content relevant to RI-B0.
 
@@ -86,3 +87,5 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 **`agent-review.authoritative-check-policy.v2`** — Base-owned, target-owned policy naming which CI producer may speak for a required check (#201-C0). Its lifecycle belongs to the target pack (#203), not to RI-B0.
 
 **`agent-review.authoritative-check-snapshot.v2`** — Transport artifact between the host-owned CI acquirer and the offline assembler (#201-C0). An observation, not evidence about findings.
+
+**`agent-review.producer-attestation.v2`** — Checkout-free attestation emitted by a SHA-pinned reusable workflow, binding the tree a producer actually executed to the run identity (#201-C0). Evidence about CI execution, not about findings.

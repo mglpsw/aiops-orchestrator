@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Strict, hash-bound material emitted by the producer's attestation job.\n\nThe job that emits this must not check out the pull request or execute any\nof its code. If it did, the subject would be attesting to its own\nexecution -- the `#201-B3` boundary broken in a new place.",
+  "properties": {
+    "attestation_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Attestation Digest",
+      "type": "string"
+    },
+    "base_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Base Sha",
+      "type": "string"
+    },
+    "executed_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Executed Sha",
+      "type": "string"
+    },
+    "head_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Head Sha",
+      "type": "string"
+    },
+    "policy_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Policy Digest",
+      "type": "string"
+    },
+    "pr_number": {
+      "exclusiveMinimum": 0,
+      "title": "Pr Number",
+      "type": "integer"
+    },
+    "repository": {
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+      "title": "Repository",
+      "type": "string"
+    },
+    "run_attempt": {
+      "exclusiveMinimum": 0,
+      "title": "Run Attempt",
+      "type": "integer"
+    },
+    "schema_id": {
+      "const": "agent-review.producer-attestation.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "aiops-authoritative-check-producer",
+      "title": "Source",
+      "type": "string"
+    },
+    "test_outcome": {
+      "enum": [
+        "success",
+        "failure"
+      ],
+      "title": "Test Outcome",
+      "type": "string"
+    },
+    "toolchain_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Toolchain Digest",
+      "type": "string"
+    },
+    "workflow_run_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "Workflow Run Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "repository",
+    "pr_number",
+    "base_sha",
+    "head_sha",
+    "executed_sha",
+    "workflow_run_id",
+    "run_attempt",
+    "test_outcome",
+    "policy_digest",
+    "toolchain_digest",
+    "attestation_digest"
+  ],
+  "title": "ProducerAttestationV2",
+  "type": "object"
+}

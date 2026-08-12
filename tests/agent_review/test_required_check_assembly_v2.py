@@ -58,6 +58,37 @@ from app.agent_review.trusted_checks_v2 import (
 
 from tests.agent_review.test_authoritative_check_policy_v2 import FIXTURES
 
+def _attestation(repo: str, pr: int, base: str, head: str, merge: str,
+                 run_id: str, attempt: int, outcome: str = "success", **overrides) -> dict:
+    """Attestation emitted by the producer's checkout-free job."""
+
+    from app.agent_review.authoritative_producer_evidence_v2 import (
+        ProducerAttestationV2,
+        compute_producer_attestation_digest_v2,
+    )
+
+    fields: dict = {
+        "schema_id": "agent-review.producer-attestation.v2",
+        "schema_version": 2,
+        "source": "aiops-authoritative-check-producer",
+        "repository": repo,
+        "pr_number": pr,
+        "base_sha": base,
+        "head_sha": head,
+        "executed_sha": merge,
+        "workflow_run_id": run_id,
+        "run_attempt": attempt,
+        "test_outcome": outcome,
+        "policy_digest": "5" * 64,
+        "toolchain_digest": "6" * 64,
+    }
+    fields.update(overrides)
+    digest = compute_producer_attestation_digest_v2(
+        ProducerAttestationV2.model_construct(**fields, attestation_digest="0" * 64)
+    )
+    return ProducerAttestationV2(**fields, attestation_digest=digest).model_dump(mode="json")
+
+
 REPO = "mglpsw/AgentEscala"
 BASE = "c" * 40
 HEAD = "a" * 40
@@ -99,7 +130,10 @@ def _obs(**overrides: object) -> dict[str, object]:
         "conclusion": "success",
         "app_slug": "github-actions",
         "workflow_path": ".github/workflows/ci.yml",
-        "workflow_ref": "refs/heads/master",
+        "workflow_execution_ref": "refs/pull/7/merge",
+        "referenced_workflows": [{"path": "mglpsw/aiops-orchestrator/.github/workflows/authoritative-checks.reusable.yml", "sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96", "ref": None}],
+        "producer_trigger": "pull_request",
+        "producer_attestation": _attestation(REPO, 7, BASE, HEAD, MERGE, "900", 1),
         "workflow_run_id": "900",
         "run_attempt": 1,
         "run_started_at": "2026-08-11T10:00:00Z",
@@ -194,7 +228,16 @@ def test_a_red_ci_run_promotes_as_a_failure_not_as_absence() -> None:
     """A real red must reach readiness as a red. Dropping it would be as wrong
     as fabricating a green."""
 
-    promoted = _assemble_ci(_snapshot(observations=[_obs(conclusion="failure")]))
+    promoted = _assemble_ci(
+        _snapshot(
+            observations=[
+                _obs(
+                    conclusion="failure",
+                    producer_attestation=_attestation(REPO, 7, BASE, HEAD, MERGE, "900", 1, outcome="failure"),
+                )
+            ]
+        )
+    )
     assert promoted.result.conclusion is RequiredCheckConclusionV2.FAILURE
 
 
@@ -325,14 +368,33 @@ def test_c0_t3_a_check_from_a_non_allowlisted_workflow_is_refused() -> None:
     assert _reason(exc) == PROVENANCE_MISSING_REASON_V2
 
 
-def test_c0_t4_a_workflow_resolved_from_a_pr_ref_is_refused() -> None:
-    """The policy pins `workflow_ref` to the base-owned default branch, so a
-    workflow the PR modified and ran from its own ref matches nothing."""
+def test_c0_t4_a_producer_workflow_at_an_unpinned_sha_is_refused() -> None:
+    """C0-T4, restated after Codex round 4 inverted its premise.
 
-    snapshot = _snapshot(observations=[_obs(workflow_ref="refs/pull/7/merge")])
+    A pull ref is now the NORMAL case -- genuine `pull_request` runs always
+    execute under one, and requiring a default-branch ref made the whole bridge
+    unusable. Base ownership is established instead by the reusable workflow the
+    run actually loaded, pinned by full commit SHA. A pull request can edit its
+    own tree; it cannot make a run reference a workflow SHA it did not load."""
+
+    from app.agent_review.authoritative_producer_evidence_v2 import (
+        PRODUCER_WORKFLOW_NOT_PINNED_REASON_V2,
+    )
+
+    snapshot = _snapshot(
+        observations=[_obs(referenced_workflows=[{"path": "mglpsw/aiops-orchestrator/.github/workflows/authoritative-checks.reusable.yml", "sha": "e" * 40, "ref": None}])]
+    )
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         _assemble_ci(snapshot)
-    assert _reason(exc) == PROVENANCE_MISSING_REASON_V2
+    assert _reason(exc) == PRODUCER_WORKFLOW_NOT_PINNED_REASON_V2
+
+
+def test_a_pull_ref_execution_is_the_normal_promotable_case() -> None:
+    """The inverse assertion, pinned: what round 4 proved impossible must now
+    be the ordinary path."""
+
+    promoted = _assemble_ci(_snapshot(observations=[_obs(workflow_execution_ref="refs/pull/7/merge")]))
+    assert promoted.result.conclusion is RequiredCheckConclusionV2.SUCCESS
 
 
 def test_c0_t13_a_non_allowlisted_app_is_refused() -> None:
@@ -742,9 +804,14 @@ def test_only_synthetic_merge_parentage_can_promote() -> None:
     entry = AuthoritativeCheckEntryV2.model_construct(
         check_name="pytest",
         workflow_path=".github/workflows/ci.yml",
-        workflow_ref="refs/heads/master",
         job_name="Validate repository",
         verifier_identity="github-actions",
+        producer_kind="sha_pinned_reusable_workflow",
+        producer_workflow={
+            "repository": "mglpsw/aiops-orchestrator",
+            "path": ".github/workflows/authoritative-checks.reusable.yml",
+            "sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96",
+        },
         permitted_conclusions=("success", "failure"),
         origin_rules=OriginRulesV2.model_construct(
             pull_request=None,

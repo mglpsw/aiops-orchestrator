@@ -52,6 +52,15 @@ a reusable workflow pinned by the base, or branch protection plus CODEOWNERS on
 the workflow path). Recorded here rather than resolved, because inventing a
 resolution would mean claiming an assurance the platform does not give.
 
+## Producer attestations are acquired, not inferred
+
+GitHub exposes no execution-tree SHA, so the producer emits one from a job that
+performs no checkout and runs none of the pull request's code. This script
+carries those attestations through from the acquired payload keyed by workflow
+run id; obtaining them from the run's artifacts is a separate concern that must
+not be conflated with deciding whether they are valid. An absent attestation
+means the check cannot be promoted -- never "assume it ran the merge".
+
 ## Why the queries are scoped to the PR head
 
 Both requests filter by `--head-sha`, which retrieves exactly the runs GitHub
@@ -263,6 +272,7 @@ def build_snapshot_document(
         run.get("check_suite_id"): run for run in payload.get("workflow_runs", []) if run.get("check_suite_id")
     }
 
+    attestations = payload.get("producer_attestations") or {}
     observations = []
     for check in payload.get("check_runs", []):
         suite_id = (check.get("check_suite") or {}).get("id")
@@ -284,7 +294,23 @@ def build_snapshot_document(
                 "conclusion": check.get("conclusion"),
                 "app_slug": (check.get("app") or {}).get("slug"),
                 "workflow_path": run.get("path"),
-                "workflow_ref": _workflow_ref(run),
+                "workflow_execution_ref": _workflow_ref(run),
+                # What the run LOADED, with GitHub's own full commit SHA. This
+                # is the fact a pull request cannot forge, and it is what the
+                # base-owned policy pins.
+                "referenced_workflows": [
+                    {
+                        "path": ref.get("path"),
+                        "sha": ref.get("sha"),
+                        "ref": ref.get("ref"),
+                    }
+                    for ref in (run.get("referenced_workflows") or [])
+                ],
+                "producer_trigger": _run_event(run),
+                # Emitted by the producer's checkout-free attestation job and
+                # acquired alongside the run. Absent means unpromotable, never
+                # "assume it ran the merge".
+                "producer_attestation": attestations.get(str(run.get("id"))),
                 "workflow_run_id": str(run.get("id")),
                 "run_attempt": run.get("run_attempt") or 1,
                 "run_started_at": _run_started_at(run),
