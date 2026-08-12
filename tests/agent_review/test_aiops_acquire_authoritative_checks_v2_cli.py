@@ -426,3 +426,93 @@ def test_the_attestation_member_is_parsed_strictly() -> None:
 def test_a_non_object_attestation_is_refused() -> None:
     acq = _acquirer_module()
     _assert_attestation_refused(_zip_bytes({acq.ATTESTATION_MEMBER_NAME: b"[1, 2, 3]"}))
+
+
+def _paging_get_json(pages: dict[int, list], key: str, seen: list[str] | None = None):
+    """A fake `get_json` that serves a recorded page map and records the paths."""
+
+    def get_json(path: str):
+        if seen is not None:
+            seen.append(path)
+        page = int(path.rsplit("page=", 1)[1])
+        return {"total_count": sum(len(p) for p in pages.values()), key: pages.get(page, [])}
+
+    return get_json
+
+
+def test_every_page_of_a_list_endpoint_is_read() -> None:
+    """Reading page 1 only reports a producer that genuinely ran as MISSING,
+    and "missing" is not a neutral outcome here -- it is evidence the gate
+    acts on."""
+
+    acq = _acquirer_module()
+    seen: list[str] = []
+    pages = {
+        1: [{"id": i} for i in range(acq.ACQUISITION_PAGE_SIZE)],
+        2: [{"id": 1000}, {"id": 1001}],
+    }
+    items = acq.paginate_envelope_v2(
+        get_json=_paging_get_json(pages, "workflow_runs", seen),
+        path="/repos/o/r/actions/runs?head_sha=abc",
+        key="workflow_runs",
+    )
+
+    assert len(items) == acq.ACQUISITION_PAGE_SIZE + 2
+    assert items[-1] == {"id": 1001}
+    assert len(seen) == 2
+    assert f"per_page={acq.ACQUISITION_PAGE_SIZE}" in seen[0]
+    # The endpoint already carries a query string; paging must extend it, not
+    # start a second one.
+    assert seen[0].count("?") == 1
+
+
+def test_a_short_page_stops_the_walk() -> None:
+    acq = _acquirer_module()
+    seen: list[str] = []
+    items = acq.paginate_envelope_v2(
+        get_json=_paging_get_json({1: [{"id": 1}, {"id": 2}]}, "check_runs", seen),
+        path="/repos/o/r/commits/abc/check-runs",
+        key="check_runs",
+    )
+    assert items == [{"id": 1}, {"id": 2}]
+    assert len(seen) == 1
+
+
+def test_a_list_that_never_ends_is_refused_rather_than_truncated() -> None:
+    """A silently short list is indistinguishable from "the producer did not
+    run", and one of those is a lie."""
+
+    acq = _acquirer_module()
+    full_page = [{"id": i} for i in range(acq.ACQUISITION_PAGE_SIZE)]
+    with pytest.raises(acq.AcquisitionError) as exc:
+        acq.paginate_envelope_v2(
+            get_json=lambda path: {"workflow_runs": full_page},
+            path="/repos/o/r/actions/runs",
+            key="workflow_runs",
+        )
+    assert exc.value.reason_code == acq.ACQUISITION_FAILED_REASON
+
+
+def test_a_non_envelope_response_is_refused() -> None:
+    acq = _acquirer_module()
+    with pytest.raises(acq.AcquisitionError) as exc:
+        acq.paginate_envelope_v2(
+            get_json=lambda path: [{"id": 1}],
+            path="/repos/o/r/actions/runs",
+            key="workflow_runs",
+        )
+    assert exc.value.reason_code == acq.ACQUISITION_FAILED_REASON
+
+
+def test_a_missing_envelope_key_is_refused_not_defaulted() -> None:
+    """`.get(key, [])` would turn a changed or errored payload into "no runs",
+    which the assembler then reports as a missing required check."""
+
+    acq = _acquirer_module()
+    with pytest.raises(acq.AcquisitionError) as exc:
+        acq.paginate_envelope_v2(
+            get_json=lambda path: {"message": "Not Found"},
+            path="/repos/o/r/actions/runs",
+            key="workflow_runs",
+        )
+    assert exc.value.reason_code == acq.ACQUISITION_FAILED_REASON

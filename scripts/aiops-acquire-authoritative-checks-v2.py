@@ -133,6 +133,13 @@ ACQUISITION_FAILED_REASON = "authoritative_check_acquisition_failed"
 ATTESTATION_INVALID_REASON = "authoritative_check_attestation_artifact_invalid"
 GIT_OBSERVATION_FAILED_REASON = "authoritative_check_git_observation_failed"
 
+# GitHub's list endpoints page at 30 by default and 100 at most. An acquirer
+# that reads only the first page reports a producer that ran as MISSING, which
+# is a false negative dressed as evidence -- so every list call pages, and runs
+# out of pages loudly rather than truncating quietly.
+ACQUISITION_PAGE_SIZE = 100
+MAX_ACQUISITION_PAGES = 50
+
 
 class AcquisitionError(RuntimeError):
     def __init__(self, reason_code: str) -> None:
@@ -212,16 +219,22 @@ def _fetch_payload(args: argparse.Namespace) -> tuple[dict, bytes]:
 
     client = module.GitHubClient(token, args.repository, args.api_base_url)
     owner, repo = args.repository.split("/", 1)
-    check_runs = client.get_json(
-        f"/repos/{owner}/{repo}/commits/{args.head_sha}/check-runs"
-    ).get("check_runs", [])
-    workflow_runs = client.get_json(
-        f"/repos/{owner}/{repo}/actions/runs?head_sha={args.head_sha}"
-    ).get("workflow_runs", [])
+    check_runs = paginate_envelope_v2(
+        get_json=client.get_json,
+        path=f"/repos/{owner}/{repo}/commits/{args.head_sha}/check-runs",
+        key="check_runs",
+    )
+    workflow_runs = paginate_envelope_v2(
+        get_json=client.get_json,
+        path=f"/repos/{owner}/{repo}/actions/runs?head_sha={args.head_sha}",
+        key="workflow_runs",
+    )
 
     def list_artifacts(run_id):
-        return client.get_json(f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts").get(
-            "artifacts", []
+        return paginate_envelope_v2(
+            get_json=client.get_json,
+            path=f"/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts",
+            key="artifacts",
         )
 
     def download_artifact(artifact_id):
@@ -243,6 +256,36 @@ def _fetch_payload(args: argparse.Namespace) -> tuple[dict, bytes]:
         ),
     }
     return payload, json.dumps(payload, sort_keys=True).encode("utf-8")
+
+
+def paginate_envelope_v2(*, get_json, path: str, key: str) -> list:
+    """Read every page of a GitHub list endpoint, or refuse.
+
+    GitHub returns these lists inside an envelope (`{"total_count": N, "<key>":
+    [...]}`), paged at 30 by default. Reading page 1 only means a producer that
+    genuinely ran is reported as missing whenever the head has more runs than
+    fit on a page -- and "missing" here is not a neutral outcome, it is evidence
+    the gate acts on.
+
+    `get_json` is injected so the paging discipline is testable without a token
+    and without the network."""
+
+    items: list = []
+    for page in range(1, MAX_ACQUISITION_PAGES + 1):
+        separator = "&" if "?" in path else "?"
+        response = get_json(f"{path}{separator}per_page={ACQUISITION_PAGE_SIZE}&page={page}")
+        if not isinstance(response, dict):
+            raise AcquisitionError(ACQUISITION_FAILED_REASON)
+        batch = response.get(key)
+        if not isinstance(batch, list):
+            raise AcquisitionError(ACQUISITION_FAILED_REASON)
+        items.extend(item for item in batch if isinstance(item, dict))
+        if len(batch) < ACQUISITION_PAGE_SIZE:
+            return items
+
+    # Never return a truncated view: a silently short list is indistinguishable
+    # from "the producer did not run", and one of those is a lie.
+    raise AcquisitionError(ACQUISITION_FAILED_REASON)
 
 
 def _download_bytes(*, url: str, token: str) -> bytes:
@@ -338,9 +381,13 @@ def _workflow_ref(run: dict) -> str:
       asserted -- see the KNOWN LIMITATION in the module docstring.
     - `pull_request_target` loads it from the BASE branch. That is the event's
       defining property (and the reason it is dangerous to use carelessly).
-      Recording a pull ref for it would be factually wrong, and would make
-      every otherwise-authorised `pull_request_target` run permanently
-      unauthorisable, since policy only admits the default branch.
+      Recording a pull ref for it would be factually wrong.
+
+    Since the producer-evidence model landed, no authorisation decision keys
+    off this field at all -- producer identity is the SHA-pinned workflow, and
+    the executed tree is attested. This is a recorded observation, and it is
+    kept accurate for the same reason every other observation is: the acquirer
+    never writes down something it did not see.
 
     For `pull_request_target` the base ref comes from the run's own
     `pull_requests[].base.ref` rather than `head_branch`, which names the pull

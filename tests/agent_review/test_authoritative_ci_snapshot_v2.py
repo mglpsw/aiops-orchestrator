@@ -398,3 +398,69 @@ def test_a_tie_on_start_time_and_attempt_is_ambiguous() -> None:
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         _select(snapshot)
     assert exc.value.reason_code == PROVENANCE_RUN_ATTEMPT_AMBIGUOUS_REASON_V2
+
+
+def test_runs_tied_on_start_time_never_compare_attempts() -> None:
+    """`run_started_at` has second precision, so two DISTINCT workflow runs can
+    tie on it. A maximum over the pair `(run_started_at, run_attempt)` then
+    silently compares attempts belonging to different `workflow_run_id`s --
+    which is the same category error as ordering by attempt alone, just one
+    tie away.
+
+    Concretely: an old run rerun to attempt 3 (green) and a newer run at
+    attempt 1 (red) starting in the same second. Nothing in the data orders
+    those two runs, so the only honest answer is to refuse -- never to hand
+    back the greener one."""
+
+    snapshot = _snapshot(
+        _obs(
+            check_run_id="old-rerun",
+            workflow_run_id="100",
+            run_attempt=3,
+            conclusion="success",
+            run_started_at="2026-08-11T09:00:00Z",
+        ),
+        _obs(
+            check_run_id="new-first-try",
+            workflow_run_id="200",
+            run_attempt=1,
+            conclusion="failure",
+            run_started_at="2026-08-11T09:00:00Z",
+        ),
+    )
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _select(snapshot)
+    assert exc.value.reason_code == PROVENANCE_RUN_ATTEMPT_AMBIGUOUS_REASON_V2
+
+
+def test_the_latest_run_is_chosen_before_any_attempt_is_compared() -> None:
+    """The ordering is run-first, attempt-second -- not a single comparison over
+    both. A newer run at attempt 1 wins outright over an older rerun at a
+    higher attempt, and the older run's attempts are never even considered."""
+
+    snapshot = _snapshot(
+        _obs(
+            check_run_id="old-a1",
+            workflow_run_id="100",
+            run_attempt=1,
+            conclusion="failure",
+            run_started_at="2026-08-11T09:00:00Z",
+        ),
+        _obs(
+            check_run_id="old-a9",
+            workflow_run_id="100",
+            run_attempt=9,
+            conclusion="success",
+            run_started_at="2026-08-11T09:00:00Z",
+        ),
+        _obs(
+            check_run_id="new-a1",
+            workflow_run_id="200",
+            run_attempt=1,
+            conclusion="failure",
+            run_started_at="2026-08-11T12:00:00Z",
+        ),
+    )
+    selected = _select(snapshot)
+    assert selected.check_run_id == "new-a1"
+    assert resolve_conclusion_v2(selected) is RequiredCheckConclusionV2.FAILURE

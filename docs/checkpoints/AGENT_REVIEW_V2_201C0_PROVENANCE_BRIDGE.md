@@ -243,6 +243,43 @@ As asserções desses testes afirmam o tipo de exceção e o reason code, não `
 precisamente a classe de asserção vazia que esta PR existe para manter fora do caminho de
 proveniência.
 
+## Rodada 6 de review adversarial (Codex) — a ordenação empatava entre runs
+
+**Achado 1 (P1) — comparação de tentativas entre workflow runs distintos.** A correção da rodada 3
+trocou "maior `run_attempt`" por um máximo sobre o par `(run_started_at, run_attempt)`, e a
+docstring passou a afirmar "o run mais recente vence, depois a última tentativa desse run". O
+código não fazia isso. `run_started_at` tem precisão de segundo, então dois workflow runs
+**distintos** podem empatar nele; nesse caso a comparação de tupla cai para `run_attempt`, que só
+tem significado dentro de um mesmo `workflow_run_id`. Um run antigo re-executado até a tentativa 3
+(verde) e um run novo na tentativa 1 (vermelho) iniciados no mesmo segundo selecionavam o **verde
+obsoleto** — exatamente a falha que essa seleção existe para impedir, um empate de distância.
+
+É a mesma categoria de erro da rodada 3, sobrevivendo dentro da própria correção da rodada 3.
+
+**Correção.** Dois passos separados, nessa ordem: (1) maior `run_started_at`; se mais de um
+`workflow_run_id` distinto empata nele, **recusa** — nada nos dados ordena os dois runs, e escolher
+qualquer um seria um palpite vestido de decisão; (2) dentro do run único vencedor, maior
+`run_attempt`; dois registros no mesmo run e mesma tentativa são contradição, não escolha.
+
+**Achado 2 (P2) — aquisição viva lia só a primeira página.** Os endpoints de lista do GitHub
+paginam (30 por padrão, 100 no máximo). `check-runs`, `actions/runs` e `artifacts` liam página 1 e
+descartavam o resto em silêncio, então um produtor que **rodou** era reportado como ausente sempre
+que o HEAD tivesse mais runs do que cabe numa página. "Ausente" aqui não é resultado neutro: é
+evidência sobre a qual o gate age.
+
+**Correção.** `paginate_envelope_v2(*, get_json, path, key)` — envelope-aware, `per_page=100`,
+`get_json` injetado (testável sem token e sem rede), e **recusa em vez de truncar** ao esgotar
+`MAX_ACQUISITION_PAGES`. Uma lista curta em silêncio é indistinguível de "o produtor não rodou", e
+uma dessas duas coisas é mentira. A chave do envelope ausente também recusa: o antigo
+`.get(key, [])` transformava payload alterado ou com erro em "nenhum run".
+
+**Threads antigas ainda abertas, verificadas.** As três threads não-outdated remanescentes
+(`required_check_assembly_v2.py:213` e `:273`, `aiops-acquire-authoritative-checks-v2.py:355`) já
+estavam corrigidas nas rodadas 3 e 4; o GitHub as ancora em linhas cujo conteúdo mudou. Duas
+**prosas** ficaram desatualizadas depois que a rodada 4 removeu `workflow_ref` do casamento de
+produtor, e foram corrigidas aqui — comentário que descreve errado o próprio código é exatamente o
+tipo de afirmação não verificada que esta slice existe para não produzir.
+
 ## Limitação conhecida — `workflow_ref` e workflows base-owned
 
 A API de Actions do GitHub reporta o `path` de um workflow run, mas **nenhum campo** afirma de
@@ -274,7 +311,7 @@ CT104.
 | Gate | Resultado |
 |---|---|
 | testes focados C0-1…C0-6 | verde |
-| regressão offline completa | 2173 passed, 4 skipped |
+| regressão offline completa | 2180 passed, 4 skipped |
 | suíte `requires_network` | verde |
 | `bash scripts/ci_validate.sh` (seções 1–8) | **OK** |
 | `export-agent-review-v2-schemas.py --check` | byte-idêntico |
@@ -283,9 +320,10 @@ CT104.
 | CT104 | `blocked_external: ct104_unavailable` |
 
 Testes verificados como genuínos por mutação: relaxar a ordem dos pais, remover a ambiguidade de
-tentativa, reintroduzir match por nome no verificador e trocar o membro esperado do zip de
-attestation por "primeira entrada" falham exatamente o teste escrito para cada um, e voltam a
-passar no restore.
+tentativa, reintroduzir match por nome no verificador, trocar o membro esperado do zip de
+attestation por "primeira entrada", remover a recusa de runs empatados no horário de início e
+parar a paginação após a primeira página falham exatamente o teste escrito para cada um, e voltam
+a passar no restore.
 
 ## Estado vetorial
 

@@ -299,11 +299,15 @@ def select_observation_v2(
       missing, because those are different problems: stale means the evidence
       exists but describes an earlier push, and silently reporting "missing"
       would hide that a green run is being aged out;
-    - the latest run wins, then that run's latest attempt. Ordering by attempt
-      alone was wrong: attempts count within a single workflow run, so an old
-      run rerun to attempt 3 would outrank a newer run at attempt 1;
-    - a tie on (started_at, attempt) is ambiguity, refused rather than resolved
-      by preferring the greener one.
+    - the latest run wins, then that run's latest attempt -- in that order, as
+      two separate steps. Ordering by attempt alone was wrong (attempts count
+      within a single workflow run, so an old run rerun to attempt 3 would
+      outrank a newer run at attempt 1), and so is a single maximum over the
+      pair, which degenerates into the same cross-run comparison whenever two
+      runs tie on a second-precision timestamp;
+    - ambiguity at either step -- two runs tied for latest, or two records at
+      the same run and attempt -- is refused rather than resolved by preferring
+      the greener one.
     """
 
     producer_matches = [obs for obs in snapshot.observations if _matches_producer(obs, entry)]
@@ -318,14 +322,29 @@ def select_observation_v2(
             raise RequiredCheckProvenanceErrorV2(PROVENANCE_OBSERVATION_STALE_REASON_V2)
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_MISSING_REASON_V2)
 
-    # Latest RUN first, then that run's latest attempt. Taking the maximum
-    # attempt across runs was wrong: `run_attempt` counts within one
-    # workflow_run_id, so an old run rerun to attempt 3 outranked a newer run
-    # at attempt 1 -- selecting a stale green over a current red, which is the
-    # exact failure this selection exists to prevent.
-    ordering = max((obs.run_started_at, obs.run_attempt) for obs in scoped)
-    finalists = [obs for obs in scoped if (obs.run_started_at, obs.run_attempt) == ordering]
+    # Latest RUN first, and only THEN that run's latest attempt. These are two
+    # separate steps on purpose, because `run_attempt` counts within a single
+    # workflow_run_id and therefore cannot order two runs against each other.
+    #
+    # A single maximum over the pair `(run_started_at, run_attempt)` looks like
+    # it does this, but does not: `run_started_at` has second precision, so two
+    # distinct runs can tie on it, and the tuple comparison then falls through
+    # to comparing attempts ACROSS runs -- the very thing that lets an old run
+    # rerun to attempt 3 outrank a newer run at attempt 1, selecting a stale
+    # green over a current red.
+    latest_started_at = max(obs.run_started_at for obs in scoped)
+    latest_run_ids = {obs.workflow_run_id for obs in scoped if obs.run_started_at == latest_started_at}
+    if len(latest_run_ids) != 1:
+        # Two runs started in the same second. Nothing in the data orders them,
+        # and picking either would be a guess dressed as a decision.
+        raise RequiredCheckProvenanceErrorV2(PROVENANCE_RUN_ATTEMPT_AMBIGUOUS_REASON_V2)
+
+    latest_run_id = latest_run_ids.pop()
+    within_run = [obs for obs in scoped if obs.workflow_run_id == latest_run_id]
+    latest_attempt = max(obs.run_attempt for obs in within_run)
+    finalists = [obs for obs in within_run if obs.run_attempt == latest_attempt]
     if len(finalists) != 1:
+        # Same run, same attempt, two records: a contradiction, not a choice.
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_RUN_ATTEMPT_AMBIGUOUS_REASON_V2)
 
     return finalists[0]

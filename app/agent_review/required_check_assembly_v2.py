@@ -205,11 +205,9 @@ def _require_run_executed_this_merge(
     # The observation must be of the SAME event the caller declared. Without
     # this, a caller could declare `pull_request` -- earning the synthetic-merge
     # rule -- and have it applied to a `pull_request_target` run, which executes
-    # the BASE rather than the merge. That is especially reachable here because
-    # the policy demands a default-branch `workflow_ref`, which genuine
-    # `pull_request` runs do not have and `pull_request_target` runs do: the
-    # only observations able to satisfy the policy today are exactly the ones
-    # this check must refuse under a mismatched origin.
+    # the BASE rather than the merge. The declared origin selects the rule, so
+    # it has to be the origin that was actually observed; otherwise the rule is
+    # applied to an execution it does not describe.
     if observation.run_event != origin.event_type:
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_ORIGIN_EVENT_MISMATCH_REASON_V2)
 
