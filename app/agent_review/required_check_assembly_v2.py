@@ -401,7 +401,32 @@ def assemble_trusted_host_promotion_v2(
 
     The `TrustedCheckAuthorityV2.TRUSTED` and resolved-outcome requirements are
     NOT re-implemented: `promote_trusted_check_to_required_v2` remains the sole
-    authority on those, and this function delegates to it."""
+    authority on those, and this function delegates to it.
+
+    ## KNOWN LIMITATION -- non-None is not the same fact as verified
+
+    A Codex review found that the two digest checks below establish only that
+    `toolchain_digest`/`host_owned_config_digest` are PRESENT, never that they
+    match a trusted inventory or plan value -- so a stale or misconfigured host
+    execution could still produce a `PROMOTABLE` result carrying digests that
+    describe a DIFFERENT harness or config than the one actually consumed.
+    This is a real, confirmed gap, and this function alone must never be
+    treated as sufficient authority for a production promotion.
+
+    It is not closed here. No contract in this codebase today carries a
+    trusted, independently-derived ground truth for these two digests to be
+    checked against -- `TrustedCheckPlanV2` has no such fields, and inventing
+    one inside this function would mean this module unilaterally deciding
+    where that authority lives, exactly the kind of local, unratified change
+    `#201-C0` has repeatedly declined to make elsewhere (see the acquirer's
+    query-scope limitation). The real fix is a trusted-plan/inventory design
+    ratified together with `#203`'s producer installation and CT104 coming
+    online, not a digest invented at this call site.
+
+    Recorded here rather than hidden. This function also currently has NO
+    production caller: `reassemble_and_verify_required_checks_v2` refuses
+    every `TRUSTED_HOST_PROMOTION` record unconditionally, so today this gap
+    cannot itself turn into a real promotion."""
 
     if toolchain_digest is None:
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_TOOLCHAIN_UNVERIFIED_REASON_V2)
@@ -419,7 +444,16 @@ def assemble_trusted_host_promotion_v2(
     # policy` below returns early for TRUSTED_HOST_PROMOTION, so an unrelated
     # policy passed in at both assembly and verification would agree with
     # itself and promote. Binding here closes that the same way Path B does.
-    _require_policy_entry(loaded_policy=loaded_policy, identity=identity, check_name=trusted_result.check_name)
+    entry = _require_policy_entry(loaded_policy=loaded_policy, identity=identity, check_name=trusted_result.check_name)
+
+    # `entry.origin_rules` is "which RunOriginV2 event types this entry may be
+    # promoted under" -- an origin is opted IN, never assumed, per its own
+    # docstring. Path B enforces this via `_require_executed_tree_binding`;
+    # Path A used to never consult it at all, so a caller could promote under
+    # `manual`/`replay` even though every shipped policy authorises only
+    # `pull_request`.
+    if entry.origin_rules.rule_for(origin.event_type) is None:
+        raise RequiredCheckProvenanceErrorV2(PROVENANCE_ORIGIN_UNSUPPORTED_REASON_V2)
 
     try:
         result = promote_trusted_check_to_required_v2(trusted_result)

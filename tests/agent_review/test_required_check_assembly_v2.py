@@ -638,6 +638,25 @@ def test_host_promotion_refuses_a_check_name_the_policy_never_declared() -> None
     assert _reason(exc) == PROVENANCE_PRODUCER_NOT_ALLOWLISTED_REASON_V2
 
 
+def test_host_promotion_refuses_an_origin_the_policy_never_authorised() -> None:
+    """Path A used to never consult `entry.origin_rules` at all -- unlike
+    Path B's `_require_executed_tree_binding`, nothing stopped a caller from
+    promoting under `manual`/`replay` even though every shipped policy
+    authorises only `pull_request`."""
+
+    unauthorised_origin = RunOriginV2(event_type="manual", event_action="manual", delivery_id="delivery-2")
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        assemble_trusted_host_promotion_v2(
+            trusted_result=_trusted(),
+            loaded_policy=POLICY,
+            identity=IDENTITY,
+            origin=unauthorised_origin,
+            toolchain_digest=TOOLCHAIN,
+            host_owned_config_digest=CONFIG_DIGEST,
+        )
+    assert _reason(exc) == PROVENANCE_ORIGIN_UNSUPPORTED_REASON_V2
+
+
 def test_the_two_paths_produce_distinguishable_provenance() -> None:
     ci = _assemble_ci_fixture().provenance
     host = _assemble_host().provenance

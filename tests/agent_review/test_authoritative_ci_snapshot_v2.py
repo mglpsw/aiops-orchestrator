@@ -359,6 +359,31 @@ def test_observation_digest_is_deterministic_and_discriminating() -> None:
     assert compute_observation_digest_v2(first) != compute_observation_digest_v2(other)
 
 
+def test_observation_digest_is_independent_of_referenced_workflows_order() -> None:
+    """`referenced_workflows` is semantically the SET of what the run loaded;
+    nothing matches it by position and GitHub does not document a stable
+    order for it. Two acquisitions of the same run returning the same
+    references in a different order must produce the SAME digest, or a
+    persisted submission would fail byte-for-byte reassembly against a
+    reacquired snapshot describing identical evidence.
+
+    The two orderings below are genuinely different lists (not a no-op
+    permutation of identical entries), so this proves order-independence
+    rather than an accidental match."""
+
+    refs_forward = [
+        {"path": "org/repo/.github/workflows/a.yml", "sha": "1" * 40, "ref": "refs/heads/master"},
+        {"path": "org/repo/.github/workflows/b.yml", "sha": "2" * 40, "ref": "refs/heads/master"},
+    ]
+    refs_reversed = list(reversed(refs_forward))
+    assert refs_forward != refs_reversed
+
+    forward = _observed(_obs(referenced_workflows=refs_forward))
+    reversed_ = _observed(_obs(referenced_workflows=refs_reversed))
+
+    assert compute_observation_digest_v2(forward) == compute_observation_digest_v2(reversed_)
+
+
 # -- Codex review round 3: ordering across distinct workflow runs --------------
 
 

@@ -270,9 +270,22 @@ def parse_authoritative_ci_snapshot_v2(raw: bytes | str) -> AuthoritativeCheckSn
 
 def compute_observation_digest_v2(observation: ObservedCheckRunV2) -> str:
     """Binds a provenance record to the exact observation it was derived from,
-    not merely to the snapshot file that contained it."""
+    not merely to the snapshot file that contained it.
 
-    return canonical_json_digest_hex(observation.model_dump(mode="json"))
+    `referenced_workflows` is semantically a SET of what the run loaded --
+    nothing compares it by position, and GitHub does not document a stable
+    order for it. Two acquisitions of the same run returning the same
+    references in a different order must not move this digest, or a
+    persisted submitted pair would fail byte-for-byte reassembly against a
+    reacquired snapshot describing the exact same evidence. Sorted by a
+    stable identity tuple before hashing, the same discipline
+    `compute_policy_semantic_digest_v2` already applies to policy entries."""
+
+    dumped = observation.model_dump(mode="json")
+    dumped["referenced_workflows"] = sorted(
+        dumped["referenced_workflows"], key=lambda ref: (ref["path"], ref["sha"], ref["ref"] or "")
+    )
+    return canonical_json_digest_hex(dumped)
 
 
 def _matches_producer(observation: ObservedCheckRunV2, entry: AuthoritativeCheckEntryV2) -> bool:
