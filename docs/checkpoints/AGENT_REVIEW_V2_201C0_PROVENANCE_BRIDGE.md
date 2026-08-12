@@ -435,29 +435,64 @@ disso:
    ratificada em conjunto com a instalação do produtor em `#203` — não implementada nesta rodada.
    Documentada como limitação conhecida no docstring do acquirer, não escondida.
 
-Trinta e dois testes do gate CLI e da suíte de assembly dependiam de `state: ready` ser alcançável
-via `pytest` CI-sourced — o único caminho que já foi promovível neste ambiente
-(`trusted_host_promotion` é recusado na re-derivação do gate incondicionalmente, por constatação
-pré-existente e não relacionada: CT104 está offline). Doze testes cuja fixture-construction
-dependia do assembler foram religados via um bypass de teste explícito, escopado, documentado
-(`_ci_promotion_bypassing_independent_judge_gate`), que nunca alcança o processo real do gate.
-Nove testes do CLI cujo ÚNICO cenário de sucesso passava por essa promoção foram reescritos para
-provar a propriedade que ainda é real: a submissão atravessa toda checagem anterior e é recusada
-apenas no gate terminal — não por colisão de output/input, não por mismatch de contrato, não por
-cobertura incompleta. Dois testes cuja asserção original (`state: ready`) tornou-se literalmente
-falsa foram deletados por estarem substituídos pelos novos testes que afirmam o oposto. Onde a
-cobertura de um mecanismo específico (decision-provenance replay) já existia de forma independente
-em `test_review_readiness_emission_v2.py` — arquivo que a `#201-C0` é proibida de tocar — o teste
-do CLI foi reescrito citando essa cobertura em vez de duplicá-la.
+**Correção sobre o próprio tratamento inicial deste ponto, feita a pedido explícito do usuário.**
+A primeira versão desta correção usou um monkeypatch escopado no processo pai só para construir
+fixtures (nunca alcançava o subprocesso real do gate). O usuário rejeitou isso: qualquer bypass,
+mesmo limitado à construção de fixture, ainda arrisca produzir "evidência que a produção nunca
+aceitaria" e foi vetado por inteiro — nenhuma flag, env var, source_kind exclusivo de teste, skip
+de reassembly ou monkeypatch, em lugar nenhum.
+
+Dois fatos foram verificados antes de decidir o caminho correto:
+
+1. `TargetPoliciesV2.required_checks` é `Field(min_length=1)` (`contracts_v2.py:931`) — contrato
+   **congelado**, que a `#201-C0` não pode tocar. `required_checks: []` é recusado pelo próprio
+   loader do profile; não existe target sem ao menos um required check.
+2. `reassemble_and_verify_required_checks_v2` não tem caminho de re-derivação para
+   `TRUSTED_HOST_PROMOTION` — todo registro desse `source_kind` é recusado incondicionalmente, em
+   código, sem checagem de disponibilidade do CT104 em runtime. Isso é **anterior à rodada 7**, da
+   correção da rodada 1 para o ataque de par forjado à mão.
+
+Logo: `AuthoritativeCIPromotion` sempre foi o único caminho de promoção alcançável por este gate
+endurecido, e agora está corretamente sempre recusado. **Não existe fixture — à mão, com bypass ou
+de qualquer outra forma — capaz de fazer o subprocesso real do gate emitir `state: ready` para um
+target com required check, sem que o próprio subprocesso aceite evidência que nunca aceitaria de
+verdade.** Nenhuma fixture assim foi construída.
+
+A correção final, sem bypass algum: `_hand_built_ci_pair` constrói `--checks`/`--checks-provenance`
+usando os MESMOS primitivos públicos de construção de campo que o assembler real usa
+internamente (`select_observation_v2`, `resolve_conclusion_v2`, `compute_observation_digest_v2`,
+`build_required_check_provenance_v2`) — nunca chamando `assemble_authoritative_ci_promotion_v2`,
+com ou sem bypass. Isso não é atalho: é o equivalente honesto, do lado do teste, à submissão de um
+atacante — uma alegação internamente consistente, que `reassemble_and_verify_required_checks_v2`
+existe precisamente para não confiar, re-derivando de forma independente via o assembler real e
+recusando de verdade. Trinta e dois testes do CLI usam essa mesma fixture; nenhum precisa de
+bypass, porque a re-derivação real recusa exatamente a mesma alegação que um atacante submeteria.
+
+Nove testes do CLI cujo único cenário de sucesso dependia de promoção foram reescritos: oito
+provam a propriedade que ainda é real — a submissão atravessa toda checagem anterior (colisão de
+output/input, mismatch de contrato, decision binding, parsing de payload/response) e é recusada
+apenas no gate terminal — e o nono, antes `test_cli_still_emits_when_provenance_is_authorised`,
+virou `test_cli_refuses_required_check_without_independent_semantic_judge`: prova explicitamente
+que `required_checks: [pytest]` com proveniência estruturalmente bem-formada nunca alcança
+`ready`, com reason code estável, sem fallback. A afirmação correta não é "o check foi legitimado
+mas readiness ficou indisponível" — é `provenance consistency ≠ semantic authority`. A prova
+positiva genuína de que o gate ainda emite `ready` vive uma camada abaixo, em
+`emit_review_readiness_v2`/`compute_readiness_decision_v2` — arquivos que a `#201-C0` é proibida
+de tocar — já coberta, intocada, em `test_review_readiness_emission_v2.py`; os testes de decision-
+provenance replay do CLI foram reescritos citando essa cobertura em vez de duplicá-la.
 
 Estado honesto resultante:
 
 ```text
 #201-C0_SECURITY_BOUNDARY=IMPLEMENTED
 #217_EXERCISED_BYPASS=CLOSED
+QUALITY_GATE_READY_WITHOUT_REQUIRED_CHECKS=NOT_EXPRESSIBLE (TargetPoliciesV2.required_checks min_length=1, frozen)
+QUALITY_GATE_READY_WITH_REQUIRED_CHECKS=UNAVAILABLE
 AUTHORITATIVE_PYTEST_PROMOTION=UNAVAILABLE_BY_DESIGN
+TRUSTED_HOST_PROMOTION_OPERATIONAL_EVIDENCE=BLOCKED_BY_CT104
 INDEPENDENT_SEMANTIC_JUDGE=REQUIRED
 ACQUIRER_QUERY_SCOPE=KNOWN_LIMITATION_DEFERRED_TO_C0_AMENDMENT
+TEST_ONLY_ESCAPE_HATCH=NONE
 ```
 
 ## Limitação conhecida — `workflow_ref` e workflows base-owned
