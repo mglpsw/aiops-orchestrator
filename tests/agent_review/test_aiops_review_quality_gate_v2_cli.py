@@ -874,6 +874,53 @@ def test_cli_requires_checks_provenance(tmp_path: Path) -> None:
     assert "--checks-provenance" in result.stderr
 
 
+def test_cli_rejects_checks_provenance_with_duplicate_keys(tmp_path: Path) -> None:
+    """`--checks-provenance` is authority-bearing: a duplicate key inside one
+    of its objects must not silently resolve to plain `json.loads`'s
+    last-value-wins, the same discipline `--checks-snapshot` already gets from
+    the real assembler's strict parser (`#217`'s binding is by digest of THIS
+    document, so an ambiguous document must never even parse).
+
+    Both values are individually well-formed, proving this is a live
+    ambiguity rather than an incidental parse failure: the first `source_kind`
+    is a real, allowlisted value; the decoy that wins under plain `json.loads`
+    is a different one plain parsing would have accepted just as silently."""
+
+    paths = _write_fixtures(tmp_path)
+    provenance = json.loads(paths["checks_provenance"].read_text(encoding="utf-8"))
+    assert provenance and "source_kind" in provenance[0]
+    raw = json.dumps(provenance)
+    duplicated = raw.replace('{"schema_id"', '{"source_kind": "trusted_host_promotion", "schema_id"', 1)
+    assert duplicated.count('"source_kind"') == 2
+    paths["checks_provenance"].write_text(duplicated, encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "gate_input_invalid" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_rejects_run_origin_with_duplicate_keys(tmp_path: Path) -> None:
+    """Same discipline as above for `--run-origin`: a duplicate `event_type`
+    could otherwise select different origin semantics for a different reader
+    of the same bytes than the one this gate used to authorise a promotion."""
+
+    paths = _write_fixtures(tmp_path)
+    origin = json.loads(paths["run_origin"].read_text(encoding="utf-8"))
+    duplicated = json.dumps(origin)[:-1] + ', "event_type": "push"}'
+    assert duplicated.count('"event_type"') == 2
+    paths["run_origin"].write_text(duplicated, encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "gate_input_invalid" in result.stderr
+    assert not output_path.exists()
+
+
 def test_cli_rejects_a_hand_built_green_check_with_no_provenance(tmp_path: Path) -> None:
     """The #217 attack end to end: an object named `pytest` with
     `conclusion=success` used to satisfy the gate by name alone."""

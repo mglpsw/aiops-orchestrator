@@ -413,6 +413,14 @@ def assemble_trusted_host_promotion_v2(
     if trusted_result.run_id != compute_run_id(identity):
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_RUN_IDENTITY_MISMATCH_REASON_V2)
 
+    # Unlike Path B, this path used to stamp the record with `loaded_policy`'s
+    # digests without ever checking that `loaded_policy` describes THIS
+    # identity's repository or declares THIS check_name -- `_verify_against_
+    # policy` below returns early for TRUSTED_HOST_PROMOTION, so an unrelated
+    # policy passed in at both assembly and verification would agree with
+    # itself and promote. Binding here closes that the same way Path B does.
+    _require_policy_entry(loaded_policy=loaded_policy, identity=identity, check_name=trusted_result.check_name)
+
     try:
         result = promote_trusted_check_to_required_v2(trusted_result)
     except TrustedCheckPromotionError as exc:

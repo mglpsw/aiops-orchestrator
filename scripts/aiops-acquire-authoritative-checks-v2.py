@@ -564,6 +564,23 @@ def _require_id(value: object) -> str:
     return str(value)
 
 
+def _require_producer_repository(run: dict) -> str:
+    """Refuse a missing producer repository rather than assume the caller's
+    target repository observed it.
+
+    `run.get("repository", {}).get("full_name", args.repository)` silently
+    substitutes the repository THIS acquisition is scoped to whenever GitHub's
+    payload omits the field -- turning an absent fact into the one identity
+    value the base-owned policy's producer-repository pin is meant to check
+    against. A missing value must be refused, the same as every other identity
+    field this module reads off a run."""
+
+    full_name = (run.get("repository") or {}).get("full_name")
+    if not isinstance(full_name, str) or not full_name:
+        raise AcquisitionError(ACQUISITION_FAILED_REASON)
+    return full_name
+
+
 def build_snapshot_document(
     *, args: argparse.Namespace, payload: dict, payload_bytes: bytes, parents: list[str]
 ) -> dict:
@@ -610,9 +627,7 @@ def build_snapshot_document(
                 # GitHub loads the definition from the default branch, so this
                 # SHA is a base-owned commit -- which is what lets it serve as
                 # identity for a producer the pull request cannot write into.
-                "workflow_repository": (run.get("repository") or {}).get(
-                    "full_name", args.repository
-                ),
+                "workflow_repository": _require_producer_repository(run),
                 "workflow_sha": run.get("head_sha"),
                 # What the run LOADED, with GitHub's own full commit SHA. This
                 # is the fact a pull request cannot forge, and it is what the
@@ -660,6 +675,24 @@ def build_snapshot_document(
     }
 
 
+def _resolve_git_metadata_dir(git_dir: str) -> Path:
+    """The ACTUAL `.git` metadata directory for `--git-dir`, which is a
+    checkout root (`git -C <git_dir> ...`), not literally a `.git` path
+    itself -- so it cannot be compared against `--output` by simple equality."""
+
+    try:
+        completed = subprocess.run(
+            ["git", "-C", git_dir, "rev-parse", "--absolute-git-dir"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AcquisitionError(GIT_OBSERVATION_FAILED_REASON) from exc
+    return Path(completed.stdout.strip()).resolve()
+
+
 def _check_no_output_input_collision(args: argparse.Namespace) -> None:
     """Reject `--output` aliasing an input, by RESOLVED PATH, before anything
     is read or written.
@@ -670,13 +703,24 @@ def _check_no_output_input_collision(args: argparse.Namespace) -> None:
     a snapshot that has eaten its own source cannot be re-derived or checked.
 
     The quality gate already refuses this class twice over (#145, #156). A new
-    CLI that writes an artifact does not get to relearn it the hard way."""
+    CLI that writes an artifact does not get to relearn it the hard way.
+
+    `--git-dir` defaults to a normal checkout ROOT, not the `.git` metadata
+    directory itself -- comparing `--output` against `--git-dir` by equality
+    alone misses `--output` pointing INSIDE that checkout's real `.git`
+    directory (e.g. `<checkout>/.git/HEAD`). `_observe_parents` would then
+    succeed reading real repository state before the final write clobbers that
+    metadata file and returns success, corrupting the checkout."""
 
     output_resolved = Path(args.output).resolve()
     for name in ("observations", "git_dir"):
         value = getattr(args, name, None)
         if value is not None and Path(value).resolve() == output_resolved:
             raise AcquisitionError(OUTPUT_OVERWRITES_INPUT_REASON)
+
+    git_metadata_dir = _resolve_git_metadata_dir(args.git_dir)
+    if output_resolved == git_metadata_dir or git_metadata_dir in output_resolved.parents:
+        raise AcquisitionError(OUTPUT_OVERWRITES_INPUT_REASON)
 
 
 def main(argv: list[str] | None = None) -> int:

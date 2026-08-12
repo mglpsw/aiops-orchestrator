@@ -213,6 +213,51 @@ def test_a_check_run_with_no_matching_workflow_run_is_dropped(tmp_path: Path, me
     assert [obs.check_run_name for obs in snapshot.observations] == ["Validate repository"]
 
 
+def test_missing_producer_repository_is_refused_not_fabricated(tmp_path: Path, merge_repo) -> None:
+    """`run.get("repository", {}).get("full_name", args.repository)` used to
+    substitute the CALLER's target repository whenever GitHub's payload
+    omitted the producer's own `repository.full_name` -- turning an absent
+    fact into exactly the identity value the base-owned policy's
+    producer-repository pin checks against. A missing value must be refused,
+    the same as every other identity field this module reads off a run."""
+
+    payload = _payload()
+    del payload["workflow_runs"][0]["repository"]
+    result = _acquire(tmp_path, merge_repo, payload)
+    assert result.returncode != 0
+    assert not (tmp_path / "snapshot.json").exists()
+
+
+def test_output_inside_the_real_git_metadata_directory_is_refused(tmp_path: Path, merge_repo) -> None:
+    """`--git-dir` is a checkout ROOT (`git -C <git_dir> ...`), not the `.git`
+    metadata directory itself, so comparing `--output` to `--git-dir` by
+    equality alone misses `--output` pointing INSIDE that checkout's real
+    `.git` directory. Writing the derived snapshot there would corrupt real
+    repository metadata (e.g. overwrite `.git/HEAD`) while still returning
+    success."""
+
+    repo, _base, head, merge = merge_repo
+    observations = tmp_path / "payload.json"
+    observations.write_text(json.dumps(_payload()), encoding="utf-8")
+    git_head = repo / ".git" / "HEAD"
+    original = git_head.read_bytes()
+
+    result = _run(
+        [
+            "--repository", REPO,
+            "--head-sha", head,
+            "--tested-merge-sha", merge,
+            "--git-dir", str(repo),
+            "--observations", str(observations),
+            "--output", str(git_head),
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "authoritative_check_output_overwrites_input" in result.stderr
+    assert git_head.read_bytes() == original
+
+
 def test_a_non_merge_tested_commit_is_refused(tmp_path: Path, merge_repo) -> None:
     repo, base, head, _merge = merge_repo
     observations = tmp_path / "payload.json"

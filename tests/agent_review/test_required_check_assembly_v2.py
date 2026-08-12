@@ -609,6 +609,35 @@ def test_host_promotion_binds_to_the_run_identity() -> None:
     assert _reason(exc) == PROVENANCE_RUN_IDENTITY_MISMATCH_REASON_V2
 
 
+def test_host_promotion_refuses_a_policy_for_a_different_repository() -> None:
+    """Path A used to stamp the record with `loaded_policy`'s digests without
+    ever checking that `loaded_policy` actually describes THIS identity's
+    repository -- `_verify_against_policy` returns early for
+    TRUSTED_HOST_PROMOTION, so a policy for an unrelated repository, passed at
+    both assembly and re-verification, would agree with itself and promote."""
+
+    other_repo_policy = load_authoritative_check_policy_v2(FIXTURES / "interleitos")
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        assemble_trusted_host_promotion_v2(
+            trusted_result=_trusted(),
+            loaded_policy=other_repo_policy,
+            identity=IDENTITY,
+            origin=ORIGIN,
+            toolchain_digest=TOOLCHAIN,
+            host_owned_config_digest=CONFIG_DIGEST,
+        )
+    assert _reason(exc) == PROVENANCE_REPOSITORY_MISMATCH_REASON_V2
+
+
+def test_host_promotion_refuses_a_check_name_the_policy_never_declared() -> None:
+    """A trusted result for a check the base-owned policy never allowlisted
+    must not promote just because it is internally self-consistent."""
+
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_host(trusted=_trusted(check_name="not-a-policy-check"))
+    assert _reason(exc) == PROVENANCE_PRODUCER_NOT_ALLOWLISTED_REASON_V2
+
+
 def test_the_two_paths_produce_distinguishable_provenance() -> None:
     ci = _assemble_ci_fixture().provenance
     host = _assemble_host().provenance

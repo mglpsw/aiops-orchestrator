@@ -99,6 +99,7 @@ from app.agent_review.review_readiness_emission_v2 import (  # noqa: E402
     emit_review_readiness_v2,
 )
 from app.agent_review.versioning import select_contract_version  # noqa: E402
+from app.common.strict_json import strict_json_loads  # noqa: E402
 
 CONTRACT_VERSION_INVALID_REASON_V2 = "contract_version_required"
 INPUT_INVALID_REASON_V2 = "gate_input_invalid"
@@ -217,6 +218,21 @@ def _read_json(path: str) -> object:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
 
 
+def _read_json_strict(path: str) -> object:
+    """Like `_read_json`, but through the same duplicate-key-rejecting parser
+    `--checks-snapshot` already goes through.
+
+    `--checks-provenance` and `--run-origin` are authority-bearing documents:
+    a duplicate `source_kind` or `event_type` key would let plain `json.loads`
+    silently pick the last value while another parser or auditor reading the
+    same bytes could reasonably see a different one."""
+
+    try:
+        return strict_json_loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
+
+
 def _load_decision(path: str) -> ReadinessDecisionV2:
     raw = _read_json(path)
     if not isinstance(raw, dict):
@@ -276,7 +292,7 @@ def _load_checks(path: str) -> list[RequiredCheckResultV2]:
 
 
 def _load_checks_provenance(path: str) -> list[RequiredCheckProvenanceV2]:
-    raw = _read_json(path)
+    raw = _read_json_strict(path)
     if not isinstance(raw, list):
         raise QualityGateCliError(INPUT_INVALID_REASON_V2)
     try:
@@ -287,7 +303,7 @@ def _load_checks_provenance(path: str) -> list[RequiredCheckProvenanceV2]:
 
 def _load_run_origin(path: str) -> RunOriginV2:
     try:
-        return RunOriginV2.model_validate(_read_json(path))
+        return RunOriginV2.model_validate(_read_json_strict(path))
     except ValidationError as exc:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
 
