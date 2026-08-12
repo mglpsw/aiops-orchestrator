@@ -5,11 +5,107 @@ import subprocess
 import sys
 from pathlib import Path
 
-from app.agent_review.contracts_v2 import RunIdentityV2, compute_run_id
+from app.agent_review.authoritative_check_policy_v2 import (
+    LoadedAuthoritativeCheckPolicyV2,
+    load_authoritative_check_policy_v2,
+)
+from app.agent_review.authoritative_ci_snapshot_v2 import (
+    AuthoritativeCheckSnapshotV2,
+    compute_observation_digest_v2,
+    parse_authoritative_ci_snapshot_v2,
+    resolve_conclusion_v2,
+    select_observation_v2,
+)
+from app.agent_review.contracts_v2 import RequiredCheckResultV2, RunIdentityV2, RunOriginV2, compute_run_id
 from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_v2
+from app.agent_review.required_check_assembly_v2 import PROVENANCE_SCHEMA_FIELDS_V2
+from app.agent_review.required_check_provenance_v2 import (
+    AuthorityEffectV2,
+    RequiredCheckSourceKindV2,
+    SemanticClassV2,
+    build_required_check_provenance_v2,
+    compute_required_check_digest_v2,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "aiops-review-quality-gate-v2.py"
+
+
+def _hand_built_ci_pair(
+    *,
+    check_name: str,
+    snapshot: AuthoritativeCheckSnapshotV2,
+    loaded_policy: LoadedAuthoritativeCheckPolicyV2,
+    identity: RunIdentityV2,
+    origin: RunOriginV2,
+    toolchain_digest: str,
+) -> tuple[RequiredCheckResultV2, dict]:
+    """Build a structurally well-formed `(RequiredCheckResultV2,
+    RequiredCheckProvenanceV2)` pair by hand, from the same public
+    field-construction primitives `assemble_authoritative_ci_promotion_v2`
+    itself uses -- WITHOUT calling that function, bypassed or otherwise.
+
+    This is not a bypass and not a shortcut: `assemble_authoritative_ci_
+    promotion_v2` now refuses `AUTHORITATIVE_CI` unconditionally (round-7
+    architectural correction, preserving `#201-B3`'s theorem), so a genuinely
+    PROMOTED pair cannot exist any more, by design. What this function
+    produces is the honest test-side equivalent of an ATTACKER's submission:
+    a self-consistent claim, built from real per-observation data via
+    `select_observation_v2`/`resolve_conclusion_v2`/`compute_observation_
+    digest_v2` (the same neutral, non-gated primitives the real assembler
+    uses), asserting `authority_effect=PROMOTABLE` on its own say-so.
+
+    Submitting this to the real, unmodified gate CLI is exactly the scenario
+    `reassemble_and_verify_required_checks_v2` exists to catch: it does not
+    trust this claim, it independently re-derives from the snapshot via the
+    real `assemble_authoritative_ci_promotion_v2` and requires a byte-for-byte
+    match. Since that re-derivation now always refuses, submitting this pair
+    to the live CLI always produces the SAME outcome a genuine attacker's
+    submission would: refusal, for a real, unpatched, structural reason."""
+
+    entry = loaded_policy.policy.entry_for(check_name)
+    observation = select_observation_v2(
+        snapshot=snapshot, entry=entry, repository=identity.repo, head_sha=identity.head_sha
+    )
+    conclusion = resolve_conclusion_v2(observation)
+
+    result = RequiredCheckResultV2(
+        check_name=check_name,
+        required=True,
+        deterministic=True,
+        conclusion=conclusion,
+        head_sha=identity.head_sha,
+    )
+    provenance_fields = {
+        **PROVENANCE_SCHEMA_FIELDS_V2,
+        "check_name": check_name,
+        "required_check_digest": compute_required_check_digest_v2(result),
+        "source_kind": RequiredCheckSourceKindV2.AUTHORITATIVE_CI,
+        "semantic_class": SemanticClassV2.AUTHORITATIVE,
+        "authority_effect": AuthorityEffectV2.PROMOTABLE,
+        "authority_transfer": False,
+        "repository": identity.repo,
+        "run_id": compute_run_id(identity),
+        "base_sha": identity.base_sha,
+        "head_sha": identity.head_sha,
+        "tested_merge_sha": identity.tested_merge_sha,
+        "event_type": origin.event_type,
+        "event_action": origin.event_action,
+        "verifier_identity": observation.app_slug,
+        "toolchain_digest": toolchain_digest,
+        "workflow_path": observation.workflow_path,
+        "workflow_ref": observation.workflow_execution_ref,
+        "job_name": observation.check_run_name,
+        "ci_run_id": observation.workflow_run_id,
+        "ci_run_attempt": observation.run_attempt,
+        "observed_status": observation.status,
+        "observed_conclusion": observation.conclusion,
+        "observation_digest": compute_observation_digest_v2(observation),
+        "policy_source_bytes_digest": loaded_policy.policy_source_bytes_digest,
+        "policy_source_semantic_digest": loaded_policy.policy_source_semantic_digest,
+    }
+    provenance = build_required_check_provenance_v2(**provenance_fields)
+    return result, provenance.model_dump(mode="json")
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -58,6 +154,35 @@ policies:
   model_uncertainty_state: manual_required
 contracts: []
 limitations: []
+""",
+        encoding="utf-8",
+    )
+    entries = "\n".join(
+        f"""  - check_name: {name}
+    workflow_path: .github/workflows/authoritative-checks.yml
+    job_name: authoritative {name}
+    verifier_identity: github-actions
+    producer_kind: base_owned_workflow_run
+    producer_workflow:
+      repository: mglpsw/aiops-orchestrator
+      path: .github/workflows/authoritative-checks.yml
+      sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
+    producer_workflow_ref: refs/heads/master
+    permitted_conclusions:
+      - success
+      - failure
+    origin_rules:
+      pull_request: synthetic_merge_parentage"""
+        for name in checks
+    )
+    (aiops_dir / "authoritative-checks.v2.yaml").write_text(
+        f"""schema_id: agent-review.authoritative-check-policy.v2
+schema_version: 2
+source: repo-policy
+identity:
+  repo: mglpsw/aiops-orchestrator
+authoritative_checks:
+{entries}
 """,
         encoding="utf-8",
     )
@@ -123,18 +248,155 @@ def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None)
     )
     paths["findings"] = tmp_path / "findings.json"
     paths["findings"].write_text(json.dumps([]), encoding="utf-8")
-    paths["checks"] = tmp_path / "checks.json"
-    paths["checks"].write_text(
+    check_names = required_checks if required_checks is not None else ["pytest"]
+
+    # A real, parseable snapshot -- but `--checks`/`--checks-provenance` are
+    # now built by hand (`_hand_built_ci_pair`), not by calling the real
+    # assembler. `assemble_authoritative_ci_promotion_v2` refuses
+    # AUTHORITATIVE_CI unconditionally since the round-7 architectural
+    # correction, so there is no "genuine" promoted pair left to build any
+    # more, by design -- see that function's docstring in
+    # `authoritative_producer_evidence_v2`. What these fixtures represent
+    # instead is exactly the adversarial case `reassemble_and_verify_
+    # required_checks_v2` exists to catch: a self-consistent CLAIM, submitted
+    # to the real, unmodified gate, which independently re-derives from this
+    # same snapshot via the real assembler and refuses it for real.
+    paths["checks_snapshot"] = tmp_path / "snapshot.json"
+    paths["checks_snapshot"].write_text(
+        json.dumps(_snapshot_dict(check_names)), encoding="utf-8"
+    )
+    paths["run_origin"] = tmp_path / "origin.json"
+    paths["run_origin"].write_text(
         json.dumps(
-            [
-                {"check_name": name, "required": True, "deterministic": True, "conclusion": "success", "head_sha": "2" * 40}
-                for name in (required_checks if required_checks is not None else ["pytest"])
-            ]
+            {"event_type": "pull_request", "event_action": "synchronize", "delivery_id": "delivery-1"}
         ),
         encoding="utf-8",
     )
+
+    loaded_policy = load_authoritative_check_policy_v2(target_profile_root)
+    snapshot = parse_authoritative_ci_snapshot_v2(paths["checks_snapshot"].read_bytes())
+    origin = RunOriginV2.model_validate(json.loads(paths["run_origin"].read_text(encoding="utf-8")))
+
+    pairs = [
+        _hand_built_ci_pair(
+            check_name=name,
+            snapshot=snapshot,
+            loaded_policy=loaded_policy,
+            identity=identity_obj,
+            origin=origin,
+            toolchain_digest=TOOLCHAIN_DIGEST,
+        )
+        for name in check_names
+    ]
+
+    paths["checks"] = tmp_path / "checks.json"
+    paths["checks"].write_text(
+        json.dumps([result.model_dump(mode="json") for result, _ in pairs]), encoding="utf-8"
+    )
+    paths["checks_provenance"] = tmp_path / "checks_provenance.json"
+    paths["checks_provenance"].write_text(
+        json.dumps([provenance for _, provenance in pairs]), encoding="utf-8"
+    )
     paths["target_profile"] = target_profile_root
     return paths
+
+
+TOOLCHAIN_DIGEST = "e" * 64
+
+
+def _reseal_attestation(fields: dict) -> dict:
+    """Re-digest a mutated attestation so it is WELL-FORMED but wrong.
+
+    Without this a mutation would be caught by the self-digest, and the test
+    would prove only that tampering is detected -- not that a correctly-sealed
+    attestation describing a different base is still refused."""
+
+    from app.agent_review.authoritative_producer_evidence_v2 import (
+        ProducerAttestationV2,
+        compute_producer_attestation_digest_v2,
+    )
+
+    material = {key: value for key, value in fields.items() if key != "attestation_digest"}
+    digest = compute_producer_attestation_digest_v2(
+        ProducerAttestationV2.model_construct(**material, attestation_digest="0" * 64)
+    )
+    return ProducerAttestationV2(**material, attestation_digest=digest).model_dump(mode="json")
+
+
+def _gate_attestation(check_name: str, outcome: str = "success") -> dict:
+    from app.agent_review.authoritative_producer_evidence_v2 import (
+        ProducerAttestationV2,
+        compute_producer_attestation_digest_v2,
+    )
+
+    fields: dict = {
+        "schema_id": "agent-review.producer-attestation.v2",
+        "schema_version": 2,
+        "source": "aiops-authoritative-check-producer",
+        "repository": "mglpsw/aiops-orchestrator",
+        "pr_number": 130,
+        "base_sha": "1" * 40,
+        "head_sha": "2" * 40,
+        "executed_sha": "3" * 40,
+        "workflow_run_id": f"wf-{check_name}",
+        "run_attempt": 1,
+        "test_outcome": outcome,
+        "check_execution_mode": "reexecuted_in_producer_run",
+        "executed_sha_derivation": "verified_checkout_rev_parse",
+        "policy_digest": "5" * 64,
+        "toolchain_digest": "6" * 64,
+    }
+    digest = compute_producer_attestation_digest_v2(
+        ProducerAttestationV2.model_construct(**fields, attestation_digest="0" * 64)
+    )
+    return ProducerAttestationV2(**fields, attestation_digest=digest).model_dump(mode="json")
+
+
+def _observation(check_name: str, **overrides: object) -> dict:
+    record: dict = {
+        "repository": "mglpsw/aiops-orchestrator",
+        "head_sha": "2" * 40,
+        "check_run_id": f"run-{check_name}",
+        "check_run_name": f"authoritative {check_name}",
+        "status": "completed",
+        "conclusion": "success",
+        "app_slug": "github-actions",
+        "workflow_path": ".github/workflows/authoritative-checks.yml",
+        "workflow_execution_ref": "refs/heads/master",
+        "workflow_repository": "mglpsw/aiops-orchestrator",
+        "workflow_sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96",
+        "referenced_workflows": [],
+        "producer_trigger": "workflow_run",
+        "producer_attestation": _gate_attestation(check_name),
+        "workflow_run_id": f"wf-{check_name}",
+        "run_attempt": 1,
+        "run_started_at": "2026-08-11T10:00:00Z",
+        "run_event": "workflow_run",
+        "run_base_sha": None,
+        "run_head_sha": None,
+    }
+    record.update(overrides)
+    return record
+
+
+def _snapshot_dict(check_names: list[str], **overrides: object) -> dict:
+    payload: dict = {
+        "schema_id": "agent-review.authoritative-check-snapshot.v2",
+        "schema_version": 2,
+        "source": "aiops-acquire-authoritative-checks",
+        "acquisition": {
+            "acquired_by": "aiops-acquire-authoritative-checks-v2",
+            "api_host": "api.github.com",
+            "repository": "mglpsw/aiops-orchestrator",
+            "head_sha": "2" * 40,
+        },
+        "observations": [_observation(name) for name in check_names],
+        "tested_merge_sha": "3" * 40,
+        "tested_merge_parents": ["1" * 40, "2" * 40],
+        "observation_bytes_digest": "f" * 64,
+    }
+    payload.update(overrides)
+    return payload
 
 
 def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "open") -> list[str]:
@@ -146,20 +408,84 @@ def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "op
         "--findings", str(paths["findings"]),
         "--pr-state", pr_state,
         "--checks", str(paths["checks"]),
+        "--checks-provenance", str(paths["checks_provenance"]),
+        "--checks-snapshot", str(paths["checks_snapshot"]),
+        "--run-origin", str(paths["run_origin"]),
+        "--toolchain-digest", TOOLCHAIN_DIGEST,
         "--target-profile", str(paths["target_profile"]),
         "--output", str(output_path),
     ]
 
 
+## Round-7 architectural correction, and its effect on this test file
+## ---------------------------------------------------------------------------
+## `assemble_authoritative_ci_promotion_v2` now refuses every subject-code
+## check unconditionally (`required_check_provenance_independent_semantic_
+## judge_required` -- see `authoritative_producer_evidence_v2`'s docstring).
+## Two independent, verified facts mean `state: ready` for a target with a
+## required check is not reachable through the live gate SUBPROCESS today,
+## for ANY source_kind, in this environment:
+##
+##   1. `TargetPoliciesV2.required_checks` is `Field(min_length=1)`
+##      (`contracts_v2.py:931`) -- a FROZEN contract `#201-C0` cannot touch.
+##      A target with zero required checks cannot exist; `required_checks: []`
+##      is rejected by the profile loader itself, not by anything C0 added.
+##   2. `reassemble_and_verify_required_checks_v2` (`required_check_assembly_
+##      v2.py`) has no re-derivation path for `TRUSTED_HOST_PROMOTION` at
+##      all -- every record of that source_kind is refused unconditionally,
+##      in code, with no runtime check of CT104 availability. This predates
+##      round 7 entirely (round 1's fix for the hand-built-pair attack); it
+##      is not introduced by this correction.
+##
+## So `AuthoritativeCIPromotion` was the ONLY promotion path ever reachable
+## through this hardened gate, and it is now (correctly) always refused.
+## There is consequently no fixture -- hand-built, bypassed, or otherwise --
+## that can make the live CLI SUBPROCESS emit `state: ready` for a target
+## with a required check, without the subprocess itself accepting evidence it
+## would never accept for real. No such fixture is built here.
+##
+## What IS still real, and still proven end to end below: `--checks`/
+## `--checks-provenance` are built by `_hand_built_ci_pair`, from the SAME
+## public field-construction primitives the real assembler uses (never by
+## calling that function, bypassed or not) -- see its docstring. Submitting
+## that pair to the real, unmodified gate is the exact scenario `reassemble_
+## and_verify_required_checks_v2` exists to catch, and every test below
+## either (a) proves the SPECIFIC earlier defect it targets still fires
+## first, or (b) for the 8 tests whose own concern is unrelated to required-
+## check promotion (collision guards, contract-version handling, decision
+## binding, payload/response parsing), proves the submission is not
+## incorrectly rejected by any of THOSE stages -- it clears all of them and
+## is refused only by the terminal, architecturally-mandated gate. The
+## genuine positive proof that the gate can still emit `state: ready` lives
+## one layer down, in `emit_review_readiness_v2`/`compute_readiness_decision_
+## v2` -- files `#201-C0` is forbidden from touching, already covered,
+## untouched by this correction, in `test_review_readiness_emission_v2.py`.
+
+
+def _assert_reached_the_independent_judge_gate(result: subprocess.CompletedProcess[str]) -> None:
+    """The submission passed every check ahead of it in the pipeline, and was
+    refused only by the terminal, architecturally-mandated gate -- not by the
+    stage actually under test in the calling test."""
+
+    assert result.returncode != 0
+    assert "required_check_provenance_independent_semantic_judge_required" in result.stderr, result.stderr
+
+
 def test_cli_emits_a_valid_ready_readiness_artifact(tmp_path: Path) -> None:
+    """Was: proves a nominal invocation reaches `state: ready`. That terminal
+    state is not reachable today for any source -- see the module note above.
+    What is still real and still worth proving: a nominal invocation is not
+    rejected by any EARLIER stage (collision guards, contract-version
+    handling, decision binding, required-check coverage) -- it reaches the
+    LAST gate, and is refused only there."""
+
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode == 0, result.stderr
-    doc = json.loads(output_path.read_text(encoding="utf-8"))
-    assert doc["state"] == "ready"
+    _assert_reached_the_independent_judge_gate(result)
+    assert not output_path.exists()
 
 
 def test_cli_refuses_without_contract_version_v2(tmp_path: Path) -> None:
@@ -176,17 +502,27 @@ def test_cli_refuses_without_contract_version_v2(tmp_path: Path) -> None:
 
 def test_cli_fails_closed_on_a_readiness_invariant_violation(tmp_path: Path) -> None:
     """ready requires an open PR -- a merged PR with a ready decision must
-    be refused by ReviewReadinessV2's own validator, never silently
-    accepted."""
+    never be silently accepted.
+
+    `ReviewReadinessV2`'s own validator, which is what actually enforces
+    this, is covered directly and unaffected by the round-7 correction: see
+    `test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_
+    validator` in `test_review_readiness_emission_v2.py` -- a file `#201-C0`
+    is forbidden from touching. What THIS test can still prove, through the
+    live CLI, is that a merged PR is refused no matter which stage catches it
+    first: `_validate_required_check_provenance` now runs (and refuses)
+    before `emit_review_readiness_v2` is ever reached, so the readiness
+    invariant's own check is not reached via this path today -- but the
+    submission is refused regardless, which is the property that matters end
+    to end."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path, pr_state="merged"))
 
-    assert result.returncode != 0
+    _assert_reached_the_independent_judge_gate(result)
     assert not output_path.exists()
-    assert "readiness_invariant_violation" in result.stderr
 
 
 def test_cli_rejects_a_v1_payload_mixed_into_a_v2_gate_run(tmp_path: Path) -> None:
@@ -226,8 +562,9 @@ def test_cli_accepts_a_matching_v2_payload_and_response(tmp_path: Path) -> None:
 
     result = _run([*_base_args(paths, output_path), "--payload", str(payload_path), "--response", str(response_path)])
 
-    assert result.returncode == 0, result.stderr
-    assert output_path.exists()
+    # A matching v2 payload/response is not what refuses this submission --
+    # see the module note above the independent-judge-gate helper.
+    _assert_reached_the_independent_judge_gate(result)
 
 
 # -- Thread 2: decision-run binding --------------------------------------------
@@ -236,7 +573,17 @@ def test_cli_accepts_a_matching_v2_payload_and_response(tmp_path: Path) -> None:
 def test_cli_rejects_a_decision_replayed_from_a_different_run(tmp_path: Path) -> None:
     """Regression (Codex review of #145): a `ready` decision computed for
     run A combined with an unrelated run B's identity/findings/checks must
-    be rejected, never silently combined into a valid artifact."""
+    be rejected, never silently combined into a valid artifact.
+
+    The mechanism itself (`READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_
+    REASON_V2`) is covered directly, in-process, against
+    `emit_review_readiness_v2` --
+    `test_emit_review_readiness_rejects_a_decision_replayed_from_a_different_run`
+    in `test_review_readiness_emission_v2.py`, a file `#201-C0` is forbidden
+    from touching. `_validate_required_check_provenance` now runs (and
+    refuses) before `emit_review_readiness_v2` is ever reached, so THIS test
+    proves the weaker, still-real property: a foreign decision is refused end
+    to end via the live CLI regardless of which stage catches it."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
@@ -249,12 +596,16 @@ def test_cli_rejects_a_decision_replayed_from_a_different_run(tmp_path: Path) ->
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode != 0
+    _assert_reached_the_independent_judge_gate(result)
     assert not output_path.exists()
-    assert "readiness_emission_decision_provenance_mismatch" in result.stderr
 
 
 def test_cli_rejects_a_decision_with_matching_run_id_but_divergent_manifest_hash(tmp_path: Path) -> None:
+    """See `test_cli_rejects_a_decision_replayed_from_a_different_run` above:
+    the mechanism is covered directly against `emit_review_readiness_v2` in
+    `test_review_readiness_emission_v2.py`; this proves the live CLI still
+    refuses end to end."""
+
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
@@ -264,9 +615,8 @@ def test_cli_rejects_a_decision_with_matching_run_id_but_divergent_manifest_hash
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode != 0
+    _assert_reached_the_independent_judge_gate(result)
     assert not output_path.exists()
-    assert "readiness_emission_decision_provenance_mismatch" in result.stderr
 
 
 def test_cli_rejects_a_decision_file_without_run_provenance(tmp_path: Path) -> None:
@@ -289,12 +639,15 @@ def test_cli_rejects_a_decision_file_without_run_provenance(tmp_path: Path) -> N
 
 
 def test_cli_accepts_when_all_required_checks_are_present_and_green(tmp_path: Path) -> None:
+    """Was: proves the gate accepts full coverage. Coverage completeness is
+    not what refuses this submission now -- see the module note above."""
+
     paths = _write_fixtures(tmp_path, required_checks=["pytest", "mypy"])
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode == 0, result.stderr
+    _assert_reached_the_independent_judge_gate(result)
 
 
 def test_cli_rejects_when_a_required_check_is_missing(tmp_path: Path) -> None:
@@ -375,7 +728,9 @@ def test_cli_accepts_an_isolated_v2_payload(tmp_path: Path) -> None:
 
     result = _run([*_base_args(paths, output_path), "--payload", str(payload_path)])
 
-    assert result.returncode == 0, result.stderr
+    # An isolated v2 payload is not what refuses this submission -- see the
+    # module note above the independent-judge-gate helper.
+    _assert_reached_the_independent_judge_gate(result)
 
 
 def test_cli_rejects_an_isolated_v1_payload(tmp_path: Path) -> None:
@@ -414,12 +769,16 @@ def test_cli_rejects_a_response_supplied_without_its_payload(tmp_path: Path) -> 
 
 
 def test_cli_valid_flow_with_neither_payload_nor_response(tmp_path: Path) -> None:
+    """Was: proves the gate accepts a nominal flow with neither optional
+    input. That is not what refuses this submission now -- see the module
+    note above the independent-judge-gate helper."""
+
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode == 0, result.stderr
+    _assert_reached_the_independent_judge_gate(result)
 
 
 # -- Thread 5: output/input collision ------------------------------------------
@@ -492,3 +851,284 @@ def test_cli_rejects_output_colliding_with_optional_payload(tmp_path: Path) -> N
     assert result.returncode != 0
     assert "gate_output_overwrites_input" in result.stderr
     assert payload_path.read_bytes() == original_bytes
+
+
+# ---------------------------------------------------------------------------
+# #201-C0 -- authorised provenance is mandatory (#217)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_requires_checks_provenance(tmp_path: Path) -> None:
+    """Fail-closed by construction: omitting the argument is an argparse
+    error, not a silent legacy path that reinstates the bypass."""
+
+    paths = _write_fixtures(tmp_path)
+    output_path = tmp_path / "out" / "readiness.json"
+    args = [a for a in _base_args(paths, output_path)]
+    index = args.index("--checks-provenance")
+    del args[index : index + 2]
+
+    result = _run(args)
+
+    assert result.returncode != 0
+    assert "--checks-provenance" in result.stderr
+
+
+def test_cli_rejects_checks_provenance_with_duplicate_keys(tmp_path: Path) -> None:
+    """`--checks-provenance` is authority-bearing: a duplicate key inside one
+    of its objects must not silently resolve to plain `json.loads`'s
+    last-value-wins, the same discipline `--checks-snapshot` already gets from
+    the real assembler's strict parser (`#217`'s binding is by digest of THIS
+    document, so an ambiguous document must never even parse).
+
+    Both values are individually well-formed, proving this is a live
+    ambiguity rather than an incidental parse failure: the first `source_kind`
+    is a real, allowlisted value; the decoy that wins under plain `json.loads`
+    is a different one plain parsing would have accepted just as silently."""
+
+    paths = _write_fixtures(tmp_path)
+    provenance = json.loads(paths["checks_provenance"].read_text(encoding="utf-8"))
+    assert provenance and "source_kind" in provenance[0]
+    raw = json.dumps(provenance)
+    duplicated = raw.replace('{"schema_id"', '{"source_kind": "trusted_host_promotion", "schema_id"', 1)
+    assert duplicated.count('"source_kind"') == 2
+    paths["checks_provenance"].write_text(duplicated, encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "gate_input_invalid" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_rejects_run_origin_with_duplicate_keys(tmp_path: Path) -> None:
+    """Same discipline as above for `--run-origin`: a duplicate `event_type`
+    could otherwise select different origin semantics for a different reader
+    of the same bytes than the one this gate used to authorise a promotion."""
+
+    paths = _write_fixtures(tmp_path)
+    origin = json.loads(paths["run_origin"].read_text(encoding="utf-8"))
+    duplicated = json.dumps(origin)[:-1] + ', "event_type": "push"}'
+    assert duplicated.count('"event_type"') == 2
+    paths["run_origin"].write_text(duplicated, encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "gate_input_invalid" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_rejects_a_hand_built_green_check_with_no_provenance(tmp_path: Path) -> None:
+    """The #217 attack end to end: an object named `pytest` with
+    `conclusion=success` used to satisfy the gate by name alone."""
+
+    paths = _write_fixtures(tmp_path)
+    paths["checks_provenance"].write_text(json.dumps([]), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_rejects_provenance_naming_the_right_check_but_a_different_result(tmp_path: Path) -> None:
+    """Name coincidence is not coverage. The submitted check is flipped to
+    `failure` while the sidecar still describes the green one, so the digests
+    no longer agree even though `check_name` does."""
+
+    paths = _write_fixtures(tmp_path)
+    checks = json.loads(paths["checks"].read_text(encoding="utf-8"))
+    checks[0]["conclusion"] = "failure"
+    paths["checks"].write_text(json.dumps(checks), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance_missing" in result.stderr
+
+
+def test_cli_rejects_provenance_from_a_different_run(tmp_path: Path) -> None:
+    paths = _write_fixtures(tmp_path)
+    provenance = json.loads(paths["checks_provenance"].read_text(encoding="utf-8"))
+    provenance[0]["run_id"] = "9" * 64
+    paths["checks_provenance"].write_text(json.dumps(provenance), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    # The self-digest catches the edit before the run binding is even reached.
+    assert "gate_input_invalid" in result.stderr or "required_check_provenance" in result.stderr
+
+
+def test_cli_rejects_a_non_allowlisted_producer(tmp_path: Path) -> None:
+    """Attack the EVIDENCE, not the sidecar. Now that the gate re-derives, a
+    forged sidecar is caught generically; the interesting case is a snapshot
+    whose observed producer is not the one the base-owned policy names."""
+
+    paths = _write_fixtures(tmp_path)
+    snapshot = _snapshot_dict(["pytest"])
+    snapshot["observations"][0]["app_slug"] = "attacker-app"
+    paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance_missing" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_rejects_a_workflow_the_policy_does_not_name(tmp_path: Path) -> None:
+    paths = _write_fixtures(tmp_path)
+    snapshot = _snapshot_dict(["pytest"])
+    snapshot["observations"][0]["workflow_path"] = ".github/workflows/attacker.yml"
+    paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance_missing" in result.stderr
+
+
+def test_cli_rejects_a_fabricated_green_with_a_self_consistent_sidecar(tmp_path: Path) -> None:
+    """The exact defect a Codex review of this PR found.
+
+    The submitted check claims success while the evidence says failure. The
+    sidecar is rebuilt to be internally consistent with that claim -- correct
+    self-digest, correct run identity, correct policy digests, correct producer
+    strings. Before re-derivation this passed every structural check. It must
+    now fail, because the evidence does not produce it."""
+
+    paths = _write_fixtures(tmp_path)
+    snapshot = _snapshot_dict(["pytest"])
+    snapshot["observations"][0]["conclusion"] = "failure"
+    snapshot["observations"][0]["producer_attestation"] = _gate_attestation("pytest", outcome="failure")
+    paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_rejects_a_run_produced_against_a_different_base(tmp_path: Path) -> None:
+    """Second Codex finding: the base can advance without the head moving, so
+    a green from the previous base plus a fresh local merge would otherwise
+    line up perfectly."""
+
+    paths = _write_fixtures(tmp_path)
+    snapshot = _snapshot_dict(["pytest"])
+    # The run's own base/head are only meaningful for a PR-triggered producer;
+    # a `workflow_run`'s head is the default branch. This test is about that
+    # mechanism, so it uses the topology the mechanism guards -- which is
+    # refused for staleness here, before it is refused for being PR-writable.
+    observation = snapshot["observations"][0]
+    observation["producer_trigger"] = "pull_request"
+    observation["run_event"] = "pull_request"
+    observation["run_head_sha"] = "2" * 40
+    observation["run_base_sha"] = "7" * 40
+    paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance_observation_stale" in result.stderr
+
+
+def test_cli_rejects_a_base_owned_producer_attesting_a_different_base(tmp_path: Path) -> None:
+    """The same defect for the promotable topology.
+
+    A `workflow_run` producer has no meaningful base/head of its own, so the
+    binding to this review's base comes from the attestation instead. A green
+    attested against a previous base is refused there rather than slipping
+    through because the run-level check does not apply."""
+
+    paths = _write_fixtures(tmp_path)
+    snapshot = _snapshot_dict(["pytest"])
+    attestation = snapshot["observations"][0]["producer_attestation"]
+    attestation["base_sha"] = "7" * 40
+    snapshot["observations"][0]["producer_attestation"] = _reseal_attestation(attestation)
+    paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance_producer_attestation_mismatch" in result.stderr
+
+
+def test_cli_rejects_a_missing_authoritative_check_policy(tmp_path: Path) -> None:
+    """A target profile with no policy beside it cannot legitimate anything."""
+
+    paths = _write_fixtures(tmp_path)
+    (paths["target_profile"] / ".aiops" / "authoritative-checks.v2.yaml").unlink()
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "authoritative_check_policy_missing" in result.stderr
+
+
+def test_cli_rejects_output_colliding_with_the_authoritative_check_policy(tmp_path: Path) -> None:
+    paths = _write_fixtures(tmp_path)
+    policy_file = paths["target_profile"] / ".aiops" / "authoritative-checks.v2.yaml"
+    original_bytes = policy_file.read_bytes()
+
+    result = _run(_base_args(paths, policy_file))
+
+    assert result.returncode != 0
+    assert "gate_output_overwrites_input" in result.stderr
+    assert policy_file.read_bytes() == original_bytes
+
+
+def test_cli_refuses_required_check_without_independent_semantic_judge(tmp_path: Path) -> None:
+    """Was `test_cli_still_emits_when_provenance_is_authorised`, asserting
+    "the hardening must not make the legitimate path unreachable" -- true
+    under round 4's model, false under the round-7 architectural correction.
+    That name is no longer true, so this is a different test with a different
+    claim, not a patched assertion on the old one.
+
+    An independent audit found that `base_owned_workflow_run` +
+    `reexecuted_in_producer_run` re-runs the PULL REQUEST'S OWN test suite
+    and reports its exit code: the subject still controls the
+    success_signal, so `#201-B3`'s theorem
+    (`controls(subject, success_signal) => not authoritative(success_signal)`)
+    still applies regardless of the workflow definition's base-ownership. The
+    round-7 acceptance condition this test encoded is REVOKED, not
+    reinterpreted -- see `authoritative_producer_evidence_v2`'s module
+    docstring.
+
+    The claim under test: `required_checks = ["pytest"]` with STRUCTURALLY
+    WELL-FORMED provenance (`_hand_built_ci_pair` -- self-consistent, built
+    from real per-observation data, never a bypass) is refused, always, by a
+    STABLE reason code, with no `state: ready` and no fallback -- because
+    provenance being internally consistent is not the same fact as semantic
+    authority having been established. `AUTHORITATIVE_PYTEST_PROMOTION=
+    UNAVAILABLE_BY_DESIGN`: this is the regression test for that state
+    remaining true. If this test ever starts failing because the gate emits
+    `ready` again, that is a signal an independent-judge producer was added --
+    real, welcome progress, but it means THIS test needs to be re-ratified
+    deliberately, not patched silently to keep it green."""
+
+    paths = _write_fixtures(tmp_path)
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert not output_path.exists()
+    assert "required_check_provenance_independent_semantic_judge_required" in result.stderr, result.stderr
+
+

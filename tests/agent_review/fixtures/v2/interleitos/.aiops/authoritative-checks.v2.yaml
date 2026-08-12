@@ -1,0 +1,25 @@
+schema_id: agent-review.authoritative-check-policy.v2
+schema_version: 2
+source: repo-policy
+identity:
+  repo: mglpsw/interleitos
+authoritative_checks:
+  # See the AgentEscala fixture: the producer is base-owned and triggered by
+  # `workflow_run`, so the pull request cannot contribute jobs to the run that
+  # emits the attestation.
+  - check_name: pytest
+    workflow_path: .github/workflows/authoritative-checks.yml
+    job_name: authoritative-backend-tests
+    verifier_identity: github-actions
+    producer_kind: base_owned_workflow_run
+    producer_workflow:
+      repository: mglpsw/interleitos
+      path: .github/workflows/authoritative-checks.yml
+      # Quoted: an all-digit SHA would otherwise parse as an integer.
+      sha: "b71e4d0c58a93f26e1d7bc409a35f82e6d14c7b0"
+    producer_workflow_ref: refs/heads/main
+    permitted_conclusions:
+      - success
+      - failure
+    origin_rules:
+      pull_request: synthetic_merge_parentage

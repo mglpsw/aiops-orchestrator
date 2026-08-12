@@ -69,6 +69,13 @@ from app.agent_review.contracts_v2 import (  # noqa: E402
     RequiredCheckResultV2,
     ResponseBindingError,
     RunIdentityV2,
+    RunOriginV2,
+)
+from app.agent_review.authoritative_check_policy_v2 import (  # noqa: E402
+    DEFAULT_AUTHORITATIVE_CHECK_POLICY_RELATIVE_PATH,
+    AuthoritativeCheckPolicyErrorV2,
+    load_authoritative_check_policy_v2,
+    validate_policy_against_profile_v2,
 )
 from app.agent_review.profile_loader_v2 import (  # noqa: E402
     DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
@@ -76,12 +83,23 @@ from app.agent_review.profile_loader_v2 import (  # noqa: E402
     compute_profile_hash_v2,
     load_target_profile_v2,
 )
+from app.agent_review.authoritative_ci_snapshot_v2 import (  # noqa: E402
+    parse_authoritative_ci_snapshot_v2,
+)
+from app.agent_review.required_check_assembly_v2 import (  # noqa: E402
+    reassemble_and_verify_required_checks_v2,
+)
+from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
+    RequiredCheckProvenanceErrorV2,
+    RequiredCheckProvenanceV2,
+)
 from app.agent_review.readiness_decision_v2 import ReadinessDecisionV2  # noqa: E402
 from app.agent_review.review_readiness_emission_v2 import (  # noqa: E402
     ReadinessEmissionError,
     emit_review_readiness_v2,
 )
 from app.agent_review.versioning import select_contract_version  # noqa: E402
+from app.common.strict_json import strict_json_loads  # noqa: E402
 
 CONTRACT_VERSION_INVALID_REASON_V2 = "contract_version_required"
 INPUT_INVALID_REASON_V2 = "gate_input_invalid"
@@ -107,9 +125,32 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--pr-state", required=True, choices=["open", "closed", "merged"])
     parser.add_argument("--checks", required=True, help="JSON array of RequiredCheckResultV2")
     parser.add_argument(
+        "--checks-provenance",
+        required=True,
+        help="JSON array of RequiredCheckProvenanceV2, one per --checks entry",
+    )
+    parser.add_argument(
+        "--checks-snapshot",
+        required=True,
+        help="AuthoritativeCheckSnapshotV2 JSON the checks must be re-derivable from",
+    )
+    parser.add_argument(
+        "--run-origin",
+        required=True,
+        help="JSON: RunOriginV2 fields; selects the tested-tree rule",
+    )
+    parser.add_argument(
+        "--toolchain-digest",
+        required=True,
+        help="digest of the host toolchain that performed acquisition",
+    )
+    parser.add_argument(
         "--target-profile",
         required=True,
-        help="path to a trusted repo-root checkout containing .aiops/target-profile.v2.yaml",
+        help=(
+            "path to a TRUSTED BASE/DEFAULT repo-root checkout containing "
+            ".aiops/target-profile.v2.yaml and .aiops/authoritative-checks.v2.yaml"
+        ),
     )
     parser.add_argument("--payload", help="optional: JSON ChunkPayload for the mixed-contract-version gate")
     parser.add_argument("--response", help="optional: JSON ChunkResponseEnvelope for the same gate")
@@ -137,7 +178,18 @@ def _check_no_output_input_collision(args: argparse.Namespace) -> None:
 
     output_resolved = Path(args.output).resolve()
 
-    file_input_args = ("decision", "identity", "evaluated_identity", "findings", "checks", "payload", "response")
+    file_input_args = (
+        "decision",
+        "identity",
+        "evaluated_identity",
+        "findings",
+        "checks",
+        "checks_provenance",
+        "checks_snapshot",
+        "run_origin",
+        "payload",
+        "response",
+    )
     for name in file_input_args:
         value = getattr(args, name)
         if value is None:
@@ -147,8 +199,15 @@ def _check_no_output_input_collision(args: argparse.Namespace) -> None:
 
     if args.target_profile is not None:
         target_profile_resolved = Path(args.target_profile).resolve()
-        profile_file_resolved = (target_profile_resolved / DEFAULT_TARGET_PROFILE_RELATIVE_PATH).resolve()
-        if output_resolved in (target_profile_resolved, profile_file_resolved):
+        # The root now carries TWO nested inputs. Comparing only against the
+        # bare root, or against the profile alone, would miss a collision with
+        # the authoritative-check policy and silently corrupt it -- the same
+        # class of bug a Codex review of #156 found for the profile itself.
+        nested = [
+            (target_profile_resolved / DEFAULT_TARGET_PROFILE_RELATIVE_PATH).resolve(),
+            (target_profile_resolved / DEFAULT_AUTHORITATIVE_CHECK_POLICY_RELATIVE_PATH).resolve(),
+        ]
+        if output_resolved in (target_profile_resolved, *nested):
             raise QualityGateCliError(OUTPUT_OVERWRITES_INPUT_REASON_V2)
 
 
@@ -156,6 +215,21 @@ def _read_json(path: str) -> object:
     try:
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
+
+
+def _read_json_strict(path: str) -> object:
+    """Like `_read_json`, but through the same duplicate-key-rejecting parser
+    `--checks-snapshot` already goes through.
+
+    `--checks-provenance` and `--run-origin` are authority-bearing documents:
+    a duplicate `source_kind` or `event_type` key would let plain `json.loads`
+    silently pick the last value while another parser or auditor reading the
+    same bytes could reasonably see a different one."""
+
+    try:
+        return strict_json_loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
 
 
@@ -217,6 +291,98 @@ def _load_checks(path: str) -> list[RequiredCheckResultV2]:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
 
 
+def _load_checks_provenance(path: str) -> list[RequiredCheckProvenanceV2]:
+    raw = _read_json_strict(path)
+    if not isinstance(raw, list):
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2)
+    try:
+        return [RequiredCheckProvenanceV2.model_validate(item) for item in raw]
+    except ValidationError as exc:
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
+
+
+def _load_run_origin(path: str) -> RunOriginV2:
+    try:
+        return RunOriginV2.model_validate(_read_json_strict(path))
+    except ValidationError as exc:
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
+
+
+def _load_checks_snapshot(path: str):
+    """Parse through the same strict parser the assembler uses, so the gate
+    cannot accept a snapshot the offline pipeline would reject."""
+
+    try:
+        return parse_authoritative_ci_snapshot_v2(Path(path).read_bytes())
+    except OSError as exc:
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
+    except RequiredCheckProvenanceErrorV2 as exc:
+        raise QualityGateCliError(exc.reason_code) from exc
+
+
+def _validate_required_check_provenance(
+    *,
+    target_profile_path: str,
+    evaluated_identity: RunIdentityV2,
+    checks: list[RequiredCheckResultV2],
+    provenance: list[RequiredCheckProvenanceV2],
+    origin: RunOriginV2,
+    snapshot: object,
+    toolchain_digest: str,
+) -> None:
+    """Re-derive every submitted `RequiredCheckResultV2` from the acquired
+    evidence and refuse anything that does not follow from it.
+
+    This closes the bypass `#217` describes. `_validate_required_checks_complete`
+    below matches required checks BY NAME, so any object called `pytest` with
+    `conclusion=success` satisfied the gate regardless of who built it.
+
+    A first version of this function checked the sidecar's structure instead --
+    1:1 digest binding, run identity, policy conformance. A Codex review of
+    this PR showed that was not enough: every field it inspected is derivable
+    from public inputs, so a caller able to write both `--checks` and
+    `--checks-provenance` could hand-build a fabricated green whose sidecar was
+    perfectly consistent. Matching allowlisted strings proves consistency,
+    never that a check ran. So the gate no longer trusts the submission at all:
+    it re-runs the assembler over `--checks-snapshot` and accepts the pair only
+    if it is exactly what the assembler independently produces.
+
+    Hardening the gate is deliberately NOT readiness wiring. Nothing here
+    touches `review_readiness_emission_v2` or `readiness_decision_v2`, and
+    nothing here decides a readiness state -- connecting a legitimated check
+    set to `ReviewReadinessV2` remains `#201-C`. This function only answers
+    "may this object be here at all?".
+
+    The authoritative-check policy is read from the SAME `--target-profile`
+    root, which is documented as a trusted base/default checkout. That is the
+    security property: read from a PR working tree, the policy would let the
+    pull request nominate its own producer.
+    """
+
+    try:
+        loaded_policy = load_authoritative_check_policy_v2(target_profile_path)
+        profile = load_target_profile_v2(target_profile_path)
+        validate_policy_against_profile_v2(policy=loaded_policy.policy, profile=profile)
+    except (AuthoritativeCheckPolicyErrorV2, TargetProfileLoadErrorV2) as exc:
+        raise QualityGateCliError(exc.reason_code) from exc
+
+    try:
+        reassemble_and_verify_required_checks_v2(
+            checks=checks,
+            provenance=provenance,
+            identity=evaluated_identity,
+            origin=origin,
+            loaded_policy=loaded_policy,
+            snapshot=snapshot,
+            toolchain_digest=toolchain_digest,
+        )
+    except RequiredCheckProvenanceErrorV2 as exc:
+        # Surfaced verbatim: the verifier's reason codes are already stable,
+        # typed and log-safe, so translating them into a second gate-local
+        # vocabulary would only create synonyms.
+        raise QualityGateCliError(exc.reason_code) from exc
+
+
 def _validate_required_checks_complete(
     *, target_profile_path: str, evaluated_identity: RunIdentityV2, checks: list[RequiredCheckResultV2]
 ) -> None:
@@ -274,9 +440,28 @@ def main(argv: list[str] | None = None) -> int:
         evaluated_identity = _load_identity(args.evaluated_identity)
         findings = _load_findings(args.findings)
         checks = _load_checks(args.checks)
+        checks_provenance = _load_checks_provenance(args.checks_provenance)
+        run_origin = _load_run_origin(args.run_origin)
+        checks_snapshot = _load_checks_snapshot(args.checks_snapshot)
 
+        # Completeness first, then entitlement. The two answer different
+        # questions -- "is the required set present?" versus "may each
+        # submitted check be here at all?" -- and running completeness first
+        # keeps each failure's diagnosis precise: a genuinely missing required
+        # check reports `gate_required_check_missing` rather than surfacing as
+        # a provenance count mismatch. Neither order is a bypass, because both
+        # run before `emit_review_readiness_v2`.
         _validate_required_checks_complete(
             target_profile_path=args.target_profile, evaluated_identity=evaluated_identity, checks=checks
+        )
+        _validate_required_check_provenance(
+            target_profile_path=args.target_profile,
+            evaluated_identity=evaluated_identity,
+            checks=checks,
+            provenance=checks_provenance,
+            origin=run_origin,
+            snapshot=checks_snapshot,
+            toolchain_digest=args.toolchain_digest,
         )
 
         readiness = emit_review_readiness_v2(

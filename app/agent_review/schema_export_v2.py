@@ -18,6 +18,10 @@ from app.agent_review.evidence_hash_v2 import EvidenceBundleV2
 from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.payload_set_v2 import PayloadSetV2
 from app.agent_review.review_content_v2 import DlpPolicyDeclarationV2, ReviewContentV2
+from app.agent_review.authoritative_check_policy_v2 import AuthoritativeCheckPolicyV2
+from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
+from app.agent_review.authoritative_producer_evidence_v2 import ProducerAttestationV2
+from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanceV2
 from app.agent_review.review_transport_contract_v2 import ChunkReviewTransportEnvelopeV1
 from app.agent_review.run_fragment_coverage_v2 import RunFragmentCoverageReportV2
 from app.agent_review.semantic_grouping_policy_v2 import SemanticGroupingPolicyV2
@@ -155,6 +159,18 @@ def render_v2_json_schemas() -> dict[str, dict[str, object]]:
         "agent-review.dlp-policy.v1.schema.json": DlpPolicyDeclarationV2.model_json_schema(mode="validation"),
         "agent-review.trusted-check-plan.v2.schema.json": TrustedCheckPlanV2.model_json_schema(mode="validation"),
         "agent-review.trusted-check-result.v2.schema.json": TrustedCheckResultV2.model_json_schema(mode="validation"),
+        "agent-review.required-check-provenance.v2.schema.json": (
+            RequiredCheckProvenanceV2.model_json_schema(mode="validation")
+        ),
+        "agent-review.authoritative-check-policy.v2.schema.json": (
+            AuthoritativeCheckPolicyV2.model_json_schema(mode="validation")
+        ),
+        "agent-review.authoritative-check-snapshot.v2.schema.json": (
+            AuthoritativeCheckSnapshotV2.model_json_schema(mode="validation")
+        ),
+        "agent-review.producer-attestation.v2.schema.json": (
+            ProducerAttestationV2.model_json_schema(mode="validation")
+        ),
     }
     schemas = {filename: normalize_v2_json_schema(schema) for filename, schema in schemas.items()}
     for schema in schemas.values():

@@ -1,0 +1,26 @@
+schema_id: agent-review.authoritative-check-policy.v2
+schema_version: 2
+source: repo-policy
+identity:
+  repo: mglpsw/AgentEscala
+authoritative_checks:
+  # The authoritative producer is a base-owned `workflow_run` workflow, NOT the
+  # pull request's own CI. A PR-triggered run can call any pinned workflow and
+  # still upload its own attestation from a job of its own, so nothing it
+  # produces is authority. `#203` owns installing this workflow in the target.
+  - check_name: pytest
+    workflow_path: .github/workflows/authoritative-checks.yml
+    job_name: authoritative-pytest
+    verifier_identity: github-actions
+    producer_kind: base_owned_workflow_run
+    producer_workflow:
+      repository: mglpsw/AgentEscala
+      path: .github/workflows/authoritative-checks.yml
+      # Quoted: an all-digit SHA would otherwise parse as an integer.
+      sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
+    producer_workflow_ref: refs/heads/master
+    permitted_conclusions:
+      - success
+      - failure
+    origin_rules:
+      pull_request: synthetic_merge_parentage

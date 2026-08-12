@@ -1,0 +1,448 @@
+{
+  "$defs": {
+    "AcquisitionIdentityV2": {
+      "additionalProperties": false,
+      "description": "Who observed this, from where, and scoped to what.\n\nPart of the snapshot's canonical material on purpose: without it, an\nobservation could be re-attributed to a different acquirer or query scope\nafter the fact, and the resulting sidecar would still look coherent.",
+      "properties": {
+        "acquired_by": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Acquired By",
+          "type": "string"
+        },
+        "api_host": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Api Host",
+          "type": "string"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "repository": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repository",
+          "type": "string"
+        }
+      },
+      "required": [
+        "acquired_by",
+        "api_host",
+        "repository",
+        "head_sha"
+      ],
+      "title": "AcquisitionIdentityV2",
+      "type": "object"
+    },
+    "ObservedCheckRunV2": {
+      "additionalProperties": false,
+      "description": "One check run exactly as observed, with no interpretation applied.\n\n`check_run_name` is GitHub's own name for the run -- NOT the AgentReview\nrequired-check name. Keeping them separate is what makes name-matching\nstructurally insufficient: the policy maps a required check to the\nproducer's job name, and the two need not coincide.\n\n`run_base_sha`/`run_head_sha` are the base and head GitHub itself recorded\nfor the run. They exist because a check run is scoped to a HEAD, while the\nthing it actually executed is a merge of that head with a base -- and the\nbase can advance without the head moving. Without recording the run's own\nbase, a stale run and a freshly-created local merge commit line up\nperfectly and a green from the previous base gets promoted for a merge that\nwas never tested. Recorded here so the assembler can refuse that.",
+      "properties": {
+        "app_slug": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "App Slug",
+          "type": "string"
+        },
+        "check_run_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Check Run Id",
+          "type": "string"
+        },
+        "check_run_name": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Check Run Name",
+          "type": "string"
+        },
+        "conclusion": {
+          "anyOf": [
+            {
+              "enum": [
+                "success",
+                "failure",
+                "cancelled",
+                "timed_out",
+                "neutral",
+                "skipped",
+                "stale",
+                "action_required",
+                "startup_failure"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Conclusion"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "producer_attestation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProducerAttestationV2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "producer_trigger": {
+          "enum": [
+            "pull_request",
+            "pull_request_target",
+            "push",
+            "workflow_run",
+            "merge_group",
+            "workflow_dispatch",
+            "schedule"
+          ],
+          "title": "Producer Trigger",
+          "type": "string"
+        },
+        "referenced_workflows": {
+          "items": {
+            "$ref": "#/$defs/ProducerWorkflowReferenceV2"
+          },
+          "title": "Referenced Workflows",
+          "type": "array"
+        },
+        "repository": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repository",
+          "type": "string"
+        },
+        "run_attempt": {
+          "exclusiveMinimum": 0,
+          "title": "Run Attempt",
+          "type": "integer"
+        },
+        "run_base_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Run Base Sha"
+        },
+        "run_event": {
+          "enum": [
+            "pull_request",
+            "pull_request_target",
+            "push",
+            "merge_group",
+            "workflow_run",
+            "workflow_dispatch",
+            "schedule"
+          ],
+          "title": "Run Event",
+          "type": "string"
+        },
+        "run_head_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Run Head Sha"
+        },
+        "run_started_at": {
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+          "title": "Run Started At",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "queued",
+            "in_progress",
+            "completed",
+            "waiting",
+            "requested",
+            "pending"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "workflow_execution_ref": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Workflow Execution Ref",
+          "type": "string"
+        },
+        "workflow_path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "title": "Workflow Path",
+          "type": "string"
+        },
+        "workflow_repository": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Workflow Repository",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Workflow Run Id",
+          "type": "string"
+        },
+        "workflow_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Workflow Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "head_sha",
+        "check_run_id",
+        "check_run_name",
+        "status",
+        "conclusion",
+        "app_slug",
+        "workflow_path",
+        "workflow_execution_ref",
+        "workflow_repository",
+        "workflow_sha",
+        "referenced_workflows",
+        "producer_trigger",
+        "producer_attestation",
+        "workflow_run_id",
+        "run_attempt",
+        "run_started_at",
+        "run_event",
+        "run_base_sha",
+        "run_head_sha"
+      ],
+      "title": "ObservedCheckRunV2",
+      "type": "object"
+    },
+    "ProducerAttestationV2": {
+      "additionalProperties": false,
+      "description": "Strict, hash-bound material emitted by the producer's attestation job.\n\nThe job that emits this must not check out the pull request or execute any\nof its code. If it did, the subject would be attesting to its own\nexecution -- the `#201-B3` boundary broken in a new place.",
+      "properties": {
+        "attestation_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Attestation Digest",
+          "type": "string"
+        },
+        "base_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Base Sha",
+          "type": "string"
+        },
+        "check_execution_mode": {
+          "enum": [
+            "reexecuted_in_producer_run",
+            "upstream_artifact_republished"
+          ],
+          "title": "Check Execution Mode",
+          "type": "string"
+        },
+        "executed_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Executed Sha",
+          "type": "string"
+        },
+        "executed_sha_derivation": {
+          "enum": [
+            "verified_checkout_rev_parse",
+            "caller_supplied"
+          ],
+          "title": "Executed Sha Derivation",
+          "type": "string"
+        },
+        "head_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Head Sha",
+          "type": "string"
+        },
+        "policy_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Policy Digest",
+          "type": "string"
+        },
+        "pr_number": {
+          "exclusiveMinimum": 0,
+          "title": "Pr Number",
+          "type": "integer"
+        },
+        "repository": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repository",
+          "type": "string"
+        },
+        "run_attempt": {
+          "exclusiveMinimum": 0,
+          "title": "Run Attempt",
+          "type": "integer"
+        },
+        "schema_id": {
+          "const": "agent-review.producer-attestation.v2",
+          "title": "Schema Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source": {
+          "const": "aiops-authoritative-check-producer",
+          "title": "Source",
+          "type": "string"
+        },
+        "test_outcome": {
+          "enum": [
+            "success",
+            "failure"
+          ],
+          "title": "Test Outcome",
+          "type": "string"
+        },
+        "toolchain_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Toolchain Digest",
+          "type": "string"
+        },
+        "workflow_run_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "title": "Workflow Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_id",
+        "schema_version",
+        "source",
+        "repository",
+        "pr_number",
+        "base_sha",
+        "head_sha",
+        "executed_sha",
+        "workflow_run_id",
+        "run_attempt",
+        "test_outcome",
+        "check_execution_mode",
+        "executed_sha_derivation",
+        "policy_digest",
+        "toolchain_digest",
+        "attestation_digest"
+      ],
+      "title": "ProducerAttestationV2",
+      "type": "object"
+    },
+    "ProducerWorkflowReferenceV2": {
+      "additionalProperties": false,
+      "description": "One entry of GitHub's `referenced_workflows`, as observed.\n\n`ref` is recorded because GitHub reports it, and deliberately NOT compared:\na ref is mutable and proves nothing. The SHA is what carries identity.",
+      "properties": {
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ref"
+        },
+        "sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "sha"
+      ],
+      "title": "ProducerWorkflowReferenceV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The acquirer's output.\n\nExported as a published schema even though only the assembler reads it: it\ncrosses a process boundary and lands on disk, which is exactly what the\nother v2 wire artifacts are given schemas for. Treating it as \"internal\"\nwould also make it the one cross-process artifact a target pack could not\nvalidate independently.",
+  "properties": {
+    "acquisition": {
+      "$ref": "#/$defs/AcquisitionIdentityV2"
+    },
+    "observation_bytes_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Observation Bytes Digest",
+      "type": "string"
+    },
+    "observations": {
+      "items": {
+        "$ref": "#/$defs/ObservedCheckRunV2"
+      },
+      "title": "Observations",
+      "type": "array"
+    },
+    "schema_id": {
+      "const": "agent-review.authoritative-check-snapshot.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source": {
+      "const": "aiops-acquire-authoritative-checks",
+      "title": "Source",
+      "type": "string"
+    },
+    "tested_merge_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}$",
+        "type": "string"
+      },
+      "maxItems": 8,
+      "minItems": 1,
+      "title": "Tested Merge Parents",
+      "type": "array"
+    },
+    "tested_merge_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Tested Merge Sha",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "source",
+    "acquisition",
+    "observations",
+    "tested_merge_sha",
+    "tested_merge_parents",
+    "observation_bytes_digest"
+  ],
+  "title": "AuthoritativeCheckSnapshotV2",
+  "type": "object"
+}
