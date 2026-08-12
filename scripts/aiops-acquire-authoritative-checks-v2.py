@@ -68,6 +68,9 @@ if str(REPO_ROOT) not in sys.path:
 from app.agent_review.authoritative_ci_snapshot_v2 import (  # noqa: E402
     parse_authoritative_ci_snapshot_v2,
 )
+from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
+    RequiredCheckProvenanceErrorV2,
+)
 from app.common.strict_json import canonical_json_text, raw_bytes_digest_hex  # noqa: E402
 
 ACQUIRER_IDENTITY = "aiops-acquire-authoritative-checks-v2"
@@ -166,21 +169,60 @@ def _fetch_payload(args: argparse.Namespace) -> tuple[dict, bytes]:
 
 
 def _workflow_ref(run: dict) -> str:
-    """Record the ref the run actually executed under.
+    """Record the ref the WORKFLOW DEFINITION was loaded from.
 
-    No base-ownership is asserted here -- see the KNOWN LIMITATION in the
-    module docstring. `pull_request` runs legitimately report a pull ref, and
-    saying otherwise would be a fabricated assurance."""
+    The two pull-request events differ in exactly the property this whole
+    slice cares about, so they must not be mapped the same way:
+
+    - `pull_request` loads the workflow from the pull request's own merge
+      commit, so the honest answer is the pull ref. No base-ownership is
+      asserted -- see the KNOWN LIMITATION in the module docstring.
+    - `pull_request_target` loads it from the BASE branch. That is the event's
+      defining property (and the reason it is dangerous to use carelessly).
+      Recording a pull ref for it would be factually wrong, and would make
+      every otherwise-authorised `pull_request_target` run permanently
+      unauthorisable, since policy only admits the default branch.
+
+    For `pull_request_target` the base ref comes from the run's own
+    `pull_requests[].base.ref` rather than `head_branch`, which names the pull
+    request's head branch and is not where the definition came from."""
 
     event = run.get("event")
-    if event in {"pull_request", "pull_request_target"}:
-        number = (run.get("pull_requests") or [{}])[0].get("number")
+    pull = (run.get("pull_requests") or [{}])[0]
+
+    if event == "pull_request":
+        number = pull.get("number")
         if number is not None:
             return f"refs/pull/{number}/merge"
+    elif event == "pull_request_target":
+        base_ref = (pull.get("base") or {}).get("ref")
+        if base_ref:
+            return f"refs/heads/{base_ref}"
+
     branch = run.get("head_branch")
     if branch:
         return f"refs/heads/{branch}"
     raise AcquisitionError(ACQUISITION_FAILED_REASON)
+
+
+def _run_event(run: dict) -> str:
+    """Normalise the trigger, refusing anything unrecognised.
+
+    An unknown event cannot be reasoned about, so it is refused rather than
+    bucketed into an `other` value that later code would have to guess at."""
+
+    event = run.get("event")
+    if event not in {
+        "pull_request",
+        "pull_request_target",
+        "push",
+        "merge_group",
+        "workflow_run",
+        "workflow_dispatch",
+        "schedule",
+    }:
+        raise AcquisitionError(ACQUISITION_FAILED_REASON)
+    return event
 
 
 def build_snapshot_document(
@@ -200,6 +242,7 @@ def build_snapshot_document(
             # invented fields. Dropping here is safe: a required check that
             # ends up absent fails closed downstream.
             continue
+        pull = (run.get("pull_requests") or [{}])[0]
         observations.append(
             {
                 "repository": args.repository,
@@ -213,6 +256,13 @@ def build_snapshot_document(
                 "workflow_ref": _workflow_ref(run),
                 "workflow_run_id": str(run.get("id")),
                 "run_attempt": run.get("run_attempt") or 1,
+                "run_event": _run_event(run),
+                # The run's OWN base and head, as GitHub recorded them. Without
+                # these the run cannot be bound to a base/head pair, and a green
+                # produced against a previous base would be indistinguishable
+                # from one produced against the current merge.
+                "run_base_sha": (pull.get("base") or {}).get("sha"),
+                "run_head_sha": (pull.get("head") or {}).get("sha"),
             }
         )
 
@@ -246,7 +296,10 @@ def main(argv: list[str] | None = None) -> int:
         # Materialise only what the assembler would accept: writing a snapshot
         # the offline parser would reject just moves the failure downstream.
         parse_authoritative_ci_snapshot_v2(canonical_json_text(document))
-    except AcquisitionError as exc:
+    except (AcquisitionError, RequiredCheckProvenanceErrorV2) as exc:
+        # Surface the parser's own reason code rather than collapsing it into a
+        # generic failure: "the snapshot I was about to write is malformed" and
+        # "GitHub was unreachable" need different responses.
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
     except (OSError, ValueError) as exc:

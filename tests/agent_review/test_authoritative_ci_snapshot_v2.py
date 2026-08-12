@@ -59,6 +59,9 @@ def _obs(**overrides: object) -> dict[str, object]:
         "workflow_ref": "refs/heads/master",
         "workflow_run_id": "900",
         "run_attempt": 1,
+        "run_event": "pull_request",
+        "run_base_sha": BASE,
+        "run_head_sha": HEAD,
     }
     record.update(overrides)
     return record

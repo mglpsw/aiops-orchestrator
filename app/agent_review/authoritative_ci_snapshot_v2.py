@@ -79,6 +79,15 @@ AUTHORITATIVE_CHECK_SNAPSHOT_SCHEMA_V2 = "agent-review.authoritative-check-snaps
 # unrecognised value is a parse failure, never something to pass through and
 # hope a later stage rejects.
 ObservedStatusV2 = Literal["queued", "in_progress", "completed", "waiting", "requested", "pending"]
+ObservedRunEventV2 = Literal[
+    "pull_request",
+    "pull_request_target",
+    "push",
+    "merge_group",
+    "workflow_run",
+    "workflow_dispatch",
+    "schedule",
+]
 ObservedConclusionV2 = Literal[
     "success",
     "failure",
@@ -118,7 +127,16 @@ class ObservedCheckRunV2(ContractV2Model):
     `check_run_name` is GitHub's own name for the run -- NOT the AgentReview
     required-check name. Keeping them separate is what makes name-matching
     structurally insufficient: the policy maps a required check to the
-    producer's job name, and the two need not coincide."""
+    producer's job name, and the two need not coincide.
+
+    `run_base_sha`/`run_head_sha` are the base and head GitHub itself recorded
+    for the run. They exist because a check run is scoped to a HEAD, while the
+    thing it actually executed is a merge of that head with a base -- and the
+    base can advance without the head moving. Without recording the run's own
+    base, a stale run and a freshly-created local merge commit line up
+    perfectly and a green from the previous base gets promoted for a merge that
+    was never tested. Recorded here so the assembler can refuse that.
+    """
 
     repository: Repository
     head_sha: GitSha
@@ -131,6 +149,9 @@ class ObservedCheckRunV2(ContractV2Model):
     workflow_ref: SafeText
     workflow_run_id: SafeIdentifier
     run_attempt: PositiveInt
+    run_event: ObservedRunEventV2
+    run_base_sha: GitSha | None
+    run_head_sha: GitSha | None
 
     @model_validator(mode="after")
     def validate_status_conclusion_pair(self) -> ObservedCheckRunV2:
@@ -141,6 +162,17 @@ class ObservedCheckRunV2(ContractV2Model):
             raise ValueError("a completed check run must carry a conclusion")
         if self.status != "completed" and self.conclusion is not None:
             raise ValueError("an unfinished check run cannot carry a conclusion")
+        return self
+
+    @model_validator(mode="after")
+    def validate_pull_request_identity(self) -> ObservedCheckRunV2:
+        # A pull-request-family run always has both. Their absence would mean
+        # the run cannot be bound to a base/head pair at all, which is exactly
+        # the binding the assembler needs -- so it is refused at parse time
+        # rather than becoming a silent `None` comparison downstream.
+        if self.run_event in {"pull_request", "pull_request_target"}:
+            if self.run_base_sha is None or self.run_head_sha is None:
+                raise ValueError("a pull-request run must record its own base and head")
         return self
 
 

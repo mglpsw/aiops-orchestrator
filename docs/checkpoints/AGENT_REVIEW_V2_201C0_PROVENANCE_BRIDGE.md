@@ -74,6 +74,41 @@ Aditivos (3 novos schemas exportados): `agent-review.required-check-provenance.v
   `app/ri_b0a/reuse_manifest.py` (trilha RI) **não** foi consolidado.
 - `review_readiness_emission_v2.py` e `readiness_decision_v2.py` **não** foram tocados.
 
+## Rodada 1 de review adversarial (Codex) — três achados, todos válidos
+
+**Achado 1 (P1) — sidecar bem-formado não é evidência.** A primeira versão do gate verificava
+*estrutura*: binding 1:1, identidade de run, conformidade com a política. Todos esses campos são
+deriváveis de entradas públicas — a identidade está no arquivo de identity, os digests da política
+são computáveis do checkout base, e os campos de produtor estão escritos na própria política. Logo,
+quem pudesse escrever `--checks` e `--checks-provenance` conseguia forjar um verde completo com
+sidecar internamente consistente. A própria fixture de teste demonstrava o ataque.
+
+Correção: o gate **não confia mais na submissão**. `reassemble_and_verify_required_checks_v2`
+re-executa o assembler sobre `--checks-snapshot` e só aceita o par se ele for exatamente o que o
+assembler produz de forma independente. A submissão vira uma alegação conferida contra evidência
+derivada, não evidência em si. Novos argumentos obrigatórios: `--checks-snapshot`, `--run-origin`,
+`--toolchain-digest`.
+
+Isso não transforma um *snapshot* forjado em evidência — essa é a fronteira de confiança do
+acquirer, host-owned por construção. O que elimina é o ataque estritamente mais fácil: pular a
+aquisição inteira.
+
+**Achado 2 (P1) — parentage local não prova qual merge rodou.** Um check run é escopado a um HEAD,
+mas o que ele executou é um merge daquele head com uma base — e a base pode avançar sem o head se
+mover. Um verde produzido contra a base anterior, somado a um merge commit recém-criado cuja
+parentage confere, passava. Correção: a observação agora registra `run_base_sha`/`run_head_sha`
+como o GitHub os reportou, e o assembler exige que casem com a identidade. Base divergente ⇒
+`observation_stale`.
+
+**Achado 3 (P2) — `pull_request_target` estava sendo mapeado errado.** Esse evento carrega o
+workflow da branch **base** — é a sua propriedade definidora. Registrar um pull ref para ele era
+factualmente errado e tornava todo run `pull_request_target` permanentemente não-autorizável.
+Correção: o ref vem de `pull_requests[].base.ref`. Isso também torna `pull_request_target` **uma
+das formas legítimas** de um target satisfazer a exigência de produtor base-owned.
+
+Eventos de trigger não reconhecidos agora são recusados na aquisição em vez de virarem um valor
+genérico que o código adiante teria de adivinhar.
+
 ## Limitação conhecida — `workflow_ref` e workflows base-owned
 
 A API de Actions do GitHub reporta o `path` de um workflow run, mas **nenhum campo** afirma de

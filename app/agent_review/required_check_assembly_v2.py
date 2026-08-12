@@ -61,6 +61,7 @@ from app.agent_review.authoritative_check_policy_v2 import (
 )
 from app.agent_review.authoritative_ci_snapshot_v2 import (
     AuthoritativeCheckSnapshotV2,
+    ObservedCheckRunV2,
     compute_observation_digest_v2,
     resolve_conclusion_v2,
     select_observation_v2,
@@ -76,12 +77,14 @@ from app.agent_review.required_check_provenance_v2 import (
     PROVENANCE_HEAD_MISMATCH_REASON_V2,
     PROVENANCE_INVALID_REASON_V2,
     PROVENANCE_MISSING_REASON_V2,
+    PROVENANCE_OBSERVATION_STALE_REASON_V2,
     PROVENANCE_ORIGIN_UNSUPPORTED_REASON_V2,
     PROVENANCE_PARENTAGE_MISMATCH_REASON_V2,
     PROVENANCE_POLICY_DIGEST_MISMATCH_REASON_V2,
     PROVENANCE_PRODUCER_NOT_ALLOWLISTED_REASON_V2,
     PROVENANCE_REPOSITORY_MISMATCH_REASON_V2,
     PROVENANCE_RUN_IDENTITY_MISMATCH_REASON_V2,
+    PROVENANCE_SIDECAR_HASH_MISMATCH_REASON_V2,
     PROVENANCE_SUBJECT_RESULT_NOT_PROMOTABLE_REASON_V2,
     PROVENANCE_TESTED_MERGE_MISMATCH_REASON_V2,
     PROVENANCE_TOOLCHAIN_UNVERIFIED_REASON_V2,
@@ -168,6 +171,37 @@ def _require_executed_tree_binding(
             raise RequiredCheckProvenanceErrorV2(PROVENANCE_PARENTAGE_MISMATCH_REASON_V2)
 
 
+def _require_run_executed_this_merge(
+    *, observation: ObservedCheckRunV2, identity: RunIdentityV2, origin: RunOriginV2
+) -> None:
+    """Bind the SELECTED run to the base/head pair this review is about.
+
+    A check run is scoped to a HEAD, but what it executed is a merge of that
+    head with a base -- and the base can advance without the head moving. Local
+    parentage proves only that the merge commit is well-formed; it says nothing
+    about which merge the observed run actually ran. So a green produced
+    against the previous base, plus a freshly created merge commit whose
+    parents check out, would otherwise line up perfectly and promote a result
+    for a tree nothing ever tested.
+
+    GitHub records the run's own base and head, so the binding is available
+    rather than inferred. Comparing them is what makes the parentage check mean
+    something.
+    """
+
+    if origin.event_type not in {"pull_request", "pull_request_target"}:
+        return
+
+    if observation.run_base_sha is None or observation.run_head_sha is None:
+        raise RequiredCheckProvenanceErrorV2(PROVENANCE_TESTED_MERGE_MISMATCH_REASON_V2)
+    if observation.run_head_sha != identity.head_sha:
+        raise RequiredCheckProvenanceErrorV2(PROVENANCE_HEAD_MISMATCH_REASON_V2)
+    if observation.run_base_sha != identity.base_sha:
+        # The run happened, but against a different base -- so it did not
+        # execute this merge. Stale rather than absent, and never promotable.
+        raise RequiredCheckProvenanceErrorV2(PROVENANCE_OBSERVATION_STALE_REASON_V2)
+
+
 def _require_policy_entry(
     *, loaded_policy: LoadedAuthoritativeCheckPolicyV2, identity: RunIdentityV2, check_name: str
 ) -> AuthoritativeCheckEntryV2:
@@ -212,6 +246,7 @@ def assemble_authoritative_ci_promotion_v2(
     observation = select_observation_v2(
         snapshot=snapshot, entry=entry, repository=identity.repo, head_sha=identity.head_sha
     )
+    _require_run_executed_this_merge(observation=observation, identity=identity, origin=origin)
     conclusion = resolve_conclusion_v2(observation)
 
     result = RequiredCheckResultV2(
@@ -341,6 +376,80 @@ def assemble_trusted_host_promotion_v2(
 
 
 # -- the gate-facing verifier -------------------------------------------------
+
+
+def reassemble_and_verify_required_checks_v2(
+    *,
+    checks: Sequence[RequiredCheckResultV2],
+    provenance: Sequence[RequiredCheckProvenanceV2],
+    identity: RunIdentityV2,
+    origin: RunOriginV2,
+    loaded_policy: LoadedAuthoritativeCheckPolicyV2,
+    snapshot: AuthoritativeCheckSnapshotV2,
+    toolchain_digest: str,
+) -> None:
+    """Re-derive every submitted check from the evidence, and require the
+    submission to match what the evidence produces.
+
+    ## Why the structural checks below are not enough on their own
+
+    A Codex review of this PR found the hole this function closes. Every field
+    `verify_required_check_provenance_set_v2` inspects is derivable from public
+    inputs: the run identity is in the identity file, the policy digests are
+    computable from the base checkout, and the producer fields are literally
+    written in the base-owned policy. So a caller able to write both
+    `--checks` and `--checks-provenance` could hand-build a wholly fabricated
+    green result whose sidecar is internally consistent and policy-conformant.
+    Matching allowlisted strings proves consistency, never that a check ran.
+
+    The fix is not another string comparison. It is to stop trusting the
+    submission at all: the gate re-runs the assembler over the acquired
+    snapshot and accepts the submitted pair only if it is byte-for-byte what
+    the assembler independently produces. The submission becomes a claim to be
+    checked against derived evidence rather than evidence in itself.
+
+    ## What this does and does not prove
+
+    It proves the submitted checks follow from the snapshot, the base-owned
+    policy and the run identity. It does not turn a fabricated SNAPSHOT into
+    evidence -- that is the acquirer's trust boundary, and the acquirer is
+    host-owned by construction. What it removes is the strictly easier attack
+    of skipping acquisition entirely.
+
+    `trusted_host_promotion` records are refused here: `#201-B3`'s executor has
+    no operational producer yet (CT104 is unavailable), so there is nothing to
+    re-derive them from, and accepting an un-derivable assertion is exactly
+    what this function exists to stop.
+    """
+
+    verify_required_check_provenance_set_v2(
+        checks=checks, provenance=provenance, identity=identity, loaded_policy=loaded_policy
+    )
+
+    by_digest = {record.required_check_digest: record for record in provenance}
+
+    for check in checks:
+        record = by_digest[compute_required_check_digest_v2(check)]
+
+        if record.source_kind is not RequiredCheckSourceKindV2.AUTHORITATIVE_CI:
+            raise RequiredCheckProvenanceErrorV2(PROVENANCE_SUBJECT_RESULT_NOT_PROMOTABLE_REASON_V2)
+
+        derived = assemble_authoritative_ci_promotion_v2(
+            check_name=check.check_name,
+            snapshot=snapshot,
+            loaded_policy=loaded_policy,
+            identity=identity,
+            origin=origin,
+            toolchain_digest=toolchain_digest,
+        )
+
+        # Byte-for-byte, both halves. A submitted conclusion that disagrees
+        # with the evidence is the whole attack; a submitted sidecar that
+        # disagrees means the caller knows something the evidence does not say.
+        if derived.result != check:
+            raise RequiredCheckProvenanceErrorV2(PROVENANCE_INVALID_REASON_V2)
+        if derived.provenance != record:
+            raise RequiredCheckProvenanceErrorV2(PROVENANCE_SIDECAR_HASH_MISMATCH_REASON_V2)
 
 
 def verify_required_check_provenance_set_v2(

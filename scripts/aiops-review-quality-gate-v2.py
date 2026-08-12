@@ -69,6 +69,7 @@ from app.agent_review.contracts_v2 import (  # noqa: E402
     RequiredCheckResultV2,
     ResponseBindingError,
     RunIdentityV2,
+    RunOriginV2,
 )
 from app.agent_review.authoritative_check_policy_v2 import (  # noqa: E402
     DEFAULT_AUTHORITATIVE_CHECK_POLICY_RELATIVE_PATH,
@@ -82,8 +83,11 @@ from app.agent_review.profile_loader_v2 import (  # noqa: E402
     compute_profile_hash_v2,
     load_target_profile_v2,
 )
+from app.agent_review.authoritative_ci_snapshot_v2 import (  # noqa: E402
+    parse_authoritative_ci_snapshot_v2,
+)
 from app.agent_review.required_check_assembly_v2 import (  # noqa: E402
-    verify_required_check_provenance_set_v2,
+    reassemble_and_verify_required_checks_v2,
 )
 from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
     RequiredCheckProvenanceErrorV2,
@@ -123,6 +127,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--checks-provenance",
         required=True,
         help="JSON array of RequiredCheckProvenanceV2, one per --checks entry",
+    )
+    parser.add_argument(
+        "--checks-snapshot",
+        required=True,
+        help="AuthoritativeCheckSnapshotV2 JSON the checks must be re-derivable from",
+    )
+    parser.add_argument(
+        "--run-origin",
+        required=True,
+        help="JSON: RunOriginV2 fields; selects the tested-tree rule",
+    )
+    parser.add_argument(
+        "--toolchain-digest",
+        required=True,
+        help="digest of the host toolchain that performed acquisition",
     )
     parser.add_argument(
         "--target-profile",
@@ -165,6 +184,8 @@ def _check_no_output_input_collision(args: argparse.Namespace) -> None:
         "findings",
         "checks",
         "checks_provenance",
+        "checks_snapshot",
+        "run_origin",
         "payload",
         "response",
     )
@@ -264,21 +285,51 @@ def _load_checks_provenance(path: str) -> list[RequiredCheckProvenanceV2]:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
 
 
+def _load_run_origin(path: str) -> RunOriginV2:
+    try:
+        return RunOriginV2.model_validate(_read_json(path))
+    except ValidationError as exc:
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
+
+
+def _load_checks_snapshot(path: str):
+    """Parse through the same strict parser the assembler uses, so the gate
+    cannot accept a snapshot the offline pipeline would reject."""
+
+    try:
+        return parse_authoritative_ci_snapshot_v2(Path(path).read_bytes())
+    except OSError as exc:
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
+    except RequiredCheckProvenanceErrorV2 as exc:
+        raise QualityGateCliError(exc.reason_code) from exc
+
+
 def _validate_required_check_provenance(
     *,
     target_profile_path: str,
     evaluated_identity: RunIdentityV2,
     checks: list[RequiredCheckResultV2],
     provenance: list[RequiredCheckProvenanceV2],
+    origin: RunOriginV2,
+    snapshot: object,
+    toolchain_digest: str,
 ) -> None:
-    """Refuse any submitted `RequiredCheckResultV2` that is not covered by
-    authorised provenance bound to THIS run.
+    """Re-derive every submitted `RequiredCheckResultV2` from the acquired
+    evidence and refuse anything that does not follow from it.
 
-    This closes the bypass `#217` describes. Until now the only thing standing
-    between an unverified check and `ready` was that nothing assembled the
-    `checks` array in production: `_validate_required_checks_complete` below
-    matches required checks BY NAME, so any object called `pytest` with
+    This closes the bypass `#217` describes. `_validate_required_checks_complete`
+    below matches required checks BY NAME, so any object called `pytest` with
     `conclusion=success` satisfied the gate regardless of who built it.
+
+    A first version of this function checked the sidecar's structure instead --
+    1:1 digest binding, run identity, policy conformance. A Codex review of
+    this PR showed that was not enough: every field it inspected is derivable
+    from public inputs, so a caller able to write both `--checks` and
+    `--checks-provenance` could hand-build a fabricated green whose sidecar was
+    perfectly consistent. Matching allowlisted strings proves consistency,
+    never that a check ran. So the gate no longer trusts the submission at all:
+    it re-runs the assembler over `--checks-snapshot` and accepts the pair only
+    if it is exactly what the assembler independently produces.
 
     Hardening the gate is deliberately NOT readiness wiring. Nothing here
     touches `review_readiness_emission_v2` or `readiness_decision_v2`, and
@@ -300,11 +351,14 @@ def _validate_required_check_provenance(
         raise QualityGateCliError(exc.reason_code) from exc
 
     try:
-        verify_required_check_provenance_set_v2(
+        reassemble_and_verify_required_checks_v2(
             checks=checks,
             provenance=provenance,
             identity=evaluated_identity,
+            origin=origin,
             loaded_policy=loaded_policy,
+            snapshot=snapshot,
+            toolchain_digest=toolchain_digest,
         )
     except RequiredCheckProvenanceErrorV2 as exc:
         # Surfaced verbatim: the verifier's reason codes are already stable,
@@ -371,6 +425,8 @@ def main(argv: list[str] | None = None) -> int:
         findings = _load_findings(args.findings)
         checks = _load_checks(args.checks)
         checks_provenance = _load_checks_provenance(args.checks_provenance)
+        run_origin = _load_run_origin(args.run_origin)
+        checks_snapshot = _load_checks_snapshot(args.checks_snapshot)
 
         # Completeness first, then entitlement. The two answer different
         # questions -- "is the required set present?" versus "may each
@@ -387,6 +443,9 @@ def main(argv: list[str] | None = None) -> int:
             evaluated_identity=evaluated_identity,
             checks=checks,
             provenance=checks_provenance,
+            origin=run_origin,
+            snapshot=checks_snapshot,
+            toolchain_digest=args.toolchain_digest,
         )
 
         readiness = emit_review_readiness_v2(

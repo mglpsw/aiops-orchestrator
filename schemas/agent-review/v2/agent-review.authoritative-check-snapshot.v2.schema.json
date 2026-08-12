@@ -37,7 +37,7 @@
     },
     "ObservedCheckRunV2": {
       "additionalProperties": false,
-      "description": "One check run exactly as observed, with no interpretation applied.\n\n`check_run_name` is GitHub's own name for the run -- NOT the AgentReview\nrequired-check name. Keeping them separate is what makes name-matching\nstructurally insufficient: the policy maps a required check to the\nproducer's job name, and the two need not coincide.",
+      "description": "One check run exactly as observed, with no interpretation applied.\n\n`check_run_name` is GitHub's own name for the run -- NOT the AgentReview\nrequired-check name. Keeping them separate is what makes name-matching\nstructurally insufficient: the policy maps a required check to the\nproducer's job name, and the two need not coincide.\n\n`run_base_sha`/`run_head_sha` are the base and head GitHub itself recorded\nfor the run. They exist because a check run is scoped to a HEAD, while the\nthing it actually executed is a merge of that head with a base -- and the\nbase can advance without the head moving. Without recording the run's own\nbase, a stale run and a freshly-created local merge commit line up\nperfectly and a green from the previous base gets promoted for a merge that\nwas never tested. Recorded here so the assembler can refuse that.",
       "properties": {
         "app_slug": {
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
@@ -92,6 +92,43 @@
           "title": "Run Attempt",
           "type": "integer"
         },
+        "run_base_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Run Base Sha"
+        },
+        "run_event": {
+          "enum": [
+            "pull_request",
+            "pull_request_target",
+            "push",
+            "merge_group",
+            "workflow_run",
+            "workflow_dispatch",
+            "schedule"
+          ],
+          "title": "Run Event",
+          "type": "string"
+        },
+        "run_head_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Run Head Sha"
+        },
         "status": {
           "enum": [
             "queued",
@@ -134,7 +171,10 @@
         "workflow_path",
         "workflow_ref",
         "workflow_run_id",
-        "run_attempt"
+        "run_attempt",
+        "run_event",
+        "run_base_sha",
+        "run_head_sha"
       ],
       "title": "ObservedCheckRunV2",
       "type": "object"

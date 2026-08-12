@@ -6,15 +6,10 @@ import sys
 from pathlib import Path
 
 from app.agent_review.authoritative_check_policy_v2 import load_authoritative_check_policy_v2
-from app.agent_review.contracts_v2 import RequiredCheckResultV2, RunIdentityV2, compute_run_id
+from app.agent_review.authoritative_ci_snapshot_v2 import parse_authoritative_ci_snapshot_v2
+from app.agent_review.contracts_v2 import RequiredCheckResultV2, RunIdentityV2, RunOriginV2, compute_run_id
 from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_v2
-from app.agent_review.required_check_provenance_v2 import (
-    AuthorityEffectV2,
-    RequiredCheckSourceKindV2,
-    SemanticClassV2,
-    build_required_check_provenance_v2,
-    compute_required_check_digest_v2,
-)
+from app.agent_review.required_check_assembly_v2 import assemble_authoritative_ci_promotion_v2
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "aiops-review-quality-gate-v2.py"
@@ -156,73 +151,95 @@ def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None)
     paths["findings"] = tmp_path / "findings.json"
     paths["findings"].write_text(json.dumps([]), encoding="utf-8")
     check_names = required_checks if required_checks is not None else ["pytest"]
-    check_dicts = [
-        {"check_name": name, "required": True, "deterministic": True, "conclusion": "success", "head_sha": "2" * 40}
-        for name in check_names
-    ]
-    paths["checks"] = tmp_path / "checks.json"
-    paths["checks"].write_text(json.dumps(check_dicts), encoding="utf-8")
 
-    loaded_policy = load_authoritative_check_policy_v2(target_profile_root)
-    paths["checks_provenance"] = tmp_path / "checks_provenance.json"
-    paths["checks_provenance"].write_text(
+    # Build a REAL snapshot and derive the checks/provenance from it with the
+    # real assembler, rather than hand-building either. A Codex review of this
+    # PR found that hand-built pairs were accepted, so the gate now re-derives
+    # from the snapshot -- which means the fixture has to produce evidence, not
+    # assertions.
+    paths["checks_snapshot"] = tmp_path / "snapshot.json"
+    paths["checks_snapshot"].write_text(
+        json.dumps(_snapshot_dict(check_names)), encoding="utf-8"
+    )
+    paths["run_origin"] = tmp_path / "origin.json"
+    paths["run_origin"].write_text(
         json.dumps(
-            [
-                _provenance_dict(check, identity_obj, loaded_policy)
-                for check in (RequiredCheckResultV2.model_validate(item) for item in check_dicts)
-            ]
+            {"event_type": "pull_request", "event_action": "synchronize", "delivery_id": "delivery-1"}
         ),
         encoding="utf-8",
+    )
+
+    loaded_policy = load_authoritative_check_policy_v2(target_profile_root)
+    snapshot = parse_authoritative_ci_snapshot_v2(paths["checks_snapshot"].read_bytes())
+    origin = RunOriginV2.model_validate(json.loads(paths["run_origin"].read_text(encoding="utf-8")))
+
+    promoted = [
+        assemble_authoritative_ci_promotion_v2(
+            check_name=name,
+            snapshot=snapshot,
+            loaded_policy=loaded_policy,
+            identity=identity_obj,
+            origin=origin,
+            toolchain_digest=TOOLCHAIN_DIGEST,
+        )
+        for name in check_names
+    ]
+
+    paths["checks"] = tmp_path / "checks.json"
+    paths["checks"].write_text(
+        json.dumps([p.result.model_dump(mode="json") for p in promoted]), encoding="utf-8"
+    )
+    paths["checks_provenance"] = tmp_path / "checks_provenance.json"
+    paths["checks_provenance"].write_text(
+        json.dumps([p.provenance.model_dump(mode="json") for p in promoted]), encoding="utf-8"
     )
     paths["target_profile"] = target_profile_root
     return paths
 
 
-def _provenance_dict(
-    check: RequiredCheckResultV2, identity: RunIdentityV2, loaded_policy, **overrides: object
-) -> dict:
-    """Build a sidecar the way a legitimate assembler would.
+TOOLCHAIN_DIGEST = "e" * 64
 
-    Hand-building one here is deliberate, and is not a shortcut: the gate
-    revalidates every field against the base-owned policy and the run identity,
-    so a well-formed sidecar that does not match is still refused. These tests
-    would be weaker, not stronger, if the fixture could only produce records
-    the assembler already blessed."""
 
-    entry = loaded_policy.policy.entry_for(check.check_name)
-    record = build_required_check_provenance_v2(
-        schema_id="agent-review.required-check-provenance.v2",
-        schema_version=2,
-        source="aiops-review-check-provenance",
-        check_name=check.check_name,
-        required_check_digest=compute_required_check_digest_v2(check),
-        source_kind=RequiredCheckSourceKindV2.AUTHORITATIVE_CI,
-        semantic_class=SemanticClassV2.AUTHORITATIVE,
-        authority_effect=AuthorityEffectV2.PROMOTABLE,
-        authority_transfer=False,
-        repository=identity.repo,
-        run_id=compute_run_id(identity),
-        base_sha=identity.base_sha,
-        head_sha=identity.head_sha,
-        tested_merge_sha=identity.tested_merge_sha,
-        event_type="pull_request",
-        event_action="synchronize",
-        verifier_identity=entry.verifier_identity,
-        toolchain_digest="e" * 64,
-        workflow_path=entry.workflow_path,
-        workflow_ref=entry.workflow_ref,
-        job_name=entry.job_name,
-        ci_run_id="900",
-        ci_run_attempt=1,
-        observed_status="completed",
-        observed_conclusion="success" if check.conclusion.value == "success" else "failure",
-        observation_digest="f" * 64,
-        policy_source_bytes_digest=loaded_policy.policy_source_bytes_digest,
-        policy_source_semantic_digest=loaded_policy.policy_source_semantic_digest,
-    )
-    dumped = record.model_dump(mode="json")
-    dumped.update(overrides)
-    return dumped
+def _observation(check_name: str, **overrides: object) -> dict:
+    record: dict = {
+        "repository": "mglpsw/aiops-orchestrator",
+        "head_sha": "2" * 40,
+        "check_run_id": f"run-{check_name}",
+        "check_run_name": f"Validate repository {check_name}",
+        "status": "completed",
+        "conclusion": "success",
+        "app_slug": "github-actions",
+        "workflow_path": ".github/workflows/ci.yml",
+        "workflow_ref": "refs/heads/master",
+        "workflow_run_id": f"wf-{check_name}",
+        "run_attempt": 1,
+        "run_event": "pull_request",
+        "run_base_sha": "1" * 40,
+        "run_head_sha": "2" * 40,
+    }
+    record.update(overrides)
+    return record
+
+
+def _snapshot_dict(check_names: list[str], **overrides: object) -> dict:
+    payload: dict = {
+        "schema_id": "agent-review.authoritative-check-snapshot.v2",
+        "schema_version": 2,
+        "source": "aiops-acquire-authoritative-checks",
+        "acquisition": {
+            "acquired_by": "aiops-acquire-authoritative-checks-v2",
+            "api_host": "api.github.com",
+            "repository": "mglpsw/aiops-orchestrator",
+            "head_sha": "2" * 40,
+        },
+        "observations": [_observation(name) for name in check_names],
+        "tested_merge_sha": "3" * 40,
+        "tested_merge_parents": ["1" * 40, "2" * 40],
+        "executed_tree_sha": "3" * 40,
+        "observation_bytes_digest": "f" * 64,
+    }
+    payload.update(overrides)
+    return payload
 
 
 def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "open") -> list[str]:
@@ -235,6 +252,9 @@ def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "op
         "--pr-state", pr_state,
         "--checks", str(paths["checks"]),
         "--checks-provenance", str(paths["checks_provenance"]),
+        "--checks-snapshot", str(paths["checks_snapshot"]),
+        "--run-origin", str(paths["run_origin"]),
+        "--toolchain-digest", TOOLCHAIN_DIGEST,
         "--target-profile", str(paths["target_profile"]),
         "--output", str(output_path),
     ]
@@ -651,39 +671,73 @@ def test_cli_rejects_provenance_from_a_different_run(tmp_path: Path) -> None:
 
 
 def test_cli_rejects_a_non_allowlisted_producer(tmp_path: Path) -> None:
-    paths = _write_fixtures(tmp_path)
-    identity_obj = RunIdentityV2.model_validate(json.loads(paths["identity"].read_text(encoding="utf-8")))
-    loaded_policy = load_authoritative_check_policy_v2(paths["target_profile"])
-    check = RequiredCheckResultV2.model_validate(json.loads(paths["checks"].read_text(encoding="utf-8"))[0])
+    """Attack the EVIDENCE, not the sidecar. Now that the gate re-derives, a
+    forged sidecar is caught generically; the interesting case is a snapshot
+    whose observed producer is not the one the base-owned policy names."""
 
-    forged = _provenance_dict(check, identity_obj, loaded_policy)
-    forged["verifier_identity"] = "attacker-app"
-    forged["provenance_digest"] = _redigest_cli(forged)
-    paths["checks_provenance"].write_text(json.dumps([forged]), encoding="utf-8")
+    paths = _write_fixtures(tmp_path)
+    snapshot = _snapshot_dict(["pytest"])
+    snapshot["observations"][0]["app_slug"] = "attacker-app"
+    paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path))
 
     assert result.returncode != 0
-    assert "required_check_provenance_producer_not_allowlisted" in result.stderr
+    assert "required_check_provenance_missing" in result.stderr
+    assert not output_path.exists()
 
 
 def test_cli_rejects_a_workflow_the_policy_does_not_name(tmp_path: Path) -> None:
     paths = _write_fixtures(tmp_path)
-    identity_obj = RunIdentityV2.model_validate(json.loads(paths["identity"].read_text(encoding="utf-8")))
-    loaded_policy = load_authoritative_check_policy_v2(paths["target_profile"])
-    check = RequiredCheckResultV2.model_validate(json.loads(paths["checks"].read_text(encoding="utf-8"))[0])
-
-    forged = _provenance_dict(check, identity_obj, loaded_policy)
-    forged["workflow_path"] = ".github/workflows/attacker.yml"
-    forged["provenance_digest"] = _redigest_cli(forged)
-    paths["checks_provenance"].write_text(json.dumps([forged]), encoding="utf-8")
+    snapshot = _snapshot_dict(["pytest"])
+    snapshot["observations"][0]["workflow_path"] = ".github/workflows/attacker.yml"
+    paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path))
 
     assert result.returncode != 0
-    assert "required_check_provenance_workflow_identity_mismatch" in result.stderr
+    assert "required_check_provenance_missing" in result.stderr
+
+
+def test_cli_rejects_a_fabricated_green_with_a_self_consistent_sidecar(tmp_path: Path) -> None:
+    """The exact defect a Codex review of this PR found.
+
+    The submitted check claims success while the evidence says failure. The
+    sidecar is rebuilt to be internally consistent with that claim -- correct
+    self-digest, correct run identity, correct policy digests, correct producer
+    strings. Before re-derivation this passed every structural check. It must
+    now fail, because the evidence does not produce it."""
+
+    paths = _write_fixtures(tmp_path)
+    snapshot = _snapshot_dict(["pytest"])
+    snapshot["observations"][0]["conclusion"] = "failure"
+    paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_rejects_a_run_produced_against_a_different_base(tmp_path: Path) -> None:
+    """Second Codex finding: the base can advance without the head moving, so
+    a green from the previous base plus a fresh local merge would otherwise
+    line up perfectly."""
+
+    paths = _write_fixtures(tmp_path)
+    snapshot = _snapshot_dict(["pytest"])
+    snapshot["observations"][0]["run_base_sha"] = "7" * 40
+    paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance_observation_stale" in result.stderr
 
 
 def test_cli_rejects_a_missing_authoritative_check_policy(tmp_path: Path) -> None:
@@ -726,7 +780,3 @@ def test_cli_still_emits_when_provenance_is_authorised(tmp_path: Path) -> None:
     assert emitted["checks"] == json.loads(paths["checks"].read_text(encoding="utf-8"))
 
 
-def _redigest_cli(payload: dict) -> str:
-    from app.common.strict_json import canonical_json_digest_hex
-
-    return canonical_json_digest_hex({k: v for k, v in payload.items() if k != "provenance_digest"})

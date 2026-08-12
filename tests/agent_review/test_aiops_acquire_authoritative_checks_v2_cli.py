@@ -76,7 +76,9 @@ def _payload(**overrides: object) -> dict:
                 "event": "pull_request",
                 "head_branch": "feature",
                 "run_attempt": 2,
-                "pull_requests": [{"number": 7}],
+                "pull_requests": [
+                    {"number": 7, "base": {"ref": "master", "sha": "b" * 40}, "head": {"sha": "a" * 40}}
+                ],
             }
         ],
     }
@@ -207,5 +209,48 @@ def test_an_unparseable_snapshot_is_never_written(tmp_path: Path, merge_repo) ->
     payload["check_runs"][0]["conclusion"] = "exploded"
     result = _acquire(tmp_path, merge_repo, payload)
 
+    assert result.returncode != 0
+    assert not (tmp_path / "snapshot.json").exists()
+
+
+def test_pull_request_target_records_the_base_ref_not_a_pull_ref(tmp_path: Path, merge_repo) -> None:
+    """Codex finding 3. `pull_request_target` loads its workflow from the BASE
+    branch -- that is the event's defining property. Recording a pull ref for it
+    was factually wrong and made every otherwise-authorised
+    `pull_request_target` run permanently unauthorisable, since policy only
+    admits the default branch."""
+
+    payload = _payload()
+    payload["workflow_runs"][0]["event"] = "pull_request_target"
+    _acquire(tmp_path, merge_repo, payload)
+    snapshot = parse_authoritative_ci_snapshot_v2((tmp_path / "snapshot.json").read_bytes())
+    assert snapshot.observations[0].workflow_ref == "refs/heads/master"
+
+
+def test_the_runs_own_base_and_head_are_recorded(tmp_path: Path, merge_repo) -> None:
+    """Codex finding 2: without these, a run cannot be bound to a base/head
+    pair and a stale green is indistinguishable from a current one."""
+
+    _acquire(tmp_path, merge_repo, _payload())
+    snapshot = parse_authoritative_ci_snapshot_v2((tmp_path / "snapshot.json").read_bytes())
+    assert snapshot.observations[0].run_base_sha == "b" * 40
+    assert snapshot.observations[0].run_head_sha == "a" * 40
+
+
+def test_an_unrecognised_trigger_is_refused(tmp_path: Path, merge_repo) -> None:
+    """An unknown event cannot be reasoned about, so it is refused rather than
+    bucketed into a catch-all that later code would have to guess at."""
+
+    payload = _payload()
+    payload["workflow_runs"][0]["event"] = "repository_dispatch"
+    result = _acquire(tmp_path, merge_repo, payload)
+    assert result.returncode != 0
+    assert not (tmp_path / "snapshot.json").exists()
+
+
+def test_a_pull_request_run_missing_its_base_is_refused(tmp_path: Path, merge_repo) -> None:
+    payload = _payload()
+    payload["workflow_runs"][0]["pull_requests"] = [{"number": 7}]
+    result = _acquire(tmp_path, merge_repo, payload)
     assert result.returncode != 0
     assert not (tmp_path / "snapshot.json").exists()

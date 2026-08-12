@@ -31,6 +31,7 @@ from app.agent_review.required_check_provenance_v2 import (
     PROVENANCE_HEAD_MISMATCH_REASON_V2,
     PROVENANCE_INVALID_REASON_V2,
     PROVENANCE_MISSING_REASON_V2,
+    PROVENANCE_OBSERVATION_STALE_REASON_V2,
     PROVENANCE_ORIGIN_UNSUPPORTED_REASON_V2,
     PROVENANCE_PARENTAGE_MISMATCH_REASON_V2,
     PROVENANCE_POLICY_DIGEST_MISMATCH_REASON_V2,
@@ -101,6 +102,9 @@ def _obs(**overrides: object) -> dict[str, object]:
         "workflow_ref": "refs/heads/master",
         "workflow_run_id": "900",
         "run_attempt": 1,
+        "run_event": "pull_request",
+        "run_base_sha": BASE,
+        "run_head_sha": HEAD,
     }
     record.update(overrides)
     return record
@@ -605,3 +609,109 @@ def test_an_empty_check_set_verifies_vacuously() -> None:
     verify_required_check_provenance_set_v2(
         checks=[], provenance=[], identity=IDENTITY, loaded_policy=POLICY
     )
+
+
+# =============================================================================
+# Codex review round 1 -- regressions
+# =============================================================================
+
+
+def test_a_run_produced_against_a_different_base_is_refused() -> None:
+    """Codex finding 2. A check run is scoped to a HEAD, but what it executed
+    is a merge of that head with a base. If the base advances without the head
+    moving, a green from the previous base plus a freshly created merge commit
+    whose parents check out would otherwise line up perfectly."""
+
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[_obs(run_base_sha="7" * 40)]))
+    assert _reason(exc) == PROVENANCE_OBSERVATION_STALE_REASON_V2
+
+
+def test_a_run_whose_own_head_disagrees_is_refused() -> None:
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[_obs(run_head_sha="7" * 40)]))
+    assert _reason(exc) == PROVENANCE_HEAD_MISMATCH_REASON_V2
+
+
+def test_local_parentage_alone_no_longer_suffices() -> None:
+    """The merge commit is well-formed and its parents are exactly
+    [base, head] -- and it is still refused, because the observed run was
+    produced against a different base. Parentage proves the shape of the merge,
+    never which merge was executed."""
+
+    snapshot = _snapshot(observations=[_obs(run_base_sha="7" * 40)])
+    assert tuple(snapshot.tested_merge_parents) == (BASE, HEAD)
+    with pytest.raises(RequiredCheckProvenanceErrorV2):
+        _assemble_ci(snapshot)
+
+
+def test_reassembly_rejects_a_fabricated_green_with_a_consistent_sidecar() -> None:
+    """Codex finding 1, at the library boundary.
+
+    The submitted pair is internally perfect: correct self-digest, correct run
+    identity, correct policy digests, correct producer strings -- everything
+    `verify_required_check_provenance_set_v2` inspects. It is still refused,
+    because the evidence produces a failure, not a success."""
+
+    from app.agent_review.required_check_assembly_v2 import reassemble_and_verify_required_checks_v2
+
+    evidence = _snapshot(observations=[_obs(conclusion="failure")])
+    fabricated = _assemble_ci()  # derived from a GREEN snapshot
+
+    # The structural verifier is satisfied by the fabricated pair...
+    verify_required_check_provenance_set_v2(
+        checks=[fabricated.result],
+        provenance=[fabricated.provenance],
+        identity=IDENTITY,
+        loaded_policy=POLICY,
+    )
+
+    # ...and re-derivation against the real evidence still refuses it.
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        reassemble_and_verify_required_checks_v2(
+            checks=[fabricated.result],
+            provenance=[fabricated.provenance],
+            identity=IDENTITY,
+            origin=ORIGIN,
+            loaded_policy=POLICY,
+            snapshot=evidence,
+            toolchain_digest=TOOLCHAIN,
+        )
+    assert _reason(exc) == PROVENANCE_INVALID_REASON_V2
+
+
+def test_reassembly_accepts_a_genuinely_derived_pair() -> None:
+    from app.agent_review.required_check_assembly_v2 import reassemble_and_verify_required_checks_v2
+
+    snapshot = _snapshot()
+    promoted = _assemble_ci(snapshot)
+    reassemble_and_verify_required_checks_v2(
+        checks=[promoted.result],
+        provenance=[promoted.provenance],
+        identity=IDENTITY,
+        origin=ORIGIN,
+        loaded_policy=POLICY,
+        snapshot=snapshot,
+        toolchain_digest=TOOLCHAIN,
+    )
+
+
+def test_reassembly_refuses_a_trusted_host_record() -> None:
+    """`#201-B3`'s executor has no operational producer yet, so there is
+    nothing to re-derive a host promotion from. Accepting an un-derivable
+    assertion is exactly what re-derivation exists to stop."""
+
+    from app.agent_review.required_check_assembly_v2 import reassemble_and_verify_required_checks_v2
+
+    host = _assemble_host()
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        reassemble_and_verify_required_checks_v2(
+            checks=[host.result],
+            provenance=[host.provenance],
+            identity=IDENTITY,
+            origin=ORIGIN,
+            loaded_policy=POLICY,
+            snapshot=_snapshot(),
+            toolchain_digest=TOOLCHAIN,
+        )
+    assert _reason(exc) == PROVENANCE_SUBJECT_RESULT_NOT_PROMOTABLE_REASON_V2
