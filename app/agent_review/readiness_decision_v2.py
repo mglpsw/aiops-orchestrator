@@ -107,6 +107,10 @@ from app.agent_review.contracts_v2 import (
     TargetPoliciesV2,
 )
 from app.agent_review.manifest_v2 import ManifestV2
+from app.agent_review.required_check_readiness_v2 import (
+    RequiredCheckReadinessAssessmentV2,
+    RequiredCheckStatusV2,
+)
 from app.agent_review.run_fragment_coverage_v2 import (
     FragmentCoverageBindingError,
     FragmentCoverageStatusV2,
@@ -444,4 +448,102 @@ def compute_readiness_decision_v2(
         pipeline=pipeline,
         run_id=manifest.run_id,
         manifest_hash=manifest.identity.manifest_hash,
+    )
+
+
+REQUIRED_CHECKS_PIPELINE_COMPONENT_V2 = "required_checks"
+_REQUIRED_CHECKS_BLOCKER_ID_V2 = "required-checks"
+
+
+def _required_check_detail_v2(assessment: RequiredCheckReadinessAssessmentV2) -> str:
+    parts: list[str] = []
+    if assessment.missing_check_names:
+        parts.append("authority not established for: " + ", ".join(assessment.missing_check_names))
+    if assessment.failed_check_names:
+        parts.append("failed: " + ", ".join(assessment.failed_check_names))
+    return "; ".join(parts)
+
+
+def _apply_required_check_assessment_v2(
+    *, decision: ReadinessDecisionV2, assessment: RequiredCheckReadinessAssessmentV2
+) -> ReadinessDecisionV2:
+    """`#201-C` -- fold a required-check assessment into a content decision,
+    per the ratified precedence:
+
+    1. `STALE` is sovereign. A required-check assessment is never consulted
+       when `decision.state is STALE`: identity/HEAD divergence already
+       makes any evidence non-current, and `ReviewReadinessV2.validate_
+       state_invariants`'s own STALE branch forbids any reason code beyond
+       `head_mismatch`/`identity_mismatch` -- adding a check reason here
+       would not degrade gracefully, it would make the artifact
+       unconstructible.
+    2. `assessment.status is SATISFIED` -- the decision passes through
+       completely unchanged. This is the only case that can still reach
+       `READY`, and only if `decision` itself was already `READY`.
+    3. Otherwise (`FAILED` or `AUTHORITY_NOT_ESTABLISHED`), `POLICY_FAILURE`
+       is added as an additional reason/blocker/structured pipeline cause.
+       If `decision.state` was already `BLOCKED_CODE` (a CONFIRMED code
+       finding), it stays `BLOCKED_CODE` -- the required-check failure
+       coexists as an additional cause, never itself the reason the state
+       is `BLOCKED_CODE`, per `CHECK FAILURE != CONFIRMED CODE FINDING`.
+       Every other content state (`READY`, `MANUAL_REQUIRED`,
+       `BLOCKED_PIPELINE`) becomes `MANUAL_REQUIRED`.
+
+       Downgrading `BLOCKED_PIPELINE` to `MANUAL_REQUIRED` here is a
+       RATIFIED PRECEDENCE DECISION, not a technical necessity:
+       `BLOCKED_PIPELINE`'s own frozen invariant would in fact tolerate
+       `POLICY_FAILURE` coexisting inside it. The decision is that a
+       required-check problem is judged more expressive of "a human
+       decision is the right next step" than the target's own
+       coverage-failure policy choice, so it always wins. This makes the
+       precedence non-monotonic in one specific combination (a target
+       whose `coverage_failure_state` is `blocked_pipeline`, combined with
+       a required-check failure, ends up LESS restrictive in STATE than
+       `BLOCKED_PIPELINE` alone would be -- though never less informative:
+       both `coverage_failure` and `policy_failure` remain visible in
+       `reason_codes`) -- recorded here deliberately, not discovered later.
+
+    A required check the assessment reports `FAILED` for is never dropped:
+    `assessment.checks` -- the exact tuple `#201-C0`'s verifier accepted,
+    including every red result -- becomes `ReviewReadinessV2.checks`
+    unchanged, one layer up in `review_readiness_emission_v2.
+    produce_review_readiness_v2`. This function only ever WIDENS the set of
+    reasons/blockers/causes; it never removes anything `compute_readiness_
+    decision_v2` already produced, and the frozen contract's own validator
+    remains the sole authority on whether the result is well-formed -- this
+    function does not re-implement any of its checks.
+    """
+
+    if decision.state is ReadinessStateV2.STALE:
+        return decision
+    if assessment.status is RequiredCheckStatusV2.SATISFIED:
+        return decision
+
+    cause = PipelineDegradationCauseV2(
+        reason_code=ReadinessReasonV2.POLICY_FAILURE,
+        component=REQUIRED_CHECKS_PIPELINE_COMPONENT_V2,
+        detail=_required_check_detail_v2(assessment),
+    )
+    blocker = ReadinessBlockerV2(
+        blocker_id=_REQUIRED_CHECKS_BLOCKER_ID_V2,
+        reason_code=ReadinessReasonV2.POLICY_FAILURE,
+        active=True,
+        finding_id=None,
+    )
+    state = (
+        ReadinessStateV2.BLOCKED_CODE
+        if decision.state is ReadinessStateV2.BLOCKED_CODE
+        else ReadinessStateV2.MANUAL_REQUIRED
+    )
+
+    return ReadinessDecisionV2(
+        state=state,
+        reason_codes=tuple(
+            sorted({*decision.reason_codes, ReadinessReasonV2.POLICY_FAILURE}, key=lambda code: code.value)
+        ),
+        blockers=(*decision.blockers, blocker),
+        coverage=decision.coverage,
+        pipeline=PipelineAssessmentV2(degraded=True, causes=[*decision.pipeline.causes, cause]),
+        run_id=decision.run_id,
+        manifest_hash=decision.manifest_hash,
     )

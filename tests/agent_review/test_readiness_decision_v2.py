@@ -11,6 +11,8 @@ from app.agent_review.contracts_v2 import (
     FindingSeverityV2,
     ReadinessReasonV2,
     ReadinessStateV2,
+    RequiredCheckConclusionV2,
+    RequiredCheckResultV2,
     RunIdentityV2,
     TargetPoliciesV2,
     compute_run_id,
@@ -30,10 +32,13 @@ from app.agent_review.readiness_decision_v2 import (
     COVERAGE_BRIDGE_UNKNOWN_DEGRADATION_REASON_V2,
     READINESS_INVALID_STALE_REASON_CODES_REASON_V2,
     READINESS_SYNTHESIS_MANIFEST_RUN_ID_MISMATCH_REASON_V2,
+    REQUIRED_CHECKS_PIPELINE_COMPONENT_V2,
     ReadinessDecisionError,
+    _apply_required_check_assessment_v2,
     bridge_fragment_coverage_to_chunk_coverage_v2,
     compute_readiness_decision_v2,
 )
+from app.agent_review.required_check_readiness_v2 import _assess_required_checks_v2
 from app.agent_review.run_fragment_coverage_v2 import (
     FragmentCoverageReasonV2,
     FragmentCoverageStatusV2,
@@ -605,3 +610,189 @@ def test_bridge_fails_closed_on_an_unmapped_manifest_degradation_reason() -> Non
     with pytest.raises(ReadinessDecisionError) as excinfo:
         bridge_fragment_coverage_to_chunk_coverage_v2(coverage_report=report, manifest=manifest)
     assert excinfo.value.reason_code == COVERAGE_BRIDGE_UNKNOWN_DEGRADATION_REASON_V2
+
+
+# -- `#201-C`: `_apply_required_check_assessment_v2` precedence (plan §5.1) --
+
+_SATISFIED = _assess_required_checks_v2(
+    verified_checks=(
+        RequiredCheckResultV2(
+            check_name="pytest", required=True, deterministic=True,
+            conclusion=RequiredCheckConclusionV2.SUCCESS, head_sha="2" * 40,
+        ),
+    ),
+    required_check_names=("pytest",),
+)
+_FAILED = _assess_required_checks_v2(
+    verified_checks=(
+        RequiredCheckResultV2(
+            check_name="pytest", required=True, deterministic=True,
+            conclusion=RequiredCheckConclusionV2.FAILURE, head_sha="2" * 40,
+        ),
+    ),
+    required_check_names=("pytest",),
+)
+_NOT_ESTABLISHED = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+
+def _ready_decision():
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    return compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+
+
+def _blocked_code_decision():
+    manifest, report = _fully_reviewed_manifest_and_report()
+    finding = _confirmed_finding(finding_id="finding-1", head_sha=manifest.identity.head_sha)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, findings=(finding,))
+    return compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+
+
+def _blocked_pipeline_decision():
+    manifest, report = _plain_split_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    return compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies(coverage_failure_state="blocked_pipeline")
+    )
+
+
+def _manual_required_model_uncertainty_decision():
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, limitations=("model_uncertainty",))
+    return compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+
+
+def _manual_required_new_finding_decision():
+    manifest, report = _fully_reviewed_manifest_and_report()
+    finding = _new_finding(finding_id="finding-2", head_sha=manifest.identity.head_sha)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, findings=(finding,))
+    return compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+
+
+def _stale_decision():
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    return compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies(),
+        stale_reason_codes=frozenset({ReadinessReasonV2.HEAD_MISMATCH}),
+    )
+
+
+def test_satisfied_never_changes_a_ready_decision() -> None:
+    decision = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_SATISFIED)
+    assert decision.state is ReadinessStateV2.READY
+    assert decision.reason_codes == ()
+    assert decision.blockers == ()
+    assert decision.pipeline.degraded is False
+
+
+def test_satisfied_never_changes_any_other_decision() -> None:
+    for build in (
+        _blocked_code_decision, _blocked_pipeline_decision,
+        _manual_required_model_uncertainty_decision, _manual_required_new_finding_decision, _stale_decision,
+    ):
+        before = build()
+        after = _apply_required_check_assessment_v2(decision=before, assessment=_SATISFIED)
+        assert after == before
+
+
+def test_failed_turns_ready_into_manual_required_with_policy_failure() -> None:
+    decision = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_FAILED)
+    assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert decision.reason_codes == (ReadinessReasonV2.POLICY_FAILURE,)
+    assert len(decision.blockers) == 1
+    assert decision.blockers[0].reason_code is ReadinessReasonV2.POLICY_FAILURE
+    assert decision.blockers[0].active is True
+    assert decision.blockers[0].finding_id is None
+    assert decision.pipeline.degraded is True
+    assert len(decision.pipeline.causes) == 1
+    assert decision.pipeline.causes[0].component == REQUIRED_CHECKS_PIPELINE_COMPONENT_V2
+    assert "pytest" in decision.pipeline.causes[0].detail
+
+
+def test_authority_not_established_turns_ready_into_manual_required() -> None:
+    decision = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_NOT_ESTABLISHED)
+    assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert decision.reason_codes == (ReadinessReasonV2.POLICY_FAILURE,)
+
+
+def test_check_failure_is_never_confirmed_code_finding() -> None:
+    """`CHECK FAILURE != CONFIRMED CODE FINDING`. A required-check problem on
+    an otherwise-READY decision must never itself produce `BLOCKED_CODE` --
+    only a genuinely confirmed finding may."""
+
+    decision = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_FAILED)
+    assert decision.state is not ReadinessStateV2.BLOCKED_CODE
+    assert ReadinessReasonV2.CONFIRMED_CODE_FINDING not in decision.reason_codes
+
+
+@pytest.mark.parametrize("assessment", [_FAILED, _NOT_ESTABLISHED])
+def test_a_confirmed_finding_keeps_blocked_code_and_gains_policy_failure(assessment) -> None:
+    before = _blocked_code_decision()
+    after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
+
+    assert after.state is ReadinessStateV2.BLOCKED_CODE
+    assert ReadinessReasonV2.CONFIRMED_CODE_FINDING in after.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in after.reason_codes
+    # The original confirmed-finding blocker survives untouched, alongside
+    # the new required-checks blocker.
+    assert any(b.reason_code is ReadinessReasonV2.CONFIRMED_CODE_FINDING for b in after.blockers)
+    assert any(b.reason_code is ReadinessReasonV2.POLICY_FAILURE for b in after.blockers)
+
+
+@pytest.mark.parametrize("assessment", [_FAILED, _NOT_ESTABLISHED])
+def test_blocked_pipeline_downgrades_to_manual_required(assessment) -> None:
+    """Ratified, non-monotonic precedence (plan §5.2): a required-check
+    problem always forces `MANUAL_REQUIRED`, even though `BLOCKED_PIPELINE`
+    would itself tolerate `POLICY_FAILURE` -- both `coverage_failure` and
+    `policy_failure` remain visible in `reason_codes`."""
+
+    before = _blocked_pipeline_decision()
+    after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
+
+    assert after.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert ReadinessReasonV2.COVERAGE_FAILURE in after.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in after.reason_codes
+
+
+@pytest.mark.parametrize("assessment", [_FAILED, _NOT_ESTABLISHED])
+def test_manual_required_model_uncertainty_gains_policy_failure(assessment) -> None:
+    before = _manual_required_model_uncertainty_decision()
+    after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
+
+    assert after.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert ReadinessReasonV2.MODEL_UNCERTAINTY in after.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in after.reason_codes
+
+
+@pytest.mark.parametrize("assessment", [_FAILED, _NOT_ESTABLISHED])
+def test_manual_required_new_finding_gains_policy_failure(assessment) -> None:
+    before = _manual_required_new_finding_decision()
+    after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
+
+    assert after.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED in after.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in after.reason_codes
+    # The original pending-finding blocker survives untouched.
+    assert any(b.reason_code is ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED for b in after.blockers)
+
+
+@pytest.mark.parametrize("assessment", [_SATISFIED, _FAILED, _NOT_ESTABLISHED])
+def test_stale_is_sovereign_and_never_gains_a_check_reason(assessment) -> None:
+    before = _stale_decision()
+    after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
+    assert after == before
+
+
+def test_failed_and_not_established_produce_distinguishable_detail() -> None:
+    """The two non-satisfied statuses map to the same `POLICY_FAILURE`
+    reason (there is no frozen reason code for "authority not established"
+    specifically), but the human-readable `detail` still distinguishes them
+    -- no information is silently collapsed."""
+
+    failed = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_FAILED)
+    not_established = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_NOT_ESTABLISHED)
+
+    assert "failed" in failed.pipeline.causes[0].detail
+    assert "authority not established" in not_established.pipeline.causes[0].detail
+    assert failed.pipeline.causes[0].detail != not_established.pipeline.causes[0].detail
