@@ -253,8 +253,15 @@ def _fetch_payload(args: argparse.Namespace) -> tuple[dict, bytes]:
         # Fetched here rather than deferred: without them the live path could
         # never promote anything, which is exactly the defect a Codex review
         # found in the previous revision.
+        #
+        # Only offered for runs a `workflow_run` trigger produced. A
+        # `pull_request`/`pull_request_target` run is refused downstream
+        # regardless of what its artifact contains, so fetching and parsing
+        # one anyway would let a pull request abort acquisition for every
+        # OTHER, unrelated observation in the same run by uploading one
+        # oversized or malformed artifact under the conventional name.
         "producer_attestations": collect_attestations_v2(
-            workflow_runs=workflow_runs,
+            workflow_runs=attestable_workflow_runs_v2(workflow_runs),
             list_artifacts=list_artifacts,
             download_artifact=download_artifact,
         ),
@@ -349,11 +356,27 @@ def extract_attestation_from_zip_v2(raw: bytes) -> dict:
             entries = archive.infolist()
             if len(entries) > MAX_ATTESTATION_ZIP_ENTRIES:
                 raise AcquisitionError(ATTESTATION_INVALID_REASON)
-            member = next((e for e in entries if e.filename == ATTESTATION_MEMBER_NAME), None)
+            matches = [e for e in entries if e.filename == ATTESTATION_MEMBER_NAME]
+            if len(matches) > 1:
+                # The identical ambiguity `collect_attestations_v2` already
+                # refuses one level up (two ARTIFACTS sharing the conventional
+                # name): taking the first of two ZIP MEMBERS sharing the
+                # expected filename would let an attacker win by appending a
+                # second entry, and there is no safe way to pick between them.
+                raise AcquisitionError(ATTESTATION_AMBIGUOUS_REASON)
+            member = matches[0] if matches else None
             if member is None or member.file_size > MAX_ATTESTATION_MEMBER_BYTES:
                 raise AcquisitionError(ATTESTATION_INVALID_REASON)
             with archive.open(member) as handle:
                 content = handle.read(MAX_ATTESTATION_MEMBER_BYTES + 1)
+    except AcquisitionError:
+        # `AcquisitionError` is itself a `RuntimeError`, and `zipfile`'s own
+        # failure modes are caught below by that same base class. Without this
+        # the ambiguity refusal raised above would be caught by the generic
+        # handler and relabelled `ATTESTATION_INVALID_REASON`, losing the
+        # distinction between "malformed" and "ambiguous" the two reason codes
+        # exist to preserve.
+        raise
     except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
         raise AcquisitionError(ATTESTATION_INVALID_REASON) from exc
 
@@ -367,6 +390,20 @@ def extract_attestation_from_zip_v2(raw: bytes) -> dict:
     if not isinstance(document, dict):
         raise AcquisitionError(ATTESTATION_INVALID_REASON)
     return document
+
+
+def attestable_workflow_runs_v2(workflow_runs: list) -> list:
+    """Narrow to runs whose attestation could ever be trusted.
+
+    `verify_producer_is_base_owned_v2` refuses every `pull_request`/
+    `pull_request_target` trigger outright, downstream, before it reads a
+    single attested field. Offering their artifacts to `collect_attestations_v2`
+    anyway buys nothing and costs a real DoS surface: a pull request could
+    abort acquisition for every OTHER observation in the same run by uploading
+    one oversized or malformed artifact under the conventional name. A pure
+    filter so it is testable without a token or a network."""
+
+    return [run for run in workflow_runs if run.get("event") == "workflow_run"]
 
 
 def collect_attestations_v2(*, workflow_runs: list, list_artifacts, download_artifact) -> dict:
@@ -476,6 +513,21 @@ def _run_event(run: dict) -> str:
     return event
 
 
+def _require_run_attempt(run: dict) -> int:
+    """Refuse a missing or non-positive attempt number rather than default.
+
+    `run.get("run_attempt") or 1` silently mislabelled a rerun as attempt 1 --
+    the exact field the run-before-attempt selection depends on for its
+    within-run tiebreak -- rather than refusing like every sibling field in
+    this module. GitHub's `run_attempt` starts at 1 and only increases, so 0
+    or a missing value cannot be a genuine observation."""
+
+    attempt = run.get("run_attempt")
+    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1:
+        raise AcquisitionError(ACQUISITION_FAILED_REASON)
+    return attempt
+
+
 def _require_id(value: object) -> str:
     """Refuse a missing identity field rather than fabricate one.
 
@@ -498,9 +550,20 @@ def _require_id(value: object) -> str:
 def build_snapshot_document(
     *, args: argparse.Namespace, payload: dict, payload_bytes: bytes, parents: list[str]
 ) -> dict:
-    runs_by_suite = {
-        run.get("check_suite_id"): run for run in payload.get("workflow_runs", []) if run.get("check_suite_id")
-    }
+    runs_by_suite: dict[object, dict] = {}
+    for run in payload.get("workflow_runs", []):
+        suite_id = run.get("check_suite_id")
+        if not suite_id:
+            continue
+        if suite_id in runs_by_suite:
+            # A dict comprehension here would silently last-win: two workflow
+            # runs sharing a check_suite_id would attribute every check run in
+            # that suite to whichever run happened to be built second --
+            # including ITS identity and ITS attestation. Every other
+            # duplicate in this module is refused as ambiguity; this is not
+            # an exception.
+            raise AcquisitionError(ACQUISITION_FAILED_REASON)
+        runs_by_suite[suite_id] = run
 
     attestations = payload.get("producer_attestations") or {}
     observations = []
@@ -551,7 +614,7 @@ def build_snapshot_document(
                 # "assume it ran the merge".
                 "producer_attestation": attestations.get(_require_id(run.get("id"))),
                 "workflow_run_id": _require_id(run.get("id")),
-                "run_attempt": run.get("run_attempt") or 1,
+                "run_attempt": _require_run_attempt(run),
                 "run_started_at": _run_started_at(run),
                 "run_event": _run_event(run),
                 # The run's OWN base and head, as GitHub recorded them. Without

@@ -381,6 +381,24 @@ def test_c0_t8_snapshot_merge_sha_must_match_the_identity() -> None:
     assert _reason(exc) == PROVENANCE_TESTED_MERGE_MISMATCH_REASON_V2
 
 
+def test_a_pull_request_run_missing_base_or_head_is_refused_downstream() -> None:
+    """Independent-audit correction. `ObservedCheckRunV2` no longer refuses a
+    pull-request-family observation missing its own base/head AT PARSE TIME --
+    that refused the WHOLE snapshot for a fact fork PRs produce routinely
+    (GitHub leaves `pull_requests` empty for cross-repository runs), letting
+    one fork PR's own run deny acquisition for every OTHER observation.
+
+    The binding this protected still exists here, PER CHECK: an observation
+    that cannot report its own base/head cannot be bound to this merge, and
+    `_require_run_executed_this_merge` refuses it exactly as before -- it
+    simply no longer takes the rest of the snapshot down with it."""
+
+    observation = _pr_triggered_obs(run_base_sha=None, run_head_sha=None)
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[observation]))
+    assert _reason(exc) == PROVENANCE_TESTED_MERGE_MISMATCH_REASON_V2
+
+
 # =============================================================================
 # C0-T24 -- per-origin rules
 # =============================================================================
@@ -1116,3 +1134,23 @@ def test_the_positive_path_still_refuses_a_failing_producer_verdict() -> None:
     )
     promoted = _assemble_ci(_snapshot(observations=[observation]))
     assert promoted.result.conclusion is RequiredCheckConclusionV2.FAILURE
+
+
+# =============================================================================
+# Independent audit (2026-08-12) -- fail-open default
+# =============================================================================
+
+
+def test_loaded_policy_is_a_required_keyword_argument() -> None:
+    """`loaded_policy: ... | None = None` meant an omitted argument silently
+    skipped the policy-digest and producer-allowlist binding entirely --
+    `_verify_against_policy` only ran `if loaded_policy is not None`. Every
+    current caller (production and test) already passes it explicitly, so
+    removing the default changes no caller's behaviour; it removes a footgun
+    for whichever caller is added next. Confirmed by an independent audit
+    that no caller relied on the permissive default."""
+
+    with pytest.raises(TypeError):
+        verify_required_check_provenance_set_v2(
+            checks=[], provenance=[], identity=IDENTITY
+        )

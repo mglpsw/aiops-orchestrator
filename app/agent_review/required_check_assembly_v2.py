@@ -535,7 +535,7 @@ def verify_required_check_provenance_set_v2(
     checks: Sequence[RequiredCheckResultV2],
     provenance: Sequence[RequiredCheckProvenanceV2],
     identity: RunIdentityV2,
-    loaded_policy: LoadedAuthoritativeCheckPolicyV2 | None = None,
+    loaded_policy: LoadedAuthoritativeCheckPolicyV2,
 ) -> None:
     """Refuse any required check that is not covered by authorised provenance.
 
@@ -588,8 +588,7 @@ def verify_required_check_provenance_set_v2(
         if record.authority_effect is not AuthorityEffectV2.PROMOTABLE:
             raise RequiredCheckProvenanceErrorV2(PROVENANCE_SUBJECT_RESULT_NOT_PROMOTABLE_REASON_V2)
 
-        if loaded_policy is not None:
-            _verify_against_policy(record=record, loaded_policy=loaded_policy)
+        _verify_against_policy(record=record, loaded_policy=loaded_policy)
 
 
 def _verify_against_policy(

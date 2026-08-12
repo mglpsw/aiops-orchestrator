@@ -288,12 +288,26 @@ def test_an_unrecognised_trigger_is_refused(tmp_path: Path, merge_repo) -> None:
     assert not (tmp_path / "snapshot.json").exists()
 
 
-def test_a_pull_request_run_missing_its_base_is_refused(tmp_path: Path, merge_repo) -> None:
+def test_a_pull_request_run_missing_its_base_is_recorded_not_refused(
+    tmp_path: Path, merge_repo
+) -> None:
+    """Independent-audit correction: a fork PR's own `pull_request` run
+    genuinely cannot report its own base/head (GitHub leaves `pull_requests`
+    empty for cross-repository runs), which is ordinary contributor behaviour,
+    not a malformed payload. Refusing the WHOLE acquisition for one such
+    observation meant a fork PR could deny acquisition for every OTHER,
+    unrelated observation. Acquisition now records the fact and lets the
+    assembler refuse PER CHECK -- see
+    `test_a_pull_request_run_missing_base_or_head_is_refused_downstream` in
+    the assembly test suite for that refusal."""
+
     payload = _payload()
     payload["workflow_runs"][0]["pull_requests"] = [{"number": 7}]
     result = _acquire(tmp_path, merge_repo, payload)
-    assert result.returncode != 0
-    assert not (tmp_path / "snapshot.json").exists()
+    assert result.returncode == 0, result.stderr
+    snapshot = parse_authoritative_ci_snapshot_v2((tmp_path / "snapshot.json").read_bytes())
+    assert snapshot.observations[0].run_base_sha is None
+    assert snapshot.observations[0].run_head_sha is None
 
 
 def test_run_started_at_is_recorded(tmp_path: Path, merge_repo) -> None:
@@ -710,3 +724,133 @@ def test_two_runs_each_missing_an_id_do_not_collapse_onto_one_identity(
 
     assert result.returncode != 0
     assert not (tmp_path / "snapshot.json").exists()
+
+
+def _zip_bytes_with_duplicate_member(name: str, first: bytes, second: bytes) -> bytes:
+    """A zip is allowed to carry two entries with the identical name -- the
+    dict-keyed `_zip_bytes` helper cannot represent that."""
+
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(name, first)
+        archive.writestr(name, second)
+    return buffer.getvalue()
+
+
+def test_two_attestation_json_entries_in_one_zip_are_refused() -> None:
+    """`extract_attestation_from_zip_v2` already refuses two ARTIFACTS sharing
+    the conventional name (`ATTESTATION_AMBIGUOUS_REASON`). The identical
+    ambiguity one level down -- two ZIP MEMBERS sharing the expected filename
+    -- was not: `next(...)` silently took the first match. A hostile or
+    corrupt artifact can carry two `attestation.json` entries; taking the
+    first is exactly the "pick one, hope it's the honest one" pattern this
+    module refuses everywhere else."""
+
+    acq = _acquirer_module()
+    raw = _zip_bytes_with_duplicate_member(
+        acq.ATTESTATION_MEMBER_NAME, b'{"a": 1}', b'{"a": 2}'
+    )
+    with pytest.raises(acq.AcquisitionError) as exc:
+        acq.extract_attestation_from_zip_v2(raw)
+    assert exc.value.reason_code == acq.ATTESTATION_AMBIGUOUS_REASON
+
+
+def test_a_workflow_run_missing_run_attempt_is_refused(tmp_path: Path, merge_repo) -> None:
+    """`run.get("run_attempt") or 1` silently mislabels a rerun as attempt 1 --
+    the exact field the whole run-before-attempt ordering depends on -- rather
+    than refusing like every sibling field in this module does."""
+
+    payload = _payload()
+    del payload["workflow_runs"][0]["run_attempt"]
+    result = _acquire(tmp_path, merge_repo, payload)
+
+    assert result.returncode != 0
+    assert "authoritative_check_acquisition_failed" in result.stderr
+
+
+def test_a_zero_run_attempt_is_refused(tmp_path: Path, merge_repo) -> None:
+    """GitHub's `run_attempt` starts at 1 and only increases. Zero cannot be a
+    genuine value; treating it as one via `or 1` would be equally wrong."""
+
+    payload = _payload()
+    payload["workflow_runs"][0]["run_attempt"] = 0
+    result = _acquire(tmp_path, merge_repo, payload)
+
+    assert result.returncode != 0
+    assert "authoritative_check_acquisition_failed" in result.stderr
+
+
+def test_two_runs_sharing_a_check_suite_id_are_refused(tmp_path: Path, merge_repo) -> None:
+    """`runs_by_suite` was a dict comprehension: two workflow runs sharing a
+    `check_suite_id` silently last-wins, attributing a check run to whichever
+    run happened to be built second -- including its identity and attestation.
+    Every other duplicate in this module is refused as ambiguity; this one
+    was not."""
+
+    payload = _payload()
+    payload["workflow_runs"] = [
+        {**payload["workflow_runs"][0], "id": 900},
+        {**payload["workflow_runs"][0], "id": 901},
+    ]
+    result = _acquire(tmp_path, merge_repo, payload)
+
+    assert result.returncode != 0
+    assert "authoritative_check_acquisition_failed" in result.stderr
+
+
+def test_a_fork_pull_request_run_does_not_poison_the_whole_snapshot(
+    tmp_path: Path, merge_repo
+) -> None:
+    """GitHub leaves `pull_requests` empty for workflow runs from forked
+    repositories, so a fork PR's own `pull_request` run cannot report its own
+    base/head. That run is legitimately unusable -- but it must not be able to
+    abort acquisition for every OTHER, unrelated observation in the same
+    snapshot. One irrelevant run should not deny the whole file."""
+
+    payload = _payload()
+    fork_run = {
+        **payload["workflow_runs"][0],
+        "id": 777,
+        "check_suite_id": 999,
+        "pull_requests": [],
+    }
+    fork_check = {**payload["check_runs"][0], "id": 200, "check_suite": {"id": 999}}
+    payload["workflow_runs"].append(fork_run)
+    payload["check_runs"].append(fork_check)
+
+    result = _acquire(tmp_path, merge_repo, payload)
+
+    assert result.returncode == 0, result.stderr
+    snapshot = parse_authoritative_ci_snapshot_v2((tmp_path / "snapshot.json").read_bytes())
+    # Both observations survive parsing; the genuine one is still usable.
+    assert len(snapshot.observations) == 2
+    fork_observation = next(o for o in snapshot.observations if o.check_run_id == "200")
+    assert fork_observation.run_base_sha is None
+    assert fork_observation.run_head_sha is None
+
+
+def test_only_workflow_run_triggered_runs_are_offered_for_attestation() -> None:
+    """A `pull_request`-triggered run's own artifacts are never trusted --
+    `verify_producer_is_base_owned_v2` refuses that trigger outright,
+    downstream, regardless of what the artifact contains. Fetching and parsing
+    them anyway meant a PR could abort acquisition for every OTHER observation
+    in the same run simply by uploading one oversized or malformed artifact
+    under the conventional name. The live fetch path must not even look at an
+    attestation it can never use.
+
+    This is a pure filter, tested directly rather than through the live
+    network path (which `--observations` deliberately bypasses and so cannot
+    exercise), matching the injected-callable pattern the rest of this
+    module already uses for network-adjacent logic."""
+
+    acq = _acquirer_module()
+    runs = [
+        {"id": 1, "event": "pull_request"},
+        {"id": 2, "event": "pull_request_target"},
+        {"id": 3, "event": "workflow_run"},
+        {"id": 4, "event": "push"},
+    ]
+    assert [r["id"] for r in acq.attestable_workflow_runs_v2(runs)] == [3]

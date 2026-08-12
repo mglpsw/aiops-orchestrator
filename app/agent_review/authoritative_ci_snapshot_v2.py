@@ -193,16 +193,21 @@ class ObservedCheckRunV2(ContractV2Model):
             raise ValueError("an unfinished check run cannot carry a conclusion")
         return self
 
-    @model_validator(mode="after")
-    def validate_pull_request_identity(self) -> ObservedCheckRunV2:
-        # A pull-request-family run always has both. Their absence would mean
-        # the run cannot be bound to a base/head pair at all, which is exactly
-        # the binding the assembler needs -- so it is refused at parse time
-        # rather than becoming a silent `None` comparison downstream.
-        if self.run_event in {"pull_request", "pull_request_target"}:
-            if self.run_base_sha is None or self.run_head_sha is None:
-                raise ValueError("a pull-request run must record its own base and head")
-        return self
+    # No parse-time validator ties `run_base_sha`/`run_head_sha` presence to
+    # `run_event` here, on purpose. GitHub leaves `pull_requests` empty for
+    # workflow runs from FORKED repositories, so a fork PR's own
+    # `pull_request` run genuinely cannot report its own base/head -- a
+    # normal, unremarkable fact about ordinary contributor behaviour, not a
+    # malformed payload. An earlier revision refused the whole snapshot the
+    # moment any ONE observation had this shape, which meant a single fork
+    # PR's own run could deny acquisition for every OTHER, unrelated
+    # observation in the same file -- confirmed by an independent audit.
+    #
+    # The binding this was protecting still exists: `_require_run_executed_
+    # this_merge` in `required_check_assembly_v2.py` refuses PER CHECK, not
+    # per snapshot, when a pull-request-family observation lacks its own
+    # base/head. An unusable observation is simply unusable for THAT check;
+    # it does not get to veto parsing the rest of the file.
 
 
 class AuthoritativeCheckSnapshotV2(ContractV2Model):
