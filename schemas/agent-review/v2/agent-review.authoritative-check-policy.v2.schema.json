@@ -36,12 +36,21 @@
           "type": "array"
         },
         "producer_kind": {
-          "const": "sha_pinned_reusable_workflow",
+          "enum": [
+            "sha_pinned_reusable_workflow",
+            "base_owned_workflow_run"
+          ],
           "title": "Producer Kind",
           "type": "string"
         },
         "producer_workflow": {
           "$ref": "#/$defs/ProducerWorkflowIdentityV2"
+        },
+        "producer_workflow_ref": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Producer Workflow Ref",
+          "type": "string"
         },
         "verifier_identity": {
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
@@ -63,6 +72,7 @@
         "verifier_identity",
         "producer_kind",
         "producer_workflow",
+        "producer_workflow_ref",
         "permitted_conclusions",
         "origin_rules"
       ],

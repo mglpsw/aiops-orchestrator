@@ -13,9 +13,25 @@
       "title": "Base Sha",
       "type": "string"
     },
+    "check_execution_mode": {
+      "enum": [
+        "reexecuted_in_producer_run",
+        "upstream_artifact_republished"
+      ],
+      "title": "Check Execution Mode",
+      "type": "string"
+    },
     "executed_sha": {
       "pattern": "^[0-9a-f]{40}$",
       "title": "Executed Sha",
+      "type": "string"
+    },
+    "executed_sha_derivation": {
+      "enum": [
+        "verified_checkout_rev_parse",
+        "caller_supplied"
+      ],
+      "title": "Executed Sha Derivation",
       "type": "string"
     },
     "head_sha": {
@@ -89,6 +105,8 @@
     "workflow_run_id",
     "run_attempt",
     "test_outcome",
+    "check_execution_mode",
+    "executed_sha_derivation",
     "policy_digest",
     "toolchain_digest",
     "attestation_digest"

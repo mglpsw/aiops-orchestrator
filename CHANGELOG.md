@@ -36,15 +36,34 @@
   - **Producer evidence, separate from review origin.** `RunOriginV2` stays
     frozen: it types what the *review* is about, not how the producer fired.
     `AuthoritativeProducerEvidenceV2` separates `producer_trigger`,
-    `workflow_execution_ref`, the immutable producer workflow identity
-    (`path @ 40-char SHA`) and the executed-tree attestation. The first
-    ratified `producer_kind` is `sha_pinned_reusable_workflow`: a pull request
-    can edit its own tree but cannot make a run reference a workflow SHA it did
-    not load. The executed tree is proven by an attestation emitted by a
-    producer job that performs **no checkout and runs no pull-request code** —
-    otherwise the subject would be attesting to its own execution. The
-    acquirer fetches those attestations from the producer run's artifacts,
-    bounded and strictly parsed; fetching them does not validate them.
+    `workflow_execution_ref`, the producer workflow identity
+    (`repository + path @ 40-char SHA + ref`) and the executed-tree
+    attestation. Review origin `pull_request` and producer trigger
+    `workflow_run` legitimately differ, and representing that is the point.
+  - **Only a producer outside the pull request's reach can speak.** The
+    promotable `producer_kind` is `base_owned_workflow_run`: a `workflow_run`
+    producer, whose definition GitHub loads from the default branch and whose
+    run the pull request cannot add jobs to. A PR-triggered producer is refused
+    outright — inside its own run a pull request can call any pinned workflow
+    *and* upload an attestation carrying every field a verifier checks, because
+    it already knows all of them. `merge_group` is not assumed base-owned:
+    each event runs the workflow from its own ref, so it needs its own model.
+    `sha_pinned_reusable_workflow` stays declarable and is refused at policy
+    load time, becoming promotable only once the attestation's issuer is
+    cryptographically authenticated.
+  - **Base-ownership is necessary, not sufficient.** The producer must also
+    declare that it re-executed the check itself rather than republishing an
+    artifact from the pull request's run (GitHub's own guidance: artifacts from
+    a workflow that processed untrusted code are untrusted data), and that it
+    read the executed tree from its own verified checkout rather than repeating
+    a value it was handed. The attestation job performs **no checkout and runs
+    no pull-request code**. The acquirer fetches attestations from the producer
+    run's artifacts, bounded and strictly parsed, refusing when two artifacts
+    share the conventional name; fetching them does not validate them.
+  - **Acquirer hardening.** Every GitHub list endpoint is paged and refuses
+    rather than truncating — a silently short list is indistinguishable from
+    "the producer did not run". `--output` may not alias an input, so the
+    recorded evidence cannot be overwritten by the snapshot derived from it.
   - **HEAD is not the tested tree.** `review_subject_sha = head_sha` versus
     `execution_subject_sha = tested_merge_sha`, with order-sensitive
     `[base, head]` parentage proven per origin — `pull_request_target`,

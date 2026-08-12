@@ -66,14 +66,15 @@ limitations: []
     )
     entries = "\n".join(
         f"""  - check_name: {name}
-    workflow_path: .github/workflows/ci.yml
-    job_name: Validate repository {name}
+    workflow_path: .github/workflows/authoritative-checks.yml
+    job_name: authoritative {name}
     verifier_identity: github-actions
-    producer_kind: sha_pinned_reusable_workflow
+    producer_kind: base_owned_workflow_run
     producer_workflow:
       repository: mglpsw/aiops-orchestrator
-      path: .github/workflows/authoritative-checks.reusable.yml
+      path: .github/workflows/authoritative-checks.yml
       sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
+    producer_workflow_ref: refs/heads/master
     permitted_conclusions:
       - success
       - failure
@@ -204,6 +205,25 @@ def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None)
 TOOLCHAIN_DIGEST = "e" * 64
 
 
+def _reseal_attestation(fields: dict) -> dict:
+    """Re-digest a mutated attestation so it is WELL-FORMED but wrong.
+
+    Without this a mutation would be caught by the self-digest, and the test
+    would prove only that tampering is detected -- not that a correctly-sealed
+    attestation describing a different base is still refused."""
+
+    from app.agent_review.authoritative_producer_evidence_v2 import (
+        ProducerAttestationV2,
+        compute_producer_attestation_digest_v2,
+    )
+
+    material = {key: value for key, value in fields.items() if key != "attestation_digest"}
+    digest = compute_producer_attestation_digest_v2(
+        ProducerAttestationV2.model_construct(**material, attestation_digest="0" * 64)
+    )
+    return ProducerAttestationV2(**material, attestation_digest=digest).model_dump(mode="json")
+
+
 def _gate_attestation(check_name: str, outcome: str = "success") -> dict:
     from app.agent_review.authoritative_producer_evidence_v2 import (
         ProducerAttestationV2,
@@ -222,6 +242,8 @@ def _gate_attestation(check_name: str, outcome: str = "success") -> dict:
         "workflow_run_id": f"wf-{check_name}",
         "run_attempt": 1,
         "test_outcome": outcome,
+        "check_execution_mode": "reexecuted_in_producer_run",
+        "executed_sha_derivation": "verified_checkout_rev_parse",
         "policy_digest": "5" * 64,
         "toolchain_digest": "6" * 64,
     }
@@ -236,21 +258,23 @@ def _observation(check_name: str, **overrides: object) -> dict:
         "repository": "mglpsw/aiops-orchestrator",
         "head_sha": "2" * 40,
         "check_run_id": f"run-{check_name}",
-        "check_run_name": f"Validate repository {check_name}",
+        "check_run_name": f"authoritative {check_name}",
         "status": "completed",
         "conclusion": "success",
         "app_slug": "github-actions",
-        "workflow_path": ".github/workflows/ci.yml",
-        "workflow_execution_ref": "refs/pull/130/merge",
-        "referenced_workflows": [{"path": "mglpsw/aiops-orchestrator/.github/workflows/authoritative-checks.reusable.yml", "sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96", "ref": None}],
-        "producer_trigger": "pull_request",
+        "workflow_path": ".github/workflows/authoritative-checks.yml",
+        "workflow_execution_ref": "refs/heads/master",
+        "workflow_repository": "mglpsw/aiops-orchestrator",
+        "workflow_sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96",
+        "referenced_workflows": [],
+        "producer_trigger": "workflow_run",
         "producer_attestation": _gate_attestation(check_name),
         "workflow_run_id": f"wf-{check_name}",
         "run_attempt": 1,
         "run_started_at": "2026-08-11T10:00:00Z",
-        "run_event": "pull_request",
-        "run_base_sha": "1" * 40,
-        "run_head_sha": "2" * 40,
+        "run_event": "workflow_run",
+        "run_base_sha": None,
+        "run_head_sha": None,
     }
     record.update(overrides)
     return record
@@ -765,7 +789,15 @@ def test_cli_rejects_a_run_produced_against_a_different_base(tmp_path: Path) -> 
 
     paths = _write_fixtures(tmp_path)
     snapshot = _snapshot_dict(["pytest"])
-    snapshot["observations"][0]["run_base_sha"] = "7" * 40
+    # The run's own base/head are only meaningful for a PR-triggered producer;
+    # a `workflow_run`'s head is the default branch. This test is about that
+    # mechanism, so it uses the topology the mechanism guards -- which is
+    # refused for staleness here, before it is refused for being PR-writable.
+    observation = snapshot["observations"][0]
+    observation["producer_trigger"] = "pull_request"
+    observation["run_event"] = "pull_request"
+    observation["run_head_sha"] = "2" * 40
+    observation["run_base_sha"] = "7" * 40
     paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
     output_path = tmp_path / "out" / "readiness.json"
 
@@ -773,6 +805,28 @@ def test_cli_rejects_a_run_produced_against_a_different_base(tmp_path: Path) -> 
 
     assert result.returncode != 0
     assert "required_check_provenance_observation_stale" in result.stderr
+
+
+def test_cli_rejects_a_base_owned_producer_attesting_a_different_base(tmp_path: Path) -> None:
+    """The same defect for the promotable topology.
+
+    A `workflow_run` producer has no meaningful base/head of its own, so the
+    binding to this review's base comes from the attestation instead. A green
+    attested against a previous base is refused there rather than slipping
+    through because the run-level check does not apply."""
+
+    paths = _write_fixtures(tmp_path)
+    snapshot = _snapshot_dict(["pytest"])
+    attestation = snapshot["observations"][0]["producer_attestation"]
+    attestation["base_sha"] = "7" * 40
+    snapshot["observations"][0]["producer_attestation"] = _reseal_attestation(attestation)
+    paths["checks_snapshot"].write_text(json.dumps(snapshot), encoding="utf-8")
+    output_path = tmp_path / "out" / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "required_check_provenance_producer_attestation_mismatch" in result.stderr
 
 
 def test_cli_rejects_a_missing_authoritative_check_policy(tmp_path: Path) -> None:

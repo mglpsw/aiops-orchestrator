@@ -87,6 +87,8 @@ def _attestation(**overrides: object) -> ProducerAttestationV2:
         "workflow_run_id": "900",
         "run_attempt": 1,
         "test_outcome": "success",
+        "check_execution_mode": "reexecuted_in_producer_run",
+        "executed_sha_derivation": "verified_checkout_rev_parse",
         "policy_digest": "5" * 64,
         "toolchain_digest": "6" * 64,
     }

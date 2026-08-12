@@ -75,6 +75,10 @@ def _payload(**overrides: object) -> dict:
                 "path": ".github/workflows/ci.yml",
                 "event": "pull_request",
                 "head_branch": "feature",
+                # The commit the workflow DEFINITION was loaded from, and the
+                # repository it belongs to. GitHub reports both on every run.
+                "head_sha": "a" * 40,
+                "repository": {"full_name": REPO},
                 "run_attempt": 2,
                 "run_started_at": "2026-08-11T10:00:00Z",
                 "referenced_workflows": [
@@ -111,6 +115,8 @@ def _attestation_for(payload: dict) -> dict:
         "workflow_run_id": "900",
         "run_attempt": 2,
         "test_outcome": "success",
+        "check_execution_mode": "reexecuted_in_producer_run",
+        "executed_sha_derivation": "verified_checkout_rev_parse",
         "policy_digest": "5" * 64,
         "toolchain_digest": "6" * 64,
     }

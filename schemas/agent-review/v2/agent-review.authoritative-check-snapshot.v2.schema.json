@@ -189,9 +189,19 @@
           "title": "Workflow Path",
           "type": "string"
         },
+        "workflow_repository": {
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Workflow Repository",
+          "type": "string"
+        },
         "workflow_run_id": {
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
           "title": "Workflow Run Id",
+          "type": "string"
+        },
+        "workflow_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Workflow Sha",
           "type": "string"
         }
       },
@@ -205,6 +215,8 @@
         "app_slug",
         "workflow_path",
         "workflow_execution_ref",
+        "workflow_repository",
+        "workflow_sha",
         "referenced_workflows",
         "producer_trigger",
         "producer_attestation",
@@ -232,9 +244,25 @@
           "title": "Base Sha",
           "type": "string"
         },
+        "check_execution_mode": {
+          "enum": [
+            "reexecuted_in_producer_run",
+            "upstream_artifact_republished"
+          ],
+          "title": "Check Execution Mode",
+          "type": "string"
+        },
         "executed_sha": {
           "pattern": "^[0-9a-f]{40}$",
           "title": "Executed Sha",
+          "type": "string"
+        },
+        "executed_sha_derivation": {
+          "enum": [
+            "verified_checkout_rev_parse",
+            "caller_supplied"
+          ],
+          "title": "Executed Sha Derivation",
           "type": "string"
         },
         "head_sha": {
@@ -308,6 +336,8 @@
         "workflow_run_id",
         "run_attempt",
         "test_outcome",
+        "check_execution_mode",
+        "executed_sha_derivation",
         "policy_digest",
         "toolchain_digest",
         "attestation_digest"

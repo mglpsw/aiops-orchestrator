@@ -41,6 +41,8 @@ def _attestation(repo: str, pr: int, base: str, head: str, merge: str,
         "workflow_run_id": run_id,
         "run_attempt": attempt,
         "test_outcome": outcome,
+        "check_execution_mode": "reexecuted_in_producer_run",
+        "executed_sha_derivation": "verified_checkout_rev_parse",
         "policy_digest": "5" * 64,
         "toolchain_digest": "6" * 64,
     }
@@ -66,17 +68,21 @@ OTHER_HEAD = "9" * 40
 MERGE = "d" * 40
 BASE = "c" * 40
 
+PRODUCER_PATH = ".github/workflows/authoritative-checks.yml"
+PRODUCER_SHA = "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
+
 ENTRY = AuthoritativeCheckEntryV2(
     check_name="pytest",
-    workflow_path=".github/workflows/ci.yml",
-    job_name="Validate repository",
+    workflow_path=PRODUCER_PATH,
+    job_name="authoritative-pytest",
     verifier_identity="github-actions",
-    producer_kind="sha_pinned_reusable_workflow",
+    producer_kind="base_owned_workflow_run",
     producer_workflow={
-        "repository": "mglpsw/aiops-orchestrator",
-        "path": ".github/workflows/authoritative-checks.reusable.yml",
-        "sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96",
+        "repository": REPO,
+        "path": PRODUCER_PATH,
+        "sha": PRODUCER_SHA,
     },
+    producer_workflow_ref="refs/heads/master",
     permitted_conclusions=("success", "failure"),
     origin_rules=OriginRulesV2(pull_request="synthetic_merge_parentage"),
 )
@@ -87,21 +93,23 @@ def _obs(**overrides: object) -> dict[str, object]:
         "repository": REPO,
         "head_sha": HEAD,
         "check_run_id": "100",
-        "check_run_name": "Validate repository",
+        "check_run_name": "authoritative-pytest",
         "status": "completed",
         "conclusion": "success",
         "app_slug": "github-actions",
-        "workflow_path": ".github/workflows/ci.yml",
-        "workflow_execution_ref": "refs/pull/7/merge",
-        "referenced_workflows": [{"path": "mglpsw/aiops-orchestrator/.github/workflows/authoritative-checks.reusable.yml", "sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96", "ref": None}],
-        "producer_trigger": "pull_request",
+        "workflow_path": PRODUCER_PATH,
+        "workflow_execution_ref": "refs/heads/master",
+        "workflow_repository": REPO,
+        "workflow_sha": PRODUCER_SHA,
+        "referenced_workflows": [],
+        "producer_trigger": "workflow_run",
         "producer_attestation": _attestation(REPO, 7, BASE, HEAD, MERGE, "900", 1),
         "workflow_run_id": "900",
         "run_attempt": 1,
         "run_started_at": "2026-08-11T10:00:00Z",
-        "run_event": "pull_request",
-        "run_base_sha": BASE,
-        "run_head_sha": HEAD,
+        "run_event": "workflow_run",
+        "run_base_sha": None,
+        "run_head_sha": None,
     }
     record.update(overrides)
     return record

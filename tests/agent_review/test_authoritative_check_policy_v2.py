@@ -37,14 +37,15 @@ identity:
   repo: mglpsw/AgentEscala
 authoritative_checks:
   - check_name: pytest
-    workflow_path: .github/workflows/ci.yml
-    job_name: Validate repository
+    workflow_path: .github/workflows/authoritative-checks.yml
+    job_name: authoritative-pytest
     verifier_identity: github-actions
-    producer_kind: sha_pinned_reusable_workflow
+    producer_kind: base_owned_workflow_run
     producer_workflow:
-      repository: mglpsw/aiops-orchestrator
-      path: .github/workflows/authoritative-checks.reusable.yml
+      repository: mglpsw/AgentEscala
+      path: .github/workflows/authoritative-checks.yml
       sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
+    producer_workflow_ref: refs/heads/master
     permitted_conclusions:
       - success
       - failure
@@ -106,7 +107,7 @@ def test_reformatting_moves_the_bytes_digest_only(tmp_path: Path) -> None:
 def test_a_semantic_change_moves_both_digests(tmp_path: Path) -> None:
     original = load_authoritative_check_policy_v2(_write(tmp_path / "a", VALID_POLICY))
     changed = load_authoritative_check_policy_v2(
-        _write(tmp_path / "b", VALID_POLICY.replace("job_name: Validate repository", "job_name: something-else"))
+        _write(tmp_path / "b", VALID_POLICY.replace("job_name: authoritative-pytest", "job_name: something-else"))
     )
 
     assert original.policy_source_bytes_digest != changed.policy_source_bytes_digest
@@ -260,14 +261,15 @@ def test_a_required_check_with_no_declared_source_is_a_load_failure(tmp_path: Pa
 def test_an_entry_for_a_non_required_check_is_refused(tmp_path: Path) -> None:
     extra = VALID_POLICY + """\
   - check_name: mypy
-    workflow_path: .github/workflows/ci.yml
-    job_name: Validate repository
+    workflow_path: .github/workflows/authoritative-checks.yml
+    job_name: authoritative-pytest
     verifier_identity: github-actions
-    producer_kind: sha_pinned_reusable_workflow
+    producer_kind: base_owned_workflow_run
     producer_workflow:
-      repository: mglpsw/aiops-orchestrator
-      path: .github/workflows/authoritative-checks.reusable.yml
+      repository: mglpsw/AgentEscala
+      path: .github/workflows/authoritative-checks.yml
       sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
+    producer_workflow_ref: refs/heads/master
     permitted_conclusions:
       - success
       - failure
@@ -290,6 +292,37 @@ def test_the_producer_workflow_must_be_pinned_by_a_full_sha(tmp_path: Path) -> N
     never be satisfied by a real run. Immutability now comes from the SHA."""
 
     text = VALID_POLICY.replace('sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"', 'sha: "abc1234"')
+    with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
+        load_authoritative_check_policy_v2(_write(tmp_path, text))
+    assert exc.value.reason_code == POLICY_INVALID_REASON_V2
+
+
+def test_the_unsigned_reusable_workflow_producer_is_refused_at_load(tmp_path: Path) -> None:
+    """Codex round 7. The pin proves which reusable workflow a run LOADED; it
+    never binds the uploaded artifact to that workflow's job, and inside a
+    PR-triggered run the pull request can upload one itself.
+
+    Refused when the policy is WRITTEN, the same way `explicit_tested_tree` is,
+    so a target learns its producer cannot work then -- not when a review
+    silently never becomes ready."""
+
+    text = VALID_POLICY.replace(
+        "producer_kind: base_owned_workflow_run", "producer_kind: sha_pinned_reusable_workflow"
+    )
+    with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
+        load_authoritative_check_policy_v2(_write(tmp_path, text))
+    assert exc.value.reason_code == POLICY_INVALID_REASON_V2
+
+
+def test_a_base_owned_producer_must_run_its_own_workflow(tmp_path: Path) -> None:
+    """For a base-owned producer the run IS the producer, so a policy naming one
+    workflow for the observation and another for the pinned identity would leave
+    the assembler matching two different files."""
+
+    text = VALID_POLICY.replace(
+        "    workflow_path: .github/workflows/authoritative-checks.yml",
+        "    workflow_path: .github/workflows/something-else.yml",
+    )
     with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
         load_authoritative_check_policy_v2(_write(tmp_path, text))
     assert exc.value.reason_code == POLICY_INVALID_REASON_V2

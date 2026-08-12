@@ -27,17 +27,33 @@ executed-tree evidence  an attestation                  proof, not inference
 origin of the REVIEW, not for a producer's internal trigger; conflating the two
 is what made `workflow_run` look like it needed a place in a frozen enum.
 
-## Why a SHA-pinned reusable workflow
+## Why the producing RUN, not just the producing workflow
 
-`workflow_execution_ref` proves nothing on its own -- a pull request controls
-the ref its own runs execute under. What a pull request cannot forge is which
-reusable workflow a run *referenced*: GitHub records `referenced_workflows` with
-the full commit SHA of the workflow it loaded. Pinning that SHA in the
-base-owned policy gives an immutable producer identity that survives the PR
-being able to edit files in its own tree.
+The first model here pinned a reusable workflow by full commit SHA and treated
+that as producer identity. A Codex review then found the gap: the pin proves
+which workflow a run LOADED, and nothing more. Inside a `pull_request` run the
+pull request can call the pinned workflow AND add a job of its own that uploads
+the attestation artifact -- filling in repository, PR number, base, head,
+executed tree, run id and attempt, every one of which it already knows.
 
-That is also why the pin must be a full 40-character SHA. An abbreviated SHA or
-a branch ref is mutable, and a mutable identity is not an identity.
+Checking those fields therefore proves only that the forger was careful. The
+correct boundary is not a better check on the message; it is refusing messages
+sent from inside a run the pull request can write into.
+
+So identity comes from the producing run BEING the base-owned workflow:
+triggered by `workflow_run`, whose definition GitHub loads from the default
+branch, executing under a ref the pull request does not control, matched on
+repository, path, commit SHA and job name.
+
+`merge_group` is deliberately NOT treated as base-owned. GitHub runs each
+event's workflow from the ref associated with that event, and a merge group has
+its own ref and SHA; assuming base-ownership from the event name would be the
+same optimistic reuse this module keeps removing.
+
+`sha_pinned_reusable_workflow` stays declarable so a policy naming it earns a
+precise refusal instead of a vague one. It becomes promotable only when the
+attestation's ISSUER is cryptographically authenticated -- a separate, additive
+mode, not something to improvise here.
 
 ## Why an attestation, and what it must not do
 
@@ -49,15 +65,26 @@ the `#201-B3` boundary violated in a new place.
 
 `attested_executed_sha == identity.tested_merge_sha` is the binding that
 replaces the tautological `executed_tree_sha` removed in round 2. The
-difference is that this value is produced by a base-owned workflow pinned by
-SHA, not copied from the caller's own argument.
+difference is that this value is produced by a run the pull request cannot
+write into, not copied from the caller's own argument.
+
+Two further things the producer must declare, because being base-owned makes it
+trustworthy about what IT did and not about what the pull request's run did:
+
+- it re-executed the check itself, rather than republishing an artifact built
+  by the pull request's own run. GitHub's own guidance is that artifacts from a
+  workflow which processed untrusted code are untrusted data; forwarding one
+  unchanged launders it rather than verifying it;
+- it derived the executed tree from its own verified checkout, rather than
+  repeating a value handed to it through workflow inputs. A value that
+  travelled in a circle is not evidence, however trustworthy the courier.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import model_validator
 
 from app.agent_review.contracts_v2 import (
     ContractV2Model,
@@ -77,11 +104,30 @@ PRODUCER_ATTESTATION_SCHEMA_V2 = "agent-review.producer-attestation.v2"
 PRODUCER_WORKFLOW_NOT_PINNED_REASON_V2 = "required_check_provenance_producer_workflow_not_pinned"
 PRODUCER_ATTESTATION_MISSING_REASON_V2 = "required_check_provenance_producer_attestation_missing"
 PRODUCER_ATTESTATION_MISMATCH_REASON_V2 = "required_check_provenance_producer_attestation_mismatch"
+# A refusal must say WHICH impossibility it hit. "attestation missing" and "the
+# only attestation obtainable here is one the pull request could have written"
+# are different diagnoses and lead to different fixes.
+PRODUCER_PR_WRITABLE_REASON_V2 = "required_check_provenance_pr_writable_producer"
+UNSIGNED_PR_PRODUCER_REASON_V2 = "required_check_provenance_unsigned_pr_producer"
+BASE_OWNED_PRODUCER_REQUIRED_REASON_V2 = "required_check_provenance_base_owned_producer_required"
+UPSTREAM_ARTIFACT_UNTRUSTED_REASON_V2 = "required_check_provenance_upstream_artifact_untrusted"
+PRODUCER_TRIGGER_UNSUPPORTED_REASON_V2 = "required_check_provenance_producer_trigger_unsupported"
+PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2 = (
+    "required_check_provenance_producer_workflow_identity_mismatch"
+)
+EXECUTED_TREE_NOT_OBSERVED_REASON_V2 = "required_check_provenance_executed_tree_not_observed"
 
 ALL_PRODUCER_EVIDENCE_REASON_CODES_V2: tuple[str, ...] = (
     PRODUCER_WORKFLOW_NOT_PINNED_REASON_V2,
     PRODUCER_ATTESTATION_MISSING_REASON_V2,
     PRODUCER_ATTESTATION_MISMATCH_REASON_V2,
+    PRODUCER_PR_WRITABLE_REASON_V2,
+    UNSIGNED_PR_PRODUCER_REASON_V2,
+    BASE_OWNED_PRODUCER_REQUIRED_REASON_V2,
+    UPSTREAM_ARTIFACT_UNTRUSTED_REASON_V2,
+    PRODUCER_TRIGGER_UNSUPPORTED_REASON_V2,
+    PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2,
+    EXECUTED_TREE_NOT_OBSERVED_REASON_V2,
 )
 
 # The producer's OWN trigger, deliberately a separate vocabulary from
@@ -98,11 +144,44 @@ ProducerTriggerV2 = Literal[
     "schedule",
 ]
 
-# Only one kind is ratified. Others must arrive with their own evidence model,
-# not by widening this literal and hoping the existing checks still apply.
-ProducerKindV2 = Literal["sha_pinned_reusable_workflow"]
+# Two kinds are declarable; exactly ONE is promotable today.
+#
+# `sha_pinned_reusable_workflow` was the first model, and a Codex review then
+# showed why it cannot stand unsigned: the pinned SHA proves the run LOADED the
+# base-owned reusable workflow, but nothing binds the uploaded artifact to that
+# workflow's job. Inside a PR-triggered run the pull request can call the pinned
+# workflow AND, from a job of its own, upload an attestation carrying every
+# field the verifier checks -- repository, pr_number, base/head/executed SHA,
+# run id, attempt -- because it already knows all of them. It stays declarable
+# so a policy naming it earns a precise refusal instead of a vague one, and it
+# becomes promotable only once the attestation's ISSUER is authenticated.
+#
+# `base_owned_workflow_run` is the promotable kind. It moves the producer out
+# of the pull request's reach entirely rather than trying to authenticate a
+# message sent from inside it.
+ProducerKindV2 = Literal["sha_pinned_reusable_workflow", "base_owned_workflow_run"]
+
+# The only producer trigger whose workflow definition GitHub loads from the
+# default branch AND whose run the pull request cannot write jobs into.
+BASE_OWNED_PRODUCER_TRIGGER_V2 = "workflow_run"
+
+# Triggers where the pull request can contribute jobs to the producing run, and
+# therefore can author anything that run uploads.
+PR_WRITABLE_PRODUCER_TRIGGERS_V2: frozenset[str] = frozenset({"pull_request", "pull_request_target"})
 
 ExecutedTreeEvidenceKindV2 = Literal["producer_attestation"]
+
+# How the producer obtained the verdict it is attesting to. Republishing an
+# artifact built by the pull request's own run is NOT re-execution: GitHub's own
+# guidance is that artifacts from a workflow which processed untrusted code are
+# untrusted data. A base-owned run that merely forwards one has laundered the
+# pull request's output, not verified it.
+CheckExecutionModeV2 = Literal["reexecuted_in_producer_run", "upstream_artifact_republished"]
+
+# How the producer learned which tree it ran. `caller_supplied` means the value
+# was handed in via workflow inputs or client_payload and merely echoed back --
+# the tautology removed in round 2, arriving through a new door.
+ExecutedShaDerivationV2 = Literal["verified_checkout_rev_parse", "caller_supplied"]
 
 
 class ProducerWorkflowIdentityV2(ContractV2Model):
@@ -156,6 +235,14 @@ class ProducerAttestationV2(ContractV2Model):
     # `authoritative_ci_snapshot_v2`: an attestation cannot smuggle in a
     # non-verdict that the conclusion mapping would refuse.
     test_outcome: Literal["success", "failure"]
+    # Declared by the producer so the assembler can refuse the two ways a
+    # base-owned run can still be a pass-through rather than a witness. Both are
+    # self-reported, and that is sound ONLY because the producer is base-owned:
+    # nothing the pull request can write reaches these fields. For a
+    # PR-writable producer the whole attestation is refused before these are
+    # ever read.
+    check_execution_mode: CheckExecutionModeV2
+    executed_sha_derivation: ExecutedShaDerivationV2
     policy_digest: Sha256
     toolchain_digest: Sha256
     attestation_digest: Sha256
@@ -203,6 +290,86 @@ def verify_producer_workflow_pinned_v2(
         if reference.path == expected_path and reference.sha == pinned.sha:
             return reference
     raise RequiredCheckProvenanceErrorV2(PRODUCER_WORKFLOW_NOT_PINNED_REASON_V2)
+
+
+def verify_producer_is_base_owned_v2(
+    *,
+    producer_kind: str,
+    producer_trigger: str,
+) -> None:
+    """Refuse every producer whose run the pull request can write into.
+
+    Ordered so the reason code names the actual obstacle:
+
+    - a `pull_request`/`pull_request_target` producer is PR-writable, so
+      anything it uploads may have been authored by the pull request;
+    - `sha_pinned_reusable_workflow` is refused wherever it appears, because
+      its evidence is an unauthenticated artifact by convention -- the pin
+      proves which workflow was LOADED, never which job wrote the file;
+    - `merge_group` is NOT assumed base-owned. GitHub runs each event's
+      workflow from the ref associated with that event, and a merge group has
+      its own ref and SHA; treating it as base-owned by name alone would be the
+      same optimistic reuse this slice keeps removing. It needs its own model;
+    - everything else is unsupported rather than tolerated.
+    """
+
+    if producer_trigger in PR_WRITABLE_PRODUCER_TRIGGERS_V2:
+        raise RequiredCheckProvenanceErrorV2(PRODUCER_PR_WRITABLE_REASON_V2)
+
+    if producer_kind == "sha_pinned_reusable_workflow":
+        raise RequiredCheckProvenanceErrorV2(UNSIGNED_PR_PRODUCER_REASON_V2)
+
+    if producer_kind != "base_owned_workflow_run":
+        raise RequiredCheckProvenanceErrorV2(BASE_OWNED_PRODUCER_REQUIRED_REASON_V2)
+
+    if producer_trigger != BASE_OWNED_PRODUCER_TRIGGER_V2:
+        raise RequiredCheckProvenanceErrorV2(PRODUCER_TRIGGER_UNSUPPORTED_REASON_V2)
+
+
+def verify_base_owned_producer_workflow_v2(
+    *,
+    pinned: ProducerWorkflowIdentityV2,
+    pinned_ref: str,
+    observed_repository: str,
+    observed_path: str,
+    observed_sha: str,
+    observed_ref: str,
+) -> None:
+    """Require the producing run to BE the pinned base-owned workflow.
+
+    For `base_owned_workflow_run` the producer is not referenced by the run --
+    it *is* the run, so identity is checked against the run's own workflow
+    repository, path and commit SHA rather than against `referenced_workflows`.
+
+    Unlike the `pull_request` case, the ref is compared here and is meaningful:
+    a `workflow_run` event loads its definition from the default branch, so a
+    run executing under anything else is not the base-owned producer.
+    """
+
+    if (
+        observed_repository != pinned.repository
+        or observed_path != pinned.path
+        or observed_sha != pinned.sha
+        or observed_ref != pinned_ref
+    ):
+        raise RequiredCheckProvenanceErrorV2(PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2)
+
+
+def verify_producer_execution_is_first_hand_v2(*, attestation: ProducerAttestationV2) -> None:
+    """Refuse a base-owned run that forwarded someone else's work.
+
+    Being base-owned makes a producer trustworthy about what IT did. It does not
+    make it authoritative about what the pull request's own run did. A producer
+    that republishes an upstream artifact, or that repeats an executed SHA it
+    was handed rather than one it observed after checkout, has moved untrusted
+    data across the trust boundary without checking it.
+    """
+
+    if attestation.check_execution_mode != "reexecuted_in_producer_run":
+        raise RequiredCheckProvenanceErrorV2(UPSTREAM_ARTIFACT_UNTRUSTED_REASON_V2)
+
+    if attestation.executed_sha_derivation != "verified_checkout_rev_parse":
+        raise RequiredCheckProvenanceErrorV2(EXECUTED_TREE_NOT_OBSERVED_REASON_V2)
 
 
 def verify_producer_attestation_v2(

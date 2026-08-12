@@ -184,6 +184,11 @@ class AuthoritativeCheckEntryV2(ContractV2Model):
     # reusable workflow pinned by full SHA, which a pull request cannot swap.
     producer_kind: ProducerKindV2
     producer_workflow: ProducerWorkflowIdentityV2
+    # The base-owned ref the producer workflow must execute under. Meaningful
+    # only for `base_owned_workflow_run`, where GitHub loads the definition from
+    # the default branch -- so unlike a `pull_request` run, the ref is not
+    # PR-controlled and comparing it adds real assurance.
+    producer_workflow_ref: SafeText
     # Structurally pinned rather than configurable -- see the module docstring.
     permitted_conclusions: tuple[Literal["success"], Literal["failure"]]
     origin_rules: OriginRulesV2
@@ -191,10 +196,35 @@ class AuthoritativeCheckEntryV2(ContractV2Model):
     @model_validator(mode="after")
     def validate_entry(self) -> AuthoritativeCheckEntryV2:
         # The producer must live in a repository, not in the pull request's own
-        # tree by coincidence of path. Nothing else about the ref is checked --
-        # `workflow_execution_ref` is an observation, never an authority.
+        # tree by coincidence of path.
         if self.producer_workflow.repository == "":
             raise ValueError("a pinned producer workflow needs a repository")
+
+        # Refused at LOAD time, the same way `explicit_tested_tree` is: a target
+        # learns its policy cannot work when it writes the policy, not when a
+        # review silently never becomes ready.
+        #
+        # The pin proves which reusable workflow a run LOADED. It does not bind
+        # the uploaded attestation to that workflow's job, and inside a
+        # PR-triggered run the pull request can upload one itself carrying every
+        # field the verifier checks. Promotable again only once the
+        # attestation's issuer is cryptographically authenticated.
+        if self.producer_kind == "sha_pinned_reusable_workflow":
+            raise ValueError(
+                "sha_pinned_reusable_workflow has no unsigned evidence path: "
+                "the attestation artifact is not bound to the pinned workflow's job"
+            )
+
+        # For a base-owned producer the run IS the producer, so the entry's
+        # workflow path and the pinned producer path describe one workflow.
+        # Allowing them to differ would leave the assembler matching the
+        # observation against one path and the identity against another.
+        if self.producer_kind == "base_owned_workflow_run":
+            if self.workflow_path != self.producer_workflow.path:
+                raise ValueError(
+                    "a base_owned_workflow_run producer runs its own workflow: "
+                    "workflow_path and producer_workflow.path must be identical"
+                )
         return self
 
 

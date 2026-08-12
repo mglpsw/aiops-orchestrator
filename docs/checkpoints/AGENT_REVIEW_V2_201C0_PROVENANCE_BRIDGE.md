@@ -280,6 +280,84 @@ estavam corrigidas nas rodadas 3 e 4; o GitHub as ancora em linhas cujo conteúd
 produtor, e foram corrigidas aqui — comentário que descreve errado o próprio código é exatamente o
 tipo de afirmação não verificada que esta slice existe para não produzir.
 
+## Rodada 7 de review adversarial (Codex) — o artefato não estava ligado ao produtor
+
+**Achado 1 (P1) — a attestation era aceita por convenção de nome.** O modelo da rodada 4 pinava um
+reusable workflow por SHA completo e tratava isso como identidade do produtor. O pin prova que o
+run **carregou** aquele workflow — e nada além disso. Dentro de um run `pull_request` a própria PR
+pode chamar o workflow pinado **e** acrescentar um job seu que publica
+`aiops-authoritative-check-attestation`, preenchendo repository, pr_number, base, head,
+executed_sha, run id e attempt: todos valores que ela já conhece.
+
+Verificar esses campos, portanto, provava apenas que o forjador foi cuidadoso. A fronteira correta
+não é uma checagem melhor sobre a mensagem; é **recusar mensagens vindas de dentro de um run em que
+a PR pode escrever**.
+
+**Achado 2 (P2) — o acquirer não tinha guarda de colisão output/input.** Com `--observations` e
+`--output` no mesmo caminho resolvido, ele lia o payload gravado, sobrescrevia com o snapshot
+derivado e retornava sucesso. Isso destrói a evidência bruta do GitHub de que uma auditoria ou
+reexecução depende, e um snapshot que comeu a própria fonte não pode ser re-derivado nem conferido.
+O quality gate já recusa essa classe duas vezes (`#145`, `#156`).
+
+### Decisão ratificada
+
+`fail closed now, sign later` — **com a condição obrigatória de que a C0 não termine apenas
+desligando `pull_request`**. Esta rodada implementa e prova um primeiro producer kind unsigned que
+é efetivamente base-owned:
+
+```text
+producer_kind    = base_owned_workflow_run
+producer_trigger = workflow_run
+```
+
+A diferença em relação à rodada 4 é arquitetural, não cosmética:
+
+| Rodada 4 | Depois da rodada 7 |
+|---|---|
+| não existia produtor real representável | existe `base_owned_workflow_run` representável |
+| `#203` não podia configurar nada que o modelo aceitasse | `#203` pode instalar a topologia já suportada |
+| C0 promovia zero **por defeito de modelo** | C0 promove zero nos targets atuais **por falta de adoção** |
+
+### O que passou a valer
+
+```text
+pull_request  + artefato convencional por nome        → NÃO PROMOVÍVEL
+pull_request  + attestation autenticada por assinatura → caminho futuro, não implementado
+merge_group                                            → inelegível sem modelo próprio
+workflow_run base-owned + attestation do próprio run   → PROMOVÍVEL
+```
+
+Bindings exigidos para o produtor base-owned: `producer_trigger == workflow_run`;
+`workflow_repository`, `workflow_path`, `workflow_sha` e `workflow_execution_ref` iguais aos
+pinados na política; `job_name` igual; e a attestation ligada a run id, attempt, repository,
+pr_number, base, head e `executed_sha == identity.tested_merge_sha`.
+
+Duas declarações novas na attestation, porque ser base-owned torna o produtor confiável sobre o que
+**ele** fez, não sobre o que o run da PR fez:
+
+- `check_execution_mode` — republicar um artifact do run da PR não é reexecução. A orientação do
+  próprio GitHub é que artefatos de um workflow que processou código não confiável são dados não
+  confiáveis; encaminhar um sem verificar é lavagem, não verificação;
+- `executed_sha_derivation` — a árvore executada precisa vir do checkout verificado do produtor,
+  não de um input repetido. Um valor que andou em círculo não é evidência, por mais confiável que
+  seja o mensageiro.
+
+`sha_pinned_reusable_workflow` continua **declarável** e é recusado **no load da política**, com a
+mesma disciplina de `explicit_tested_tree`: o target descobre que seu produtor não funciona ao
+escrever a política, não quando uma review silenciosamente nunca fica ready.
+
+`RunOriginV2` permanece intocado. Origem da revisão (`pull_request`) e trigger do produtor
+(`workflow_run`) agora **legitimamente diferem** — é exatamente a separação que o modelo de producer
+evidence existe para representar, e colapsá-las de novo tornaria o único produtor sólido
+inexprimível.
+
+### Consequência operacional a decidir em `#203`
+
+A política pina `producer_workflow.sha` como SHA completo. Para um produtor `workflow_run` o SHA
+observado é o topo do default branch, logo **o pin precisa ser rotacionado quando o commit do
+produtor muda**. Isso é propriedade da instalação, não do engine: `#203` deve escolher a estratégia
+de rotação. Registrado aqui como consequência conhecida, não como defeito silencioso.
+
 ## Limitação conhecida — `workflow_ref` e workflows base-owned
 
 A API de Actions do GitHub reporta o `path` de um workflow run, mas **nenhum campo** afirma de
@@ -311,7 +389,7 @@ CT104.
 | Gate | Resultado |
 |---|---|
 | testes focados C0-1…C0-6 | verde |
-| regressão offline completa | 2180 passed, 4 skipped |
+| regressão offline completa | 2199 passed, 4 skipped |
 | suíte `requires_network` | verde |
 | `bash scripts/ci_validate.sh` (seções 1–8) | **OK** |
 | `export-agent-review-v2-schemas.py --check` | byte-idêntico |
@@ -321,9 +399,10 @@ CT104.
 
 Testes verificados como genuínos por mutação: relaxar a ordem dos pais, remover a ambiguidade de
 tentativa, reintroduzir match por nome no verificador, trocar o membro esperado do zip de
-attestation por "primeira entrada", remover a recusa de runs empatados no horário de início e
-parar a paginação após a primeira página falham exatamente o teste escrito para cada um, e voltam
-a passar no restore.
+attestation por "primeira entrada", remover a recusa de runs empatados no horário de início, parar
+a paginação após a primeira página, e desligar cada uma das três guardas da rodada 7 (produtor
+PR-writable, artefato upstream republicado, executed_sha vindo do chamador) falham exatamente o
+teste escrito para cada um, e voltam a passar no restore.
 
 ## Estado vetorial
 
@@ -331,7 +410,11 @@ a passar no restore.
 #201-B3_IMPLEMENTATION=MERGED
 #201-B3_OPERATIONAL_CLOSURE=BLOCKED_BY_CT104
 #201-C0_IMPLEMENTATION=READY_FOR_REVIEW
-#201-C0_C0T4_BASE_OWNED_WORKFLOW=UNRESOLVED_TARGET_CONFIGURATION
+#201-C0_C0T4_BASE_OWNED_WORKFLOW=MODELLED_AWAITING_TARGET_INSTALLATION
+UNSIGNED_PULL_REQUEST_PRODUCER=INELIGIBLE
+BASE_OWNED_WORKFLOW_RUN=IMPLEMENTED_AND_TESTED
+CRYPTOGRAPHIC_PRODUCER_MODE=DEFERRED
+TARGET_INSTALLATION_OWNER=#203
 #201-C=BLOCKED
 #217=OPEN (cobre-se o caminho exercido pela #201; a classe completa permanece)
 #201=OPEN

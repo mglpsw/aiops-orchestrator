@@ -157,6 +157,13 @@ class ObservedCheckRunV2(ContractV2Model):
     # base ownership: a pull request controls the ref its own runs execute
     # under. Identity comes from `referenced_workflows`.
     workflow_execution_ref: SafeText
+    # The repository the producing workflow itself belongs to, and the commit
+    # its definition was loaded from. For a `workflow_run` producer GitHub loads
+    # the definition from the default branch, so this SHA is a base-owned
+    # commit -- which is what makes it usable as identity rather than as mere
+    # description. Recorded for every run; only compared for the base-owned kind.
+    workflow_repository: Repository
+    workflow_sha: GitSha
     # The reusable workflows this run loaded, each with the full commit SHA
     # GitHub recorded. This is what a pull request cannot forge.
     referenced_workflows: tuple[ProducerWorkflowReferenceV2, ...]

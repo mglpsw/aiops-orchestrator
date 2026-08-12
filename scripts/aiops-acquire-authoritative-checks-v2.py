@@ -486,6 +486,15 @@ def build_snapshot_document(
                 "app_slug": (check.get("app") or {}).get("slug"),
                 "workflow_path": run.get("path"),
                 "workflow_execution_ref": _workflow_ref(run),
+                # The producing workflow's OWN repository and the commit its
+                # definition was loaded from. For a `workflow_run` producer
+                # GitHub loads the definition from the default branch, so this
+                # SHA is a base-owned commit -- which is what lets it serve as
+                # identity for a producer the pull request cannot write into.
+                "workflow_repository": (run.get("repository") or {}).get(
+                    "full_name", args.repository
+                ),
+                "workflow_sha": run.get("head_sha"),
                 # What the run LOADED, with GitHub's own full commit SHA. This
                 # is the fact a pull request cannot forge, and it is what the
                 # base-owned policy pins.

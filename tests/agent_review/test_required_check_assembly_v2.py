@@ -79,6 +79,10 @@ def _attestation(repo: str, pr: int, base: str, head: str, merge: str,
         "workflow_run_id": run_id,
         "run_attempt": attempt,
         "test_outcome": outcome,
+        # The producer re-ran the check itself and read the executed tree back
+        # from its own verified checkout. Anything else is a pass-through.
+        "check_execution_mode": "reexecuted_in_producer_run",
+        "executed_sha_derivation": "verified_checkout_rev_parse",
         "policy_digest": "5" * 64,
         "toolchain_digest": "6" * 64,
     }
@@ -120,27 +124,68 @@ def _identity(**overrides: object) -> RunIdentityV2:
 IDENTITY = _identity()
 
 
+PRODUCER_WORKFLOW_PATH = ".github/workflows/authoritative-checks.yml"
+PRODUCER_WORKFLOW_SHA = "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
+PRODUCER_WORKFLOW_REF = "refs/heads/master"
+
+
 def _obs(**overrides: object) -> dict[str, object]:
+    """The promotable shape: a BASE-OWNED producer.
+
+    The default is deliberately a `workflow_run` producer, not the pull
+    request's own CI run. A PR-triggered run is PR-writable -- the pull request
+    can add a job that uploads an attestation carrying every field the verifier
+    checks -- so that topology appears below only as a negative case.
+
+    `run_base_sha`/`run_head_sha` are absent because a `workflow_run`'s own head
+    is the default branch, not this pull request. The merge binding comes from
+    the attestation instead, which is emitted by a run the PR cannot write into.
+    """
+
     record: dict[str, object] = {
         "repository": REPO,
         "head_sha": HEAD,
         "check_run_id": "100",
-        "check_run_name": "Validate repository",
+        "check_run_name": "authoritative-pytest",
         "status": "completed",
         "conclusion": "success",
         "app_slug": "github-actions",
-        "workflow_path": ".github/workflows/ci.yml",
-        "workflow_execution_ref": "refs/pull/7/merge",
-        "referenced_workflows": [{"path": "mglpsw/aiops-orchestrator/.github/workflows/authoritative-checks.reusable.yml", "sha": "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96", "ref": None}],
-        "producer_trigger": "pull_request",
+        "workflow_path": PRODUCER_WORKFLOW_PATH,
+        "workflow_execution_ref": PRODUCER_WORKFLOW_REF,
+        "workflow_repository": REPO,
+        "workflow_sha": PRODUCER_WORKFLOW_SHA,
+        "referenced_workflows": [],
+        "producer_trigger": "workflow_run",
         "producer_attestation": _attestation(REPO, 7, BASE, HEAD, MERGE, "900", 1),
         "workflow_run_id": "900",
         "run_attempt": 1,
         "run_started_at": "2026-08-11T10:00:00Z",
-        "run_event": "pull_request",
-        "run_base_sha": BASE,
-        "run_head_sha": HEAD,
+        "run_event": "workflow_run",
+        "run_base_sha": None,
+        "run_head_sha": None,
     }
+    record.update(overrides)
+    return record
+
+
+def _pr_triggered_obs(**overrides: object) -> dict[str, object]:
+    """The topology round 7 proved unpromotable: the producing run is the pull
+    request's own, so the pull request can author whatever it uploads."""
+
+    record = _obs(
+        workflow_execution_ref="refs/pull/7/merge",
+        referenced_workflows=[
+            {
+                "path": f"{REPO}/{PRODUCER_WORKFLOW_PATH}",
+                "sha": PRODUCER_WORKFLOW_SHA,
+                "ref": None,
+            }
+        ],
+        producer_trigger="pull_request",
+        run_event="pull_request",
+        run_base_sha=BASE,
+        run_head_sha=HEAD,
+    )
     record.update(overrides)
     return record
 
@@ -369,32 +414,38 @@ def test_c0_t3_a_check_from_a_non_allowlisted_workflow_is_refused() -> None:
 
 
 def test_c0_t4_a_producer_workflow_at_an_unpinned_sha_is_refused() -> None:
-    """C0-T4, restated after Codex round 4 inverted its premise.
+    """C0-T4, restated again after Codex round 7.
 
-    A pull ref is now the NORMAL case -- genuine `pull_request` runs always
-    execute under one, and requiring a default-branch ref made the whole bridge
-    unusable. Base ownership is established instead by the reusable workflow the
-    run actually loaded, pinned by full commit SHA. A pull request can edit its
-    own tree; it cannot make a run reference a workflow SHA it did not load."""
+    Round 4 moved base-ownership onto a SHA-pinned reusable workflow; round 7
+    showed the pin proves only which workflow the run LOADED, never which job
+    wrote the artifact. Identity now comes from the producing run BEING the
+    pinned base-owned workflow, so the SHA compared is the run's own workflow
+    commit."""
 
     from app.agent_review.authoritative_producer_evidence_v2 import (
-        PRODUCER_WORKFLOW_NOT_PINNED_REASON_V2,
+        PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2,
     )
 
-    snapshot = _snapshot(
-        observations=[_obs(referenced_workflows=[{"path": "mglpsw/aiops-orchestrator/.github/workflows/authoritative-checks.reusable.yml", "sha": "e" * 40, "ref": None}])]
-    )
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
-        _assemble_ci(snapshot)
-    assert _reason(exc) == PRODUCER_WORKFLOW_NOT_PINNED_REASON_V2
+        _assemble_ci(_snapshot(observations=[_obs(workflow_sha="e" * 40)]))
+    assert _reason(exc) == PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2
 
 
-def test_a_pull_ref_execution_is_the_normal_promotable_case() -> None:
-    """The inverse assertion, pinned: what round 4 proved impossible must now
-    be the ordinary path."""
+def test_a_pull_ref_execution_is_never_promotable() -> None:
+    """Round 4 made a pull-ref execution the ordinary promotable path; round 7
+    proved that path forgeable and it is now refused outright.
 
-    promoted = _assemble_ci(_snapshot(observations=[_obs(workflow_execution_ref="refs/pull/7/merge")]))
-    assert promoted.result.conclusion is RequiredCheckConclusionV2.SUCCESS
+    The refusal is not about the ref. It is about WHO could have written the
+    evidence: a run executing under a pull ref is the pull request's own run,
+    and every field the verifier checks is a value the pull request knows."""
+
+    from app.agent_review.authoritative_producer_evidence_v2 import (
+        PRODUCER_PR_WRITABLE_REASON_V2,
+    )
+
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[_pr_triggered_obs()]))
+    assert _reason(exc) == PRODUCER_PR_WRITABLE_REASON_V2
 
 
 def test_c0_t13_a_non_allowlisted_app_is_refused() -> None:
@@ -684,13 +735,13 @@ def test_a_run_produced_against_a_different_base_is_refused() -> None:
     whose parents check out would otherwise line up perfectly."""
 
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
-        _assemble_ci(_snapshot(observations=[_obs(run_base_sha="7" * 40)]))
+        _assemble_ci(_snapshot(observations=[_pr_triggered_obs(run_base_sha="7" * 40)]))
     assert _reason(exc) == PROVENANCE_OBSERVATION_STALE_REASON_V2
 
 
 def test_a_run_whose_own_head_disagrees_is_refused() -> None:
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
-        _assemble_ci(_snapshot(observations=[_obs(run_head_sha="7" * 40)]))
+        _assemble_ci(_snapshot(observations=[_pr_triggered_obs(run_head_sha="7" * 40)]))
     assert _reason(exc) == PROVENANCE_HEAD_MISMATCH_REASON_V2
 
 
@@ -700,7 +751,7 @@ def test_local_parentage_alone_no_longer_suffices() -> None:
     produced against a different base. Parentage proves the shape of the merge,
     never which merge was executed."""
 
-    snapshot = _snapshot(observations=[_obs(run_base_sha="7" * 40)])
+    snapshot = _snapshot(observations=[_pr_triggered_obs(run_base_sha="7" * 40)])
     assert tuple(snapshot.tested_merge_parents) == (BASE, HEAD)
     with pytest.raises(RequiredCheckProvenanceErrorV2):
         _assemble_ci(snapshot)
@@ -830,7 +881,7 @@ def test_only_synthetic_merge_parentage_can_promote() -> None:
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         assemble_authoritative_ci_promotion_v2(
             check_name="pytest",
-            snapshot=_snapshot(observations=[_obs(run_event="pull_request_target")]),
+            snapshot=_snapshot(observations=[_pr_triggered_obs(run_event="pull_request_target", producer_trigger="pull_request_target")]),
             loaded_policy=policy,
             identity=IDENTITY,
             origin=origin,
@@ -866,7 +917,9 @@ def test_an_observation_whose_event_differs_from_the_origin_is_refused() -> None
         PROVENANCE_ORIGIN_EVENT_MISMATCH_REASON_V2,
     )
 
-    snapshot = _snapshot(observations=[_obs(run_event="pull_request_target")])
+    snapshot = _snapshot(
+        observations=[_pr_triggered_obs(run_event="pull_request_target")]
+    )
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         _assemble_ci(snapshot)
     assert _reason(exc) == PROVENANCE_ORIGIN_EVENT_MISMATCH_REASON_V2
@@ -876,3 +929,190 @@ def test_a_matching_event_still_promotes() -> None:
     """So the refusal above is about the mismatch, not about the check itself."""
 
     assert _assemble_ci().result.conclusion is RequiredCheckConclusionV2.SUCCESS
+
+
+# =============================================================================
+# Codex review round 7 -- the producing run must be outside the PR's reach
+# =============================================================================
+#
+# Round 4 established that a producer must be REPRESENTABLE. Round 7 showed the
+# first representable producer was not AUTHENTICATED: a SHA-pinned reusable
+# workflow proves which workflow a run loaded, never which job wrote the
+# artifact that run uploaded. Inside a PR-triggered run the pull request can
+# write that job itself.
+#
+# The fix is not a better check on the message. It is refusing to accept
+# messages from inside the pull request's own run at all.
+
+
+def _producer_reason(name: str) -> str:
+    import app.agent_review.authoritative_producer_evidence_v2 as evidence
+
+    return getattr(evidence, name)
+
+
+def test_a_pr_job_publishing_a_perfect_attestation_is_refused() -> None:
+    """Negative 1. The attestation is flawless -- correct repository, PR number,
+    base, head, executed tree, run id, attempt, outcome and self-digest. Every
+    one of those is a value the pull request already knows, so checking them
+    proves only that the forger was careful."""
+
+    forged = _pr_triggered_obs(
+        producer_attestation=_attestation(REPO, 7, BASE, HEAD, MERGE, "900", 1)
+    )
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[forged]))
+    assert _reason(exc) == _producer_reason("PRODUCER_PR_WRITABLE_REASON_V2")
+
+
+def test_a_pr_run_referencing_the_pinned_workflow_is_still_refused() -> None:
+    """Negative 2. The run really did load the pinned base-owned workflow --
+    `referenced_workflows` carries its full commit SHA, which the pull request
+    cannot forge. It is still refused, because loading a workflow says nothing
+    about which job uploaded the artifact."""
+
+    observation = _pr_triggered_obs(
+        referenced_workflows=[
+            {"path": f"{REPO}/{PRODUCER_WORKFLOW_PATH}", "sha": PRODUCER_WORKFLOW_SHA, "ref": None}
+        ]
+    )
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[observation]))
+    assert _reason(exc) == _producer_reason("PRODUCER_PR_WRITABLE_REASON_V2")
+
+
+def test_a_pr_run_copying_every_true_field_of_the_run_is_refused() -> None:
+    """Negative 3. Nothing is inconsistent anywhere: the observation's own run
+    id, attempt, base and head all agree with the attestation and with the
+    identity. Consistency is not provenance."""
+
+    observation = _pr_triggered_obs(
+        workflow_run_id="4242",
+        run_attempt=3,
+        producer_attestation=_attestation(REPO, 7, BASE, HEAD, MERGE, "4242", 3),
+    )
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[observation]))
+    assert _reason(exc) == _producer_reason("PRODUCER_PR_WRITABLE_REASON_V2")
+
+
+def test_an_attestation_from_the_right_run_but_a_pr_writable_trigger_is_refused() -> None:
+    """Negative 4. The artifact genuinely came from the workflow run named in
+    the attestation. That run was PR-writable, so "the right run" is not a
+    property worth having."""
+
+    observation = _obs(producer_trigger="pull_request_target", run_event="workflow_run")
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[observation]))
+    assert _reason(exc) == _producer_reason("PRODUCER_PR_WRITABLE_REASON_V2")
+
+
+def test_a_base_owned_run_republishing_an_upstream_artifact_is_refused() -> None:
+    """Negative 5. The producer is genuinely base-owned and genuinely not
+    PR-writable -- and it forwarded the pull request's own artifact instead of
+    re-running the check.
+
+    Base-ownership makes a producer trustworthy about what IT did. GitHub's own
+    guidance is that artifacts from a workflow which processed untrusted code
+    are untrusted data; carrying one across the boundary unchanged launders it
+    rather than verifying it."""
+
+    observation = _obs(
+        producer_attestation=_attestation(
+            REPO, 7, BASE, HEAD, MERGE, "900", 1,
+            check_execution_mode="upstream_artifact_republished",
+        )
+    )
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[observation]))
+    assert _reason(exc) == _producer_reason("UPSTREAM_ARTIFACT_UNTRUSTED_REASON_V2")
+
+
+def test_merge_group_is_not_assumed_base_owned() -> None:
+    """Negative 6. GitHub runs each event's workflow from the ref associated
+    with that event, and a merge group has its own ref and SHA. Treating it as
+    base-owned because the name sounds post-merge would be exactly the
+    optimistic reuse this slice keeps removing. It needs its own model."""
+
+    observation = _obs(producer_trigger="merge_group")
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[observation]))
+    assert _reason(exc) == _producer_reason("PRODUCER_TRIGGER_UNSUPPORTED_REASON_V2")
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"workflow_sha": "e" * 40},
+        {"workflow_repository": "mglpsw/somewhere-else"},
+        {"workflow_execution_ref": "refs/heads/attacker"},
+    ],
+)
+def test_a_base_owned_run_with_a_divergent_producer_identity_is_refused(override: dict) -> None:
+    """Negative 7. Right event, right trigger, wrong producer. Each field is
+    checked independently, so satisfying the others buys nothing."""
+
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[_obs(**override)]))
+    assert _reason(exc) == _producer_reason("PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2")
+
+
+def test_a_divergent_producer_job_name_is_refused() -> None:
+    """Negative 7, job axis. A different job in the right base-owned workflow is
+    a different producer, and is not selected at all."""
+
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[_obs(check_run_name="some-other-job")]))
+    assert _reason(exc) == PROVENANCE_MISSING_REASON_V2
+
+
+def test_a_producer_that_echoes_a_caller_supplied_executed_sha_is_refused() -> None:
+    """Negative 8. The tautology removed in round 2, arriving through a new
+    door: the producer did not observe the tree it ran, it was handed the value
+    and repeated it. A value that travelled in a circle is not evidence, no
+    matter how base-owned the courier."""
+
+    observation = _obs(
+        producer_attestation=_attestation(
+            REPO, 7, BASE, HEAD, MERGE, "900", 1,
+            executed_sha_derivation="caller_supplied",
+        )
+    )
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[observation]))
+    assert _reason(exc) == _producer_reason("EXECUTED_TREE_NOT_OBSERVED_REASON_V2")
+
+
+def test_a_base_owned_workflow_run_producer_promotes() -> None:
+    """The load-bearing positive.
+
+    Without this, "fail closed" would just mean C0 promotes nothing again --
+    the round-4 state, reached by a different route. This fixture is the whole
+    difference between "the model cannot express a real producer" and "targets
+    have not adopted the producer the model expresses".
+
+    Review origin stays `pull_request` (that is what the review is ABOUT) while
+    the producer trigger is `workflow_run` (that is how the producer RAN). Those
+    two being different facts is the point of the producer-evidence model."""
+
+    promoted = _assemble_ci(_snapshot(observations=[_obs()]))
+
+    assert promoted.result.conclusion is RequiredCheckConclusionV2.SUCCESS
+    assert promoted.result.head_sha == HEAD
+    assert promoted.provenance.authority_effect is AuthorityEffectV2.PROMOTABLE
+    assert promoted.provenance.source_kind is RequiredCheckSourceKindV2.AUTHORITATIVE_CI
+    # The review origin is unchanged by the producer's own trigger.
+    assert promoted.provenance.event_type == "pull_request"
+    assert promoted.provenance.ci_run_id == "900"
+
+
+def test_the_positive_path_still_refuses_a_failing_producer_verdict() -> None:
+    """The promotable path promotes a FAILURE just as readily as a success. A
+    bridge that only carries greens is not a provenance bridge."""
+
+    observation = _obs(
+        conclusion="failure",
+        producer_attestation=_attestation(REPO, 7, BASE, HEAD, MERGE, "900", 1, outcome="failure"),
+    )
+    promoted = _assemble_ci(_snapshot(observations=[observation]))
+    assert promoted.result.conclusion is RequiredCheckConclusionV2.FAILURE

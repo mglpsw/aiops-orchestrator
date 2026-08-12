@@ -60,8 +60,11 @@ from app.agent_review.authoritative_check_policy_v2 import (
     LoadedAuthoritativeCheckPolicyV2,
 )
 from app.agent_review.authoritative_producer_evidence_v2 import (
+    BASE_OWNED_PRODUCER_TRIGGER_V2,
+    verify_base_owned_producer_workflow_v2,
     verify_producer_attestation_v2,
-    verify_producer_workflow_pinned_v2,
+    verify_producer_execution_is_first_hand_v2,
+    verify_producer_is_base_owned_v2,
 )
 from app.agent_review.authoritative_ci_snapshot_v2 import (
     AuthoritativeCheckSnapshotV2,
@@ -202,12 +205,23 @@ def _require_run_executed_this_merge(
     something.
     """
 
-    # The observation must be of the SAME event the caller declared. Without
-    # this, a caller could declare `pull_request` -- earning the synthetic-merge
-    # rule -- and have it applied to a `pull_request_target` run, which executes
-    # the BASE rather than the merge. The declared origin selects the rule, so
-    # it has to be the origin that was actually observed; otherwise the rule is
-    # applied to an execution it does not describe.
+    # A base-owned producer is triggered by `workflow_run`, so its run event
+    # legitimately DIFFERS from the review's origin -- that separation is the
+    # whole point of the producer-evidence model, and collapsing them again
+    # would make the only sound producer unrepresentable.
+    #
+    # What replaces the equality is not weaker: the run's own base/head are
+    # meaningless for a `workflow_run` (its head is the default branch), so the
+    # merge binding comes from the attestation, which must carry this review's
+    # base, head and executed tree, and is emitted by a run the pull request
+    # cannot write into.
+    if observation.run_event == BASE_OWNED_PRODUCER_TRIGGER_V2:
+        return
+
+    # For every other producer the observation must be of the SAME event the
+    # caller declared. Without this, a caller could declare `pull_request` --
+    # earning the synthetic-merge rule -- and have it applied to a
+    # `pull_request_target` run, which executes the BASE rather than the merge.
     if observation.run_event != origin.event_type:
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_ORIGIN_EVENT_MISMATCH_REASON_V2)
 
@@ -270,12 +284,25 @@ def assemble_authoritative_ci_promotion_v2(
     )
     _require_run_executed_this_merge(observation=observation, identity=identity, origin=origin)
 
-    # WHICH producer, immutably: the run must have referenced exactly the
-    # reusable workflow the base-owned policy pinned, by full commit SHA. A
-    # pull request can edit files in its own tree; it cannot make a run
-    # reference a workflow SHA it did not load.
-    verify_producer_workflow_pinned_v2(
-        pinned=entry.producer_workflow, referenced=observation.referenced_workflows
+    # WHOSE RUN. Before any field of the attestation is read, the producing run
+    # must be one the pull request cannot write jobs into. Inside a PR-triggered
+    # run every attested field is a value the pull request already knows, so
+    # checking them there proves only that the forger was careful.
+    verify_producer_is_base_owned_v2(
+        producer_kind=entry.producer_kind,
+        producer_trigger=observation.producer_trigger,
+    )
+
+    # WHICH producer, immutably: for a base-owned producer the run IS the
+    # producer, so identity comes from the run's own workflow repository, path
+    # and commit -- and from the ref, which here is not PR-controlled.
+    verify_base_owned_producer_workflow_v2(
+        pinned=entry.producer_workflow,
+        pinned_ref=entry.producer_workflow_ref,
+        observed_repository=observation.workflow_repository,
+        observed_path=observation.workflow_path,
+        observed_sha=observation.workflow_sha,
+        observed_ref=observation.workflow_execution_ref,
     )
 
     # WHICH TREE, attested rather than inferred. GitHub exposes no
@@ -288,6 +315,10 @@ def assemble_authoritative_ci_promotion_v2(
         workflow_run_id=observation.workflow_run_id,
         run_attempt=observation.run_attempt,
     )
+
+    # FIRST-HAND, not forwarded. Base-ownership makes the producer trustworthy
+    # about what it did, not about what the pull request's own run did.
+    verify_producer_execution_is_first_hand_v2(attestation=attestation)
 
     conclusion = resolve_conclusion_v2(observation)
     if attestation.test_outcome != (observation.conclusion or ""):
