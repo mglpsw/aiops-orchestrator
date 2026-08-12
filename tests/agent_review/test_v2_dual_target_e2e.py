@@ -64,7 +64,7 @@ from app.agent_review.payload_set_v2 import (
 )
 from app.agent_review.profile_loader_v2 import load_target_profile_v2
 from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
-from app.agent_review.review_readiness_emission_v2 import emit_review_readiness_v2
+from app.agent_review.review_readiness_emission_v2 import _assemble_review_readiness_v2
 from app.agent_review.run_assembly_v2 import (
     RUN_ASSEMBLY_REQUIRED_PATH_UNREPRESENTABLE_REASON_V2,
     assemble_manifest_from_diff_v2,
@@ -540,7 +540,7 @@ def test_agent_escala_ready():
     decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=profile.policies)
     assert decision.state is ReadinessStateV2.READY
 
-    readiness = emit_review_readiness_v2(
+    readiness = _assemble_review_readiness_v2(
         decision=decision,
         findings=synthesis.findings,
         identity=manifest.identity,
@@ -594,7 +594,7 @@ def test_agent_escala_blocked_code_on_confirmed_finding():
     assert decision.state is ReadinessStateV2.BLOCKED_CODE
     assert ReadinessReasonV2.CONFIRMED_CODE_FINDING in decision.reason_codes
 
-    readiness = emit_review_readiness_v2(
+    readiness = _assemble_review_readiness_v2(
         decision=decision,
         findings=synthesis_2.findings,
         identity=manifest.identity,
@@ -659,7 +659,7 @@ def test_interleitos_manual_required_on_model_uncertainty():
     assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
     assert ReadinessReasonV2.MODEL_UNCERTAINTY in decision.reason_codes
 
-    readiness = emit_review_readiness_v2(
+    readiness = _assemble_review_readiness_v2(
         decision=decision,
         findings=synthesis.findings,
         identity=manifest.identity,
@@ -772,7 +772,7 @@ def test_interleitos_stale_on_identity_divergence():
 
     new_head_sha = "5" * 40
     current_identity = manifest.identity.model_copy(update={"head_sha": new_head_sha})
-    readiness = emit_review_readiness_v2(
+    readiness = _assemble_review_readiness_v2(
         decision=decision,
         findings=synthesis.findings,
         identity=current_identity,
@@ -845,7 +845,7 @@ def _build_full_run(*, target_id: str, profile, policy, file_diffs, pr_number: i
     ]
     synthesis = synthesize_chunk_results_v2(manifest=manifest, chunk_results=results, evaluated_head_sha=_HEAD_SHA)
     decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=profile.policies)
-    readiness = emit_review_readiness_v2(
+    readiness = _assemble_review_readiness_v2(
         decision=decision,
         findings=synthesis.findings,
         identity=manifest.identity,

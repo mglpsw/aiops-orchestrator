@@ -1,53 +1,106 @@
 """C2 -- emit a real ReviewReadinessV2 artifact (issue #130, child of
-tracker #108).
+tracker #108). Extended by `#201-C` (plan rev.2.1) to be the single
+production path through which required-check authority connects to
+readiness.
 
 Folds C1/#127's ``ReadinessDecisionV2`` (state, reason codes, blockers,
 bridged coverage, pipeline assessment) together with identity, the full
-finding lifecycle, ``pr_state``, and ``checks`` into a real
-``ReviewReadinessV2``. Per the tracker's own rule -- "``ReviewReadinessV2``
+finding lifecycle, ``pr_state``, and a legitimated required-check set into
+a real ``ReviewReadinessV2``. Per the tracker's own rule -- "``ReviewReadinessV2``
 é a AUTORIDADE: o computador decide o estado e deixa o contrato reprovar.
 Proibido reimplementar as invariantes de ``validate_state_invariants`` fora
-do contrato" -- this module does not re-check anything
+do contrato" -- nothing in this module re-checks anything
 ``ReviewReadinessV2.validate_state_invariants`` (``contracts_v2.py``)
 already enforces. It only assembles the constructor call; the contract's
 own validator is the sole authority on whether the result is well-formed,
 and raises ``pydantic.ValidationError`` fail-closed if it is not.
 
-## ``pr_state``/``checks`` are caller-supplied, not acquired here
+## The single production constructor path (`#201-C`, R2)
 
-Real acquisition of a PR's live ``pr_state``/``checks`` (e.g. via ``gh pr
-view``/``gh pr checks``) is a live GitHub network operation. Every prior
-slice in this convergence effort (#103's git-subprocess diff acquisition,
-#129's manifest assembly, #131's artifact/contract reading) has drawn the
-identical boundary: the ACQUISITION step (reading from something external)
-stays separate from and untested-live-by the ASSEMBLY step (a pure function
-over already-acquired values) -- #129's `assemble_manifest_from_diff_v2`
-accepts already-parsed `ParsedFileDiffV2` tuples rather than calling
-`acquire_authoritative_diff_v2` itself, for exactly this reason. This
-module mirrors that same separation: `pr_state`/`checks` are accepted as
-parameters, already acquired by whatever caller has legitimate, granted
-network/GitHub read access in its own execution context. A live
-`gh`-based adapter is explicitly deferred, out of scope for this offline,
-CT104-scoped slice -- wiring one is future work requiring its own grant for
-real network/GitHub access, not implied by this issue.
+```text
+produce_review_readiness_v2                 <- the ONLY public production entry point
+  -> _verify_and_assess_required_checks_v2   (required_check_readiness_v2, THE C0 frontier)
+  -> _apply_required_check_assessment_v2     (readiness_decision_v2, precedence)
+  -> _assemble_review_readiness_v2           (this module, pure, now internal)
+       -> ReviewReadinessV2(...)             <- the ONLY construction site
+```
 
-Deliberately out of scope, per the issue: publishing anything to GitHub;
-altering `quality_gate.py` v1 or `scripts/aiops-review-quality-gate.py`.
+``_assemble_review_readiness_v2`` -- this module's original ``emit_review_
+readiness_v2`` -- is deliberately no longer public. Nothing about the pure
+assembly step itself needed to change (it still does not decide authority,
+still does not re-implement the frozen contract's invariants), but a
+caller that could reach it directly could hand it a hand-built ``checks``
+array or a hand-built ``RequiredCheckReadinessAssessmentV2`` and have
+either treated as legitimate -- reopening, one layer above
+``review_transport_v2``/the quality-gate CLI, precisely the bypass
+``#201-C0`` closed one layer below. ``produce_review_readiness_v2`` is
+therefore the only function in this codebase permitted to call it, and it
+always calls the real, unpatched C0 verifier first, in the same call, with
+no ``except RequiredCheckProvenanceErrorV2`` anywhere in between. See
+``tests/agent_review/test_required_check_readiness_arch_v2.py`` for the
+AST-level proof.
+
+## What `#201-C` authenticates, and what it deliberately still does not
+
+``produce_review_readiness_v2`` authenticates required checks: every
+``RequiredCheckResultV2`` that reaches ``ReviewReadinessV2.checks`` has
+passed ``#201-C0``'s re-derivation against an acquired snapshot, a
+base-owned policy, and the run identity. It does **not** authenticate
+where ``decision``/``findings`` came from. ``ReadinessDecisionV2`` remains,
+by C1's own design, "plain, freely constructible data value... not a wire
+contract with its own schema/hash" -- the only binding this module (via
+``_assemble_review_readiness_v2``) enforces on it is REPLAY protection
+(``decision.run_id``/``manifest_hash`` must match ``evaluated_identity``),
+never origin. This is a preexisting trust assumption inherited unchanged
+from C1/C2 (`#127`/`#130`), not created or widened by `#201-C`: today it is
+provably inert, because with no positive required-check authority reaching
+this function (`#201-C0`'s ``verify_independent_semantic_judge_v2``
+refuses unconditionally, and ``TRUSTED_HOST_PROMOTION`` has no production
+caller), a fabricated ``decision`` claiming ``READY`` is still narrowed by
+``_apply_required_check_assessment_v2`` the moment any required check is
+missing or unestablished -- which is always, today. If a future slice
+(`#203`/CT104 bringing positive authority online) ever makes it possible
+for subject-controlled code to influence ``decision``/``findings`` in a way
+that becomes reachable through this function, that is a NEW trust-boundary
+defect requiring its own stop-and-decide, not something for this module to
+silently absorb.
+
+## ``pr_state``/``checks``/``provenance``/``snapshot`` are caller-supplied,
+## not acquired here
+
+Real acquisition of a PR's live ``pr_state`` and of the authoritative-check
+snapshot (e.g. via ``gh pr view``/the CI API) is a live network operation.
+Every prior slice in this convergence effort (#103's git-subprocess diff
+acquisition, #129's manifest assembly, #131's artifact/contract reading,
+`#201-C0`'s own acquirer/assembler split) has drawn the identical boundary:
+the ACQUISITION step stays separate from the ASSEMBLY/verification step.
+This module mirrors that same separation -- every input is accepted as
+already acquired by whatever caller has legitimate, granted network/GitHub
+read access in its own execution context.
+
+Deliberately out of scope, per the issue and per `#201-C`: publishing
+anything to GitHub; altering `quality_gate.py` v1 or
+`scripts/aiops-review-quality-gate.py`; anything about Path A/Path B
+authority itself, which remains entirely `#201-C0`'s.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
+from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
 from app.agent_review.contracts_v2 import (
     FindingLifecycleRecordV2,
     PullRequestStateV2,
     RequiredCheckResultV2,
     ReviewReadinessV2,
     RunIdentityV2,
+    RunOriginV2,
     compute_run_id,
 )
-from app.agent_review.readiness_decision_v2 import ReadinessDecisionV2
+from app.agent_review.readiness_decision_v2 import ReadinessDecisionV2, _apply_required_check_assessment_v2
+from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanceV2
+from app.agent_review.required_check_readiness_v2 import _verify_and_assess_required_checks_v2
 
 REVIEW_READINESS_SOURCE_V2 = "aiops-review-quality-gate"
 
@@ -64,7 +117,58 @@ class ReadinessEmissionError(ValueError):
         self.reason_code = reason_code
 
 
-def emit_review_readiness_v2(
+def produce_review_readiness_v2(
+    *,
+    decision: ReadinessDecisionV2,
+    findings: Sequence[FindingLifecycleRecordV2],
+    identity: RunIdentityV2,
+    evaluated_identity: RunIdentityV2,
+    pr_state: PullRequestStateV2,
+    checks: Sequence[RequiredCheckResultV2],
+    provenance: Sequence[RequiredCheckProvenanceV2],
+    origin: RunOriginV2,
+    snapshot: AuthoritativeCheckSnapshotV2,
+    toolchain_digest: str,
+    target_profile_root: str,
+) -> ReviewReadinessV2:
+    """THE single production entry point for constructing a
+    ``ReviewReadinessV2``. ``checks``/``provenance`` are unauthenticated
+    CLAIMS -- exactly as trustworthy as any other caller-supplied bytes --
+    until ``_verify_and_assess_required_checks_v2`` (``#201-C0``'s own
+    verifier, called from here, always, first) accepts them without
+    raising. A forged or invalid submission's
+    ``RequiredCheckProvenanceErrorV2`` propagates uncaught: it is never
+    converted into a ``manual_required`` artifact, and no artifact is
+    produced at all.
+
+    ``required_check_names`` is not a parameter here, deliberately: it is
+    derived, inside ``_verify_and_assess_required_checks_v2``, exclusively
+    from a ``TargetProfileV2`` loaded fresh from ``target_profile_root``
+    and bound to ``evaluated_identity.profile_hash``. See that function's
+    own docstring.
+    """
+
+    assessment = _verify_and_assess_required_checks_v2(
+        checks=checks,
+        provenance=provenance,
+        identity=evaluated_identity,
+        origin=origin,
+        snapshot=snapshot,
+        toolchain_digest=toolchain_digest,
+        target_profile_root=target_profile_root,
+    )
+    adjusted_decision = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+    return _assemble_review_readiness_v2(
+        decision=adjusted_decision,
+        findings=findings,
+        identity=identity,
+        evaluated_identity=evaluated_identity,
+        pr_state=pr_state,
+        checks=assessment.checks,
+    )
+
+
+def _assemble_review_readiness_v2(
     *,
     decision: ReadinessDecisionV2,
     findings: Sequence[FindingLifecycleRecordV2],
@@ -73,8 +177,15 @@ def emit_review_readiness_v2(
     pr_state: PullRequestStateV2,
     checks: Sequence[RequiredCheckResultV2],
 ) -> ReviewReadinessV2:
-    """Assemble a real ``ReviewReadinessV2`` from C1's decision plus the
-    caller-supplied identity/``pr_state``/``checks``/findings.
+    """Assemble a real ``ReviewReadinessV2`` from an already-decided
+    ``decision`` plus identity/``pr_state``/``checks``/findings.
+
+    Internal since `#201-C` (R2): the only caller in this codebase is
+    ``produce_review_readiness_v2``, immediately above, which always
+    supplies ``checks`` as ``assessment.checks`` -- the exact tuple
+    ``#201-C0``'s verifier accepted, never a raw caller-supplied array. See
+    the module docstring for why this function no longer accepts one
+    directly.
 
     ``identity`` and ``evaluated_identity`` are the SAME object except when
     the caller has independently determined staleness (the same case

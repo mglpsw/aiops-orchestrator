@@ -14,7 +14,8 @@ ReviewContentV2 (#200-A/#200-B)
   -> parser_v2.parse_bound_chunk_response_v2
   -> synthesis_v2.synthesize_chunk_results_v2
   -> lifecycle_v2 (via synthesis) / readiness_decision_v2.compute_readiness_decision_v2
-  -> review_readiness_emission_v2.emit_review_readiness_v2
+  -> review_readiness_emission_v2.produce_review_readiness_v2   (#201-C: also
+       verifies checks/provenance against #201-C0's boundary before emission)
 ```
 
 No finding is EVER reachable before the echo check and the binding both
@@ -61,6 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, Sequence
 
+from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
 from app.agent_review.chunk_result_scope_v2 import ChunkResultScopeError
 from app.agent_review.consumer_v2 import ResponseBindingError, bind_chunk_response_v2
 from app.agent_review.contracts_v2 import (
@@ -68,14 +70,16 @@ from app.agent_review.contracts_v2 import (
     PullRequestStateV2,
     RequiredCheckResultV2,
     ReviewReadinessV2,
+    RunOriginV2,
     TargetPoliciesV2,
 )
 from app.agent_review.lifecycle_v2 import FindingLifecycleRecordV2
 from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.parser_v2 import ParsedChunkResultV2, parse_bound_chunk_response_v2
 from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
+from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanceV2
 from app.agent_review.review_content_v2 import ChunkContentV2, ReviewContentV2
-from app.agent_review.review_readiness_emission_v2 import emit_review_readiness_v2
+from app.agent_review.review_readiness_emission_v2 import produce_review_readiness_v2
 from app.agent_review.review_transport_contract_v2 import (
     ChunkReviewRequestV2,
     ChunkReviewTransportEnvelopeV1,
@@ -188,18 +192,33 @@ def run_synthetic_review_v2(
     transport: ChunkReviewTransportV2,
     policies: TargetPoliciesV2,
     pr_state: PullRequestStateV2,
+    origin: RunOriginV2,
+    snapshot: AuthoritativeCheckSnapshotV2,
+    toolchain_digest: str,
+    target_profile_root: str,
     checks: Sequence[RequiredCheckResultV2] = (),
+    provenance: Sequence[RequiredCheckProvenanceV2] = (),
     prior_lifecycle: Sequence[FindingLifecycleRecordV2] = (),
 ) -> SyntheticReviewOutcomeV2:
     """The full E2E: every chunk in ``content`` goes through ``execute_
     chunk_review_v2``; only the ones that bind feed ``synthesize_chunk_
     results_v2``; the result feeds ``compute_readiness_decision_v2``; the
-    decision is emitted as a real ``ReviewReadinessV2`` via ``emit_review_
-    readiness_v2``. ``identity`` and ``evaluated_identity`` are the same
-    object (``manifest.identity``) -- this function does not itself decide
-    staleness; a caller with an independent staleness determination should
-    call the lower-level pieces directly instead, exactly as ``review_
-    readiness_emission_v2``'s own docstring documents.
+    decision is emitted as a real ``ReviewReadinessV2`` via ``produce_
+    review_readiness_v2``. ``identity`` and ``evaluated_identity`` are the
+    same object (``manifest.identity``) -- this function does not itself
+    decide staleness; a caller with an independent staleness determination
+    should call the lower-level pieces directly instead, exactly as
+    ``review_readiness_emission_v2``'s own docstring documents.
+
+    ``checks``/``provenance`` -- default empty -- are CLAIMS, not evidence
+    (`#201-C`). This function no longer accepts a pre-verified array: it
+    calls ``produce_review_readiness_v2``, which always re-verifies them
+    against ``#201-C0``'s real, unpatched boundary before any check can
+    reach the emitted artifact. An empty default is safe precisely because
+    it is no longer trusted -- it degrades honestly to
+    ``authority_not_established`` rather than silently defaulting to an
+    already-approved empty set, which is what this parameter meant before
+    `#201-C`.
     """
 
     outcomes = tuple(
@@ -220,9 +239,11 @@ def run_synthetic_review_v2(
         raise
 
     decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=policies)
-    readiness = emit_review_readiness_v2(
+    readiness = produce_review_readiness_v2(
         decision=decision, findings=synthesis.findings, identity=manifest.identity,
-        evaluated_identity=manifest.identity, pr_state=pr_state, checks=checks,
+        evaluated_identity=manifest.identity, pr_state=pr_state,
+        checks=checks, provenance=provenance, origin=origin, snapshot=snapshot,
+        toolchain_digest=toolchain_digest, target_profile_root=target_profile_root,
     )
     return SyntheticReviewOutcomeV2(readiness=readiness, chunk_outcomes=outcomes)
 
