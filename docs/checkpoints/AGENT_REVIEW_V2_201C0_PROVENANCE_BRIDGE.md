@@ -139,6 +139,33 @@ evidência para um caminho que falha fechado de qualquer forma e sugeriria que e
 Registrado no docstring do acquirer: se um produtor futuro tornar `pull_request_target`
 verificável, o escopo da query deve ser revisto **junto com** essa mudança, não antes dela.
 
+## Rodada 3 de review adversarial (Codex) — dois achados P1, ambos válidos
+
+**Achado A — evento observado não estava ligado à origem declarada.** `select_observation_v2`
+nunca verificava `observation.run_event == origin.event_type`. Um chamador podia declarar
+`pull_request` (ganhando a regra de merge sintético) e promover um run `pull_request_target`, que
+executa a **base**, não o merge.
+
+Isto era pior do que o achado descreve, e vale registrar o mecanismo: a política exige
+`workflow_ref` no default branch; runs `pull_request` genuínos registram um **pull ref**, enquanto
+runs `pull_request_target` registram o **default branch**. Ou seja, as únicas observações capazes
+de satisfazer a política hoje eram exatamente as base-executed. Declarar `pull_request` como origem
+lhes concedia a semântica de merge sintético.
+
+Correção: `required_check_provenance_origin_event_mismatch`, aplicado **antes** de qualquer
+semântica dependente de origem.
+
+**Achado B — `run_attempt` não ordena runs distintos.** `run_attempt` conta dentro de um único
+`workflow_run_id`. Tomar o máximo entre runs identifica o maior **número** de tentativa, não a
+execução mais recente: um run antigo re-executado até a tentativa 3 vencia um run novo na tentativa
+1 — selecionando um verde obsoleto sobre um vermelho atual, exatamente a falha que essa seleção
+existe para impedir.
+
+Correção: a observação passa a registrar `run_started_at`, e a seleção ordena por
+`(run_started_at, run_attempt)` — run mais recente primeiro, depois a tentativa mais recente dele.
+Empate nesse par continua sendo ambiguidade recusada. O acquirer **recusa** um run sem timestamp:
+adivinhar ordenação é como um verde obsoleto vence um vermelho atual.
+
 ## Limitação conhecida — `workflow_ref` e workflows base-owned
 
 A API de Actions do GitHub reporta o `path` de um workflow run, mas **nenhum campo** afirma de

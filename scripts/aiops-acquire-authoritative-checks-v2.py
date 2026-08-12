@@ -222,6 +222,20 @@ def _workflow_ref(run: dict) -> str:
     raise AcquisitionError(ACQUISITION_FAILED_REASON)
 
 
+def _run_started_at(run: dict) -> str:
+    """When this workflow run started, used to order distinct runs.
+
+    `run_attempt` counts within a single workflow run, so it cannot order two
+    runs against each other. Refused rather than defaulted: a missing timestamp
+    means the selection cannot establish which run is latest, and guessing
+    there is how a stale green outranks a current red."""
+
+    started = run.get("run_started_at") or run.get("created_at")
+    if not isinstance(started, str) or not started:
+        raise AcquisitionError(ACQUISITION_FAILED_REASON)
+    return started
+
+
 def _run_event(run: dict) -> str:
     """Normalise the trigger, refusing anything unrecognised.
 
@@ -273,6 +287,7 @@ def build_snapshot_document(
                 "workflow_ref": _workflow_ref(run),
                 "workflow_run_id": str(run.get("id")),
                 "run_attempt": run.get("run_attempt") or 1,
+                "run_started_at": _run_started_at(run),
                 "run_event": _run_event(run),
                 # The run's OWN base and head, as GitHub recorded them. Without
                 # these the run cannot be bound to a base/head pair, and a green

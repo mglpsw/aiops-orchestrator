@@ -59,6 +59,7 @@ def _obs(**overrides: object) -> dict[str, object]:
         "workflow_ref": "refs/heads/master",
         "workflow_run_id": "900",
         "run_attempt": 1,
+        "run_started_at": "2026-08-11T10:00:00Z",
         "run_event": "pull_request",
         "run_base_sha": BASE,
         "run_head_sha": HEAD,
@@ -303,3 +304,52 @@ def test_observation_digest_is_deterministic_and_discriminating() -> None:
 
     assert compute_observation_digest_v2(first) == compute_observation_digest_v2(same)
     assert compute_observation_digest_v2(first) != compute_observation_digest_v2(other)
+
+
+# -- Codex review round 3: ordering across distinct workflow runs --------------
+
+
+def test_a_newer_run_beats_an_older_rerun_with_a_higher_attempt() -> None:
+    """`run_attempt` counts within ONE workflow run, so a maximum taken across
+    runs identifies the highest attempt NUMBER, not the latest execution. An
+    old run rerun to attempt 3 must not outrank a newer run at attempt 1 --
+    that selects a stale green over a current red, the exact failure this
+    selection exists to prevent."""
+
+    snapshot = _snapshot(
+        _obs(
+            check_run_id="old",
+            workflow_run_id="100",
+            run_attempt=3,
+            conclusion="success",
+            run_started_at="2026-08-11T09:00:00Z",
+        ),
+        _obs(
+            check_run_id="new",
+            workflow_run_id="200",
+            run_attempt=1,
+            conclusion="failure",
+            run_started_at="2026-08-11T12:00:00Z",
+        ),
+    )
+    selected = _select(snapshot)
+    assert selected.check_run_id == "new"
+    assert resolve_conclusion_v2(selected) is RequiredCheckConclusionV2.FAILURE
+
+
+def test_within_one_run_the_latest_attempt_still_wins() -> None:
+    snapshot = _snapshot(
+        _obs(check_run_id="a1", run_attempt=1, conclusion="failure", run_started_at="2026-08-11T09:00:00Z"),
+        _obs(check_run_id="a2", run_attempt=2, conclusion="success", run_started_at="2026-08-11T09:00:00Z"),
+    )
+    assert _select(snapshot).check_run_id == "a2"
+
+
+def test_a_tie_on_start_time_and_attempt_is_ambiguous() -> None:
+    snapshot = _snapshot(
+        _obs(check_run_id="x", workflow_run_id="100", run_started_at="2026-08-11T09:00:00Z"),
+        _obs(check_run_id="y", workflow_run_id="200", run_started_at="2026-08-11T09:00:00Z"),
+    )
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _select(snapshot)
+    assert exc.value.reason_code == PROVENANCE_RUN_ATTEMPT_AMBIGUOUS_REASON_V2

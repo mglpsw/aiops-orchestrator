@@ -213,6 +213,7 @@ def _observation(check_name: str, **overrides: object) -> dict:
         "workflow_ref": "refs/heads/master",
         "workflow_run_id": f"wf-{check_name}",
         "run_attempt": 1,
+        "run_started_at": "2026-08-11T10:00:00Z",
         "run_event": "pull_request",
         "run_base_sha": "1" * 40,
         "run_head_sha": "2" * 40,

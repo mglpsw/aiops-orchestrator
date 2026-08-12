@@ -129,6 +129,11 @@
           ],
           "title": "Run Head Sha"
         },
+        "run_started_at": {
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+          "title": "Run Started At",
+          "type": "string"
+        },
         "status": {
           "enum": [
             "queued",
@@ -172,6 +177,7 @@
         "workflow_ref",
         "workflow_run_id",
         "run_attempt",
+        "run_started_at",
         "run_event",
         "run_base_sha",
         "run_head_sha"

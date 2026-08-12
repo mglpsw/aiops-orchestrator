@@ -76,6 +76,7 @@ def _payload(**overrides: object) -> dict:
                 "event": "pull_request",
                 "head_branch": "feature",
                 "run_attempt": 2,
+                "run_started_at": "2026-08-11T10:00:00Z",
                 "pull_requests": [
                     {"number": 7, "base": {"ref": "master", "sha": "b" * 40}, "head": {"sha": "a" * 40}}
                 ],
@@ -251,6 +252,26 @@ def test_an_unrecognised_trigger_is_refused(tmp_path: Path, merge_repo) -> None:
 def test_a_pull_request_run_missing_its_base_is_refused(tmp_path: Path, merge_repo) -> None:
     payload = _payload()
     payload["workflow_runs"][0]["pull_requests"] = [{"number": 7}]
+    result = _acquire(tmp_path, merge_repo, payload)
+    assert result.returncode != 0
+    assert not (tmp_path / "snapshot.json").exists()
+
+
+def test_run_started_at_is_recorded(tmp_path: Path, merge_repo) -> None:
+    """Codex round 3: without it, distinct workflow runs cannot be ordered and
+    an old rerun outranks a newer run."""
+
+    _acquire(tmp_path, merge_repo, _payload())
+    snapshot = parse_authoritative_ci_snapshot_v2((tmp_path / "snapshot.json").read_bytes())
+    assert snapshot.observations[0].run_started_at == "2026-08-11T10:00:00Z"
+
+
+def test_a_run_without_a_start_time_is_refused(tmp_path: Path, merge_repo) -> None:
+    """Guessing an ordering is how a stale green outranks a current red."""
+
+    payload = _payload()
+    payload["workflow_runs"][0].pop("run_started_at", None)
+    payload["workflow_runs"][0].pop("created_at", None)
     result = _acquire(tmp_path, merge_repo, payload)
     assert result.returncode != 0
     assert not (tmp_path / "snapshot.json").exists()

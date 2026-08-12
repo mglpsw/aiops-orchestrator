@@ -56,6 +56,7 @@ from app.agent_review.contracts_v2 import (
     ContractV2Model,
     GitSha,
     PositiveInt,
+    Rfc3339Timestamp,
     RelativePath,
     Repository,
     RequiredCheckConclusionV2,
@@ -149,6 +150,11 @@ class ObservedCheckRunV2(ContractV2Model):
     workflow_ref: SafeText
     workflow_run_id: SafeIdentifier
     run_attempt: PositiveInt
+    # When THIS workflow run started. `run_attempt` is scoped to a single
+    # workflow_run_id, so it cannot order two distinct runs against each other:
+    # an old run rerun to attempt 3 would otherwise outrank a newer run at
+    # attempt 1. Ordering needs a fact that spans runs.
+    run_started_at: Rfc3339Timestamp
     run_event: ObservedRunEventV2
     run_base_sha: GitSha | None
     run_head_sha: GitSha | None
@@ -273,10 +279,11 @@ def select_observation_v2(
       missing, because those are different problems: stale means the evidence
       exists but describes an earlier push, and silently reporting "missing"
       would hide that a green run is being aged out;
-    - the highest run attempt wins outright -- a rerun supersedes its
-      predecessor, so an old green can never outrank a current red;
-    - two survivors at the highest attempt is ambiguity, refused rather than
-      resolved by recency or by preferring the greener one.
+    - the latest run wins, then that run's latest attempt. Ordering by attempt
+      alone was wrong: attempts count within a single workflow run, so an old
+      run rerun to attempt 3 would outrank a newer run at attempt 1;
+    - a tie on (started_at, attempt) is ambiguity, refused rather than resolved
+      by preferring the greener one.
     """
 
     producer_matches = [obs for obs in snapshot.observations if _matches_producer(obs, entry)]
@@ -291,8 +298,13 @@ def select_observation_v2(
             raise RequiredCheckProvenanceErrorV2(PROVENANCE_OBSERVATION_STALE_REASON_V2)
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_MISSING_REASON_V2)
 
-    highest_attempt = max(obs.run_attempt for obs in scoped)
-    finalists = [obs for obs in scoped if obs.run_attempt == highest_attempt]
+    # Latest RUN first, then that run's latest attempt. Taking the maximum
+    # attempt across runs was wrong: `run_attempt` counts within one
+    # workflow_run_id, so an old run rerun to attempt 3 outranked a newer run
+    # at attempt 1 -- selecting a stale green over a current red, which is the
+    # exact failure this selection exists to prevent.
+    ordering = max((obs.run_started_at, obs.run_attempt) for obs in scoped)
+    finalists = [obs for obs in scoped if (obs.run_started_at, obs.run_attempt) == ordering]
     if len(finalists) != 1:
         raise RequiredCheckProvenanceErrorV2(PROVENANCE_RUN_ATTEMPT_AMBIGUOUS_REASON_V2)
 

@@ -78,6 +78,7 @@ from app.agent_review.required_check_provenance_v2 import (
     PROVENANCE_INVALID_REASON_V2,
     PROVENANCE_MISSING_REASON_V2,
     PROVENANCE_OBSERVATION_STALE_REASON_V2,
+    PROVENANCE_ORIGIN_EVENT_MISMATCH_REASON_V2,
     PROVENANCE_ORIGIN_UNSUPPORTED_REASON_V2,
     PROVENANCE_PARENTAGE_MISMATCH_REASON_V2,
     PROVENANCE_POLICY_DIGEST_MISMATCH_REASON_V2,
@@ -196,6 +197,17 @@ def _require_run_executed_this_merge(
     rather than inferred. Comparing them is what makes the parentage check mean
     something.
     """
+
+    # The observation must be of the SAME event the caller declared. Without
+    # this, a caller could declare `pull_request` -- earning the synthetic-merge
+    # rule -- and have it applied to a `pull_request_target` run, which executes
+    # the BASE rather than the merge. That is especially reachable here because
+    # the policy demands a default-branch `workflow_ref`, which genuine
+    # `pull_request` runs do not have and `pull_request_target` runs do: the
+    # only observations able to satisfy the policy today are exactly the ones
+    # this check must refuse under a mismatched origin.
+    if observation.run_event != origin.event_type:
+        raise RequiredCheckProvenanceErrorV2(PROVENANCE_ORIGIN_EVENT_MISMATCH_REASON_V2)
 
     if origin.event_type not in {"pull_request", "pull_request_target"}:
         return

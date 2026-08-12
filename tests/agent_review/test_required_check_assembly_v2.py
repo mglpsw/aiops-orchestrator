@@ -102,6 +102,7 @@ def _obs(**overrides: object) -> dict[str, object]:
         "workflow_ref": "refs/heads/master",
         "workflow_run_id": "900",
         "run_attempt": 1,
+        "run_started_at": "2026-08-11T10:00:00Z",
         "run_event": "pull_request",
         "run_base_sha": BASE,
         "run_head_sha": HEAD,
@@ -777,3 +778,34 @@ def test_the_snapshot_carries_no_self_referential_execution_field() -> None:
     tautology wearing the costume of a proof."""
 
     assert "executed_tree_sha" not in _snapshot().model_dump()
+
+
+# =============================================================================
+# Codex review round 3 -- regressions
+# =============================================================================
+
+
+def test_an_observation_whose_event_differs_from_the_origin_is_refused() -> None:
+    """Codex round 3, finding A -- and the mechanism by which the previous
+    revision was actually exploitable.
+
+    The policy demands a default-branch `workflow_ref`. Genuine `pull_request`
+    runs record a PULL ref, while `pull_request_target` runs record the default
+    branch -- so the only observations able to satisfy the policy today are
+    exactly the base-executed ones. Declaring `pull_request` as the origin then
+    granted them the synthetic-merge rule."""
+
+    from app.agent_review.required_check_provenance_v2 import (
+        PROVENANCE_ORIGIN_EVENT_MISMATCH_REASON_V2,
+    )
+
+    snapshot = _snapshot(observations=[_obs(run_event="pull_request_target")])
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(snapshot)
+    assert _reason(exc) == PROVENANCE_ORIGIN_EVENT_MISMATCH_REASON_V2
+
+
+def test_a_matching_event_still_promotes() -> None:
+    """So the refusal above is about the mismatch, not about the check itself."""
+
+    assert _assemble_ci().result.conclusion is RequiredCheckConclusionV2.SUCCESS
