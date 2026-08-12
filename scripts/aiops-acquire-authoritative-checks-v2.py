@@ -130,7 +130,9 @@ MAX_ATTESTATION_MEMBER_BYTES = 256 * 1024
 MAX_ATTESTATION_ZIP_ENTRIES = 16
 
 ACQUISITION_FAILED_REASON = "authoritative_check_acquisition_failed"
+OUTPUT_OVERWRITES_INPUT_REASON = "authoritative_check_output_overwrites_input"
 ATTESTATION_INVALID_REASON = "authoritative_check_attestation_artifact_invalid"
+ATTESTATION_AMBIGUOUS_REASON = "authoritative_check_attestation_artifact_ambiguous"
 GIT_OBSERVATION_FAILED_REASON = "authoritative_check_git_observation_failed"
 
 # GitHub's list endpoints page at 30 by default and 100 at most. An acquirer
@@ -360,13 +362,22 @@ def collect_attestations_v2(*, workflow_runs: list, list_artifacts, download_art
         run_id = run.get("id")
         if run_id is None:
             continue
-        for artifact in list_artifacts(run_id):
-            if artifact.get("name") != ATTESTATION_ARTIFACT_NAME or artifact.get("expired"):
-                continue
-            attestations[str(run_id)] = extract_attestation_from_zip_v2(
-                download_artifact(artifact.get("id"))
-            )
-            break
+        candidates = [
+            artifact
+            for artifact in list_artifacts(run_id)
+            if artifact.get("name") == ATTESTATION_ARTIFACT_NAME and not artifact.get("expired")
+        ]
+        if not candidates:
+            continue
+        if len(candidates) > 1:
+            # Taking the first match would let an attacker win simply by
+            # uploading a second artifact under the same name. Two candidates
+            # is a contradiction about which one speaks for the run, and there
+            # is no safe way to pick between them.
+            raise AcquisitionError(ATTESTATION_AMBIGUOUS_REASON)
+        attestations[str(run_id)] = extract_attestation_from_zip_v2(
+            download_artifact(candidates[0].get("id"))
+        )
     return attestations
 
 
@@ -521,10 +532,30 @@ def build_snapshot_document(
     }
 
 
+def _check_no_output_input_collision(args: argparse.Namespace) -> None:
+    """Reject `--output` aliasing an input, by RESOLVED PATH, before anything
+    is read or written.
+
+    The recorded payload is the raw GitHub evidence a later audit or rerun
+    depends on. Reading it and then overwriting it with the derived snapshot --
+    while returning success -- destroys the only copy of what was observed, and
+    a snapshot that has eaten its own source cannot be re-derived or checked.
+
+    The quality gate already refuses this class twice over (#145, #156). A new
+    CLI that writes an artifact does not get to relearn it the hard way."""
+
+    output_resolved = Path(args.output).resolve()
+    for name in ("observations", "git_dir"):
+        value = getattr(args, name, None)
+        if value is not None and Path(value).resolve() == output_resolved:
+            raise AcquisitionError(OUTPUT_OVERWRITES_INPUT_REASON)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
     try:
+        _check_no_output_input_collision(args)
         payload, payload_bytes = _fetch_payload(args)
         parents = _observe_parents(args.git_dir, args.tested_merge_sha)
         document = build_snapshot_document(

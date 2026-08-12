@@ -516,3 +516,78 @@ def test_a_missing_envelope_key_is_refused_not_defaulted() -> None:
             key="workflow_runs",
         )
     assert exc.value.reason_code == acq.ACQUISITION_FAILED_REASON
+
+
+def test_an_output_that_aliases_the_observations_input_is_refused(tmp_path: Path, merge_repo) -> None:
+    """The recorded GitHub payload is the evidence a later audit or rerun needs.
+    Reading it and then overwriting it with the derived snapshot -- while
+    returning success -- destroys exactly that. The quality gate already
+    refuses this class twice over (#145, #156); the acquirer must too."""
+
+    repo, _base, head, merge = merge_repo
+    observations = tmp_path / "payload.json"
+    original = json.dumps(_payload())
+    observations.write_text(original, encoding="utf-8")
+
+    result = _run(
+        [
+            "--repository", REPO,
+            "--head-sha", head,
+            "--tested-merge-sha", merge,
+            "--git-dir", str(repo),
+            "--observations", str(observations),
+            "--output", str(observations),
+        ]
+    )
+
+    assert result.returncode == 1
+    assert "authoritative_check_output_overwrites_input" in result.stderr
+    # The refusal has to happen BEFORE the write, not merely be reported after.
+    assert observations.read_text(encoding="utf-8") == original
+
+
+def test_an_output_aliasing_the_input_by_a_different_path_spelling_is_refused(
+    tmp_path: Path, merge_repo
+) -> None:
+    """Resolved paths, not string equality: `./x` and `x` are the same file."""
+
+    repo, _base, head, merge = merge_repo
+    observations = tmp_path / "payload.json"
+    original = json.dumps(_payload())
+    observations.write_text(original, encoding="utf-8")
+
+    result = _run(
+        [
+            "--repository", REPO,
+            "--head-sha", head,
+            "--tested-merge-sha", merge,
+            "--git-dir", str(repo),
+            "--observations", str(observations),
+            "--output", str(tmp_path / "." / "payload.json"),
+        ]
+    )
+
+    assert result.returncode == 1
+    assert "authoritative_check_output_overwrites_input" in result.stderr
+    assert observations.read_text(encoding="utf-8") == original
+
+
+def test_two_attestation_artifacts_in_one_run_are_refused() -> None:
+    """Taking the first match lets an attacker win by uploading a second
+    artifact under the same name. Two candidates is a contradiction about which
+    one speaks for the run, and there is no safe way to pick."""
+
+    acq = _acquirer_module()
+    attestation = {"schema_id": "agent-review.producer-attestation.v2", "executed_sha": "d" * 40}
+    with pytest.raises(acq.AcquisitionError) as exc:
+        acq.collect_attestations_v2(
+            workflow_runs=[{"id": 900}],
+            list_artifacts=lambda run_id: [
+                {"id": 7, "name": acq.ATTESTATION_ARTIFACT_NAME, "expired": False},
+                {"id": 8, "name": acq.ATTESTATION_ARTIFACT_NAME, "expired": False},
+            ],
+            download_artifact=lambda artifact_id: _zip_bytes(
+                {acq.ATTESTATION_MEMBER_NAME: json.dumps(attestation).encode()}
+            ),
+        )
+    assert exc.value.reason_code == acq.ATTESTATION_AMBIGUOUS_REASON
