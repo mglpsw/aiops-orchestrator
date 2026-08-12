@@ -655,3 +655,58 @@ def test_authorization_is_stripped_on_every_redirect_status() -> None:
         assert redirected is not None
         assert not redirected.has_header("Authorization"), code
 
+
+def test_a_check_run_missing_an_id_is_refused(tmp_path: Path, merge_repo) -> None:
+    """`str(None)` is the literal string `"None"`, and `"None"` satisfies
+    `SafeIdentifier`'s regex -- it is not rejected by schema validation, unlike
+    every other field this function builds. Two distinct check runs each
+    missing `id` would otherwise collapse onto the identical identity
+    `"None"`, defeating the run-before-attempt ordering the selector depends
+    on. Confirmed and reproduced end-to-end by an independent audit."""
+
+    payload = _payload()
+    del payload["check_runs"][0]["id"]
+    result = _acquire(tmp_path, merge_repo, payload)
+
+    assert result.returncode != 0
+    assert "authoritative_check_acquisition_failed" in result.stderr
+    assert not (tmp_path / "snapshot.json").exists()
+
+
+def test_a_workflow_run_missing_an_id_is_refused(tmp_path: Path, merge_repo) -> None:
+    payload = _payload()
+    del payload["workflow_runs"][0]["id"]
+    result = _acquire(tmp_path, merge_repo, payload)
+
+    assert result.returncode != 0
+    assert "authoritative_check_acquisition_failed" in result.stderr
+    assert not (tmp_path / "snapshot.json").exists()
+
+
+def test_two_runs_each_missing_an_id_do_not_collapse_onto_one_identity(
+    tmp_path: Path, merge_repo
+) -> None:
+    """The end-to-end reproduction: without the fix, both runs would silently
+    become `workflow_run_id="None"`, letting an old rerun (attempt 3) outrank
+    a newer first attempt -- a stale green over a current red. With the fix,
+    acquisition refuses outright rather than fabricating a shared identity."""
+
+    payload = _payload()
+    payload["check_runs"] = [
+        {**payload["check_runs"][0], "check_suite": {"id": 55}},
+        {**payload["check_runs"][0], "check_suite": {"id": 56}},
+    ]
+    del payload["check_runs"][0]["id"]
+    del payload["check_runs"][1]["id"]
+    payload["workflow_runs"] = [
+        {**payload["workflow_runs"][0], "check_suite_id": 55, "run_attempt": 3},
+        {**payload["workflow_runs"][0], "check_suite_id": 56, "run_attempt": 1},
+    ]
+    del payload["workflow_runs"][0]["id"]
+    del payload["workflow_runs"][1]["id"]
+    payload["producer_attestations"] = {}
+
+    result = _acquire(tmp_path, merge_repo, payload)
+
+    assert result.returncode != 0
+    assert not (tmp_path / "snapshot.json").exists()

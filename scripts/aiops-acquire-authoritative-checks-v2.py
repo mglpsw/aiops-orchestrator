@@ -476,6 +476,25 @@ def _run_event(run: dict) -> str:
     return event
 
 
+def _require_id(value: object) -> str:
+    """Refuse a missing identity field rather than fabricate one.
+
+    `str(None)` is the literal string `"None"`, which satisfies
+    `SafeIdentifier`'s regex -- schema validation would not catch it. Two
+    distinct runs each missing `id` would silently collapse onto the same
+    fabricated `"None"` identity, which defeats the run-before-attempt
+    ordering `select_observation_v2` depends on: an old run reran to a high
+    attempt would be read as a later attempt of the SAME run as a genuinely
+    newer one, letting a stale green outrank a current red. Confirmed and
+    reproduced end-to-end by an independent audit. Every other identity field
+    in this module is refused, never defaulted, when GitHub omits it; this is
+    the one place that was coercing instead."""
+
+    if not isinstance(value, (str, int)) or (isinstance(value, str) and not value):
+        raise AcquisitionError(ACQUISITION_FAILED_REASON)
+    return str(value)
+
+
 def build_snapshot_document(
     *, args: argparse.Namespace, payload: dict, payload_bytes: bytes, parents: list[str]
 ) -> dict:
@@ -499,7 +518,7 @@ def build_snapshot_document(
             {
                 "repository": args.repository,
                 "head_sha": args.head_sha,
-                "check_run_id": str(check.get("id")),
+                "check_run_id": _require_id(check.get("id")),
                 "check_run_name": check.get("name"),
                 "status": check.get("status"),
                 "conclusion": check.get("conclusion"),
@@ -530,8 +549,8 @@ def build_snapshot_document(
                 # Emitted by the producer's checkout-free attestation job and
                 # acquired alongside the run. Absent means unpromotable, never
                 # "assume it ran the merge".
-                "producer_attestation": attestations.get(str(run.get("id"))),
-                "workflow_run_id": str(run.get("id")),
+                "producer_attestation": attestations.get(_require_id(run.get("id"))),
+                "workflow_run_id": _require_id(run.get("id")),
                 "run_attempt": run.get("run_attempt") or 1,
                 "run_started_at": _run_started_at(run),
                 "run_event": _run_event(run),
