@@ -597,3 +597,61 @@ def test_two_attestation_artifacts_in_one_run_are_refused() -> None:
             ),
         )
     assert exc.value.reason_code == acq.ATTESTATION_AMBIGUOUS_REASON
+
+
+# =============================================================================
+# Independent audit (2026-08-12) -- security findings
+# =============================================================================
+#
+# Confirmed by an independent read-only audit of HEAD 8b7e94c, verified
+# separately before being accepted: two real security defects in the
+# acquirer, unrelated to the architectural questions raised in the same
+# audit. Fixed here, red-first, ahead of and independent of any
+# architectural decision.
+
+
+def test_authorization_is_stripped_on_redirect() -> None:
+    """GitHub's artifact-download endpoint answers with a 302 to a pre-signed
+    blob-storage URL that authenticates via the URL itself, not a bearer
+    token. `urllib`'s default redirect handling replays every request header
+    except `Content-Length`/`Content-Type` -- verified against this
+    interpreter's own `HTTPRedirectHandler.redirect_request` source, which
+    lists only those two as stripped. Left unmodified, a live GitHub token
+    would be handed to whatever host the redirect names."""
+
+    acq = _acquirer_module()
+    handler = acq._StripAuthOnRedirectHandler()
+    original = acq.urllib.request.Request(
+        "https://api.github.com/repos/o/r/actions/artifacts/1/zip",
+        headers={
+            "Authorization": "Bearer super-secret-token",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+
+    redirected = handler.redirect_request(
+        original, None, 302, "Found", {}, "https://blob.example.com/signed?sig=abc"
+    )
+
+    assert redirected is not None
+    assert not redirected.has_header("Authorization")
+    # Ordinary headers still make the hop -- only the credential is stripped.
+    assert redirected.has_header("Accept")
+
+
+def test_authorization_is_stripped_on_every_redirect_status() -> None:
+    """303 and 307 are both real GitHub Actions API redirect codes; the
+    stripping must not be coded against 302 alone."""
+
+    acq = _acquirer_module()
+    handler = acq._StripAuthOnRedirectHandler()
+    for code in (301, 302, 303, 307, 308):
+        original = acq.urllib.request.Request(
+            "https://api.github.com/x", headers={"Authorization": "Bearer t"}, method="GET"
+        )
+        redirected = handler.redirect_request(
+            original, None, code, "", {}, "https://blob.example.com/y"
+        )
+        assert redirected is not None
+        assert not redirected.has_header("Authorization"), code
+

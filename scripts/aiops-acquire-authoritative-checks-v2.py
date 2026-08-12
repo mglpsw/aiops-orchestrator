@@ -96,6 +96,8 @@ import io
 import json
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 import zipfile
 from pathlib import Path
 
@@ -290,12 +292,29 @@ def paginate_envelope_v2(*, get_json, path: str, key: str) -> list:
     raise AcquisitionError(ACQUISITION_FAILED_REASON)
 
 
+class _StripAuthOnRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never replay `Authorization` past the first hop.
+
+    Confirmed by an independent audit: GitHub's artifact-download endpoint
+    (`/actions/artifacts/{id}/zip`) answers with a redirect to a pre-signed
+    blob-storage URL that authenticates via the URL itself, never a bearer
+    token. The stdlib's default redirect handling strips only
+    `Content-Length`/`Content-Type` and replays every other header --
+    including `Authorization` -- to whatever host the redirect names. Left
+    unmodified, a live GitHub token is handed to a third-party storage host on
+    every artifact download. The credential is stripped unconditionally,
+    regardless of whether the redirect target happens to share a host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None:
+            redirected.remove_header("Authorization")
+        return redirected
+
+
 def _download_bytes(*, url: str, token: str) -> bytes:
     """Raw artifact download. The reviewed `GitHubClient` speaks JSON only, and
     an artifact is a zip, so this is the one place that reads bytes."""
-
-    import urllib.error
-    import urllib.request
 
     request = urllib.request.Request(
         url,
@@ -307,8 +326,9 @@ def _download_bytes(*, url: str, token: str) -> bytes:
         },
         method="GET",
     )
+    opener = urllib.request.build_opener(_StripAuthOnRedirectHandler)
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with opener.open(request, timeout=60) as response:
             return response.read(MAX_ATTESTATION_ZIP_BYTES + 1)
     except (urllib.error.URLError, OSError) as exc:
         raise AcquisitionError(ACQUISITION_FAILED_REASON) from exc
