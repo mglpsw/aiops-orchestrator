@@ -40,30 +40,61 @@
     (`repository + path @ 40-char SHA + ref`) and the executed-tree
     attestation. Review origin `pull_request` and producer trigger
     `workflow_run` legitimately differ, and representing that is the point.
-  - **Only a producer outside the pull request's reach can speak.** The
-    promotable `producer_kind` is `base_owned_workflow_run`: a `workflow_run`
-    producer, whose definition GitHub loads from the default branch and whose
-    run the pull request cannot add jobs to. A PR-triggered producer is refused
-    outright — inside its own run a pull request can call any pinned workflow
-    *and* upload an attestation carrying every field a verifier checks, because
-    it already knows all of them. `merge_group` is not assumed base-owned:
-    each event runs the workflow from its own ref, so it needs its own model.
+  - **Only a producer outside the pull request's reach is even considered.**
+    `base_owned_workflow_run` is a `workflow_run` producer, whose definition
+    GitHub loads from the default branch and whose run the pull request
+    cannot add jobs to. A PR-triggered producer is refused outright — inside
+    its own run a pull request can call any pinned workflow *and* upload an
+    attestation carrying every field a verifier checks, because it already
+    knows all of them. `merge_group` is not assumed base-owned: each event
+    runs the workflow from its own ref, so it needs its own model.
     `sha_pinned_reusable_workflow` stays declarable and is refused at policy
-    load time, becoming promotable only once the attestation's issuer is
+    load time, becoming eligible only once the attestation's issuer is
     cryptographically authenticated.
-  - **Base-ownership is necessary, not sufficient.** The producer must also
-    declare that it re-executed the check itself rather than republishing an
-    artifact from the pull request's run (GitHub's own guidance: artifacts from
-    a workflow that processed untrusted code are untrusted data), and that it
-    read the executed tree from its own verified checkout rather than repeating
-    a value it was handed. The attestation job performs **no checkout and runs
-    no pull-request code**. The acquirer fetches attestations from the producer
-    run's artifacts, bounded and strictly parsed, refusing when two artifacts
-    share the conventional name; fetching them does not validate them.
-  - **Acquirer hardening.** Every GitHub list endpoint is paged and refuses
-    rather than truncating — a silently short list is indistinguishable from
-    "the producer did not run". `--output` may not alias an input, so the
-    recorded evidence cannot be overwritten by the snapshot derived from it.
+  - **Base-ownership is necessary, not sufficient — and, on its own, still not
+    enough.** The producer must also declare that it re-executed the check
+    itself rather than republishing an artifact from the pull request's run
+    (GitHub's own guidance: artifacts from a workflow that processed untrusted
+    code are untrusted data), and that it read the executed tree from its own
+    verified checkout rather than repeating a value it was handed. The
+    attestation job performs **no checkout and runs no pull-request code**.
+    The acquirer fetches attestations from the producer run's artifacts,
+    bounded and strictly parsed, refusing when two artifacts (or two zip
+    members) share the conventional name; fetching them does not validate
+    them.
+  - **`AuthoritativeCIPromotion` is refused unconditionally, by ratified
+    architectural correction.** An independent audit of the base-owned model
+    above found that `reexecuted_in_producer_run` means exactly what it says:
+    the producer re-runs the PULL REQUEST'S OWN test suite and reports its
+    exit code. A base-owned workflow *definition* does not change who
+    authors the value being measured — `#201-B3`'s theorem
+    (`controls(subject, success_signal) => not authoritative(success_signal)`)
+    still applies; running the subject's tests inside a differently-owned
+    runner relocates that boundary, it does not cross it. The round-7
+    acceptance condition this model was built to satisfy is **revoked, not
+    reinterpreted**: no `check_execution_mode` defined today supplies a
+    semantic judge independent of the subject, so promotion is refused by a
+    single, final, explicit gate (`verify_independent_semantic_judge_v2`),
+    reached only after producer identity, base-ownership and tree binding
+    have all already succeeded — that infrastructure remains real and still
+    closes `#217`'s check-name-only bypass; it no longer implies a subject-code
+    check can ever become authoritative on its own. `AUTHORITATIVE_PYTEST_
+    PROMOTION=UNAVAILABLE_BY_DESIGN` until a producer kind with a genuinely
+    independent judge is designed and ratified.
+  - **Acquirer hardening**, from the same audit: every GitHub list endpoint is
+    paged and refuses rather than truncating — a silently short list is
+    indistinguishable from "the producer did not run". `--output` may not
+    alias an input. A fabricated `str(None)` no longer masquerades as a real
+    run/check identity (two runs missing `id` could otherwise collapse onto
+    one fabricated identity, letting a stale green outrank a current red). The
+    GitHub token is no longer replayed to the artifact-storage host on
+    redirect. A fork pull request's own run — which cannot report its own
+    base/head, ordinary GitHub behaviour for cross-repository runs — no longer
+    poisons acquisition for every other observation in the same snapshot.
+    Known limitation, recorded rather than fixed here: the acquirer's query
+    scope (`?head_sha=`) cannot retrieve the base-owned producer run it is
+    meant to observe; correcting it is deferred to a ratified amendment
+    together with `#203`'s producer-installation design.
   - **HEAD is not the tested tree.** `review_subject_sha = head_sha` versus
     `execution_subject_sha = tested_merge_sha`, with order-sensitive
     `[base, head]` parentage proven per origin — `pull_request_target`,

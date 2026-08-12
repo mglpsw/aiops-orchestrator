@@ -78,6 +78,50 @@ trustworthy about what IT did and not about what the pull request's run did:
 - it derived the executed tree from its own verified checkout, rather than
   repeating a value handed to it through workflow inputs. A value that
   travelled in a circle is not evidence, however trustworthy the courier.
+
+## Round-7 architectural correction -- base-ownership is not the same axis as
+## `#201-B3`'s theorem, and satisfying one does not satisfy the other
+
+An independent audit of the model above, once implemented, found the gap this
+paragraph exists to close. `check_execution_mode == "reexecuted_in_producer_
+run"` means exactly what it says: the producer re-ran the PULL REQUEST'S OWN
+test suite and reported ITS exit code. Everything above this paragraph proves
+the workflow DEFINITION is base-owned -- which job ran, from which commit,
+under which ref. None of it changes who authored the value being measured: the
+subject's own test code still determines whether `pytest` exits 0 or 1.
+
+`#201-B3` ratified a boundary, not a detector, and it is stated as a theorem,
+not as a property of *where* code runs:
+
+```text
+controls(subject, success_signal)  =>  not authoritative(success_signal)
+```
+
+Re-running the subject's own tests inside a base-owned `workflow_run`
+relocates that execution from the isolated executor to a differently-owned
+runner. It does not cross the boundary the theorem describes: the subject
+still controls the success_signal, because the subject's own code is what
+produces it. A base-owned CALLER (the workflow steps: checkout, invoke,
+capture, attest) does not launder a subject-controlled CALLEE (the test suite
+itself) into something independent of the subject.
+
+Consequently: **no `check_execution_mode` defined today supplies a semantic
+judge independent of the subject**, and `AuthoritativeCIPromotion` is refused
+categorically -- see `verify_independent_semantic_judge_v2` -- until a
+producer kind representing an actually independent judge exists. This is a
+REVOCATION of the round-7 acceptance condition ("C0 exits with a working
+base-owned positive pytest path"), not a patch to the model that condition
+produced: new evidence showed the condition itself forced an incoherent
+architecture, so it is withdrawn rather than worked around.
+
+This does NOT unwind the rest of this module. Producer identity, base-
+ownership, and tree binding remain real, tested infrastructure -- they answer
+"is this evidence from where it claims to be", which is a necessary condition
+for authority and a defect C0 still closes (`#217`'s check_name-only bypass).
+What they do not answer, and what nothing in this module answers today, is
+"was the verdict decided by someone other than the subject". A future
+producer kind with an actually independent judge can be added additively,
+without touching anything above this paragraph.
 """
 
 from __future__ import annotations
@@ -116,6 +160,14 @@ PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2 = (
     "required_check_provenance_producer_workflow_identity_mismatch"
 )
 EXECUTED_TREE_NOT_OBSERVED_REASON_V2 = "required_check_provenance_executed_tree_not_observed"
+# Round-7 architectural correction: base-ownership of the WORKFLOW DEFINITION
+# is not the same axis as `#201-B3`'s theorem about who controls the
+# success_signal. Every `check_execution_mode` defined today re-runs or
+# forwards the SUBJECT's own test outcome, so none of them supplies a judge
+# independent of the subject -- see the module docstring.
+INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2 = (
+    "required_check_provenance_independent_semantic_judge_required"
+)
 
 ALL_PRODUCER_EVIDENCE_REASON_CODES_V2: tuple[str, ...] = (
     PRODUCER_WORKFLOW_NOT_PINNED_REASON_V2,
@@ -128,6 +180,7 @@ ALL_PRODUCER_EVIDENCE_REASON_CODES_V2: tuple[str, ...] = (
     PRODUCER_TRIGGER_UNSUPPORTED_REASON_V2,
     PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2,
     EXECUTED_TREE_NOT_OBSERVED_REASON_V2,
+    INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2,
 )
 
 # The producer's OWN trigger, deliberately a separate vocabulary from
@@ -400,3 +453,31 @@ def verify_producer_attestation_v2(
         raise RequiredCheckProvenanceErrorV2(PRODUCER_ATTESTATION_MISMATCH_REASON_V2)
 
     return attestation
+
+
+def verify_independent_semantic_judge_v2(*, attestation: ProducerAttestationV2) -> None:
+    """Refuse promotion when the verdict is authored by the subject.
+
+    This is deliberately unconditional, and deliberately the LAST check in the
+    promotion path -- every producer-identity, base-ownership, and tree-
+    binding check above it still runs and still refuses on its own specific
+    reason code first when it applies. Reaching this function means all of
+    that infrastructure already succeeded; it is refused here anyway, because
+    none of it answers the one question that matters for `#201-B3`'s theorem.
+
+    `check_execution_mode` has exactly two values today, and NEITHER supplies
+    a judge independent of the subject's own code:
+
+    - `reexecuted_in_producer_run` re-ran the pull request's own test suite
+      and reported its exit code. The workflow DEFINITION is base-owned; the
+      value being measured is still authored by the subject.
+    - `upstream_artifact_republished` is refused earlier, by
+      `verify_producer_execution_is_first_hand_v2`, for the same underlying
+      reason stated more bluntly: it did not even re-run anything, it merely
+      forwarded the subject's own claim.
+
+    A producer_kind representing an actually independent judge -- one whose
+    verdict does not derive from executing or trusting the subject's own code
+    -- does not exist yet. See the module docstring's round-7 correction."""
+
+    raise RequiredCheckProvenanceErrorV2(INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2)

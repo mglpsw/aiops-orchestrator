@@ -358,6 +358,108 @@ observado é o topo do default branch, logo **o pin precisa ser rotacionado quan
 produtor muda**. Isso é propriedade da instalação, não do engine: `#203` deve escolher a estratégia
 de rotação. Registrado aqui como consequência conhecida, não como defeito silencioso.
 
+## Auditoria independente de `8b7e94c`, e retificação arquitetural
+
+Com o CI real verde em `8b7e94c` e a quota do Codex esgotada, uma auditoria independente
+read-only (três agentes, cada um em superfícies distintas: producer ownership/artifact binding,
+executed-tree identity/digest binding/gate fail-closed, run-attempt ordering/pagination) revisou o
+mesmo HEAD. Cada achado citado abaixo foi verificado por mim antes de ser aceito — reproduzido em
+código, não apenas relatado.
+
+**4 P1 confirmados, 8 P2 confirmados.** Dois P2 (security) foram corrigidos imediatamente, red-first,
+em commits próprios, independentes de qualquer decisão arquitetural:
+
+- o token do GitHub era repassado ao host de blob storage no redirect do download de artifact
+  (`urllib` não remove `Authorization` por padrão; só `Content-Length`/`Content-Type` são
+  removidos) — `_StripAuthOnRedirectHandler` remove o header incondicionalmente em todo redirect;
+- `str(check.get("id"))`/`str(run.get("id"))` produziam a string `"None"` quando o campo faltava, e
+  `"None"` satisfaz `SafeIdentifier` — dois runs distintos sem `id` colapsavam na mesma identidade
+  fabricada, permitindo que um verde obsoleto (rerun até attempt 3) vencesse um vermelho atual
+  (attempt 1) silenciosamente. Reproduzido e corrigido com `_require_id`, que recusa em vez de
+  fabricar, como todo outro campo de identidade neste módulo já fazia.
+
+Mais cinco P2 mecânicos, independentes da arquitetura, corrigidos no mesmo padrão red-first:
+ambiguidade de membro de zip (`attestation.json` duplicado — mesma classe já recusada um nível
+acima para artifacts duplicados), `run_attempt` fabricado via `or 1`, `runs_by_suite` como
+dict-comprehension com colisão silenciosa de `check_suite_id`, blast radius de DoS via artifact em
+run PR-writable (agora só runs `workflow_run` são oferecidos a `collect_attestations_v2`), e uma PR
+de fork podendo envenenar o snapshot inteiro (GitHub deixa `pull_requests` vazio para runs
+cross-repo; a checagem moveu de parse-time — recusa o arquivo todo — para o assembler, per-check).
+Também: `verify_required_check_provenance_set_v2(loaded_policy=None)` era fail-open por default;
+nenhum chamador real dependia disso, e o parâmetro passou a ser obrigatório.
+
+### Os dois P1 arquiteturais
+
+**P1 — o positive path da rodada 7 não funciona com dados reais.** O acquirer escopa as duas
+queries por `?head_sha={PR head}` (filtro server-side), e grava `workflow_sha = run["head_sha"]`.
+Para qualquer run retornado por essa query, `workflow_sha` é necessariamente o HEAD da PR — nunca
+o SHA base-owned que a política pina. A fixture positiva load-bearing da rodada 7 usava
+`workflow_sha=PRODUCER_WORKFLOW_SHA` junto de `head_sha=HEAD`, uma combinação que o acquirer nunca
+poderia produzir. É a mesma classe de defeito da rodada 4 (fixture codificando um estado do GitHub
+impossível), reintroduzida uma camada abaixo, por mim, na correção que deveria tê-la fechado.
+
+**P1 — a arquitetura do produtor contradiz a si mesma.** `verify_producer_is_base_owned_v2`
+depende de "a PR não pode escrever neste run"; três funções abaixo,
+`verify_producer_execution_is_first_hand_v2` **exige** `check_execution_mode ==
+"reexecuted_in_producer_run"` — ou seja, exige que o produtor reexecute a suíte de testes **da
+própria PR** e reporte o exit code dela. O `#201-B3` ratificou:
+
+```text
+controls(subject, success_signal)  ⇒  not authoritative(success_signal)
+```
+
+Um workflow base-owned na **definição** não muda quem determina o `success_signal`: o próprio
+código de teste da PR ainda decide se `pytest` sai com 0 ou 1. Mover essa execução do executor
+isolado para um `workflow_run` base-owned realoca a fronteira da B3; não a atravessa.
+
+### Decisão ratificada
+
+Corrigir os dois P1 com mais patches locais no modelo atual foi explicitamente descartado. Em vez
+disso:
+
+1. **A condição de aceite da rodada 7** — "C0 sai com um positive path base-owned funcionando para
+   pytest" — está **revogada**, não reinterpretada. Nova evidência mostrou que ela força uma
+   arquitetura incoerente.
+2. **O teorema da B3 é preservado por inteiro.** Nenhum `check_execution_mode` hoje fornece um
+   julgamento semântico independente do subject — `reexecuted_in_producer_run` reexecuta o teste
+   da própria PR; `upstream_artifact_republished` nem reexecuta, apenas encaminha. Nenhum dos dois
+   qualifica.
+3. `AuthoritativeCIPromotion` passa a ser recusada **incondicionalmente**, por um único gate final
+   e explícito — `verify_independent_semantic_judge_v2`, chamado por último em
+   `assemble_authoritative_ci_promotion_v2`, depois que identidade de produtor, base-ownership e
+   tree binding já passaram. Isso preserva essa infraestrutura como real e testada (ela ainda fecha
+   o bypass da `#217` — binding por digest, nunca por nome) e ao mesmo tempo torna impossível
+   qualquer coisa que hoje aparentasse `AuthoritativeCIPromotion(pytest)`.
+4. A correção de query-scope do acquirer (âncorar por um `producer_run_id` seletor não confiável em
+   vez de `head_sha`/`tested_merge_sha`) fica **explicitamente adiada** para uma emenda C0
+   ratificada em conjunto com a instalação do produtor em `#203` — não implementada nesta rodada.
+   Documentada como limitação conhecida no docstring do acquirer, não escondida.
+
+Trinta e dois testes do gate CLI e da suíte de assembly dependiam de `state: ready` ser alcançável
+via `pytest` CI-sourced — o único caminho que já foi promovível neste ambiente
+(`trusted_host_promotion` é recusado na re-derivação do gate incondicionalmente, por constatação
+pré-existente e não relacionada: CT104 está offline). Doze testes cuja fixture-construction
+dependia do assembler foram religados via um bypass de teste explícito, escopado, documentado
+(`_ci_promotion_bypassing_independent_judge_gate`), que nunca alcança o processo real do gate.
+Nove testes do CLI cujo ÚNICO cenário de sucesso passava por essa promoção foram reescritos para
+provar a propriedade que ainda é real: a submissão atravessa toda checagem anterior e é recusada
+apenas no gate terminal — não por colisão de output/input, não por mismatch de contrato, não por
+cobertura incompleta. Dois testes cuja asserção original (`state: ready`) tornou-se literalmente
+falsa foram deletados por estarem substituídos pelos novos testes que afirmam o oposto. Onde a
+cobertura de um mecanismo específico (decision-provenance replay) já existia de forma independente
+em `test_review_readiness_emission_v2.py` — arquivo que a `#201-C0` é proibida de tocar — o teste
+do CLI foi reescrito citando essa cobertura em vez de duplicá-la.
+
+Estado honesto resultante:
+
+```text
+#201-C0_SECURITY_BOUNDARY=IMPLEMENTED
+#217_EXERCISED_BYPASS=CLOSED
+AUTHORITATIVE_PYTEST_PROMOTION=UNAVAILABLE_BY_DESIGN
+INDEPENDENT_SEMANTIC_JUDGE=REQUIRED
+ACQUIRER_QUERY_SCOPE=KNOWN_LIMITATION_DEFERRED_TO_C0_AMENDMENT
+```
+
 ## Limitação conhecida — `workflow_ref` e workflows base-owned
 
 A API de Actions do GitHub reporta o `path` de um workflow run, mas **nenhum campo** afirma de
@@ -389,20 +491,24 @@ CT104.
 | Gate | Resultado |
 |---|---|
 | testes focados C0-1…C0-6 | verde |
-| regressão offline completa | 2199 passed, 4 skipped |
+| regressão offline completa | 2211 passed, 4 skipped |
 | suíte `requires_network` | verde |
 | `bash scripts/ci_validate.sh` (seções 1–8) | **OK** |
 | `export-agent-review-v2-schemas.py --check` | byte-idêntico |
 | `verify-caem-f0-pin.py --check` | verde |
+| auditoria independente read-only (3 agentes, superfícies distintas) | executada; achados verificados antes de aceitos |
 | API GitHub real | **não executado** — fixtures gravadas; não é gate de merge da C0 |
 | CT104 | `blocked_external: ct104_unavailable` |
 
 Testes verificados como genuínos por mutação: relaxar a ordem dos pais, remover a ambiguidade de
 tentativa, reintroduzir match por nome no verificador, trocar o membro esperado do zip de
 attestation por "primeira entrada", remover a recusa de runs empatados no horário de início, parar
-a paginação após a primeira página, e desligar cada uma das três guardas da rodada 7 (produtor
-PR-writable, artefato upstream republicado, executed_sha vindo do chamador) falham exatamente o
-teste escrito para cada um, e voltam a passar no restore.
+a paginação após a primeira página, desligar cada uma das três guardas da rodada 7 (produtor
+PR-writable, artefato upstream republicado, executed_sha vindo do chamador), remover o header
+`Authorization` do redirect, restaurar a fabricação de identidade a partir de `id` ausente, e
+remover o gate `verify_independent_semantic_judge_v2` — tanto no nível de unidade quanto ponta a
+ponta via o CLI do gate real — falham exatamente o teste escrito para cada um, e voltam a passar no
+restore.
 
 ## Estado vetorial
 
@@ -410,9 +516,13 @@ teste escrito para cada um, e voltam a passar no restore.
 #201-B3_IMPLEMENTATION=MERGED
 #201-B3_OPERATIONAL_CLOSURE=BLOCKED_BY_CT104
 #201-C0_IMPLEMENTATION=READY_FOR_REVIEW
-#201-C0_C0T4_BASE_OWNED_WORKFLOW=MODELLED_AWAITING_TARGET_INSTALLATION
+#201-C0_INDEPENDENT_AUDIT=COMPLETE_4_P1_8_P2_CONFIRMED
+#201-C0_SECURITY_BOUNDARY=IMPLEMENTED
+#217_EXERCISED_BYPASS=CLOSED
+AUTHORITATIVE_PYTEST_PROMOTION=UNAVAILABLE_BY_DESIGN
+INDEPENDENT_SEMANTIC_JUDGE=REQUIRED
+ACQUIRER_QUERY_SCOPE=KNOWN_LIMITATION_DEFERRED_TO_C0_AMENDMENT
 UNSIGNED_PULL_REQUEST_PRODUCER=INELIGIBLE
-BASE_OWNED_WORKFLOW_RUN=IMPLEMENTED_AND_TESTED
 CRYPTOGRAPHIC_PRODUCER_MODE=DEFERRED
 TARGET_INSTALLATION_OWNER=#203
 #201-C=BLOCKED
@@ -425,8 +535,20 @@ MERGE_WITHHELD_BY_AUTHORITY
 
 ## Próxima ação mínima
 
-Revisão da PR. Depois, em ordem: (1) decidir a configuração base-owned do produtor autoritativo
-(limitação `C0-T4` acima) — decisão de target/`#203`, não de código deste repositório;
-(2) `#201-C` (wiring em `ReviewReadinessV2`), que permanece bloqueada pelo fechamento operacional
-da `#201-B3` no CT104. Merge, tag, release, deploy, repin, ativação de capacidade e fechamento de
-`#201` seguem **retidos**, cada um exigindo grant nominal próprio.
+Revisão da PR (Codex round 8, quando a quota do provedor voltar; `NOT_RUN_GATE_UNAVAILABLE` até lá,
+nunca `PENDING_FINDINGS=0` — ausência de rodada não é evidência negativa). Merge segue **NO-GO**:
+`8b7e94c` tinha CI real verde mas não satisfazia o critério load-bearing da rodada 7, que a
+auditoria demonstrou ser falso; o HEAD atual corrige os achados confirmados e revoga essa condição
+explicitamente em vez de forçá-la.
+
+Depois, em ordem, cada um exigindo grant nominal próprio e nenhum iniciável antes do fechamento
+operacional anterior: (1) uma emenda C0 ratificada cobrindo tanto a correção de query-scope do
+acquirer (`producer_run_id` como seletor não confiável, nunca `head_sha`/`tested_merge_sha`) quanto
+a decisão de instalação do produtor base-owned em `#203` — as duas juntas, não uma sem a outra,
+porque a segunda sem a primeira reproduziria exatamente o P1 desta rodada; (2) desenho de um
+producer kind com julgamento semântico genuinamente independente do subject, sem o qual
+`AuthoritativeCIPromotion(pytest)` permanece `UNAVAILABLE_BY_DESIGN` por tempo indefinido — `#203`
+pode instalar a topologia, mas instalação sozinha não cria autoridade; (3) `#201-C` (wiring em
+`ReviewReadinessV2`), que também permanece bloqueada pelo fechamento operacional da `#201-B3` no
+CT104. Merge, tag, release, deploy, repin, ativação de capacidade e fechamento de `#201`/`#217`
+seguem **retidos**.

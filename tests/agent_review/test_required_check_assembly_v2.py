@@ -8,6 +8,7 @@ check, and nothing that merely looks well-formed is treated as entitled.
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import pytest
@@ -221,6 +222,41 @@ def _assemble_ci(snapshot=None, identity: RunIdentityV2 = IDENTITY, origin: RunO
     )
 
 
+@contextlib.contextmanager
+def _ci_promotion_bypassing_independent_judge_gate():
+    """Round-7 architectural correction: `assemble_authoritative_ci_promotion_v2`
+    now refuses unconditionally at `verify_independent_semantic_judge_v2` --
+    see that function's docstring. The tests using this context manager are
+    NOT about whether CI promotion is authoritative; they use an
+    AUTHORITATIVE_CI-sourced `(result, provenance)` pair purely as a FIXTURE
+    to exercise unrelated downstream logic that has nothing to do with the
+    subject-control question: digest binding, the verifier's cross-field
+    checks, the gate's reassembly re-derivation. Patched at the module
+    attribute `assemble_authoritative_ci_promotion_v2` itself calls, so
+    `reassemble_and_verify_required_checks_v2`'s internal re-derivation is
+    bypassed identically to a direct `_assemble_ci_fixture` call -- there is
+    exactly one point where the gate is applied, and this patches that one
+    point, not two independent copies of it."""
+
+    import unittest.mock
+
+    import app.agent_review.required_check_assembly_v2 as assembly_module
+
+    with unittest.mock.patch.object(
+        assembly_module, "verify_independent_semantic_judge_v2", lambda **_: None
+    ):
+        yield
+
+
+def _assemble_ci_fixture(snapshot=None, identity: RunIdentityV2 = IDENTITY, origin: RunOriginV2 = ORIGIN):
+    """A promoted CI-sourced pair for tests that need one as a fixture rather
+    than testing promotion itself -- see
+    `_ci_promotion_bypassing_independent_judge_gate`."""
+
+    with _ci_promotion_bypassing_independent_judge_gate():
+        return _assemble_ci(snapshot=snapshot, identity=identity, origin=origin)
+
+
 def _trusted(**overrides: object) -> TrustedCheckResultV2:
     material: dict[str, object] = {
         "schema_id": "agent-review.trusted-check-result.v2",
@@ -260,30 +296,14 @@ def _reason(exc_info) -> str:
 # =============================================================================
 
 
-def test_authoritative_ci_promotion_succeeds() -> None:
-    promoted = _assemble_ci()
-    assert promoted.result.conclusion is RequiredCheckConclusionV2.SUCCESS
-    assert promoted.result.head_sha == HEAD
-    assert promoted.provenance.source_kind is RequiredCheckSourceKindV2.AUTHORITATIVE_CI
-    assert promoted.provenance.authority_effect is AuthorityEffectV2.PROMOTABLE
-    assert promoted.provenance.required_check_digest == compute_required_check_digest_v2(promoted.result)
-
-
-def test_a_red_ci_run_promotes_as_a_failure_not_as_absence() -> None:
-    """A real red must reach readiness as a red. Dropping it would be as wrong
-    as fabricating a green."""
-
-    promoted = _assemble_ci(
-        _snapshot(
-            observations=[
-                _obs(
-                    conclusion="failure",
-                    producer_attestation=_attestation(REPO, 7, BASE, HEAD, MERGE, "900", 1, outcome="failure"),
-                )
-            ]
-        )
-    )
-    assert promoted.result.conclusion is RequiredCheckConclusionV2.FAILURE
+## `test_authoritative_ci_promotion_succeeds` and `test_a_red_ci_run_promotes_
+## as_a_failure_not_as_absence` were removed here by the round-7 architectural
+## correction. Both asserted the claim now REVOKED -- that
+## `assemble_authoritative_ci_promotion_v2` promotes a `reexecuted_in_producer_
+## run` verdict, success or failure alike. See
+## `test_a_base_owned_workflow_run_producer_is_still_refused` and
+## `test_a_failing_producer_verdict_is_also_refused_not_promoted_as_a_regression`
+## below, which assert the opposite and now hold instead.
 
 
 def test_trusted_host_promotion_succeeds() -> None:
@@ -296,7 +316,7 @@ def test_head_and_tested_merge_stay_distinct_facts() -> None:
     """`RequiredCheckResultV2.head_sha` keeps its frozen meaning; the tree that
     actually ran is recorded separately."""
 
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     assert promoted.result.head_sha == HEAD
     assert promoted.provenance.head_sha == HEAD
     assert promoted.provenance.tested_merge_sha == MERGE
@@ -304,7 +324,7 @@ def test_head_and_tested_merge_stay_distinct_facts() -> None:
 
 
 def test_verifier_accepts_a_correctly_assembled_pair() -> None:
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     verify_required_check_provenance_set_v2(
         checks=[promoted.result],
         provenance=[promoted.provenance],
@@ -484,7 +504,7 @@ def test_c0_t20_an_allowlisted_check_name_from_a_different_producer_is_refused()
 
 
 def test_c0_t19_a_record_whose_workflow_disagrees_with_policy_is_refused_at_verify() -> None:
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     forged = promoted.provenance.model_dump(mode="json")
     forged["workflow_path"] = ".github/workflows/attacker.yml"
     record = RequiredCheckProvenanceV2.model_validate(
@@ -498,7 +518,7 @@ def test_c0_t19_a_record_whose_workflow_disagrees_with_policy_is_refused_at_veri
 
 
 def test_a_record_whose_producer_disagrees_with_policy_is_refused_at_verify() -> None:
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     forged = promoted.provenance.model_dump(mode="json")
     forged["verifier_identity"] = "attacker-app"
     record = RequiredCheckProvenanceV2.model_validate({**forged, "provenance_digest": _redigest(forged)})
@@ -590,7 +610,7 @@ def test_host_promotion_binds_to_the_run_identity() -> None:
 
 
 def test_the_two_paths_produce_distinguishable_provenance() -> None:
-    ci = _assemble_ci().provenance
+    ci = _assemble_ci_fixture().provenance
     host = _assemble_host().provenance
     assert ci.source_kind is not host.source_kind
     assert ci.ci_run_id is not None and host.ci_run_id is None
@@ -602,7 +622,7 @@ def test_the_two_paths_produce_distinguishable_provenance() -> None:
 
 
 def test_c0_t21_a_check_with_no_provenance_is_refused() -> None:
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         verify_required_check_provenance_set_v2(
             checks=[promoted.result], provenance=[], identity=IDENTITY, loaded_policy=POLICY
@@ -614,7 +634,7 @@ def test_c0_t21_a_spare_provenance_record_is_refused() -> None:
     """Total in both directions: a spare record means the caller believes
     something about this run the check set does not reflect."""
 
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     host = _assemble_host()
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         verify_required_check_provenance_set_v2(
@@ -647,7 +667,7 @@ def test_c0_t25_the_217_attack_a_hand_built_green_named_pytest() -> None:
 def test_provenance_for_a_different_check_does_not_cover_this_one() -> None:
     """Matching by name would accept this. Matching by digest does not."""
 
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     red = RequiredCheckResultV2(
         check_name="pytest",
         required=True,
@@ -663,7 +683,7 @@ def test_provenance_for_a_different_check_does_not_cover_this_one() -> None:
 
 
 def test_c0_t15_provenance_from_another_run_is_refused() -> None:
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     other_identity = _identity(pr_number=99)
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         verify_required_check_provenance_set_v2(
@@ -676,7 +696,7 @@ def test_c0_t15_provenance_from_another_run_is_refused() -> None:
 
 
 def test_c0_t14_a_tampered_sidecar_cannot_even_be_constructed() -> None:
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     tampered = promoted.provenance.model_dump(mode="json")
     tampered["observed_conclusion"] = "failure"
     with pytest.raises(Exception):
@@ -687,7 +707,7 @@ def test_duplicate_identical_checks_are_refused() -> None:
     """Two identical checks cannot be told apart by the join key, so a 1:1
     binding is not expressible. Refused rather than silently deduplicated."""
 
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         verify_required_check_provenance_set_v2(
             checks=[promoted.result, promoted.result],
@@ -699,7 +719,7 @@ def test_duplicate_identical_checks_are_refused() -> None:
 
 
 def test_a_non_promotable_record_is_refused_at_the_gate() -> None:
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     downgraded = build_required_check_provenance_v2(
         **{
             k: v
@@ -719,7 +739,7 @@ def test_a_record_assembled_under_a_different_policy_is_refused() -> None:
     """Otherwise a record built under a permissive older policy could be
     replayed against a tightened one."""
 
-    promoted = _assemble_ci()
+    promoted = _assemble_ci_fixture()
     other_policy = load_authoritative_check_policy_v2(FIXTURES / "interleitos")
     with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
         verify_required_check_provenance_set_v2(
@@ -786,27 +806,33 @@ def test_reassembly_rejects_a_fabricated_green_with_a_consistent_sidecar() -> No
     from app.agent_review.required_check_assembly_v2 import reassemble_and_verify_required_checks_v2
 
     evidence = _snapshot(observations=[_obs(conclusion="failure")])
-    fabricated = _assemble_ci()  # derived from a GREEN snapshot
 
-    # The structural verifier is satisfied by the fabricated pair...
-    verify_required_check_provenance_set_v2(
-        checks=[fabricated.result],
-        provenance=[fabricated.provenance],
-        identity=IDENTITY,
-        loaded_policy=POLICY,
-    )
+    # This test is about mismatch detection between a submitted pair and the
+    # re-derived evidence, not about the independent-judge gate -- both the
+    # fixture construction AND the reassembly call bypass it, so the mismatch
+    # logic under test is what actually produces the reason code below.
+    with _ci_promotion_bypassing_independent_judge_gate():
+        fabricated = _assemble_ci()  # derived from a GREEN snapshot
 
-    # ...and re-derivation against the real evidence still refuses it.
-    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
-        reassemble_and_verify_required_checks_v2(
+        # The structural verifier is satisfied by the fabricated pair...
+        verify_required_check_provenance_set_v2(
             checks=[fabricated.result],
             provenance=[fabricated.provenance],
             identity=IDENTITY,
-            origin=ORIGIN,
             loaded_policy=POLICY,
-            snapshot=evidence,
-            toolchain_digest=TOOLCHAIN,
         )
+
+        # ...and re-derivation against the real evidence still refuses it.
+        with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+            reassemble_and_verify_required_checks_v2(
+                checks=[fabricated.result],
+                provenance=[fabricated.provenance],
+                identity=IDENTITY,
+                origin=ORIGIN,
+                loaded_policy=POLICY,
+                snapshot=evidence,
+                toolchain_digest=TOOLCHAIN,
+            )
     assert _reason(exc) == PROVENANCE_INVALID_REASON_V2
 
 
@@ -814,16 +840,17 @@ def test_reassembly_accepts_a_genuinely_derived_pair() -> None:
     from app.agent_review.required_check_assembly_v2 import reassemble_and_verify_required_checks_v2
 
     snapshot = _snapshot()
-    promoted = _assemble_ci(snapshot)
-    reassemble_and_verify_required_checks_v2(
-        checks=[promoted.result],
-        provenance=[promoted.provenance],
-        identity=IDENTITY,
-        origin=ORIGIN,
-        loaded_policy=POLICY,
-        snapshot=snapshot,
-        toolchain_digest=TOOLCHAIN,
-    )
+    with _ci_promotion_bypassing_independent_judge_gate():
+        promoted = _assemble_ci(snapshot)
+        reassemble_and_verify_required_checks_v2(
+            checks=[promoted.result],
+            provenance=[promoted.provenance],
+            identity=IDENTITY,
+            origin=ORIGIN,
+            loaded_policy=POLICY,
+            snapshot=snapshot,
+            toolchain_digest=TOOLCHAIN,
+        )
 
 
 def test_reassembly_refuses_a_trusted_host_record() -> None:
@@ -943,10 +970,13 @@ def test_an_observation_whose_event_differs_from_the_origin_is_refused() -> None
     assert _reason(exc) == PROVENANCE_ORIGIN_EVENT_MISMATCH_REASON_V2
 
 
-def test_a_matching_event_still_promotes() -> None:
-    """So the refusal above is about the mismatch, not about the check itself."""
+def test_a_matching_event_does_not_trip_the_mismatch_check() -> None:
+    """So the refusal above is about the mismatch, not about the check itself.
+    This is about the origin-event check specifically, not about whether the
+    check is ultimately promotable -- see
+    `_ci_promotion_bypassing_independent_judge_gate`."""
 
-    assert _assemble_ci().result.conclusion is RequiredCheckConclusionV2.SUCCESS
+    assert _assemble_ci_fixture().result.conclusion is RequiredCheckConclusionV2.SUCCESS
 
 
 # =============================================================================
@@ -1101,39 +1131,66 @@ def test_a_producer_that_echoes_a_caller_supplied_executed_sha_is_refused() -> N
     assert _reason(exc) == _producer_reason("EXECUTED_TREE_NOT_OBSERVED_REASON_V2")
 
 
-def test_a_base_owned_workflow_run_producer_promotes() -> None:
-    """The load-bearing positive.
+def test_a_base_owned_workflow_run_producer_is_still_refused() -> None:
+    """Architectural correction, ratified after an independent audit of
+    HEAD 8b7e94c. This fixture was round 7's load-bearing positive: a
+    `base_owned_workflow_run` producer, `check_execution_mode
+    == "reexecuted_in_producer_run"`, was treated as sufficient to promote
+    pytest to AuthoritativeCIPromotion.
 
-    Without this, "fail closed" would just mean C0 promotes nothing again --
-    the round-4 state, reached by a different route. This fixture is the whole
-    difference between "the model cannot express a real producer" and "targets
-    have not adopted the producer the model expresses".
+    The round-7 acceptance condition -- "C0 exits with a working base-owned
+    positive pytest path" -- is REVOKED, not patched. `reexecuted_in_producer_
+    run` means exactly what it says: the producer re-ran the PULL REQUEST'S
+    OWN test suite and reported ITS exit code. A base-owned WORKFLOW
+    DEFINITION does not change who authored the success_signal -- the
+    subject's own test code still determines whether pytest exits 0 or 1.
+    Moving that execution from the isolated executor to a base-owned
+    `workflow_run` relocates the `#201-B3` boundary; it does not cross it:
 
-    Review origin stays `pull_request` (that is what the review is ABOUT) while
-    the producer trigger is `workflow_run` (that is how the producer RAN). Those
-    two being different facts is the point of the producer-evidence model."""
+        controls(subject, success_signal) => not authoritative(success_signal)
 
-    promoted = _assemble_ci(_snapshot(observations=[_obs()]))
+    So this is now refused, categorically, by `verify_independent_semantic_
+    judge_v2` -- the FINAL gate in `assemble_authoritative_ci_promotion_v2`,
+    reached only after producer identity, base-ownership, and tree binding
+    have all already succeeded. Every check UP TO that gate remains real
+    infrastructure: see the negative-path tests above, which still exercise
+    identity/tree binding and still fail with THEIR OWN specific reason codes,
+    never this one, proving the gate is reached last and only once nothing
+    else has already refused."""
 
-    assert promoted.result.conclusion is RequiredCheckConclusionV2.SUCCESS
-    assert promoted.result.head_sha == HEAD
-    assert promoted.provenance.authority_effect is AuthorityEffectV2.PROMOTABLE
-    assert promoted.provenance.source_kind is RequiredCheckSourceKindV2.AUTHORITATIVE_CI
-    # The review origin is unchanged by the producer's own trigger.
-    assert promoted.provenance.event_type == "pull_request"
-    assert promoted.provenance.ci_run_id == "900"
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[_obs()]))
+    assert _reason(exc) == _producer_reason("INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2")
 
 
-def test_the_positive_path_still_refuses_a_failing_producer_verdict() -> None:
-    """The promotable path promotes a FAILURE just as readily as a success. A
-    bridge that only carries greens is not a provenance bridge."""
+def test_the_independent_judge_gate_is_reached_only_after_binding_succeeds() -> None:
+    """The infrastructure C0 remains responsible for -- producer identity,
+    run/tree binding -- stays meaningfully tested precisely because it is
+    checked BEFORE the final refusal, not bypassed by it. A divergent producer
+    identity still fails with its OWN reason code, not the independent-judge
+    one, proving the earlier gates are not short-circuited."""
+
+    from app.agent_review.authoritative_producer_evidence_v2 import (
+        PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2,
+    )
+
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[_obs(workflow_sha="e" * 40)]))
+    assert _reason(exc) == PRODUCER_WORKFLOW_IDENTITY_MISMATCH_REASON_V2
+
+
+def test_a_failing_producer_verdict_is_also_refused_not_promoted_as_a_regression() -> None:
+    """A FAILURE conclusion must not be smuggled through as an accepted
+    regression signal either -- the independent-judge gate refuses the whole
+    class, success or failure alike, rather than only refusing greens."""
 
     observation = _obs(
         conclusion="failure",
         producer_attestation=_attestation(REPO, 7, BASE, HEAD, MERGE, "900", 1, outcome="failure"),
     )
-    promoted = _assemble_ci(_snapshot(observations=[observation]))
-    assert promoted.result.conclusion is RequiredCheckConclusionV2.FAILURE
+    with pytest.raises(RequiredCheckProvenanceErrorV2) as exc:
+        _assemble_ci(_snapshot(observations=[observation]))
+    assert _reason(exc) == _producer_reason("INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2")
 
 
 # =============================================================================

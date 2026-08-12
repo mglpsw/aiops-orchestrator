@@ -71,22 +71,33 @@ expected member is read, and it is parsed with the strict parser. Being able to
 read it establishes nothing on its own -- the assembler still checks every field
 against the run identity.
 
-## Why the queries are scoped to the PR head
+## KNOWN LIMITATION -- the query scope, and why it is not fixed here
 
 Both requests filter by `--head-sha`, which retrieves exactly the runs GitHub
-associates with the pull request's head -- and `pull_request` is the only origin
-`#201-C0` can promote (see `authoritative_check_policy_v2`: every other origin
-requires `explicit_tested_tree`, which has no verifiable producer evidence and
-is refused when the policy is loaded).
+associates with the pull request's head. That was written when `pull_request`
+was believed to be the only promotable origin; round 7 moved the promotable
+producer identity onto `workflow_run`, whose OWN `head_sha` is not the pull
+request's head at all, and an independent audit of that round then found the
+consequence: a head-scoped query can never retrieve the base-owned producer
+run it is supposed to observe. Recorded here rather than hidden.
 
-A second Codex review noted that `pull_request_target` runs are associated with
-the BASE commit and so would not be retrieved by a head-scoped query. That is
-true, and it is consistent rather than a gap: such a run cannot be promoted, so
-not retrieving it changes no verdict. Adding a base-scoped query would collect
-evidence for a path that fails closed anyway, and would invite the impression
-that the path works. If a future producer makes `pull_request_target`
-verifiable -- by emitting authenticated evidence of the tree it checked out --
-the query scope has to be revisited together with that change, not before it.
+This is NOT fixed in this revision. The audit's proposed correction --
+acquiring a producer run by an explicit, untrusted `producer_run_id` SELECTOR
+rather than by any subject-controlled SHA, then verifying its identity
+independently -- is a real change to the acquisition contract (a new CLI
+input, a caller that must supply it, a different GitHub query shape), and
+changing it without also settling how an orchestrator obtains that selector
+would be exactly the kind of local patch to an unratified model this slice
+was told not to make. It waits for a ratified amendment together with
+`#203`'s producer-installation design, not for improvisation here.
+
+It is also, today, moot for authority: `assemble_authoritative_ci_promotion_v2`
+refuses every subject-code check unconditionally regardless of what the
+acquirer observes -- see `authoritative_producer_evidence_v2`'s module
+docstring, "Round-7 architectural correction". So this acquirer currently
+produces evidence for a path that is refused twice over, once by the query
+scope and once by `#201-B3`'s theorem. Both facts are recorded rather than
+concealed; neither is worked around by this module.
 """
 
 from __future__ import annotations

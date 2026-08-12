@@ -62,6 +62,7 @@ from app.agent_review.authoritative_check_policy_v2 import (
 from app.agent_review.authoritative_producer_evidence_v2 import (
     BASE_OWNED_PRODUCER_TRIGGER_V2,
     verify_base_owned_producer_workflow_v2,
+    verify_independent_semantic_judge_v2,
     verify_producer_attestation_v2,
     verify_producer_execution_is_first_hand_v2,
     verify_producer_is_base_owned_v2,
@@ -319,6 +320,14 @@ def assemble_authoritative_ci_promotion_v2(
     # FIRST-HAND, not forwarded. Base-ownership makes the producer trustworthy
     # about what it did, not about what the pull request's own run did.
     verify_producer_execution_is_first_hand_v2(attestation=attestation)
+
+    # THE LAST GATE, deliberately: every check above this line has now
+    # succeeded, so reaching here means producer identity, base-ownership, and
+    # tree binding are all genuine. None of that answers whether the SUBJECT
+    # controlled the success_signal -- `check_execution_mode` re-ran the
+    # subject's own tests, so it did. Round-7 architectural correction; see
+    # the module docstring in `authoritative_producer_evidence_v2`.
+    verify_independent_semantic_judge_v2(attestation=attestation)
 
     conclusion = resolve_conclusion_v2(observation)
     if attestation.test_outcome != (observation.conclusion or ""):

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import sys
+import unittest.mock
 from pathlib import Path
 
 from app.agent_review.authoritative_check_policy_v2 import load_authoritative_check_policy_v2
@@ -13,6 +15,30 @@ from app.agent_review.required_check_assembly_v2 import assemble_authoritative_c
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "aiops-review-quality-gate-v2.py"
+
+
+@contextlib.contextmanager
+def _ci_promotion_bypassing_independent_judge_gate():
+    """Round-7 architectural correction:
+    `assemble_authoritative_ci_promotion_v2` now refuses unconditionally at
+    `verify_independent_semantic_judge_v2` (see that function's docstring in
+    `authoritative_producer_evidence_v2`). This test file's fixture builder
+    (`_write_fixtures`) calls the real assembler, IN THIS PARENT PROCESS, to
+    produce a genuinely-derived `--checks`/`--checks-provenance` pair on disk
+    for tests that are about the GATE's structural/collision/fail-closed
+    behaviour, not about whether CI-sourced pytest is authoritative. Bypassed
+    here so that fixture construction succeeds; the GATE SUBPROCESS itself is
+    never patched by this (patching cannot cross a process boundary), so any
+    test whose defect-under-test fires strictly BEFORE this gate inside the
+    subprocess's own re-derivation still exercises real, unpatched production
+    code end-to-end."""
+
+    import app.agent_review.required_check_assembly_v2 as assembly_module
+
+    with unittest.mock.patch.object(
+        assembly_module, "verify_independent_semantic_judge_v2", lambda **_: None
+    ):
+        yield
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -178,17 +204,18 @@ def _write_fixtures(tmp_path: Path, *, required_checks: list[str] | None = None)
     snapshot = parse_authoritative_ci_snapshot_v2(paths["checks_snapshot"].read_bytes())
     origin = RunOriginV2.model_validate(json.loads(paths["run_origin"].read_text(encoding="utf-8")))
 
-    promoted = [
-        assemble_authoritative_ci_promotion_v2(
-            check_name=name,
-            snapshot=snapshot,
-            loaded_policy=loaded_policy,
-            identity=identity_obj,
-            origin=origin,
-            toolchain_digest=TOOLCHAIN_DIGEST,
-        )
-        for name in check_names
-    ]
+    with _ci_promotion_bypassing_independent_judge_gate():
+        promoted = [
+            assemble_authoritative_ci_promotion_v2(
+                check_name=name,
+                snapshot=snapshot,
+                loaded_policy=loaded_policy,
+                identity=identity_obj,
+                origin=origin,
+                toolchain_digest=TOOLCHAIN_DIGEST,
+            )
+            for name in check_names
+        ]
 
     paths["checks"] = tmp_path / "checks.json"
     paths["checks"].write_text(
@@ -318,15 +345,54 @@ def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "op
     ]
 
 
+## Round-7 architectural correction, and its effect on this test file
+## ---------------------------------------------------------------------------
+## `assemble_authoritative_ci_promotion_v2` now refuses every subject-code
+## check unconditionally (`required_check_provenance_independent_semantic_
+## judge_required` -- see `authoritative_producer_evidence_v2`'s docstring).
+## `_write_fixtures`'s DEFAULT fixture is pytest, CI-sourced, which was the
+## only source_kind ever reachable through this gate's re-derivation:
+## `TrustedHostPromotion` records are refused there unconditionally too, on a
+## separate, pre-existing constraint (`#201-B3`'s executor has no CT104-backed
+## producer yet). So `state: ready` is not reachable through the live gate
+## SUBPROCESS today, for any source, in this environment -- consistent with
+## `AUTHORITATIVE_PYTEST_PROMOTION=UNAVAILABLE_BY_DESIGN`.
+##
+## `_check_no_output_input_collision` -> payload/response/contract-version
+## validation -> `_validate_required_check_provenance` all run BEFORE
+## `emit_review_readiness_v2`, so a test whose OWN concern lies in one of the
+## earlier stages still proves its point precisely by reaching the terminal
+## independent-judge refusal rather than being rejected earlier for an
+## unrelated reason: that is what `_assert_reached_the_independent_judge_gate`
+## below checks. It is NOT a workaround for the correction; it is the correct
+## updated assertion for "does this earlier stage still let a well-formed
+## submission through".
+
+
+def _assert_reached_the_independent_judge_gate(result: subprocess.CompletedProcess[str]) -> None:
+    """The submission passed every check ahead of it in the pipeline, and was
+    refused only by the terminal, architecturally-mandated gate -- not by the
+    stage actually under test in the calling test."""
+
+    assert result.returncode != 0
+    assert "required_check_provenance_independent_semantic_judge_required" in result.stderr, result.stderr
+
+
 def test_cli_emits_a_valid_ready_readiness_artifact(tmp_path: Path) -> None:
+    """Was: proves a nominal invocation reaches `state: ready`. That terminal
+    state is not reachable today for any source -- see the module note above.
+    What is still real and still worth proving: a nominal invocation is not
+    rejected by any EARLIER stage (collision guards, contract-version
+    handling, decision binding, required-check coverage) -- it reaches the
+    LAST gate, and is refused only there."""
+
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode == 0, result.stderr
-    doc = json.loads(output_path.read_text(encoding="utf-8"))
-    assert doc["state"] == "ready"
+    _assert_reached_the_independent_judge_gate(result)
+    assert not output_path.exists()
 
 
 def test_cli_refuses_without_contract_version_v2(tmp_path: Path) -> None:
@@ -343,17 +409,27 @@ def test_cli_refuses_without_contract_version_v2(tmp_path: Path) -> None:
 
 def test_cli_fails_closed_on_a_readiness_invariant_violation(tmp_path: Path) -> None:
     """ready requires an open PR -- a merged PR with a ready decision must
-    be refused by ReviewReadinessV2's own validator, never silently
-    accepted."""
+    never be silently accepted.
+
+    `ReviewReadinessV2`'s own validator, which is what actually enforces
+    this, is covered directly and unaffected by the round-7 correction: see
+    `test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_
+    validator` in `test_review_readiness_emission_v2.py` -- a file `#201-C0`
+    is forbidden from touching. What THIS test can still prove, through the
+    live CLI, is that a merged PR is refused no matter which stage catches it
+    first: `_validate_required_check_provenance` now runs (and refuses)
+    before `emit_review_readiness_v2` is ever reached, so the readiness
+    invariant's own check is not reached via this path today -- but the
+    submission is refused regardless, which is the property that matters end
+    to end."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path, pr_state="merged"))
 
-    assert result.returncode != 0
+    _assert_reached_the_independent_judge_gate(result)
     assert not output_path.exists()
-    assert "readiness_invariant_violation" in result.stderr
 
 
 def test_cli_rejects_a_v1_payload_mixed_into_a_v2_gate_run(tmp_path: Path) -> None:
@@ -393,8 +469,9 @@ def test_cli_accepts_a_matching_v2_payload_and_response(tmp_path: Path) -> None:
 
     result = _run([*_base_args(paths, output_path), "--payload", str(payload_path), "--response", str(response_path)])
 
-    assert result.returncode == 0, result.stderr
-    assert output_path.exists()
+    # A matching v2 payload/response is not what refuses this submission --
+    # see the module note above the independent-judge-gate helper.
+    _assert_reached_the_independent_judge_gate(result)
 
 
 # -- Thread 2: decision-run binding --------------------------------------------
@@ -403,7 +480,17 @@ def test_cli_accepts_a_matching_v2_payload_and_response(tmp_path: Path) -> None:
 def test_cli_rejects_a_decision_replayed_from_a_different_run(tmp_path: Path) -> None:
     """Regression (Codex review of #145): a `ready` decision computed for
     run A combined with an unrelated run B's identity/findings/checks must
-    be rejected, never silently combined into a valid artifact."""
+    be rejected, never silently combined into a valid artifact.
+
+    The mechanism itself (`READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_
+    REASON_V2`) is covered directly, in-process, against
+    `emit_review_readiness_v2` --
+    `test_emit_review_readiness_rejects_a_decision_replayed_from_a_different_run`
+    in `test_review_readiness_emission_v2.py`, a file `#201-C0` is forbidden
+    from touching. `_validate_required_check_provenance` now runs (and
+    refuses) before `emit_review_readiness_v2` is ever reached, so THIS test
+    proves the weaker, still-real property: a foreign decision is refused end
+    to end via the live CLI regardless of which stage catches it."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
@@ -416,12 +503,16 @@ def test_cli_rejects_a_decision_replayed_from_a_different_run(tmp_path: Path) ->
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode != 0
+    _assert_reached_the_independent_judge_gate(result)
     assert not output_path.exists()
-    assert "readiness_emission_decision_provenance_mismatch" in result.stderr
 
 
 def test_cli_rejects_a_decision_with_matching_run_id_but_divergent_manifest_hash(tmp_path: Path) -> None:
+    """See `test_cli_rejects_a_decision_replayed_from_a_different_run` above:
+    the mechanism is covered directly against `emit_review_readiness_v2` in
+    `test_review_readiness_emission_v2.py`; this proves the live CLI still
+    refuses end to end."""
+
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
@@ -431,9 +522,8 @@ def test_cli_rejects_a_decision_with_matching_run_id_but_divergent_manifest_hash
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode != 0
+    _assert_reached_the_independent_judge_gate(result)
     assert not output_path.exists()
-    assert "readiness_emission_decision_provenance_mismatch" in result.stderr
 
 
 def test_cli_rejects_a_decision_file_without_run_provenance(tmp_path: Path) -> None:
@@ -456,12 +546,15 @@ def test_cli_rejects_a_decision_file_without_run_provenance(tmp_path: Path) -> N
 
 
 def test_cli_accepts_when_all_required_checks_are_present_and_green(tmp_path: Path) -> None:
+    """Was: proves the gate accepts full coverage. Coverage completeness is
+    not what refuses this submission now -- see the module note above."""
+
     paths = _write_fixtures(tmp_path, required_checks=["pytest", "mypy"])
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode == 0, result.stderr
+    _assert_reached_the_independent_judge_gate(result)
 
 
 def test_cli_rejects_when_a_required_check_is_missing(tmp_path: Path) -> None:
@@ -542,7 +635,9 @@ def test_cli_accepts_an_isolated_v2_payload(tmp_path: Path) -> None:
 
     result = _run([*_base_args(paths, output_path), "--payload", str(payload_path)])
 
-    assert result.returncode == 0, result.stderr
+    # An isolated v2 payload is not what refuses this submission -- see the
+    # module note above the independent-judge-gate helper.
+    _assert_reached_the_independent_judge_gate(result)
 
 
 def test_cli_rejects_an_isolated_v1_payload(tmp_path: Path) -> None:
@@ -581,12 +676,16 @@ def test_cli_rejects_a_response_supplied_without_its_payload(tmp_path: Path) -> 
 
 
 def test_cli_valid_flow_with_neither_payload_nor_response(tmp_path: Path) -> None:
+    """Was: proves the gate accepts a nominal flow with neither optional
+    input. That is not what refuses this submission now -- see the module
+    note above the independent-judge-gate helper."""
+
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode == 0, result.stderr
+    _assert_reached_the_independent_judge_gate(result)
 
 
 # -- Thread 5: output/input collision ------------------------------------------
@@ -854,18 +953,35 @@ def test_cli_rejects_output_colliding_with_the_authoritative_check_policy(tmp_pa
     assert policy_file.read_bytes() == original_bytes
 
 
-def test_cli_still_emits_when_provenance_is_authorised(tmp_path: Path) -> None:
-    """The hardening must not make the legitimate path unreachable."""
+def test_cli_no_longer_emits_for_a_subject_code_check_pending_an_independent_judge(
+    tmp_path: Path,
+) -> None:
+    """Was `test_cli_still_emits_when_provenance_is_authorised`, asserting
+    "the hardening must not make the legitimate path unreachable" -- true
+    under round 4's model, false under the round-7 architectural correction.
+
+    An independent audit found that `base_owned_workflow_run` +
+    `reexecuted_in_producer_run` re-runs the PULL REQUEST'S OWN test suite
+    and reports its exit code: the subject still controls the
+    success_signal, so `#201-B3`'s theorem
+    (`controls(subject, success_signal) => not authoritative(success_signal)`)
+    still applies regardless of the workflow definition's base-ownership. The
+    round-7 acceptance condition this test encoded is REVOKED, not
+    reinterpreted -- see `authoritative_producer_evidence_v2`'s module
+    docstring.
+
+    `AUTHORITATIVE_PYTEST_PROMOTION=UNAVAILABLE_BY_DESIGN`: this is the
+    regression test for that state remaining true. If this test ever starts
+    failing because the gate emits `ready` again, that is a signal an
+    independent-judge producer was added -- which is real, welcome progress,
+    but it means THIS test needs to be re-ratified deliberately, not patched
+    silently to keep it green."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode == 0, result.stderr
-    emitted = json.loads(output_path.read_text(encoding="utf-8"))
-    assert emitted["state"] == "ready"
-    # C0 legitimates the checks; it does not alter what readiness emits.
-    assert emitted["checks"] == json.loads(paths["checks"].read_text(encoding="utf-8"))
+    _assert_reached_the_independent_judge_gate(result)
 
 
