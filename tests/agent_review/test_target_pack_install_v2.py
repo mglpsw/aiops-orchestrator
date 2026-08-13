@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+import pytest
+
+from app.agent_review.target_pack_install_v2 import (
+    INSTALL_DRIFT_UNRESOLVED_REASON_V2,
+    TargetPackInstallError,
+    apply_install_plan_v2,
+)
+from app.agent_review.target_pack_manifest_v2 import (
+    GeneratedFileEntryV2,
+    TargetPackFileOwnershipV2,
+    TargetPackManifestV2,
+)
+from app.agent_review.target_pack_plan_v2 import compute_install_plan_v2
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _manifest(*entries: GeneratedFileEntryV2) -> TargetPackManifestV2:
+    return TargetPackManifestV2(
+        schema_id="agent-review.target-pack-manifest.v2",
+        schema_version=2,
+        pack_version="0.1.0",
+        toolrepo_sha="1" * 40,
+        generated_files=entries,
+        schema_digests={"x.json": "a" * 64},
+        required_capabilities=(),
+        min_engine_contract_version=2,
+    )
+
+
+def test_apply_writes_a_missing_upstream_generated_file(tmp_path: Path) -> None:
+    content = b"seed content"
+    entry = GeneratedFileEntryV2(
+        path="a.yaml", ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED, content_sha256=_sha256(content)
+    )
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+
+    written = apply_install_plan_v2(
+        plan=plan, manifest=manifest, target_root=tmp_path, seed_content_by_path={"a.yaml": content}
+    )
+
+    assert written == ("a.yaml",)
+    assert (tmp_path / "a.yaml").read_bytes() == content
+
+
+def test_apply_refuses_and_writes_nothing_when_drift_is_unresolved(tmp_path: Path) -> None:
+    entry = GeneratedFileEntryV2(
+        path="a.yaml", ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED, content_sha256=_sha256(b"new")
+    )
+    entry2 = GeneratedFileEntryV2(
+        path="b.yaml", ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED, content_sha256=_sha256(b"new2")
+    )
+    (tmp_path / "a.yaml").write_bytes(b"target-hand-edited")
+    manifest = _manifest(entry, entry2)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+    # No previous receipt at all -> on-disk "a.yaml" has no recorded hash to
+    # match, and its content differs from the seed -> REFUSE_DRIFT.
+    assert plan.has_drift
+
+    with pytest.raises(TargetPackInstallError) as exc_info:
+        apply_install_plan_v2(
+            plan=plan,
+            manifest=manifest,
+            target_root=tmp_path,
+            seed_content_by_path={"a.yaml": b"new", "b.yaml": b"new2"},
+        )
+    assert exc_info.value.reason_code == INSTALL_DRIFT_UNRESOLVED_REASON_V2
+    # Nothing written at all -- not even the non-drifted "b.yaml".
+    assert not (tmp_path / "b.yaml").exists()
+    assert (tmp_path / "a.yaml").read_bytes() == b"target-hand-edited"
+
+
+def test_apply_writes_a_drifted_path_only_when_explicitly_forced(tmp_path: Path) -> None:
+    entry = GeneratedFileEntryV2(
+        path="a.yaml", ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED, content_sha256=_sha256(b"new")
+    )
+    (tmp_path / "a.yaml").write_bytes(b"target-hand-edited")
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+
+    written = apply_install_plan_v2(
+        plan=plan,
+        manifest=manifest,
+        target_root=tmp_path,
+        seed_content_by_path={"a.yaml": b"new"},
+        force_overwrite_paths=frozenset({"a.yaml"}),
+    )
+
+    assert written == ("a.yaml",)
+    assert (tmp_path / "a.yaml").read_bytes() == b"new"
+
+
+def test_apply_never_touches_a_target_owned_file(tmp_path: Path) -> None:
+    entry = GeneratedFileEntryV2(
+        path=".aiops/target-profile.v2.yaml",
+        ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+        content_sha256=_sha256(b"seed"),
+    )
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_bytes(b"heavily customized by target")
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+
+    written = apply_install_plan_v2(
+        plan=plan, manifest=manifest, target_root=tmp_path, seed_content_by_path={entry.path: b"seed"}
+    )
+
+    assert written == ()
+    assert (tmp_path / ".aiops" / "target-profile.v2.yaml").read_bytes() == b"heavily customized by target"
+
+
+def test_apply_is_atomic_no_partial_file_left_on_interrupted_write(tmp_path: Path, monkeypatch) -> None:
+    """P-T10: a write interrupted mid-flight must never leave a partial
+    file at the real path -- only ever the old content or the fully new
+    content."""
+
+    import app.agent_review.target_pack_install_v2 as install_module
+
+    entry = GeneratedFileEntryV2(
+        path="a.yaml", ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED, content_sha256=_sha256(b"new")
+    )
+    (tmp_path / "a.yaml").write_bytes(b"original")
+    manifest = _manifest(entry)
+    receipt_hashes = {"a.yaml": _sha256(b"original")}
+
+    class _FakeReceipt:
+        generated_file_hashes = receipt_hashes
+
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=_FakeReceipt())
+
+    real_replace = install_module.os.replace
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated crash before rename")
+
+    monkeypatch.setattr(install_module.os, "replace", _boom)
+    with pytest.raises(OSError):
+        apply_install_plan_v2(
+            plan=plan, manifest=manifest, target_root=tmp_path, seed_content_by_path={"a.yaml": b"new"}
+        )
+    monkeypatch.setattr(install_module.os, "replace", real_replace)
+
+    # Original content survives untouched; no stray .tmp files remain.
+    assert (tmp_path / "a.yaml").read_bytes() == b"original"
+    leftover_tmp_files = list(tmp_path.glob("*.tmp"))
+    assert leftover_tmp_files == []
+
+
+def test_merged_declarative_only_replaces_the_fenced_block(tmp_path: Path) -> None:
+    target_file = tmp_path / ".gitignore"
+    target_file.write_text(
+        "node_modules/\n"
+        "# --- agent-review-v2:begin ---\n"
+        "old-generated-line\n"
+        "# --- agent-review-v2:end ---\n"
+        "*.local\n",
+        encoding="utf-8",
+    )
+    new_block = (
+        "# --- agent-review-v2:begin ---\n"
+        "new-generated-line\n"
+        "# --- agent-review-v2:end ---\n"
+    ).encode("utf-8")
+    entry = GeneratedFileEntryV2(
+        path=".gitignore", ownership=TargetPackFileOwnershipV2.MERGED_DECLARATIVE, content_sha256=_sha256(new_block)
+    )
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+
+    apply_install_plan_v2(
+        plan=plan, manifest=manifest, target_root=tmp_path, seed_content_by_path={".gitignore": new_block}
+    )
+
+    result = target_file.read_text(encoding="utf-8")
+    assert "node_modules/" in result
+    assert "*.local" in result
+    assert "new-generated-line" in result
+    assert "old-generated-line" not in result
+
+
+def test_merged_declarative_creates_the_block_when_file_did_not_exist(tmp_path: Path) -> None:
+    new_block = (
+        "# --- agent-review-v2:begin ---\nnew-line\n# --- agent-review-v2:end ---\n"
+    ).encode("utf-8")
+    entry = GeneratedFileEntryV2(
+        path=".gitignore", ownership=TargetPackFileOwnershipV2.MERGED_DECLARATIVE, content_sha256=_sha256(new_block)
+    )
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+
+    apply_install_plan_v2(
+        plan=plan, manifest=manifest, target_root=tmp_path, seed_content_by_path={".gitignore": new_block}
+    )
+
+    assert "new-line" in (tmp_path / ".gitignore").read_text(encoding="utf-8")
