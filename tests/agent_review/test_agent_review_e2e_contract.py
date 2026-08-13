@@ -444,6 +444,33 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     working_tree_before = _git_status_snapshot()
     fixture_snapshot_before = _file_snapshot(FIXTURE_ROOT)
     target_repo, agent_dir = _copy_fixture(tmp_path)
+    # The shared fixture's full.diff never actually carries a hunk for
+    # backend/api/shifts.py even though file-diff-context.json declares it
+    # "modified" and must_review -- a preexisting fixture gap this test
+    # never noticed under the old planner, which still counted the file as
+    # "covered" despite having nothing to route for it. The new
+    # must_review_hunk_unavailable fail-closed rule (aiops-orchestrator#225
+    # rev.3 SS11) correctly refuses to call that covered, so this hunk is
+    # added here, to this test's private copy of the fixture in tmp_path --
+    # never to the shared fixture file itself, which test_diff_acquisition_v2
+    # asserts contains exactly one file diff (v2 stays byte-untouched).
+    full_diff_path = agent_dir / "full.diff"
+    full_diff_path.write_text(
+        "\n".join(
+            [
+                "diff --git a/backend/api/shifts.py b/backend/api/shifts.py",
+                "index 3333333..4444444 100644",
+                "--- a/backend/api/shifts.py",
+                "+++ b/backend/api/shifts.py",
+                "@@ -5,4 +5,4 @@",
+                " def serialize_shift_response(shift):",
+                '-    return {"id": shift.id, "slot": shift.slot}',
+                '+    return {"id": shift.id, "slot": shift.slot, "status": shift.status}',
+                full_diff_path.read_text(encoding="utf-8"),
+            ]
+        ),
+        encoding="utf-8",
+    )
     target_snapshot_before = _file_snapshot(target_repo)
     out_dir = tmp_path / "agent"
     responses_dir = out_dir / "chunk-responses"
@@ -482,6 +509,18 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
     )
     assert intake_result.returncode == 0, intake_result.stderr + intake_result.stdout
 
+    # Budget now flows from the chunk plan itself, not a diverging
+    # --payload-max-chars override at build time (aiops-orchestrator#225
+    # rev.3 SS6): pass it here, to the planner, so packing itself is done
+    # against the real budget rather than a post-hoc override on a plan
+    # packed assuming the much larger 24_000 default. 2200 (this test's
+    # original tight build-time budget) turns out to have been silently
+    # truncating a chunk's own hunk under the old planner too -- exactly the
+    # defect #225 exists to catch; the hard guard now refuses to route that
+    # chunk instead of emitting it with a reduced hunk. 5000 is this
+    # fixture's real floor: aux/checks/evidence context shrink to minimal
+    # (still emptying checks_context, which is what keeps the cross-chunk
+    # scoping assertion below meaningful) but every hunk stays intact.
     plan_result = _run_cli(
         SCRIPTS / "aiops-review-plan-chunks.py",
         [
@@ -491,6 +530,8 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
             str(chunk_plan),
             "--max-blocks",
             "6",
+            "--max-chars-per-block",
+            "5000",
         ],
     )
     assert plan_result.returncode == 0, plan_result.stderr + plan_result.stdout
@@ -516,8 +557,6 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
             str(chunk_payload_manifest),
             "--brief-max-chars",
             "4000",
-            "--payload-max-chars",
-            "2200",
         ],
     )
     assert build_payloads_result.returncode == 0, build_payloads_result.stderr + build_payloads_result.stdout
@@ -555,8 +594,6 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
             str(chunk_payload_manifest_deterministic),
             "--brief-max-chars",
             "4000",
-            "--payload-max-chars",
-            "2200",
         ],
     )
     assert deterministic_build_payloads_result.returncode == 0, (
@@ -847,8 +884,13 @@ def test_agentescala_tool_repo_e2e_contract_runs_offline(
         assert entry["truncation"] == payload_data["truncation"]
         payload_len = _canonical_len(payload_data)
         assert payload_data["truncation"]["emitted_chars"] == payload_len
+        # Budget now flows from the chunk plan itself (aiops-orchestrator#225
+        # rev.3 SS6), not a diverging --payload-max-chars override.
+        chunk_budget = next(
+            item["prompt_budget_chars"] for item in chunk_plan_payload["chunks"] if item["chunk_id"] == entry["chunk_id"]
+        )
         if payload_data["truncation"]["truncation_reason"] != "max_chars_exceeded_minimum_required_sections":
-            assert payload_len <= 2200
+            assert payload_len <= chunk_budget
 
         chunk_id = entry["chunk_id"]
         context_text = json.dumps(payload_data["chunk_context"], ensure_ascii=False, sort_keys=True)
@@ -1230,8 +1272,6 @@ def test_agentescala_payload_builder_handles_quoted_diff_paths(
             str(chunk_payloads_dir),
             "--manifest-output",
             str(chunk_payload_manifest),
-            "--payload-max-chars",
-            "20000",
         ],
     )
     assert build_payloads_result.returncode == 0, build_payloads_result.stderr + build_payloads_result.stdout

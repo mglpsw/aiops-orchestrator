@@ -60,10 +60,21 @@ def _intake() -> dict[str, object]:
             }
         },
         "artifact_status": [
-            {"name": "file-diff-context.json", "available": True, "valid": True, "status": "available"}
+            {
+                "name": "file-diff-context.json",
+                "path": "file-diff-context.json",
+                "available": True,
+                "valid": True,
+                "status": "available",
+            }
         ],
         "status": "complete",
         "limitations": [],
+        # build_semantic_chunk_plan now validates intake as a full
+        # ReviewIntake (aiops-orchestrator#225 rev.3) to reach real hunk
+        # material via payload_cost_model; the real CLI pipeline
+        # (aiops-review-intake.py) always populates redaction_summary.
+        "redaction_summary": {"schema_version": "agent-review.redaction-report.v1"},
     }
 
 
