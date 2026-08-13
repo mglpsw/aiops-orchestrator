@@ -36,6 +36,7 @@ from app.agent_review.profile_loader_v2 import (
     load_target_profile_v2,
 )
 from app.agent_review.target_pack_manifest_v2 import TargetPackManifestV2
+from app.agent_review.target_pack_plan_v2 import rollout_mode_exceeds_pack_capability_v2
 from app.agent_review.target_pack_receipt_v2 import RECEIPT_RELATIVE_PATH_V2, TargetInstallReceiptV2
 from pydantic import ValidationError
 
@@ -43,6 +44,7 @@ DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 = "target_pack_doctor_target_root_n
 DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_pack_version_mismatch"
 DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_toolrepo_sha_mismatch"
 DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_profile_hash_mismatch"
+DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2 = "target_pack_doctor_receipt_rollout_exceeds_pack_capability"
 
 
 @dataclass(frozen=True)
@@ -111,7 +113,13 @@ def _check_receipt_v2(
     pack_version, then toolrepo_sha, then target_profile_hash (only when
     the profile itself loaded -- if it did not, `profile.status` already
     makes `is_healthy` false on its own, so there is nothing meaningful to
-    compare the receipt's claim against)."""
+    compare the receipt's claim against), then rollout_mode against the
+    CURRENT manifest's `max_supported_rollout_mode` -- a follow-on finding
+    from the same review pass: a receipt can be internally consistent on
+    the first three axes while still claiming an operational rollout state
+    (e.g. `shadow_full`) the pack version being diagnosed against cannot
+    deliver at all (e.g. stale from a since-downgraded or reverted pack
+    version)."""
 
     receipt_path = target_root / RECEIPT_RELATIVE_PATH_V2
     if not receipt_path.is_file():
@@ -133,6 +141,12 @@ def _check_receipt_v2(
     if profile_check.status == "present" and receipt.target_profile_hash != profile_check.profile_hash:
         return ReceiptCheckV2(
             status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2
+        )
+    if rollout_mode_exceeds_pack_capability_v2(
+        mode=receipt.rollout_mode, max_supported=manifest.max_supported_rollout_mode
+    ):
+        return ReceiptCheckV2(
+            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2
         )
 
     return ReceiptCheckV2(status="present", receipt=receipt, reason_code=None)

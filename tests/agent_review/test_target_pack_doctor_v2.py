@@ -12,6 +12,7 @@ from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_tar
 from app.agent_review.target_pack_doctor_v2 import (
     DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2,
+    DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2,
     DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2,
     DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2,
     run_doctor_v2,
@@ -245,6 +246,28 @@ def test_doctor_reports_unhealthy_when_receipt_profile_hash_does_not_match_the_l
 
     assert report.receipt.status == "invalid"
     assert report.receipt.reason_code == DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2
+    assert not report.is_healthy
+
+
+def test_doctor_reports_unhealthy_when_receipt_rollout_mode_exceeds_pack_capability(tmp_path: Path) -> None:
+    """Follow-on adversarial finding from the same review pass, confirmed
+    and fixed: a receipt can be internally consistent on pack_version/
+    toolrepo_sha/target_profile_hash while still claiming a rollout_mode
+    (e.g. shadow_full) the manifest being diagnosed against cannot
+    deliver -- e.g. stale from a since-downgraded or reverted pack
+    version. The same class of defect P2-4 fixed for `init`, reachable
+    through `doctor` instead."""
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    receipt = _receipt(rollout_mode="shadow_full")
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2
     assert not report.is_healthy
 
 

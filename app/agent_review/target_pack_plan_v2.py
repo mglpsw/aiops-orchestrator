@@ -220,7 +220,28 @@ def validate_rollout_within_pack_capability_v2(*, requested: str, max_supported:
     `init`, so `--rollout shadow_full` was silently accepted against a
     pack version that ships no trusted-check integration whatsoever."""
 
-    if requested not in _ROLLOUT_ORDER_V2 or max_supported not in _ROLLOUT_ORDER_V2:
+    if rollout_mode_exceeds_pack_capability_v2(mode=requested, max_supported=max_supported):
         raise PlanError(PLAN_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2)
-    if _ROLLOUT_ORDER_V2.index(requested) > _ROLLOUT_ORDER_V2.index(max_supported):
-        raise PlanError(PLAN_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2)
+
+
+def rollout_mode_exceeds_pack_capability_v2(*, mode: str, max_supported: str) -> bool:
+    """Non-raising predicate form of the same comparison `validate_
+    rollout_within_pack_capability_v2` enforces at `init` time. Exists so
+    `run_doctor_v2` can DIAGNOSE a receipt whose claimed `rollout_mode`
+    exceeds what the CURRENT manifest can deliver -- e.g. a receipt
+    written by a previous, more-capable pack version, now stale against a
+    downgraded or reverted manifest -- without doctor needing to raise or
+    import `PlanError` for what is a diagnosable state, not an input
+    error. Round-1-of-the-post-external-review adversarial finding,
+    confirmed and fixed: `run_doctor_v2` cross-checks a receipt's
+    `pack_version`/`toolrepo_sha`/`target_profile_hash` against the
+    manifest, but nothing checked `rollout_mode` against `max_supported_
+    rollout_mode` -- a receipt claiming `shadow_full` against a manifest
+    whose `max_supported_rollout_mode` is `shadow_minimal` reported
+    `healthy=true`, asserting an operational state the pack cannot
+    deliver, the same class of defect `init`'s own ceiling check (P2-4)
+    was fixed for, just reachable through `doctor` instead."""
+
+    if mode not in _ROLLOUT_ORDER_V2 or max_supported not in _ROLLOUT_ORDER_V2:
+        return True
+    return _ROLLOUT_ORDER_V2.index(mode) > _ROLLOUT_ORDER_V2.index(max_supported)
