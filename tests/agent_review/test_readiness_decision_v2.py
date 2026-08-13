@@ -5,10 +5,14 @@ import hashlib
 import pytest
 
 from app.agent_review.contracts_v2 import (
+    ChunkCoverageV2,
     CoverageStateV2,
     FindingDispositionV2,
     FindingLifecycleRecordV2,
     FindingSeverityV2,
+    PipelineAssessmentV2,
+    PipelineDegradationCauseV2,
+    ReadinessBlockerV2,
     ReadinessReasonV2,
     ReadinessStateV2,
     RequiredCheckConclusionV2,
@@ -30,10 +34,12 @@ from app.agent_review.manifest_v2 import (
 from app.agent_review.readiness_decision_v2 import (
     COVERAGE_BRIDGE_MIXED_DEGRADATION_REASON_V2,
     COVERAGE_BRIDGE_UNKNOWN_DEGRADATION_REASON_V2,
+    DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2,
     READINESS_INVALID_STALE_REASON_CODES_REASON_V2,
     READINESS_SYNTHESIS_MANIFEST_RUN_ID_MISMATCH_REASON_V2,
     REQUIRED_CHECKS_PIPELINE_COMPONENT_V2,
     ReadinessDecisionError,
+    ReadinessDecisionV2,
     _apply_required_check_assessment_v2,
     bridge_fragment_coverage_to_chunk_coverage_v2,
     compute_readiness_decision_v2,
@@ -824,3 +830,81 @@ def test_a_large_required_check_set_never_exceeds_the_detail_contracts_own_bound
     assert len(detail) <= 512
     # Still informative -- not silently emptied.
     assert "required-check-name-number-000" in detail or "30" in detail
+
+
+def test_blocked_pipeline_with_schema_or_transport_failure_is_refused_cleanly_not_crashed() -> None:
+    """Adversarial review finding, confirmed and fixed. `ReadinessDecisionV2`
+    is freely constructible (no validation at construction) -- a
+    hand-crafted or foreign `--decision` file could carry `BLOCKED_PIPELINE`
+    with `SCHEMA_FAILURE`/`TRANSPORT_FAILURE`, which the frozen contract's
+    `BLOCKED_PIPELINE` branch allows but `MANUAL_REQUIRED`'s branch does
+    not. `compute_readiness_decision_v2` itself never produces either
+    reason, so this was unreachable through the real producer, but nothing
+    enforced that. Before the fix, downgrading such a decision produced an
+    unrepresentable `ReadinessDecisionV2` that only failed several calls
+    later, as an opaque `pydantic.ValidationError` from inside
+    `ReviewReadinessV2.__init__` -- reproducing, for this combination,
+    exactly the crash-instead-of-a-state defect class `#201-C` exists to
+    eliminate. Now refused immediately, by name, before any transformation
+    is attempted."""
+
+    coverage = ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
+    )
+    cause = PipelineDegradationCauseV2(
+        reason_code=ReadinessReasonV2.TRANSPORT_FAILURE, component="transport", detail="synthetic"
+    )
+    identity = RunIdentityV2.model_validate(_identity())
+    decision = ReadinessDecisionV2(
+        state=ReadinessStateV2.BLOCKED_PIPELINE,
+        reason_codes=(ReadinessReasonV2.TRANSPORT_FAILURE,),
+        blockers=(),
+        coverage=coverage,
+        pipeline=PipelineAssessmentV2(degraded=True, causes=[cause]),
+        run_id=compute_run_id(identity),
+        manifest_hash=identity.manifest_hash,
+    )
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+    with pytest.raises(ReadinessDecisionError) as exc_info:
+        _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    assert exc_info.value.reason_code == DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2
+
+
+def test_blocked_code_tolerates_schema_or_transport_failure_unaffected() -> None:
+    """The companion positive case: `BLOCKED_CODE`'s own allowed pipeline-
+    reason set already includes `SCHEMA_FAILURE`/`TRANSPORT_FAILURE`
+    (contracts_v2.py), so the guard above must never fire for it -- a
+    confirmed finding coexisting with a pipeline failure and a required-
+    check problem remains fully representable."""
+
+    coverage = ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
+    )
+    cause = PipelineDegradationCauseV2(
+        reason_code=ReadinessReasonV2.TRANSPORT_FAILURE, component="transport", detail="synthetic"
+    )
+    identity = RunIdentityV2.model_validate(_identity())
+    blocker = ReadinessBlockerV2(
+        blocker_id="confirmed-finding-1", reason_code=ReadinessReasonV2.CONFIRMED_CODE_FINDING,
+        active=True, finding_id="finding-1",
+    )
+    decision = ReadinessDecisionV2(
+        state=ReadinessStateV2.BLOCKED_CODE,
+        reason_codes=(ReadinessReasonV2.CONFIRMED_CODE_FINDING, ReadinessReasonV2.TRANSPORT_FAILURE),
+        blockers=(blocker,),
+        coverage=coverage,
+        pipeline=PipelineAssessmentV2(degraded=True, causes=[cause]),
+        run_id=compute_run_id(identity),
+        manifest_hash=identity.manifest_hash,
+    )
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+    result = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    assert result.state is ReadinessStateV2.BLOCKED_CODE
+    assert ReadinessReasonV2.TRANSPORT_FAILURE in result.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in result.reason_codes
