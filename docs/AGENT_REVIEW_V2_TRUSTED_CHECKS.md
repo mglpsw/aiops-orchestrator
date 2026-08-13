@@ -126,10 +126,21 @@ same-input-same-output test.
   attempting to falsify a result (`#201-B3` — this slice's contracts make
   the STRUCTURE of such an attack impossible to represent as `trusted`,
   but nothing here yet proves a real subprocess is actually isolated);
-- wiring a real `TrustedCheckResultV2` into `run_synthetic_review_v2`'s
-  `checks` parameter (`#201-C`);
+- a producer kind supplying an independent semantic judge, without which
+  `AuthoritativeCIPromotion` stays refused unconditionally by
+  `verify_independent_semantic_judge_v2` (deferred, no target date);
 - AgentEscala's own adoption and closure of `#750` (target-side, tracked
   in that repository, not here).
+
+`#201-C` (readiness wiring, plan rev.2.1) is done: `run_synthetic_review_v2`
+no longer has an ungated `checks` parameter at all — it verifies its
+`checks`/`provenance` claims itself, through the same
+`reassemble_and_verify_required_checks_v2` boundary this section describes,
+via `required_check_readiness_v2.py` and `review_readiness_emission_v2.
+produce_review_readiness_v2`. See
+`docs/AGENT_REVIEW_V2_REVIEW_READINESS_EMISSION.md`'s own `#201-C` section
+for the wiring, and `docs/checkpoints/AGENT_REVIEW_V2_201C_READINESS_WIRING.md`
+for the full checkpoint.
 
 ## Where an authoritative `RequiredCheckResultV2` comes from (`#201-C0`)
 

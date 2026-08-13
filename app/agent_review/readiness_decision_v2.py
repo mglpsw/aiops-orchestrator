@@ -107,6 +107,10 @@ from app.agent_review.contracts_v2 import (
     TargetPoliciesV2,
 )
 from app.agent_review.manifest_v2 import ManifestV2
+from app.agent_review.required_check_readiness_v2 import (
+    RequiredCheckReadinessAssessmentV2,
+    RequiredCheckStatusV2,
+)
 from app.agent_review.run_fragment_coverage_v2 import (
     FragmentCoverageBindingError,
     FragmentCoverageStatusV2,
@@ -119,8 +123,54 @@ READINESS_SYNTHESIS_MANIFEST_RUN_ID_MISMATCH_REASON_V2 = "readiness_synthesis_ma
 READINESS_INVALID_STALE_REASON_CODES_REASON_V2 = "readiness_invalid_stale_reason_codes"
 COVERAGE_BRIDGE_MIXED_DEGRADATION_REASON_V2 = "readiness_coverage_bridge_mixed_degradation_and_plain_partial"
 COVERAGE_BRIDGE_UNKNOWN_DEGRADATION_REASON_V2 = "readiness_coverage_bridge_unknown_manifest_degradation_reason"
+DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2 = (
+    "readiness_decision_unrepresentable_with_required_check_assessment"
+)
 
 _ALLOWED_STALE_REASON_CODES_V2 = frozenset({ReadinessReasonV2.HEAD_MISMATCH, ReadinessReasonV2.IDENTITY_MISMATCH})
+# MANUAL_REQUIRED's own allowed reason set, verbatim (contracts_v2.py's
+# `validate_state_invariants`, MANUAL_REQUIRED branch) -- what an existing
+# decision's reason_codes must already be a subset of for the #201-C
+# downgrade to that state to be representable at all. `POLICY_FAILURE` is
+# always safe (it is the one #201-C itself is about to add).
+_MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2 = frozenset(
+    {
+        ReadinessReasonV2.COVERAGE_FAILURE,
+        ReadinessReasonV2.MODEL_UNCERTAINTY,
+        ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED,
+        ReadinessReasonV2.POLICY_FAILURE,
+    }
+)
+# BLOCKED_CODE's own allowed PIPELINE reason set, verbatim (contracts_v2.py,
+# BLOCKED_CODE branch: `allowed_pipeline_reasons`) -- `CONFIRMED_CODE_FINDING`
+# itself is checked separately by the contract (it is mandatory, not part of
+# this "pipeline reasons" bucket) and is never added or removed here, so it
+# is included for completeness but never actually exercised as the subject
+# of this guard.
+_BLOCKED_CODE_SAFE_EXISTING_REASONS_V2 = frozenset(
+    {
+        ReadinessReasonV2.CONFIRMED_CODE_FINDING,
+        ReadinessReasonV2.SCHEMA_FAILURE,
+        ReadinessReasonV2.TRANSPORT_FAILURE,
+        ReadinessReasonV2.COVERAGE_FAILURE,
+        ReadinessReasonV2.MODEL_UNCERTAINTY,
+        ReadinessReasonV2.POLICY_FAILURE,
+    }
+)
+# BLOCKED_PIPELINE's own allowed reason set, verbatim (contracts_v2.py,
+# BLOCKED_PIPELINE branch: `allowed`). Note this state is the ONLY one of the
+# three whose contract branch imposes no requirement that pending NEW blocking
+# findings be represented in `reason_codes` -- which is exactly why the
+# round-9 fix keeps a decision here rather than downgrading it. See
+# `_apply_required_check_assessment_v2`'s docstring.
+_BLOCKED_PIPELINE_SAFE_EXISTING_REASONS_V2 = frozenset(
+    {
+        ReadinessReasonV2.SCHEMA_FAILURE,
+        ReadinessReasonV2.TRANSPORT_FAILURE,
+        ReadinessReasonV2.COVERAGE_FAILURE,
+        ReadinessReasonV2.POLICY_FAILURE,
+    }
+)
 
 _BLOCKING_DISPOSITIONS_V2 = frozenset({FindingDispositionV2.NEW, FindingDispositionV2.CONFIRMED})
 _BLOCKING_SEVERITIES_V2 = frozenset({FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2})
@@ -166,8 +216,9 @@ class ReadinessDecisionV2:
     replay. A caller (C2's own CLI) MUST verify these against the identity
     it is about to emit against before trusting the decision -- this
     dataclass only carries the provenance, it does not enforce the check
-    itself (that is `emit_review_readiness_v2`'s job, since only it has
-    both the decision and the identity in hand)."""
+    itself (that is `review_readiness_emission_v2._assemble_review_
+    readiness_v2`'s job, since only it has both the decision and the
+    identity in hand)."""
 
     state: ReadinessStateV2
     reason_codes: tuple[ReadinessReasonV2, ...]
@@ -444,4 +495,275 @@ def compute_readiness_decision_v2(
         pipeline=pipeline,
         run_id=manifest.run_id,
         manifest_hash=manifest.identity.manifest_hash,
+    )
+
+
+REQUIRED_CHECKS_PIPELINE_COMPONENT_V2 = "required_checks"
+_REQUIRED_CHECKS_BLOCKER_ID_V2 = "required-checks"
+# `PipelineDegradationCauseV2.detail` is `SafeText` (contracts_v2.py):
+# `max_length=512`. Each segment gets a fixed budget well under that bound
+# so the two segments plus fixed prose can never together exceed it.
+_DETAIL_SEGMENT_BUDGET_V2 = 200
+
+
+def _joined_with_budget_v2(names: tuple[str, ...], *, budget: int) -> str:
+    """Join `names` up to `budget` characters, appending a deterministic
+    `(+N more)` suffix if the full list does not fit. Never returns a
+    string longer than `budget`.
+
+    `TargetPoliciesV2.required_checks` (contracts_v2.py) has no maximum
+    count, and each `SafeText` name may be up to 512 characters on its
+    own -- an adversarial review of this PR found that joining an
+    unbounded number/length of names here could exceed `PipelineDegradation
+    CauseV2.detail`'s own `SafeText` bound, raising `pydantic.
+    ValidationError` from a pure function with no `try`/`except`, crashing
+    `produce_review_readiness_v2` instead of producing exactly the
+    `manual_required` artifact this module exists to make representable.
+    Truncating deterministically -- rather than trusting the joined string
+    to happen to fit -- is the fix, not a defensive afterthought: the full
+    name lists remain on `RequiredCheckReadinessAssessmentV2` itself, so
+    nothing this string omits is lost to a caller that needs it exactly.
+    """
+
+    joined = ", ".join(names)
+    if len(joined) <= budget:
+        return joined
+    # Adversarial review finding, confirmed and fixed: the previous version
+    # packed `kept` against `budget` with no headroom reserved for the
+    # suffix appended afterward, so the trailing hard slice `result[:budget]`
+    # was not a rarely-hit backstop -- it routinely fired and could chop the
+    # suffix mid-word (e.g. "... (+22 mo" instead of "... (+22 more)"), or
+    # even chop a kept name. Reproduced: two 198-char names at budget=200
+    # produced a string ending in a bare " (" with no digit or closing
+    # paren at all. Fixed by shrinking the candidate until it -- WITH its
+    # own suffix already attached -- fits, so no post-hoc slice is ever
+    # needed and the result is provably well-formed.
+    for keep_count in range(len(names), 0, -1):
+        candidate = ", ".join(names[:keep_count])
+        suffix = f" (+{len(names) - keep_count} more)"
+        if len(candidate) + len(suffix) <= budget:
+            return candidate + suffix
+    # Adversarial review finding, confirmed and fixed (round 7): the loop
+    # above never succeeds when even the SINGLE first name alone (plus its
+    # own suffix) exceeds `budget` -- e.g. one 300-char name at budget=200.
+    # The previous fallback dropped that name entirely, returning a
+    # content-free "(+1 more)" even though `budget` had plenty of room to
+    # show a meaningfully truncated prefix of the one name that mattered.
+    # Truncate that first name itself instead of discarding it.
+    remaining = len(names) - 1
+    suffix = f" (+{remaining} more)" if remaining else ""
+    available = budget - len(suffix)
+    if available > 0:
+        return names[0][:available] + suffix
+    # budget too small even for "(+N more)" alone with zero names kept --
+    # still never exceed it.
+    return f"(+{len(names)} more)"[:budget]
+
+
+def _required_check_detail_v2(assessment: RequiredCheckReadinessAssessmentV2) -> str:
+    parts: list[str] = []
+    if assessment.missing_check_names:
+        parts.append(
+            "authority not established for: "
+            + _joined_with_budget_v2(assessment.missing_check_names, budget=_DETAIL_SEGMENT_BUDGET_V2)
+        )
+    if assessment.failed_check_names:
+        parts.append(
+            "failed: " + _joined_with_budget_v2(assessment.failed_check_names, budget=_DETAIL_SEGMENT_BUDGET_V2)
+        )
+    detail = "; ".join(parts)
+    # Defensive final cap, verified never actually exercised by the two
+    # segment budgets above (fixed prose + separators stay well under
+    # 512), but asserted structurally rather than trusted by arithmetic.
+    return detail[:512] if len(detail) > 512 else detail
+
+
+def _apply_required_check_assessment_v2(
+    *, decision: ReadinessDecisionV2, assessment: RequiredCheckReadinessAssessmentV2
+) -> ReadinessDecisionV2:
+    """`#201-C` -- fold a required-check assessment into a content decision,
+    per the ratified precedence:
+
+    1. `STALE` is sovereign. A required-check assessment is never consulted
+       when `decision.state is STALE`: identity/HEAD divergence already
+       makes any evidence non-current, and `ReviewReadinessV2.validate_
+       state_invariants`'s own STALE branch forbids any reason code beyond
+       `head_mismatch`/`identity_mismatch` -- adding a check reason here
+       would not degrade gracefully, it would make the artifact
+       unconstructible.
+    2. `assessment.status is SATISFIED` -- the decision passes through
+       completely unchanged. This is the only case that can still reach
+       `READY`, and only if `decision` itself was already `READY`.
+    3. Otherwise (`FAILED` or `AUTHORITY_NOT_ESTABLISHED`), `POLICY_FAILURE`
+       is added as an additional reason/blocker/structured pipeline cause.
+       The state is preserved wherever the widened reason set is still
+       representable in it, and only otherwise becomes `MANUAL_REQUIRED`:
+
+       - `BLOCKED_CODE` (a CONFIRMED code finding) stays `BLOCKED_CODE` --
+         the required-check failure coexists as an additional cause, never
+         itself the reason the state is `BLOCKED_CODE`, per
+         `CHECK FAILURE != CONFIRMED CODE FINDING`;
+       - `BLOCKED_PIPELINE` stays `BLOCKED_PIPELINE` whenever its own
+         allowed reason set can still carry `POLICY_FAILURE` (which, for
+         any decision actually valid in that state, it always can);
+       - `READY` and `MANUAL_REQUIRED` become `MANUAL_REQUIRED`.
+
+       Adversarial review finding, confirmed and fixed (round 9): the
+       `BLOCKED_PIPELINE` -> `MANUAL_REQUIRED` downgrade this function
+       previously performed was RATIFIED as a deliberate, documented
+       non-monotonicity ("a required-check problem is more expressive of
+       'a human decision is the right next step'"). It was also UNSOUND,
+       and not merely for hand-crafted input: `compute_readiness_decision_
+       v2` itself produces a valid `BLOCKED_PIPELINE` decision that carries
+       a pending NEW actionable P0/P1/P2 finding WITHOUT
+       `FINDING_CONFIRMATION_REQUIRED` in its reason codes -- that is this
+       module's own documented "known scope limitation", since
+       `BLOCKED_PIPELINE`'s allowed reason set excludes that code.
+       `BLOCKED_PIPELINE`'s contract branch imposes no requirement that
+       pending new findings be represented; `MANUAL_REQUIRED`'s branch
+       does ("manual_required must represent pending finding
+       confirmation"). Downgrading therefore produced an UNCONSTRUCTIBLE
+       artifact -- an uncaught `pydantic.ValidationError` several calls
+       later -- for an ordinary, real target configuration: the shipped
+       `agent_escala` profile sets `coverage_failure_state:
+       blocked_pipeline`, so degraded coverage plus one pending new
+       finding plus the (always true today) absence of required-check
+       authority was enough to reach it.
+
+       Refusing that combination with `ReadinessDecisionError` was
+       rejected as the fix: it would leave readiness unable to represent
+       absence of authority at all for a real shipped profile, which is
+       the plan's own stop condition 7 ("readiness incapaz de representar
+       ausência de autoridade sem mentir"). Preserving `BLOCKED_PIPELINE`
+       is instead exactly the alternative the plan pre-authorized as a
+       one-line, reversible governance change (rev.2.1 §5.2: "manter
+       `BLOCKED_PIPELINE` quando `reasons ∪ {policy_failure}` couber no
+       conjunto permitido daquele estado"). Nothing is lost by it: both
+       `coverage_failure` and `policy_failure` remain in `reason_codes`,
+       the blocker and the structured cause naming the checks remain, and
+       both states are non-`READY`. The precedence is now also monotonic,
+       which the ratified version explicitly was not.
+
+    Adversarial review finding, confirmed and fixed (round 1): `ReadinessDecisionV2`
+    is "freely constructible" (C1's own design -- no validation at
+    construction, unlike `ReviewReadinessV2`), so a `--decision` JSON file
+    could carry `BLOCKED_PIPELINE` together with `SCHEMA_FAILURE`/
+    `TRANSPORT_FAILURE` -- reasons the frozen contract's own `BLOCKED_
+    PIPELINE` branch allows, but which `MANUAL_REQUIRED`'s branch does
+    NOT. `compute_readiness_decision_v2` itself never produces either
+    reason (it only ever adds `COVERAGE_FAILURE`/`MODEL_UNCERTAINTY`), so
+    this was unreachable through the real producer -- but nothing enforces
+    that a `--decision` file came from it. Downgrading such a decision to
+    `MANUAL_REQUIRED` would silently construct an UNREPRESENTABLE
+    combination, surfacing many calls later as an opaque `pydantic.
+    ValidationError` from deep inside `ReviewReadinessV2.__init__` --
+    reproducing, for THIS specific reason-code combination, the exact
+    "crash instead of a representable state" defect class `#201-C`'s own
+    module docstring says it eliminates. Refused here instead, immediately
+    and by name, before any transformation is attempted -- fail-closed,
+    per the plan's own stop condition ("readiness incapaz de representar
+    ausência de autoridade sem mentir").
+
+    Adversarial review finding, confirmed and fixed (round 5): the round-1
+    fix guarded only the `MANUAL_REQUIRED` branch, on the mistaken premise
+    that `BLOCKED_CODE`'s own allowed reason set is a strict superset and
+    therefore can never be the unrepresentable branch. It is not a superset:
+    `BLOCKED_CODE` allows `SCHEMA_FAILURE`/`TRANSPORT_FAILURE` but -- like
+    `MANUAL_REQUIRED` not allowing them -- disallows `FINDING_CONFIRMATION_
+    REQUIRED`. A hand-crafted `--decision` with `state=BLOCKED_CODE,
+    reason_codes=(CONFIRMED_CODE_FINDING, FINDING_CONFIRMATION_REQUIRED)`
+    (unreachable through `compute_readiness_decision_v2`, which never adds
+    `FINDING_CONFIRMATION_REQUIRED` to a `BLOCKED_CODE` decision, but not
+    enforced against a hand-built file) reproduced the identical "opaque
+    `pydantic.ValidationError` several calls later" defect the round-1 fix
+    was supposed to eliminate everywhere. The guard below now checks
+    whichever branch `state` actually resolves to, against that branch's
+    own safe-existing-reasons set, symmetrically.
+
+    Adversarial review finding, confirmed and fixed (round 6): reason-code
+    membership is necessary but not sufficient. `PipelineAssessmentV2.
+    validate_degradation` (`contracts_v2.py`) separately requires every
+    `(cause.reason_code, cause.component)` pair to be unique, and
+    `ReviewReadinessV2.validate_state_invariants` requires every
+    `blocker.blocker_id` to be unique. A hand-crafted decision already
+    carrying a `POLICY_FAILURE` cause with `component="required_checks"`
+    (or a blocker with `blocker_id="required-checks"`) is entirely
+    representable on its own and passes the reason-code guard above, but
+    collides with the cause/blocker this function appends below,
+    reproducing the same "opaque `pydantic.ValidationError` several calls
+    later" defect for a third, structurally different reason. Guarded the
+    same way: checked and refused by name before construction, not
+    discovered by the contract several calls downstream.
+
+    A required check the assessment reports `FAILED` for is never dropped:
+    `assessment.checks` -- the exact tuple `#201-C0`'s verifier accepted,
+    including every red result -- becomes `ReviewReadinessV2.checks`
+    unchanged, one layer up in `review_readiness_emission_v2.
+    produce_review_readiness_v2`. This function only ever WIDENS the set of
+    reasons/blockers/causes; it never removes anything `compute_readiness_
+    decision_v2` already produced, and the frozen contract's own validator
+    remains the sole authority on whether the result is well-formed -- this
+    function does not re-implement any of its checks.
+    """
+
+    if decision.state is ReadinessStateV2.STALE:
+        return decision
+    if assessment.status is RequiredCheckStatusV2.SATISFIED:
+        return decision
+
+    widened_reasons = {*decision.reason_codes, ReadinessReasonV2.POLICY_FAILURE}
+    if decision.state is ReadinessStateV2.BLOCKED_CODE:
+        state = ReadinessStateV2.BLOCKED_CODE
+        safe_existing_reasons = _BLOCKED_CODE_SAFE_EXISTING_REASONS_V2
+    elif (
+        decision.state is ReadinessStateV2.BLOCKED_PIPELINE
+        and widened_reasons <= _BLOCKED_PIPELINE_SAFE_EXISTING_REASONS_V2
+    ):
+        # See the docstring above (round 9): BLOCKED_PIPELINE is preserved
+        # whenever it can still carry POLICY_FAILURE, instead of being
+        # downgraded to MANUAL_REQUIRED.
+        state = ReadinessStateV2.BLOCKED_PIPELINE
+        safe_existing_reasons = _BLOCKED_PIPELINE_SAFE_EXISTING_REASONS_V2
+    else:
+        state = ReadinessStateV2.MANUAL_REQUIRED
+        safe_existing_reasons = _MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2
+    if not set(decision.reason_codes) <= safe_existing_reasons:
+        # See the docstring above (round 5): checked symmetrically for
+        # whichever branch `state` resolves to -- no branch's safe set is a
+        # superset of the others'.
+        raise ReadinessDecisionError(DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2)
+    existing_cause_keys = {(cause.reason_code, cause.component) for cause in decision.pipeline.causes}
+    existing_blocker_ids = {blocker.blocker_id for blocker in decision.blockers}
+    if (
+        (ReadinessReasonV2.POLICY_FAILURE, REQUIRED_CHECKS_PIPELINE_COMPONENT_V2) in existing_cause_keys
+        or _REQUIRED_CHECKS_BLOCKER_ID_V2 in existing_blocker_ids
+    ):
+        # See the docstring above (round 6): reason-code membership alone
+        # does not guarantee the cause/blocker this function is about to
+        # append is representable -- the contract also requires
+        # (reason_code, component) and blocker_id to each be unique.
+        raise ReadinessDecisionError(DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2)
+
+    cause = PipelineDegradationCauseV2(
+        reason_code=ReadinessReasonV2.POLICY_FAILURE,
+        component=REQUIRED_CHECKS_PIPELINE_COMPONENT_V2,
+        detail=_required_check_detail_v2(assessment),
+    )
+    blocker = ReadinessBlockerV2(
+        blocker_id=_REQUIRED_CHECKS_BLOCKER_ID_V2,
+        reason_code=ReadinessReasonV2.POLICY_FAILURE,
+        active=True,
+        finding_id=None,
+    )
+
+    return ReadinessDecisionV2(
+        state=state,
+        reason_codes=tuple(
+            sorted({*decision.reason_codes, ReadinessReasonV2.POLICY_FAILURE}, key=lambda code: code.value)
+        ),
+        blockers=(*decision.blockers, blocker),
+        coverage=decision.coverage,
+        pipeline=PipelineAssessmentV2(degraded=True, causes=[*decision.pipeline.causes, cause]),
+        run_id=decision.run_id,
+        manifest_hash=decision.manifest_hash,
     )

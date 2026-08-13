@@ -16,7 +16,9 @@ Per tracker #108's own rule: *"`ReviewReadinessV2` é a AUTORIDADE: o
 computador decide o estado e deixa o contrato reprovar. Proibido
 reimplementar as invariantes de `validate_state_invariants` fora do
 contrato."* `app/agent_review/review_readiness_emission_v2.py`'s
-`emit_review_readiness_v2` therefore does exactly one thing: assemble the
+`emit_review_readiness_v2` (renamed `_assemble_review_readiness_v2` and made
+internal by `#201-C` — see the update section near the bottom of this
+document) therefore does exactly one thing: assemble the
 `ReviewReadinessV2` constructor call from a C1 `ReadinessDecisionV2` plus
 identity/`pr_state`/`checks`/`findings`, and let
 `ReviewReadinessV2.validate_state_invariants` (`contracts_v2.py`) decide —
@@ -46,7 +48,8 @@ issue.
 
 ## `scripts/aiops-review-quality-gate-v2.py`
 
-Thin CLI wiring around `emit_review_readiness_v2` — no second
+Thin CLI wiring around `emit_review_readiness_v2` (as of `#201-C`, this
+means `produce_review_readiness_v2` — see the update section below) — no second
 implementation of `ReviewReadinessV2`'s invariants. Reads JSON files for
 the C1 decision, identity/evaluated-identity, findings, and checks, plus a
 `--pr-state` flag; writes the resulting `ReviewReadinessV2` JSON.
@@ -86,3 +89,76 @@ a valid `READY` emission via subprocess; refusal without
 mixed into a `--contract-version v2` run (the issue's own acceptance
 criterion, verbatim); acceptance of a genuinely matching v2 payload and
 response.
+
+## `#201-C` update — where required-check authority now connects
+
+`emit_review_readiness_v2` no longer exists under that name. It became
+`_assemble_review_readiness_v2` — internal, no longer accepting a raw
+`checks` array from any caller — and a new `produce_review_readiness_v2`
+is now THE single production entry point for constructing a
+`ReviewReadinessV2`:
+
+```text
+produce_review_readiness_v2                 <- public, the only entry point
+  -> _verify_and_assess_required_checks_v2   (required_check_readiness_v2,
+                                               #201-C0's real boundary)
+  -> _apply_required_check_assessment_v2     (readiness_decision_v2, precedence)
+  -> _assemble_review_readiness_v2           (this module, pure, internal)
+       -> ReviewReadinessV2(...)             <- the only construction site
+```
+
+`checks`/`checks-provenance` are no longer trusted arrays — they are
+CLAIMS, always re-verified against `#201-C0`'s
+`reassemble_and_verify_required_checks_v2` before any of them can reach
+the emitted artifact. `required_check_names` is never a parameter
+anywhere in this chain: it is derived, every call, from a `TargetProfileV2`
+loaded fresh from a trusted `target_profile_root` and bound to
+`evaluated_identity.profile_hash`. See
+`app/agent_review/required_check_readiness_v2.py`'s own module docstring
+for the full design, and
+`tests/agent_review/test_required_check_readiness_arch_v2.py` for the
+AST-level proof that no other production path exists.
+
+**`_validate_required_check_provenance`/`_validate_required_checks_complete`
+are gone from the CLI.** Both concerns — "is the required set complete?"
+and "may each submitted check be here at all?" — now live inside
+`produce_review_readiness_v2`. The CLI is purely: parse args, load inputs,
+call `produce_review_readiness_v2`, write the result.
+
+**A required check with no legitimate submission no longer fails the CLI.**
+It emits a real `manual_required` artifact with `policy_failure` in
+`reason_codes`, and the CLI exits 0. `#217`/`#145`'s own fix is preserved —
+this state is still never `ready` — but it is now representable instead of
+crashing:
+
+```text
+CLI_EXIT_SUCCESS != READINESS_READY
+
+exit 0  => a ReviewReadinessV2 artifact was written. The decision consumable
+           by any caller is readiness.state, never the exit code.
+exit !=0 => no artifact was written at all (forged/invalid/cross-run
+            submission, or a broken --target-profile checkout).
+```
+
+**Preexisting trust assumption, not created or widened here.**
+`produce_review_readiness_v2` authenticates required checks; it does not
+authenticate the origin of a caller-supplied `ReadinessDecisionV2`/
+`findings`. `ReadinessDecisionV2` remains, by C1's own design, a plain,
+freely constructible value — the only binding enforced on it is REPLAY
+protection (`decision.run_id`/`manifest_hash` must match
+`evaluated_identity`), never origin. This is inert today because no
+required-check submission can reach `SATISFIED` in production (Path A has
+no caller; Path B is refused unconditionally by
+`verify_independent_semantic_judge_v2`) — a fabricated `READY` decision is
+still narrowed to `manual_required` the moment any required check is
+missing or unestablished, which is always, today. If a future slice makes
+positive authority reachable while `decision`/`findings` remain
+subject-influenceable, that is a new trust-boundary defect requiring its
+own decision, not something `#201-C` absorbed silently.
+
+Tests: `tests/agent_review/test_required_check_readiness_v2.py` (the choke
+point, unit + real-C0), `test_readiness_decision_v2.py` (the precedence
+table), `test_review_readiness_emission_v2.py` (`_assemble_review_
+readiness_v2` unaffected pure-assembly tests, plus new
+`produce_review_readiness_v2` Class A tests), `test_required_check_
+readiness_arch_v2.py` (AST proof of the single path).

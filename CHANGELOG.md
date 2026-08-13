@@ -4,6 +4,54 @@
 
 ### Added
 
+- **AgentReview v2 required-check readiness wiring (`#201-C`)**: connects
+  `#201-C0`'s legitimated required checks to `ReviewReadinessV2` — the last
+  piece needed for the readiness contract to represent a required-check
+  problem as a state instead of crashing.
+  - **The gap this closes.** `compute_readiness_decision_v2` never read
+    `checks`; `ReviewReadinessV2.validate_state_invariants` already required
+    a non-empty, all-green `checks` list for `ready`, so a red or missing
+    required check produced a `pydantic.ValidationError`, never a
+    representable state. Separately, `run_synthetic_review_v2` accepted a
+    `checks` parameter with **no verification at all** — the last ungated
+    door for `ReviewReadinessV2.checks` the `#217` residual class named.
+  - **Single production constructor path.** New
+    `review_readiness_emission_v2.produce_review_readiness_v2` is the only
+    public entry point that can build a `ReviewReadinessV2`. It always
+    re-verifies `checks`/`checks-provenance` claims against `#201-C0`'s real,
+    unpatched `reassemble_and_verify_required_checks_v2` before folding a
+    precedence decision and assembling the artifact — no
+    `except RequiredCheckProvenanceErrorV2` anywhere in the chain, so a
+    forged submission always propagates uncaught rather than becoming a
+    routine artifact. `run_synthetic_review_v2` no longer has an ungated
+    `checks` parameter.
+  - **Completeness is derived, never caller-supplied.** New
+    `required_check_readiness_v2.py` derives the required-check name set
+    exclusively from a `TargetProfileV2` loaded fresh from a trusted
+    `target_profile_root` and bound to `identity.profile_hash` — no function
+    on the public readiness path accepts `required_check_names` or
+    `loaded_policy`. Proven, not just documented: a new AST/call-graph test
+    file scans production code for exactly this property.
+  - **Ratified precedence, three outcomes.** A verified, legitimate required
+    check reaching `FAILED` or `AUTHORITY_NOT_ESTABLISHED` adds
+    `POLICY_FAILURE` and forces `MANUAL_REQUIRED` — except when a genuinely
+    `CONFIRMED` code finding already forced `BLOCKED_CODE`, which it joins
+    rather than creates (`CHECK FAILURE != CONFIRMED CODE FINDING`). A red
+    check is never dropped from the artifact. `STALE` is sovereign and
+    untouched.
+  - **`CLI_EXIT_SUCCESS != READINESS_READY`.** `scripts/aiops-review-quality-
+    gate-v2.py` no longer fails outright when a required check has no
+    legitimate submission — it now emits a real `manual_required` +
+    `policy_failure` artifact and exits 0; the decision consumable by any
+    caller is `readiness.state`, never the exit code. A forged/invalid
+    submission still writes no artifact and exits 1, unchanged. No consumer
+    of this CLI exists in this repository today, so the exit-code semantics
+    changed with no live blast radius.
+  - **No contract change.** `RequiredCheckResultV2`, `ReviewReadinessV2`, and
+    every other frozen/published contract are byte-identical; the assessment
+    that connects the two is internal, non-wire state, never accepted by any
+    public function.
+
 - **AgentReview v2 authoritative CI provenance bridge (`#201-C0`)**: makes it
   provable where an authoritative required check came from, before anything is
   connected to readiness. Closes the provenance bypass `#217` describes, for

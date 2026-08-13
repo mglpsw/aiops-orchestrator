@@ -457,9 +457,19 @@ def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "op
 ## incorrectly rejected by any of THOSE stages -- it clears all of them and
 ## is refused only by the terminal, architecturally-mandated gate. The
 ## genuine positive proof that the gate can still emit `state: ready` lives
-## one layer down, in `emit_review_readiness_v2`/`compute_readiness_decision_
-## v2` -- files `#201-C0` is forbidden from touching, already covered,
-## untouched by this correction, in `test_review_readiness_emission_v2.py`.
+## one layer down, in `_assemble_review_readiness_v2`/`compute_readiness_
+## decision_v2` -- files `#201-C0` is forbidden from touching, already
+## covered, untouched by this correction, in
+## `test_review_readiness_emission_v2.py`.
+##
+## `#201-C` addendum: this is no longer the whole story for a NON-empty
+## submission specifically -- an EMPTY one (no claims at all) now passes the
+## `#201-C0` boundary vacuously and produces a real, successful
+## `manual_required` artifact via `produce_review_readiness_v2`. `ready` is
+## still unreachable through this live CLI subprocess for the same two
+## reasons above; `manual_required` is reachable, and is exactly what
+## `#201-C` was built to make representable instead of crashing. See
+## `test_cli_emits_manual_required_when_a_required_check_has_no_submission`.
 
 
 def _assert_reached_the_independent_judge_gate(result: subprocess.CompletedProcess[str]) -> None:
@@ -510,11 +520,11 @@ def test_cli_fails_closed_on_a_readiness_invariant_violation(tmp_path: Path) -> 
     validator` in `test_review_readiness_emission_v2.py` -- a file `#201-C0`
     is forbidden from touching. What THIS test can still prove, through the
     live CLI, is that a merged PR is refused no matter which stage catches it
-    first: `_validate_required_check_provenance` now runs (and refuses)
-    before `emit_review_readiness_v2` is ever reached, so the readiness
-    invariant's own check is not reached via this path today -- but the
-    submission is refused regardless, which is the property that matters end
-    to end."""
+    first: `produce_review_readiness_v2` runs the `#201-C0` required-check
+    verification before `_assemble_review_readiness_v2` (where the readiness
+    invariant itself would fire) is ever reached, so that invariant's own
+    check is not reached via this path today -- but the submission is
+    refused regardless, which is the property that matters end to end."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
@@ -577,13 +587,14 @@ def test_cli_rejects_a_decision_replayed_from_a_different_run(tmp_path: Path) ->
 
     The mechanism itself (`READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_
     REASON_V2`) is covered directly, in-process, against
-    `emit_review_readiness_v2` --
+    `_assemble_review_readiness_v2` --
     `test_emit_review_readiness_rejects_a_decision_replayed_from_a_different_run`
     in `test_review_readiness_emission_v2.py`, a file `#201-C0` is forbidden
-    from touching. `_validate_required_check_provenance` now runs (and
-    refuses) before `emit_review_readiness_v2` is ever reached, so THIS test
-    proves the weaker, still-real property: a foreign decision is refused end
-    to end via the live CLI regardless of which stage catches it."""
+    from touching. `produce_review_readiness_v2` runs the `#201-C0`
+    required-check verification (and refuses) before
+    `_assemble_review_readiness_v2` is ever reached, so THIS test proves the
+    weaker, still-real property: a foreign decision is refused end to end via
+    the live CLI regardless of which stage catches it."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
@@ -602,8 +613,8 @@ def test_cli_rejects_a_decision_replayed_from_a_different_run(tmp_path: Path) ->
 
 def test_cli_rejects_a_decision_with_matching_run_id_but_divergent_manifest_hash(tmp_path: Path) -> None:
     """See `test_cli_rejects_a_decision_replayed_from_a_different_run` above:
-    the mechanism is covered directly against `emit_review_readiness_v2` in
-    `test_review_readiness_emission_v2.py`; this proves the live CLI still
+    the mechanism is covered directly against `_assemble_review_readiness_v2`
+    in `test_review_readiness_emission_v2.py`; this proves the live CLI still
     refuses end to end."""
 
     paths = _write_fixtures(tmp_path)
@@ -650,31 +661,53 @@ def test_cli_accepts_when_all_required_checks_are_present_and_green(tmp_path: Pa
     _assert_reached_the_independent_judge_gate(result)
 
 
-def test_cli_rejects_when_a_required_check_is_missing(tmp_path: Path) -> None:
-    """Regression (Codex review of #145): a target requiring both pytest
-    and mypy was previously satisfied by a submission containing only a
-    green pytest -- the CLI never cross-checked against
-    TargetPoliciesV2.required_checks at all."""
+def test_cli_emits_manual_required_when_a_required_check_has_no_submission(tmp_path: Path) -> None:
+    """Was `test_cli_rejects_when_a_required_check_is_missing` -- a Codex
+    review of #145 found that a target requiring both pytest and mypy was
+    satisfied by a submission containing only a green pytest, because the
+    CLI never cross-checked against `TargetPoliciesV2.required_checks` at
+    all. That property survives `#201-C` (asserted below: never `ready`),
+    but the SHAPE of the fix changed with the architecture.
+
+    A one-check-short submission built from `_hand_built_ci_pair` no longer
+    isolates "missing required check" as its own diagnosis: any non-empty
+    claim is refused at the terminal, architecturally-mandated
+    independent-semantic-judge gate before completeness is even asked
+    about -- see the module note above. The genuinely reachable, honest
+    case for `#201-C`'s new completeness semantics is an EMPTY submission:
+    no claims at all, which passes the `#201-C0` boundary vacuously and
+    then reports every required name as `authority_not_established`.
+
+    This is `#201-C`'s own positive proof, `CLI_EXIT_SUCCESS != READINESS_
+    READY`: the CLI exits 0, WRITES a real artifact, and that artifact is
+    `manual_required`+`policy_failure` -- never `ready`, and never a bare
+    exit-1 refusal with no artifact at all (which `#217`'s ORIGINAL bypass
+    would have made indistinguishable from "no evidence exists yet")."""
 
     paths = _write_fixtures(tmp_path, required_checks=["pytest", "mypy"])
     output_path = tmp_path / "out" / "readiness.json"
 
-    # Submit only "pytest", omitting the required "mypy".
-    paths["checks"].write_text(
-        json.dumps(
-            [{"check_name": "pytest", "required": True, "deterministic": True, "conclusion": "success", "head_sha": "2" * 40}]
-        ),
-        encoding="utf-8",
-    )
+    # No claims submitted at all -- vacuously verified by #201-C0, then
+    # reported as authority_not_established for both required names.
+    paths["checks"].write_text(json.dumps([]), encoding="utf-8")
+    paths["checks_provenance"].write_text(json.dumps([]), encoding="utf-8")
 
     result = _run(_base_args(paths, output_path))
 
-    assert result.returncode != 0
-    assert not output_path.exists()
-    assert "gate_required_check_missing" in result.stderr
+    assert result.returncode == 0, result.stderr
+    readiness = json.loads(output_path.read_text(encoding="utf-8"))
+    assert readiness["state"] == "manual_required"
+    assert "policy_failure" in readiness["reason_codes"]
+    assert readiness["checks"] == []
 
 
 def test_cli_rejects_a_target_profile_with_a_diverging_hash(tmp_path: Path) -> None:
+    """`#201-C`: this binding now lives in
+    `required_check_readiness_v2._verify_and_assess_required_checks_v2`,
+    not in a CLI-local completeness check -- the reason code moved with
+    it, from the old `gate_profile_identity_mismatch` to
+    `readiness_required_check_assessment_profile_identity_mismatch`."""
+
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
@@ -689,10 +722,18 @@ def test_cli_rejects_a_target_profile_with_a_diverging_hash(tmp_path: Path) -> N
 
     assert result.returncode != 0
     assert not output_path.exists()
-    assert "gate_profile_identity_mismatch" in result.stderr
+    assert "readiness_required_check_assessment_profile_identity_mismatch" in result.stderr
 
 
 def test_cli_extra_check_does_not_substitute_a_missing_required_check(tmp_path: Path) -> None:
+    """`#201-C`: completeness and provenance are no longer two separate CLI
+    stages -- both run inside the single `reassemble_and_verify_required_
+    checks_v2` call now. A hand-typed extra check with no matching
+    provenance record is refused as `required_check_provenance_missing`
+    (the digest join simply has nothing to bind it to), not the old
+    CLI-local `gate_required_check_missing`. The claim under test survives
+    unchanged: an unrelated extra check can never substitute for "mypy"."""
+
     paths = _write_fixtures(tmp_path, required_checks=["pytest", "mypy"])
     output_path = tmp_path / "out" / "readiness.json"
 
@@ -711,7 +752,7 @@ def test_cli_extra_check_does_not_substitute_a_missing_required_check(tmp_path: 
 
     assert result.returncode != 0
     assert not output_path.exists()
-    assert "gate_required_check_missing" in result.stderr
+    assert "required_check_provenance_missing" in result.stderr
 
 
 # -- Thread 4: one-sided version-gate inputs -----------------------------------
@@ -1132,3 +1173,50 @@ def test_cli_refuses_required_check_without_independent_semantic_judge(tmp_path:
     assert "required_check_provenance_independent_semantic_judge_required" in result.stderr, result.stderr
 
 
+
+
+def test_cli_refuses_cleanly_instead_of_crashing_on_an_unrepresentable_decision_downgrade(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed. `_apply_required_
+    check_assessment_v2`'s representability guard (readiness_decision_v2.py)
+    raises `ReadinessDecisionError` for a `--decision` file whose existing
+    reason codes cannot survive into the state the required-check
+    assessment resolves to -- but the CLI's own `main()` never imported or
+    caught that exception type, so it propagated as an uncaught Python
+    traceback instead of the documented, clean `error: <reason_code>` +
+    exit 1 + no artifact refusal every other boundary case in this CLI
+    already gets. Reproduced before the fix (subprocess exit code 1 via an
+    unhandled traceback, not the expected `error: readiness_decision_
+    unrepresentable_with_required_check_assessment` message) and fixed by
+    adding `ReadinessDecisionError` to the CLI's existing catch-all
+    boundary-refusal handler.
+
+    The fixture uses `manual_required` + `transport_failure`: round 9
+    removed the `BLOCKED_PIPELINE` -> `MANUAL_REQUIRED` downgrade this test
+    originally exercised (that combination is now legitimately preserved as
+    `blocked_pipeline` and emits a real artifact), so the guard is reached
+    here instead via a state that genuinely forbids `transport_failure`."""
+
+    paths = _write_fixtures(tmp_path)
+    output_path = tmp_path / "out" / "readiness.json"
+
+    foreign_decision = json.loads(paths["decision"].read_text(encoding="utf-8"))
+    foreign_decision["state"] = "manual_required"
+    foreign_decision["reason_codes"] = ["transport_failure"]
+    foreign_decision["pipeline"] = {
+        "degraded": True,
+        "causes": [{"reason_code": "transport_failure", "component": "transport", "detail": "synthetic"}],
+    }
+    paths["decision"].write_text(json.dumps(foreign_decision), encoding="utf-8")
+
+    # Empty checks/provenance -- passes the #201-C0 boundary vacuously and
+    # produces a non-satisfied assessment, without an unrelated Path B
+    # refusal masking the guard this test is actually about.
+    paths["checks"].write_text(json.dumps([]), encoding="utf-8")
+    paths["checks_provenance"].write_text(json.dumps([]), encoding="utf-8")
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert not output_path.exists()
+    assert "readiness_decision_unrepresentable_with_required_check_assessment" in result.stderr, result.stderr
+    assert "Traceback" not in result.stderr

@@ -1,0 +1,125 @@
+{
+  "note": "Lightweight, human-authored summary of this slice. Not validated by a strict schema/loader -- no such receipt contract exists in this repository yet. Do not treat this as equivalent in authority to a ReviewReadinessV2 artifact or any other ContractV2Model-backed contract.",
+  "repository": "mglpsw/aiops-orchestrator",
+  "epic": 199,
+  "issue": 201,
+  "slice": "201-C",
+  "plan": "Execution-Ready Engineering Specification rev.2.1, audited and approved before implementation",
+  "branch": "feat/201-c-required-check-readiness-wiring",
+  "pr": "https://github.com/mglpsw/aiops-orchestrator/pull/220 (draft, open)",
+  "code_head_reviewed_through_round_8": "2d39d0686371414038be8dd61fbce25521a7bb5f",
+  "head_semantics_note": "code_head_reviewed_through_round_8 is the last SHA whose PRODUCT code was measured and CI-verified. Purely documentary commits after it advance the PR HEAD without changing app/, scripts/ or tests/, so they do not invalidate that measurement -- but they do mean this file must never call any SHA 'the current HEAD'. The live HEAD is authoritative and must be read from the forge (gh pr view 220 --json headRefOid), never from this receipt.",
+  "base_sha": "8b20ae37cb28c52c49f545d15d006de2f6086388",
+  "base_tree": "a4fd4840aaf31a3442f2073991aa4ac679089c43",
+  "commits": [
+    "test(agent-review/v2): red tests for required-check readiness assessment",
+    "feat(agent-review/v2): required-check assessment derived from the trusted profile behind the C0 verifier",
+    "feat(agent-review/v2): required-check precedence in readiness_decision_v2",
+    "feat(agent-review/v2): single production constructor path for ReviewReadinessV2",
+    "test(agent-review/v2): AST proof that the readiness path always traverses the C0 boundary",
+    "test(agent-review/v2): migrate dual-target E2E to fail-closed reality",
+    "docs(agent-review/v2): #201-C checkpoint, changelog and receipt",
+    "fix(agent-review/v2): cap required-check detail string within its own SafeText bound",
+    "fix(agent-review/v2): refuse an unrepresentable BLOCKED_PIPELINE->MANUAL_REQUIRED downgrade cleanly",
+    "fix(agent-review/v2): stop the (+N more) truncation from corrupting itself, catch ReadinessDecisionError in the CLI",
+    "fix(agent-review/v2): make STALE genuinely sovereign -- skip #201-C0 verification entirely",
+    "fix(agent-review/v2): refuse an unrepresentable BLOCKED_CODE+FINDING_CONFIRMATION_REQUIRED downgrade cleanly (adversarial review round 5)",
+    "fix(agent-review/v2): refuse pipeline-cause/blocker-id collisions cleanly, close architecture-test blind spots (adversarial review round 6)",
+    "fix(agent-review/v2): stop truncating a single overlong required-check name into a content-free suffix (adversarial review round 7)",
+    "fix(agent-review/v2): make status account for every verified check's conclusion, not only required-named ones (adversarial review round 8)",
+    "fix(agent-review/v2): stop downgrading BLOCKED_PIPELINE -- the ratified downgrade was unsound for a real shipped profile (adversarial review round 9)"
+  ],
+  "files_added": [
+    "app/agent_review/required_check_readiness_v2.py",
+    "tests/agent_review/test_required_check_readiness_v2.py",
+    "tests/agent_review/test_required_check_readiness_arch_v2.py",
+    "docs/checkpoints/AGENT_REVIEW_V2_201C_READINESS_WIRING.md",
+    "reports/agent-review-v2-201c-readiness-wiring-receipt.json"
+  ],
+  "files_modified": [
+    "app/agent_review/readiness_decision_v2.py",
+    "app/agent_review/review_readiness_emission_v2.py",
+    "app/agent_review/review_transport_v2.py",
+    "scripts/aiops-review-quality-gate-v2.py",
+    "tests/agent_review/test_readiness_decision_v2.py",
+    "tests/agent_review/test_review_readiness_emission_v2.py",
+    "tests/agent_review/test_review_transport_v2.py",
+    "tests/agent_review/test_aiops_review_quality_gate_v2_cli.py",
+    "tests/agent_review/test_v2_dual_target_e2e.py",
+    "docs/AGENT_REVIEW_V2_REVIEW_READINESS_EMISSION.md",
+    "docs/AGENT_REVIEW_V2_TRUSTED_CHECKS.md",
+    "CHANGELOG.md"
+  ],
+  "new_schemas": [],
+  "existing_schemas_touched": [],
+  "frozen_contracts_touched": [],
+  "renamed_functions": {
+    "app.agent_review.review_readiness_emission_v2.emit_review_readiness_v2": "app.agent_review.review_readiness_emission_v2._assemble_review_readiness_v2 (internal since #201-C; no longer accepts a raw checks array)"
+  },
+  "new_public_entry_point": "app.agent_review.review_readiness_emission_v2.produce_review_readiness_v2",
+  "cli_contract_change": {
+    "before": "a required check with no legitimate submission failed the CLI outright (exit 1, gate_required_check_missing)",
+    "after": "emits a real manual_required + policy_failure artifact and exits 0; a forged/invalid submission still writes nothing and exits 1, unchanged",
+    "blast_radius": "none confirmed -- global search found zero production invocations of scripts/aiops-review-quality-gate-v2.py in this repository as of base_sha"
+  },
+  "verification": {
+    "baseline_at_base_sha": {
+      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/agent_review/ tests/evals/",
+      "result": "1681 passed, 16 skipped, 2 failed (environment: sudo absent in sandbox, test_isolated_executor_v2.py, out of #201-C's scope)"
+    },
+    "final_combined_suite": {
+      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/agent_review/ tests/evals/",
+      "result": "1750 passed, 16 skipped, 2 failed (same environment class as baseline, unchanged -- test_isolated_executor_v2.py, sudo absent in sandbox). Figure current as of the round-9 adversarial-review fix commit; superseded by whatever the final two-clean-rounds HEAD measures."
+    },
+    "schema_export_check": {
+      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python scripts/export-agent-review-v2-schemas.py --check",
+      "result": "AgentReview v2 schemas are byte-identical."
+    },
+    "caem_f0_pin_check": {
+      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python scripts/verify-caem-f0-pin.py --check",
+      "result": "pin: ok"
+    },
+    "ruff": "not canonical in this repository (absent from requirements-dev.txt and the venv) -- gate skipped, not fabricated",
+    "git_diff_check": "clean",
+    "real_ci": "not yet run -- requires push + PR (task pending at original receipt time; superseded -- PR #220 (draft) is open, and both checks, Validate repository and AgentReview release gates, are green on code_head_reviewed_through_round_8 = 2d39d0686371414038be8dd61fbce25521a7bb5f, the round-8 fix commit, and re-verified green on each subsequent documentary commit)"
+  },
+  "architecture_proof": {
+    "file": "tests/agent_review/test_required_check_readiness_arch_v2.py",
+    "asserts": 8,
+    "mutation_verified": [
+      "reintroducing except RequiredCheckProvenanceErrorV2 around the C0 boundary call -- caught",
+      "reintroducing a required_check_names parameter on produce_review_readiness_v2 -- caught",
+      "reverting the round-5 symmetric representability guard back to the MANUAL_REQUIRED-only check -- test_blocked_code_with_finding_confirmation_required_is_refused_cleanly_not_crashed failed with DID NOT RAISE, confirming the guard (not the test) is what makes it pass",
+      "reverting the round-6 pipeline-cause/blocker-id collision guard -- test_a_preexisting_required_checks_pipeline_cause_is_refused_cleanly_not_crashed and its blocker-id companion both failed with an uncaught pydantic.ValidationError instead of the named ReadinessDecisionError",
+      "reverting FORBIDDEN_COMPLETENESS_PARAM_NAMES to omit required_checks -- test_forbidden_completeness_param_names_matches_its_own_docstring_claim failed",
+      "simulating the pre-round-6 single-name annotation resolution directly against X | None / Optional[X] / a string forward-ref -- all three resolved to None, confirming the blind spot _annotation_names closes",
+      "simulating the pre-round-6 Eq/Is-only comparator handling directly against `result.state in {ReadinessStateV2.READY}` -- resolved to None, confirming the blind spot the membership-form fix to _compares_state_to_ready_like closes",
+      "reverting the round-7 single-overlong-name truncation fix -- test_joined_with_budget_never_drops_all_content_for_a_single_overlong_name failed, asserting '(+1 more)' where a truncated real prefix of the name was expected",
+      "reverting the round-8 failed_check_names fix (a red non-required check alongside all-green required checks) -- both the isolated assessment test and the full-construction test failed; the latter's underlying scenario, run directly without the fix, reproduced an uncaught pydantic.ValidationError ('ready requires every deterministic required check to be green') from ReviewReadinessV2.__init__",
+      "reverting the round-9 fix (restoring the BLOCKED_PIPELINE -> MANUAL_REQUIRED downgrade) -- test_blocked_pipeline_with_a_pending_new_finding_survives_full_construction failed with the exact production-reachable pydantic.ValidationError ('manual_required must represent pending finding confirmation')"
+    ]
+  },
+  "not_delivered": [
+    "positive READY/BLOCKED_PIPELINE E2E through the real C0 boundary -- no legitimate authority source exists in production today (Path A has no caller; Path B refused unconditionally by verify_independent_semantic_judge_v2). Deferred to #203/CT104, marked temporary_until_203 in the architecture test.",
+    "authentication of ReadinessDecisionV2/findings origin -- preexisting trust assumption from C1/C2, documented, not created or widened by #201-C.",
+    "#217 closure -- the single remaining ungated door (run_synthetic_review_v2) is closed, but #217's own closure condition requires proof of exhaustiveness over the whole defect class, not absence of a known path.",
+    "two consecutive clean adversarial-review rounds on the same HEAD -- in progress; nine rounds run so far, each finding and fixing at least one genuine issue (unbounded detail string; truncation-suffix corruption x2; uncaught ReadinessDecisionError in the CLI; STALE-verification-ordering crash; BLOCKED_CODE representability-guard asymmetry; pipeline-cause/blocker-id collision plus two architecture-test blind spots; single-overlong-name content loss; a red non-required check silently reaching a claimed-SATISFIED assessment; and -- round 9, the only producer-reachable one -- an unsound ratified BLOCKED_PIPELINE downgrade that made a real shipped profile's artifact unconstructible). Not yet at the grant's stop condition."
+  ],
+  "state_vector": {
+    "201_A": "MERGED",
+    "201_B1": "MERGED",
+    "201_B2": "MERGED",
+    "201_B3": "MERGED (operational closure BLOCKED_BY_CT104)",
+    "201_C0": "MERGED",
+    "201_C_implementation": "COMPLETE",
+    "201_C_adversarial_review": "IN_PROGRESS (9 rounds; awaiting two consecutive clean rounds on the same HEAD)",
+    "201_C": "IMPLEMENTED_AWAITING_MERGE_REVIEW",
+    "217": "OPEN_RESIDUAL_NOT_BLOCKING_C",
+    "203": "NOT_STARTED",
+    "ct104_conformance": "NOT_CLAIMED",
+    "authoritative_pytest_promotion": "UNAVAILABLE_BY_DESIGN",
+    "release": "NOT_AUTHORIZED"
+  },
+  "grant_scope": "implementation of #201-C only, per plan rev.2.1. Does not authorize merge, tag, release, deploy, repin, CT104 activation, start of #203, or closing #201/#217/#199.",
+  "ratified_decision_reversed_in_round_9": "Plan rev.2.1 §5.2 ratified a deliberately non-monotonic BLOCKED_PIPELINE -> MANUAL_REQUIRED downgrade on required-check failure. Round 9 proved it unsound: compute_readiness_decision_v2 legitimately emits a BLOCKED_PIPELINE decision carrying a pending NEW actionable finding without FINDING_CONFIRMATION_REQUIRED (BLOCKED_PIPELINE's allowed set excludes that code -- the module's own documented scope limitation), and MANUAL_REQUIRED's contract branch requires pending new findings to be represented. Reachable with the shipped agent_escala profile (coverage_failure_state: blocked_pipeline). Refusing was rejected as it would trigger the plan's own stop condition 7; the fix is the alternative §5.2 itself pre-authorized (preserve BLOCKED_PIPELINE). REQUIRES OWNER REVIEW: this reverses a ratified governance decision, on soundness grounds."
+}

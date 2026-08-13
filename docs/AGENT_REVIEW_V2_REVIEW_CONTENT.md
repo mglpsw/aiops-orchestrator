@@ -264,7 +264,7 @@ ReviewContentV2 (#200-A/#200-B)
   -> parser_v2.parse_bound_chunk_response_v2
   -> synthesis_v2.synthesize_chunk_results_v2
   -> readiness_decision_v2.compute_readiness_decision_v2
-  -> review_readiness_emission_v2.emit_review_readiness_v2
+  -> review_readiness_emission_v2.produce_review_readiness_v2   (#201-C)
 ```
 
 `execute_chunk_review_v2` is the single choke point: no finding is

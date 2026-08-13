@@ -5,12 +5,19 @@ import hashlib
 import pytest
 
 from app.agent_review.contracts_v2 import (
+    ChunkCoverageV2,
     CoverageStateV2,
     FindingDispositionV2,
     FindingLifecycleRecordV2,
     FindingSeverityV2,
+    PipelineAssessmentV2,
+    PipelineDegradationCauseV2,
+    PullRequestStateV2,
+    ReadinessBlockerV2,
     ReadinessReasonV2,
     ReadinessStateV2,
+    RequiredCheckConclusionV2,
+    RequiredCheckResultV2,
     RunIdentityV2,
     TargetPoliciesV2,
     compute_run_id,
@@ -28,12 +35,19 @@ from app.agent_review.manifest_v2 import (
 from app.agent_review.readiness_decision_v2 import (
     COVERAGE_BRIDGE_MIXED_DEGRADATION_REASON_V2,
     COVERAGE_BRIDGE_UNKNOWN_DEGRADATION_REASON_V2,
+    DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2,
     READINESS_INVALID_STALE_REASON_CODES_REASON_V2,
     READINESS_SYNTHESIS_MANIFEST_RUN_ID_MISMATCH_REASON_V2,
+    REQUIRED_CHECKS_PIPELINE_COMPONENT_V2,
     ReadinessDecisionError,
+    ReadinessDecisionV2,
+    _apply_required_check_assessment_v2,
+    _joined_with_budget_v2,
     bridge_fragment_coverage_to_chunk_coverage_v2,
     compute_readiness_decision_v2,
 )
+from app.agent_review.required_check_readiness_v2 import RequiredCheckStatusV2, _assess_required_checks_v2
+from app.agent_review.review_readiness_emission_v2 import _assemble_review_readiness_v2
 from app.agent_review.run_fragment_coverage_v2 import (
     FragmentCoverageReasonV2,
     FragmentCoverageStatusV2,
@@ -605,3 +619,744 @@ def test_bridge_fails_closed_on_an_unmapped_manifest_degradation_reason() -> Non
     with pytest.raises(ReadinessDecisionError) as excinfo:
         bridge_fragment_coverage_to_chunk_coverage_v2(coverage_report=report, manifest=manifest)
     assert excinfo.value.reason_code == COVERAGE_BRIDGE_UNKNOWN_DEGRADATION_REASON_V2
+
+
+# -- `#201-C`: `_apply_required_check_assessment_v2` precedence (plan §5.1) --
+
+_SATISFIED = _assess_required_checks_v2(
+    verified_checks=(
+        RequiredCheckResultV2(
+            check_name="pytest", required=True, deterministic=True,
+            conclusion=RequiredCheckConclusionV2.SUCCESS, head_sha="2" * 40,
+        ),
+    ),
+    required_check_names=("pytest",),
+)
+_FAILED = _assess_required_checks_v2(
+    verified_checks=(
+        RequiredCheckResultV2(
+            check_name="pytest", required=True, deterministic=True,
+            conclusion=RequiredCheckConclusionV2.FAILURE, head_sha="2" * 40,
+        ),
+    ),
+    required_check_names=("pytest",),
+)
+_NOT_ESTABLISHED = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+
+def _ready_decision():
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    return compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+
+
+def _blocked_code_decision():
+    manifest, report = _fully_reviewed_manifest_and_report()
+    finding = _confirmed_finding(finding_id="finding-1", head_sha=manifest.identity.head_sha)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, findings=(finding,))
+    return compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+
+
+def _blocked_pipeline_decision():
+    manifest, report = _plain_split_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    return compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies(coverage_failure_state="blocked_pipeline")
+    )
+
+
+def _manual_required_model_uncertainty_decision():
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, limitations=("model_uncertainty",))
+    return compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+
+
+def _manual_required_new_finding_decision():
+    manifest, report = _fully_reviewed_manifest_and_report()
+    finding = _new_finding(finding_id="finding-2", head_sha=manifest.identity.head_sha)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, findings=(finding,))
+    return compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+
+
+def _stale_decision():
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    return compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies(),
+        stale_reason_codes=frozenset({ReadinessReasonV2.HEAD_MISMATCH}),
+    )
+
+
+def test_satisfied_never_changes_a_ready_decision() -> None:
+    decision = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_SATISFIED)
+    assert decision.state is ReadinessStateV2.READY
+    assert decision.reason_codes == ()
+    assert decision.blockers == ()
+    assert decision.pipeline.degraded is False
+
+
+def test_satisfied_never_changes_any_other_decision() -> None:
+    for build in (
+        _blocked_code_decision, _blocked_pipeline_decision,
+        _manual_required_model_uncertainty_decision, _manual_required_new_finding_decision, _stale_decision,
+    ):
+        before = build()
+        after = _apply_required_check_assessment_v2(decision=before, assessment=_SATISFIED)
+        assert after == before
+
+
+def test_failed_turns_ready_into_manual_required_with_policy_failure() -> None:
+    decision = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_FAILED)
+    assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert decision.reason_codes == (ReadinessReasonV2.POLICY_FAILURE,)
+    assert len(decision.blockers) == 1
+    assert decision.blockers[0].reason_code is ReadinessReasonV2.POLICY_FAILURE
+    assert decision.blockers[0].active is True
+    assert decision.blockers[0].finding_id is None
+    assert decision.pipeline.degraded is True
+    assert len(decision.pipeline.causes) == 1
+    assert decision.pipeline.causes[0].component == REQUIRED_CHECKS_PIPELINE_COMPONENT_V2
+    assert "pytest" in decision.pipeline.causes[0].detail
+
+
+def test_authority_not_established_turns_ready_into_manual_required() -> None:
+    decision = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_NOT_ESTABLISHED)
+    assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert decision.reason_codes == (ReadinessReasonV2.POLICY_FAILURE,)
+
+
+def test_check_failure_is_never_confirmed_code_finding() -> None:
+    """`CHECK FAILURE != CONFIRMED CODE FINDING`. A required-check problem on
+    an otherwise-READY decision must never itself produce `BLOCKED_CODE` --
+    only a genuinely confirmed finding may."""
+
+    decision = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_FAILED)
+    assert decision.state is not ReadinessStateV2.BLOCKED_CODE
+    assert ReadinessReasonV2.CONFIRMED_CODE_FINDING not in decision.reason_codes
+
+
+@pytest.mark.parametrize("assessment", [_FAILED, _NOT_ESTABLISHED])
+def test_a_confirmed_finding_keeps_blocked_code_and_gains_policy_failure(assessment) -> None:
+    before = _blocked_code_decision()
+    after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
+
+    assert after.state is ReadinessStateV2.BLOCKED_CODE
+    assert ReadinessReasonV2.CONFIRMED_CODE_FINDING in after.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in after.reason_codes
+    # The original confirmed-finding blocker survives untouched, alongside
+    # the new required-checks blocker.
+    assert any(b.reason_code is ReadinessReasonV2.CONFIRMED_CODE_FINDING for b in after.blockers)
+    assert any(b.reason_code is ReadinessReasonV2.POLICY_FAILURE for b in after.blockers)
+
+
+@pytest.mark.parametrize("assessment", [_FAILED, _NOT_ESTABLISHED])
+def test_blocked_pipeline_is_preserved_and_gains_policy_failure(assessment) -> None:
+    """Adversarial review finding, confirmed and fixed (round 9). This test
+    previously asserted the opposite -- that `BLOCKED_PIPELINE` is
+    DOWNGRADED to `MANUAL_REQUIRED`, the ratified non-monotonic precedence
+    of plan §5.2. That downgrade was unsound: `compute_readiness_decision_
+    v2` legitimately produces a `BLOCKED_PIPELINE` decision carrying a
+    pending NEW actionable finding WITHOUT `FINDING_CONFIRMATION_REQUIRED`
+    (that code is not in `BLOCKED_PIPELINE`'s allowed set -- this module's
+    own documented "known scope limitation"), and `MANUAL_REQUIRED`'s
+    contract branch REQUIRES pending new findings to be represented. The
+    downgrade therefore produced an unconstructible artifact for a real
+    shipped profile (`agent_escala`, `coverage_failure_state:
+    blocked_pipeline`). `BLOCKED_PIPELINE` is now preserved, exactly as the
+    plan pre-authorized in §5.2; nothing is lost, since both
+    `coverage_failure` and `policy_failure` remain visible."""
+
+    before = _blocked_pipeline_decision()
+    after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
+
+    assert after.state is ReadinessStateV2.BLOCKED_PIPELINE
+    assert ReadinessReasonV2.COVERAGE_FAILURE in after.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in after.reason_codes
+    assert any(b.blocker_id == "required-checks" for b in after.blockers)
+
+
+@pytest.mark.parametrize("assessment", [_FAILED, _NOT_ESTABLISHED])
+def test_manual_required_model_uncertainty_gains_policy_failure(assessment) -> None:
+    before = _manual_required_model_uncertainty_decision()
+    after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
+
+    assert after.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert ReadinessReasonV2.MODEL_UNCERTAINTY in after.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in after.reason_codes
+
+
+@pytest.mark.parametrize("assessment", [_FAILED, _NOT_ESTABLISHED])
+def test_manual_required_new_finding_gains_policy_failure(assessment) -> None:
+    before = _manual_required_new_finding_decision()
+    after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
+
+    assert after.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED in after.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in after.reason_codes
+    # The original pending-finding blocker survives untouched.
+    assert any(b.reason_code is ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED for b in after.blockers)
+
+
+@pytest.mark.parametrize("assessment", [_SATISFIED, _FAILED, _NOT_ESTABLISHED])
+def test_stale_is_sovereign_and_never_gains_a_check_reason(assessment) -> None:
+    before = _stale_decision()
+    after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
+    assert after == before
+
+
+def test_failed_and_not_established_produce_distinguishable_detail() -> None:
+    """The two non-satisfied statuses map to the same `POLICY_FAILURE`
+    reason (there is no frozen reason code for "authority not established"
+    specifically), but the human-readable `detail` still distinguishes them
+    -- no information is silently collapsed."""
+
+    failed = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_FAILED)
+    not_established = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=_NOT_ESTABLISHED)
+
+    assert "failed" in failed.pipeline.causes[0].detail
+    assert "authority not established" in not_established.pipeline.causes[0].detail
+    assert failed.pipeline.causes[0].detail != not_established.pipeline.causes[0].detail
+
+
+def test_a_large_required_check_set_never_exceeds_the_detail_contracts_own_bound() -> None:
+    """Adversarial review finding, confirmed and fixed. `TargetPoliciesV2.
+    required_checks` has no maximum count, and each `SafeText` name may be
+    up to 512 characters on its own -- `TargetPoliciesV2.required_checks:
+    list[SafeText]` (contracts_v2.py) carries no upper bound at all. A
+    realistic large required-check set (a monorepo's CI matrix) joined
+    without a cap would exceed `PipelineDegradationCauseV2.detail`'s own
+    `SafeText` bound (max_length=512) and raise `pydantic.ValidationError`
+    -- propagating UNCAUGHT out of `_apply_required_check_assessment_v2`
+    (a pure function with no `try`/`except`), crashing `produce_review_
+    readiness_v2` instead of producing exactly the `manual_required`
+    artifact this module exists to make representable. Reproduced before
+    the fix: 30 realistically-named required checks produced a 2189-
+    character `detail`, and `PipelineDegradationCauseV2(...)` raised
+    `string_too_long`."""
+
+    names = tuple(f"required-check-name-number-{i:03d}-with-some-extra-padding-to-be-realistic" for i in range(30))
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=names)
+
+    decision = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=assessment)
+
+    assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
+    detail = decision.pipeline.causes[0].detail
+    assert len(detail) <= 512
+    # Still informative -- not silently emptied.
+    assert "required-check-name-number-000" in detail or "30" in detail
+
+
+def test_blocked_pipeline_with_schema_or_transport_failure_stays_representable() -> None:
+    """Round 2 found that downgrading a `BLOCKED_PIPELINE` decision carrying
+    `SCHEMA_FAILURE`/`TRANSPORT_FAILURE` to `MANUAL_REQUIRED` produced an
+    unrepresentable combination (those two codes are allowed in the former,
+    forbidden in the latter), and fixed it by REFUSING with
+    `ReadinessDecisionError`. Round 9 removed the downgrade itself, which
+    subsumes that fix and strictly improves on it: the decision now simply
+    stays `BLOCKED_PIPELINE`, where those codes are legal, so the
+    combination becomes a real emitted artifact instead of a hard refusal
+    with no artifact at all. This test therefore now asserts
+    representability, not refusal -- the round-2 defect (an opaque
+    `pydantic.ValidationError` several calls later) remains fixed either
+    way, which the full-construction assertion at the end proves."""
+
+    coverage = ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
+    )
+    cause = PipelineDegradationCauseV2(
+        reason_code=ReadinessReasonV2.TRANSPORT_FAILURE, component="transport", detail="synthetic"
+    )
+    identity = RunIdentityV2.model_validate(_identity())
+    transport_blocker = ReadinessBlockerV2(
+        blocker_id="transport-failure", reason_code=ReadinessReasonV2.TRANSPORT_FAILURE,
+        active=True, finding_id=None,
+    )
+    decision = ReadinessDecisionV2(
+        state=ReadinessStateV2.BLOCKED_PIPELINE,
+        reason_codes=(ReadinessReasonV2.TRANSPORT_FAILURE,),
+        blockers=(transport_blocker,),
+        coverage=coverage,
+        pipeline=PipelineAssessmentV2(degraded=True, causes=[cause]),
+        run_id=compute_run_id(identity),
+        manifest_hash=identity.manifest_hash,
+    )
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    assert adjusted.state is ReadinessStateV2.BLOCKED_PIPELINE
+    assert ReadinessReasonV2.TRANSPORT_FAILURE in adjusted.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in adjusted.reason_codes
+
+    # The point of the round-2 finding: it must survive the FROZEN contract,
+    # not merely this module's own guard.
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=(), identity=identity,
+        evaluated_identity=identity, pr_state=PullRequestStateV2.OPEN, checks=(),
+    )
+    assert readiness.state.value == "blocked_pipeline"
+
+
+def test_blocked_code_tolerates_schema_or_transport_failure_unaffected() -> None:
+    """The companion positive case: `BLOCKED_CODE`'s own allowed pipeline-
+    reason set already includes `SCHEMA_FAILURE`/`TRANSPORT_FAILURE`
+    (contracts_v2.py), so the guard above must never fire for it -- a
+    confirmed finding coexisting with a pipeline failure and a required-
+    check problem remains fully representable."""
+
+    coverage = ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
+    )
+    cause = PipelineDegradationCauseV2(
+        reason_code=ReadinessReasonV2.TRANSPORT_FAILURE, component="transport", detail="synthetic"
+    )
+    identity = RunIdentityV2.model_validate(_identity())
+    blocker = ReadinessBlockerV2(
+        blocker_id="confirmed-finding-1", reason_code=ReadinessReasonV2.CONFIRMED_CODE_FINDING,
+        active=True, finding_id="finding-1",
+    )
+    decision = ReadinessDecisionV2(
+        state=ReadinessStateV2.BLOCKED_CODE,
+        reason_codes=(ReadinessReasonV2.CONFIRMED_CODE_FINDING, ReadinessReasonV2.TRANSPORT_FAILURE),
+        blockers=(blocker,),
+        coverage=coverage,
+        pipeline=PipelineAssessmentV2(degraded=True, causes=[cause]),
+        run_id=compute_run_id(identity),
+        manifest_hash=identity.manifest_hash,
+    )
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+    result = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    assert result.state is ReadinessStateV2.BLOCKED_CODE
+    assert ReadinessReasonV2.TRANSPORT_FAILURE in result.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in result.reason_codes
+
+
+def test_blocked_code_with_transport_failure_survives_full_review_readiness_construction() -> None:
+    """Adversarial review finding (round 8, raised independently by
+    multiple reviewers): `_BLOCKED_CODE_SAFE_EXISTING_REASONS_V2`/
+    `_MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2` are hand-copies of
+    `contracts_v2.py`'s own allowed-reason sets -- `contracts_v2.py`
+    cannot be touched by this slice (plan rev.2.1, C-3: frozen contract),
+    so there is no shared, single source of truth to import from instead.
+    The companion test right above this one
+    (`test_blocked_code_tolerates_schema_or_transport_failure_unaffected`)
+    only proves `_apply_required_check_assessment_v2`'s OWN guard accepts
+    `BLOCKED_CODE`+`TRANSPORT_FAILURE` -- it never proves the real, frozen
+    `ReviewReadinessV2` contract accepts it too. If the hand-copy and the
+    contract were ever to disagree, this is the only kind of test that
+    would catch it: run the combination all the way through the real
+    contract, not just through this module's own guard. See also the
+    `MANUAL_REQUIRED` siblings of this proof further down (`test_
+    blocked_pipeline_downgrade_survives_full_review_readiness_
+    construction`, `test_model_uncertainty_downgrade_survives_full_
+    review_readiness_construction`, `test_finding_confirmation_required_
+    downgrade_survives_full_review_readiness_construction`) -- this test
+    closes the `BLOCKED_CODE` gap those three left uncovered."""
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    finding = _confirmed_finding(finding_id="finding-1", head_sha=manifest.identity.head_sha)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, findings=(finding,))
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+    assert decision.state is ReadinessStateV2.BLOCKED_CODE
+
+    transport_cause = PipelineDegradationCauseV2(
+        reason_code=ReadinessReasonV2.TRANSPORT_FAILURE, component="transport", detail="synthetic"
+    )
+    transport_blocker = ReadinessBlockerV2(
+        blocker_id="transport-failure", reason_code=ReadinessReasonV2.TRANSPORT_FAILURE, active=True, finding_id=None,
+    )
+    decision_with_transport = ReadinessDecisionV2(
+        state=decision.state,
+        reason_codes=(*decision.reason_codes, ReadinessReasonV2.TRANSPORT_FAILURE),
+        blockers=(*decision.blockers, transport_blocker),
+        coverage=decision.coverage,
+        pipeline=PipelineAssessmentV2(degraded=True, causes=[*decision.pipeline.causes, transport_cause]),
+        run_id=decision.run_id,
+        manifest_hash=decision.manifest_hash,
+    )
+
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+    adjusted = _apply_required_check_assessment_v2(decision=decision_with_transport, assessment=assessment)
+    assert adjusted.state is ReadinessStateV2.BLOCKED_CODE
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=synthesis.findings, identity=manifest.identity,
+        evaluated_identity=manifest.identity, pr_state=PullRequestStateV2.OPEN, checks=[],
+    )
+
+    assert readiness.state.value == "blocked_code"
+    assert ReadinessReasonV2.TRANSPORT_FAILURE in readiness.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+
+
+def test_blocked_code_with_finding_confirmation_required_is_refused_cleanly_not_crashed() -> None:
+    """Adversarial review finding, confirmed and fixed (round 5). The
+    round-1 guard (see `test_blocked_pipeline_with_schema_or_transport_
+    failure_is_refused_cleanly_not_crashed` above) only checked the
+    `MANUAL_REQUIRED` branch, on the mistaken assumption that `BLOCKED_
+    CODE`'s allowed reason set is a strict superset of `MANUAL_REQUIRED`'s.
+    It is not: `BLOCKED_CODE` disallows `FINDING_CONFIRMATION_REQUIRED`
+    exactly like `MANUAL_REQUIRED` disallows `SCHEMA_FAILURE`/`TRANSPORT_
+    FAILURE`. A hand-crafted `--decision` file with `state=BLOCKED_CODE,
+    reason_codes=(CONFIRMED_CODE_FINDING, FINDING_CONFIRMATION_REQUIRED)`
+    -- unreachable through `compute_readiness_decision_v2`, which never
+    adds `FINDING_CONFIRMATION_REQUIRED` to a `BLOCKED_CODE` decision, but
+    not enforced against a hand-built file -- reproduced, before this fix,
+    the identical opaque `pydantic.ValidationError` several calls later
+    inside `ReviewReadinessV2.__init__` that the round-1 fix was supposed
+    to eliminate for every branch, not just `MANUAL_REQUIRED`."""
+
+    coverage = ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
+    )
+    identity = RunIdentityV2.model_validate(_identity())
+    blocker = ReadinessBlockerV2(
+        blocker_id="confirmed-finding-1", reason_code=ReadinessReasonV2.CONFIRMED_CODE_FINDING,
+        active=True, finding_id="finding-1",
+    )
+    decision = ReadinessDecisionV2(
+        state=ReadinessStateV2.BLOCKED_CODE,
+        reason_codes=(ReadinessReasonV2.CONFIRMED_CODE_FINDING, ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED),
+        blockers=(blocker,),
+        coverage=coverage,
+        pipeline=PipelineAssessmentV2(degraded=False, causes=[]),
+        run_id=compute_run_id(identity),
+        manifest_hash=identity.manifest_hash,
+    )
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+    with pytest.raises(ReadinessDecisionError) as exc_info:
+        _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    assert exc_info.value.reason_code == DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2
+
+
+def test_a_preexisting_required_checks_pipeline_cause_is_refused_cleanly_not_crashed() -> None:
+    """Adversarial review finding, confirmed and fixed (round 6). Reason-code
+    membership alone (the round-1/round-5 guards) is not sufficient:
+    `PipelineAssessmentV2.validate_degradation` (`contracts_v2.py`) also
+    requires every `(cause.reason_code, cause.component)` pair to be
+    unique. A hand-crafted decision already carrying a `POLICY_FAILURE`
+    cause with `component="required_checks"` passes the reason-code guard
+    (`POLICY_FAILURE` is always safe) but collides with the cause this
+    function appends, reproducing the same opaque `pydantic.ValidationError`
+    several calls later that the earlier rounds' guards were meant to
+    eliminate everywhere."""
+
+    coverage = ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
+    )
+    identity = RunIdentityV2.model_validate(_identity())
+    existing_cause = PipelineDegradationCauseV2(
+        reason_code=ReadinessReasonV2.POLICY_FAILURE, component=REQUIRED_CHECKS_PIPELINE_COMPONENT_V2,
+        detail="pre-existing",
+    )
+    decision = ReadinessDecisionV2(
+        state=ReadinessStateV2.MANUAL_REQUIRED,
+        reason_codes=(ReadinessReasonV2.POLICY_FAILURE,),
+        blockers=(),
+        coverage=coverage,
+        pipeline=PipelineAssessmentV2(degraded=True, causes=[existing_cause]),
+        run_id=compute_run_id(identity),
+        manifest_hash=identity.manifest_hash,
+    )
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+    with pytest.raises(ReadinessDecisionError) as exc_info:
+        _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    assert exc_info.value.reason_code == DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2
+
+
+def test_a_preexisting_required_checks_blocker_id_is_refused_cleanly_not_crashed() -> None:
+    """Companion to the cause-collision test above: `ReviewReadinessV2.
+    validate_state_invariants` separately requires every `blocker.
+    blocker_id` to be unique. A hand-crafted decision already carrying a
+    blocker with `blocker_id="required-checks"` -- this function's own
+    fixed blocker id -- passes the reason-code guard and has no colliding
+    pipeline cause, but collides on blocker_id alone."""
+
+    coverage = ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
+    )
+    identity = RunIdentityV2.model_validate(_identity())
+    existing_blocker = ReadinessBlockerV2(
+        blocker_id="required-checks", reason_code=ReadinessReasonV2.POLICY_FAILURE, active=True, finding_id=None,
+    )
+    decision = ReadinessDecisionV2(
+        state=ReadinessStateV2.MANUAL_REQUIRED,
+        reason_codes=(ReadinessReasonV2.POLICY_FAILURE,),
+        blockers=(existing_blocker,),
+        coverage=coverage,
+        pipeline=PipelineAssessmentV2(degraded=False, causes=[]),
+        run_id=compute_run_id(identity),
+        manifest_hash=identity.manifest_hash,
+    )
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+    with pytest.raises(ReadinessDecisionError) as exc_info:
+        _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    assert exc_info.value.reason_code == DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2
+
+
+def test_a_red_non_required_check_survives_full_review_readiness_construction_as_manual_required() -> None:
+    """Adversarial review finding (round 8), full end-to-end proof.
+    Companion to `test_a_red_non_required_check_never_produces_satisfied`
+    in `test_required_check_readiness_v2.py`: every required check
+    ("pytest") is green, one legitimately-verified NON-required check
+    ("lint") is red. Before the fix, this combination reported `SATISFIED`,
+    left a `READY` decision unchanged, and crashed `ReviewReadinessV2.
+    __init__` several calls later with an uncaught `pydantic.
+    ValidationError` -- because the frozen contract's READY branch holds
+    EVERY entry of `self.checks` to green, not only the required-named
+    ones. The fix makes `status` account for every verified check's
+    conclusion, so this combination now downgrades to a representable
+    `MANUAL_REQUIRED` artifact instead of crashing."""
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+    assert decision.state is ReadinessStateV2.READY
+
+    checks = (
+        RequiredCheckResultV2(
+            check_name="pytest", required=True, deterministic=True,
+            conclusion=RequiredCheckConclusionV2.SUCCESS, head_sha=manifest.identity.head_sha,
+        ),
+        RequiredCheckResultV2(
+            check_name="lint", required=True, deterministic=True,
+            conclusion=RequiredCheckConclusionV2.FAILURE, head_sha=manifest.identity.head_sha,
+        ),
+    )
+    assessment = _assess_required_checks_v2(verified_checks=checks, required_check_names=("pytest",))
+    assert assessment.status is RequiredCheckStatusV2.FAILED
+
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+    assert adjusted.state is ReadinessStateV2.MANUAL_REQUIRED
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=synthesis.findings, identity=manifest.identity,
+        evaluated_identity=manifest.identity, pr_state=PullRequestStateV2.OPEN, checks=assessment.checks,
+    )
+
+    assert readiness.state.value == "manual_required"
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+    assert any(c.check_name == "lint" and c.conclusion.value == "failure" for c in readiness.checks)
+
+
+def test_joined_with_budget_never_produces_a_truncated_suffix() -> None:
+    """Adversarial review finding, confirmed and fixed. The previous
+    implementation packed names against `budget` with no headroom reserved
+    for the ` (+N more)` suffix appended afterward, so the final hard
+    slice routinely chopped the suffix itself. Reproduced before the fix:
+    two 198-char names at budget=200 produced a string ending in a bare
+    `' ('`, with no digit or closing paren. Every result must now be
+    well-formed: it fits the budget, and if it was truncated at all, it
+    ends with a complete `(+N more)`."""
+
+    result = _joined_with_budget_v2(("a" * 198, "b" * 198), budget=200)
+    assert len(result) <= 200
+    assert result.endswith(")")
+    assert "more)" in result
+
+    many_short_names = tuple(f"check-{i}" for i in range(40))
+    result_many = _joined_with_budget_v2(many_short_names, budget=200)
+    assert len(result_many) <= 200
+    assert result_many.endswith(")")
+
+    tiny_budget = _joined_with_budget_v2(("a" * 300,), budget=10)
+    assert len(tiny_budget) <= 10
+
+
+def test_joined_with_budget_never_drops_all_content_for_a_single_overlong_name() -> None:
+    """Adversarial review finding, confirmed and fixed (round 7). When even
+    the single FIRST name alone (plus its own suffix) exceeds `budget`, the
+    previous fallback dropped it entirely, returning a content-free
+    `"(+1 more)"` -- conveying nothing about which check was missing/failed
+    -- even though `budget` had plenty of room to show a meaningfully
+    truncated prefix of that one name. `SafeText` check names may be up to
+    512 characters (`contracts_v2.py`) against this module's own 200-
+    character per-segment budget, so a single overlong name is realistically
+    reachable, not just a synthetic edge case. The result must now retain a
+    real prefix of the name instead of discarding it."""
+
+    single_overlong = _joined_with_budget_v2(("a" * 300,), budget=200)
+    assert len(single_overlong) <= 200
+    assert single_overlong == "a" * 200
+    assert single_overlong != "(+1 more)"
+
+    with_a_short_companion = _joined_with_budget_v2(("short", "b" * 300), budget=200)
+    assert len(with_a_short_companion) <= 200
+    assert with_a_short_companion.startswith("short")
+    assert "(+1 more)" in with_a_short_companion
+
+
+def test_joined_with_budget_returns_the_full_join_when_it_fits() -> None:
+    assert _joined_with_budget_v2(("a", "b", "c"), budget=200) == "a, b, c"
+
+
+def test_a_required_check_present_and_green_never_masks_a_different_missing_one() -> None:
+    """The literal #145 regression shape, with a SUCCESS conclusion
+    specifically -- a Codex review of #145 found that a target requiring
+    both pytest and mypy was satisfied by a submission containing only a
+    green pytest. The only existing coverage of "one present, one missing"
+    used a FAILURE conclusion for the present check; add the SUCCESS case
+    by name so a future change to the missing/failed precedence cannot
+    reintroduce this exact shape unnoticed."""
+
+    checks = (
+        RequiredCheckResultV2(
+            check_name="pytest", required=True, deterministic=True,
+            conclusion=RequiredCheckConclusionV2.SUCCESS, head_sha="2" * 40,
+        ),
+    )
+
+    assessment = _assess_required_checks_v2(verified_checks=checks, required_check_names=("pytest", "mypy"))
+
+    assert assessment.status is RequiredCheckStatusV2.AUTHORITY_NOT_ESTABLISHED
+    assert assessment.missing_check_names == ("mypy",)
+    assert assessment.failed_check_names == ()
+
+
+def test_blocked_pipeline_preservation_survives_full_review_readiness_construction() -> None:
+    """Closes the exact class of gap the adversarial review's confirmed
+    finding exploited: `_apply_required_check_assessment_v2` alone
+    validating is not the same fact as the frozen `ReviewReadinessV2`
+    contract accepting the result. `COVERAGE_FAILURE` (the one reason
+    `compute_readiness_decision_v2` can actually attach to a real
+    `BLOCKED_PIPELINE` decision) combined with `POLICY_FAILURE` must
+    survive all the way to a real, fully-constructed artifact -- not just
+    the intermediate `ReadinessDecisionV2`. Since round 9 the state is
+    PRESERVED rather than downgraded; the end-to-end obligation is
+    unchanged."""
+
+    manifest, report = _plain_split_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies(coverage_failure_state="blocked_pipeline")
+    )
+    assert decision.state is ReadinessStateV2.BLOCKED_PIPELINE
+
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+    assert adjusted.state is ReadinessStateV2.BLOCKED_PIPELINE
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted,
+        findings=synthesis.findings,
+        identity=manifest.identity,
+        evaluated_identity=manifest.identity,
+        pr_state=PullRequestStateV2.OPEN,
+        checks=[],
+    )
+
+    assert readiness.state.value == "blocked_pipeline"
+    assert ReadinessReasonV2.COVERAGE_FAILURE in readiness.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+
+
+def test_blocked_pipeline_with_a_pending_new_finding_survives_full_construction() -> None:
+    """THE round-9 finding, as a production-reachable regression test.
+
+    `compute_readiness_decision_v2` produces a valid `BLOCKED_PIPELINE`
+    decision that carries a pending NEW actionable P0/P1/P2 finding WITHOUT
+    `FINDING_CONFIRMATION_REQUIRED` in its reason codes -- that code is not
+    in `BLOCKED_PIPELINE`'s allowed set, which this module's own docstring
+    records as a "known, documented scope limitation". `BLOCKED_PIPELINE`'s
+    contract branch imposes no requirement that pending new findings be
+    represented; `MANUAL_REQUIRED`'s branch does ("manual_required must
+    represent pending finding confirmation").
+
+    So the pre-round-9 downgrade turned a perfectly valid producer output
+    into an UNCONSTRUCTIBLE artifact -- an uncaught `pydantic.
+    ValidationError` several calls later. Not hypothetical and not
+    hand-crafted: the shipped `agent_escala` target profile sets
+    `coverage_failure_state: blocked_pipeline`, so degraded coverage plus
+    one pending new finding plus the absence of required-check authority
+    (always true today) was enough to reach it."""
+
+    manifest, report = _plain_split_manifest_and_report()
+    finding = _new_finding(finding_id="finding-9", head_sha=manifest.identity.head_sha)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, findings=(finding,))
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies(coverage_failure_state="blocked_pipeline")
+    )
+    assert decision.state is ReadinessStateV2.BLOCKED_PIPELINE
+    # The finding is genuinely pending and genuinely unrepresented here.
+    assert ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED not in decision.reason_codes
+
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=synthesis.findings, identity=manifest.identity,
+        evaluated_identity=manifest.identity, pr_state=PullRequestStateV2.OPEN, checks=[],
+    )
+
+    assert readiness.state.value == "blocked_pipeline"
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+    assert ReadinessReasonV2.COVERAGE_FAILURE in readiness.reason_codes
+    # The required-check problem is not silently dropped by preserving the state.
+    assert any(b.blocker_id == "required-checks" for b in readiness.blockers)
+    assert any(c.component == "required_checks" for c in readiness.pipeline.causes)
+
+
+def test_model_uncertainty_downgrade_survives_full_review_readiness_construction() -> None:
+    """Same class of proof as `test_blocked_pipeline_downgrade_survives_
+    full_review_readiness_construction`, for the other reachable member of
+    `_MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2`: `MODEL_UNCERTAINTY` +
+    `POLICY_FAILURE` together must survive a real, fully-constructed
+    `ReviewReadinessV2`, not just the intermediate `ReadinessDecisionV2`."""
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, limitations=("model_uncertainty",))
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+    assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert ReadinessReasonV2.MODEL_UNCERTAINTY in decision.reason_codes
+
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=synthesis.findings, identity=manifest.identity,
+        evaluated_identity=manifest.identity, pr_state=PullRequestStateV2.OPEN, checks=[],
+    )
+
+    assert readiness.state.value == "manual_required"
+    assert ReadinessReasonV2.MODEL_UNCERTAINTY in readiness.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+
+
+def test_finding_confirmation_required_downgrade_survives_full_review_readiness_construction() -> None:
+    """Same class of proof, for `FINDING_CONFIRMATION_REQUIRED` -- the one
+    member of the safe set whose own contract invariant additionally
+    requires a matching blocker naming a real, pending, actionable new
+    finding. Proves the required-check wiring does not disturb that
+    finding-confirmation machinery."""
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    finding = _new_finding(finding_id="finding-3", head_sha=manifest.identity.head_sha)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, findings=(finding,))
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+    assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED in decision.reason_codes
+
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=synthesis.findings, identity=manifest.identity,
+        evaluated_identity=manifest.identity, pr_state=PullRequestStateV2.OPEN, checks=[],
+    )
+
+    assert readiness.state.value == "manual_required"
+    assert ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED in readiness.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes

@@ -12,9 +12,8 @@ from app.agent_review.contracts_v2 import (
     ChunkResponseSuccessEnvelopeV2,
     ChunkReviewResultV2,
     PullRequestStateV2,
+    ReadinessReasonV2,
     ReadinessStateV2,
-    RequiredCheckConclusionV2,
-    RequiredCheckResultV2,
     SemanticGroupV2,
     TargetProfileV2,
     compute_response_sha256_v2,
@@ -161,28 +160,149 @@ def _policies():
     return _profile().policies
 
 
+def _target_profile_root(tmp_path: Path) -> Path:
+    """An on-disk trusted checkout carrying the SAME profile content as
+    ``_profile()`` (so ``compute_profile_hash_v2`` agrees regardless of
+    construction path) plus a matching authoritative-check policy for
+    ``pytest`` -- required since `#201-C`'s choke point derives the
+    required-check set and re-verifies claims from this root, never from a
+    caller-supplied array."""
+
+    profile_root = tmp_path / "target_profile"
+    aiops_dir = profile_root / ".aiops"
+    aiops_dir.mkdir(parents=True, exist_ok=True)
+    (aiops_dir / "target-profile.v2.yaml").write_text(
+        f"""schema_id: agent-review.target-profile.v2
+schema_version: 2
+source: repo-profile
+identity:
+  repo: example/repo
+  default_branch: main
+artifacts:
+  - artifact_id: full-diff
+    path: artifacts/full.diff
+    kind: diff
+    required: true
+    max_bytes: 1000000
+budgets:
+  max_chunks: 32
+  total_prompt_chars: 250000
+  max_chars_per_chunk: 24000
+  max_files_per_chunk: 50
+  max_contracts_per_chunk: 50
+must_review:
+  paths:
+    - app.py
+  patterns: []
+  artifact_ids: []
+  minimum_coverage: complete
+policies:
+  network_policy: forbidden
+  fail_closed: true
+  redaction_required: true
+  allow_partial_coverage: false
+  required_checks:
+    - pytest
+  allowed_semantic_groups:
+    - primary_backend_logic
+  coverage_failure_state: manual_required
+  model_uncertainty_state: manual_required
+contracts:
+  - contract_id: contract.api
+    contract_version: "1"
+    path: .aiops/domain-contracts.yaml
+    sha256: "{'f' * 64}"
+    scope: repository
+    required: true
+limitations: []
+""",
+        encoding="utf-8",
+    )
+    (aiops_dir / "authoritative-checks.v2.yaml").write_text(
+        """schema_id: agent-review.authoritative-check-policy.v2
+schema_version: 2
+source: repo-policy
+identity:
+  repo: example/repo
+authoritative_checks:
+  - check_name: pytest
+    workflow_path: .github/workflows/authoritative-checks.yml
+    job_name: authoritative pytest
+    verifier_identity: github-actions
+    producer_kind: base_owned_workflow_run
+    producer_workflow:
+      repository: example/repo
+      path: .github/workflows/authoritative-checks.yml
+      sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
+    producer_workflow_ref: refs/heads/main
+    permitted_conclusions:
+      - success
+      - failure
+    origin_rules:
+      pull_request: synthetic_merge_parentage
+""",
+        encoding="utf-8",
+    )
+    return profile_root
+
+
+def _empty_authority(tmp_path: Path):
+    """The Class A shape every test in this file uses: an empty, honestly
+    unestablished required-check submission, verified against the real,
+    unpatched `#201-C0` boundary -- never a hand-built claim asserting its
+    own authority."""
+
+    from app.agent_review.authoritative_ci_snapshot_v2 import parse_authoritative_ci_snapshot_v2
+    from app.agent_review.contracts_v2 import RunOriginV2
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import TOOLCHAIN_DIGEST, _snapshot_dict
+
+    # An empty submission never reaches `assemble_authoritative_ci_promotion_v2`
+    # at all (`verify_required_check_provenance_set_v2`'s loop is vacuous for
+    # an empty `checks`), so the snapshot's own content is irrelevant here --
+    # it only needs to be a structurally valid, parseable snapshot.
+    origin = RunOriginV2(event_type="pull_request", event_action="synchronize", delivery_id="delivery-1")
+    snapshot = parse_authoritative_ci_snapshot_v2(json.dumps(_snapshot_dict([])))
+    return {
+        "origin": origin,
+        "snapshot": snapshot,
+        "toolchain_digest": TOOLCHAIN_DIGEST,
+        "target_profile_root": str(_target_profile_root(tmp_path)),
+    }
+
+
 # -- offline transport, full synthetic E2E ------------------------------------
 
 
 @pytest.mark.requires_network
-def test_run_synthetic_review_produces_a_real_readiness_from_bound_chunks(tmp_path: Path) -> None:
+def test_run_synthetic_review_produces_manual_required_when_authority_is_not_established(tmp_path: Path) -> None:
+    """Was: proves a nominal invocation reaches `state: ready` via a
+    hand-built green check. Under `#201-C` that check is no longer a
+    trusted array -- it is a CLAIM `run_synthetic_review_v2` re-verifies
+    against the real, unpatched `#201-C0` boundary itself. No positive
+    required-check authority is reachable in production today (see
+    `required_check_readiness_v2`'s own module docstring), so the
+    genuinely reachable, honest outcome of a clean chunk bind with an
+    empty (never fabricated) required-check submission is
+    `manual_required` + `policy_failure` -- not `ready`. The composition-
+    level proof that a SATISFIED assessment reaches `ready` lives in
+    `test_readiness_decision_v2.py`/`test_review_readiness_emission_v2.py`,
+    below the authority boundary, where it belongs."""
+
     manifest, content, payload_by_chunk_id = _build_repo_manifest_and_content(tmp_path)
     responses_dir = tmp_path / "responses"
     _write_offline_responses(responses_dir, content=content, manifest=manifest)
 
-    green_check = RequiredCheckResultV2(
-        check_name="pytest", required=True, deterministic=True,
-        conclusion=RequiredCheckConclusionV2.SUCCESS, head_sha=manifest.identity.head_sha,
-    )
     outcome = run_synthetic_review_v2(
         content=content, manifest=manifest, payload_by_chunk_id=payload_by_chunk_id,
         transport=offline_file_transport_v2(responses_dir), policies=_policies(),
-        pr_state=PullRequestStateV2.OPEN, checks=[green_check],
+        pr_state=PullRequestStateV2.OPEN, checks=(), provenance=(),
+        **_empty_authority(tmp_path),
     )
 
     assert all(o.state == "bound" for o in outcome.chunk_outcomes)
     assert outcome.readiness.run_id == manifest.run_id
-    assert outcome.readiness.state is ReadinessStateV2.READY, outcome.readiness.reason_codes
+    assert outcome.readiness.state is ReadinessStateV2.MANUAL_REQUIRED, outcome.readiness.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in outcome.readiness.reason_codes
 
 
 @pytest.mark.requires_network
@@ -195,7 +315,8 @@ def test_run_synthetic_review_degrades_a_tampered_echo_chunk_to_manual_required(
     outcome = run_synthetic_review_v2(
         content=content, manifest=manifest, payload_by_chunk_id=payload_by_chunk_id,
         transport=offline_file_transport_v2(responses_dir), policies=_policies(),
-        pr_state=PullRequestStateV2.OPEN, checks=(),
+        pr_state=PullRequestStateV2.OPEN, checks=(), provenance=(),
+        **_empty_authority(tmp_path),
     )
 
     tampered = next(o for o in outcome.chunk_outcomes if o.chunk_id == tamper_chunk_id)
@@ -215,7 +336,8 @@ def test_run_synthetic_review_degrades_a_missing_response_file_to_manual_require
     outcome = run_synthetic_review_v2(
         content=content, manifest=manifest, payload_by_chunk_id=payload_by_chunk_id,
         transport=offline_file_transport_v2(responses_dir), policies=_policies(),
-        pr_state=PullRequestStateV2.OPEN, checks=(),
+        pr_state=PullRequestStateV2.OPEN, checks=(), provenance=(),
+        **_empty_authority(tmp_path),
     )
 
     assert all(o.state == "manual_required" for o in outcome.chunk_outcomes)
@@ -234,7 +356,8 @@ def test_run_synthetic_review_degrades_malformed_json_to_manual_required(tmp_pat
     outcome = run_synthetic_review_v2(
         content=content, manifest=manifest, payload_by_chunk_id=payload_by_chunk_id,
         transport=offline_file_transport_v2(responses_dir), policies=_policies(),
-        pr_state=PullRequestStateV2.OPEN, checks=(),
+        pr_state=PullRequestStateV2.OPEN, checks=(), provenance=(),
+        **_empty_authority(tmp_path),
     )
     assert all(o.reason_code == CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2 for o in outcome.chunk_outcomes)
 
