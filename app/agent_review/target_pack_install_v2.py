@@ -48,6 +48,34 @@ known, accepted residual risk at this level of rigor -- the same class of
 limit `#201-C`'s own merge gate declared honestly (`§6.4` of that slice's
 spec) rather than solving with OS-level `O_NOFOLLOW` primitives this slice
 does not need.
+
+## `target_root` itself swapped between plan and apply (round 5)
+
+The check above resolves `target_root` fresh at the start of `apply_
+install_plan_v2` -- but if `target_root` ITSELF had already been replaced
+by a symlink pointing elsewhere between `compute_install_plan_v2` and this
+call, that "fresh" resolution just faithfully reports the attacker's
+redirected location as ground truth, and every per-file check above passes
+trivially against it. `InstallPlanV2.target_root_real` captures the
+resolved root AT PLAN TIME; `apply_install_plan_v2` re-resolves `target_
+root` at the START of its own call and refuses outright, writing nothing,
+if the two disagree -- before any file-level check ever runs.
+
+## Every write to a target repository goes through this module (round 5)
+
+Adversarial review finding, confirmed and fixed: `scripts/agent-review-
+target-pack-v2.py`'s `_cmd_init` used to write `.aiops/install-receipt.v2.
+json` with a raw `Path.write_text`, bypassing every containment check
+above entirely -- this module's own "ONLY module that writes" claim was
+false. Reproduced: a pre-existing, valid `TARGET_OWNED` profile reached
+through a symlinked `.aiops` (so `apply_install_plan_v2`'s own profile
+write was `SKIP_TARGET_OWNED` -- no write attempted, no check triggered at
+all) let the raw receipt write silently follow the same symlink, landing
+`install-receipt.v2.json` entirely outside `target_root`, exit 0, no
+refusal. `write_receipt_v2` is the fix: the CLI's only sanctioned way to
+persist a receipt, routed through the exact same `_atomic_write_v2` (and
+therefore the exact same symlink/root-identity containment) every other
+write in this module already gets.
 """
 
 from __future__ import annotations
@@ -61,9 +89,11 @@ from app.agent_review.target_pack_manifest_v2 import (
     TargetPackManifestV2,
 )
 from app.agent_review.target_pack_plan_v2 import InstallPlanV2, PlannedActionV2
+from app.agent_review.target_pack_receipt_v2 import RECEIPT_RELATIVE_PATH_V2, TargetInstallReceiptV2
 
 INSTALL_DRIFT_UNRESOLVED_REASON_V2 = "target_pack_install_drift_unresolved"
 INSTALL_PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_install_path_escapes_target_root"
+INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2 = "target_pack_install_target_root_identity_changed"
 
 
 class TargetPackInstallError(ValueError):
@@ -116,16 +146,33 @@ def apply_install_plan_v2(
     """Applies `plan` to `target_root`. Returns the tuple of paths actually
     written. Raises `TargetPackInstallError` (writing NOTHING) if any
     drifted path is not covered by `force_overwrite_paths` -- see the
-    module docstring."""
+    module docstring.
+
+    Round 5 adversarial finding, confirmed and fixed: the per-file symlink
+    check added in the previous round resolves `target_root` fresh at the
+    START of this call -- but if `target_root` ITSELF had already been
+    swapped for a symlink pointing elsewhere between `compute_install_
+    plan_v2` and this call, that "fresh" resolution just faithfully
+    reports the ATTACKER'S redirected location as the ground truth, and
+    every subsequent per-file check passes trivially against it.
+    Reproduced: swapping `target_root` for a symlink after planning, then
+    applying, wrote the file into the symlink's target with no refusal at
+    all -- the previous round's fix only ever protected an INTERMEDIATE
+    path component, never the root itself.
+
+    Fixed by comparing this call's own resolution of `target_root` against
+    `plan.target_root_real` (captured at PLAN time) and refusing outright,
+    before touching the filesystem at all, if they disagree -- the ground
+    truth shifted between plan and apply, so nothing about this plan can
+    be trusted to still apply to whatever `target_root` now is."""
 
     unresolved_drift = set(plan.drifted_paths) - force_overwrite_paths
     if unresolved_drift:
         raise TargetPackInstallError(INSTALL_DRIFT_UNRESOLVED_REASON_V2)
 
-    # Resolved ONCE per call. Every write below re-verifies against this
-    # same value immediately before it happens -- see the module
-    # docstring's "Symlink / path-escape containment" section.
     target_root_real = target_root.resolve(strict=False)
+    if str(target_root_real) != plan.target_root_real:
+        raise TargetPackInstallError(INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2)
 
     written: list[str] = []
     for file_action in plan.file_actions:
@@ -149,6 +196,22 @@ def apply_install_plan_v2(
         # NOOP_UNCHANGED intentionally do nothing.
 
     return tuple(written)
+
+
+def write_receipt_v2(*, target_root: Path, receipt: TargetInstallReceiptV2) -> None:
+    """The CLI's only sanctioned way to persist a `TargetInstallReceiptV2`
+    -- see the module docstring's "Every write to a target repository goes
+    through this module" section. Routed through the exact same atomic,
+    symlink/root-identity-checked `_atomic_write_v2` every other write in
+    this module gets; never a raw `Path.write_text` in the CLI again."""
+
+    import json
+
+    target_root_real = target_root.resolve(strict=False)
+    content = (json.dumps(receipt.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    _atomic_write_v2(target_root / RECEIPT_RELATIVE_PATH_V2, content, target_root_real=target_root_real)
 
 
 _FENCE_BEGIN_V2 = "# --- agent-review-v2:begin ---"

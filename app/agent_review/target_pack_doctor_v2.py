@@ -36,10 +36,8 @@ from app.agent_review.profile_loader_v2 import (
     load_target_profile_v2,
 )
 from app.agent_review.target_pack_manifest_v2 import TargetPackManifestV2
-from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2
+from app.agent_review.target_pack_receipt_v2 import RECEIPT_RELATIVE_PATH_V2, TargetInstallReceiptV2
 from pydantic import ValidationError
-
-RECEIPT_RELATIVE_PATH_V2 = ".aiops/install-receipt.v2.json"
 
 DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 = "target_pack_doctor_target_root_not_a_directory"
 

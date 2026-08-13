@@ -8,6 +8,7 @@ import pytest
 from app.agent_review.target_pack_install_v2 import (
     INSTALL_DRIFT_UNRESOLVED_REASON_V2,
     INSTALL_PATH_ESCAPES_TARGET_ROOT_REASON_V2,
+    INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2,
     TargetPackInstallError,
     apply_install_plan_v2,
 )
@@ -184,6 +185,43 @@ def test_apply_refuses_to_write_through_a_directory_symlink_escaping_target_root
         )
 
     assert exc_info.value.reason_code == INSTALL_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert list(outside.iterdir()) == []
+
+
+def test_apply_refuses_when_target_root_itself_was_swapped_for_a_symlink_after_planning(
+    tmp_path: Path,
+) -> None:
+    """Round 5 adversarial finding, confirmed and fixed: the per-file
+    symlink check (round 4) resolves `target_root` fresh at the start of
+    `apply_install_plan_v2` -- but if `target_root` ITSELF was already
+    replaced by a symlink pointing elsewhere between `compute_install_
+    plan_v2` and `apply_install_plan_v2`, that "fresh" resolution just
+    faithfully reports the attacker's redirected location, and every
+    per-file check passes trivially against it. Reproduced before the fix:
+    the file landed inside the symlink's target with no refusal at all.
+    """
+
+    import shutil
+
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-root-swap"
+    outside.mkdir()
+
+    entry = GeneratedFileEntryV2(
+        path="a.yaml", ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED, content_sha256=_sha256(b"new")
+    )
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+
+    # target_root ITSELF replaced by a symlink AFTER planning.
+    shutil.rmtree(tmp_path)
+    tmp_path.symlink_to(outside)
+
+    with pytest.raises(TargetPackInstallError) as exc_info:
+        apply_install_plan_v2(
+            plan=plan, manifest=manifest, target_root=tmp_path, seed_content_by_path={"a.yaml": b"new"}
+        )
+
+    assert exc_info.value.reason_code == INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2
     assert list(outside.iterdir()) == []
 
 

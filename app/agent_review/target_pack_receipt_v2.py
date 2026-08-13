@@ -53,6 +53,13 @@ from app.agent_review.contracts_v2 import (
 
 TARGET_INSTALL_RECEIPT_SCHEMA_ID_V2 = "agent-review.target-install-receipt.v2"
 
+# The single source of truth for where a receipt lives in a target
+# repository -- `target_pack_install_v2.write_receipt_v2` (the only
+# sanctioned writer) and `target_pack_doctor_v2.run_doctor_v2` (read-only)
+# both import this constant from here rather than each defining their own
+# copy, so the two can never silently drift apart.
+RECEIPT_RELATIVE_PATH_V2 = ".aiops/install-receipt.v2.json"
+
 RECEIPT_SECRET_NAME_LOOKS_LIKE_VALUE_REASON_V2 = "target_install_receipt_secret_name_looks_like_value"
 RECEIPT_HASH_MISMATCH_REASON_V2 = "target_install_receipt_hash_mismatch"
 

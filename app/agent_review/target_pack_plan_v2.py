@@ -87,10 +87,18 @@ class InstallPlanV2:
     true iff every entry resolved to `NOOP_UNCHANGED`/`SKIP_TARGET_OWNED`
     -- the property `target_pack_plan_v2`'s idempotence tests assert
     directly: computing a plan against a target a plan was JUST applied to
-    must be `is_noop`."""
+    must be `is_noop`.
+
+    `target_root_real` -- `target_root.resolve(strict=False)` AT PLAN TIME
+    -- exists so `apply_install_plan_v2` can detect `target_root` ITSELF
+    having been swapped for a symlink between planning and applying (round
+    5 adversarial finding: per-file symlink checks are meaningless if the
+    very ROOT they are anchored to has already been redirected). See that
+    function's own docstring."""
 
     file_actions: tuple[PlannedFileActionV2, ...]
     drifted_paths: tuple[str, ...]
+    target_root_real: str
 
     @property
     def is_noop(self) -> bool:
@@ -176,7 +184,11 @@ def compute_install_plan_v2(
             )
         )
 
-    return InstallPlanV2(file_actions=tuple(actions), drifted_paths=tuple(drifted))
+    return InstallPlanV2(
+        file_actions=tuple(actions),
+        drifted_paths=tuple(drifted),
+        target_root_real=str(target_root.resolve(strict=False)),
+    )
 
 
 def validate_rollout_ceiling_v2(*, requested: str, resolved: str) -> None:

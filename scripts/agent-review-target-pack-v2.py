@@ -52,8 +52,10 @@ from app.agent_review.target_pack_build_v2 import (  # noqa: E402
 )
 from app.agent_review.target_pack_doctor_v2 import run_doctor_v2  # noqa: E402
 from app.agent_review.target_pack_install_v2 import (  # noqa: E402
+    RECEIPT_RELATIVE_PATH_V2,
     TargetPackInstallError,
     apply_install_plan_v2,
+    write_receipt_v2,
 )
 from app.agent_review.target_pack_plan_v2 import PlanError, compute_install_plan_v2  # noqa: E402
 from app.agent_review.target_pack_receipt_v2 import (  # noqa: E402
@@ -61,8 +63,6 @@ from app.agent_review.target_pack_receipt_v2 import (  # noqa: E402
     compute_target_install_receipt_hash_v2,
 )
 from pydantic import ValidationError  # noqa: E402
-
-RECEIPT_RELATIVE_PATH_V2 = ".aiops/install-receipt.v2.json"
 
 CLI_INPUT_INVALID_REASON_V2 = "target_pack_cli_input_invalid"
 
@@ -168,12 +168,11 @@ def _cmd_init(args: argparse.Namespace) -> int:
     )
     receipt = TargetInstallReceiptV2(**receipt_without_hash, receipt_hash=receipt_hash)
 
-    receipt_path = target_root / RECEIPT_RELATIVE_PATH_V2
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    receipt_path.write_text(
-        json.dumps(receipt.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    try:
+        write_receipt_v2(target_root=target_root, receipt=receipt)
+    except TargetPackInstallError as exc:
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return 1
     print(json.dumps({"written": list(written) + [RECEIPT_RELATIVE_PATH_V2]}, indent=2))
     return 0
 

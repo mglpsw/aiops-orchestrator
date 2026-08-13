@@ -191,6 +191,47 @@ def test_init_refuses_cleanly_not_a_traceback_when_a_preexisting_target_owned_pr
     assert "target_profile_unreadable" in result.stderr
 
 
+def test_init_refuses_when_the_receipt_write_would_escape_target_root_via_a_symlink(tmp_path: Path) -> None:
+    """Round 5 adversarial finding, confirmed and fixed: `_cmd_init` used
+    to write the receipt with a raw `Path.write_text`, bypassing every
+    symlink/containment check `apply_install_plan_v2` enforces for every
+    OTHER write. Reproduced: a pre-existing, valid `TARGET_OWNED` profile
+    reached through a symlinked `.aiops` meant `apply_install_plan_v2`'s
+    own profile write was `SKIP_TARGET_OWNED` (no write attempted, no
+    check triggered at all) -- so the raw receipt write was the ONLY write
+    touching `.aiops/`, and it silently followed the symlink, landing
+    `install-receipt.v2.json` entirely outside `target_root`, exit 0, no
+    refusal. Must now refuse cleanly instead."""
+
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-receipt-escape"
+    outside.mkdir()
+    # A real, VALID target-owned profile living outside target_root.
+    template_profile = (
+        REPO_ROOT / "templates" / "agentreview-v2-target-pack" / "target-profile.v2.yaml"
+    ).read_bytes()
+    (outside / "target-profile.v2.yaml").write_bytes(template_profile)
+
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    (target_root / ".aiops").symlink_to(outside)
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(target_root),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "target_pack_install_path_escapes_target_root" in result.stderr
+    # The receipt must NOT have leaked into the symlink target.
+    assert not (outside / "install-receipt.v2.json").exists()
+
+
 def test_init_refuses_cleanly_instead_of_fabricating_a_toolrepo_sha(tmp_path: Path) -> None:
     """Adversarial review finding, confirmed and fixed: a `--toolrepo-root`
     that is not a real git checkout previously made `init` succeed anyway,
