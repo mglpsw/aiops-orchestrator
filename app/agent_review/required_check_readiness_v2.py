@@ -121,11 +121,22 @@ artifact bytes. Reproduced directly: identical status and identical name
 lists, but `a.checks != b.checks` and different serialized bytes.
 
 Sorting by `check_name` alone is a TOTAL order here, not a partial one that
-would need a tie-break: as the `by_name` comment in
-`_assess_required_checks_v2` records, no two verified checks can share a
-`check_name` without being byte-identical, because they would then share a
-`compute_required_check_digest_v2` digest, which
-`verify_required_check_provenance_set_v2` already refuses as a duplicate.
+would need a tie-break -- but only within the already-legitimated domain
+this function receives, and the reason is two steps, not one:
+`compute_required_check_digest_v2` hashes the entire canonical
+`RequiredCheckResultV2`, so two checks sharing only a `check_name` do NOT
+thereby share a digest -- differing in `conclusion`/`head_sha`/etc. would
+still differ in digest. What rules that out here is the caller,
+`_verify_and_assess_required_checks_v2`, which always calls
+`reassemble_and_verify_required_checks_v2` before assessment: for a fixed
+identity/snapshot/policy/origin, re-deriving a given `check_name` is
+deterministic, so two verified checks sharing that name in the SAME
+verified submission must be byte-identical -- and if they were not, they
+would share a digest that `verify_required_check_provenance_set_v2`
+already refuses as a duplicate (the same reasoning the existing `by_name`
+comment in `_assess_required_checks_v2` records). `check_name` is
+therefore a sufficient, tie-break-free sort key for `verified_checks`
+specifically -- not a general property of `RequiredCheckResultV2`.
 
 This is ordering normalization only. Every check is preserved -- no filter,
 no dedup, no substitution -- so nothing about `status`, precedence, or the
