@@ -117,7 +117,10 @@ from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
 from app.agent_review.required_check_readiness_v2 import (  # noqa: E402
     RequiredCheckReadinessErrorV2,
 )
-from app.agent_review.readiness_decision_v2 import ReadinessDecisionV2  # noqa: E402
+from app.agent_review.readiness_decision_v2 import (  # noqa: E402
+    ReadinessDecisionError,
+    ReadinessDecisionV2,
+)
 from app.agent_review.review_readiness_emission_v2 import (  # noqa: E402
     ReadinessEmissionError,
     produce_review_readiness_v2,
@@ -410,14 +413,22 @@ def main(argv: list[str] | None = None) -> int:
         RequiredCheckReadinessErrorV2,
         TargetProfileLoadErrorV2,
         AuthoritativeCheckPolicyErrorV2,
+        ReadinessDecisionError,
     ) as exc:
         # Surfaced verbatim: every one of these reason codes is already
         # stable, typed and log-safe -- translating them into a second
         # gate-local vocabulary would only create synonyms. This is the
         # boundary refusal case (forged/invalid/cross-run/non-allowlisted
-        # submission, or a broken --target-profile checkout): no artifact is
+        # submission, a broken --target-profile checkout, or an
+        # unrepresentable decision/assessment combination): no artifact is
         # ever written for it, matching CLI_EXIT_SUCCESS != READINESS_READY
         # (module docstring) -- an artifact is written only past this point.
+        # ReadinessDecisionError specifically: an adversarial review of PR
+        # #220 found it was raised by _apply_required_check_assessment_v2's
+        # representability guard but never caught here, so it propagated as
+        # an uncaught traceback instead of this clean, typed refusal --
+        # reproducing, for that one case, exactly the "crash instead of a
+        # controlled exit" defect the guard itself was written to prevent.
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
     except ValidationError as exc:

@@ -12,6 +12,7 @@ from app.agent_review.contracts_v2 import (
     FindingSeverityV2,
     PipelineAssessmentV2,
     PipelineDegradationCauseV2,
+    PullRequestStateV2,
     ReadinessBlockerV2,
     ReadinessReasonV2,
     ReadinessStateV2,
@@ -41,10 +42,12 @@ from app.agent_review.readiness_decision_v2 import (
     ReadinessDecisionError,
     ReadinessDecisionV2,
     _apply_required_check_assessment_v2,
+    _joined_with_budget_v2,
     bridge_fragment_coverage_to_chunk_coverage_v2,
     compute_readiness_decision_v2,
 )
-from app.agent_review.required_check_readiness_v2 import _assess_required_checks_v2
+from app.agent_review.required_check_readiness_v2 import RequiredCheckStatusV2, _assess_required_checks_v2
+from app.agent_review.review_readiness_emission_v2 import _assemble_review_readiness_v2
 from app.agent_review.run_fragment_coverage_v2 import (
     FragmentCoverageReasonV2,
     FragmentCoverageStatusV2,
@@ -908,3 +911,89 @@ def test_blocked_code_tolerates_schema_or_transport_failure_unaffected() -> None
     assert result.state is ReadinessStateV2.BLOCKED_CODE
     assert ReadinessReasonV2.TRANSPORT_FAILURE in result.reason_codes
     assert ReadinessReasonV2.POLICY_FAILURE in result.reason_codes
+
+
+def test_joined_with_budget_never_produces_a_truncated_suffix() -> None:
+    """Adversarial review finding, confirmed and fixed. The previous
+    implementation packed names against `budget` with no headroom reserved
+    for the ` (+N more)` suffix appended afterward, so the final hard
+    slice routinely chopped the suffix itself. Reproduced before the fix:
+    two 198-char names at budget=200 produced a string ending in a bare
+    `' ('`, with no digit or closing paren. Every result must now be
+    well-formed: it fits the budget, and if it was truncated at all, it
+    ends with a complete `(+N more)`."""
+
+    result = _joined_with_budget_v2(("a" * 198, "b" * 198), budget=200)
+    assert len(result) <= 200
+    assert result.endswith(")")
+    assert "more)" in result
+
+    many_short_names = tuple(f"check-{i}" for i in range(40))
+    result_many = _joined_with_budget_v2(many_short_names, budget=200)
+    assert len(result_many) <= 200
+    assert result_many.endswith(")")
+
+    tiny_budget = _joined_with_budget_v2(("a" * 300,), budget=10)
+    assert len(tiny_budget) <= 10
+
+
+def test_joined_with_budget_returns_the_full_join_when_it_fits() -> None:
+    assert _joined_with_budget_v2(("a", "b", "c"), budget=200) == "a, b, c"
+
+
+def test_a_required_check_present_and_green_never_masks_a_different_missing_one() -> None:
+    """The literal #145 regression shape, with a SUCCESS conclusion
+    specifically -- a Codex review of #145 found that a target requiring
+    both pytest and mypy was satisfied by a submission containing only a
+    green pytest. The only existing coverage of "one present, one missing"
+    used a FAILURE conclusion for the present check; add the SUCCESS case
+    by name so a future change to the missing/failed precedence cannot
+    reintroduce this exact shape unnoticed."""
+
+    checks = (
+        RequiredCheckResultV2(
+            check_name="pytest", required=True, deterministic=True,
+            conclusion=RequiredCheckConclusionV2.SUCCESS, head_sha="2" * 40,
+        ),
+    )
+
+    assessment = _assess_required_checks_v2(verified_checks=checks, required_check_names=("pytest", "mypy"))
+
+    assert assessment.status is RequiredCheckStatusV2.AUTHORITY_NOT_ESTABLISHED
+    assert assessment.missing_check_names == ("mypy",)
+    assert assessment.failed_check_names == ()
+
+
+def test_blocked_pipeline_downgrade_survives_full_review_readiness_construction() -> None:
+    """Closes the exact class of gap the adversarial review's confirmed
+    finding exploited: `_apply_required_check_assessment_v2` alone
+    validating is not the same fact as the frozen `ReviewReadinessV2`
+    contract accepting the result. `COVERAGE_FAILURE` (the one reason
+    `compute_readiness_decision_v2` can actually attach to a real
+    `BLOCKED_PIPELINE` decision) combined with `POLICY_FAILURE` must
+    survive all the way to a real, fully-constructed artifact -- not just
+    the intermediate `ReadinessDecisionV2`."""
+
+    manifest, report = _plain_split_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies(coverage_failure_state="blocked_pipeline")
+    )
+    assert decision.state is ReadinessStateV2.BLOCKED_PIPELINE
+
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+    assert adjusted.state is ReadinessStateV2.MANUAL_REQUIRED
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted,
+        findings=synthesis.findings,
+        identity=manifest.identity,
+        evaluated_identity=manifest.identity,
+        pr_state=PullRequestStateV2.OPEN,
+        checks=[],
+    )
+
+    assert readiness.state.value == "manual_required"
+    assert ReadinessReasonV2.COVERAGE_FAILURE in readiness.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes

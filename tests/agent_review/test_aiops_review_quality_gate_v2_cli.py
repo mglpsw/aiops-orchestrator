@@ -1173,3 +1173,44 @@ def test_cli_refuses_required_check_without_independent_semantic_judge(tmp_path:
     assert "required_check_provenance_independent_semantic_judge_required" in result.stderr, result.stderr
 
 
+
+
+def test_cli_refuses_cleanly_instead_of_crashing_on_an_unrepresentable_decision_downgrade(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed. `_apply_required_
+    check_assessment_v2`'s representability guard (readiness_decision_v2.py)
+    raises `ReadinessDecisionError` for a `--decision` file that is
+    `blocked_pipeline` with `transport_failure`/`schema_failure` combined
+    with a non-satisfied required-check assessment -- but the CLI's own
+    `main()` never imported or caught that exception type, so it propagated
+    as an uncaught Python traceback instead of the documented, clean
+    `error: <reason_code>` + exit 1 + no artifact refusal every other
+    boundary case in this CLI already gets. Reproduced before the fix
+    (subprocess exit code 1 via an unhandled traceback, not the expected
+    `error: readiness_decision_unrepresentable_with_required_check_
+    assessment` message) and fixed by adding `ReadinessDecisionError` to
+    the CLI's existing catch-all boundary-refusal handler."""
+
+    paths = _write_fixtures(tmp_path)
+    output_path = tmp_path / "out" / "readiness.json"
+
+    foreign_decision = json.loads(paths["decision"].read_text(encoding="utf-8"))
+    foreign_decision["state"] = "blocked_pipeline"
+    foreign_decision["reason_codes"] = ["transport_failure"]
+    foreign_decision["pipeline"] = {
+        "degraded": True,
+        "causes": [{"reason_code": "transport_failure", "component": "transport", "detail": "synthetic"}],
+    }
+    paths["decision"].write_text(json.dumps(foreign_decision), encoding="utf-8")
+
+    # Empty checks/provenance -- passes the #201-C0 boundary vacuously and
+    # produces a non-satisfied assessment, without an unrelated Path B
+    # refusal masking the guard this test is actually about.
+    paths["checks"].write_text(json.dumps([]), encoding="utf-8")
+    paths["checks_provenance"].write_text(json.dumps([]), encoding="utf-8")
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert not output_path.exists()
+    assert "readiness_decision_unrepresentable_with_required_check_assessment" in result.stderr, result.stderr
+    assert "Traceback" not in result.stderr

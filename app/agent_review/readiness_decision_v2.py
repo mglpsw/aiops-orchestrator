@@ -497,17 +497,24 @@ def _joined_with_budget_v2(names: tuple[str, ...], *, budget: int) -> str:
     joined = ", ".join(names)
     if len(joined) <= budget:
         return joined
-    kept: list[str] = []
-    length = 0
-    for name in names:
-        addition = len(name) + (2 if kept else 0)  # ", " separator
-        if length + addition > budget:
-            break
-        kept.append(name)
-        length += addition
-    suffix = f" (+{len(names) - len(kept)} more)"
-    result = ", ".join(kept) + suffix
-    return result[:budget] if len(result) > budget else result
+    # Adversarial review finding, confirmed and fixed: the previous version
+    # packed `kept` against `budget` with no headroom reserved for the
+    # suffix appended afterward, so the trailing hard slice `result[:budget]`
+    # was not a rarely-hit backstop -- it routinely fired and could chop the
+    # suffix mid-word (e.g. "... (+22 mo" instead of "... (+22 more)"), or
+    # even chop a kept name. Reproduced: two 198-char names at budget=200
+    # produced a string ending in a bare " (" with no digit or closing
+    # paren at all. Fixed by shrinking the candidate until it -- WITH its
+    # own suffix already attached -- fits, so no post-hoc slice is ever
+    # needed and the result is provably well-formed.
+    for keep_count in range(len(names), 0, -1):
+        candidate = ", ".join(names[:keep_count])
+        suffix = f" (+{len(names) - keep_count} more)"
+        if len(candidate) + len(suffix) <= budget:
+            return candidate + suffix
+    # budget too small even for "(+N more)" alone with zero names kept --
+    # still never exceed it.
+    return f"(+{len(names)} more)"[:budget]
 
 
 def _required_check_detail_v2(assessment: RequiredCheckReadinessAssessmentV2) -> str:
