@@ -157,6 +157,20 @@ _BLOCKED_CODE_SAFE_EXISTING_REASONS_V2 = frozenset(
         ReadinessReasonV2.POLICY_FAILURE,
     }
 )
+# BLOCKED_PIPELINE's own allowed reason set, verbatim (contracts_v2.py,
+# BLOCKED_PIPELINE branch: `allowed`). Note this state is the ONLY one of the
+# three whose contract branch imposes no requirement that pending NEW blocking
+# findings be represented in `reason_codes` -- which is exactly why the
+# round-9 fix keeps a decision here rather than downgrading it. See
+# `_apply_required_check_assessment_v2`'s docstring.
+_BLOCKED_PIPELINE_SAFE_EXISTING_REASONS_V2 = frozenset(
+    {
+        ReadinessReasonV2.SCHEMA_FAILURE,
+        ReadinessReasonV2.TRANSPORT_FAILURE,
+        ReadinessReasonV2.COVERAGE_FAILURE,
+        ReadinessReasonV2.POLICY_FAILURE,
+    }
+)
 
 _BLOCKING_DISPOSITIONS_V2 = frozenset({FindingDispositionV2.NEW, FindingDispositionV2.CONFIRMED})
 _BLOCKING_SEVERITIES_V2 = frozenset({FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2})
@@ -582,26 +596,53 @@ def _apply_required_check_assessment_v2(
        `READY`, and only if `decision` itself was already `READY`.
     3. Otherwise (`FAILED` or `AUTHORITY_NOT_ESTABLISHED`), `POLICY_FAILURE`
        is added as an additional reason/blocker/structured pipeline cause.
-       If `decision.state` was already `BLOCKED_CODE` (a CONFIRMED code
-       finding), it stays `BLOCKED_CODE` -- the required-check failure
-       coexists as an additional cause, never itself the reason the state
-       is `BLOCKED_CODE`, per `CHECK FAILURE != CONFIRMED CODE FINDING`.
-       Every other content state (`READY`, `MANUAL_REQUIRED`,
-       `BLOCKED_PIPELINE`) becomes `MANUAL_REQUIRED`.
+       The state is preserved wherever the widened reason set is still
+       representable in it, and only otherwise becomes `MANUAL_REQUIRED`:
 
-       Downgrading `BLOCKED_PIPELINE` to `MANUAL_REQUIRED` here is a
-       RATIFIED PRECEDENCE DECISION, not a technical necessity:
-       `BLOCKED_PIPELINE`'s own frozen invariant would in fact tolerate
-       `POLICY_FAILURE` coexisting inside it. The decision is that a
-       required-check problem is judged more expressive of "a human
-       decision is the right next step" than the target's own
-       coverage-failure policy choice, so it always wins. This makes the
-       precedence non-monotonic in one specific combination (a target
-       whose `coverage_failure_state` is `blocked_pipeline`, combined with
-       a required-check failure, ends up LESS restrictive in STATE than
-       `BLOCKED_PIPELINE` alone would be -- though never less informative:
-       both `coverage_failure` and `policy_failure` remain visible in
-       `reason_codes`) -- recorded here deliberately, not discovered later.
+       - `BLOCKED_CODE` (a CONFIRMED code finding) stays `BLOCKED_CODE` --
+         the required-check failure coexists as an additional cause, never
+         itself the reason the state is `BLOCKED_CODE`, per
+         `CHECK FAILURE != CONFIRMED CODE FINDING`;
+       - `BLOCKED_PIPELINE` stays `BLOCKED_PIPELINE` whenever its own
+         allowed reason set can still carry `POLICY_FAILURE` (which, for
+         any decision actually valid in that state, it always can);
+       - `READY` and `MANUAL_REQUIRED` become `MANUAL_REQUIRED`.
+
+       Adversarial review finding, confirmed and fixed (round 9): the
+       `BLOCKED_PIPELINE` -> `MANUAL_REQUIRED` downgrade this function
+       previously performed was RATIFIED as a deliberate, documented
+       non-monotonicity ("a required-check problem is more expressive of
+       'a human decision is the right next step'"). It was also UNSOUND,
+       and not merely for hand-crafted input: `compute_readiness_decision_
+       v2` itself produces a valid `BLOCKED_PIPELINE` decision that carries
+       a pending NEW actionable P0/P1/P2 finding WITHOUT
+       `FINDING_CONFIRMATION_REQUIRED` in its reason codes -- that is this
+       module's own documented "known scope limitation", since
+       `BLOCKED_PIPELINE`'s allowed reason set excludes that code.
+       `BLOCKED_PIPELINE`'s contract branch imposes no requirement that
+       pending new findings be represented; `MANUAL_REQUIRED`'s branch
+       does ("manual_required must represent pending finding
+       confirmation"). Downgrading therefore produced an UNCONSTRUCTIBLE
+       artifact -- an uncaught `pydantic.ValidationError` several calls
+       later -- for an ordinary, real target configuration: the shipped
+       `agent_escala` profile sets `coverage_failure_state:
+       blocked_pipeline`, so degraded coverage plus one pending new
+       finding plus the (always true today) absence of required-check
+       authority was enough to reach it.
+
+       Refusing that combination with `ReadinessDecisionError` was
+       rejected as the fix: it would leave readiness unable to represent
+       absence of authority at all for a real shipped profile, which is
+       the plan's own stop condition 7 ("readiness incapaz de representar
+       ausência de autoridade sem mentir"). Preserving `BLOCKED_PIPELINE`
+       is instead exactly the alternative the plan pre-authorized as a
+       one-line, reversible governance change (rev.2.1 §5.2: "manter
+       `BLOCKED_PIPELINE` quando `reasons ∪ {policy_failure}` couber no
+       conjunto permitido daquele estado"). Nothing is lost by it: both
+       `coverage_failure` and `policy_failure` remain in `reason_codes`,
+       the blocker and the structured cause naming the checks remain, and
+       both states are non-`READY`. The precedence is now also monotonic,
+       which the ratified version explicitly was not.
 
     Adversarial review finding, confirmed and fixed (round 1): `ReadinessDecisionV2`
     is "freely constructible" (C1's own design -- no validation at
@@ -670,20 +711,26 @@ def _apply_required_check_assessment_v2(
     if assessment.status is RequiredCheckStatusV2.SATISFIED:
         return decision
 
-    state = (
-        ReadinessStateV2.BLOCKED_CODE
-        if decision.state is ReadinessStateV2.BLOCKED_CODE
-        else ReadinessStateV2.MANUAL_REQUIRED
-    )
-    safe_existing_reasons = (
-        _BLOCKED_CODE_SAFE_EXISTING_REASONS_V2
-        if state is ReadinessStateV2.BLOCKED_CODE
-        else _MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2
-    )
+    widened_reasons = {*decision.reason_codes, ReadinessReasonV2.POLICY_FAILURE}
+    if decision.state is ReadinessStateV2.BLOCKED_CODE:
+        state = ReadinessStateV2.BLOCKED_CODE
+        safe_existing_reasons = _BLOCKED_CODE_SAFE_EXISTING_REASONS_V2
+    elif (
+        decision.state is ReadinessStateV2.BLOCKED_PIPELINE
+        and widened_reasons <= _BLOCKED_PIPELINE_SAFE_EXISTING_REASONS_V2
+    ):
+        # See the docstring above (round 9): BLOCKED_PIPELINE is preserved
+        # whenever it can still carry POLICY_FAILURE, instead of being
+        # downgraded to MANUAL_REQUIRED.
+        state = ReadinessStateV2.BLOCKED_PIPELINE
+        safe_existing_reasons = _BLOCKED_PIPELINE_SAFE_EXISTING_REASONS_V2
+    else:
+        state = ReadinessStateV2.MANUAL_REQUIRED
+        safe_existing_reasons = _MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2
     if not set(decision.reason_codes) <= safe_existing_reasons:
         # See the docstring above (round 5): checked symmetrically for
-        # whichever branch `state` resolves to -- neither branch's safe set
-        # is a superset of the other's.
+        # whichever branch `state` resolves to -- no branch's safe set is a
+        # superset of the others'.
         raise ReadinessDecisionError(DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2)
     existing_cause_keys = {(cause.reason_code, cause.component) for cause in decision.pipeline.causes}
     existing_blocker_ids = {blocker.blocker_id for blocker in decision.blockers}

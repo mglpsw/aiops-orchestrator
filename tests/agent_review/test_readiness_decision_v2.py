@@ -750,18 +750,29 @@ def test_a_confirmed_finding_keeps_blocked_code_and_gains_policy_failure(assessm
 
 
 @pytest.mark.parametrize("assessment", [_FAILED, _NOT_ESTABLISHED])
-def test_blocked_pipeline_downgrades_to_manual_required(assessment) -> None:
-    """Ratified, non-monotonic precedence (plan §5.2): a required-check
-    problem always forces `MANUAL_REQUIRED`, even though `BLOCKED_PIPELINE`
-    would itself tolerate `POLICY_FAILURE` -- both `coverage_failure` and
-    `policy_failure` remain visible in `reason_codes`."""
+def test_blocked_pipeline_is_preserved_and_gains_policy_failure(assessment) -> None:
+    """Adversarial review finding, confirmed and fixed (round 9). This test
+    previously asserted the opposite -- that `BLOCKED_PIPELINE` is
+    DOWNGRADED to `MANUAL_REQUIRED`, the ratified non-monotonic precedence
+    of plan §5.2. That downgrade was unsound: `compute_readiness_decision_
+    v2` legitimately produces a `BLOCKED_PIPELINE` decision carrying a
+    pending NEW actionable finding WITHOUT `FINDING_CONFIRMATION_REQUIRED`
+    (that code is not in `BLOCKED_PIPELINE`'s allowed set -- this module's
+    own documented "known scope limitation"), and `MANUAL_REQUIRED`'s
+    contract branch REQUIRES pending new findings to be represented. The
+    downgrade therefore produced an unconstructible artifact for a real
+    shipped profile (`agent_escala`, `coverage_failure_state:
+    blocked_pipeline`). `BLOCKED_PIPELINE` is now preserved, exactly as the
+    plan pre-authorized in §5.2; nothing is lost, since both
+    `coverage_failure` and `policy_failure` remain visible."""
 
     before = _blocked_pipeline_decision()
     after = _apply_required_check_assessment_v2(decision=before, assessment=assessment)
 
-    assert after.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert after.state is ReadinessStateV2.BLOCKED_PIPELINE
     assert ReadinessReasonV2.COVERAGE_FAILURE in after.reason_codes
     assert ReadinessReasonV2.POLICY_FAILURE in after.reason_codes
+    assert any(b.blocker_id == "required-checks" for b in after.blockers)
 
 
 @pytest.mark.parametrize("assessment", [_FAILED, _NOT_ESTABLISHED])
@@ -835,21 +846,19 @@ def test_a_large_required_check_set_never_exceeds_the_detail_contracts_own_bound
     assert "required-check-name-number-000" in detail or "30" in detail
 
 
-def test_blocked_pipeline_with_schema_or_transport_failure_is_refused_cleanly_not_crashed() -> None:
-    """Adversarial review finding, confirmed and fixed. `ReadinessDecisionV2`
-    is freely constructible (no validation at construction) -- a
-    hand-crafted or foreign `--decision` file could carry `BLOCKED_PIPELINE`
-    with `SCHEMA_FAILURE`/`TRANSPORT_FAILURE`, which the frozen contract's
-    `BLOCKED_PIPELINE` branch allows but `MANUAL_REQUIRED`'s branch does
-    not. `compute_readiness_decision_v2` itself never produces either
-    reason, so this was unreachable through the real producer, but nothing
-    enforced that. Before the fix, downgrading such a decision produced an
-    unrepresentable `ReadinessDecisionV2` that only failed several calls
-    later, as an opaque `pydantic.ValidationError` from inside
-    `ReviewReadinessV2.__init__` -- reproducing, for this combination,
-    exactly the crash-instead-of-a-state defect class `#201-C` exists to
-    eliminate. Now refused immediately, by name, before any transformation
-    is attempted."""
+def test_blocked_pipeline_with_schema_or_transport_failure_stays_representable() -> None:
+    """Round 2 found that downgrading a `BLOCKED_PIPELINE` decision carrying
+    `SCHEMA_FAILURE`/`TRANSPORT_FAILURE` to `MANUAL_REQUIRED` produced an
+    unrepresentable combination (those two codes are allowed in the former,
+    forbidden in the latter), and fixed it by REFUSING with
+    `ReadinessDecisionError`. Round 9 removed the downgrade itself, which
+    subsumes that fix and strictly improves on it: the decision now simply
+    stays `BLOCKED_PIPELINE`, where those codes are legal, so the
+    combination becomes a real emitted artifact instead of a hard refusal
+    with no artifact at all. This test therefore now asserts
+    representability, not refusal -- the round-2 defect (an opaque
+    `pydantic.ValidationError` several calls later) remains fixed either
+    way, which the full-construction assertion at the end proves."""
 
     coverage = ChunkCoverageV2(
         status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
@@ -859,10 +868,14 @@ def test_blocked_pipeline_with_schema_or_transport_failure_is_refused_cleanly_no
         reason_code=ReadinessReasonV2.TRANSPORT_FAILURE, component="transport", detail="synthetic"
     )
     identity = RunIdentityV2.model_validate(_identity())
+    transport_blocker = ReadinessBlockerV2(
+        blocker_id="transport-failure", reason_code=ReadinessReasonV2.TRANSPORT_FAILURE,
+        active=True, finding_id=None,
+    )
     decision = ReadinessDecisionV2(
         state=ReadinessStateV2.BLOCKED_PIPELINE,
         reason_codes=(ReadinessReasonV2.TRANSPORT_FAILURE,),
-        blockers=(),
+        blockers=(transport_blocker,),
         coverage=coverage,
         pipeline=PipelineAssessmentV2(degraded=True, causes=[cause]),
         run_id=compute_run_id(identity),
@@ -870,10 +883,19 @@ def test_blocked_pipeline_with_schema_or_transport_failure_is_refused_cleanly_no
     )
     assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
 
-    with pytest.raises(ReadinessDecisionError) as exc_info:
-        _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
 
-    assert exc_info.value.reason_code == DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2
+    assert adjusted.state is ReadinessStateV2.BLOCKED_PIPELINE
+    assert ReadinessReasonV2.TRANSPORT_FAILURE in adjusted.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in adjusted.reason_codes
+
+    # The point of the round-2 finding: it must survive the FROZEN contract,
+    # not merely this module's own guard.
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=(), identity=identity,
+        evaluated_identity=identity, pr_state=PullRequestStateV2.OPEN, checks=(),
+    )
+    assert readiness.state.value == "blocked_pipeline"
 
 
 def test_blocked_code_tolerates_schema_or_transport_failure_unaffected() -> None:
@@ -1204,7 +1226,7 @@ def test_a_required_check_present_and_green_never_masks_a_different_missing_one(
     assert assessment.failed_check_names == ()
 
 
-def test_blocked_pipeline_downgrade_survives_full_review_readiness_construction() -> None:
+def test_blocked_pipeline_preservation_survives_full_review_readiness_construction() -> None:
     """Closes the exact class of gap the adversarial review's confirmed
     finding exploited: `_apply_required_check_assessment_v2` alone
     validating is not the same fact as the frozen `ReviewReadinessV2`
@@ -1212,7 +1234,9 @@ def test_blocked_pipeline_downgrade_survives_full_review_readiness_construction(
     `compute_readiness_decision_v2` can actually attach to a real
     `BLOCKED_PIPELINE` decision) combined with `POLICY_FAILURE` must
     survive all the way to a real, fully-constructed artifact -- not just
-    the intermediate `ReadinessDecisionV2`."""
+    the intermediate `ReadinessDecisionV2`. Since round 9 the state is
+    PRESERVED rather than downgraded; the end-to-end obligation is
+    unchanged."""
 
     manifest, report = _plain_split_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
@@ -1223,7 +1247,7 @@ def test_blocked_pipeline_downgrade_survives_full_review_readiness_construction(
 
     assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
     adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
-    assert adjusted.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert adjusted.state is ReadinessStateV2.BLOCKED_PIPELINE
 
     readiness = _assemble_review_readiness_v2(
         decision=adjusted,
@@ -1234,9 +1258,55 @@ def test_blocked_pipeline_downgrade_survives_full_review_readiness_construction(
         checks=[],
     )
 
-    assert readiness.state.value == "manual_required"
+    assert readiness.state.value == "blocked_pipeline"
     assert ReadinessReasonV2.COVERAGE_FAILURE in readiness.reason_codes
     assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+
+
+def test_blocked_pipeline_with_a_pending_new_finding_survives_full_construction() -> None:
+    """THE round-9 finding, as a production-reachable regression test.
+
+    `compute_readiness_decision_v2` produces a valid `BLOCKED_PIPELINE`
+    decision that carries a pending NEW actionable P0/P1/P2 finding WITHOUT
+    `FINDING_CONFIRMATION_REQUIRED` in its reason codes -- that code is not
+    in `BLOCKED_PIPELINE`'s allowed set, which this module's own docstring
+    records as a "known, documented scope limitation". `BLOCKED_PIPELINE`'s
+    contract branch imposes no requirement that pending new findings be
+    represented; `MANUAL_REQUIRED`'s branch does ("manual_required must
+    represent pending finding confirmation").
+
+    So the pre-round-9 downgrade turned a perfectly valid producer output
+    into an UNCONSTRUCTIBLE artifact -- an uncaught `pydantic.
+    ValidationError` several calls later. Not hypothetical and not
+    hand-crafted: the shipped `agent_escala` target profile sets
+    `coverage_failure_state: blocked_pipeline`, so degraded coverage plus
+    one pending new finding plus the absence of required-check authority
+    (always true today) was enough to reach it."""
+
+    manifest, report = _plain_split_manifest_and_report()
+    finding = _new_finding(finding_id="finding-9", head_sha=manifest.identity.head_sha)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, findings=(finding,))
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies(coverage_failure_state="blocked_pipeline")
+    )
+    assert decision.state is ReadinessStateV2.BLOCKED_PIPELINE
+    # The finding is genuinely pending and genuinely unrepresented here.
+    assert ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED not in decision.reason_codes
+
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=synthesis.findings, identity=manifest.identity,
+        evaluated_identity=manifest.identity, pr_state=PullRequestStateV2.OPEN, checks=[],
+    )
+
+    assert readiness.state.value == "blocked_pipeline"
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+    assert ReadinessReasonV2.COVERAGE_FAILURE in readiness.reason_codes
+    # The required-check problem is not silently dropped by preserving the state.
+    assert any(b.blocker_id == "required-checks" for b in readiness.blockers)
+    assert any(c.component == "required_checks" for c in readiness.pipeline.causes)
 
 
 def test_model_uncertainty_downgrade_survives_full_review_readiness_construction() -> None:

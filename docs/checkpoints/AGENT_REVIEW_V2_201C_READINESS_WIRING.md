@@ -1,7 +1,7 @@
 # `#201-C` — Required-check readiness wiring
 
 **Classe:** checkpoint de implementação. Review adversarial **em andamento**
-— 8 rodadas executadas até agora, cada uma achando e corrigindo um problema
+— 9 rodadas executadas até agora, cada uma achando e corrigindo um problema
 genuíno (0 rodadas consecutivas limpas); aguardando duas rodadas consecutivas
 limpas no mesmo HEAD (condição de parada do grant). Ver "Estado vetorial" e
 "Próxima ação mínima".
@@ -58,16 +58,23 @@ caller.
 
 `_apply_required_check_assessment_v2`, aditiva. `compute_readiness_decision_v2`
 permanece **intocada** (preserva `evals/harness.py`/`aiops_projection.py`).
-Precedência ratificada:
+Precedência (ratificada, com a emenda da rodada 9 — ver "Review adversarial"):
 
 ```text
 1. STALE                          → soberano, nunca tocado
 2. CONFIRMED code finding          → BLOCKED_CODE (coexiste com POLICY_FAILURE)
-3. required check FAILED/NOT_ESTABLISHED → MANUAL_REQUIRED + POLICY_FAILURE
-                                      (downgrade deliberado de BLOCKED_PIPELINE,
-                                       registrado, não uma necessidade do contrato)
+3. required check FAILED/NOT_ESTABLISHED → + POLICY_FAILURE, preservando o
+                                      estado sempre que ele ainda comporta o
+                                      reason set alargado:
+                                        BLOCKED_CODE     → BLOCKED_CODE
+                                        BLOCKED_PIPELINE → BLOCKED_PIPELINE
+                                        READY/MANUAL_REQ → MANUAL_REQUIRED
 4-7. inalterado
 ```
+
+O downgrade `BLOCKED_PIPELINE → MANUAL_REQUIRED` originalmente ratificado foi
+removido na rodada 9 por ser *unsound* (produzia artifact inconstrutível para
+o profile shipped `agent_escala`); ver "Review adversarial", item 9.
 
 ### `review_readiness_emission_v2.py` — único caminho de construção
 
@@ -152,7 +159,7 @@ próprios a `test_readiness_decision_v2.py` e `test_aiops_review_quality_gate_v2
 
 ## Review adversarial
 
-8 rodadas executadas até o momento deste checkpoint, cada uma achando pelo
+9 rodadas executadas até o momento deste checkpoint, cada uma achando pelo
 menos um problema genuíno, reproduzido antes de corrigido, com um red test
 próprio e verificação por mutação:
 
@@ -233,6 +240,41 @@ próprio e verificação por mutação:
    `gate_required_check_missing` — mudança de diagnóstico, não de
    comportamento fail-closed (sem artifact, exit≠0 nos dois casos).
 
+9. **o achado mais grave até agora, e o único alcançável pelo produtor real
+   em vez de por `--decision` forjado.** O downgrade ratificado
+   `BLOCKED_PIPELINE → MANUAL_REQUIRED` (plano §5.2, explicitamente
+   não-monotônico) é *unsound*: `compute_readiness_decision_v2` produz uma
+   decisão `BLOCKED_PIPELINE` válida que carrega um finding NEW acionável
+   pendente **sem** `FINDING_CONFIRMATION_REQUIRED` nos reason codes — essa
+   é a "known scope limitation" documentada do próprio módulo, já que aquele
+   código não pertence ao conjunto permitido de `BLOCKED_PIPELINE`. O ramo
+   `BLOCKED_PIPELINE` do contrato não exige que findings pendentes estejam
+   representados; o ramo `MANUAL_REQUIRED` exige ("manual_required must
+   represent pending finding confirmation"). O downgrade portanto produzia
+   um artifact inconstrutível — `pydantic.ValidationError` não capturado
+   várias chamadas depois — para uma configuração de target real: o profile
+   shipped `agent_escala` usa `coverage_failure_state: blocked_pipeline`,
+   então coverage degradada + um finding novo pendente + ausência de
+   autoridade de required check (sempre verdadeira hoje) bastavam.
+
+   Recusar com `ReadinessDecisionError` foi **rejeitado** como correção:
+   deixaria a readiness incapaz de representar ausência de autoridade para
+   um profile real — literalmente a stop condition 7 do plano. A correção é
+   preservar `BLOCKED_PIPELINE`, exatamente a alternativa que o plano
+   pré-autorizou em §5.2 ("manter `BLOCKED_PIPELINE` quando
+   `reasons ∪ {policy_failure}` couber no conjunto permitido daquele
+   estado"). Nada se perde: `coverage_failure` e `policy_failure`
+   permanecem em `reason_codes`, o blocker e a causa estruturada nomeando
+   os checks permanecem, e ambos os estados são não-`READY`. A precedência
+   passa a ser monotônica, o que a versão ratificada explicitamente não era.
+
+   **Isto reverte uma decisão de governança ratificada pelo dono do
+   repositório** — feito porque a decisão ratificada demonstrou-se unsound,
+   não por preferência de desenho. Registrado aqui explicitamente para
+   revisão. Subsume também o achado da rodada 2: aquela combinação
+   (`BLOCKED_PIPELINE` + `SCHEMA`/`TRANSPORT`) deixa de ser recusada e passa
+   a emitir artifact real, estritamente melhor.
+
 Nenhuma rodada chegou ainda a "limpa" — a condição de parada do grant (duas
 rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
 
@@ -240,16 +282,16 @@ rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
 
 | Gate | Resultado |
 |---|---|
-| `tests/agent_review/ tests/evals/` combinado | 1749 passed, 16 skipped, 2 failed (classe `environment`, sudo ausente no sandbox — `test_isolated_executor_v2.py`, arquivo fora do escopo de `#201-C`) |
+| `tests/agent_review/ tests/evals/` combinado | 1750 passed, 16 skipped, 2 failed (classe `environment`, sudo ausente no sandbox — `test_isolated_executor_v2.py`, arquivo fora do escopo de `#201-C`) |
 | `export-agent-review-v2-schemas.py --check` | OK |
 | `verify-caem-f0-pin.py --check` | OK |
 | `ruff` | não canônico neste repositório (ausente de `requirements-dev.txt`) — gate pulado, não fabricado |
-| CI remota (`aiops-ci`) | verde em `code_head_reviewed_through_round_8` = `2d39d06` |
+| CI remota (`aiops-ci`) | verde em `code_head_reviewed_through_round_8` = `2d39d06`; revalidada no HEAD da rodada 9 |
 
 Baseline (mesmo ambiente, HEAD `8b20ae3`, antes de qualquer edição): idêntica
 classificação — 1681/16/2 em `tests/agent_review/ tests/evals/` juntos,
-mesmas 2 falhas de ambiente. Nenhuma regressão introduzida. Figura de 1749
-corrente na correção da rodada 8 de review adversarial (ganho de +68 desde o
+mesmas 2 falhas de ambiente. Nenhuma regressão introduzida. Figura de 1750
+corrente na correção da rodada 9 de review adversarial (ganho de +69 desde o
 baseline: testes novos + red tests de cada rodada de correção); será
 superada pelo HEAD final quando as duas rodadas limpas consecutivas forem
 alcançadas.
@@ -276,7 +318,7 @@ alcançadas.
 #201_B3=MERGED (operational closure BLOCKED_BY_CT104)
 #201_C0=MERGED
 #201_C_IMPLEMENTATION=COMPLETE
-#201_C_ADVERSARIAL_REVIEW=IN_PROGRESS (8 rodadas; 0 consecutivas limpas; aguardando duas consecutivas limpas no mesmo HEAD)
+#201_C_ADVERSARIAL_REVIEW=IN_PROGRESS (9 rodadas; 0 consecutivas limpas; aguardando duas consecutivas limpas no mesmo HEAD)
 #201_C=IMPLEMENTED_AWAITING_MERGE_REVIEW
 #217=OPEN_RESIDUAL_NOT_BLOCKING_C
 #203=NOT_STARTED

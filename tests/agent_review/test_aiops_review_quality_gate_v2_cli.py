@@ -1178,23 +1178,29 @@ def test_cli_refuses_required_check_without_independent_semantic_judge(tmp_path:
 def test_cli_refuses_cleanly_instead_of_crashing_on_an_unrepresentable_decision_downgrade(tmp_path: Path) -> None:
     """Adversarial review finding, confirmed and fixed. `_apply_required_
     check_assessment_v2`'s representability guard (readiness_decision_v2.py)
-    raises `ReadinessDecisionError` for a `--decision` file that is
-    `blocked_pipeline` with `transport_failure`/`schema_failure` combined
-    with a non-satisfied required-check assessment -- but the CLI's own
-    `main()` never imported or caught that exception type, so it propagated
-    as an uncaught Python traceback instead of the documented, clean
-    `error: <reason_code>` + exit 1 + no artifact refusal every other
-    boundary case in this CLI already gets. Reproduced before the fix
-    (subprocess exit code 1 via an unhandled traceback, not the expected
-    `error: readiness_decision_unrepresentable_with_required_check_
-    assessment` message) and fixed by adding `ReadinessDecisionError` to
-    the CLI's existing catch-all boundary-refusal handler."""
+    raises `ReadinessDecisionError` for a `--decision` file whose existing
+    reason codes cannot survive into the state the required-check
+    assessment resolves to -- but the CLI's own `main()` never imported or
+    caught that exception type, so it propagated as an uncaught Python
+    traceback instead of the documented, clean `error: <reason_code>` +
+    exit 1 + no artifact refusal every other boundary case in this CLI
+    already gets. Reproduced before the fix (subprocess exit code 1 via an
+    unhandled traceback, not the expected `error: readiness_decision_
+    unrepresentable_with_required_check_assessment` message) and fixed by
+    adding `ReadinessDecisionError` to the CLI's existing catch-all
+    boundary-refusal handler.
+
+    The fixture uses `manual_required` + `transport_failure`: round 9
+    removed the `BLOCKED_PIPELINE` -> `MANUAL_REQUIRED` downgrade this test
+    originally exercised (that combination is now legitimately preserved as
+    `blocked_pipeline` and emits a real artifact), so the guard is reached
+    here instead via a state that genuinely forbids `transport_failure`."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     foreign_decision = json.loads(paths["decision"].read_text(encoding="utf-8"))
-    foreign_decision["state"] = "blocked_pipeline"
+    foreign_decision["state"] = "manual_required"
     foreign_decision["reason_codes"] = ["transport_failure"]
     foreign_decision["pipeline"] = {
         "degraded": True,
