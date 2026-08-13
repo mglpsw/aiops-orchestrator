@@ -222,6 +222,11 @@ def _assert_projection_sound(
         target = {"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40}
         brief_review = {"mode": "full", "contract_pack": None}
     resolved_brief_limitations = list(brief_limitations) if brief_limitations is not None else []
+    # P2-8: the wire representation PRBrief.coverage.required_files will
+    # actually emit -- ordered-unique, not canonicalized -- not the raw
+    # `must` list a caller passed in (which may contain non-canonical
+    # spellings or duplicates the real dedup would collapse).
+    required_files_wire = m.required_files_wire(intake)
     projected = m.project_min_hunk_preserving_chars(
         intake=intake,
         chunk_files=files,
@@ -231,7 +236,7 @@ def _assert_projection_sound(
         target=target,
         brief_target=target,
         brief_review=brief_review,
-        brief_required_files=must,
+        brief_required_files=required_files_wire,
         brief_limitations=resolved_brief_limitations,
         selected_contract_pack=brief_review.get("contract_pack"),
         checks=checks_doc,
@@ -263,7 +268,7 @@ def _assert_projection_sound(
     brief = PRBrief(
         target=target,
         review=brief_review,
-        coverage={"required_files": must},
+        coverage={"required_files": required_files_wire},
         limitations=resolved_brief_limitations,
         created_at="2026-08-13T00:00:00Z",
     )
@@ -515,6 +520,109 @@ def test_red26_projection_sound_with_adversarial_review_metadata() -> None:
     _assert_projection_sound(files, {"backend/api/a.py": 20}, files, use_real_metadata=True, checks_doc=checks_doc)
 
 
+def test_red31_projection_sound_with_non_canonical_must_review_wire() -> None:
+    """RED-31 (P2-8): must_review_files may be declared in a non-canonical
+    form (leading "./", duplicates). `brief_required_files` must project
+    the real wire bytes PRBrief.coverage.required_files will actually emit
+    (ordered-unique, not canonicalized) -- not the canonicalized identity
+    set, which can be much shorter once "./" segments collapse away.
+    """
+    files = ["backend/a.py"]
+    non_canonical_wire = ["./././backend/a.py", "backend\\a.py", "./././backend/a.py"]
+    _assert_projection_sound(files, {"backend/a.py": 20}, non_canonical_wire)
+
+
+def test_red31_wire_representation_is_ordered_unique_like_pr_brief() -> None:
+    """`required_files_wire` must apply the identical ordered-unique
+    semantics `pr_brief._coverage_requirements` uses -- exact duplicates
+    collapse to one entry, in first-occurrence order, distinct spellings of
+    the same file do not collapse (they are not canonicalized here).
+    """
+    files = ["backend/a.py"]
+    wire_declaration = ["backend/a.py", "backend/a.py", "./backend/a.py", "backend/a.py"]
+    intake = _build_intake(files, {"backend/a.py": 5}, wire_declaration)
+    assert m.required_files_wire(intake) == ["backend/a.py", "./backend/a.py"]
+
+
+def test_wire_vs_canonical_identity_set_would_have_been_unsound() -> None:
+    """Negative control for RED-31 (P2-8): projecting `brief_required_files`
+    as the canonicalized identity SET (the pre-fix behavior, deduped down
+    to one entry per real file) under-projects once the real declared wire
+    list contains many entries whose non-canonical padding ("./" segments)
+    collapses away under canonicalization -- exactly what happened before
+    this fix, since PRBrief.coverage.required_files never canonicalizes.
+    """
+    files = ["backend/a.py"]
+    non_canonical_wire = [("./" * 50 + f"module_{i}.py") for i in range(20)] + ["./././backend/a.py"]
+    intake = _build_intake(files, {"backend/a.py": 20}, non_canonical_wire)
+    hunks = m.diff_by_file(intake)
+    target = {"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40}
+    brief_review = {"mode": "full", "contract_pack": None}
+
+    # old-style (pre-P2-8) projection: the canonicalized identity SET, as
+    # semantic_chunker.py used to pass via `sorted(required_files)`.
+    old_style_required_files = sorted({m.canonical_repo_path(p) for p in non_canonical_wire})
+    real_wire = m.required_files_wire(intake)
+    old_len = len(m.canonical_json(old_style_required_files))
+    real_len = len(m.canonical_json(real_wire))
+    assert real_len > old_len + 1000, "adversarial fixture is not actually adversarial enough"
+
+    projected = m.project_min_hunk_preserving_chars(
+        intake=intake,
+        chunk_files=files,
+        chunk_contracts=[],
+        semantic_group="api_schema_contract",
+        max_blocks=6,
+        target=target,
+        brief_target=target,
+        brief_review=brief_review,
+        brief_required_files=old_style_required_files,
+        brief_limitations=[],
+        selected_contract_pack=None,
+        checks=None,
+        validation_evidence=None,
+        hunks=hunks,
+        created_at="2026-08-13T00:00:00Z",
+    )
+
+    plan = SemanticChunkPlan(
+        target_repo="r/t",
+        max_parallel_blocks=6,
+        status="complete",
+        files_covered=files,
+        chunks=[
+            SemanticChunk(
+                chunk_id="chunk-01-api_schema_contract",
+                semantic_group="api_schema_contract",
+                order_index=0,
+                files=files,
+                artifacts=[],
+                contracts=[],
+                depends_on=[],
+                coverage="complete",
+                prompt_budget_chars=projected,
+                estimated_chars=projected,
+            )
+        ],
+    )
+    # the real builder embeds the real wire representation verbatim.
+    brief = PRBrief(
+        target=target,
+        review=brief_review,
+        coverage={"required_files": real_wire},
+        created_at="2026-08-13T00:00:00Z",
+    )
+    manifest, _ = build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
+    entry = manifest.chunks[0]
+    guard_tripped = entry.payload_path is None
+    hunks_reduced = entry.payload_path is not None and "chunk_hunks_reduced" in entry.truncation.coverage_impact
+    assert guard_tripped or hunks_reduced, (
+        "expected the canonical-identity-set projection to be unsound against the real "
+        "wire-representation build -- if neither the guard tripped nor a hunk was reduced, "
+        "this negative control no longer demonstrates what RED-31/P2-8 fixed"
+    )
+
+
 def test_worst_case_optional_artifact_union_increases_projected_floor() -> None:
     """Unit-level proof that project_min_hunk_preserving_chars actually
     responds to brief_limitations content -- the mechanism P2-6's
@@ -574,6 +682,106 @@ def test_worst_case_chunk_id_scales_with_max_blocks() -> None:
     )
 
 
+def test_red32_worst_case_order_index_scales_with_max_blocks() -> None:
+    """RED-32 (P2-9): `order_index` was hardcoded to 0 in the projection,
+    but the real value (`_pack_all_groups`, `order_index=len(chunks)`) can
+    be as large as `max_blocks - 1`. The projected worst-case value must
+    scale with the actual max_blocks a given plan is built with.
+    """
+    assert m.worst_case_order_index(1) == 0
+    assert m.worst_case_order_index(6) == 5
+    assert m.worst_case_order_index(10) == 9
+    assert m.worst_case_order_index(100) == 99
+    # crossing a digit boundary (9 -> 10, one extra serialized character):
+    # the projection for max_blocks=10 must be at least as large as for
+    # max_blocks=9, or the boundary crossing would silently under-project.
+    kwargs = dict(
+        chunk_files=["a.py"],
+        chunk_contracts=[],
+        semantic_group="api_schema_contract",
+        target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
+        brief_target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
+        brief_review={"mode": "full", "contract_pack": None},
+        brief_required_files=["a.py"],
+        brief_limitations=[],
+        selected_contract_pack=None,
+        checks=None,
+        validation_evidence=None,
+        created_at="2026-08-13T00:00:00Z",
+    )
+    intake = _build_intake(["a.py"], {"a.py": 20}, ["a.py"])
+    hunks = m.diff_by_file(intake)
+    projected_at_9 = m.project_min_hunk_preserving_chars(intake=intake, hunks=hunks, max_blocks=9, **kwargs)
+    projected_at_10 = m.project_min_hunk_preserving_chars(intake=intake, hunks=hunks, max_blocks=10, **kwargs)
+    assert projected_at_10 >= projected_at_9
+
+
+def test_red32_projection_sound_crossing_order_index_digit_boundary() -> None:
+    """Integration proof: 10 files in the *same* semantic group
+    (suspicious_out_of_scope -- the longest group name, so chunk_id
+    contributes no accidental slack), each too large to pack two-per-chunk,
+    force FFD to open 10 single-file bins with order_index 0..9. The real
+    builder must never touch a hunk at budget=projected.
+    """
+    files = [f"backend/prod_module_{i}.py" for i in range(10)]
+    hunk_lines = {p: 80 for p in files}
+    intake_dict = {
+        "schema_id": "agent-review.intake.v1",
+        "schema_version": 1,
+        "source": "aiops-review-intake",
+        "target_repo": "r/t",
+        "target_profile": {},
+        "created_at": "2026-08-13T00:00:00Z",
+        "artifacts": {
+            "file-diff-context.json": {
+                "path": "file-diff-context.json",
+                "content": {
+                    "files": [{"path": p} for p in files],
+                    "coverage_requirements": {"must_review_files": []},
+                },
+            },
+            "full-diff.diff": {
+                "path": "full-diff.diff",
+                "content": "\n".join(
+                    f"diff --git a/{p} b/{p}\n--- a/{p}\n+++ b/{p}\n@@ -1,1 +1,{n} @@\n"
+                    + "\n".join(f"+    value_{i} = compute_window(index_{i}, offset_{i})" for i in range(n))
+                    for p, n in hunk_lines.items()
+                ),
+            },
+        },
+        "artifact_status": [],
+        "redaction_summary": RedactionReport().model_dump(mode="json"),
+        "limitations": [],
+        "completeness": {},
+        "status": "complete",
+    }
+    from app.agent_review.semantic_chunker import build_semantic_chunk_plan
+
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=10, max_chars_per_block=8500)
+    assert plan.status == "complete"
+    assert {c.semantic_group for c in plan.chunks} == {"suspicious_out_of_scope"}
+    assert sorted(c.order_index for c in plan.chunks) == list(range(10))
+
+    intake = ReviewIntake.model_validate(intake_dict)
+    from app.agent_review.pr_brief import build_pr_brief
+
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=plan,
+        redaction_report=intake.redaction_summary,
+        checks=None,
+        validation_evidence=None,
+    )
+    manifest, _ = build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
+    assert manifest.payload_count == len(plan.chunks), (
+        f"hard guard blocked a chunk the planner claimed would fit: "
+        f"{[e.chunk_id for e in manifest.chunks if e.payload_path is None]}"
+    )
+    for entry in manifest.chunks:
+        assert entry.payload_path is not None
+        assert "chunk_hunks_reduced" not in entry.truncation.coverage_impact
+
+
 def test_bootstrap_original_chars_is_exact_not_a_placeholder() -> None:
     """RED-30 (P2-7): `original_chars` was a fixed 999_999_999 placeholder
     because measuring the payload's own untruncated length is
@@ -593,3 +801,27 @@ def test_bootstrap_original_chars_is_exact_not_a_placeholder() -> None:
     # a genuine fixed point is deterministic on repeat measurement, not a
     # one-shot heuristic guess.
     assert m.bootstrap_original_chars(payload) == exact
+
+
+def test_bootstrap_untruncated_state_is_the_single_shared_bootstrap_authority() -> None:
+    """P3 hardening (PR #227 round 3): chunk_payload_builder._apply_payload_
+    budget used to keep an independent copy of this 3-pass bootstrap
+    sequence; both it and bootstrap_original_chars now consume
+    bootstrap_untruncated_state. Locks the two entry points to the same
+    result: the metadata's own length must match the plain int accessor,
+    and the metadata itself must be a stable (applied=False) fixed point.
+    """
+    payload = {
+        "chunk_id": "chunk-01-tests",
+        "semantic_group": "tests",
+        "order_index": 0,
+        "chunk_context": {"notes": "z" * 2000},
+    }
+    truncation, exact_len = m.bootstrap_untruncated_state(payload)
+    assert exact_len == m.bootstrap_original_chars(payload)
+    assert truncation.applied is False
+    assert truncation.original_chars == exact_len
+    # re-measuring the payload with this exact truncation embedded must
+    # reproduce the identical length -- a genuine fixed point.
+    _, remeasured_len = m.materialize_payload(payload, truncation=truncation)
+    assert remeasured_len == exact_len

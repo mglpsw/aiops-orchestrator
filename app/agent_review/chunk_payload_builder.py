@@ -487,22 +487,9 @@ def _resolve_identity_value(
 
 def _apply_payload_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str, Any], TruncationMetadata]:
     working = copy.deepcopy(payload)
-    base_truncation, original_chars = stabilize_payload_truncation(
-        working,
-        TruncationMetadata(applied=False, original_chars=0, emitted_chars=0),
-    )
-    untruncated_truncation, untruncated_len = stabilize_payload_truncation(
-        working,
-        TruncationMetadata(
-            applied=False,
-            original_chars=original_chars,
-            emitted_chars=base_truncation.emitted_chars,
-        ),
-    )
-    untruncated_truncation, untruncated_len = stabilize_payload_truncation(
-        working,
-        untruncated_truncation.model_copy(update={"original_chars": untruncated_len}),
-    )
+    # P3 hardening (PR #227 round 3): single shared bootstrap authority --
+    # see payload_cost_model.bootstrap_untruncated_state.
+    untruncated_truncation, untruncated_len = payload_cost_model.bootstrap_untruncated_state(working)
     original_chars = untruncated_len
     omitted_sections: list[str] = []
     coverage_impact: list[str] = []

@@ -320,6 +320,28 @@ def artifact_content(intake: ReviewIntake, name: str) -> dict[str, Any] | None:
     return None
 
 
+# P2-8 (PR #227 exact-HEAD adversarial review, round 3): the projection
+# previously passed the *canonical identity* set as `brief_required_files`,
+# which fixes must_review membership but under-projects whenever the real
+# wire spelling (whatever the file-diff-context artifact actually wrote,
+# e.g. "./a.py") is longer than its canonicalized form -- `pr_brief.
+# _coverage_requirements`/`_coverage_summary` never canonicalizes this
+# field; `PRBrief.coverage.required_files` is the ordered-unique *wire*
+# representation, verbatim, and that is exactly what `_build_chunk_payload`
+# embeds via `pr_brief.coverage.get("required_files")`. This is the single
+# shared authority for that exact byte representation -- both pr_brief.py's
+# real output and this projection must derive it the same way. Membership/
+# priority/oversize classification must use the separate, canonicalized
+# identity view instead (see semantic_chunker._required_files_for_projection),
+# never this one.
+def required_files_wire(review_intake: ReviewIntake) -> list[str]:
+    file_context = artifact_content(review_intake, "file-diff-context")
+    requirements = file_context.get("coverage_requirements") if isinstance(file_context, dict) else None
+    if not isinstance(requirements, dict):
+        return []
+    return _dedupe(_string_list(requirements.get("must_review_files")))
+
+
 def artifact_text(intake: ReviewIntake, name: str) -> str | None:
     candidates = {name, f"{name}.diff", f"{name}.txt"}
     for artifact_name, artifact in intake.artifacts.items():
@@ -1144,6 +1166,20 @@ def worst_case_chunk_id(max_blocks: int) -> str:
     return "chunk-" + ("9" * index_digits) + "-" + _LONGEST_GROUP_NAME
 
 
+# P2-9 (PR #227 exact-HEAD adversarial review, round 3): `order_index` was
+# hardcoded to 0 in the projected payload body, but the real value
+# (`_pack_all_groups`: `order_index=len(chunks)`, assigned during emission
+# over `selected_sorted`) can be as large as `max_blocks - 1` -- the same
+# selection cap `worst_case_chunk_id` already derives its bound from. Using
+# the real maximum directly (rather than a padded placeholder) is exact,
+# not merely conservative: no real order_index for this plan can ever
+# exceed it, and the serialized integer's digit count only grows with the
+# value, so this never relies on incidental slack from chunk_id or
+# semantic_group length elsewhere in the payload.
+def worst_case_order_index(max_blocks: int) -> int:
+    return max(int(max_blocks) - 1, 0)
+
+
 # ---------------------------------------------------------------------------
 # Auxiliary context construction (single authority; was
 # chunk_payload_builder._aux_context / ._coverage_requirements_for_chunk).
@@ -1195,18 +1231,25 @@ def _coverage_requirements_for_chunk(requirements: Any, *, chunk_files: set[str]
 
 
 # ---------------------------------------------------------------------------
-# Exact `original_chars` bootstrap (single authority; was
-# chunk_payload_builder._apply_payload_budget's own inline 3-pass
-# bootstrap). `original_chars` is itself embedded in the payload being
-# measured, so establishing its own correct value takes an initial
-# bootstrap pass plus a confirmation pass. Shared here so the planner's
-# exact-floor projection (P2-7, PR #227 exact-HEAD adversarial review)
-# computes the real untruncated length instead of keeping an
-# empirically-sized placeholder with no proven bound.
+# Exact `original_chars` bootstrap (single authority). `original_chars` is
+# itself embedded in the payload being measured, so establishing its own
+# correct value takes an initial bootstrap pass plus a confirmation pass.
+#
+# P3 hardening (PR #227 exact-HEAD adversarial review, round 3):
+# chunk_payload_builder._apply_payload_budget used to keep its own,
+# independent copy of this exact 3-pass sequence rather than calling this
+# module -- functionally identical today, but a structural drift risk: the
+# real builder's untruncated state and the planner's exact-floor projection
+# (P2-7) could silently diverge if one copy were ever edited without the
+# other. Both now consume this single function; there is no second
+# implementation of the bootstrap left anywhere in the package.
 # ---------------------------------------------------------------------------
 
 
-def bootstrap_original_chars(payload: dict[str, Any]) -> int:
+def bootstrap_untruncated_state(payload: dict[str, Any]) -> tuple[TruncationMetadata, int]:
+    """Returns the stable (applied=False) `TruncationMetadata` for `payload`
+    together with its exact untruncated length, once `original_chars` has
+    reached its own self-consistent fixed point."""
     base_truncation, original_chars = stabilize_payload_truncation(
         payload,
         TruncationMetadata(applied=False, original_chars=0, emitted_chars=0),
@@ -1219,11 +1262,14 @@ def bootstrap_original_chars(payload: dict[str, Any]) -> int:
             emitted_chars=base_truncation.emitted_chars,
         ),
     )
-    _, untruncated_len = stabilize_payload_truncation(
+    return stabilize_payload_truncation(
         payload,
         untruncated_truncation.model_copy(update={"original_chars": untruncated_len}),
     )
-    return untruncated_len
+
+
+def bootstrap_original_chars(payload: dict[str, Any]) -> int:
+    return bootstrap_untruncated_state(payload)[1]
 
 
 # ---------------------------------------------------------------------------
@@ -1250,6 +1296,7 @@ def project_min_hunk_preserving_chars(
     created_at: str | None,
 ) -> int:
     chunk_id = worst_case_chunk_id(max_blocks)
+    order_index = worst_case_order_index(max_blocks)
     chunk_files_sorted = sorted(chunk_files)
     # chunk_context.files is never touched by the shrink ladder, so it must
     # carry the REAL status/summary from file-diff-context, not a
@@ -1301,7 +1348,7 @@ def project_min_hunk_preserving_chars(
         return {
             "chunk_id": chunk_id,
             "semantic_group": semantic_group,
-            "order_index": 0,
+            "order_index": order_index,
             "target": dict(target),
             "brief": {
                 **brief_target,

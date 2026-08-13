@@ -453,8 +453,12 @@ def _coverage_requirements(intake: ReviewIntake) -> dict[str, list[str]]:
             "should_review_files": [],
             "may_summarize_files": [],
         }
+    # must_review_files: delegated to payload_cost_model.required_files_wire,
+    # the single shared authority for this exact wire representation --
+    # semantic_chunker's cost projection (P2-8, PR #227 round 3) must derive
+    # the identical bytes for `brief.required_files` to stay sound.
     return {
-        "must_review_files": _ordered_unique(_string_list(requirements.get("must_review_files"))),
+        "must_review_files": payload_cost_model.required_files_wire(intake),
         "should_review_files": _ordered_unique(_string_list(requirements.get("should_review_files"))),
         "may_summarize_files": _ordered_unique(_string_list(requirements.get("may_summarize_files"))),
     }

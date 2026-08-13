@@ -16,7 +16,7 @@ from app.agent_review.chunk_payload_builder import build_chunk_payloads
 from app.agent_review.pr_brief import build_pr_brief
 from app.agent_review.schemas import RedactionReport, ReviewIntake
 
-from app.agent_review.semantic_chunker import GROUP_PRIORITY, build_semantic_chunk_plan
+from app.agent_review.semantic_chunker import GROUP_PRIORITY, IntakeValidationError, build_semantic_chunk_plan
 
 
 def _hunk(path: str, lines: int) -> str:
@@ -546,6 +546,28 @@ def test_red28_malformed_must_review_declaration_fails_closed_not_silently() -> 
 
 
 # ---------------------------------------------------------------------------
+# RED-31 (P2-8): brief_required_files must project the real wire bytes
+# PRBrief.coverage.required_files will actually emit -- ordered-unique,
+# never canonicalized -- distinct from the canonicalized identity set used
+# for must_review membership/priority/oversize classification.
+# ---------------------------------------------------------------------------
+
+
+def test_red31_projection_sound_with_non_canonical_must_review_wire_declaration() -> None:
+    files = ["backend/a.py"]
+    hunk_lines = {"backend/a.py": 30}
+    # duplicates and non-canonical spellings of the same file, declared as
+    # must_review -- the changed-file identity still matches (RED-28), and
+    # the wire bytes embedded in brief.required_files must be projected at
+    # their real (non-canonicalized, ordered-unique) length.
+    non_canonical_wire = ["./././backend/a.py", "backend\\a.py", "./././backend/a.py"]
+    intake_dict = _intake(files, hunk_lines, must=non_canonical_wire)
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=6, max_chars_per_block=24_000)
+    assert plan.status == "complete"
+    _assert_real_build_never_reduces_a_hunk(intake_dict, plan)
+
+
+# ---------------------------------------------------------------------------
 # RED-29 (P2-6): the planner cannot observe what --checks/--validation-
 # evidence flags a later, separate builder invocation will be given, so it
 # must unconditionally assume both are missing in its projection -- even
@@ -590,3 +612,62 @@ def test_red30_projection_sound_at_max_blocks_exceeding_old_three_digit_assumpti
     plan = build_semantic_chunk_plan(intake_dict, max_blocks=5000, max_chars_per_block=24_000)
     assert plan.status == "complete"
     _assert_real_build_never_reduces_a_hunk(intake_dict, plan)
+
+
+# ---------------------------------------------------------------------------
+# RED-33 (P2-10): max_blocks/max_chars_per_block must be validated at entry.
+# A non-positive max_blocks disagrees between `ordered[:max_blocks]`
+# (Python negative slicing for negative values) and `worst_case_chunk_id`/
+# `worst_case_order_index` (which normalize non-positive input to 1) --
+# fail closed instead of letting the two silently diverge.
+# ---------------------------------------------------------------------------
+
+
+def test_red33_zero_max_blocks_fails_closed() -> None:
+    intake_dict = _intake(["a.py"], {"a.py": 5})
+    try:
+        build_semantic_chunk_plan(intake_dict, max_blocks=0)
+    except IntakeValidationError as exc:
+        assert str(exc) == "max_blocks_invalid"
+    else:
+        raise AssertionError("expected IntakeValidationError for max_blocks=0")
+
+
+def test_red33_negative_max_blocks_fails_closed() -> None:
+    intake_dict = _intake(["a.py"], {"a.py": 5})
+    try:
+        build_semantic_chunk_plan(intake_dict, max_blocks=-1)
+    except IntakeValidationError as exc:
+        assert str(exc) == "max_blocks_invalid"
+    else:
+        raise AssertionError("expected IntakeValidationError for max_blocks=-1")
+
+
+def test_red33_bool_max_blocks_fails_closed() -> None:
+    # bool is a structural int subclass in Python (True == 1) -- must not
+    # silently pass as a valid max_blocks value.
+    intake_dict = _intake(["a.py"], {"a.py": 5})
+    try:
+        build_semantic_chunk_plan(intake_dict, max_blocks=True)
+    except IntakeValidationError as exc:
+        assert str(exc) == "max_blocks_invalid"
+    else:
+        raise AssertionError("expected IntakeValidationError for max_blocks=True")
+
+
+def test_red33_non_positive_max_chars_per_block_fails_closed() -> None:
+    intake_dict = _intake(["a.py"], {"a.py": 5})
+    for bad in (0, -1):
+        try:
+            build_semantic_chunk_plan(intake_dict, max_chars_per_block=bad)
+        except IntakeValidationError as exc:
+            assert str(exc) == "max_chars_per_block_invalid"
+        else:
+            raise AssertionError(f"expected IntakeValidationError for max_chars_per_block={bad}")
+
+
+def test_red33_normal_max_blocks_unchanged() -> None:
+    intake_dict = _intake(["a.py"], {"a.py": 5})
+    for value in (1, 6):
+        plan = build_semantic_chunk_plan(intake_dict, max_blocks=value)
+        assert plan.status == "complete"

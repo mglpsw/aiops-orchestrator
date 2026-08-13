@@ -106,6 +106,21 @@ def build_semantic_chunk_plan(
     validation_evidence: dict[str, Any] | None = None,
     optional_limitations: list[str] | None = None,
 ) -> SemanticChunkPlan:
+    # P2-10 (PR #227 exact-HEAD adversarial review, round 3): max_blocks<=0
+    # was previously accepted. `ordered[:max_blocks]` uses Python negative
+    # slicing for a negative value (silently selecting from the *end* of
+    # the candidate list instead of failing), while `worst_case_chunk_id`/
+    # `worst_case_order_index` normalize a non-positive bound as if it were
+    # 1 -- the two would silently disagree about how many chunks the plan
+    # can produce. Entry-validated here, before anything else runs, rather
+    # than left to degrade unpredictably downstream. `bool` is rejected
+    # too: it is a structural `int` subclass in Python (`True == 1`), so an
+    # accidental `max_blocks=True` would otherwise silently pass as 1.
+    if not isinstance(max_blocks, int) or isinstance(max_blocks, bool) or max_blocks <= 0:
+        raise IntakeValidationError("max_blocks_invalid")
+    if not isinstance(max_chars_per_block, int) or isinstance(max_chars_per_block, bool) or max_chars_per_block <= 0:
+        raise IntakeValidationError("max_chars_per_block_invalid")
+
     limitations = validate_intake_contract(intake)
     target_repo = str(intake.get("target_repo", "unknown"))
     created_at = _resolve_created_at(intake)
@@ -181,6 +196,12 @@ def build_semantic_chunk_plan(
     required_files_list, must_review_identity_limitations = _required_files_for_projection(review_intake)
     required_files = set(required_files_list)
     limitations.extend(must_review_identity_limitations)
+    # P2-8: brief.required_files is the *wire* representation
+    # (payload_cost_model.required_files_wire, matching pr_brief.py's real
+    # _coverage_requirements output byte-for-byte) -- distinct from
+    # `required_files` above, which is the canonicalized *identity* set used
+    # for must_review membership/priority/oversize classification only.
+    required_files_wire = payload_cost_model.required_files_wire(review_intake)
     contract_refs = _contract_refs(intake)
     available_refs = _artifact_refs(artifacts)
 
@@ -256,7 +277,7 @@ def build_semantic_chunk_plan(
             target=real_target,
             brief_target=real_target,
             brief_review=real_brief_review,
-            brief_required_files=sorted(required_files),
+            brief_required_files=required_files_wire,
             brief_limitations=[*fixed_brief_limitations, *packing_limitations],
             selected_contract_pack=review_metadata["contract_pack"],
             checks=effective_checks,
