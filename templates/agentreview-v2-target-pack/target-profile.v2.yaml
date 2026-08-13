@@ -1,0 +1,36 @@
+schema_id: agent-review.target-profile.v2
+schema_version: 2
+source: repo-profile
+identity:
+  repo: OWNER/REPO
+  default_branch: main
+artifacts:
+  - artifact_id: full-diff
+    path: artifacts/full.diff
+    kind: diff
+    required: true
+    max_bytes: 1000000
+budgets:
+  max_chunks: 16
+  total_prompt_chars: 250000
+  max_chars_per_chunk: 24000
+  max_files_per_chunk: 50
+  max_contracts_per_chunk: 50
+must_review:
+  paths: []
+  patterns: []
+  artifact_ids: []
+  minimum_coverage: complete
+policies:
+  network_policy: forbidden
+  fail_closed: true
+  redaction_required: true
+  allow_partial_coverage: false
+  required_checks:
+    - REPLACE_ME_WITH_A_REAL_REQUIRED_CHECK_NAME
+  allowed_semantic_groups:
+    - primary_backend_logic
+  coverage_failure_state: manual_required
+  model_uncertainty_state: manual_required
+contracts: []
+limitations: []
