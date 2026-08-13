@@ -17,7 +17,7 @@ own profile, domain contracts, DLP extensions, and trusted-check inventory.
 #203 MUST NEVER CREATE AUTHORITY, FORK THE ENGINE, OR SILENTLY PROMOTE ROLLOUT.
 ```
 
-Full design: `/root/.claude/plans/203-agentreview-v2-target-pack.md`
+Full design: `docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`
 (Execution-Ready Engineering Specification rev.1) — ownership boundary,
 contract shapes, CLI surface, install/drift/rollback semantics, rollout
 modes, trusted-check ownership, and the full threat model.
@@ -97,20 +97,28 @@ in the target, `TARGET_OWNED` (written once at `init`, never touched again).
 
 ## Tests
 
-62 new tests across 8 files: contract validation (manifest/receipt,
+83 tests across 8 files: contract validation (manifest/receipt,
 including path-traversal rejection reused from `contracts_v2.RelativePath`
 and secret-name-shape rejection with two independent layers), pure plan
 computation (all five `PlannedActionV2` cases, rollout-ceiling refusal),
 install/apply (atomic-write-under-simulated-crash, drift refusal writes
 NOTHING, target-owned files never touched, fenced-block merge preserves
-surrounding content), doctor (missing/invalid/healthy, secret NAME-only
-checking, read-only-under-CLI-subprocess), manifest building (from the
-real toolrepo template tree, catching a real template-source-vs-target-path
-bug during implementation), and CLI E2E subprocess tests (`init` idempotence
-never overwriting a target-customized profile, `doctor` unhealthy-before/
-healthy-after `init`, no traceback on bad input).
+surrounding content, symlink/root-identity containment), doctor
+(missing/invalid/healthy, receipt-identity cross-checked against the
+manifest and loaded profile, secret NAME-only checking,
+read-only-under-CLI-subprocess), manifest building (from the real toolrepo
+template tree, catching a real template-source-vs-target-path bug during
+implementation), and CLI E2E subprocess tests (`init` idempotence never
+overwriting a target-customized profile, ownership-derived receipt fields
+stable across reinstalls, rollout-capability refusal, `doctor`
+unhealthy-before/healthy-after `init`, no traceback on bad input). Grown
+from an initial 62 to 83 across two adversarial-review passes (pre-PR
+self-review: symlink escape, fabricated `toolrepo_sha`/
+`target_profile_hash`; post-PR external exact-HEAD review: doctor identity
+binding, fabricated `target_policy_hash`, ownership-derivation bug,
+missing rollout-capability enforcement).
 
-Combined suite: 1812 passed (1750 baseline + 62 new), 16 skipped, 2 failed
+Combined suite (full `tests/`): 2497 passed, 16 skipped, 2 failed
 (pre-existing environment class, `sudo` absent in sandbox,
 `test_isolated_executor_v2.py`, unrelated to `#203`). Schema export
 byte-identical; CAEM F0 pin unchanged.
