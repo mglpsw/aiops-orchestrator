@@ -198,16 +198,35 @@ def apply_install_plan_v2(
     return tuple(written)
 
 
-def write_receipt_v2(*, target_root: Path, receipt: TargetInstallReceiptV2) -> None:
+def write_receipt_v2(
+    *, target_root: Path, receipt: TargetInstallReceiptV2, expected_target_root_real: str
+) -> None:
     """The CLI's only sanctioned way to persist a `TargetInstallReceiptV2`
     -- see the module docstring's "Every write to a target repository goes
     through this module" section. Routed through the exact same atomic,
     symlink/root-identity-checked `_atomic_write_v2` every other write in
-    this module gets; never a raw `Path.write_text` in the CLI again."""
+    this module gets; never a raw `Path.write_text` in the CLI again.
+
+    Adversarial review finding, confirmed and fixed (spec rev.2 §5.4,
+    "mutation boundary and root identity" -- P2-C): `apply_install_plan_v2`
+    binds its OWN writes to `plan.target_root_real`, captured at plan time,
+    but this function previously re-resolved `target_root` independently,
+    with no cross-check against any prior identity at all. A root swapped
+    between `apply_install_plan_v2` completing and this call landed the
+    receipt under a DIFFERENT root than the files it is supposed to
+    describe -- reproduced directly: calling this function against a target
+    root that had been replaced by a symlink wrote the receipt straight
+    through it, with no refusal, no binding to the install it was
+    persisting. `expected_target_root_real` is the SAME identity the plan
+    was computed against (`InstallPlanV2.target_root_real`) and the SAME
+    identity `apply_install_plan_v2` already verified before writing any
+    file -- the receipt now closes with that identity, or not at all."""
 
     import json
 
     target_root_real = target_root.resolve(strict=False)
+    if str(target_root_real) != expected_target_root_real:
+        raise TargetPackInstallError(INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2)
     content = (json.dumps(receipt.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
     )

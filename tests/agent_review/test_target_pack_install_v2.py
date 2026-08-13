@@ -11,6 +11,7 @@ from app.agent_review.target_pack_install_v2 import (
     INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2,
     TargetPackInstallError,
     apply_install_plan_v2,
+    write_receipt_v2,
 )
 from app.agent_review.target_pack_manifest_v2 import (
     GeneratedFileEntryV2,
@@ -18,6 +19,7 @@ from app.agent_review.target_pack_manifest_v2 import (
     TargetPackManifestV2,
 )
 from app.agent_review.target_pack_plan_v2 import compute_install_plan_v2
+from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2, compute_target_install_receipt_hash_v2
 
 
 def _sha256(data: bytes) -> str:
@@ -273,3 +275,62 @@ def test_merged_declarative_creates_the_block_when_file_did_not_exist(tmp_path: 
     )
 
     assert "new-line" in (tmp_path / ".gitignore").read_text(encoding="utf-8")
+
+
+def _receipt() -> TargetInstallReceiptV2:
+    fields = dict(
+        schema_id="agent-review.target-install-receipt.v2",
+        schema_version=2,
+        pack_version="0.1.0",
+        toolrepo_sha="1" * 40,
+        target_repo="owner/repo",
+        target_profile_hash="a" * 64,
+        target_policy_hash=None,
+        review_pack_hashes={},
+        generated_file_hashes={},
+        target_owned_paths=(),
+        required_capabilities=(),
+        expected_runner_labels=(),
+        required_secret_names=(),
+        rollout_mode="off",
+        compatibility="compatible",
+        previous_install_identity=None,
+        generated_at=None,
+    )
+    receipt_hash = compute_target_install_receipt_hash_v2(
+        TargetInstallReceiptV2.model_construct(**fields, receipt_hash="0" * 64)
+    )
+    return TargetInstallReceiptV2(**fields, receipt_hash=receipt_hash)
+
+
+def test_write_receipt_accepts_when_root_identity_matches_the_plans(tmp_path: Path) -> None:
+    write_receipt_v2(target_root=tmp_path, receipt=_receipt(), expected_target_root_real=str(tmp_path.resolve()))
+    assert (tmp_path / ".aiops" / "install-receipt.v2.json").is_file()
+
+
+def test_write_receipt_refuses_when_root_identity_changed_since_the_plan(tmp_path: Path) -> None:
+    """P2-C, spec rev.2 §5.4: `apply_install_plan_v2` binds its own writes to
+    `plan.target_root_real`, captured at plan time, but `write_receipt_v2`
+    previously re-resolved `target_root` independently, with no cross-check
+    against any prior identity at all. Reproduced before the fix: calling
+    `write_receipt_v2` against a root that had been replaced by a symlink
+    landed the receipt straight through it, no refusal, no binding to the
+    install it was supposed to describe. `expected_target_root_real` closes
+    the window between `apply_install_plan_v2` completing and this call."""
+
+    import shutil
+
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-receipt-root-swap"
+    outside.mkdir()
+    plan_time_identity = str(tmp_path.resolve())
+
+    # target_root ITSELF replaced by a symlink AFTER the plan/apply identity
+    # was captured -- the same attack class as the apply-time root swap.
+    shutil.rmtree(tmp_path)
+    tmp_path.symlink_to(outside)
+
+    with pytest.raises(TargetPackInstallError) as exc_info:
+        write_receipt_v2(target_root=tmp_path, receipt=_receipt(), expected_target_root_real=plan_time_identity)
+
+    assert exc_info.value.reason_code == INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2
+    assert not (outside / ".aiops" / "install-receipt.v2.json").exists()

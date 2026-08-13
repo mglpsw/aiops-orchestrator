@@ -228,7 +228,10 @@ def _cmd_init(args: argparse.Namespace) -> int:
     receipt = TargetInstallReceiptV2(**receipt_without_hash, receipt_hash=receipt_hash)
 
     try:
-        write_receipt_v2(target_root=target_root, receipt=receipt)
+        # Bound to the SAME root identity the plan was computed against and
+        # apply_install_plan_v2 already verified -- not re-resolved
+        # independently (P2-C, spec rev.2 §5.4).
+        write_receipt_v2(target_root=target_root, receipt=receipt, expected_target_root_real=plan.target_root_real)
     except TargetPackInstallError as exc:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
