@@ -453,15 +453,63 @@ def compute_readiness_decision_v2(
 
 REQUIRED_CHECKS_PIPELINE_COMPONENT_V2 = "required_checks"
 _REQUIRED_CHECKS_BLOCKER_ID_V2 = "required-checks"
+# `PipelineDegradationCauseV2.detail` is `SafeText` (contracts_v2.py):
+# `max_length=512`. Each segment gets a fixed budget well under that bound
+# so the two segments plus fixed prose can never together exceed it.
+_DETAIL_SEGMENT_BUDGET_V2 = 200
+
+
+def _joined_with_budget_v2(names: tuple[str, ...], *, budget: int) -> str:
+    """Join `names` up to `budget` characters, appending a deterministic
+    `(+N more)` suffix if the full list does not fit. Never returns a
+    string longer than `budget`.
+
+    `TargetPoliciesV2.required_checks` (contracts_v2.py) has no maximum
+    count, and each `SafeText` name may be up to 512 characters on its
+    own -- an adversarial review of this PR found that joining an
+    unbounded number/length of names here could exceed `PipelineDegradation
+    CauseV2.detail`'s own `SafeText` bound, raising `pydantic.
+    ValidationError` from a pure function with no `try`/`except`, crashing
+    `produce_review_readiness_v2` instead of producing exactly the
+    `manual_required` artifact this module exists to make representable.
+    Truncating deterministically -- rather than trusting the joined string
+    to happen to fit -- is the fix, not a defensive afterthought: the full
+    name lists remain on `RequiredCheckReadinessAssessmentV2` itself, so
+    nothing this string omits is lost to a caller that needs it exactly.
+    """
+
+    joined = ", ".join(names)
+    if len(joined) <= budget:
+        return joined
+    kept: list[str] = []
+    length = 0
+    for name in names:
+        addition = len(name) + (2 if kept else 0)  # ", " separator
+        if length + addition > budget:
+            break
+        kept.append(name)
+        length += addition
+    suffix = f" (+{len(names) - len(kept)} more)"
+    result = ", ".join(kept) + suffix
+    return result[:budget] if len(result) > budget else result
 
 
 def _required_check_detail_v2(assessment: RequiredCheckReadinessAssessmentV2) -> str:
     parts: list[str] = []
     if assessment.missing_check_names:
-        parts.append("authority not established for: " + ", ".join(assessment.missing_check_names))
+        parts.append(
+            "authority not established for: "
+            + _joined_with_budget_v2(assessment.missing_check_names, budget=_DETAIL_SEGMENT_BUDGET_V2)
+        )
     if assessment.failed_check_names:
-        parts.append("failed: " + ", ".join(assessment.failed_check_names))
-    return "; ".join(parts)
+        parts.append(
+            "failed: " + _joined_with_budget_v2(assessment.failed_check_names, budget=_DETAIL_SEGMENT_BUDGET_V2)
+        )
+    detail = "; ".join(parts)
+    # Defensive final cap, verified never actually exercised by the two
+    # segment budgets above (fixed prose + separators stay well under
+    # 512), but asserted structurally rather than trusted by arithmetic.
+    return detail[:512] if len(detail) > 512 else detail
 
 
 def _apply_required_check_assessment_v2(

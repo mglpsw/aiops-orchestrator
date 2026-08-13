@@ -796,3 +796,31 @@ def test_failed_and_not_established_produce_distinguishable_detail() -> None:
     assert "failed" in failed.pipeline.causes[0].detail
     assert "authority not established" in not_established.pipeline.causes[0].detail
     assert failed.pipeline.causes[0].detail != not_established.pipeline.causes[0].detail
+
+
+def test_a_large_required_check_set_never_exceeds_the_detail_contracts_own_bound() -> None:
+    """Adversarial review finding, confirmed and fixed. `TargetPoliciesV2.
+    required_checks` has no maximum count, and each `SafeText` name may be
+    up to 512 characters on its own -- `TargetPoliciesV2.required_checks:
+    list[SafeText]` (contracts_v2.py) carries no upper bound at all. A
+    realistic large required-check set (a monorepo's CI matrix) joined
+    without a cap would exceed `PipelineDegradationCauseV2.detail`'s own
+    `SafeText` bound (max_length=512) and raise `pydantic.ValidationError`
+    -- propagating UNCAUGHT out of `_apply_required_check_assessment_v2`
+    (a pure function with no `try`/`except`), crashing `produce_review_
+    readiness_v2` instead of producing exactly the `manual_required`
+    artifact this module exists to make representable. Reproduced before
+    the fix: 30 realistically-named required checks produced a 2189-
+    character `detail`, and `PipelineDegradationCauseV2(...)` raised
+    `string_too_long`."""
+
+    names = tuple(f"required-check-name-number-{i:03d}-with-some-extra-padding-to-be-realistic" for i in range(30))
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=names)
+
+    decision = _apply_required_check_assessment_v2(decision=_ready_decision(), assessment=assessment)
+
+    assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
+    detail = decision.pipeline.causes[0].detail
+    assert len(detail) <= 512
+    # Still informative -- not silently emptied.
+    assert "required-check-name-number-000" in detail or "30" in detail
