@@ -1,0 +1,343 @@
+"""RED/lock tests for aiops-orchestrator#225: planner/builder chunk-cost
+divergence and its fix (FFD packing, fixed-point cost projection, fail-closed
+oversize/hunk-unavailable handling, deterministic partitioning).
+
+Complements test_semantic_chunker.py (existing grouping/budget tests, now
+updated for real-cost semantics) and test_chunk_payload_builder.py (hard
+guard, budget authority, projection-input binding). See EES #225 rev.3 for
+the RED matrix these map to.
+"""
+
+from __future__ import annotations
+
+import random
+
+from app.agent_review.chunk_payload_builder import build_chunk_payloads
+from app.agent_review.pr_brief import build_pr_brief
+from app.agent_review.schemas import RedactionReport, ReviewIntake
+
+from app.agent_review.semantic_chunker import GROUP_PRIORITY, build_semantic_chunk_plan
+
+
+def _hunk(path: str, lines: int) -> str:
+    body = "\n".join(f"+    value_{i} = compute_window(index_{i}, offset_{i})" for i in range(lines))
+    return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,{lines} @@\n{body}"
+
+
+def _intake(files: list[str], hunk_lines: dict[str, int], must: list[str] | None = None) -> dict:
+    """`hunk_lines` maps path -> line count; a path present in `files` but
+    absent from `hunk_lines` gets no diff block at all (simulating a binary
+    file or a diff producer gap), not a default-sized hunk."""
+    must = must if must is not None else files
+    diff = "\n".join(_hunk(p, hunk_lines[p]) for p in files if p in hunk_lines)
+    return {
+        "schema_id": "agent-review.intake.v1",
+        "schema_version": 1,
+        "source": "aiops-review-intake",
+        "target_repo": "mglpsw/AgentEscala",
+        "target_profile": {},
+        "created_at": "2026-08-13T00:00:00Z",
+        "artifacts": {
+            "file-diff-context.json": {
+                "path": "file-diff-context.json",
+                "content": {
+                    "files": [{"path": p, "status": "modified", "summary": ""} for p in files],
+                    "coverage_requirements": {"must_review_files": must},
+                },
+            },
+            "full-diff.diff": {"path": "full-diff.diff", "content": diff},
+        },
+        "artifact_status": [],
+        "redaction_summary": RedactionReport().model_dump(mode="json"),
+        "limitations": [],
+        "completeness": {},
+        "status": "complete",
+    }
+
+
+def _build_real_payloads(intake_dict: dict, plan):
+    intake = ReviewIntake.model_validate(intake_dict)
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=plan,
+        redaction_report=intake.redaction_summary,
+        checks=None,
+        validation_evidence=None,
+    )
+    return build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
+
+
+def _lost_must_review_files(plan, manifest, payloads, must: set[str]) -> set[str]:
+    """A file is "lost" only if a payload was actually emitted claiming to
+    cover it but its hunk didn't transport intact -- the silent-loss defect
+    #225 exists to close. A file honestly reported in `files_not_covered`
+    (oversize, hunk-unavailable, budget-exhausted) is a *visible* gap, not a
+    silent loss, and must not be counted here.
+    """
+    lost: set[str] = set()
+    for entry in manifest.chunks:
+        if entry.payload_path is None:
+            continue
+        payload = payloads[entry.payload_path]
+        planned = set(payload.coverage.get("files_in_chunk") or [])
+        transported = {
+            item["path"]
+            for item in payload.chunk_context.get("chunk_hunks", [])
+            if isinstance(item, dict) and isinstance(item.get("hunk"), str) and not item["hunk"].endswith("...")
+        }
+        lost |= (planned - transported) & must
+    return lost
+
+
+# ---------------------------------------------------------------------------
+# RED-1 / RED-2 / RED-3: reproduce the #774 divergence shape and prove it is
+# fixed -- zero must_review files ever lose hunk material, at magnitude
+# equivalent to the real canary (workflow_aiops ~150k+, tests ~40k+).
+# ---------------------------------------------------------------------------
+
+
+def test_no_must_review_file_ever_loses_hunk_material_at_774_scale() -> None:
+    workflow_files = [
+        ".github/workflows/agent-review.yml",
+        ".github/workflows/agent-review-publish.yml",
+        ".github/workflows/aiops-collect.yml",
+        "scripts/aiops/collect_metrics.py",
+        "scripts/aiops/publish_review.py",
+        "scripts/aiops/intake_builder.py",
+    ]
+    test_files = [
+        "tests/aiops/test_publisher.py",
+        "tests/aiops/test_intake.py",
+        "tests/aiops/test_collect.py",
+        "tests/aiops/test_boundary.py",
+    ]
+    other_files = [
+        "docs/AIOPS_STATE.md",
+        "docs/TRUST_BOUNDARY.md",
+        "frontend/src/pages/panel.jsx",
+        "backend/services/shift_service.py",
+        "backend/api/schema_contract.py",
+    ]
+    files = workflow_files + test_files + other_files
+    must = workflow_files + test_files
+    hunk_lines = {**{p: 600 for p in workflow_files}, **{p: 250 for p in test_files}, **{p: 5 for p in other_files}}
+
+    intake_dict = _intake(files, hunk_lines, must)
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=6, max_chars_per_block=24_000)
+    manifest, payloads = _build_real_payloads(intake_dict, plan)
+
+    lost = _lost_must_review_files(plan, manifest, payloads, set(must))
+    assert lost == set(), f"must_review files lost hunk material: {sorted(lost)}"
+
+    # every file the plan claims is covered actually reached the reviewer
+    for entry in manifest.chunks:
+        if entry.payload_path is None:
+            continue
+        assert "chunk_hunks_reduced" not in entry.truncation.coverage_impact
+
+
+# ---------------------------------------------------------------------------
+# RED-4 / RED-13: permutation invariance and rerun determinism.
+# ---------------------------------------------------------------------------
+
+
+def test_plan_is_invariant_to_intake_file_order() -> None:
+    files = [
+        "backend/api/a.py",
+        "tests/b_test.py",
+        "tests/c_test.py",
+        "docs/README.md",
+        "frontend/src/x.jsx",
+        ".github/workflows/ci.yml",
+        "scripts/aiops/y.py",
+    ]
+    must = ["backend/api/a.py", "tests/b_test.py"]
+    hunk_lines = {p: 40 for p in files}
+
+    plan_a = build_semantic_chunk_plan(_intake(files, hunk_lines, must))
+    plan_b = build_semantic_chunk_plan(_intake(list(reversed(files)), hunk_lines, must))
+    shuffled = files[:]
+    random.Random(1234).shuffle(shuffled)
+    plan_c = build_semantic_chunk_plan(_intake(shuffled, hunk_lines, must))
+
+    assert plan_a.model_dump_json() == plan_b.model_dump_json()
+    assert plan_a.model_dump_json() == plan_c.model_dump_json()
+
+    # rerun determinism: created_at no longer leaks wall-clock time
+    plan_a2 = build_semantic_chunk_plan(_intake(files, hunk_lines, must))
+    assert plan_a.model_dump_json() == plan_a2.model_dump_json()
+    assert plan_a.created_at == "2026-08-13T00:00:00Z"
+
+
+def test_plan_created_at_derives_from_intake_not_wall_clock() -> None:
+    intake_dict = _intake(["a.py"], {"a.py": 5})
+    intake_dict["created_at"] = "2020-01-01T00:00:00Z"
+    plan = build_semantic_chunk_plan(intake_dict)
+    assert plan.created_at == "2020-01-01T00:00:00Z"
+
+
+# ---------------------------------------------------------------------------
+# RED-6 / RED-7: oversize fail-closed, differentiated by must_review.
+# ---------------------------------------------------------------------------
+
+
+def test_must_review_individual_oversize_fails_closed_not_fragmented() -> None:
+    files = ["backend/services/huge_module.py"]
+    plan = build_semantic_chunk_plan(_intake(files, {files[0]: 5000}, must=files), max_chars_per_block=24_000)
+    assert plan.status == "degraded"
+    assert plan.files_not_covered == files
+    assert f"must_review_payload_oversize:{files[0]}" in plan.limitations
+    # never silently fragmented into a partial chunk
+    assert plan.chunks == []
+
+
+def test_non_must_review_individual_oversize_is_reported_not_dropped() -> None:
+    files = ["docs/huge_reference.md"]
+    plan = build_semantic_chunk_plan(_intake(files, {files[0]: 5000}, must=[]), max_chars_per_block=24_000)
+    assert plan.status == "degraded"
+    assert plan.files_not_covered == files
+    assert f"payload_oversize:{files[0]}" in plan.limitations
+    assert plan.chunks == []
+
+
+# ---------------------------------------------------------------------------
+# RED-16: must_review with no observable hunk fails closed (binary/missing).
+# ---------------------------------------------------------------------------
+
+
+def test_must_review_file_with_no_hunk_fails_closed() -> None:
+    files = ["backend/api/a.py", "assets/logo.png"]
+    intake_dict = _intake(files, {"backend/api/a.py": 5}, must=files)
+    # assets/logo.png has no diff --git block at all (binary, or the diff
+    # producer never emitted one)
+    plan = build_semantic_chunk_plan(intake_dict)
+    assert "assets/logo.png" in plan.files_not_covered
+    assert "must_review_hunk_unavailable:assets/logo.png" in plan.limitations
+    assert "assets/logo.png" not in plan.files_covered
+
+
+# ---------------------------------------------------------------------------
+# RED-17: no empty chunk is ever emitted.
+# ---------------------------------------------------------------------------
+
+
+def test_no_chunk_is_ever_emitted_empty() -> None:
+    files = ["backend/api/a.py", "backend/services/huge_module.py"]
+    intake_dict = _intake(files, {"backend/api/a.py": 5, "backend/services/huge_module.py": 5000}, must=[])
+    plan = build_semantic_chunk_plan(intake_dict, max_chars_per_block=24_000)
+    for chunk in plan.chunks:
+        assert chunk.files, f"{chunk.chunk_id} was emitted with an empty files list"
+
+
+# ---------------------------------------------------------------------------
+# RED-15: max_blocks selection prioritizes candidate chunks that themselves
+# contain a must_review file, cutting across GROUP_PRIORITY.
+# ---------------------------------------------------------------------------
+
+
+def test_max_blocks_selection_prioritizes_must_review_bearing_chunks() -> None:
+    # docs_changelog sorts after tests in GROUP_PRIORITY, but only the
+    # docs file is must_review -- with max_blocks=1 the docs chunk must
+    # still be the one selected, not the higher-priority-but-unrequired
+    # tests chunk.
+    files = ["tests/a_test.py", "docs/CHANGELOG.md"]
+    intake_dict = _intake(files, {p: 5 for p in files}, must=["docs/CHANGELOG.md"])
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=1, max_chars_per_block=24_000)
+    assert len(plan.chunks) == 1
+    assert plan.chunks[0].files == ["docs/CHANGELOG.md"]
+    assert "tests/a_test.py" in plan.files_not_covered
+    assert "chunk_plan_budget_exhausted:tests" in plan.limitations
+
+
+# ---------------------------------------------------------------------------
+# RED-20: the plan/brief cost fixed point converges (doesn't just crash or
+# loop) even when checks produce unbounded `check_scope_unclassified:*`
+# limitations that feed back into brief.limitations, which feeds back into
+# the projected cost of every chunk.
+# ---------------------------------------------------------------------------
+
+
+def test_fixed_point_converges_with_growing_checks_limitations() -> None:
+    files = [f"backend/services/f{i}.py" for i in range(8)]
+    intake_dict = _intake(files, {p: 20 for p in files}, must=files[:2])
+    # a checks document with many unscoped, unclassified rows -- each one
+    # contributes a `check_scope_unclassified:<name>` limitation that lands
+    # in every chunk's projected brief.limitations
+    intake_dict["artifacts"]["checks.json"] = {
+        "path": "checks.json",
+        "content": {
+            "status": "complete",
+            "mode": "scoped",
+            "scope": "",
+            "checks": [{"name": f"weird_check_{i}", "status": "passed"} for i in range(30)],
+        },
+    }
+    plan = build_semantic_chunk_plan(intake_dict, max_chars_per_block=24_000)
+    # must converge to a real, usable plan -- not raise
+    # plan_cost_fixed_point_not_converged, and not lose any must_review file
+    assert plan.status in {"complete", "degraded"}
+    assert "plan_cost_fixed_point_not_converged" not in plan.limitations
+
+
+# ---------------------------------------------------------------------------
+# RED-22: FFD packing succeeds within max_blocks where naive canonical-order
+# first-fit would have needed more chunks than available.
+# ---------------------------------------------------------------------------
+
+
+def test_ffd_packs_within_max_blocks_where_naive_order_would_not() -> None:
+    # One large file plus several small ones, all in the same semantic
+    # group: canonical-path order happens to put the large file first, which
+    # would force it into its own chunk under naive first-fit and then
+    # require 1 chunk per remaining small file too if packed in strict
+    # insertion order without reordering by cost. FFD (cost-descending) must
+    # still find a packing that fits within max_blocks.
+    small_files = [f"backend/services/small_{i}.py" for i in range(5)]
+    files = ["backend/services/aaa_biggest.py", *small_files]
+    hunk_lines = {"backend/services/aaa_biggest.py": 200, **{p: 3 for p in small_files}}
+    intake_dict = _intake(files, hunk_lines, must=[])
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=3, max_chars_per_block=24_000)
+    assert plan.status == "complete"
+    assert set(plan.files_covered) == set(files)
+    assert len(plan.chunks) <= 3
+
+
+# ---------------------------------------------------------------------------
+# RED-8: v2 stays byte/semantically untouched by this fix -- the planner and
+# builder for v2 never import anything from this v1-only fix surface.
+# ---------------------------------------------------------------------------
+
+
+def test_v2_modules_do_not_import_v1_cost_model_or_semantic_chunker() -> None:
+    import ast
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    v2_files = sorted((repo_root / "app" / "agent_review").glob("*_v2.py"))
+    assert v2_files, "expected at least one *_v2.py module to check"
+    forbidden = {"payload_cost_model", "semantic_chunker", "chunk_payload_builder"}
+    for path in v2_files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                module_tail = node.module.rsplit(".", 1)[-1]
+                assert module_tail not in forbidden, f"{path.name} imports v1-only module {node.module}"
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module_tail = alias.name.rsplit(".", 1)[-1]
+                    assert module_tail not in forbidden, f"{path.name} imports v1-only module {alias.name}"
+
+
+def test_group_priority_unchanged_shape() -> None:
+    # Defensive lock: the packer's group-priority tie-break (rev.3 SS10)
+    # depends on this exact, closed vocabulary staying stable.
+    assert GROUP_PRIORITY == [
+        "suspicious_out_of_scope",
+        "api_schema_contract",
+        "primary_backend_logic",
+        "workflow_aiops",
+        "frontend_ui",
+        "tests",
+        "docs_changelog",
+        "unknown",
+    ]

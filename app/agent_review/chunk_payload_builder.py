@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import json
-import re
-from collections import defaultdict
 from typing import Any
 
+from app.agent_review import payload_cost_model
 from app.agent_review.chunk_artifact_ids import ChunkArtifactIdError, chunk_artifact_filename
 from app.agent_review.chunk_response_contract import build_chunk_response_contract
+from app.agent_review.payload_cost_model import (
+    canonical_json,
+    checks_context,
+    contracts_context,
+    evidence_context,
+    materialize_payload,
+    sanitize_display_path as _sanitize_relative_path,
+    stabilize_payload_truncation,
+)
 from app.agent_review.redaction import sanitize_artifact_value
 from app.agent_review.schemas import (
     ChunkPayload,
@@ -50,9 +57,14 @@ def build_chunk_payloads(
         checks=checks,
         validation_evidence=validation_evidence,
     )
+    payload_cost_model.assert_projection_inputs_bound(
+        intake,
+        checks=checks,
+        validation_evidence=validation_evidence,
+    )
     chunks = sorted(chunk_plan.chunks, key=lambda item: (item.order_index, item.chunk_id))
     _validate_chunk_plan_uniqueness(chunks)
-    diff_map = _diff_by_file(intake)
+    diff_map = payload_cost_model.diff_by_file(intake)
     file_context = _file_context_map(intake)
 
     payloads: dict[str, ChunkPayload] = {}
@@ -157,20 +169,24 @@ def _build_chunk_payload(
     chunk_hunks = []
     for path in sorted(chunk.files):
         hunk = diff_map.get(path)
+        display = _sanitize_relative_path(path)
         if hunk:
-            chunk_hunks.append({"path": _sanitize_relative_path(path), "hunk": hunk})
+            chunk_hunks.append({"path": display, "hunk": hunk})
             continue
-        limitations.append(f"chunk_diff_hunk_missing:{_sanitize_relative_path(path)}")
+        limitations.append(f"chunk_diff_hunk_missing:{display}")
 
-    contracts_context, contract_limitations = _contracts_context(
+    contracts_ctx, contract_limitations = contracts_context(
         intake,
-        chunk=chunk,
+        chunk_files=chunk.files,
+        chunk_contracts=chunk.contracts,
+        chunk_id=chunk.chunk_id,
         selected_contract_pack=_clean_text(pr_brief.review.get("contract_pack")),
+        semantic_group=chunk.semantic_group,
     )
-    checks_context, check_limitations = _checks_context(checks, intake=intake, chunk_files=set(chunk.files))
-    evidence_context, evidence_limitations = _evidence_context(
+    checks_ctx, check_limitations = checks_context(checks, intake=intake, chunk_files=set(chunk.files))
+    evidence_ctx, evidence_limitations = evidence_context(
         intake,
-        chunk=chunk,
+        chunk_files=chunk.files,
         validation_evidence=validation_evidence,
     )
     limitations.extend(contract_limitations)
@@ -198,9 +214,9 @@ def _build_chunk_payload(
         "chunk_context": {
             "files": chunk_files,
             "chunk_hunks": chunk_hunks,
-            "contracts_context": contracts_context,
-            "evidence_context": evidence_context,
-            "checks_context": checks_context,
+            "contracts_context": contracts_ctx,
+            "evidence_context": evidence_ctx,
+            "checks_context": checks_ctx,
             "aux_context": _aux_context(intake, chunk=chunk),
         },
         "coverage": {
@@ -220,10 +236,80 @@ def _build_chunk_payload(
     }
 
     sanitized = sanitize_artifact_value(payload_body)
+
+    # Hard guard (rev.3 SS7): no downstream CLI (parse-chunks / synthesize /
+    # quality-gate / telemetry) consumes this manifest -- they all take
+    # --chunk-plan / --chunk-results instead -- so a residual coverage
+    # divergence recorded only as a manifest limitation would never reach the
+    # quality gate. Any file the plan declared covered whose hunk material
+    # was reduced, altered, or dropped by the shrink ladder blocks this
+    # chunk from being routed at all; it is never downgraded to a mere
+    # limitation on an otherwise-emitted payload.
+    #
+    # The comparison baseline is the SANITIZED hunk text -- captured here,
+    # before `_apply_payload_budget` runs -- never the raw `diff_map` hunk.
+    # `sanitize_artifact_value` legitimately rewrites hunk content (secret
+    # redaction, local-path redaction) independent of the budget; comparing
+    # against the raw pre-sanitization text would make every legitimately
+    # redacted hunk look like a budget-driven loss.
+    original_hunks_by_path = {
+        item["path"]: item["hunk"]
+        for item in sanitized.get("chunk_context", {}).get("chunk_hunks", [])
+        if isinstance(item, dict)
+    }
+
     payload_body, truncation = _apply_payload_budget(sanitized, max_chars=payload_budget)
-    payload, _ = _materialize_payload(payload_body, truncation=truncation)
+    payload, _ = materialize_payload(payload_body, truncation=truncation)
+
+    final_hunks_by_path = {
+        item.get("path"): item.get("hunk")
+        for item in payload.chunk_context.get("chunk_hunks", [])
+        if isinstance(item, dict)
+    }
+    reduced_paths: list[str] = []
+    omitted_paths: list[str] = []
+    fully_included = 0
+    for path, original_hunk in original_hunks_by_path.items():
+        final_hunk = final_hunks_by_path.get(path)
+        if final_hunk is None:
+            omitted_paths.append(path)
+        elif final_hunk != original_hunk:
+            reduced_paths.append(path)
+        else:
+            fully_included += 1
+    reduced_paths.sort()
+    omitted_paths.sort()
+    missing_paths = sorted(item["path"] for item in chunk_files if item["path"] not in original_hunks_by_path)
 
     filename, filename_limitations = _payload_filename(chunk)
+
+    if reduced_paths or omitted_paths:
+        guard_limitations = [
+            f"chunk_hunk_material_not_transported:{path}" for path in sorted({*reduced_paths, *omitted_paths})
+        ]
+        entry_limitations = _dedupe([*payload.limitations, *filename_limitations, *guard_limitations])
+        manifest_entry = ChunkPayloadManifestEntry(
+            chunk_id=chunk.chunk_id,
+            semantic_group=chunk.semantic_group,
+            order_index=chunk.order_index,
+            status="limited",
+            payload_path=None,
+            payload_sha256=None,
+            coverage={
+                **dict(payload.coverage),
+                "hunks_fully_included": fully_included,
+                "hunks_reduced": len(reduced_paths),
+                "hunks_omitted": len(omitted_paths),
+                "files_with_hunks_reduced": reduced_paths,
+                "files_with_hunks_omitted": omitted_paths,
+                "files_with_hunks_missing": missing_paths,
+            },
+            warnings=list(payload.warnings),
+            limitations=entry_limitations,
+            truncation=payload.truncation,
+        )
+        return None, manifest_entry, None
+
     entry_limitations = _dedupe([*payload.limitations, *filename_limitations])
     payload_hash = _sha256_payload(payload.model_dump(mode="json"))
     manifest_entry = ChunkPayloadManifestEntry(
@@ -233,7 +319,15 @@ def _build_chunk_payload(
         status="limited" if entry_limitations or payload.truncation.applied else "available",
         payload_path=filename,
         payload_sha256=payload_hash,
-        coverage=dict(payload.coverage),
+        coverage={
+            **dict(payload.coverage),
+            "hunks_fully_included": fully_included,
+            "hunks_reduced": 0,
+            "hunks_omitted": 0,
+            "files_with_hunks_reduced": [],
+            "files_with_hunks_omitted": [],
+            "files_with_hunks_missing": missing_paths,
+        },
         warnings=list(payload.warnings),
         limitations=entry_limitations,
         truncation=payload.truncation,
@@ -242,11 +336,24 @@ def _build_chunk_payload(
 
 
 def _resolve_payload_budget(chunk: SemanticChunk, *, max_chars_per_payload: int | None) -> int:
-    if max_chars_per_payload is not None:
-        return max_chars_per_payload
     if isinstance(chunk.prompt_budget_chars, int) and chunk.prompt_budget_chars > 0:
-        return chunk.prompt_budget_chars
-    return DEFAULT_PAYLOAD_MAX_CHARS
+        effective_budget = chunk.prompt_budget_chars
+    else:
+        effective_budget = DEFAULT_PAYLOAD_MAX_CHARS
+    # Single budget authority (rev.3 SS6): the planner already committed to
+    # `chunk.prompt_budget_chars` when it decided this chunk's partition.
+    # Silently preferring a different `--payload-max-chars` here would
+    # reintroduce the exact planner/builder divergence this fix exists to
+    # close -- a smaller override could truncate hunks the plan proved would
+    # fit, without the plan ever knowing.
+    if max_chars_per_payload is not None and max_chars_per_payload != effective_budget:
+        raise ChunkPayloadBuilderError(
+            "payload_budget_mismatch",
+            f"--payload-max-chars ({max_chars_per_payload}) does not match chunk {chunk.chunk_id}'s "
+            f"own planned prompt_budget_chars ({effective_budget}); the planner and builder must "
+            "consume a single effective budget",
+        )
+    return effective_budget
 
 
 def _validate_chunk_plan_uniqueness(chunks: list[SemanticChunk]) -> None:
@@ -372,165 +479,10 @@ def _resolve_identity_value(
     return None
 
 
-def _contracts_context(
-    intake: ReviewIntake,
-    *,
-    chunk: SemanticChunk,
-    selected_contract_pack: str | None,
-) -> tuple[dict[str, Any], list[str]]:
-    profile = intake.target_profile if isinstance(intake.target_profile, dict) else {}
-    contracts = _flatten_contract_rules(profile.get("domain_contracts"))
-    packs = _flatten_review_packs(profile.get("review_packs"))
-    relevance_keywords = _relevance_keywords(chunk)
-    chunk_file_set = set(chunk.files)
-    referenced_contracts = {item.split(":", 1)[1] for item in chunk.contracts if item.startswith("contract:") and ":" in item}
-    include_all_contracts = "target_profile:domain_contracts" in chunk.contracts
-    include_all_packs = "target_profile:review_packs" in chunk.contracts
-    selected_pack = (selected_contract_pack or "").lower()
-
-    filtered_contracts = [
-        item
-        for item in contracts
-        if (
-            include_all_contracts
-            or item.get("id") in referenced_contracts
-            or _contract_matches_chunk(item, chunk_files=chunk_file_set)
-            or (
-                relevance_keywords
-                and any(keyword in (item.get("id", "") + " " + item.get("description", "")).lower() for keyword in relevance_keywords)
-            )
-        )
-    ]
-    filtered_packs = [
-        item
-        for item in packs
-        if (
-            include_all_packs
-            or item.get("id") in referenced_contracts
-            or (selected_pack and _review_pack_matches_selected(item, selected_pack))
-            or _contract_matches_chunk(item, chunk_files=chunk_file_set)
-            or (
-                relevance_keywords
-                and any(keyword in (item.get("id", "") + " " + item.get("description", "")).lower() for keyword in relevance_keywords)
-            )
-        )
-    ]
-    limitations: list[str] = []
-    if not filtered_contracts and not filtered_packs:
-        limitations.append(f"contracts_context_not_relevant:{chunk.chunk_id}")
-    return (
-        {
-            "domain_contracts": sorted(filtered_contracts, key=lambda item: (item.get("id") or "", item.get("description") or "")),
-            "review_packs": sorted(filtered_packs, key=lambda item: (item.get("id") or "", item.get("description") or "")),
-        },
-        limitations,
-    )
-
-
-def _evidence_context(
-    intake: ReviewIntake,
-    *,
-    chunk: SemanticChunk,
-    validation_evidence: dict[str, Any] | None,
-) -> tuple[dict[str, Any], list[str]]:
-    validation_document = (
-        validation_evidence
-        if isinstance(validation_evidence, dict)
-        else _artifact_content(intake, "validation-evidence-result")
-    )
-    chunk_files = set(chunk.files)
-    validation_entries = _filter_validation_entries(
-        validation_document,
-        field_name="blocking_findings",
-        chunk_files=chunk_files,
-    )
-    validation_risks = _filter_validation_entries(
-        validation_document,
-        field_name="validation_risks",
-        chunk_files=chunk_files,
-    )
-    facts_for_synthesizer = _validation_facts(validation_document)
-    lci = _artifact_content(intake, "local-code-intelligence")
-    tests = _artifact_content(intake, "test-intelligence")
-    lci_context, lci_limitations = _filter_lci(lci, chunk_files=set(chunk.files))
-    return (
-        {
-            "validation_evidence": {
-                "provided": isinstance(validation_document, dict),
-                "status": _clean_text(_get(validation_document, "status")),
-                "validation_verdict": _clean_text(_get(validation_document, "validation_verdict")),
-                "blocking_findings": validation_entries,
-                "validation_risks": validation_risks,
-                "facts_for_synthesizer": facts_for_synthesizer,
-                "limitations": _string_list(_get(validation_document, "limitations")),
-            },
-            "local_code_intelligence": lci_context,
-            "test_intelligence": _filter_test_intelligence(tests, chunk_files=set(chunk.files)),
-        },
-        lci_limitations,
-    )
-
-
-def _checks_context(
-    checks: dict[str, Any] | None,
-    *,
-    intake: ReviewIntake,
-    chunk_files: set[str],
-) -> tuple[dict[str, Any], list[str]]:
-    checks_document = checks if isinstance(checks, dict) else _artifact_content(intake, "checks")
-    if not isinstance(checks_document, dict):
-        return {"provided": False, "status": None, "checks": []}, []
-    checks_rows = [item for item in _list(checks_document.get("checks")) if isinstance(item, dict)]
-    has_row_level_scope = any(_paths_from_item(item) or _is_global_item(item) for item in checks_rows)
-    document_scope = _clean_text(checks_document.get("scope"))
-    document_mode = _clean_text(checks_document.get("mode"))
-    rows = []
-    limitations: list[str] = []
-    for item in checks_rows:
-        item_scope_paths = _paths_from_item(item)
-        is_global = _is_global_item(item)
-        if item_scope_paths:
-            if not item_scope_paths.intersection(chunk_files):
-                continue
-        elif not is_global:
-            applies_to_chunk = True
-            if document_scope:
-                applies_to_chunk = _document_scope_applies_to_chunk(document_scope, chunk_files=chunk_files)
-            if (not has_row_level_scope or document_scope or document_mode) and applies_to_chunk:
-                rows.append(
-                    {
-                        "name": _clean_text(item.get("name")),
-                        "status": _clean_text(item.get("status")) or "unknown",
-                        "command": _clean_text(item.get("command")),
-                        "scope": f"document:{document_scope}" if document_scope else "document",
-                    }
-                )
-                continue
-            name = _clean_text(item.get("name")) or "unknown_check"
-            limitations.append(f"check_scope_unclassified:{name}")
-            continue
-        rows.append(
-            {
-                "name": _clean_text(item.get("name")),
-                "status": _clean_text(item.get("status")) or "unknown",
-                "command": _clean_text(item.get("command")),
-                "scope": "global" if is_global else "file",
-            }
-        )
-    return (
-        {
-            "provided": True,
-            "status": _clean_text(checks_document.get("status")) or _clean_text(checks_document.get("validation_level")),
-            "checks": sorted(rows, key=lambda item: ((item.get("name") or ""), item.get("status") or "")),
-        },
-        _dedupe(limitations),
-    )
-
-
 def _aux_context(intake: ReviewIntake, *, chunk: SemanticChunk) -> dict[str, Any]:
-    project_context = _artifact_content(intake, "project-context")
-    semantic_context = _artifact_content(intake, "semantic-context")
-    file_context = _artifact_content(intake, "file-diff-context")
+    project_context = payload_cost_model.artifact_content(intake, "project-context")
+    semantic_context = payload_cost_model.artifact_content(intake, "semantic-context")
+    file_context = payload_cost_model.artifact_content(intake, "file-diff-context")
     modules = _get(project_context, "modules")
     selected_modules: list[dict[str, Any]] = []
     if isinstance(modules, dict):
@@ -567,282 +519,13 @@ def _coverage_requirements_for_chunk(requirements: Any, *, chunk_files: set[str]
     return result
 
 
-def _contract_matches_chunk(contract: dict[str, Any], *, chunk_files: set[str]) -> bool:
-    contract_paths = _paths_from_item(contract)
-    if contract_paths and contract_paths.intersection(chunk_files):
-        return True
-    patterns = _normalized_contract_patterns(contract.get("patterns"))
-    if patterns and any(_matches_pattern(path, patterns) for path in chunk_files):
-        return True
-    return _is_global_item(contract)
-
-
-def _matches_pattern(path: str, patterns: list[str]) -> bool:
-    for pattern in patterns:
-        normalized = pattern.strip()
-        if not normalized:
-            continue
-        if normalized.endswith("*") and path.startswith(normalized[:-1]):
-            return True
-        if normalized in path:
-            return True
-    return False
-
-
-def _document_scope_applies_to_chunk(scope: str, *, chunk_files: set[str]) -> bool:
-    normalized = scope.strip().lower()
-    if not normalized:
-        return True
-    if normalized in {"global", "all", "document"}:
-        return True
-    tokens = [token for token in re.split(r"[^a-z0-9]+", normalized) if token]
-    for file_path in chunk_files:
-        lowered = file_path.lower()
-        if normalized in lowered:
-            return True
-        if tokens and any(token in lowered for token in tokens):
-            return True
-    return False
-
-
-def _is_global_item(item: dict[str, Any]) -> bool:
-    scope = _clean_text(item.get("scope"))
-    if scope and scope.lower() == "global":
-        return True
-    return item.get("is_global") is True
-
-
-def _paths_from_item(item: dict[str, Any]) -> set[str]:
-    paths: set[str] = set()
-    for key in ("file_path", "file", "original_file", "path"):
-        value = _sanitize_relative_path(_clean_text(item.get(key)) or "")
-        if value:
-            paths.add(value)
-    for key in ("files", "paths", "source_files", "related_files"):
-        for value in _sanitize_contract_paths(item.get(key)):
-            paths.add(value)
-    return paths
-
-
-def _filter_lci(document: dict[str, Any] | None, *, chunk_files: set[str]) -> tuple[dict[str, Any], list[str]]:
-    if not isinstance(document, dict):
-        return {"provided": False, "files_analyzed": [], "confirmed_local_failures": []}, []
-    analyzed = [path for path in _string_list(document.get("files_analyzed")) if path in chunk_files]
-    scoped_failures: list[dict[str, Any]] = []
-    limitations = list(_string_list(document.get("limitations")))
-    for item in _list(document.get("confirmed_local_failures")):
-        if not isinstance(item, dict):
-            continue
-        if _is_global_item(item):
-            scoped_failures.append(item)
-            continue
-        item_paths = _paths_from_item(item)
-        if item_paths:
-            if item_paths.intersection(chunk_files):
-                scoped_failures.append(item)
-            continue
-        title = _clean_text(item.get("title")) or "unnamed_local_failure"
-        limitations.append(f"lci_scope_unclassified:{title}")
-    deduped_limitations = _dedupe(limitations)
-    return (
-        {
-            "provided": True,
-            "mode": _clean_text(document.get("mode")),
-            "files_analyzed": analyzed,
-            "confirmed_local_failures": scoped_failures,
-            "limitations": deduped_limitations,
-        },
-        [item for item in deduped_limitations if item.startswith("lci_scope_unclassified:")],
-    )
-
-
-def _filter_test_intelligence(document: dict[str, Any] | None, *, chunk_files: set[str]) -> dict[str, Any]:
-    if not isinstance(document, dict):
-        return {"provided": False, "changed_tests": [], "failed_tests": []}
-    changed_tests = [path for path in _string_list(document.get("changed_tests")) if path in chunk_files]
-    failed_tests = [path for path in _string_list(document.get("failed_tests")) if path in chunk_files]
-    return {
-        "provided": True,
-        "mode": _clean_text(document.get("mode")),
-        "changed_tests": changed_tests,
-        "failed_tests": failed_tests,
-        "limitations": _string_list(document.get("limitations")),
-    }
-
-
-def _filter_validation_entries(
-    document: dict[str, Any] | None,
-    *,
-    field_name: str,
-    chunk_files: set[str],
-) -> list[dict[str, Any]]:
-    entries = _get(document, field_name)
-    if not isinstance(entries, list):
-        return []
-    rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in entries:
-        if not isinstance(item, dict):
-            continue
-        is_global = _is_global_item(item)
-        item_paths = _paths_from_item(item)
-        if not is_global and item_paths and not item_paths.intersection(chunk_files):
-            continue
-        sanitized = sanitize_artifact_value(item)
-        if not isinstance(sanitized, dict):
-            continue
-        row = _normalize_validation_scope_fields(sanitized)
-        if not row:
-            continue
-        key = _canonical_json(row)
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append(row)
-    return sorted(rows, key=_canonical_json)
-
-
-def _normalize_validation_scope_fields(item: dict[str, Any]) -> dict[str, Any]:
-    row = copy.deepcopy(item)
-    for key in ("file_path", "file", "original_file", "path"):
-        if key not in row:
-            continue
-        value = _sanitize_relative_path(_clean_text(row.get(key)) or "")
-        if value:
-            row[key] = value
-        else:
-            row.pop(key, None)
-    for key in ("files", "paths", "source_files", "related_files"):
-        if key not in row:
-            continue
-        values = _sanitize_contract_paths(row.get(key))
-        if values:
-            row[key] = values
-        else:
-            row.pop(key, None)
-    return row
-
-
-def _validation_facts(document: dict[str, Any] | None) -> list[str]:
-    facts: set[str] = set()
-    for item in _list(_get(document, "facts_for_synthesizer")):
-        cleaned = _clean_text(item) if isinstance(item, str) else None
-        if not cleaned:
-            continue
-        sanitized = sanitize_artifact_value(cleaned)
-        if isinstance(sanitized, str) and sanitized.strip():
-            facts.add(sanitized.strip())
-    return sorted(facts)
-
-
-def _flatten_contract_rules(document: Any) -> list[dict[str, Any]]:
-    rules = _get(document, "rules")
-    if not isinstance(rules, list):
-        return []
-    rows: list[dict[str, Any]] = []
-    for item in rules:
-        if not isinstance(item, dict):
-            continue
-        row = {
-            "id": _clean_text(item.get("id")),
-            "description": _clean_text(item.get("description")),
-            "scope": _clean_text(item.get("scope")),
-            "is_global": item.get("is_global") is True,
-            "file_path": _sanitize_relative_path(_clean_text(item.get("file_path")) or ""),
-            "path": _sanitize_relative_path(_clean_text(item.get("path")) or ""),
-            "files": _sanitize_contract_paths(item.get("files")),
-            "paths": _sanitize_contract_paths(item.get("paths")),
-            "source_files": _sanitize_contract_paths(item.get("source_files")),
-            "related_files": _sanitize_contract_paths(item.get("related_files")),
-            "patterns": _normalized_contract_patterns(item.get("patterns")),
-        }
-        rows.append(_drop_empty_contract_fields(row))
-    return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
-
-
-def _sanitize_contract_paths(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    paths = [_sanitize_relative_path(item) for item in value if isinstance(item, str) and item.strip()]
-    return sorted({item for item in paths if item})
-
-
-def _normalized_contract_patterns(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    patterns = [_sanitize_relative_path(item.strip()) for item in value if isinstance(item, str) and item.strip()]
-    return sorted({item for item in patterns if item})
-
-
-def _drop_empty_contract_fields(row: dict[str, Any]) -> dict[str, Any]:
-    cleaned: dict[str, Any] = {}
-    for key, value in row.items():
-        if isinstance(value, list) and not value:
-            continue
-        if isinstance(value, str) and not value:
-            continue
-        if value is None:
-            continue
-        if key == "is_global" and value is False:
-            continue
-        cleaned[key] = value
-    return cleaned
-
-
-def _flatten_review_packs(document: Any) -> list[dict[str, Any]]:
-    packs = _get(document, "packs")
-    if not isinstance(packs, list):
-        return []
-    rows: list[dict[str, Any]] = []
-    for item in packs:
-        if not isinstance(item, dict):
-            continue
-        rows.append(
-            {
-                "id": _clean_text(item.get("id")),
-                "description": _clean_text(item.get("description")),
-                "recommended_review_preset": _clean_text(item.get("recommended_review_preset")),
-            }
-        )
-    return sorted(rows, key=lambda item: (item.get("id") or "", item.get("description") or ""))
-
-
-def _review_pack_matches_selected(pack: dict[str, Any], selected_pack: str) -> bool:
-    if not selected_pack:
-        return False
-    pack_id = _clean_text(pack.get("id")) or ""
-    description = _clean_text(pack.get("description")) or ""
-    selected = selected_pack.lower()
-    id_lower = pack_id.lower()
-    description_lower = description.lower()
-    return (
-        id_lower == selected
-        or description_lower == selected
-        or selected in id_lower
-        or selected in description_lower
-    )
-
-
-def _relevance_keywords(chunk: SemanticChunk) -> tuple[str, ...]:
-    mapping = {
-        "primary_backend_logic": ("backend", "service", "domain", "api"),
-        "api_schema_contract": ("schema", "contract", "api", "model"),
-        "frontend_ui": ("frontend", "ui", "component"),
-        "tests": ("test", "coverage", "assert"),
-        "workflow_aiops": ("workflow", "aiops", "pipeline"),
-        "docs_changelog": ("docs", "changelog", "readme"),
-        "suspicious_out_of_scope": ("secret", "prod", "deploy", "runtime"),
-    }
-    return mapping.get(chunk.semantic_group, tuple())
-
-
 def _apply_payload_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str, Any], TruncationMetadata]:
     working = copy.deepcopy(payload)
-    base_truncation, original_chars = _stabilize_payload_truncation(
+    base_truncation, original_chars = stabilize_payload_truncation(
         working,
         TruncationMetadata(applied=False, original_chars=0, emitted_chars=0),
     )
-    untruncated_truncation, untruncated_len = _stabilize_payload_truncation(
+    untruncated_truncation, untruncated_len = stabilize_payload_truncation(
         working,
         TruncationMetadata(
             applied=False,
@@ -850,7 +533,7 @@ def _apply_payload_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[d
             emitted_chars=base_truncation.emitted_chars,
         ),
     )
-    untruncated_truncation, untruncated_len = _stabilize_payload_truncation(
+    untruncated_truncation, untruncated_len = stabilize_payload_truncation(
         working,
         untruncated_truncation.model_copy(update={"original_chars": untruncated_len}),
     )
@@ -869,7 +552,7 @@ def _apply_payload_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[d
     ]
 
     while True:
-        current_truncation, current_len = _stabilize_payload_truncation(
+        current_truncation, current_len = stabilize_payload_truncation(
             working,
             TruncationMetadata(
                 applied=True,
@@ -899,7 +582,7 @@ def _apply_payload_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[d
                 limitations.append("payload_budget_under_minimum_required_content")
             break
 
-    final_truncation, _ = _stabilize_payload_truncation(
+    final_truncation, _ = stabilize_payload_truncation(
         working,
         TruncationMetadata(
             applied=True,
@@ -1035,148 +718,10 @@ def _payload_filename(chunk: SemanticChunk) -> tuple[str, list[str]]:
         raise ChunkPayloadBuilderError(exc.error_class, exc.message) from exc
 
 
-def _diff_by_file(intake: ReviewIntake) -> dict[str, str]:
-    full_diff = _artifact_text(intake, "full-diff")
-    if not full_diff:
-        return {}
-    result: dict[str, str] = {}
-    buffer: list[str] = []
-
-    def flush() -> None:
-        nonlocal buffer
-        if not buffer:
-            return
-        path = _resolve_diff_block_path(buffer)
-        if path:
-            rendered = "\n".join(buffer).strip()
-            if rendered:
-                result[path] = rendered
-        buffer = []
-
-    for line in full_diff.splitlines():
-        if line.startswith("diff --git "):
-            flush()
-            buffer = [line]
-            continue
-        if buffer:
-            buffer.append(line)
-    flush()
-    return dict(sorted(result.items()))
-
-
-def _resolve_diff_block_path(block_lines: list[str]) -> str | None:
-    header_path = _parse_diff_path(block_lines[0])
-    plus_path: str | None = None
-    minus_path: str | None = None
-    rename_to_path: str | None = None
-    for line in block_lines[1:]:
-        if line.startswith("rename to "):
-            rename_to_path = _normalize_diff_path(line[len("rename to ") :])
-            continue
-        if line.startswith("+++ "):
-            marker_path = _normalize_diff_path(line[4:])
-            if marker_path == "/dev/null":
-                plus_path = "/dev/null"
-            elif marker_path:
-                plus_path = marker_path
-            continue
-        if line.startswith("--- "):
-            marker_path = _normalize_diff_path(line[4:])
-            if marker_path and marker_path != "/dev/null":
-                minus_path = marker_path
-    if rename_to_path:
-        return rename_to_path
-    if plus_path and plus_path != "/dev/null":
-        return plus_path
-    if plus_path == "/dev/null" and minus_path:
-        return minus_path
-    return header_path
-
-
-def _parse_diff_path(line: str) -> str | None:
-    if not line.startswith("diff --git "):
-        return None
-    parsed = _split_diff_git_header(line[len("diff --git ") :])
-    if len(parsed) < 2:
-        return None
-    return _normalize_diff_path(parsed[1])
-
-
-def _split_diff_git_header(raw: str) -> list[str]:
-    parts: list[str] = []
-    index = 0
-    length = len(raw)
-    while index < length:
-        while index < length and raw[index].isspace():
-            index += 1
-        if index >= length:
-            break
-        if raw[index] == '"':
-            token = ['"']
-            index += 1
-            while index < length:
-                char = raw[index]
-                token.append(char)
-                index += 1
-                if char == "\\" and index < length:
-                    token.append(raw[index])
-                    index += 1
-                    continue
-                if char == '"':
-                    break
-            parts.append("".join(token))
-            continue
-        start = index
-        while index < length and not raw[index].isspace():
-            index += 1
-        parts.append(raw[start:index])
-    return parts
-
-
-def _normalize_diff_path(raw_path: str) -> str | None:
-    value = _decode_git_path(raw_path)
-    if not value:
-        return None
-    if value.startswith("a/") or value.startswith("b/"):
-        value = value[2:]
-    return value.replace("\\", "/")
-
-
-def _decode_git_path(raw_path: str) -> str:
-    text = raw_path.strip()
-    if len(text) < 2 or not (text.startswith('"') and text.endswith('"')):
-        return text
-    inner = text[1:-1]
-    decoded = bytearray()
-    index = 0
-    while index < len(inner):
-        char = inner[index]
-        if char != "\\":
-            decoded.extend(char.encode("utf-8"))
-            index += 1
-            continue
-        if index + 1 >= len(inner):
-            decoded.append(ord("\\"))
-            break
-        next_char = inner[index + 1]
-        octal = inner[index + 1 : index + 4]
-        if len(octal) == 3 and re.fullmatch(r"[0-7]{3}", octal):
-            decoded.append(int(octal, 8))
-            index += 4
-            continue
-        escape_map = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"'}
-        mapped = escape_map.get(next_char)
-        if mapped is not None:
-            decoded.extend(mapped.encode("utf-8"))
-            index += 2
-            continue
-        decoded.extend(next_char.encode("utf-8"))
-        index += 2
-    return decoded.decode("utf-8", errors="replace")
 
 
 def _file_context_map(intake: ReviewIntake) -> dict[str, dict[str, Any]]:
-    file_context = _artifact_content(intake, "file-diff-context")
+    file_context = payload_cost_model.artifact_content(intake, "file-diff-context")
     files = _get(file_context, "files")
     if not isinstance(files, list):
         return {}
@@ -1191,79 +736,11 @@ def _file_context_map(intake: ReviewIntake) -> dict[str, dict[str, Any]]:
     return mapped
 
 
-def _artifact_content(intake: ReviewIntake, name: str) -> dict[str, Any] | None:
-    candidates = {name, f"{name}.json"}
-    for artifact_name, artifact in intake.artifacts.items():
-        normalized = str(artifact_name).replace("\\", "/").rsplit("/", 1)[-1]
-        if normalized not in candidates:
-            continue
-        if isinstance(artifact, dict):
-            content = artifact.get("content")
-            if isinstance(content, dict):
-                return content
-    return None
-
-
-def _artifact_text(intake: ReviewIntake, name: str) -> str | None:
-    candidates = {name, f"{name}.diff", f"{name}.txt"}
-    for artifact_name, artifact in intake.artifacts.items():
-        normalized = str(artifact_name).replace("\\", "/").rsplit("/", 1)[-1]
-        if normalized not in candidates:
-            continue
-        if isinstance(artifact, dict):
-            content = artifact.get("content")
-            if isinstance(content, str):
-                return content
-    return None
-
 
 def _sha256_payload(payload: dict[str, Any]) -> str:
-    canonical = _canonical_json(payload)
+    canonical = canonical_json(payload)
     return hashlib.sha256(canonical.encode()).hexdigest()
 
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _sanitize_relative_path(path: str) -> str:
-    normalized = path.replace("\\", "/").strip()
-    if not normalized:
-        return ""
-    if normalized.startswith("/") or normalized.startswith("~/"):
-        return "[LOCAL_PATH_REDACTED]"
-    if len(normalized) >= 2 and normalized[1] == ":":
-        return "[LOCAL_PATH_REDACTED]"
-    return normalized
-
-
-def _canonical_len(payload: dict[str, Any]) -> int:
-    return len(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-
-
-def _materialize_payload(payload: dict[str, Any], *, truncation: TruncationMetadata) -> tuple[ChunkPayload, int]:
-    model = ChunkPayload.model_validate({**payload, "truncation": truncation.model_dump(mode="json")})
-    dumped = model.model_dump(mode="json")
-    return model, _canonical_len(dumped)
-
-
-def _stabilize_payload_truncation(
-    payload: dict[str, Any],
-    truncation: TruncationMetadata,
-    *,
-    max_iterations: int = 16,
-) -> tuple[TruncationMetadata, int]:
-    stable = truncation.model_copy(deep=True)
-    emitted = stable.emitted_chars
-    for _ in range(max_iterations):
-        stable.emitted_chars = emitted
-        _, current_len = _materialize_payload(payload, truncation=stable)
-        if current_len == emitted:
-            stable.emitted_chars = current_len
-            return stable, current_len
-        emitted = current_len
-    stable.emitted_chars = emitted
-    return stable, emitted
 
 
 def _coerce_int(value: Any) -> int | None:

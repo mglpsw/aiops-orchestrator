@@ -20,6 +20,7 @@ from app.agent_review.semantic_chunker import (  # noqa: E402
     build_semantic_chunk_plan,
     load_intake,
 )
+from app.agent_review.payload_cost_model import ProjectionInputMismatchError  # noqa: E402
 from app.services.environment_context import build_environment_context  # noqa: E402
 
 
@@ -29,6 +30,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-blocks", type=int, default=6)
     parser.add_argument("--max-chars-per-block", type=int, default=24_000)
+    # Optional, additive (aiops-orchestrator#225 rev.3 Amendment 1): when the
+    # operator supplies the same --checks / --validation-evidence documents
+    # the builder will later be given explicitly, the planner's real-hunk
+    # cost projection can use their real content instead of falling back to
+    # whatever is already embedded in the intake artifacts. This never
+    # changes soundness -- chunk_payload_builder.build_chunk_payloads
+    # independently verifies at build time that any external document it
+    # receives is canonically bound to what the planner could observe,
+    # regardless of whether these flags were used.
+    parser.add_argument("--checks")
+    parser.add_argument("--validation-evidence")
     args = parser.parse_args(argv)
 
     context = build_environment_context(os.environ, source="aiops-review-plan-chunks")
@@ -49,13 +61,19 @@ def main(argv: list[str] | None = None) -> int:
                 path_error,
                 limitations=["target_repo_must_not_be_modified"],
             )
+        checks = _load_optional_json(args.checks)
+        validation_evidence = _load_optional_json(args.validation_evidence)
         plan = build_semantic_chunk_plan(
             intake,
             max_blocks=args.max_blocks,
             max_chars_per_block=args.max_chars_per_block,
+            checks=checks,
+            validation_evidence=validation_evidence,
         )
     except IntakeValidationError as exc:
         return _fail_json("intake_invalid", str(exc), limitations=["intake_invalid"])
+    except ProjectionInputMismatchError as exc:
+        return _fail_json(exc.error_class, exc.message, limitations=[exc.error_class])
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(_to_json(plan.model_dump(mode="json")), encoding="utf-8")
@@ -104,6 +122,19 @@ def _environment_block_message(context: dict[str, Any]) -> str:
     if "invalid_production_runtime" in context.get("limitations", []):
         return "Blocked: production runtime flag is invalid."
     return "Blocked: AgentReview chunk planning requires dev/toolrepo agent_review_tooling environment."
+
+
+def _load_optional_json(raw_path: str | None) -> dict[str, Any] | None:
+    if not raw_path:
+        return None
+    path = Path(raw_path)
+    if not path.exists():
+        return None
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return document if isinstance(document, dict) else None
 
 
 def _fail_json(error_class: str, message: str, *, limitations: list[str]) -> int:
