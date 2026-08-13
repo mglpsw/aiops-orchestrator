@@ -10,6 +10,7 @@ from typing import Any, get_args
 
 from pydantic import ValidationError
 
+from app.agent_review import payload_cost_model
 from app.agent_review.redaction import RedactionState, redact_value
 from app.agent_review.schemas import (
     CHUNK_RESULTS_SCHEMA,
@@ -467,7 +468,17 @@ def _critical_coverage_gaps(
 
     covered = reviewed | partial
     must_review = _must_review_files(intake)
-    missing_must_review = sorted(file_path for file_path in must_review if file_path not in covered)
+    # P2 follow-through (PR #227 round 3): must_review_files may be declared
+    # in a non-canonical form ("./a.py") while reported coverage uses the
+    # canonical spelling ("a.py"), or vice versa (RED-28/RED-31 established
+    # this same divergence for semantic_chunker's own must_review handling).
+    # Compare canonical identities, not raw wire strings, so the two never
+    # falsely disagree about the same file -- raw strings that fail to
+    # canonicalize fall back to themselves, preserving the prior (fail-safe)
+    # behavior for genuinely malformed declarations.
+    canonical_covered = _canonical_identity_set(covered)
+    canonical_must_review = _canonical_identity_set(must_review)
+    missing_must_review = sorted(identity for identity in canonical_must_review if identity not in canonical_covered)
     if missing_must_review:
         gaps.append("critical_must_review_files_not_covered")
 
@@ -493,6 +504,16 @@ def _must_review_files(intake: ReviewIntake | None) -> set[str]:
             if isinstance(coverage_requirements, dict):
                 discovered.update(_string_set(coverage_requirements.get("must_review_files")))
     return discovered
+
+
+def _canonical_identity_set(values: set[str]) -> set[str]:
+    identities: set[str] = set()
+    for value in values:
+        try:
+            identities.add(payload_cost_model.canonical_repo_path(value))
+        except payload_cost_model.PathIdentityError:
+            identities.add(value)
+    return identities
 
 
 def _has_minimum_material(raw: dict[str, Any], chunk_results: ChunkResults) -> bool:

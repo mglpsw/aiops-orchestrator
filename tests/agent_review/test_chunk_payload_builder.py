@@ -9,7 +9,9 @@ from app.agent_review.chunk_payload_builder import (
     _shrink_evidence_context,
     build_chunk_payloads,
 )
+from app.agent_review.payload_cost_model import ProjectionInputMismatchError
 from app.agent_review.pr_brief import build_pr_brief
+from app.agent_review.redaction import RedactionState, redact_value
 from app.agent_review.schemas import (
     ChunkCoverageNotes,
     ChunkResponse,
@@ -162,7 +164,18 @@ def _intake() -> ReviewIntake:
     )
 
 
-def _chunk_plan(reverse_order: bool = False, include_empty_chunk: bool = False) -> SemanticChunkPlan:
+def _chunk_plan(
+    reverse_order: bool = False,
+    include_empty_chunk: bool = False,
+    budget: int | None = None,
+) -> SemanticChunkPlan:
+    # A single effective budget now flows from the plan through to the
+    # builder (aiops-orchestrator#225 rev.3 SS6): `chunk.prompt_budget_chars`
+    # is what `build_chunk_payloads` actually honors, so a test that wants a
+    # different budget must set it here rather than by passing a diverging
+    # `max_chars_per_payload` -- that mismatch is exactly what
+    # `payload_budget_mismatch` now fails closed on.
+    effective_budget = budget if budget is not None else 10_000
     chunks = [
         SemanticChunk(
             chunk_id="chunk-01-api_schema_contract",
@@ -173,7 +186,7 @@ def _chunk_plan(reverse_order: bool = False, include_empty_chunk: bool = False) 
             contracts=["target_profile:domain_contracts"],
             depends_on=[],
             coverage="complete",
-            prompt_budget_chars=10_000,
+            prompt_budget_chars=effective_budget,
             estimated_chars=1_000,
             limitations=[],
         ),
@@ -186,7 +199,7 @@ def _chunk_plan(reverse_order: bool = False, include_empty_chunk: bool = False) 
             contracts=[],
             depends_on=[],
             coverage="complete",
-            prompt_budget_chars=10_000,
+            prompt_budget_chars=effective_budget,
             estimated_chars=900,
             limitations=[],
         ),
@@ -393,14 +406,13 @@ def test_chunk_payload_builder_generates_one_payload_per_chunk() -> None:
 
 def test_chunk_payload_builder_keeps_context_bounded_to_chunk_files() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     _, payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=20_000,
     )
 
     api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
@@ -412,14 +424,13 @@ def test_chunk_payload_builder_keeps_context_bounded_to_chunk_files() -> None:
 
 def test_chunk_payload_builder_includes_hunks_contracts_evidence_and_response_contract() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     _, payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=20_000,
     )
 
     api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
@@ -432,8 +443,9 @@ def test_chunk_payload_builder_includes_hunks_contracts_evidence_and_response_co
 
 def test_chunk_payload_builder_preserves_scoped_validation_risks_and_shared_facts() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     validation_evidence = _populated_validation_evidence()
+    intake.artifacts["validation-evidence-result"]["content"] = validation_evidence
 
     _, payloads = build_chunk_payloads(
         intake=intake,
@@ -441,7 +453,6 @@ def test_chunk_payload_builder_preserves_scoped_validation_risks_and_shared_fact
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=validation_evidence,
-        max_chars_per_payload=20_000,
     )
 
     api_evidence = payloads["chunk-01-api_schema_contract.json"].chunk_context["evidence_context"][
@@ -474,8 +485,9 @@ def test_chunk_payload_builder_preserves_scoped_validation_risks_and_shared_fact
 
 def test_path_bearing_global_validation_entries_reach_every_chunk() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     evidence = _path_bearing_global_validation_evidence()
+    intake.artifacts["validation-evidence-result"]["content"] = evidence
 
     _, payloads = build_chunk_payloads(
         intake=intake,
@@ -483,7 +495,6 @@ def test_path_bearing_global_validation_entries_reach_every_chunk() -> None:
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=evidence,
-        max_chars_per_payload=20_000,
     )
 
     api_validation = payloads["chunk-01-api_schema_contract.json"].chunk_context["evidence_context"][
@@ -517,8 +528,9 @@ def test_path_bearing_global_validation_entries_reach_every_chunk() -> None:
 
 def test_path_bearing_global_validation_entries_are_byte_deterministic() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     evidence = _path_bearing_global_validation_evidence()
+    intake.artifacts["validation-evidence-result"]["content"] = evidence
 
     first_manifest, first_payloads = build_chunk_payloads(
         intake=intake,
@@ -526,7 +538,6 @@ def test_path_bearing_global_validation_entries_are_byte_deterministic() -> None
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=evidence,
-        max_chars_per_payload=20_000,
     )
     second_manifest, second_payloads = build_chunk_payloads(
         intake=intake,
@@ -534,7 +545,6 @@ def test_path_bearing_global_validation_entries_are_byte_deterministic() -> None
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=evidence,
-        max_chars_per_payload=20_000,
     )
 
     test_risk_titles = {
@@ -555,7 +565,7 @@ def test_path_bearing_global_validation_entries_are_byte_deterministic() -> None
 
 def test_chunk_payload_builder_sanitizes_new_validation_evidence_fields() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     validation_evidence = _populated_validation_evidence()
     validation_evidence["validation_risks"].append(
         {
@@ -570,6 +580,12 @@ def test_chunk_payload_builder_sanitizes_new_validation_evidence_fields() -> Non
             "Read /home/reviewer/private/evidence.json",
         ]
     )
+    # The real intake-build pipeline (artifact_loader.load_declared_artifacts)
+    # always redacts an artifact's content before embedding it -- mirror
+    # that here, or the projection-input binding check (rev.3 RED-19) would
+    # compare this test's deliberately unredacted secret content against an
+    # already-redacted embedded copy and report a false divergence.
+    intake.artifacts["validation-evidence-result"]["content"] = redact_value(validation_evidence, RedactionState())
 
     manifest, payloads = build_chunk_payloads(
         intake=intake,
@@ -577,7 +593,6 @@ def test_chunk_payload_builder_sanitizes_new_validation_evidence_fields() -> Non
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=validation_evidence,
-        max_chars_per_payload=20_000,
     )
 
     rendered = _render(
@@ -594,8 +609,9 @@ def test_chunk_payload_builder_sanitizes_new_validation_evidence_fields() -> Non
 
 def test_chunk_payload_builder_validation_evidence_is_byte_deterministic() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     evidence = _populated_validation_evidence()
+    intake.artifacts["validation-evidence-result"]["content"] = evidence
 
     first_manifest, first_payloads = build_chunk_payloads(
         intake=intake,
@@ -603,7 +619,6 @@ def test_chunk_payload_builder_validation_evidence_is_byte_deterministic() -> No
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=evidence,
-        max_chars_per_payload=20_000,
     )
     second_manifest, second_payloads = build_chunk_payloads(
         intake=intake,
@@ -611,7 +626,6 @@ def test_chunk_payload_builder_validation_evidence_is_byte_deterministic() -> No
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=evidence,
-        max_chars_per_payload=20_000,
     )
 
     assert first_manifest.model_dump_json() == second_manifest.model_dump_json()
@@ -654,8 +668,9 @@ def test_evidence_shrink_preserves_blockers_before_risks_and_facts() -> None:
 
 def test_validation_evidence_truncation_is_explicit_and_keeps_higher_priority_evidence() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=5_500)
     evidence = _populated_validation_evidence()
+    intake.artifacts["validation-evidence-result"]["content"] = evidence
     evidence["facts_for_synthesizer"].extend(
         [f"shared-fact-{index:02d}-{'x' * 200}" for index in range(30)]
     )
@@ -666,7 +681,6 @@ def test_validation_evidence_truncation_is_explicit_and_keeps_higher_priority_ev
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=evidence,
-        max_chars_per_payload=5_500,
     )
 
     payload = payloads["chunk-01-api_schema_contract.json"]
@@ -700,36 +714,38 @@ def test_chunk_payload_builder_handles_empty_chunk_as_limited() -> None:
 
 
 def test_chunk_payload_builder_applies_explicit_truncation_for_min_budget() -> None:
+    # A budget this tight (aiops-orchestrator#225) cannot fit either chunk's
+    # hunk material even after aux/checks/evidence/contracts are shrunk to
+    # floor -- the hard guard (rev.3 SS7) blocks routing both chunks rather
+    # than silently emitting a payload with a reduced or dropped hunk.
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=900)
     manifest, payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=900,
     )
 
-    assert any(entry.truncation.applied for entry in manifest.chunks)
-    assert any(payload.truncation.applied for payload in payloads.values())
-    for payload in payloads.values():
-        dumped = payload.model_dump(mode="json")
-        assert payload.truncation.emitted_chars == _canonical_len(dumped)
-        if payload.truncation.truncation_reason != "max_chars_exceeded_minimum_required_sections":
-            assert _canonical_len(dumped) <= 900
+    assert payloads == {}
+    assert manifest.payload_count == 0
+    for entry in manifest.chunks:
+        assert entry.status == "limited"
+        assert entry.payload_path is None
+        assert entry.payload_sha256 is None
+        assert any(limitation.startswith("chunk_hunk_material_not_transported:") for limitation in entry.limitations)
 
 
 def test_chunk_payload_builder_non_truncated_emitted_chars_match_final_artifact() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     _, payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=20_000,
     )
 
     for payload in payloads.values():
@@ -771,7 +787,7 @@ def test_chunk_payload_builder_identity_stable_when_plan_chunk_list_order_change
 
 def test_chunk_payload_builder_redacts_absolute_paths_and_secrets() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     plan.chunks[0].files = ["/tmp/backend/api/shifts.py"]
     _, payloads = build_chunk_payloads(
         intake=intake,
@@ -779,7 +795,6 @@ def test_chunk_payload_builder_redacts_absolute_paths_and_secrets() -> None:
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=20_000,
     )
 
     rendered = _render(payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json"))
@@ -932,6 +947,7 @@ def test_chunk_payload_builder_filters_file_scoped_checks_by_chunk() -> None:
             {"name": "global-check", "status": "passed", "command": "global", "scope": "global"},
         ],
     }
+    intake.artifacts["checks"]["content"] = checks
     _, payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
@@ -957,6 +973,7 @@ def test_chunk_payload_builder_keeps_document_scoped_checks_for_each_chunk() -> 
             {"name": "ruff", "status": "passed", "command": "ruff check ."},
         ],
     }
+    intake.artifacts["checks"]["content"] = checks
     manifest, payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
@@ -982,6 +999,7 @@ def test_chunk_payload_builder_filters_document_scoped_checks_to_matching_chunks
             {"name": "backend-pytest", "status": "passed", "command": "python -m pytest backend"},
         ],
     }
+    intake.artifacts["checks"]["content"] = checks
     _, payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
@@ -1124,7 +1142,7 @@ def test_chunk_payload_builder_parses_quoted_unicode_rename_and_deleted_diff_pat
             "-old content",
         ]
     )
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     plan.chunks[0].files = ["backend/my file.py", "docs/ação clínica.md", "new.py", "obsolete.py"]
     _, payloads = build_chunk_payloads(
         intake=intake,
@@ -1132,7 +1150,6 @@ def test_chunk_payload_builder_parses_quoted_unicode_rename_and_deleted_diff_pat
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=20_000,
     )
     api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
     hunk_paths = {item["path"] for item in api_payload["chunk_context"]["chunk_hunks"]}
@@ -1151,7 +1168,7 @@ def test_chunk_payload_builder_parses_octal_quoted_header_paths_without_plus_mar
             "+conteúdo",
         ]
     )
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     plan.chunks[0].files = ["docs/ação clínica.md"]
     _, payloads = build_chunk_payloads(
         intake=intake,
@@ -1159,7 +1176,6 @@ def test_chunk_payload_builder_parses_octal_quoted_header_paths_without_plus_mar
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=20_000,
     )
 
     api_payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
@@ -1184,20 +1200,30 @@ def test_chunk_payload_builder_records_missing_hunks_as_limitations() -> None:
     assert api_payload["coverage"]["chunk_file_count"] == 2
 
 
-def test_chunk_payload_builder_updates_hunk_coverage_after_truncation_removes_hunks() -> None:
+def test_chunk_payload_builder_updates_hunk_coverage_after_non_hunk_context_truncation() -> None:
+    # 4131 is the exact boundary for this single-file fixture where
+    # aux/checks/evidence/contracts all shrink to floor but the hunk itself
+    # still fits -- below it, the hard guard (aiops-orchestrator#225 rev.3
+    # SS7) would block the chunk instead of emitting a payload with a
+    # reduced hunk. `hunks_included` must still track the (unchanged) final
+    # hunk list after every other section has been shrunk.
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=4_131)
     plan.chunks[0].files = ["backend/api/shifts.py"]
-    _, payloads = build_chunk_payloads(
+    manifest, payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=900,
     )
+    entry = manifest.chunks[0]
+    assert entry.payload_path is not None
+    assert entry.truncation.applied is True
+    assert "chunk_hunks_reduced" not in entry.truncation.coverage_impact
     payload = payloads["chunk-01-api_schema_contract.json"].model_dump(mode="json")
     assert payload["coverage"]["hunks_included"] == len(payload["chunk_context"]["chunk_hunks"])
+    assert payload["coverage"]["hunks_included"] == 1
 
 
 def test_chunk_payload_builder_rejects_duplicate_chunk_ids() -> None:
@@ -1283,14 +1309,13 @@ def test_chunk_payload_builder_validates_secret_like_id_before_duplicate_error()
 
 def test_chunk_response_contract_describes_all_nested_model_shapes() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=20_000)
     _, payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=20_000,
     )
     payload = payloads["chunk-01-api_schema_contract.json"]
     contract = payload.response_contract
@@ -1326,14 +1351,13 @@ def test_chunk_response_contract_describes_all_nested_model_shapes() -> None:
 
 def test_chunk_response_contract_survives_truncation_and_keeps_deterministic_hashes() -> None:
     intake = _intake()
-    plan = _chunk_plan()
+    plan = _chunk_plan(budget=900)
     first_manifest, first_payloads = build_chunk_payloads(
         intake=intake,
         chunk_plan=plan,
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=900,
     )
     second_manifest, second_payloads = build_chunk_payloads(
         intake=intake,
@@ -1341,7 +1365,6 @@ def test_chunk_response_contract_survives_truncation_and_keeps_deterministic_has
         pr_brief=_brief(intake, plan),
         checks=None,
         validation_evidence=None,
-        max_chars_per_payload=900,
     )
 
     for payload in first_payloads.values():
@@ -1581,3 +1604,67 @@ def test_chunk_payload_builder_excludes_non_matching_contracts() -> None:
     )
     for payload_name in payloads:
         assert "unrelated" not in _contract_ids(payloads, payload_name)
+
+
+# ---------------------------------------------------------------------------
+# aiops-orchestrator#225 rev.3: single budget authority (RED-10) and
+# projection-input binding (RED-19), exercised through the real
+# build_chunk_payloads entry point.
+# ---------------------------------------------------------------------------
+
+
+def test_payload_max_chars_mismatch_with_plan_budget_fails_closed() -> None:
+    intake = _intake()
+    plan = _chunk_plan(budget=10_000)
+    with pytest.raises(ChunkPayloadBuilderError) as exc:
+        build_chunk_payloads(
+            intake=intake,
+            chunk_plan=plan,
+            pr_brief=_brief(intake, plan),
+            checks=None,
+            validation_evidence=None,
+            max_chars_per_payload=5_000,
+        )
+    assert exc.value.error_class == "payload_budget_mismatch"
+
+
+def test_payload_max_chars_matching_plan_budget_is_accepted() -> None:
+    intake = _intake()
+    plan = _chunk_plan(budget=10_000)
+    manifest, _ = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=None,
+        validation_evidence=None,
+        max_chars_per_payload=10_000,
+    )
+    assert manifest.payload_count == len(plan.chunks)
+
+
+def test_external_checks_diverging_from_intake_artifact_fails_closed() -> None:
+    intake = _intake()
+    plan = _chunk_plan(budget=20_000)
+    with pytest.raises(ProjectionInputMismatchError) as exc:
+        build_chunk_payloads(
+            intake=intake,
+            chunk_plan=plan,
+            pr_brief=_brief(intake, plan),
+            checks={"status": "totally-different", "checks": []},
+            validation_evidence=None,
+        )
+    assert exc.value.error_class == "payload_projection_input_mismatch"
+
+
+def test_external_checks_matching_intake_artifact_is_accepted() -> None:
+    intake = _intake()
+    plan = _chunk_plan(budget=20_000)
+    matching_checks = intake.artifacts["checks"]["content"]
+    manifest, _ = build_chunk_payloads(
+        intake=intake,
+        chunk_plan=plan,
+        pr_brief=_brief(intake, plan),
+        checks=dict(matching_checks),
+        validation_evidence=None,
+    )
+    assert manifest.payload_count == len(plan.chunks)

@@ -24,6 +24,10 @@ from app.agent_review.chunk_payload_builder import (  # noqa: E402
     build_chunk_payloads,
 )
 from app.agent_review.chunk_artifact_ids import ChunkArtifactIdError, validate_chunk_ids  # noqa: E402
+from app.agent_review.payload_cost_model import (  # noqa: E402
+    ProjectionInputMismatchError,
+    load_optional_json_with_limitation,
+)
 from app.agent_review.pr_brief import PRBriefError, build_pr_brief  # noqa: E402
 from app.agent_review.redaction import sanitize_artifact_value  # noqa: E402
 from app.agent_review.schemas import (  # noqa: E402
@@ -124,10 +128,51 @@ def main(argv: list[str] | None = None) -> int:
             manifest=manifest.model_dump(mode="json"),
             payloads={name: payload.model_dump(mode="json") for name, payload in payloads.items()},
         )
-    except (PayloadBuildCliError, PRBriefError, ChunkPayloadBuilderError) as exc:
+    except (PayloadBuildCliError, PRBriefError, ChunkPayloadBuilderError, ProjectionInputMismatchError) as exc:
         return _fail_json(exc.error_class, exc.message, limitations=[exc.error_class])
     except Exception as exc:  # pragma: no cover - defensive fallback
         return _fail_json("payload_builder_unexpected_error", str(exc), limitations=["payload_builder_unexpected_error"])
+
+    # Hard guard (aiops-orchestrator#225 rev.3 SS7): a manifest entry with no
+    # payload_path means build_chunk_payloads refused to route that chunk --
+    # a file the plan declared covered had its hunk material reduced,
+    # altered, or dropped by the shrink ladder. The manifest is not consumed
+    # by any downstream CLI (parse-chunks/synthesize/quality-gate/telemetry
+    # all take --chunk-plan/--chunk-results), so this cannot be reported as
+    # a mere limitation on an otherwise-successful run -- it must fail the
+    # whole step closed. Outputs were already written above: the manifest is
+    # exactly the sanitized, recoverable diagnostic artifact this case
+    # exists to produce (rev.3 SS9), even though the run itself did not
+    # succeed.
+    blocked_entries = [entry for entry in manifest.chunks if entry.payload_path is None]
+    if blocked_entries:
+        blocked_reasons = sorted(
+            {
+                limitation
+                for entry in blocked_entries
+                for limitation in entry.limitations
+                if limitation.startswith("chunk_hunk_material_not_transported:")
+            }
+        )
+        print(
+            _to_json(
+                {
+                    "ok": False,
+                    "status": "failed",
+                    "error_class": "chunk_hunk_material_not_transported",
+                    "message": (
+                        f"{len(blocked_entries)} chunk(s) had covered-file hunk material reduced, "
+                        "altered, or dropped by the payload budget shrink ladder; routing blocked "
+                        "rather than silently reviewed"
+                    ),
+                    "blocked_chunks": sorted(entry.chunk_id for entry in blocked_entries),
+                    "limitations": blocked_reasons,
+                    "payload_count": manifest.payload_count,
+                    "output_written": True,
+                }
+            )
+        )
+        return 1
 
     has_limited_entries = any(entry.status == "limited" for entry in manifest.chunks)
     has_truncated_entries = any(entry.truncation.applied for entry in manifest.chunks)
@@ -349,14 +394,12 @@ def _normalize_schema_envelope(
 
 
 def _load_optional_json(path: Path | None, name: str) -> tuple[dict[str, Any] | None, list[str]]:
-    if path is None:
-        return None, [f"optional_artifact_missing:{name}"]
-    if not path.exists():
-        return None, [f"optional_artifact_missing:{name}"]
-    try:
-        return _load_json_object(path, error_class=f"{name}_invalid"), []
-    except PayloadBuildCliError:
-        return None, [f"optional_artifact_invalid:{name}"]
+    # Delegates to payload_cost_model.load_optional_json_with_limitation --
+    # the single authority also used by aiops-review-plan-chunks.py, so the
+    # planner's optional_limitations projection is the exact reason code
+    # this CLI will independently compute for the same path
+    # (aiops-orchestrator#225 P2-2), not a second, divergent copy.
+    return load_optional_json_with_limitation(path, name)
 
 
 def _load_json_object(path: Path, *, error_class: str) -> dict[str, Any]:

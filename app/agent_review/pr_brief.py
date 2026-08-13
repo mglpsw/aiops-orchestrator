@@ -7,6 +7,7 @@ import json
 from collections import Counter, defaultdict
 from typing import Any
 
+from app.agent_review import payload_cost_model
 from app.agent_review.redaction import sanitize_artifact_value
 from app.agent_review.schemas import PRBrief, RedactionReport, ReviewIntake, SemanticChunkPlan, TruncationMetadata
 
@@ -119,68 +120,13 @@ def _artifact_matrix(intake: ReviewIntake) -> dict[str, Any]:
     }
 
 
-def _declared_requiredness(intake: ReviewIntake) -> dict[str, bool]:
-    """Map artifact name -> declared `required`, from the target profile.
-
-    `ArtifactStatus` does not carry `required`: `artifact_loader` consumes
-    `ArtifactDeclaration.required` and keeps only its effect, in the separate
-    intake-level `limitations` list. The declarations themselves survive on
-    `intake.target_profile["artifacts"]` (serialized by `cli.build_intake`
-    from `TargetProfile.artifacts`, where `required` has a `= False` default
-    and is therefore always emitted), which is the only source complete
-    across all four `ArtifactState` values. Joined by `name`, not `path`:
-    the profile is passed through `redact_value` before it lands here, and a
-    path is likelier than a name to be rewritten by redaction.
-    """
-    profile = intake.target_profile if isinstance(intake.target_profile, dict) else {}
-    declarations = profile.get("artifacts")
-    if not isinstance(declarations, list):
-        return {}
-    requiredness: dict[str, bool] = {}
-    for declaration in declarations:
-        if not isinstance(declaration, dict):
-            continue
-        name = _clean_text(declaration.get("name"))
-        if name is None:
-            continue
-        requiredness[name] = bool(declaration.get("required", False))
-    return requiredness
-
-
-def _artifact_state_limitations(intake: ReviewIntake) -> list[str]:
-    """Classify artifact state as required / optional / invalid.
-
-    AgentEscala#675, Fix B. A `required: false` artifact that was never
-    produced is an evidence-*availability* fact, not a missing input, and
-    collapsing both into `artifact_missing:` is what made the trusted
-    publisher's comment misleading: the trusted recomputation deliberately
-    produces none of the target's five optional artifacts, and each came back
-    indistinguishable from a genuinely absent required one.
-
-    The reason codes are the ones `artifact_loader` already emits
-    (`required_artifact_missing:`, `artifact_invalid:`) plus the
-    `optional_artifact_missing:` form that `aiops-review-build-payloads.py`
-    already passes in as `optional_limitations` -- no new vocabulary.
-
-    Ownership stops here: this says required/optional/invalid/available. *Why*
-    an artifact was not produced is target policy and stays with the target.
-    """
-    requiredness = _declared_requiredness(intake)
-    limitations: list[str] = []
-    for status in intake.artifact_status:
-        if status.status == "missing":
-            if status.name not in requiredness:
-                # No declaration means no policy saying this is optional.
-                # Absent that policy we do not get to assume it, so the
-                # undifferentiated form stays -- fail-closed, as before.
-                limitations.append(f"artifact_missing:{status.name}")
-            elif requiredness[status.name]:
-                limitations.append(f"required_artifact_missing:{status.name}")
-            else:
-                limitations.append(f"optional_artifact_missing:{status.name}")
-        elif status.status in {"invalid", "degraded"}:
-            limitations.append(f"artifact_invalid:{status.name}")
-    return limitations
+# _declared_requiredness / artifact-state classification (AgentEscala#675,
+# Fix B) now live in payload_cost_model.artifact_state_limitations -- the
+# single authority build_pr_brief and the v1 planner's cost projection both
+# call, so the planner's projected brief.limitations reflects this
+# contribution exactly rather than approximating it
+# (aiops-orchestrator#225).
+_artifact_state_limitations = payload_cost_model.artifact_state_limitations
 
 
 def _changed_files_summary(intake: ReviewIntake, *, chunk_plan: SemanticChunkPlan) -> dict[str, Any]:
@@ -325,54 +271,20 @@ def _review_metadata(
     checks: dict[str, Any] | None,
     validation_evidence: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    target_repo = _resolve_identity_value(
-        "target_repo",
-        [
-            ("intake.target_repo", intake.target_repo),
-            ("chunk_plan.target_repo", chunk_plan.target_repo),
-            ("intake.target_profile.target_repo", _find_key(intake.target_profile, "target_repo")),
-            ("checks.target_repo", _find_key(checks, "target_repo")),
-            ("validation_evidence.target_repo", _find_key(validation_evidence, "target_repo")),
-            *_artifact_identity_candidates(intake.artifacts, "target_repo"),
-        ],
-        coerce=_clean_text,
-    )
-    if target_repo is None:
-        raise PRBriefError("review_identity_conflict", "missing required review identity field: target_repo")
-
-    pr_number = _resolve_identity_value(
-        "pr_number",
-        [
-            ("checks.pr_number", _find_key(checks, "pr_number")),
-            ("validation_evidence.pr_number", _find_key(validation_evidence, "pr_number")),
-            *_artifact_identity_candidates(intake.artifacts, "pr_number"),
-        ],
-        coerce=_coerce_int,
-    )
-    commit_sha = _resolve_identity_value(
-        "commit_sha",
-        [
-            ("checks.commit_sha", _find_key(checks, "commit_sha")),
-            ("validation_evidence.commit_sha", _find_key(validation_evidence, "commit_sha")),
-            *_artifact_identity_candidates(intake.artifacts, "commit_sha"),
-        ],
-        coerce=_clean_text,
-    )
-
-    mode = _first_non_empty(_clean_text(_find_key(intake.artifacts, "review_mode")))
-    contract_pack = _first_non_empty(
-        _clean_text(_find_key(intake.artifacts, "contract_pack")),
-        _clean_text(_find_key(intake.artifacts, "pack")),
-    )
-
-    return {
-        "target_repo": target_repo,
-        "pr_number": pr_number,
-        "commit_sha": commit_sha,
-        "review_mode": mode,
-        "contract_pack": contract_pack,
-        "warnings": [],
-    }
+    # Delegates to payload_cost_model.resolve_review_metadata -- the single
+    # authority build_pr_brief and the v1 planner's cost projection both
+    # call (aiops-orchestrator#225), so this stays a thin translation of
+    # ReviewIdentityConflictError into this module's own PRBriefError
+    # rather than a second, independently-maintained resolution.
+    try:
+        return payload_cost_model.resolve_review_metadata(
+            intake=intake,
+            chunk_plan_target_repo=chunk_plan.target_repo,
+            checks=checks,
+            validation_evidence=validation_evidence,
+        )
+    except payload_cost_model.ReviewIdentityConflictError as exc:
+        raise PRBriefError(exc.error_class, exc.message) from exc
 
 
 def _apply_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str, Any], TruncationMetadata]:
@@ -541,8 +453,12 @@ def _coverage_requirements(intake: ReviewIntake) -> dict[str, list[str]]:
             "should_review_files": [],
             "may_summarize_files": [],
         }
+    # must_review_files: delegated to payload_cost_model.required_files_wire,
+    # the single shared authority for this exact wire representation --
+    # semantic_chunker's cost projection (P2-8, PR #227 round 3) must derive
+    # the identical bytes for `brief.required_files` to stay sound.
     return {
-        "must_review_files": _ordered_unique(_string_list(requirements.get("must_review_files"))),
+        "must_review_files": payload_cost_model.required_files_wire(intake),
         "should_review_files": _ordered_unique(_string_list(requirements.get("should_review_files"))),
         "may_summarize_files": _ordered_unique(_string_list(requirements.get("may_summarize_files"))),
     }
@@ -575,46 +491,13 @@ def _input_ref(document: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _coerce_int(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.strip().isdigit():
-        return int(value.strip())
-    return None
-
-
-def _find_key(document: Any, key: str) -> Any:
-    if isinstance(document, dict):
-        if key in document:
-            return document[key]
-        for value in document.values():
-            found = _find_key(value, key)
-            if found is not None:
-                return found
-    if isinstance(document, list):
-        for value in document:
-            found = _find_key(value, key)
-            if found is not None:
-                return found
-    return None
-
-
-def _artifact_identity_candidates(artifacts: Any, key: str) -> list[tuple[str, Any]]:
-    if not isinstance(artifacts, dict):
-        return []
-    candidates: list[tuple[str, Any]] = []
-    for artifact_name in sorted(artifacts):
-        artifact = artifacts[artifact_name]
-        if not isinstance(artifact, dict):
-            continue
-        if key in artifact:
-            candidates.append((f"intake.artifacts.{artifact_name}.{key}", artifact.get(key)))
-        content = artifact.get("content")
-        if isinstance(content, dict) and key in content:
-            candidates.append((f"intake.artifacts.{artifact_name}.content.{key}", content.get(key)))
-    return candidates
+# _coerce_int / _find_key delegate to payload_cost_model, the single shared
+# authority (aiops-orchestrator#225); _artifact_identity_candidates and the
+# old _resolve_identity_value/_first_non_empty are no longer needed here at
+# all now that _review_metadata delegates wholesale to
+# payload_cost_model.resolve_review_metadata.
+_coerce_int = payload_cost_model.coerce_int
+_find_key = payload_cost_model.find_key
 
 
 def _canonical_len(payload: dict[str, Any]) -> int:
@@ -646,30 +529,6 @@ def _stabilize_truncation(
     return stable, emitted
 
 
-def _resolve_identity_value(
-    field_name: str,
-    candidates: list[tuple[str, Any]],
-    *,
-    coerce,
-) -> Any:
-    values_by_source: dict[str, Any] = {}
-    for source, raw in candidates:
-        value = coerce(raw)
-        if value is None:
-            continue
-        values_by_source[source] = value
-    unique_values = sorted({value for value in values_by_source.values()}, key=lambda item: str(item))
-    if len(unique_values) > 1:
-        details = ",".join(f"{source}={values_by_source[source]}" for source in sorted(values_by_source))
-        raise PRBriefError(
-            "review_identity_conflict",
-            f"conflicting review identity for {field_name}: {details}",
-        )
-    if unique_values:
-        return unique_values[0]
-    return None
-
-
 def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -689,13 +548,6 @@ def _clean_text(value: Any) -> str | None:
         return None
     cleaned = str(value).strip()
     return cleaned or None
-
-
-def _first_non_empty(*values: str | None) -> str | None:
-    for value in values:
-        if value:
-            return value
-    return None
 
 
 def _dedupe(values: list[str]) -> list[str]:

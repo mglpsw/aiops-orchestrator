@@ -272,6 +272,72 @@ def test_must_review_files_are_best_effort_from_intake() -> None:
     assert "critical_must_review_files_not_covered" in gate.limitations
 
 
+def test_red34_non_canonical_must_review_declaration_is_not_a_false_gap() -> None:
+    """RED-34 (P2 follow-through): must_review_files declared in a
+    non-canonical form ("./backend/a.py") must match reviewed coverage
+    reported in its canonical form ("backend/a.py") -- the two are the same
+    file (RED-28/RED-31 established this same identity for semantic_
+    chunker's own must_review handling), so this must not raise a false
+    critical_must_review_files_not_covered gap.
+    """
+    intake = ReviewIntake(
+        target_repo="mglpsw/AgentEscala",
+        target_profile={},
+        artifacts={
+            "file-diff-context": {
+                "content": {
+                    "coverage_requirements": {
+                        "must_review_files": ["./backend/a.py"],
+                    }
+                }
+            }
+        },
+        artifact_status=[],
+        redaction_summary={"schema_version": "agent-review.redaction-report.v1"},
+        status="complete",
+    )
+
+    gate = _gate(
+        _final_review(coverage={**_final_review()["coverage"], "files_reviewed": ["backend/a.py"]}),
+        intake=intake,
+        critical_pr=True,
+    )
+
+    assert "critical_must_review_files_not_covered" not in gate.limitations
+
+
+def test_red34_genuinely_absent_canonical_required_file_still_produces_gap() -> None:
+    """A genuinely uncovered must_review file (same canonical identity on
+    both sides, still absent from coverage) must still produce the
+    critical gap -- the RED-34 fix narrows false positives, it does not
+    weaken real coverage enforcement.
+    """
+    intake = ReviewIntake(
+        target_repo="mglpsw/AgentEscala",
+        target_profile={},
+        artifacts={
+            "file-diff-context": {
+                "content": {
+                    "coverage_requirements": {
+                        "must_review_files": ["./backend/a.py", "backend/b.py"],
+                    }
+                }
+            }
+        },
+        artifact_status=[],
+        redaction_summary={"schema_version": "agent-review.redaction-report.v1"},
+        status="complete",
+    )
+
+    gate = _gate(
+        _final_review(coverage={**_final_review()["coverage"], "files_reviewed": ["backend/a.py"]}),
+        intake=intake,
+        critical_pr=True,
+    )
+
+    assert "critical_must_review_files_not_covered" in gate.limitations
+
+
 def test_approved_with_p2_risks_or_limitations_is_not_clean_approved() -> None:
     p2 = _gate(_final_review(confirmed_findings=[_finding(severity="P2")]))
     risk = _gate(_final_review(risks=[_risk()]))

@@ -144,7 +144,7 @@ def _base_artifacts(tmp_path: Path) -> dict[str, Path]:
                     "contracts": [],
                     "depends_on": [],
                     "coverage": "complete",
-                    "prompt_budget_chars": 2000,
+                    "prompt_budget_chars": 24_000,
                     "estimated_chars": 800,
                     "limitations": [],
                 },
@@ -157,7 +157,7 @@ def _base_artifacts(tmp_path: Path) -> dict[str, Path]:
                     "contracts": [],
                     "depends_on": [],
                     "coverage": "complete",
-                    "prompt_budget_chars": 2000,
+                    "prompt_budget_chars": 24_000,
                     "estimated_chars": 600,
                     "limitations": [],
                 },
@@ -232,20 +232,32 @@ def test_cli_builds_outputs_outside_git_worktree(monkeypatch, tmp_path: Path) ->
 
 
 def test_cli_returns_partial_status_when_manifest_entries_are_truncated(monkeypatch, tmp_path: Path) -> None:
+    # 4100 is within the fixture's own boundary (aiops-orchestrator#225
+    # rev.3 SS6): aux/checks/evidence/contracts context all shrink, but both
+    # chunks' single hunk each still fits, so the run completes as "partial"
+    # instead of the hard guard blocking it. The budget now has to be set on
+    # the chunk plan itself, not via a diverging --payload-max-chars
+    # override -- that mismatch is exactly what payload_budget_mismatch
+    # fails closed on.
     for key, value in _dev_env().items():
         monkeypatch.setenv(key, value)
     paths = _base_artifacts(tmp_path)
+    chunk_plan = json.loads(paths["chunk_plan"].read_text(encoding="utf-8"))
+    for chunk in chunk_plan["chunks"]:
+        chunk["prompt_budget_chars"] = 4_100
+    _write_json(paths["chunk_plan"], chunk_plan)
     out_root = tmp_path / "agent-output"
     module = _load_script_module()
     args = _args(paths, out_root)
-    args.extend(["--payload-max-chars", "900"])
 
     result = _invoke(module, args)
 
     payload = _success_payload(result)
     assert payload["status"] == "partial"
     manifest = json.loads((out_root / "chunk-payload-manifest.json").read_text(encoding="utf-8"))
+    assert all(item["payload_path"] is not None for item in manifest["chunks"])
     assert any(item["truncation"]["applied"] for item in manifest["chunks"])
+    assert not any("chunk_hunks_reduced" in item["truncation"]["coverage_impact"] for item in manifest["chunks"])
 
 
 def test_cli_blocks_symlinked_output_inside_git_worktree(monkeypatch, tmp_path: Path) -> None:

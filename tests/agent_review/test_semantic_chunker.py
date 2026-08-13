@@ -40,12 +40,31 @@ def _intake(files: list[object] | None = None, *, status: str = "complete") -> d
         "target_profile": {"domain_contracts": {"rules": []}},
         "artifacts": artifacts,
         "artifact_status": [
-            {"name": "file-diff-context.json", "available": True, "valid": True, "status": "available"},
-            {"name": "checks.json", "available": True, "valid": True, "status": "available"},
-            {"name": "local-code-intelligence.json", "available": True, "valid": True, "status": "available"},
+            {
+                "name": "file-diff-context.json",
+                "path": "file-diff-context.json",
+                "available": True,
+                "valid": True,
+                "status": "available",
+            },
+            {"name": "checks.json", "path": "checks.json", "available": True, "valid": True, "status": "available"},
+            {
+                "name": "local-code-intelligence.json",
+                "path": "local-code-intelligence.json",
+                "available": True,
+                "valid": True,
+                "status": "available",
+            },
         ],
         "status": status,
         "limitations": [],
+        # build_semantic_chunk_plan now validates intake as a full
+        # ReviewIntake (aiops-orchestrator#225 rev.3) to reach the real hunk
+        # material via payload_cost_model.diff_by_file/artifact_content, so
+        # this fixture must satisfy that stricter schema too -- the real CLI
+        # pipeline (aiops-review-intake.py) always produces a complete
+        # redaction_summary, this fixture just needs to say so explicitly.
+        "redaction_summary": {"schema_version": "agent-review.redaction-report.v1"},
     }
 
 
@@ -65,13 +84,17 @@ def test_semantic_chunker_groups_backend_api_schema_files() -> None:
         ])
     )
 
+    # Packing now orders files by canonical path within a chunk, not intake
+    # insertion order (aiops-orchestrator#225 rev.3 SS8/SS13): determinism
+    # requires the same partition regardless of how the diff producer
+    # happened to list files.
     groups = _groups(plan)
-    assert groups["api_schema_contract"] == ["backend/api/notification_admin.py", "app/api/routes.py"]
+    assert groups["api_schema_contract"] == ["app/api/routes.py", "backend/api/notification_admin.py"]
     assert groups["primary_backend_logic"] == [
-        "backend/services/notification_event_projection.py",
-        "backend/models/user.py",
-        "app/services/schedule_service.py",
         "app/schedule.py",
+        "app/services/schedule_service.py",
+        "backend/models/user.py",
+        "backend/services/notification_event_projection.py",
     ]
 
 
@@ -90,7 +113,9 @@ def test_semantic_chunker_groups_tests_files() -> None:
 def test_semantic_chunker_groups_docs_changelog_files() -> None:
     plan = build_semantic_chunk_plan(_intake(["docs/AGENT_REVIEW_ENGINE.md", "CHANGELOG.md"]))
 
-    assert _groups(plan)["docs_changelog"] == ["docs/AGENT_REVIEW_ENGINE.md", "CHANGELOG.md"]
+    # Canonical path order, not intake order (rev.3 SS8/SS13) -- see the
+    # comment in test_semantic_chunker_groups_backend_api_schema_files.
+    assert _groups(plan)["docs_changelog"] == ["CHANGELOG.md", "docs/AGENT_REVIEW_ENGINE.md"]
 
 
 def test_semantic_chunker_groups_workflow_aiops_files() -> None:
@@ -227,7 +252,7 @@ def test_real_coverage_gaps_still_degrade_the_plan() -> None:
     """Fix C must not become fail-open: a limitation that *does* carry a
     coverage consequence keeps degrading the plan exactly as before."""
 
-    partial = build_semantic_chunk_plan(
+    degraded_by_oversize = build_semantic_chunk_plan(
         _intake(
             [
                 "backend/services/notification_event_projection.py",
@@ -236,8 +261,8 @@ def test_real_coverage_gaps_still_degrade_the_plan() -> None:
         ),
         max_chars_per_block=700,
     )
-    assert partial.files_partially_covered != []
-    assert partial.status == "partial"
+    assert degraded_by_oversize.files_not_covered != []
+    assert degraded_by_oversize.status == "degraded"
 
     missing_context = build_semantic_chunk_plan(_intake([]))
     assert missing_context.status == "degraded"
@@ -358,24 +383,37 @@ def test_semantic_chunker_accepts_files_dict_keys() -> None:
     assert files == ["backend/api/a.py", "backend/services/b.py", "frontend/src/c.jsx", "docs/d.md"]
 
 
-def test_semantic_chunker_marks_budget_overflow_partial() -> None:
+def test_semantic_chunker_marks_budget_overflow_as_oversize_not_covered() -> None:
+    # 700 chars is smaller than the fixed payload envelope alone
+    # (aiops-orchestrator#225 rev.3): every candidate chunk containing
+    # either file is projected well over budget on its own, so both are
+    # reported oversize and not covered -- honest and fail-closed, never a
+    # silently truncated "partial" chunk (rev.3 SS3/SS11).
     plan = build_semantic_chunk_plan(
         _intake(["backend/services/notification_event_projection.py", "backend/services/another_projection.py"]),
         max_chars_per_block=700,
     )
 
-    assert plan.status == "partial"
-    assert plan.files_partially_covered == ["backend/services/another_projection.py"]
-    assert "chunk_budget_exceeded:primary_backend_logic" in plan.limitations
+    assert plan.status == "degraded"
+    assert plan.chunks == []
+    assert plan.files_covered == []
+    assert plan.files_partially_covered == []
+    assert set(plan.files_not_covered) == {
+        "backend/services/notification_event_projection.py",
+        "backend/services/another_projection.py",
+    }
+    assert "payload_oversize:backend/services/notification_event_projection.py" in plan.limitations
+    assert "payload_oversize:backend/services/another_projection.py" in plan.limitations
 
 
-def test_semantic_chunker_marks_single_file_budget_overflow_partial() -> None:
+def test_semantic_chunker_marks_single_file_budget_overflow_as_oversize() -> None:
     oversized = "backend/services/very_long_service_module_name_for_budget_overflow.py"
 
     plan = build_semantic_chunk_plan(_intake([oversized]), max_chars_per_block=128)
 
-    assert plan.status == "partial"
-    assert plan.chunks[0].coverage == "partial"
-    assert plan.chunks[0].files == [oversized]
-    assert plan.files_partially_covered == [oversized]
-    assert "chunk_budget_exceeded:primary_backend_logic" in plan.limitations
+    assert plan.status == "degraded"
+    assert plan.chunks == []
+    assert plan.files_covered == []
+    assert plan.files_partially_covered == []
+    assert plan.files_not_covered == [oversized]
+    assert f"payload_oversize:{oversized}" in plan.limitations

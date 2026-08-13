@@ -20,6 +20,10 @@ from app.agent_review.semantic_chunker import (  # noqa: E402
     build_semantic_chunk_plan,
     load_intake,
 )
+from app.agent_review.payload_cost_model import (  # noqa: E402
+    ProjectionInputMismatchError,
+    load_optional_json_with_limitation,
+)
 from app.services.environment_context import build_environment_context  # noqa: E402
 
 
@@ -29,6 +33,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-blocks", type=int, default=6)
     parser.add_argument("--max-chars-per-block", type=int, default=24_000)
+    # Optional, additive (aiops-orchestrator#225 rev.3 Amendment 1): when the
+    # operator supplies the same --checks / --validation-evidence documents
+    # the builder will later be given explicitly, the planner's real-hunk
+    # cost projection can use their real content instead of falling back to
+    # whatever is already embedded in the intake artifacts. This never
+    # changes soundness -- chunk_payload_builder.build_chunk_payloads
+    # independently verifies at build time that any external document it
+    # receives is canonically bound to what the planner could observe,
+    # regardless of whether these flags were used.
+    parser.add_argument("--checks")
+    parser.add_argument("--validation-evidence")
     args = parser.parse_args(argv)
 
     context = build_environment_context(os.environ, source="aiops-review-plan-chunks")
@@ -49,13 +64,28 @@ def main(argv: list[str] | None = None) -> int:
                 path_error,
                 limitations=["target_repo_must_not_be_modified"],
             )
+        checks, checks_limitations = load_optional_json_with_limitation(args.checks, "checks")
+        validation_evidence, ve_limitations = load_optional_json_with_limitation(
+            args.validation_evidence, "validation_evidence"
+        )
         plan = build_semantic_chunk_plan(
             intake,
             max_blocks=args.max_blocks,
             max_chars_per_block=args.max_chars_per_block,
+            checks=checks,
+            validation_evidence=validation_evidence,
+            # Exact reproduction of the optional_limitations
+            # aiops-review-build-payloads.py will independently compute for
+            # the same --checks/--validation-evidence paths (P2-2): these
+            # feed brief.limitations, which is not shrinkable, so an
+            # omitted or approximated source here could under-estimate the
+            # real hunk-preserving floor.
+            optional_limitations=[*checks_limitations, *ve_limitations],
         )
     except IntakeValidationError as exc:
         return _fail_json("intake_invalid", str(exc), limitations=["intake_invalid"])
+    except ProjectionInputMismatchError as exc:
+        return _fail_json(exc.error_class, exc.message, limitations=[exc.error_class])
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(_to_json(plan.model_dump(mode="json")), encoding="utf-8")
