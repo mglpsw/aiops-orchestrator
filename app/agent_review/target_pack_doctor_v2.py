@@ -40,6 +40,9 @@ from app.agent_review.target_pack_receipt_v2 import RECEIPT_RELATIVE_PATH_V2, Ta
 from pydantic import ValidationError
 
 DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 = "target_pack_doctor_target_root_not_a_directory"
+DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_pack_version_mismatch"
+DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_toolrepo_sha_mismatch"
+DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_profile_hash_mismatch"
 
 
 @dataclass(frozen=True)
@@ -89,7 +92,27 @@ def _check_profile_v2(target_root: Path) -> ProfileCheckV2:
     return ProfileCheckV2(status="present", profile_hash=compute_profile_hash_v2(profile), reason_code=None)
 
 
-def _check_receipt_v2(target_root: Path) -> ReceiptCheckV2:
+def _check_receipt_v2(
+    target_root: Path, *, manifest: TargetPackManifestV2, profile_check: ProfileCheckV2
+) -> ReceiptCheckV2:
+    """A receipt that parses successfully is not yet a receipt that
+    describes THIS install. Adversarial review finding, confirmed and
+    fixed: the previous version only ever checked structural validity
+    (does this JSON parse into a `TargetInstallReceiptV2`?), never whether
+    the receipt's own claimed identity (`pack_version`, `toolrepo_sha`,
+    `target_profile_hash`) actually matches the manifest being diagnosed
+    against or the profile actually on disk. Reproduced: a receipt with a
+    self-consistent `receipt_hash` but a completely unrelated
+    `pack_version`/`toolrepo_sha`/`target_profile_hash` (as if copied from
+    a different install, or stale from a previous pack version) reported
+    `status="present"` and `is_healthy=True` -- doctor asserted an install
+    was healthy while unable to say it was looking at the RIGHT install at
+    all. Checked in this order (first mismatch wins, deterministic):
+    pack_version, then toolrepo_sha, then target_profile_hash (only when
+    the profile itself loaded -- if it did not, `profile.status` already
+    makes `is_healthy` false on its own, so there is nothing meaningful to
+    compare the receipt's claim against)."""
+
     receipt_path = target_root / RECEIPT_RELATIVE_PATH_V2
     if not receipt_path.is_file():
         return ReceiptCheckV2(status="missing", receipt=None, reason_code="target_pack_receipt_missing")
@@ -98,6 +121,20 @@ def _check_receipt_v2(target_root: Path) -> ReceiptCheckV2:
         receipt = TargetInstallReceiptV2.model_validate_json(raw)
     except (OSError, ValidationError, ValueError):
         return ReceiptCheckV2(status="invalid", receipt=None, reason_code="target_pack_receipt_invalid")
+
+    if receipt.pack_version != manifest.pack_version:
+        return ReceiptCheckV2(
+            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2
+        )
+    if receipt.toolrepo_sha != manifest.toolrepo_sha:
+        return ReceiptCheckV2(
+            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2
+        )
+    if profile_check.status == "present" and receipt.target_profile_hash != profile_check.profile_hash:
+        return ReceiptCheckV2(
+            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2
+        )
+
     return ReceiptCheckV2(status="present", receipt=receipt, reason_code=None)
 
 
@@ -112,7 +149,7 @@ def run_doctor_v2(*, target_root: Path, manifest: TargetPackManifestV2) -> Docto
         raise NotADirectoryError(DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2)
 
     profile_check = _check_profile_v2(target_root)
-    receipt_check = _check_receipt_v2(target_root)
+    receipt_check = _check_receipt_v2(target_root, manifest=manifest, profile_check=profile_check)
     expected_secret_names = receipt_check.receipt.required_secret_names if receipt_check.receipt else ()
 
     return DoctorReportV2(
