@@ -20,7 +20,8 @@
     "fix(agent-review/v2): refuse an unrepresentable BLOCKED_PIPELINE->MANUAL_REQUIRED downgrade cleanly",
     "fix(agent-review/v2): stop the (+N more) truncation from corrupting itself, catch ReadinessDecisionError in the CLI",
     "fix(agent-review/v2): make STALE genuinely sovereign -- skip #201-C0 verification entirely",
-    "fix(agent-review/v2): refuse an unrepresentable BLOCKED_CODE+FINDING_CONFIRMATION_REQUIRED downgrade cleanly (adversarial review round 5)"
+    "fix(agent-review/v2): refuse an unrepresentable BLOCKED_CODE+FINDING_CONFIRMATION_REQUIRED downgrade cleanly (adversarial review round 5)",
+    "fix(agent-review/v2): refuse pipeline-cause/blocker-id collisions cleanly, close architecture-test blind spots (adversarial review round 6)"
   ],
   "files_added": [
     "app/agent_review/required_check_readiness_v2.py",
@@ -62,7 +63,7 @@
     },
     "final_combined_suite": {
       "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/agent_review/ tests/evals/",
-      "result": "1739 passed, 16 skipped, 2 failed (same environment class as baseline, unchanged -- test_isolated_executor_v2.py, sudo absent in sandbox). Figure current as of the round-5 adversarial-review fix commit; superseded by whatever the final two-clean-rounds HEAD measures."
+      "result": "1744 passed, 16 skipped, 2 failed (same environment class as baseline, unchanged -- test_isolated_executor_v2.py, sudo absent in sandbox). Figure current as of the round-6 adversarial-review fix commit; superseded by whatever the final two-clean-rounds HEAD measures."
     },
     "schema_export_check": {
       "command": ".venvs/aiops-orchestrator-toolrepo/bin/python scripts/export-agent-review-v2-schemas.py --check",
@@ -82,14 +83,18 @@
     "mutation_verified": [
       "reintroducing except RequiredCheckProvenanceErrorV2 around the C0 boundary call -- caught",
       "reintroducing a required_check_names parameter on produce_review_readiness_v2 -- caught",
-      "reverting the round-5 symmetric representability guard back to the MANUAL_REQUIRED-only check -- test_blocked_code_with_finding_confirmation_required_is_refused_cleanly_not_crashed failed with DID NOT RAISE, confirming the guard (not the test) is what makes it pass"
+      "reverting the round-5 symmetric representability guard back to the MANUAL_REQUIRED-only check -- test_blocked_code_with_finding_confirmation_required_is_refused_cleanly_not_crashed failed with DID NOT RAISE, confirming the guard (not the test) is what makes it pass",
+      "reverting the round-6 pipeline-cause/blocker-id collision guard -- test_a_preexisting_required_checks_pipeline_cause_is_refused_cleanly_not_crashed and its blocker-id companion both failed with an uncaught pydantic.ValidationError instead of the named ReadinessDecisionError",
+      "reverting FORBIDDEN_COMPLETENESS_PARAM_NAMES to omit required_checks -- test_forbidden_completeness_param_names_matches_its_own_docstring_claim failed",
+      "simulating the pre-round-6 single-name annotation resolution directly against X | None / Optional[X] / a string forward-ref -- all three resolved to None, confirming the blind spot _annotation_names closes",
+      "simulating the pre-round-6 Eq/Is-only comparator handling directly against `result.state in {ReadinessStateV2.READY}` -- resolved to None, confirming the blind spot the membership-form fix to _compares_state_to_ready_like closes"
     ]
   },
   "not_delivered": [
     "positive READY/BLOCKED_PIPELINE E2E through the real C0 boundary -- no legitimate authority source exists in production today (Path A has no caller; Path B refused unconditionally by verify_independent_semantic_judge_v2). Deferred to #203/CT104, marked temporary_until_203 in the architecture test.",
     "authentication of ReadinessDecisionV2/findings origin -- preexisting trust assumption from C1/C2, documented, not created or widened by #201-C.",
     "#217 closure -- the single remaining ungated door (run_synthetic_review_v2) is closed, but #217's own closure condition requires proof of exhaustiveness over the whole defect class, not absence of a known path.",
-    "two consecutive clean adversarial-review rounds on the same HEAD -- in progress; five rounds run so far, each finding and fixing a genuine issue (unbounded detail string; truncation-suffix corruption x2; uncaught ReadinessDecisionError in the CLI; STALE-verification-ordering crash; BLOCKED_CODE representability-guard asymmetry). Not yet at the grant's stop condition."
+    "two consecutive clean adversarial-review rounds on the same HEAD -- in progress; six rounds run so far, each finding and fixing at least one genuine issue (unbounded detail string; truncation-suffix corruption x2; uncaught ReadinessDecisionError in the CLI; STALE-verification-ordering crash; BLOCKED_CODE representability-guard asymmetry; pipeline-cause/blocker-id collision plus two architecture-test blind spots). Not yet at the grant's stop condition."
   ],
   "state_vector": {
     "201_A": "MERGED",
@@ -98,7 +103,7 @@
     "201_B3": "MERGED (operational closure BLOCKED_BY_CT104)",
     "201_C0": "MERGED",
     "201_C_implementation": "COMPLETE",
-    "201_C_adversarial_review": "IN_PROGRESS (5 rounds; awaiting two consecutive clean rounds on the same HEAD)",
+    "201_C_adversarial_review": "IN_PROGRESS (6 rounds; awaiting two consecutive clean rounds on the same HEAD)",
     "201_C": "IMPLEMENTED_AWAITING_MERGE_REVIEW",
     "217": "OPEN_RESIDUAL_NOT_BLOCKING_C",
     "203": "NOT_STARTED",

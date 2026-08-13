@@ -16,7 +16,9 @@ Per tracker #108's own rule: *"`ReviewReadinessV2` é a AUTORIDADE: o
 computador decide o estado e deixa o contrato reprovar. Proibido
 reimplementar as invariantes de `validate_state_invariants` fora do
 contrato."* `app/agent_review/review_readiness_emission_v2.py`'s
-`emit_review_readiness_v2` therefore does exactly one thing: assemble the
+`emit_review_readiness_v2` (renamed `_assemble_review_readiness_v2` and made
+internal by `#201-C` — see the update section near the bottom of this
+document) therefore does exactly one thing: assemble the
 `ReviewReadinessV2` constructor call from a C1 `ReadinessDecisionV2` plus
 identity/`pr_state`/`checks`/`findings`, and let
 `ReviewReadinessV2.validate_state_invariants` (`contracts_v2.py`) decide —
@@ -46,7 +48,8 @@ issue.
 
 ## `scripts/aiops-review-quality-gate-v2.py`
 
-Thin CLI wiring around `emit_review_readiness_v2` — no second
+Thin CLI wiring around `emit_review_readiness_v2` (as of `#201-C`, this
+means `produce_review_readiness_v2` — see the update section below) — no second
 implementation of `ReviewReadinessV2`'s invariants. Reads JSON files for
 the C1 decision, identity/evaluated-identity, findings, and checks, plus a
 `--pr-state` flag; writes the resulting `ReviewReadinessV2` JSON.

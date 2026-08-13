@@ -40,7 +40,15 @@ PRODUCTION_FILES = sorted(
 )
 
 FORBIDDEN_ASSESSMENT_ANNOTATIONS = {"RequiredCheckReadinessAssessmentV2"}
-FORBIDDEN_COMPLETENESS_PARAM_NAMES = {"required_check_names", "loaded_policy"}
+# Adversarial review finding, confirmed and fixed (round 6): this set
+# omitted "required_checks", even though `test_completeness_is_never_a_
+# caller_supplied_parameter`'s own docstring explicitly claims that name is
+# covered ("required_check_names/required_checks(as a parameter)/
+# loaded_policy"). A future `required_checks: list[str]` parameter on a
+# public entry point -- smuggling a caller-supplied "which checks are
+# required" list, the exact #145/#201-C attack class -- would have passed
+# silently.
+FORBIDDEN_COMPLETENESS_PARAM_NAMES = {"required_check_names", "required_checks", "loaded_policy"}
 BOUNDARY_FUNCTION_NAMES = {
     "reassemble_and_verify_required_checks_v2",
     "verify_independent_semantic_judge_v2",
@@ -67,6 +75,38 @@ def _call_name(node: ast.expr) -> str | None:
     if isinstance(node, ast.Attribute):
         return node.attr
     return None
+
+
+def _annotation_names(node: ast.expr) -> set[str]:
+    """Every bare name reachable inside a type annotation -- robust to
+    `X | None` (`ast.BinOp`), `Optional[X]`/`list[X]` (`ast.Subscript`),
+    and string forward-references (`"X"`), not just a bare `X`/`module.X`.
+
+    Adversarial review finding, confirmed and fixed (round 6): the original
+    single-name resolution (`_call_name(node) or (node.id if ast.Name else
+    None)`) silently returned `None` -- never flagging the offender -- for
+    any of those three spellings, even though this same file's own type
+    hints use `X | None` idiomatically, making the gap realistic rather
+    than academic. `ast.walk` already recurses into `BinOp`/`Subscript`
+    children, so collecting every `Name`/`Attribute` it finds handles the
+    first two automatically; string constants are additionally re-parsed
+    as an expression and recursed into, to catch forward-referenced
+    annotations too.
+    """
+
+    names: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name):
+            names.add(sub.id)
+        elif isinstance(sub, ast.Attribute):
+            names.add(sub.attr)
+        elif isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+            try:
+                parsed = ast.parse(sub.value, mode="eval").body
+            except SyntaxError:
+                continue
+            names |= _annotation_names(parsed)
+    return names
 
 
 def _find_calls(tree: ast.Module, target_name: str) -> list[tuple[ast.Call, ast.FunctionDef | None]]:
@@ -214,12 +254,28 @@ def test_no_public_production_function_accepts_an_assessment() -> None:
             for arg in all_args:
                 if arg.annotation is None:
                     continue
-                annotation_name = _call_name(arg.annotation) or (
-                    arg.annotation.id if isinstance(arg.annotation, ast.Name) else None
-                )
-                if annotation_name in FORBIDDEN_ASSESSMENT_ANNOTATIONS:
+                if FORBIDDEN_ASSESSMENT_ANNOTATIONS & _annotation_names(arg.annotation):
                     offenders.append(f"{path.name}:{func.name}({arg.arg})")
     assert not offenders, f"public production function(s) accept a RequiredCheckReadinessAssessmentV2 directly: {offenders}"
+
+
+def test_annotation_names_resolves_union_optional_and_forward_ref_spellings() -> None:
+    """Direct unit test of `_annotation_names`, proving the round-6 fix
+    without depending on any production file happening to use one of these
+    spellings today: `X` (bare), `X | None`, `Optional[X]`, and a string
+    forward-reference must all resolve to a set containing `X`."""
+
+    bare = ast.parse("x: RequiredCheckReadinessAssessmentV2", mode="exec").body[0].annotation
+    union = ast.parse("x: RequiredCheckReadinessAssessmentV2 | None", mode="exec").body[0].annotation
+    optional = ast.parse("x: Optional[RequiredCheckReadinessAssessmentV2]", mode="exec").body[0].annotation
+    forward_ref = ast.parse('x: "RequiredCheckReadinessAssessmentV2"', mode="exec").body[0].annotation
+    qualified = ast.parse("x: mod.RequiredCheckReadinessAssessmentV2", mode="exec").body[0].annotation
+
+    for node in (bare, union, optional, forward_ref, qualified):
+        assert "RequiredCheckReadinessAssessmentV2" in _annotation_names(node), ast.dump(node)
+
+    unrelated = ast.parse("x: int | None", mode="exec").body[0].annotation
+    assert "RequiredCheckReadinessAssessmentV2" not in _annotation_names(unrelated)
 
 
 # -- assert 5: no handler converts a C0 refusal into an artifact ------------
@@ -304,6 +360,17 @@ def test_completeness_is_never_a_caller_supplied_parameter() -> None:
     assert not offenders, f"a public entry point accepts caller-supplied completeness input: {offenders}"
 
 
+def test_forbidden_completeness_param_names_matches_its_own_docstring_claim() -> None:
+    """Adversarial review finding, confirmed and fixed (round 6):
+    `test_completeness_is_never_a_caller_supplied_parameter`'s own
+    docstring names three forbidden spellings -- `required_check_names`,
+    `required_checks`, `loaded_policy` -- but `FORBIDDEN_COMPLETENESS_
+    PARAM_NAMES` omitted `required_checks`, silently narrower than what
+    the docstring claimed to cover."""
+
+    assert FORBIDDEN_COMPLETENESS_PARAM_NAMES == {"required_check_names", "required_checks", "loaded_policy"}
+
+
 # -- assert 7 (§6.5): no fixture creates a production-reachable positive
 # authority path -- temporary_until_203, removed (not relaxed) once a
 # legitimately promotable source exists (plan rev.2.1 §12, class C).
@@ -346,17 +413,29 @@ def _result_names_from(func: ast.FunctionDef) -> set[str]:
 def _compares_state_to_ready_like(node: ast.AST, result_names: set[str]) -> str | None:
     """If `node` is a `Compare` asserting `<result>.state` (or
     `<result>.readiness.state`, for the `SyntheticReviewOutcomeV2` wrapper)
-    equals a ready-like value, where `<result>` is one of `result_names`,
-    return that value; else None. Scoped to the entry point's OWN return
-    value specifically -- an intermediate `decision.state == READY` used to
-    set up a fixture's PRECONDITION (the content decision the required-check
-    gate is about to narrow) is not a claim about what the entry point
-    itself produced, and must not be flagged."""
+    equals -- or, per the round-6 fix below, is a MEMBER of a container
+    containing -- a ready-like value, where `<result>` is one of
+    `result_names`, return that value; else None. Scoped to the entry
+    point's OWN return value specifically -- an intermediate
+    `decision.state == READY` used to set up a fixture's PRECONDITION (the
+    content decision the required-check gate is about to narrow) is not a
+    claim about what the entry point itself produced, and must not be
+    flagged.
+
+    Adversarial review finding, confirmed and fixed (round 6): the
+    original version recognized only `==`/`is` against a single scalar
+    value, so a fixture asserting membership --
+    `result.state in {ReadinessStateV2.READY, ReadinessStateV2.
+    BLOCKED_PIPELINE}` -- would silently bypass this mechanical proof
+    entirely, exactly the "regression here fails loudly, by name" guarantee
+    this file's own module docstring claims to provide.
+    """
 
     if not isinstance(node, ast.Compare):
         return None
-    if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Eq, ast.Is)):
+    if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Eq, ast.Is, ast.In)):
         return None
+    op = node.ops[0]
     left, right = node.left, node.comparators[0]
 
     def _is_result_state_access(n: ast.expr) -> bool:
@@ -372,11 +451,44 @@ def _compares_state_to_ready_like(node: ast.AST, result_names: set[str]) -> str 
             return n.attr.lower()
         return None
 
+    if isinstance(op, ast.In):
+        if not _is_result_state_access(left):
+            return None
+        if not isinstance(right, (ast.Set, ast.Tuple, ast.List)):
+            return None
+        for elt in right.elts:
+            value = _ready_like_value(elt)
+            if value is not None:
+                return value
+        return None
+
     if _is_result_state_access(left):
         return _ready_like_value(right)
     if _is_result_state_access(right):
         return _ready_like_value(left)
     return None
+
+
+def test_compares_state_to_ready_like_catches_membership_form() -> None:
+    """Direct unit test of `_compares_state_to_ready_like`, proving the
+    round-6 fix without depending on any test file happening to use the
+    membership form today: `result.state in {...}` and `result.readiness.
+    state in (...)` must both resolve to the ready-like value found in the
+    container, and an unrelated name must still resolve to `None`."""
+
+    set_form = ast.parse("outcome.state in {ReadinessStateV2.READY}", mode="eval").body
+    assert _compares_state_to_ready_like(set_form, {"outcome"}) == "ready"
+
+    tuple_form = ast.parse(
+        "outcome.readiness.state in (ReadinessStateV2.BLOCKED_PIPELINE,)", mode="eval"
+    ).body
+    assert _compares_state_to_ready_like(tuple_form, {"outcome"}) == "blocked_pipeline"
+
+    unrelated_result = ast.parse("other.state in {ReadinessStateV2.READY}", mode="eval").body
+    assert _compares_state_to_ready_like(unrelated_result, {"outcome"}) is None
+
+    no_ready_like_member = ast.parse("outcome.state in {ReadinessStateV2.MANUAL_REQUIRED}", mode="eval").body
+    assert _compares_state_to_ready_like(no_ready_like_member, {"outcome"}) is None
 
 
 def test_no_fixture_creates_a_production_reachable_positive_authority_path() -> None:

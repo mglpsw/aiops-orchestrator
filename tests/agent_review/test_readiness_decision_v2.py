@@ -956,6 +956,77 @@ def test_blocked_code_with_finding_confirmation_required_is_refused_cleanly_not_
     assert exc_info.value.reason_code == DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2
 
 
+def test_a_preexisting_required_checks_pipeline_cause_is_refused_cleanly_not_crashed() -> None:
+    """Adversarial review finding, confirmed and fixed (round 6). Reason-code
+    membership alone (the round-1/round-5 guards) is not sufficient:
+    `PipelineAssessmentV2.validate_degradation` (`contracts_v2.py`) also
+    requires every `(cause.reason_code, cause.component)` pair to be
+    unique. A hand-crafted decision already carrying a `POLICY_FAILURE`
+    cause with `component="required_checks"` passes the reason-code guard
+    (`POLICY_FAILURE` is always safe) but collides with the cause this
+    function appends, reproducing the same opaque `pydantic.ValidationError`
+    several calls later that the earlier rounds' guards were meant to
+    eliminate everywhere."""
+
+    coverage = ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
+    )
+    identity = RunIdentityV2.model_validate(_identity())
+    existing_cause = PipelineDegradationCauseV2(
+        reason_code=ReadinessReasonV2.POLICY_FAILURE, component=REQUIRED_CHECKS_PIPELINE_COMPONENT_V2,
+        detail="pre-existing",
+    )
+    decision = ReadinessDecisionV2(
+        state=ReadinessStateV2.MANUAL_REQUIRED,
+        reason_codes=(ReadinessReasonV2.POLICY_FAILURE,),
+        blockers=(),
+        coverage=coverage,
+        pipeline=PipelineAssessmentV2(degraded=True, causes=[existing_cause]),
+        run_id=compute_run_id(identity),
+        manifest_hash=identity.manifest_hash,
+    )
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+    with pytest.raises(ReadinessDecisionError) as exc_info:
+        _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    assert exc_info.value.reason_code == DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2
+
+
+def test_a_preexisting_required_checks_blocker_id_is_refused_cleanly_not_crashed() -> None:
+    """Companion to the cause-collision test above: `ReviewReadinessV2.
+    validate_state_invariants` separately requires every `blocker.
+    blocker_id` to be unique. A hand-crafted decision already carrying a
+    blocker with `blocker_id="required-checks"` -- this function's own
+    fixed blocker id -- passes the reason-code guard and has no colliding
+    pipeline cause, but collides on blocker_id alone."""
+
+    coverage = ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
+    )
+    identity = RunIdentityV2.model_validate(_identity())
+    existing_blocker = ReadinessBlockerV2(
+        blocker_id="required-checks", reason_code=ReadinessReasonV2.POLICY_FAILURE, active=True, finding_id=None,
+    )
+    decision = ReadinessDecisionV2(
+        state=ReadinessStateV2.MANUAL_REQUIRED,
+        reason_codes=(ReadinessReasonV2.POLICY_FAILURE,),
+        blockers=(existing_blocker,),
+        coverage=coverage,
+        pipeline=PipelineAssessmentV2(degraded=False, causes=[]),
+        run_id=compute_run_id(identity),
+        manifest_hash=identity.manifest_hash,
+    )
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+    with pytest.raises(ReadinessDecisionError) as exc_info:
+        _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    assert exc_info.value.reason_code == DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2
+
+
 def test_joined_with_budget_never_produces_a_truncated_suffix() -> None:
     """Adversarial review finding, confirmed and fixed. The previous
     implementation packed names against `budget` with no headroom reserved

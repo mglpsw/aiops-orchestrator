@@ -178,6 +178,24 @@ próprio e verificação por mutação:
    FINDING_CONFIRMATION_REQUIRED)` reproduzia o mesmo defeito de forma
    assimétrica — corrigido generalizando o guard para checar qualquer um
    dos dois ramos contra o conjunto seguro que de fato lhe corresponde.
+6. o mesmo guard checava só membership de `reason_codes`, não unicidade de
+   `(reason_code, component)` em `pipeline.causes` nem de `blocker_id` em
+   `blockers` — uma decisão já carregando uma causa/blocker
+   `policy_failure`/`required_checks`/`required-checks` colidia com a que
+   esta função anexa, mesmo passando no guard de reason codes — corrigido
+   checando as duas colisões antes de construir. Na mesma rodada: dois
+   pontos cegos no próprio arquivo de teste de arquitetura --
+   `_annotation_names` não reconhecia `X | None`/`Optional[X]`/forward-ref
+   string (só `X`/`module.X`), e `_compares_state_to_ready_like` não
+   reconhecia a forma de associação `resultado.state in {...}` (só
+   `==`/`is`) -- ambos corrigidos com testes unitários diretos provando a
+   lacuna antes da correção. Também corrigido: `FORBIDDEN_COMPLETENESS_
+   PARAM_NAMES` faltava `"required_checks"`, apesar do docstring do
+   próprio teste afirmar cobri-lo; e uma auto-contradição em
+   `docs/AGENT_REVIEW_V2_REVIEW_READINESS_EMISSION.md` (texto histórico
+   ainda descrevendo `emit_review_readiness_v2` como atual, enquanto a
+   seção `#201-C` no fim do mesmo arquivo já dizia "não existe mais sob
+   esse nome").
 
 Nenhuma rodada chegou ainda a "limpa" — a condição de parada do grant (duas
 rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
@@ -186,16 +204,16 @@ rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
 
 | Gate | Resultado |
 |---|---|
-| `tests/agent_review/ tests/evals/` combinado | 1739 passed, 16 skipped, 2 failed (classe `environment`, sudo ausente no sandbox — `test_isolated_executor_v2.py`, arquivo fora do escopo de `#201-C`) |
+| `tests/agent_review/ tests/evals/` combinado | 1744 passed, 16 skipped, 2 failed (classe `environment`, sudo ausente no sandbox — `test_isolated_executor_v2.py`, arquivo fora do escopo de `#201-C`) |
 | `export-agent-review-v2-schemas.py --check` | OK |
 | `verify-caem-f0-pin.py --check` | OK |
 | `ruff` | não canônico neste repositório (ausente de `requirements-dev.txt`) — gate pulado, não fabricado |
-| CI remota (`aiops-ci`) | pendente — requer push + PR |
+| CI remota (`aiops-ci`) | verde na rodada 5 (`fb35d20`); pendente revalidação no HEAD da rodada 6 |
 
 Baseline (mesmo ambiente, HEAD `8b20ae3`, antes de qualquer edição): idêntica
 classificação — 1681/16/2 em `tests/agent_review/ tests/evals/` juntos,
-mesmas 2 falhas de ambiente. Nenhuma regressão introduzida. Figura de 1739
-corrente na correção da rodada 5 de review adversarial (ganho de +58 desde o
+mesmas 2 falhas de ambiente. Nenhuma regressão introduzida. Figura de 1744
+corrente na correção da rodada 6 de review adversarial (ganho de +63 desde o
 baseline: testes novos + red tests de cada rodada de correção); será
 superada pelo HEAD final quando as duas rodadas limpas consecutivas forem
 alcançadas.

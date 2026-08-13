@@ -627,6 +627,21 @@ def _apply_required_check_assessment_v2(
     whichever branch `state` actually resolves to, against that branch's
     own safe-existing-reasons set, symmetrically.
 
+    Adversarial review finding, confirmed and fixed (round 6): reason-code
+    membership is necessary but not sufficient. `PipelineAssessmentV2.
+    validate_degradation` (`contracts_v2.py`) separately requires every
+    `(cause.reason_code, cause.component)` pair to be unique, and
+    `ReviewReadinessV2.validate_state_invariants` requires every
+    `blocker.blocker_id` to be unique. A hand-crafted decision already
+    carrying a `POLICY_FAILURE` cause with `component="required_checks"`
+    (or a blocker with `blocker_id="required-checks"`) is entirely
+    representable on its own and passes the reason-code guard above, but
+    collides with the cause/blocker this function appends below,
+    reproducing the same "opaque `pydantic.ValidationError` several calls
+    later" defect for a third, structurally different reason. Guarded the
+    same way: checked and refused by name before construction, not
+    discovered by the contract several calls downstream.
+
     A required check the assessment reports `FAILED` for is never dropped:
     `assessment.checks` -- the exact tuple `#201-C0`'s verifier accepted,
     including every red result -- becomes `ReviewReadinessV2.checks`
@@ -657,6 +672,17 @@ def _apply_required_check_assessment_v2(
         # See the docstring above (round 5): checked symmetrically for
         # whichever branch `state` resolves to -- neither branch's safe set
         # is a superset of the other's.
+        raise ReadinessDecisionError(DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2)
+    existing_cause_keys = {(cause.reason_code, cause.component) for cause in decision.pipeline.causes}
+    existing_blocker_ids = {blocker.blocker_id for blocker in decision.blockers}
+    if (
+        (ReadinessReasonV2.POLICY_FAILURE, REQUIRED_CHECKS_PIPELINE_COMPONENT_V2) in existing_cause_keys
+        or _REQUIRED_CHECKS_BLOCKER_ID_V2 in existing_blocker_ids
+    ):
+        # See the docstring above (round 6): reason-code membership alone
+        # does not guarantee the cause/blocker this function is about to
+        # append is representable -- the contract also requires
+        # (reason_code, component) and blocker_id to each be unique.
         raise ReadinessDecisionError(DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2)
 
     cause = PipelineDegradationCauseV2(
