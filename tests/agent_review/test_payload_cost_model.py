@@ -227,6 +227,7 @@ def _assert_projection_sound(
         chunk_files=files,
         chunk_contracts=[],
         semantic_group="api_schema_contract",
+        max_blocks=6,
         target=target,
         brief_target=target,
         brief_review=brief_review,
@@ -319,6 +320,7 @@ def test_projection_sound_at_exact_fit_boundaries() -> None:
         chunk_files=["a.py"],
         chunk_contracts=[],
         semantic_group="api_schema_contract",
+        max_blocks=6,
         target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
         brief_target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
         brief_review={"mode": "full", "contract_pack": None},
@@ -430,6 +432,7 @@ def test_placeholder_file_status_would_have_been_unsound() -> None:
         chunk_files=files,
         chunk_contracts=[],
         semantic_group="api_schema_contract",
+        max_blocks=6,
         target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
         brief_target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
         brief_review={"mode": "full", "contract_pack": None},
@@ -510,3 +513,83 @@ def test_red26_projection_sound_with_adversarial_review_metadata() -> None:
         "contract_pack": "adversarially-long-contract-pack-" + ("p" * 3000),
     }
     _assert_projection_sound(files, {"backend/api/a.py": 20}, files, use_real_metadata=True, checks_doc=checks_doc)
+
+
+def test_worst_case_optional_artifact_union_increases_projected_floor() -> None:
+    """Unit-level proof that project_min_hunk_preserving_chars actually
+    responds to brief_limitations content -- the mechanism P2-6's
+    unconditional worst-case union in semantic_chunker.py relies on to make
+    a real difference. (A full end-to-end unsoundness demonstration from
+    omitting the union in isolation is not independently constructible at
+    small chunk scale: aux_context's full-vs-minimal shrink margin for even
+    a single tiny file already exceeds the ~80-char cost of these two
+    limitation strings, so the real build always has enough other slack to
+    absorb just this one omission. The mechanism itself is what's proven
+    here and by the identical-projection assertion in
+    test_red29_planner_projection_unaffected_by_its_own_optional_flags.)
+    """
+    files = ["backend/api/a.py"]
+    intake = _build_intake(files, {"backend/api/a.py": 20}, files)
+    hunks = m.diff_by_file(intake)
+    target = {"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40}
+    brief_review = {"mode": "full", "contract_pack": None}
+    kwargs = dict(
+        intake=intake,
+        chunk_files=files,
+        chunk_contracts=[],
+        semantic_group="api_schema_contract",
+        max_blocks=6,
+        target=target,
+        brief_target=target,
+        brief_review=brief_review,
+        brief_required_files=files,
+        selected_contract_pack=None,
+        checks=None,
+        validation_evidence=None,
+        hunks=hunks,
+        created_at="2026-08-13T00:00:00Z",
+    )
+    projected_without_union = m.project_min_hunk_preserving_chars(brief_limitations=[], **kwargs)
+    projected_with_union = m.project_min_hunk_preserving_chars(
+        brief_limitations=["optional_artifact_missing:checks", "optional_artifact_missing:validation_evidence"],
+        **kwargs,
+    )
+    assert projected_with_union > projected_without_union
+
+
+def test_worst_case_chunk_id_scales_with_max_blocks() -> None:
+    """RED-30 (P2-7): a fixed 3-digit assumption ("chunk-999-<group>") was
+    an empirical guess -- max_blocks has no upper-bound validation. The
+    worst-case chunk_id's digit count must scale with the actual max_blocks
+    a given plan is built with, or a large --max-blocks invocation would
+    silently under-count this term again.
+    """
+    assert m.worst_case_chunk_id(6) == "chunk-99-" + m._LONGEST_GROUP_NAME
+    assert m.worst_case_chunk_id(999) == "chunk-999-" + m._LONGEST_GROUP_NAME
+    assert m.worst_case_chunk_id(5000) == "chunk-9999-" + m._LONGEST_GROUP_NAME
+    old_fixed_three_digit_assumption = "chunk-999-" + m._LONGEST_GROUP_NAME
+    assert len(m.worst_case_chunk_id(5000)) > len(old_fixed_three_digit_assumption), (
+        "max_blocks=5000 can produce a real chunk_id ('chunk-5000-<group>') longer than "
+        "the old fixed 3-digit assumption ever accounted for"
+    )
+
+
+def test_bootstrap_original_chars_is_exact_not_a_placeholder() -> None:
+    """RED-30 (P2-7): `original_chars` was a fixed 999_999_999 placeholder
+    because measuring the payload's own untruncated length is
+    self-referential (the field is embedded in what it measures).
+    bootstrap_original_chars must converge to the payload's real length --
+    bounded, deterministic, and far smaller than the old placeholder for
+    any realistic payload -- not a magic constant.
+    """
+    payload = {
+        "chunk_id": "chunk-01-api_schema_contract",
+        "semantic_group": "api_schema_contract",
+        "order_index": 0,
+        "chunk_context": {"notes": "x" * 3000, "items": ["y" * 10 for _ in range(50)]},
+    }
+    exact = m.bootstrap_original_chars(payload)
+    assert 0 < exact < 999_999_999
+    # a genuine fixed point is deterministic on repeat measurement, not a
+    # one-shot heuristic guess.
+    assert m.bootstrap_original_chars(payload) == exact

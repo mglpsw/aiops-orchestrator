@@ -1098,6 +1098,25 @@ def load_optional_json_with_limitation(path: Any, name: str) -> tuple[dict[str, 
     return raw, []
 
 
+# P2-6 (PR #227 exact-HEAD adversarial review): the planner and the builder
+# are separate process invocations that can, in principle, be given
+# different --checks/--validation-evidence flags -- the planner cannot
+# observe what flags the later, independent builder invocation will
+# actually be given, only what it itself received. `optional_artifact_
+# missing:<name>` fires purely on CLI flag *presence* (`load_optional_json_
+# with_limitation`, above), independent of whether the artifact is embedded
+# in intake, so a planner invocation that happens to receive --checks
+# cannot conclude the builder invocation will too. Both possible reason
+# codes are the same length regardless of which one would actually fire
+# (`missing`/`invalid`, 7 characters either way), so the projection includes
+# both unconditionally rather than trusting invocation-to-invocation flag
+# symmetry it has no way to verify.
+WORST_CASE_OPTIONAL_ARTIFACT_LIMITATIONS: list[str] = [
+    "optional_artifact_missing:checks",
+    "optional_artifact_missing:validation_evidence",
+]
+
+
 # ---------------------------------------------------------------------------
 # Worst-case chunk_id placeholder. Final chunk numbering is only known once
 # `max_blocks` selection (rev.3 SS10) has finished choosing which candidate
@@ -1105,11 +1124,106 @@ def load_optional_json_with_limitation(path: Any, name: str) -> tuple[dict[str, 
 # projected. Using the longest possible valid id keeps the projection
 # conservative (over-, never under-, estimating this term) without requiring
 # a second projection pass once numbering is final.
+#
+# P2-7 (PR #227 exact-HEAD adversarial review): a fixed 3-digit assumption
+# ("up to 999 chunks") was an empirical guess, not a proven bound --
+# `--max-blocks` has no upper-bound validation, so an operator invocation
+# could in principle exceed it. The chunk numbering format itself
+# (`chunk-{index:02d}-{group}`) provides the real, provable bound instead:
+# `index` can never exceed the selection cap `max_blocks` (packing only
+# ever selects `ordered[:max_blocks]` candidates), so the worst-case digit
+# count is derived directly from the `max_blocks` value this specific plan
+# is actually being built with.
 # ---------------------------------------------------------------------------
 
-_MAX_CHUNK_INDEX_DIGITS = 3  # supports up to 999 chunks in one plan
 _LONGEST_GROUP_NAME = max(get_args(SemanticGroup), key=len)
-WORST_CASE_CHUNK_ID = "chunk-" + ("9" * _MAX_CHUNK_INDEX_DIGITS) + "-" + _LONGEST_GROUP_NAME
+
+
+def worst_case_chunk_id(max_blocks: int) -> str:
+    index_digits = max(2, len(str(max(int(max_blocks), 1))))
+    return "chunk-" + ("9" * index_digits) + "-" + _LONGEST_GROUP_NAME
+
+
+# ---------------------------------------------------------------------------
+# Auxiliary context construction (single authority; was
+# chunk_payload_builder._aux_context / ._coverage_requirements_for_chunk).
+# Needed only for the exact `original_chars` bootstrap below (P2-7) -- the
+# projected *floor* always uses `MINIMAL_AUX_CONTEXT`, a genuinely
+# input-independent constant (`_shrink_aux_context` discards all real
+# content unconditionally), so this is not used for the floor itself.
+# ---------------------------------------------------------------------------
+
+
+def aux_context(intake: ReviewIntake, *, chunk_files: list[str]) -> dict[str, Any]:
+    project_context_doc = artifact_content(intake, "project-context")
+    semantic_context_doc = artifact_content(intake, "semantic-context")
+    file_context_doc = artifact_content(intake, "file-diff-context")
+    modules = _get(project_context_doc, "modules")
+    selected_modules: list[dict[str, Any]] = []
+    if isinstance(modules, dict):
+        for path in sorted(chunk_files):
+            if path in modules:
+                selected_modules.append({"path": path, "description": _clean_text(modules.get(path))})
+
+    requirements = _get(file_context_doc, "coverage_requirements")
+    return {
+        "project_context": {
+            "provided": isinstance(project_context_doc, dict),
+            "status": _clean_text(_get(project_context_doc, "status")),
+            "modules": selected_modules,
+            "gaps": _string_list(_get(project_context_doc, "gaps")),
+        },
+        "semantic_context": {
+            "provided": isinstance(semantic_context_doc, dict),
+            "status": _clean_text(_get(semantic_context_doc, "status")),
+            "scope": _clean_text(_get(semantic_context_doc, "scope")),
+            "change_type": _clean_text(_get(semantic_context_doc, "change_type")),
+            "must_hold": _string_list(_get(semantic_context_doc, "must_hold")),
+        },
+        "coverage_requirements": _coverage_requirements_for_chunk(requirements, chunk_files=set(chunk_files)),
+    }
+
+
+def _coverage_requirements_for_chunk(requirements: Any, *, chunk_files: set[str]) -> dict[str, list[str]]:
+    if not isinstance(requirements, dict):
+        return {"must_review_files": [], "should_review_files": [], "may_summarize_files": []}
+    result: dict[str, list[str]] = {}
+    for key in ("must_review_files", "should_review_files", "may_summarize_files"):
+        values = [item for item in _string_list(requirements.get(key)) if item in chunk_files]
+        result[key] = values
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Exact `original_chars` bootstrap (single authority; was
+# chunk_payload_builder._apply_payload_budget's own inline 3-pass
+# bootstrap). `original_chars` is itself embedded in the payload being
+# measured, so establishing its own correct value takes an initial
+# bootstrap pass plus a confirmation pass. Shared here so the planner's
+# exact-floor projection (P2-7, PR #227 exact-HEAD adversarial review)
+# computes the real untruncated length instead of keeping an
+# empirically-sized placeholder with no proven bound.
+# ---------------------------------------------------------------------------
+
+
+def bootstrap_original_chars(payload: dict[str, Any]) -> int:
+    base_truncation, original_chars = stabilize_payload_truncation(
+        payload,
+        TruncationMetadata(applied=False, original_chars=0, emitted_chars=0),
+    )
+    untruncated_truncation, untruncated_len = stabilize_payload_truncation(
+        payload,
+        TruncationMetadata(
+            applied=False,
+            original_chars=original_chars,
+            emitted_chars=base_truncation.emitted_chars,
+        ),
+    )
+    _, untruncated_len = stabilize_payload_truncation(
+        payload,
+        untruncated_truncation.model_copy(update={"original_chars": untruncated_len}),
+    )
+    return untruncated_len
 
 
 # ---------------------------------------------------------------------------
@@ -1123,6 +1237,7 @@ def project_min_hunk_preserving_chars(
     chunk_files: list[str],
     chunk_contracts: list[str],
     semantic_group: str,
+    max_blocks: int,
     target: dict[str, Any],
     brief_target: dict[str, Any],
     brief_review: dict[str, Any],
@@ -1134,7 +1249,7 @@ def project_min_hunk_preserving_chars(
     hunks: dict[str, str],
     created_at: str | None,
 ) -> int:
-    chunk_id = WORST_CASE_CHUNK_ID
+    chunk_id = worst_case_chunk_id(max_blocks)
     chunk_files_sorted = sorted(chunk_files)
     # chunk_context.files is never touched by the shrink ladder, so it must
     # carry the REAL status/summary from file-diff-context, not a
@@ -1176,65 +1291,88 @@ def project_min_hunk_preserving_chars(
         chunk_files=chunk_files_sorted,
         validation_evidence=validation_evidence,
     )
-    del contracts_ctx  # only its minimal (constant) form is ever emitted
+    aux_ctx = aux_context(intake, chunk_files=chunk_files_sorted)
     limitations.extend(contract_limitations)
     limitations.extend(check_limitations)
     limitations.extend(evidence_limitations)
+    deduped_limitations = _dedupe(limitations)
 
-    payload_body = {
-        "chunk_id": chunk_id,
-        "semantic_group": semantic_group,
-        "order_index": 0,
-        "target": dict(target),
-        "brief": {
-            **brief_target,
-            "review_mode": brief_review.get("mode"),
-            "contract_pack": brief_review.get("contract_pack"),
-            "required_files": list(brief_required_files),
-            "limitations": list(brief_limitations),
-        },
-        "chunk_context": {
+    def base_payload_body(chunk_context: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "chunk_id": chunk_id,
+            "semantic_group": semantic_group,
+            "order_index": 0,
+            "target": dict(target),
+            "brief": {
+                **brief_target,
+                "review_mode": brief_review.get("mode"),
+                "contract_pack": brief_review.get("contract_pack"),
+                "required_files": list(brief_required_files),
+                "limitations": list(brief_limitations),
+            },
+            "chunk_context": chunk_context,
+            "coverage": {
+                "declared_coverage": "complete",
+                "files_in_chunk": [item["path"] for item in display_files],
+                "chunk_file_count": len(display_files),
+                "hunks_included": len(chunk_hunks_full),
+                "chunk_plan_limitations": [],
+            },
+            "response_contract": build_chunk_response_contract(chunk_id=chunk_id, semantic_group=semantic_group),
+            "warnings": [],
+            "limitations": deduped_limitations,
+            "created_at": created_at,
+        }
+
+    # Exact original_chars (P2-7): rather than an empirically-sized
+    # placeholder with no proven bound, build the FULL (real, non-minimal)
+    # payload -- the same shape `_build_chunk_payload` constructs before
+    # `_apply_payload_budget` ever runs -- and bootstrap its true
+    # untruncated length the same way the real shrink loop establishes its
+    # own `original_chars`. This is exact, not approximate: same content,
+    # same sanitizer, same bootstrap.
+    full_payload_body = base_payload_body(
+        {
+            "files": display_files,
+            "chunk_hunks": chunk_hunks_full,
+            "contracts_context": contracts_ctx,
+            "evidence_context": evidence_ctx,
+            "checks_context": checks_ctx,
+            "aux_context": aux_ctx,
+        }
+    )
+    sanitized_full = sanitize_artifact_value(full_payload_body)
+    exact_original_chars = bootstrap_original_chars(sanitized_full)
+
+    # The terminal (minimal-non-hunk) state, measured against that exact
+    # original_chars. The real shrink loop only ever measures an
+    # in-progress payload with `applied=True` and
+    # `truncation_reason="max_chars_exceeded"` baked in -- both add real
+    # characters a naive `applied=False` measurement of the same minimal
+    # content would miss, which is precisely how an earlier revision of
+    # this projection under-estimated the real floor and let
+    # `chunk_hunks_reduced` still fire at the projected budget. Every
+    # non-hunk section is marked "omitted" here regardless of whether that
+    # section actually had anything to shrink (`checks_context`, e.g., is
+    # already at its floor whenever no checks document applies): a longer
+    # `omitted_sections`/`coverage_impact` list can only ever make the
+    # measured length larger, so this stays a safe over-estimate rather
+    # than requiring the projection to replay the real loop's exact step
+    # order.
+    minimal_payload_body = base_payload_body(
+        {
             "files": display_files,
             "chunk_hunks": chunk_hunks_full,
             "contracts_context": dict(MINIMAL_CONTRACTS_CONTEXT),
             "evidence_context": minimal_evidence_context(evidence_ctx),
             "checks_context": minimal_checks_context(checks_ctx),
             "aux_context": dict(MINIMAL_AUX_CONTEXT),
-        },
-        "coverage": {
-            "declared_coverage": "complete",
-            "files_in_chunk": [item["path"] for item in display_files],
-            "chunk_file_count": len(display_files),
-            "hunks_included": len(chunk_hunks_full),
-            "chunk_plan_limitations": [],
-        },
-        "response_contract": build_chunk_response_contract(chunk_id=chunk_id, semantic_group=semantic_group),
-        "warnings": [],
-        "limitations": _dedupe(limitations),
-        "created_at": created_at,
-    }
-
-    sanitized = sanitize_artifact_value(payload_body)
-
-    # The real shrink loop only ever measures an in-progress payload with
-    # `applied=True` and `truncation_reason="max_chars_exceeded"` baked in --
-    # both add real characters that a naive `applied=False` measurement of
-    # the same minimal content would miss, which is precisely how an earlier
-    # revision of this projection under-estimated the real floor and let
-    # `chunk_hunks_reduced` still fire at the projected budget. Every
-    # non-hunk section is marked "omitted" here regardless of whether that
-    # section actually had anything to shrink (`checks_context`, e.g., is
-    # already at its floor whenever no checks document applies): a longer
-    # `omitted_sections`/`coverage_impact` list can only ever make the
-    # measured length larger, so this stays a safe over-estimate rather than
-    # requiring the projection to replay the real loop's exact step order.
-    # `original_chars` uses a fixed, generously-sized placeholder for the
-    # same reason -- it is embedded in the very payload being measured, and
-    # a placeholder with at least as many digits as any realistic real value
-    # keeps that field's contribution conservative too.
+        }
+    )
+    sanitized_minimal = sanitize_artifact_value(minimal_payload_body)
     worst_case_truncation = TruncationMetadata(
         applied=True,
-        original_chars=999_999_999,
+        original_chars=exact_original_chars,
         emitted_chars=0,
         omitted_sections=["aux_context", "checks_context", "evidence_context", "contracts_context"],
         truncation_reason="max_chars_exceeded",
@@ -1255,7 +1393,7 @@ def project_min_hunk_preserving_chars(
     # artificially expensive whenever their full, unshrunk context costs more
     # than this floor -- working directly against the packing improvement
     # this projection exists to enable.
-    _, projected_chars = stabilize_payload_truncation(sanitized, worst_case_truncation)
+    _, projected_chars = stabilize_payload_truncation(sanitized_minimal, worst_case_truncation)
     return projected_chars
 
 

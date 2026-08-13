@@ -217,7 +217,7 @@ def _build_chunk_payload(
             "contracts_context": contracts_ctx,
             "evidence_context": evidence_ctx,
             "checks_context": checks_ctx,
-            "aux_context": _aux_context(intake, chunk=chunk),
+            "aux_context": payload_cost_model.aux_context(intake, chunk_files=chunk.files),
         },
         "coverage": {
             "declared_coverage": chunk.coverage,
@@ -479,44 +479,10 @@ def _resolve_identity_value(
     return None
 
 
-def _aux_context(intake: ReviewIntake, *, chunk: SemanticChunk) -> dict[str, Any]:
-    project_context = payload_cost_model.artifact_content(intake, "project-context")
-    semantic_context = payload_cost_model.artifact_content(intake, "semantic-context")
-    file_context = payload_cost_model.artifact_content(intake, "file-diff-context")
-    modules = _get(project_context, "modules")
-    selected_modules: list[dict[str, Any]] = []
-    if isinstance(modules, dict):
-        for path in sorted(chunk.files):
-            if path in modules:
-                selected_modules.append({"path": path, "description": _clean_text(modules.get(path))})
-
-    requirements = _get(file_context, "coverage_requirements")
-    return {
-        "project_context": {
-            "provided": isinstance(project_context, dict),
-            "status": _clean_text(_get(project_context, "status")),
-            "modules": selected_modules,
-            "gaps": _string_list(_get(project_context, "gaps")),
-        },
-        "semantic_context": {
-            "provided": isinstance(semantic_context, dict),
-            "status": _clean_text(_get(semantic_context, "status")),
-            "scope": _clean_text(_get(semantic_context, "scope")),
-            "change_type": _clean_text(_get(semantic_context, "change_type")),
-            "must_hold": _string_list(_get(semantic_context, "must_hold")),
-        },
-        "coverage_requirements": _coverage_requirements_for_chunk(requirements, chunk_files=set(chunk.files)),
-    }
-
-
-def _coverage_requirements_for_chunk(requirements: Any, *, chunk_files: set[str]) -> dict[str, list[str]]:
-    if not isinstance(requirements, dict):
-        return {"must_review_files": [], "should_review_files": [], "may_summarize_files": []}
-    result: dict[str, list[str]] = {}
-    for key in ("must_review_files", "should_review_files", "may_summarize_files"):
-        values = [item for item in _string_list(requirements.get(key)) if item in chunk_files]
-        result[key] = values
-    return result
+# aux_context / _coverage_requirements_for_chunk now live in
+# payload_cost_model as the single authority both this builder and the
+# planner's exact-original_chars bootstrap call (P2-7,
+# aiops-orchestrator#225 PR #227 exact-HEAD adversarial review).
 
 
 def _apply_payload_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str, Any], TruncationMetadata]:

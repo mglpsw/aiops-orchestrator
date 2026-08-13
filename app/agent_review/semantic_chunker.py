@@ -18,8 +18,14 @@ from app.agent_review.schemas import (
     SemanticChunk,
     SemanticChunkPlan,
     SemanticGroup,
-    utc_now_iso,
 )
+
+# P2-4: a fixed, content-independent sentinel for intake documents that omit
+# created_at -- never wall-clock, so the same (incomplete) intake always
+# produces the same plan bytes. Deliberately implausible as a real
+# timestamp (predates this system entirely) so it reads as "intake did not
+# carry one" rather than a plausible-looking date.
+_MISSING_CREATED_AT_SENTINEL = "1970-01-01T00:00:00Z"
 
 
 GROUP_PRIORITY: list[SemanticGroup] = [
@@ -172,7 +178,9 @@ def build_semantic_chunk_plan(
         if isinstance(validation_evidence, dict)
         else payload_cost_model.artifact_content(review_intake, "validation-evidence-result")
     )
-    required_files = set(_required_files_for_projection(review_intake))
+    required_files_list, must_review_identity_limitations = _required_files_for_projection(review_intake)
+    required_files = set(required_files_list)
+    limitations.extend(must_review_identity_limitations)
     contract_refs = _contract_refs(intake)
     available_refs = _artifact_refs(artifacts)
 
@@ -227,7 +235,16 @@ def build_semantic_chunk_plan(
     intake_limitations = list(review_intake.limitations)
     optional_limitations_resolved = list(optional_limitations or [])
     artifact_state_limits = payload_cost_model.artifact_state_limitations(review_intake)
-    fixed_brief_limitations = [*intake_limitations, *optional_limitations_resolved, *artifact_state_limits]
+    # P2-6: the builder's own, separate invocation may omit --checks/
+    # --validation-evidence even when this planner invocation did not (or
+    # vice versa) -- assume the worst case for both unconditionally rather
+    # than trust that the two invocations were given symmetric flags.
+    fixed_brief_limitations = [
+        *intake_limitations,
+        *optional_limitations_resolved,
+        *artifact_state_limits,
+        *payload_cost_model.WORST_CASE_OPTIONAL_ARTIFACT_LIMITATIONS,
+    ]
 
     def project_chunk_cost(group: SemanticGroup, candidate_files: list[str], packing_limitations: list[str]) -> int:
         return payload_cost_model.project_min_hunk_preserving_chars(
@@ -235,6 +252,7 @@ def build_semantic_chunk_plan(
             chunk_files=candidate_files,
             chunk_contracts=contract_refs,
             semantic_group=group,
+            max_blocks=max_blocks,
             target=real_target,
             brief_target=real_target,
             brief_review=real_brief_review,
@@ -439,22 +457,50 @@ def _canonicalize_files(files: list[str]) -> tuple[list[str], list[str], list[st
     return _dedupe(valid), _dedupe(not_covered), _dedupe(limitations)
 
 
-def _required_files_for_projection(review_intake: ReviewIntake) -> list[str]:
+def _required_files_for_projection(review_intake: ReviewIntake) -> tuple[list[str], list[str]]:
+    """Returns (canonical must_review identities, limitations for any
+    declared must_review path that could not be canonicalized).
+
+    P2-5 (PR #227 exact-HEAD adversarial review): changed files are
+    canonicalized via `_canonicalize_files` before packing, but
+    `must_review_files` was only string-deduped -- `./a.py`, `a.py`, and
+    `a\\b.py` naming the same file would not compare equal, silently
+    dropping that file's must_review priority and fail-closed treatment
+    after the changed-file side was canonicalized out from under it. Both
+    sides must resolve to the same identity space.
+    """
     file_context = payload_cost_model.artifact_content(review_intake, "file-diff-context")
     requirements = file_context.get("coverage_requirements") if isinstance(file_context, dict) else None
     if not isinstance(requirements, dict):
-        return []
+        return [], []
     raw = requirements.get("must_review_files")
     if not isinstance(raw, list):
-        return []
-    return _dedupe([str(item) for item in raw if isinstance(item, str) and item.strip()])
+        return [], []
+    canonical: list[str] = []
+    limitations: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            continue
+        try:
+            canonical.append(payload_cost_model.canonical_repo_path(item))
+        except payload_cost_model.PathIdentityError as exc:
+            display = payload_cost_model.sanitize_display_path(item)
+            limitations.append(f"must_review_{exc.error_class}:{display}")
+    return _dedupe(canonical), _dedupe(limitations)
 
 
 def _resolve_created_at(intake: dict[str, Any]) -> str:
+    # P2-4 (PR #227 exact-HEAD adversarial review): `created_at` is not in
+    # validate_intake_contract's required fields, so an accepted intake can
+    # legitimately omit it. Falling back to utc_now_iso() here would leak
+    # wall-clock time into the plan for that intake -- the same intake,
+    # replayed twice, would no longer produce byte-identical plans. The
+    # fallback must be a fixed, content-independent sentinel instead: never
+    # wall-clock, always the same value for the same (missing) input.
     value = intake.get("created_at")
     if isinstance(value, str) and value.strip():
         return value
-    return utc_now_iso()
+    return _MISSING_CREATED_AT_SENTINEL
 
 
 def validate_intake_schema_envelope(intake: dict[str, Any]) -> list[str]:

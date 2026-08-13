@@ -497,3 +497,96 @@ def test_red24_25_26_combined_adversarial_dimensions_stay_sound() -> None:
         intake_dict, max_blocks=6, max_chars_per_block=100_000, optional_limitations=optional_limitations
     )
     _assert_real_build_never_reduces_a_hunk(intake_dict, plan, optional_limitations=optional_limitations)
+
+
+# ---------------------------------------------------------------------------
+# RED-27 (P2-4): `created_at` fallback is a fixed sentinel, never wall clock,
+# when the intake omits the field entirely (validate_intake_contract does
+# not require it).
+# ---------------------------------------------------------------------------
+
+
+def test_red27_created_at_falls_back_to_fixed_sentinel_not_wall_clock() -> None:
+    intake_dict = _intake(["a.py"], {"a.py": 5})
+    del intake_dict["created_at"]
+    plan_a = build_semantic_chunk_plan(intake_dict)
+    plan_b = build_semantic_chunk_plan(intake_dict)
+    assert plan_a.created_at == "1970-01-01T00:00:00Z"
+    # same (missing) input, replayed twice, must be byte-identical -- a
+    # wall-clock fallback (the old utc_now_iso() default) would drift
+    # between the two calls above.
+    assert plan_a.model_dump_json() == plan_b.model_dump_json()
+
+
+# ---------------------------------------------------------------------------
+# RED-28 (P2-5): must_review_files is canonicalized the same way changed
+# files are, so a declaration in a different (but equivalent) path form
+# still matches and keeps its must_review priority/fail-closed treatment.
+# ---------------------------------------------------------------------------
+
+
+def test_red28_must_review_identity_survives_non_canonical_declaration() -> None:
+    files = ["backend/services/huge_module.py"]
+    # declared in a non-canonical form; the changed-file side is
+    # canonicalized via _canonicalize_files regardless.
+    intake_dict = _intake(files, {files[0]: 5000}, must=["./backend/services/huge_module.py"])
+    plan = build_semantic_chunk_plan(intake_dict, max_chars_per_block=24_000)
+    # if identity matching had silently broken (string-compared instead of
+    # canonicalized), this would be reported as plain payload_oversize,
+    # losing must_review's fail-closed distinction.
+    assert f"must_review_payload_oversize:{files[0]}" in plan.limitations
+    assert f"payload_oversize:{files[0]}" not in plan.limitations
+
+
+def test_red28_malformed_must_review_declaration_fails_closed_not_silently() -> None:
+    files = ["backend/api/a.py"]
+    intake_dict = _intake(files, {"backend/api/a.py": 5}, must=["/etc/passwd"])
+    plan = build_semantic_chunk_plan(intake_dict)
+    assert any(l.startswith("must_review_path_identity_absolute:") for l in plan.limitations)
+
+
+# ---------------------------------------------------------------------------
+# RED-29 (P2-6): the planner cannot observe what --checks/--validation-
+# evidence flags a later, separate builder invocation will be given, so it
+# must unconditionally assume both are missing in its projection -- even
+# when its OWN invocation happens to have optional_limitations=[] (as if it
+# had received both flags itself).
+# ---------------------------------------------------------------------------
+
+
+def test_red29_projection_sound_despite_planner_builder_flag_asymmetry() -> None:
+    files = ["backend/api/a.py"]
+    intake_dict = _intake(files, {"backend/api/a.py": 30}, must=files)
+    # planner invocation: as if it had received both --checks and
+    # --validation-evidence (optional_limitations=[]).
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=6, max_chars_per_block=24_000, optional_limitations=[])
+    assert plan.status == "complete"
+    # the separate, real builder invocation: the asymmetric case -- THIS
+    # invocation actually omitted both flags.
+    _assert_real_build_never_reduces_a_hunk(
+        intake_dict,
+        plan,
+        optional_limitations=["optional_artifact_missing:checks", "optional_artifact_missing:validation_evidence"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# RED-30 (P2-7): chunk_id's worst-case digit count and original_chars are
+# derived from real, provable bounds (max_blocks; the actual untruncated
+# payload) rather than empirically-sized placeholders (a fixed 3-digit
+# assumption; 999_999_999). See test_payload_cost_model.py for the direct,
+# low-level proofs of both primitives.
+# ---------------------------------------------------------------------------
+
+
+def test_red30_projection_sound_at_max_blocks_exceeding_old_three_digit_assumption() -> None:
+    files = [f"backend/services/f{i}.py" for i in range(3)]
+    hunk_lines = {p: 30 for p in files}
+    intake_dict = _intake(files, hunk_lines, must=files)
+    # 5000 exceeds the old fixed "up to 999 chunks" assumption -- if the
+    # chunk_id bound were still hardcoded at 3 digits, this max_blocks value
+    # alone would make the projection's own worst-case chunk_id shorter
+    # than what the real numbering format could actually produce.
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=5000, max_chars_per_block=24_000)
+    assert plan.status == "complete"
+    _assert_real_build_never_reduces_a_hunk(intake_dict, plan)
