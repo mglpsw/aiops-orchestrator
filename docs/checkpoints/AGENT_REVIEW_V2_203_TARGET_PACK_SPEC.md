@@ -1,105 +1,143 @@
-# `#203` — `agentreview-v2-target-pack` — Execution-Ready Engineering Specification rev.1
+# `#203` — `agentreview-v2-target-pack` — Execution-Ready Engineering Specification **rev.2**
 
-**Trigger:** core reconciliation gate `CORE_GATE_FOR_203=READY` (post `#201-C`/PR #220 merge, `master`=`750096625e8a2ab8793e3c106d38580cca86a617`).
-**Class:** design + implementation, single grant, no merge/tag/release/repin/CT104 authorized.
+**Status:** current specification for `#203`. Supersedes rev.1 in full.
+
+**rev.1 = historical design baseline.** Its architecture was approved and is
+substantially carried forward here; it is preserved in Git history and is no
+longer the operative document. Where rev.1 and rev.2 differ, rev.2 governs.
+
+**Live-state rule.** Every SHA, PR number and issue state in this document is a
+**dated checkpoint, never a live trigger**. rev.1 pinned
+`master=750096625e8a2ab8793e3c106d38580cca86a617` as if it were a standing
+condition; it was merely the base at authoring time. Before acting on this
+spec, revalidate live `master`, PR and HEAD. A checkpoint that disagrees with
+observed live state loses.
+
+**Authoring context (checkpoint, not condition):** written after PR #220
+(`#201-C`) and PR #224 (verified-check canonical order) merged; reconciled
+against the adversarial findings on PR #223 slice 1.
+
+**Class:** design specification. Confers no implementation, merge, tag,
+release, repin, rollout or CT104/CT102 authority by itself.
 
 ---
 
-## 0. What already exists, and what #203 actually adds
+## 0. What already exists, and what `#203` actually adds
 
 `aiops-orchestrator` already contains a complete, tested AgentReview v2 engine:
 content extraction (`#200`), trusted required checks (`#201`), canonical path
 identity (`#202`), and readiness wiring (`#201-C`). What does **not** exist is
 a way for a **consumer repository** to acquire and operate this engine without
-a human manually copying files and writing bespoke YAML by hand — which is
-exactly how `AgentEscala`/`InterLeitos` are integrated today (via fixtures in
+a human manually copying files and writing bespoke YAML — which is how
+`AgentEscala`/`InterLeitos` are integrated today (via fixtures under
 `tests/agent_review/fixtures/v2/*`, never a real installer).
 
 `#203` builds the **installer**, not a new engine. Every contract, loader, CLI
-convention, and file shape below is reused verbatim from the existing v2
-implementation; nothing here re-derives review, readiness, or authority logic.
+convention and file shape below is reused from the existing v2 implementation;
+nothing here re-derives review, readiness or authority logic.
 
 **Reuse inventory (verified live, not assumed):**
 
 | Existing | Reused for |
 |---|---|
-| `app/agent_review/profile_loader_v2.py` (`load_target_profile_v2`, `compute_profile_hash_v2`) | pack `validate`/`doctor` profile loading |
-| `app/agent_review/authoritative_check_policy_v2.py` | trusted-check inventory validation |
+| `profile_loader_v2.py` (`load_target_profile_v2`, `compute_profile_hash_v2`) | pack `validate`/`doctor` profile loading and profile-hash binding |
+| `authoritative_check_policy_v2.py` | trusted-check inventory validation |
 | `scripts/verify-agent-review-v2-conformance.py` | foundation for `agent-review target conformance` |
-| `tests/agent_review/fixtures/v2/agent_escala/.aiops/{target-profile.v2.yaml,authoritative-checks.v2.yaml}` | canonical shape of what `init` generates |
-| `schemas/agent-review/v2/*.schema.json` (19 files) | pack ships/pins these verbatim; never forks them |
-| `scripts/export-agent-review-v2-schemas.py` byte-identity discipline | applied to the new pack manifest/receipt schema too |
-| `docs/AGENT_REVIEW_V2_*.md` doc set | the pattern this spec's own docs follow |
+| `tests/agent_review/fixtures/v2/agent_escala/.aiops/*` | canonical shape of what `init` generates |
+| `schemas/agent-review/v2/*.schema.json` | pack ships/pins these verbatim; never forks them |
+| `scripts/export-agent-review-v2-schemas.py` byte-identity discipline | applied to the new pack schemas too |
+| `contracts_v2.py` `ContractV2Model`, `RelativePath`, `Sha256`, `GitSha` | both new contracts; path safety is inherited, never re-implemented |
 
 ---
 
-## 1. Ownership boundary (restated precisely, binding)
+## 1. Ownership boundary (binding)
 
 ```text
 aiops-orchestrator (this repo):
-  engine (app/agent_review/*)                     -- UNCHANGED by #203
-  generic templates                                -- NEW, #203
-  schemas (existing v2 + 2 new pack-only schemas)   -- additive only
-  pack compiler/installer CLI                       -- NEW, #203
-  doctor/validate/conformance                       -- NEW CLI wrapping existing engine + verify script
-  install/upgrade/rollback                          -- NEW, #203
-  generic trusted-check adapter (inventory SCHEMA)  -- NEW, #203 (not commands)
-  receipts/manifests (identity contract)            -- NEW, #203
+  engine (app/agent_review/*)                       -- UNCHANGED by #203
+  generic templates                                  -- #203
+  schemas (existing v2 + pack-only additions)        -- additive only
+  pack compiler/installer CLI                        -- #203
+  doctor/validate/conformance                        -- #203, wrapping existing engine
+  install/upgrade/rollback                           -- #203
+  trusted-check inventory SCHEMA (not commands)      -- #203
+  receipts/manifests (install identity contract)     -- #203
 
-target repo (consumer, e.g. AgentEscala):
-  target profile / domain contracts / review packs  -- target-authored, pack VALIDATES, never GENERATES content
-  extra DLP                                         -- target-authored plugin point
-  trusted-check inventory / allowlisted commands     -- target-authored data, pack provides the SCHEMA only
+target repo (consumer):
+  target profile / domain contracts / review packs   -- target-authored; pack VALIDATES, never GENERATES content
+  extra DLP                                          -- target-authored plugin point
+  trusted-check inventory / allowlisted commands     -- target-authored data; pack provides the SCHEMA only
   runner/secret binding DECLARATIONS (names only)    -- target-authored
-  rollout decision (OFF/SHADOW_MINIMAL/SHADOW_FULL)  -- target-authored, pack enforces ceiling
+  rollout decision                                   -- target-authored, pack enforces the ceiling
 
-Router: inference transport only. Never readiness, never authority. Unchanged.
-CAEM: referenced/pinned (`config/caem/caem-3.0-f0.pin.json`), never reinvented.
+Router: inference transport only. Never readiness, never authority.
+CAEM: referenced/pinned (config/caem/caem-3.0-f0.pin.json), never reinvented.
 ```
 
-**Invariant carried forward from `#201-C`, restated for `#203`:**
+**Invariant carried forward from `#201-C`:**
 
 ```text
 #203 MAY INSTALL/CONFIGURE INTEGRATION.
 #203 MUST NEVER CREATE AUTHORITY, FORK THE ENGINE, OR SILENTLY PROMOTE ROLLOUT.
 ```
 
+### 1.1 `TARGET_OWNED != PR_HEAD_OWNED`  *(rev.2)*
+
+Ownership of a file's **content** by the target never implies that the **PR
+branch** may supply that file to a privileged reader.
+
+```text
+target-owned  ≠  PR-controlled
+
+privileged analysis consumes:
+  profile / policy / trusted-check inventory / DLP policy
+  from the base/default-owned checkout,
+  bound to digest and identity,
+  never the PR HEAD's versions.
+```
+
+This restates, at pack level, the trust assumption `profile_loader_v2` already
+documents and `#201-C`'s R1 amendment enforces: the required-check set is
+derived from a trusted checkout bound to `identity.profile_hash`, never from
+caller- or branch-supplied data. Any future slice wiring trusted checks,
+workflows or `SHADOW_FULL` must satisfy this boundary before it ships.
+
 ---
 
-## 2. New contracts (additive, non-breaking)
+## 2. Contracts (additive, non-breaking)
 
-Two new pydantic contracts, following the exact `ContractV2Model` pattern in
-`contracts_v2.py` (frozen, strict, `schema_id`/`schema_version` literals,
-`model_validator(mode="after")` for cross-field invariants). **Neither touches
-any existing schema file.**
+Two pack contracts following the `ContractV2Model` pattern (frozen, strict,
+`schema_id`/`schema_version` literals, `model_validator(mode="after")` for
+cross-field invariants). Neither touches any pre-existing schema.
 
-### 2.1 `TargetPackManifestV2` (`app/agent_review/target_pack_manifest_v2.py`)
+### 2.1 `TargetPackManifestV2`
 
-The compiled, versioned description of what the pack CAN install — built once
-per toolrepo release, consumed by every target's `install`/`upgrade`.
+The compiled, versioned description of what one toolrepo release CAN install.
 
 ```python
 class TargetPackManifestV2(ContractV2Model):
     schema_id: Literal["agent-review.target-pack-manifest.v2"]
     schema_version: Literal[2]
-    pack_version: SafeText              # semver, e.g. "2.3.0"
+    pack_version: SafeText
     toolrepo_sha: GitSha
-    generated_files: tuple[GeneratedFileEntryV2, ...]   # relative path -> content sha256 + OWNERSHIP class
-    schema_digests: Mapping[str, Sha256]  # every schemas/agent-review/v2/*.json this pack version pins
-    required_capabilities: tuple[SafeIdentifier, ...]    # e.g. "isolated_executor", "router_transport"
+    generated_files: tuple[GeneratedFileEntryV2, ...]     # min_length=1; path -> sha256 + ownership
+    schema_digests: Mapping[str, Sha256]                   # min_length=1
+    required_capabilities: tuple[SafeIdentifier, ...]
     min_engine_contract_version: Literal[2]
+    max_supported_rollout_mode: Literal["off", "shadow_minimal", "shadow_full"]   # rev.2
 ```
 
-`GeneratedFileEntryV2.ownership` is one of `UPSTREAM_GENERATED` /
-`TARGET_OWNED` / `MERGED_DECLARATIVE` (§7). This is the single source of
-truth an installer diffs against — never a hand-maintained file list.
+`max_supported_rollout_mode` is **declared capability vs delivered capability**
+made explicit: the highest mode this pack version genuinely wires end to end.
+A caller may request a rollout mode only up to this value. Naming a mode is not
+delivering it — `shadow_full` requires trusted-check integration to *exist*.
 
-### 2.2 `TargetInstallReceiptV2` (`app/agent_review/target_install_receipt_v2.py`)
+### 2.2 `TargetInstallReceiptV2`
 
-Written to `.aiops/install-receipt.v2.json` in the **target** repo after every
-successful `install`/`upgrade`. This is the pack's own frozen contract,
-independent of `TargetProfileV2`/`RunIdentityV2` (which describe a *review
-run*, not an *installation*).
+Written to `.aiops/install-receipt.v2.json` in the target after every successful
+`install`/`upgrade`. Deliberately **not** `RunIdentityV2`: it identifies an
+*installation*, never a *review run*. It carries no review or readiness
+authority.
 
 ```python
 class TargetInstallReceiptV2(ContractV2Model):
@@ -109,317 +147,428 @@ class TargetInstallReceiptV2(ContractV2Model):
     toolrepo_sha: GitSha
     target_repo: SafeText
     target_profile_hash: Sha256
-    target_policy_hash: Sha256
+    target_policy_hash: Sha256 | None = None      # rev.2: absence is None, never a fabricated digest
     review_pack_hashes: Mapping[SafeIdentifier, Sha256]
-    generated_file_hashes: Mapping[SafeText, Sha256]     # path -> content sha256, UPSTREAM_GENERATED only
-    target_owned_paths: tuple[SafeText, ...]              # preserved, never hashed/diffed by us
+    generated_file_hashes: Mapping[SafeText, Sha256]   # UPSTREAM_GENERATED only
+    target_owned_paths: tuple[SafeText, ...]           # declared ownership, not "written this run"
     required_capabilities: tuple[SafeIdentifier, ...]
     expected_runner_labels: tuple[SafeIdentifier, ...]
-    required_secret_names: tuple[SafeIdentifier, ...]     # NAMES ONLY -- validated to reject anything value-shaped
+    required_secret_names: tuple[SafeIdentifier, ...]  # NAMES ONLY, validated
     rollout_mode: Literal["off", "shadow_minimal", "shadow_full"]
     compatibility: Literal["compatible", "major_incompatible"]
-    previous_install_identity: ReceiptIdentityRefV2 | None  # for rollback
-    receipt_hash: Sha256   # self-referential digest over everything above, computed the same way compute_run_id works
-
-    @model_validator(mode="after")
-    def validate_no_secret_values(self) -> "TargetInstallReceiptV2":
-        # required_secret_names entries must match a NAME shape (identifier-like,
-        # <=128 chars) -- refuses anything that looks like it could be a token/
-        # credential value, fail-closed. Mirrors the discipline `redact_content`/
-        # `sanitize_artifact_value` already apply elsewhere in this codebase.
-        ...
+    previous_install_identity: ReceiptIdentityRefV2 | None
+    generated_at: Rfc3339Timestamp | None = None
+    receipt_hash: Sha256
 ```
 
-`generation timestamp` is deliberately **excluded** from `receipt_hash`'s
-preimage (per the grant's own instruction) — it may be stored as a plain
-informational field, never part of canonical identity, so two installs of the
-byte-identical pack+profile+policy always produce byte-identical receipts.
+**`target_policy_hash: Sha256 | None`** *(rev.2)*. rev.1 typed this as a plain
+`Sha256`, which forced a writer with no policy artifact to invent one. A
+syntactically valid all-zero digest is indistinguishable from a real policy hash
+to any schema consumer — the same fabricated-identity class already eliminated
+for `toolrepo_sha` and `target_profile_hash`. Absence is now represented as
+absence.
 
-No new field carries a secret VALUE anywhere. `required_secret_names` is
-validated, not merely documented, to reject value-shaped strings.
+**Ownership-derived fields** *(rev.2)*. `generated_file_hashes` and
+`target_owned_paths` are derived from the manifest's ownership classification,
+never from "which files happened to be written this invocation". A fresh `init`
+must not record a `TARGET_OWNED` path as generated content, and an idempotent
+re-`init` must not drop a target-owned path merely because nothing was written.
+
+`generated_at` is excluded from `receipt_hash`'s preimage, so two installs of a
+byte-identical pack+profile+policy produce byte-identical receipts.
+`required_secret_names` is validated to reject value-shaped strings — defence in
+depth alongside the rule that the pack never reads an environment variable's
+VALUE anywhere.
 
 ---
 
-## 3. CLI surface
-
-New script `scripts/agent-review-target-pack-v2.py`, dispatching subcommands —
-matches the existing `-v2` suffix convention (`#102`) and the existing
-single-file-per-concern-but-shared-argparse-dispatch pattern already used by
-`aiops-review-quality-gate-v2.py`/`aiops-acquire-authoritative-checks-v2.py`.
+## 3. Pack material identity  *(rev.2, new)*
 
 ```text
-agent-review-target-pack-v2.py init        --target-root PATH --profile-seed PATH [--rollout off|shadow_minimal]
-agent-review-target-pack-v2.py doctor      --target-root PATH                       # READ-ONLY, always
-agent-review-target-pack-v2.py validate    --target-root PATH
-agent-review-target-pack-v2.py conformance --target-root PATH --matrix PATH         # wraps verify-agent-review-v2-conformance.py
-agent-review-target-pack-v2.py install-workflows --target-root PATH [--dry-run]
-agent-review-target-pack-v2.py upgrade     --target-root PATH [--dry-run] [--yes]
-agent-review-target-pack-v2.py rollback    --target-root PATH [--dry-run] [--yes]
+toolrepo_sha
+  ↔ immutable Git tree of that SHA
+  ↔ schemas ↔ templates ↔ seed bytes
+  ↔ manifest digests
+  ↔ receipt
 ```
 
-Each subcommand is a thin CLI wrapper — same discipline as `#201-C`'s own
-`produce_review_readiness_v2`: **the CLI never re-implements a decision**, it
-calls one pure/testable library function in `app/agent_review/target_pack_*`
-and prints/writes its result. This is what makes the 30-scenario test matrix
-(§9) tractable without a subprocess per case — every scenario has a direct
-Python entry point, subprocess E2E only for a representative subset (mirrors
-`test_aiops_review_quality_gate_v2_cli.py`'s own split).
+`toolrepo_sha` MUST identify the exact bytes the pack consumed. Reading pack
+material from the **working tree** breaks this in two ways:
 
-`doctor` is READ-ONLY by construction: its library function
-(`app/agent_review/target_pack_doctor_v2.py::run_doctor_v2`) takes no
-mutating parameter and is proven so by an AST test analogous to
-`test_required_check_readiness_arch_v2.py` (no `Path.write_text`/`.mkdir`/
-`shutil.*` call anywhere in its call graph) — the same mechanical-proof
-discipline `#201-C` established, applied to a new invariant.
+- a dirty checkout yields a receipt asserting a clean HEAD while installing
+  different bytes;
+- a glob over the schema directory admits **untracked** files into
+  `schema_digests`, silently changing the manifest digest.
 
----
+**Rule.** Pack material is derived from the Git tree at `toolrepo_sha`:
+`git ls-tree` to enumerate, `git show <sha>:<path>` to read. This makes coverage
+structural rather than a maintained list that can drift.
 
-## 4. Installation contract
+A fail-closed dirty-checkout guard may exist as **defence in depth**, but is not
+the definition of identity: if the bytes can be derived from the Git object,
+they must be. A guard alone is acceptable only if it provably covers every
+material input, including untracked additions.
 
-### 4.1 Determinism / idempotence
+**Invariant.** A relevant dirty toolrepo MUST NOT produce a successful receipt
+claiming a clean HEAD.
 
-`install`/`upgrade` compute a **plan** (list of `(path, action, ownership)`
-tuples) from `(TargetPackManifestV2, current target-root state)` as a PURE
-function (`app/agent_review/target_pack_plan_v2.py::compute_install_plan_v2`)
-before touching the filesystem. Applying the identical plan twice produces
-byte-identical output and an empty second-run diff — proven by property test
-(§9), not by convention.
-
-### 4.2 Drift detection (the safe-file-ownership core, §7)
-
-Before writing any `UPSTREAM_GENERATED` file, compute its current on-disk
-sha256 and compare to the value recorded in the **previous**
-`TargetInstallReceiptV2.generated_file_hashes`. Three cases:
-
-- no previous receipt (fresh `init`) → write, no drift possible;
-- on-disk hash matches previous receipt → safe to overwrite (target never
-  touched it);
-- on-disk hash diverges from previous receipt → **drift**: refuse by
-  default, print the specific path + a real diff, require `--force-overwrite
-  PATH` naming that exact path (never a blanket force flag) to proceed.
-
-`TARGET_OWNED` paths are **never** read, hashed, diffed, or written by the
-pack outside `init` (which creates them once from a seed template, then never
-touches them again). `MERGED_DECLARATIVE` files (e.g., a target's
-`.gitignore` needing one pack-owned block) use a fenced-block merge strategy
-(`# --- agent-review-v2:begin ---` / `:end`) — only the fenced region is ever
-replaced.
-
-### 4.3 Rollback
-
-`rollback` restores the file set recorded in
-`previous_install_identity` (itself a full prior
-`TargetInstallReceiptV2` reference, stored by `upgrade`/`install` before
-overwriting). Refuses if the target's CURRENT state doesn't match the receipt
-it's about to roll back FROM (cross-target/tampered-receipt protection, see
-§10 adversarial list) — same "verify before trusting" discipline as
-`#201-C0`'s re-derivation, applied to install state instead of check results.
+**Consequence, documented plainly.** `init` from a dirty checkout installs
+*committed* bytes, and the receipt truthfully says so.
 
 ---
 
-## 5. Workflow templates
+## 4. CLI surface
 
-Three generic GitHub Actions templates in `templates/workflows/`:
-`evidence.yml`, `analysis.yml`, `publish.yml`. Security model (restated from
-the grant, now bound to concrete jobs):
+`scripts/agent-review-target-pack-v2.py`, argparse subcommands, matching the
+existing `-v2` convention. Each subcommand is a thin wrapper: it parses args,
+calls exactly one library function in `app/agent_review/target_pack_*`, and
+prints/writes the result. **The CLI never re-implements a decision** — the same
+discipline `#201-C`'s `produce_review_readiness_v2` follows.
 
 ```text
-evidence.yml:  pull_request trigger, secretless, checkout + acquire diff/
-               manifest only, uploads artifact for analysis.yml.
-analysis.yml:  workflow_run trigger (never pull_request_target on subject
-               code), base-owned checkout, Router access only if the
-               target's rollout mode allows it, DLP before any transport,
-               trusted-check executor invoked only via the isolated broker
-               (#201-B2/B3) -- never inline shell.
-publish.yml:   minimum GITHUB_TOKEN scope (pull-requests: write, contents:
-               read), consumes ONLY the sanitized ReviewReadinessV2/finding
-               artifact from analysis.yml, never re-derives anything.
+init        --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME
+            --pack-version X.Y.Z [--rollout off|shadow_minimal|shadow_full]
+doctor      --target-root PATH --toolrepo-root PATH --pack-version X.Y.Z   # READ-ONLY
+validate    --target-root PATH
+conformance --target-root PATH --matrix PATH
+install-workflows --target-root PATH [--dry-run]
+upgrade     --target-root PATH [--dry-run] [--yes]
+rollback    --target-root PATH [--dry-run] [--yes]
 ```
 
-None of the three ever gives PR-controlled code the harness, serializer,
-authority decision, publisher, policy, or trusted inventory — restating
-`#201`'s own boundary, now enforced at the workflow-template level too.
+`init` and `doctor` are implemented (slice 1). The rest are specified here and
+deferred (§12).
 
----
+`doctor` is **READ-ONLY by construction**: it accepts no mutating parameter and
+calls no write/mkdir/rename/remove primitive anywhere in its call graph, proven
+mechanically by AST/call-graph inspection — the same mechanical-proof discipline
+`#201-C` established, applied to a new invariant.
 
-## 6. Trusted-check ownership, precisely
+### 4.1 `doctor` diagnoses identity, not just structure  *(rev.2)*
 
-Per the grant: the pack owns the **mechanism**, the target owns the
-**inventory**.
-
-- `TrustedCheckInventoryV2` (new, additive schema) — the SHAPE a target's
-  `.aiops/trusted-checks.v2.yaml` must have: `check_name`, allowlisted
-  `command` (argv list, never a shell string), `working_directory`,
-  `timeout_seconds`, `resource_limits`. This schema lives in
-  `aiops-orchestrator`; the pack's `install` copies it as a seed TEMPLATE the
-  target then edits.
-- The pack's `validate`/`doctor` load this file with
-  `load_authoritative_check_policy_v2`-style strict parsing and cross-check
-  it against `TargetProfileV2.policies.required_checks` using the SAME
-  bidirectional-equality discipline `validate_policy_against_profile_v2`
-  already enforces (`#201-C0`) — reused, not reimplemented.
-- The pack NEVER invents a target-specific command (no hardcoded `pytest`,
-  no hardcoded `mypy`) anywhere in `app/agent_review/*` or
-  `templates/*`. Grepped for after implementation as an architecture test
-  (mirrors the `#201-C` "no target-name branch in generic engine" invariant,
-  §9's last scenario).
-- Allowlisting a command is `containment` — it says nothing about whether
-  that command's result reaches `authority=TRUSTED` in a given run.
-  `containment != evidence != provenance != authority` stays a hard
-  vocabulary boundary in every docstring here, exactly as demanded.
-
----
-
-## 7. Safe file ownership (formalized)
+A receipt that *parses* is not a receipt that describes *this* install. `doctor`
+cross-checks, in deterministic order, first mismatch winning:
 
 ```text
-UPSTREAM_GENERATED  -- pack writes/overwrites (subject to drift check, §4.2)
-TARGET_OWNED         -- pack writes ONCE at init, never touches again
-MERGED_DECLARATIVE   -- pack writes/updates ONLY its own fenced block
+receipt.pack_version        vs manifest.pack_version
+receipt.toolrepo_sha        vs manifest.toolrepo_sha
+receipt.target_profile_hash vs the profile actually on disk   (only when it loaded)
+receipt.rollout_mode        vs manifest.max_supported_rollout_mode
 ```
 
-Classification lives in `TargetPackManifestV2.generated_files[].ownership`
-(§2.1) — a single source of truth, not scattered path-pattern-matching in
-each CLI command.
+Structural validity alone must never yield `healthy=true`.
 
 ---
 
-## 8. Rollout modes
+## 5. Installation contract
+
+### 5.1 Preflight before mutation  *(rev.2)*
+
+```text
+resolve immutable toolrepo
+  → build/validate manifest
+  → validate rollout against pack capability
+  → compute plan
+  → only then create or write any target path
+```
+
+**No directory creation, no file write, before every applicable preflight gate
+has passed.** A previously nonexistent `target_root` MUST remain nonexistent
+after any refusal — unresolvable toolrepo SHA, rollout above the pack ceiling,
+invalid manifest, or plan failure.
+
+### 5.2 Determinism / idempotence
+
+`compute_install_plan_v2` derives a plan of `(path, action, ownership)` from
+`(manifest, current target state, previous receipt)` as a **pure** function that
+never touches the filesystem beyond reading. Applying the identical plan twice
+produces byte-identical output and an empty second-run diff — proven by property
+test, not convention.
+
+### 5.3 Drift detection
+
+For every `UPSTREAM_GENERATED` entry, compare the on-disk sha256 against the
+value in the previous receipt. The table is total and disjoint:
+
+| previous receipt | on-disk | action |
+|---|---|---|
+| absent | absent | `WRITE_NEW` |
+| absent/any | equals seed content | `NOOP_UNCHANGED` |
+| present | equals recorded hash | `OVERWRITE_SAFE` |
+| present/absent | diverges | `REFUSE_DRIFT` |
+
+Drift refuses **outright — nothing is written, for any path** — unless the exact
+drifted path is named explicitly. Never a blanket force flag.
+
+`TARGET_OWNED` paths are written once at `init` and never read, hashed, diffed or
+written again. `MERGED_DECLARATIVE` files have only their fenced region
+(`# --- agent-review-v2:begin ---` / `:end`) replaced; content outside the
+markers is preserved byte-for-byte.
+
+### 5.4 Mutation boundary and root identity  *(rev.2)*
+
+```text
+InstallPlanV2.target_root_real  →  all file writes  →  receipt write
+```
+
+The resolved root captured **at plan time** must survive through the receipt
+commit. Re-resolving the root independently for the receipt reintroduces the
+TOCTOU that the apply-time check closes, and can land files and receipt under
+**different roots**. Receipt persistence is therefore bound to the plan's root
+identity, or moved inside the same mutation boundary.
+
+Every write to a target repository — receipt included — goes through the single
+writer, which re-verifies containment immediately before writing.
+
+### 5.5 Recovery semantics  *(rev.2)*
+
+Per-file atomicity (temp file in the same directory, then `os.replace`) stands:
+a process killed mid-write leaves either the old or the fully-written new file,
+never a partial one.
+
+For multi-file operations:
+
+```text
+interruption at N of M
+  → no valid final receipt
+  → rerun detects the intermediate state
+  → deterministic convergence to the same final state
+```
+
+**A valid receipt represents a complete installation commit. An intermediate
+state must never be able to look like a completed installation.** The receipt is
+the commit marker: its absence or invalidity means "not completed", never
+"completed but unrecorded". This becomes materially important once
+`upgrade`/`install-workflows` write more than one file.
+
+### 5.6 Rollback
+
+`rollback` restores the set recorded in `previous_install_identity`, refusing if
+the target's current state does not match the receipt it is rolling back *from*
+— the same "verify before trusting" discipline as `#201-C0`'s re-derivation,
+applied to install state.
+
+---
+
+## 6. Workflow templates
+
+`evidence.yml`, `analysis.yml`, `publish.yml` (deferred, §12):
+
+```text
+evidence.yml:  pull_request trigger, secretless, checkout + acquire diff/manifest
+               only, uploads an artifact.
+analysis.yml:  workflow_run trigger (never pull_request_target on subject code),
+               base-owned checkout, Router access only if rollout allows, DLP
+               before any transport, trusted-check execution only via the
+               isolated broker (#201-B2/B3), never inline shell.
+publish.yml:   minimum GITHUB_TOKEN scope (pull-requests: write, contents: read).
+```
+
+### 6.1 Publisher preconditions  *(rev.2)*
+
+Consuming a sanitized artifact is **necessary but not sufficient**. Before any
+GitHub write:
+
+```text
+PR == OPEN
+live_head == analyzed_head
+artifact identity valid          (run/identity/digests coherent)
+producer authorized
+sanitized artifact valid
+```
+
+This mirrors the merge-gate discipline used for PRs in this repository: a HEAD
+that moved between analysis and publication invalidates the evidence, and the
+publisher must revalidate rather than assume.
+
+None of the three templates ever gives PR-controlled code the harness,
+serializer, authority decision, publisher, policy or trusted inventory.
+
+---
+
+## 7. Trusted-check ownership
+
+The pack owns the **mechanism**; the target owns the **inventory**.
+
+- `TrustedCheckInventoryV2` (additive schema) defines the shape of a target's
+  `.aiops/trusted-checks.v2.yaml`: `check_name`, allowlisted `command` (argv
+  list, never a shell string), `working_directory`, `timeout_seconds`,
+  `resource_limits`. The pack ships it as a seed template the target edits.
+- `validate`/`doctor` load it with strict parsing and cross-check against
+  `TargetProfileV2.policies.required_checks` using the same bidirectional
+  equality `validate_policy_against_profile_v2` already enforces — reused, not
+  reimplemented.
+- The pack NEVER invents a target-specific command (no hardcoded `pytest`, no
+  hardcoded `mypy`) anywhere in `app/agent_review/*` or `templates/*`, enforced
+  by an architecture test.
+- Allowlisting a command is **containment**. It says nothing about whether that
+  command's result reaches `authority=TRUSTED` in a given run.
+  `containment != evidence != provenance != authority` is a hard vocabulary
+  boundary.
+- Per §1.1, the inventory consumed by privileged analysis comes from the trusted
+  base checkout, never the PR branch.
+
+---
+
+## 8. Safe file ownership
+
+```text
+UPSTREAM_GENERATED  -- pack writes/overwrites, subject to drift check (§5.3)
+TARGET_OWNED        -- pack writes ONCE at init, never touches again
+MERGED_DECLARATIVE  -- pack writes/updates ONLY its own fenced block
+```
+
+Classification lives solely in `TargetPackManifestV2.generated_files[].ownership`
+— one source of truth, never path-pattern matching scattered across commands,
+and never inferred from what a given invocation happened to write.
+
+---
+
+## 9. Rollout modes
 
 ```text
 OFF             -- pack installed, nothing runs.
-SHADOW_MINIMAL  -- semantic review + informational publication only.
-                   No trusted-check integration configured; a required-check
-                   claim under this mode is refused by install/doctor
-                   (there is nothing legitimate to promote to -- this mode
-                   cannot even ask #201-C0's boundary a required-check
-                   question, because the pack never wires trusted checks in).
-SHADOW_FULL     -- semantic review + trusted-check integration wired through
-                   the existing #201-C0/#201-C chain; ReviewReadinessV2 is
-                   REAL and calculable. Still never becomes a required/
-                   default/primary branch-protection check -- that is a
-                   human action outside this grant's authority, always.
+SHADOW_MINIMAL  -- semantic review + informational publication only. No
+                   trusted-check integration; a required-check claim under this
+                   mode is refused.
+SHADOW_FULL     -- semantic review + trusted-check integration wired through the
+                   existing #201-C0/#201-C chain; ReviewReadinessV2 is real and
+                   calculable. Still never becomes a required/default/primary
+                   branch-protection check — that is a human action outside any
+                   pack authority, always.
 ```
 
-`install`/`upgrade` refuse to write a rollout mode HIGHER than
-`--rollout` explicitly requested — no silent ceiling promotion, checked by a
-dedicated property test (§9).
+Two independent ceilings, both enforced:
+
+- **requested vs delivered** *(rev.2)* — a request above
+  `manifest.max_supported_rollout_mode` is refused before any mutation. A pack
+  that ships no trusted-check integration cannot accept `shadow_full`.
+- **requested vs resolved** — no install/upgrade writes a mode higher than the
+  one explicitly requested. No silent ceiling promotion.
+
+`doctor` additionally refuses a receipt whose recorded `rollout_mode` exceeds
+the current manifest's capability (§4.1).
 
 ---
 
-## 9. Test strategy (the full list from the grant, mapped to concrete tests)
+## 10. `#203` / `#204` / `#205` boundaries  *(rev.2)*
 
-Organized like `#201-C`'s own Class A/B/C split: **Class A** = real CLI
-subprocess E2E against a synthetic target-root in `tmp_path`; **Class B** =
-pure `compute_install_plan_v2`/manifest-diff composition, no filesystem;
-**Class C** = deferred (a REAL AgentEscala/InterLeitos live install is target
-adoption, out of `#203`'s own scope per `#201`/`#202`'s own reconciliation).
+rev.1 left target-adoption criteria inside `#203` while `#204` existed precisely
+to prove them, which would have made `#203` impossible to close without
+duplicating its child. Reconciled:
 
-| Scenario (from the grant) | Class | Test |
+```text
+#203 — complete distributable target pack
+       complete CLIs, templates
+       synthetic/offline conformance
+       no target-name branching
+       reproducible install/upgrade/rollback behaviour
+
+#204 — AgentEscala real migration
+       InterLeitos real installation
+       Class C execution
+       CT104 canaries
+       target-specific operational DLP/PHI proof
+
+#205 — pinnable distribution/release
+```
+
+Target adoption is **not** a `#203` completion criterion.
+
+---
+
+## 11. Test strategy
+
+Class A = real CLI subprocess E2E against a synthetic target root; Class B =
+pure composition, no filesystem; Class C = **deferred to `#204`** (§10).
+
+| Scenario | Class | Note |
 |---|---|---|
-| init in eligible empty/synthetic repo | A | `test_init_creates_the_full_generated_set` |
-| reinstall exact same pack = idempotent | A/B | `test_install_twice_produces_an_empty_second_diff` |
-| generated-file drift | A | `test_upgrade_refuses_on_unrecorded_generated_file_drift` |
-| target-owned modification preservation | A | `test_upgrade_never_touches_a_target_owned_path` |
-| compatible upgrade | A | `test_upgrade_minor_version_applies_cleanly` |
-| incompatible upgrade | A | `test_upgrade_major_incompatible_refuses_without_force` |
-| rollback | A | `test_rollback_restores_the_previous_generated_set` |
-| missing profile | A | `test_doctor_reports_missing_profile_without_mutating` |
-| invalid profile | A | `test_validate_refuses_a_structurally_invalid_profile` |
-| missing target-owned policy | A | `test_doctor_reports_missing_trusted_check_inventory` |
-| missing runner/secret diagnosed w/o mutation | A | `test_doctor_reports_missing_secret_names_read_only` |
-| Unicode paths | B | `test_plan_handles_accented_target_root_paths` (reuses `#202`'s own fixtures) |
-| quoted/backslash paths | B | same, reusing `#202` fixtures directly -- no new heuristic |
-| two different synthetic targets from same pack | A | `test_agent_escala_and_interleitos_synthetic_targets_diverge_correctly` |
-| target-specific DLP extension | A | `test_target_owned_dlp_plugin_blocks_before_router` (synthetic, no real PHI) |
-| v1 coexistence | A | `test_install_never_touches_v1_required_checks_or_branch_protection` |
-| OFF → SHADOW_MINIMAL | A | `test_upgrade_off_to_shadow_minimal` |
-| SHADOW_MINIMAL → SHADOW_FULL plan | A | `test_upgrade_plan_shadow_minimal_to_shadow_full` |
-| forbidden upward rollout | A | `test_install_refuses_to_silently_exceed_requested_rollout_ceiling` |
-| manifest/receipt determinism | B | `test_receipt_hash_is_deterministic_and_excludes_timestamp` |
-| tampered receipt | A | `test_rollback_refuses_on_a_tampered_previous_receipt` |
-| changed toolrepo SHA | B | `test_upgrade_records_the_new_toolrepo_sha` |
-| changed target profile | A | `test_upgrade_detects_a_changed_target_profile_hash` |
-| clean environment install | A | `test_init_in_a_genuinely_empty_synthetic_repo` |
-| repeated install/upgrade cycles | A | `test_five_consecutive_upgrade_cycles_stay_idempotent` (metamorphic) |
-| no target-name branch in generic engine | static | `test_no_target_specific_literal_in_generic_pack_code` (AST/grep architecture test) |
-
-Plus the injection/adversarial set lands under §10, run iteratively during
-implementation per the grant's own instruction (not saved for the end).
+| init in empty synthetic repo | A | |
+| reinstall identical pack = idempotent, empty second diff | A/B | |
+| generated-file drift refused | A | nothing written, for any path |
+| target-owned modification preserved | A | |
+| compatible / incompatible upgrade | A | deferred with `upgrade` |
+| rollback restores previous set; refuses tampered/cross-target receipt | A | deferred with `rollback` |
+| missing / invalid profile diagnosed without mutation | A | |
+| missing secret NAMES diagnosed read-only | A | never reads a VALUE |
+| Unicode / quoted / backslash paths | B | reuses `#202` fixtures, no new heuristic |
+| two synthetic targets diverge correctly from one pack | A | |
+| v1 coexistence untouched | A | |
+| rollout: requested-above-capability refused | A | rev.2 |
+| rollout: no silent ceiling promotion | A/B | |
+| receipt determinism, timestamp excluded from hash | B | |
+| **dirty toolrepo does not yield a clean-HEAD receipt** | A | rev.2, §3 |
+| **untracked schema never enters `schema_digests`** | B | rev.2, §3 |
+| **nonexistent target stays nonexistent on every refusal** | A | rev.2, §5.1 |
+| **root swap between apply and receipt write refused** | A | rev.2, §5.4 |
+| **doctor refuses receipt/manifest identity mismatch** | A/B | rev.2, §4.1 |
+| multi-file interruption converges deterministically | A | rev.2, §5.5; owed by the multi-file slice |
+| `doctor` call graph never writes | static | AST proof |
+| no target-specific literal in generic pack code | static | AST/grep |
+| no branch-protection-shaped call exists at all | static | design absence, not a guard |
 
 ---
 
-## 10. Threat model / adversarial checklist (attacked iteratively, not at the end)
+## 12. Threat model
 
 | ID | Threat | Control |
 |---|---|---|
-| P-T1 | ownership escape (target file silently overwritten) | §4.2 drift detection, `TARGET_OWNED` never diffed |
-| P-T2 | path traversal in target-root or generated path | reuse `#202`'s own fail-closed path validators |
-| P-T3 | symlink swap between plan compute and apply | `os.path.realpath` resolution + re-check immediately before write, TOCTOU-aware like `#201-C`'s merge gate |
-| P-T4 | stale receipt reuse across rollback | §4.3 refuses if current state != receipt-recorded state |
-| P-T5 | forged manifest | `TargetPackManifestV2` validated against the SAME toolrepo release building it; `install` refuses a manifest whose `toolrepo_sha` isn't the one it was invoked from |
-| P-T6 | rollback to a mismatched target | receipt binds `target_repo`; refuse cross-target rollback |
-| P-T7 | cross-repo / cross-target replay | same binding as P-T6, symmetric to `#201-C0`'s run-identity binding |
-| P-T8 | toolrepo pin mismatch | `required_capabilities`/`min_engine_contract_version` checked at `doctor`/`install` |
-| P-T9 | upgrade/downgrade attack | `compatibility` field + semver comparison, refuse silent downgrade |
-| P-T10 | install interrupted midway / partial writes | write-to-temp-then-atomic-rename per file, plan is all-or-nothing at the file level |
-| P-T11 | workflow generation nondeterminism | golden-file byte-identity test, same discipline as `export-agent-review-v2-schemas.py --check` |
-| P-T12 | malicious target input attempting YAML/script injection | `yaml.safe_load` only, never `yaml.load`; generated workflow YAML never string-interpolates target data into shell |
-| P-T13 | shell quoting | trusted-check commands are argv lists (§6), never a shell string, mirrors `#201`'s own "comando derivado de inventário, nunca texto livre" |
-| P-T14 | arbitrary command injection via trusted-check inventory | schema-level allowlist validation (§6) + `subprocess.run(argv, shell=False)` always |
-| P-T15 | secret VALUE persisted | `TargetInstallReceiptV2.validate_no_secret_values` (§2.2) |
-| P-T16 | rollout ceiling bypass | §8's explicit refuse-to-exceed-requested-ceiling test |
+| P-T1 | ownership escape, target file silently overwritten | §5.3 drift detection; `TARGET_OWNED` never diffed |
+| P-T2 | path traversal in target root or generated path | `contracts_v2.RelativePath` inherited, never re-implemented |
+| P-T3 | symlink swap between plan and apply | resolve + containment re-check immediately before every write |
+| P-T3b | **target root itself swapped after planning** | plan-time `target_root_real` cross-checked at apply (rev.2) |
+| P-T3c | **write path bypassing the single writer** | every write, receipt included, routed through it (rev.2) |
+| P-T4 | stale receipt reuse across rollback | §5.6 |
+| P-T5 | forged manifest | manifest bound to the toolrepo release that built it |
+| P-T6/7 | cross-target / cross-repo replay | receipt binds `target_repo`; symmetric to `#201-C0` run-identity binding |
+| P-T8 | toolrepo pin mismatch | `required_capabilities`/`min_engine_contract_version` at doctor/install |
+| P-T9 | upgrade/downgrade attack | `compatibility` + semver comparison |
+| P-T10 | interrupted install / partial write | per-file atomic write; §5.5 convergence; receipt = commit marker |
+| P-T11 | workflow generation nondeterminism | golden-file byte identity |
+| P-T12 | YAML/script injection from target input | `yaml.safe_load` only; no interpolation of target data into shell |
+| P-T13/14 | shell quoting / command injection | argv lists, `shell=False`, schema allowlist |
+| P-T15 | secret VALUE persisted | name-shape validation + never reading an env VALUE |
+| P-T16 | rollout ceiling bypass | §9's two independent ceilings |
+| **P-T17** | **fabricated provenance: SHA not bound to installed bytes** | §3 Git-tree derivation (rev.2) |
+| **P-T18** | **mutation before preflight completes** | §5.1 (rev.2) |
+| **P-T19** | **receipt committed under a different root than the files** | §5.4 (rev.2) |
+| **P-T20** | **PR-branch config reaching privileged analysis** | §1.1 (rev.2) |
+| **P-T21** | **publish against a moved HEAD / closed PR** | §6.1 (rev.2) |
 
 ---
 
-## 11. Self-audit of this specification (per the grant's own mandated step)
+## 13. Definition of done for `#203`
 
-- **Duplicated concepts?** Checked: `TargetInstallReceiptV2` is deliberately
-  NOT another `RunIdentityV2` — it identifies an *installation*, not a
-  *review run*; the two never collapse into one contract. Trusted-check
-  inventory SCHEMA (pack-owned) is deliberately separate from trusted-check
-  COMMANDS (target-owned data) — no duplication of `#201`'s own
-  containment/evidence/provenance/authority vocabulary.
-- **Ownership inversion?** Checked: nothing in `app/agent_review/target_pack_*`
-  reads a target-specific literal; §6 commits to an architecture test
-  enforcing this permanently, not just at spec time.
-- **Authority inflation?** Checked: `SHADOW_FULL` still never self-promotes
-  to a required/default check (§8); the pack has no code path that calls
-  any GitHub branch-protection API at all — confirmed as a design absence,
-  not a guarded one, since "guarded" would still mean the capability exists.
-- **Target leakage?** Checked: `templates/workflows/*.yml` are Jinja-free,
-  parameterized only via files the pack ALREADY validates schema-first
-  (§5) — no target string ever gets string-interpolated into generated
-  YAML that then executes as shell.
-- **Non-idempotent writes?** Checked: §4.1's plan-then-apply split, with the
-  empty-second-diff property test as the actual proof, not a claim.
-- **Rollback ambiguity?** Checked: §4.3 + P-T4/P-T6/P-T7 close the three
-  concrete ambiguity vectors (stale, cross-target, tampered).
-- **Drift ambiguity?** Checked: §4.2's three-case table is total and
-  disjoint — no state falls outside it.
-- **Hidden mutable state?** Checked: `compute_install_plan_v2` and
-  `run_doctor_v2` are pure; the only mutation points are the `apply_plan_v2`
-  writes, explicitly named as such.
-- **Schema/versioning mistakes?** Checked: both new contracts pin
-  `schema_version: Literal[2]` matching the rest of the v2 family (not v1,
-  not an unrelated v3); `pack_version` (semver) is kept explicitly SEPARATE
-  from `schema_version` (contract shape) — an upgrade can bump one without
-  the other, and the compatibility check (§4.3/P-T9) operates on the right
-  one for each question.
+```text
+all seven CLI subcommands implemented and tested
+pack material bound to an immutable Git tree              (§3)
+no mutation before preflight completes                    (§5.1)
+single mutation boundary, receipt inside it               (§5.4)
+deterministic multi-file recovery                         (§5.5)
+synthetic/offline conformance passing for >= 2 targets    (§10, §11)
+no target-name branching anywhere in generic code
+doctor mechanically read-only
+rollout ceilings enforced in both directions              (§9)
+frozen contracts and CAEM pin untouched
+```
 
-No blocking defect found in this self-audit; proceeding to implementation.
+Explicitly **not** required for `#203` to close: real AgentEscala/InterLeitos
+adoption, Class C execution, CT104 canaries, release/pinning — `#204`/`#205`.
 
 ---
 
-## 12. Deferred (explicitly, not silently)
+## 14. Deferred (explicitly, not silently)
 
-- Class C tests (real AgentEscala/InterLeitos live install) — target
-  adoption, per `#204`'s own charter, not `#203`.
-- Actual publication/pinning of the pack (`#205`).
-- The round-11 adjacent CLI `--output` OSError defect (`#222`) — not folded
-  in here per the merge grant's own explicit instruction, unless `#203`'s
-  own new IO layer happens to own that exact code path naturally (it does
-  not — that defect is in the existing quality-gate v2 CLI, not the new
-  pack CLI).
-- Real GitHub Actions runner execution proof — CT104-scoped, deferred to
-  whatever capability grant actually has that access.
+- `validate` / `conformance` / `install-workflows` / `upgrade` / `rollback` and
+  the real workflow templates — later `#203` slices. Slice 1 ships `init` +
+  `doctor`.
+- `TrustedCheckInventoryV2` and the `#201-C0` trusted-check wiring, and with it
+  any genuine `SHADOW_FULL` capability.
+- Multi-file crash-convergence metamorphic test (§5.5) — owed by the first slice
+  that writes more than one file.
+- Class C / real dual-target adoption — `#204` (§10).
+- Publication and pinning — `#205`.
+- `#222` (quality-gate v2 CLI `--output` `OSError`) — a different CLI, not this
+  pack's IO layer.
+- Real GitHub Actions runner execution proof — CT104-scoped.
