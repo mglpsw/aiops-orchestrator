@@ -4,6 +4,18 @@
 
 ### Added
 
+- **`agentreview-v2-target-pack` — installable target pack, first slice
+  (`#203`)**: begins packaging AgentReview v2 as an installer for consumer
+  repositories, without forking the engine. This commit ships `init` and
+  `doctor` (read-only, mechanically proven by AST/call-graph inspection),
+  two new additive contracts (`TargetPackManifestV2`,
+  `TargetInstallReceiptV2`), a pure drift/idempotence plan computer, and
+  the sole atomic-write installer. `validate`/`conformance`/
+  `install-workflows`/`upgrade`/`rollback` are deferred to a follow-up
+  commit on the same branch/PR. Full spec:
+  `docs/AGENT_REVIEW_V2_TARGET_PACK.md` and
+  `/root/.claude/plans/203-agentreview-v2-target-pack.md`. Zero existing
+  schema/contract touched; 62 new tests, 1812/1750+62 combined suite green.
 - **AgentReview v2 required-check readiness wiring (`#201-C`)**: connects
   `#201-C0`'s legitimated required checks to `ReviewReadinessV2` — the last
   piece needed for the readiness contract to represent a required-check
