@@ -133,3 +133,33 @@ def test_missing_required_flag_is_refused_by_argparse_not_a_traceback(tmp_path: 
     result = _run(["doctor", "--target-root", str(tmp_path)])
     assert result.returncode != 0
     assert "Traceback" not in result.stderr
+
+
+def test_init_refuses_cleanly_instead_of_fabricating_a_toolrepo_sha(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed: a `--toolrepo-root`
+    that is not a real git checkout previously made `init` succeed anyway,
+    silently writing a fabricated all-zero `toolrepo_sha` into a receipt
+    whose entire purpose is provenance. Must now refuse cleanly instead."""
+
+    fake_toolrepo = tmp_path / "fake-toolrepo"
+    (fake_toolrepo / "templates" / "agentreview-v2-target-pack").mkdir(parents=True)
+    (fake_toolrepo / "templates" / "agentreview-v2-target-pack" / "target-profile.v2.yaml").write_text(
+        "placeholder", encoding="utf-8"
+    )
+    (fake_toolrepo / "schemas" / "agent-review" / "v2").mkdir(parents=True)
+
+    target_root = tmp_path / "target"
+    result = _run(
+        [
+            "init",
+            "--target-root", str(target_root),
+            "--toolrepo-root", str(fake_toolrepo),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "target_pack_cli_toolrepo_sha_unresolved" in result.stderr
+    assert not (target_root / ".aiops" / "install-receipt.v2.json").exists()

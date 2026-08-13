@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -61,7 +62,26 @@ RECEIPT_RELATIVE_PATH_V2 = ".aiops/install-receipt.v2.json"
 CLI_INPUT_INVALID_REASON_V2 = "target_pack_cli_input_invalid"
 
 
+CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2 = "target_pack_cli_toolrepo_sha_unresolved"
+_ALL_ZERO_SHA_V2 = "0" * 40
+_GIT_SHA_HEX_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
 def _resolve_toolrepo_sha(toolrepo_root: Path) -> str:
+    """The real `git rev-parse HEAD` of `toolrepo_root`, or a refusal.
+
+    Adversarial review finding, confirmed and fixed: the previous version
+    silently fell back to an all-zero SHA (`"0" * 40`) whenever `git
+    rev-parse` failed (e.g. `--toolrepo-root` not a real git checkout),
+    and every caller wrote that fabricated value straight into
+    `TargetPackManifestV2.toolrepo_sha`/`TargetInstallReceiptV2.
+    toolrepo_sha` -- a receipt whose entire stated purpose (spec `§4`) is
+    to be "provenance-carrying". Reproduced: `init` against a
+    non-git-checkout `--toolrepo-root` exited 0 and wrote a receipt
+    claiming `toolrepo_sha: "0000...0000"`, a fabricated identity, not a
+    refusal. Never silently fabricate provenance -- refuse instead, by
+    name."""
+
     import subprocess
 
     completed = subprocess.run(
@@ -70,7 +90,10 @@ def _resolve_toolrepo_sha(toolrepo_root: Path) -> str:
         text=True,
         check=False,
     )
-    return completed.stdout.strip()
+    sha = completed.stdout.strip()
+    if completed.returncode != 0 or not _GIT_SHA_HEX_RE.fullmatch(sha) or sha == _ALL_ZERO_SHA_V2:
+        raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
+    return sha
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -81,7 +104,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     try:
         manifest = build_target_pack_manifest_v2(
             toolrepo_root=toolrepo_root,
-            toolrepo_sha=_resolve_toolrepo_sha(toolrepo_root) or "0" * 40,
+            toolrepo_sha=_resolve_toolrepo_sha(toolrepo_root),
             pack_version=args.pack_version,
         )
     except TargetPackBuildError as exc:
@@ -143,7 +166,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     try:
         manifest = build_target_pack_manifest_v2(
             toolrepo_root=toolrepo_root,
-            toolrepo_sha=_resolve_toolrepo_sha(toolrepo_root) or "0" * 40,
+            toolrepo_sha=_resolve_toolrepo_sha(toolrepo_root),
             pack_version=args.pack_version,
         )
     except TargetPackBuildError as exc:
