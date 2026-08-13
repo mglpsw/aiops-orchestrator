@@ -168,9 +168,25 @@
       "ri_b0_role": "Not applicable to RI-B0. RI-B0 consumes readiness, never producer-level execution attestations.",
       "source_path": "schemas/agent-review/v2/agent-review.producer-attestation.v2.schema.json",
       "state": "not_applicable"
+    },
+    {
+      "contract_id": "agent-review.target-pack-manifest.v2",
+      "notes": "Compiled description of what one agentreview-v2-target-pack toolrepo release can install into a target repository (#203) -- install-capability provenance, not review/readiness evidence. RI-B0 has no proof-obligation or readiness-decision content relevant here.",
+      "owner": "aiops-orchestrator (app/agent_review/)",
+      "ri_b0_role": "none: RI-B0 has no reason to read, cite, or depend on pack install-capability content.",
+      "source_path": "schemas/agent-review/v2/agent-review.target-pack-manifest.v2.schema.json",
+      "state": "not_applicable"
+    },
+    {
+      "contract_id": "agent-review.target-install-receipt.v2",
+      "notes": "Written to .aiops/install-receipt.v2.json in a TARGET repository after a successful agentreview-v2-target-pack install/upgrade (#203) -- installation-state provenance (which pack version generated which files at which hashes), never review or readiness evidence. Deliberately not RunIdentityV2 -- identifies an installation, not a review run.",
+      "owner": "aiops-orchestrator (app/agent_review/)",
+      "ri_b0_role": "none: RI-B0 has no reason to read, cite, or depend on install-state provenance.",
+      "source_path": "schemas/agent-review/v2/agent-review.target-install-receipt.v2.schema.json",
+      "state": "not_applicable"
     }
   ],
-  "generated_from": "live schemas/agent-review/v2/*.json (17 files) and this repository's own CURRENT_CHECKPOINT.md observation of the ProjectOps track boundary",
+  "generated_from": "live schemas/agent-review/v2/*.json (19 files) and this repository's own CURRENT_CHECKPOINT.md observation of the ProjectOps track boundary",
   "schema_version": 1,
   "states": [
     "reuse",

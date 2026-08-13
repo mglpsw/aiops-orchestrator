@@ -7,6 +7,7 @@ import pytest
 
 from app.agent_review.target_pack_install_v2 import (
     INSTALL_DRIFT_UNRESOLVED_REASON_V2,
+    INSTALL_PATH_ESCAPES_TARGET_ROOT_REASON_V2,
     TargetPackInstallError,
     apply_install_plan_v2,
 )
@@ -152,6 +153,38 @@ def test_apply_is_atomic_no_partial_file_left_on_interrupted_write(tmp_path: Pat
     assert (tmp_path / "a.yaml").read_bytes() == b"original"
     leftover_tmp_files = list(tmp_path.glob("*.tmp"))
     assert leftover_tmp_files == []
+
+
+def test_apply_refuses_to_write_through_a_directory_symlink_escaping_target_root(tmp_path: Path) -> None:
+    """P-T2/P-T3 (spec `§10`), confirmed and fixed. If `.aiops` inside
+    `target_root` is a symlink pointing OUTSIDE `target_root`, the write
+    must be refused and NOTHING written -- not silently followed to write
+    pack-controlled content to an arbitrary filesystem location. Reproduced
+    before the fix: the file landed inside the symlink target, outside
+    `target_root` entirely."""
+
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-escape-target"
+    outside.mkdir()
+    (tmp_path / ".aiops").symlink_to(outside)
+
+    entry = GeneratedFileEntryV2(
+        path=".aiops/target-profile.v2.yaml",
+        ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+        content_sha256=_sha256(b"seed"),
+    )
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+
+    with pytest.raises(TargetPackInstallError) as exc_info:
+        apply_install_plan_v2(
+            plan=plan,
+            manifest=manifest,
+            target_root=tmp_path,
+            seed_content_by_path={".aiops/target-profile.v2.yaml": b"seed"},
+        )
+
+    assert exc_info.value.reason_code == INSTALL_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert list(outside.iterdir()) == []
 
 
 def test_merged_declarative_only_replaces_the_fenced_block(tmp_path: Path) -> None:

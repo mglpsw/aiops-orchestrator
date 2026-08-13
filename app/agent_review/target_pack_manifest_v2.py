@@ -94,7 +94,7 @@ class TargetPackManifestV2(ContractV2Model):
     pack_version: SafeText
     toolrepo_sha: GitSha
     generated_files: tuple[GeneratedFileEntryV2, ...] = Field(min_length=1)
-    schema_digests: Mapping[str, Sha256] = Field(min_length=1)
+    schema_digests: Mapping[str, Sha256] = Field(min_length=1, json_schema_extra={"additionalProperties": False})
     required_capabilities: tuple[SafeIdentifier, ...]
     min_engine_contract_version: Literal[2]
 

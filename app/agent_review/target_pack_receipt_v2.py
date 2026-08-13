@@ -88,8 +88,12 @@ class TargetInstallReceiptV2(ContractV2Model):
     target_repo: SafeText
     target_profile_hash: Sha256
     target_policy_hash: Sha256
-    review_pack_hashes: Mapping[SafeIdentifier, Sha256] = Field(default_factory=dict)
-    generated_file_hashes: Mapping[SafeText, Sha256] = Field(default_factory=dict)
+    review_pack_hashes: Mapping[SafeIdentifier, Sha256] = Field(
+        default_factory=dict, json_schema_extra={"additionalProperties": False}
+    )
+    generated_file_hashes: Mapping[SafeText, Sha256] = Field(
+        default_factory=dict, json_schema_extra={"additionalProperties": False}
+    )
     target_owned_paths: tuple[SafeText, ...] = ()
     required_capabilities: tuple[SafeIdentifier, ...] = ()
     expected_runner_labels: tuple[SafeIdentifier, ...] = ()
