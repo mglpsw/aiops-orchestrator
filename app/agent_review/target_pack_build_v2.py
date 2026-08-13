@@ -112,6 +112,13 @@ def build_target_pack_manifest_v2(
         schema_digests=schema_digests,
         required_capabilities=("router_transport",),
         min_engine_contract_version=2,
+        # Hardcoded for this slice: no trusted-check inventory, workflow
+        # installer, or `ReviewReadinessV2` wiring ships yet, so
+        # `shadow_full` (which the spec defines as that integration being
+        # live) is not genuinely deliverable. A later slice that ships
+        # that wiring must compute this from real installed capability,
+        # not merely raise the constant.
+        max_supported_rollout_mode="shadow_minimal",
     )
 
 

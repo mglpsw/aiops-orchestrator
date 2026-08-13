@@ -51,6 +51,15 @@
       "title": "Generated Files",
       "type": "array"
     },
+    "max_supported_rollout_mode": {
+      "enum": [
+        "off",
+        "shadow_minimal",
+        "shadow_full"
+      ],
+      "title": "Max Supported Rollout Mode",
+      "type": "string"
+    },
     "min_engine_contract_version": {
       "const": 2,
       "title": "Min Engine Contract Version",
@@ -100,7 +109,8 @@
     "generated_files",
     "schema_digests",
     "required_capabilities",
-    "min_engine_contract_version"
+    "min_engine_contract_version",
+    "max_supported_rollout_mode"
   ],
   "title": "TargetPackManifestV2",
   "type": "object"

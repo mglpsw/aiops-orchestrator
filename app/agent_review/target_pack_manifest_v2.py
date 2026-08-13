@@ -97,6 +97,18 @@ class TargetPackManifestV2(ContractV2Model):
     schema_digests: Mapping[str, Sha256] = Field(min_length=1, json_schema_extra={"additionalProperties": False})
     required_capabilities: tuple[SafeIdentifier, ...]
     min_engine_contract_version: Literal[2]
+    # The highest `--rollout` value THIS pack version genuinely wires
+    # end-to-end -- distinct from what a caller might ASK for. Adversarial
+    # review finding, confirmed and fixed: without this field, `init
+    # --rollout shadow_full` exited 0 and wrote `rollout_mode:
+    # shadow_full` into the receipt even though this slice ships no
+    # trusted-check inventory, no workflow integration, and no wiring
+    # between the pack and `ReviewReadinessV2` at all -- the receipt
+    # asserted an operational state the pack cannot deliver. `#203 MUST
+    # NEVER... SILENTLY PROMOTE ROLLOUT`; this field is what lets a caller
+    # request a ceiling THIS release cannot silently exceed, not merely
+    # document that it shouldn't.
+    max_supported_rollout_mode: Literal["off", "shadow_minimal", "shadow_full"]
 
     @model_validator(mode="after")
     def validate_generated_files_are_unique(self) -> TargetPackManifestV2:

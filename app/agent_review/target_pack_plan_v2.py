@@ -46,6 +46,7 @@ from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2
 
 PLAN_UNKNOWN_OWNERSHIP_REASON_V2 = "target_pack_plan_unknown_ownership_class"
 PLAN_ROLLOUT_CEILING_EXCEEDED_REASON_V2 = "target_pack_plan_rollout_ceiling_exceeded"
+PLAN_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2 = "target_pack_plan_rollout_exceeds_pack_capability"
 
 _ROLLOUT_ORDER_V2 = ("off", "shadow_minimal", "shadow_full")
 
@@ -204,3 +205,22 @@ def validate_rollout_ceiling_v2(*, requested: str, resolved: str) -> None:
         raise PlanError(PLAN_ROLLOUT_CEILING_EXCEEDED_REASON_V2)
     if _ROLLOUT_ORDER_V2.index(resolved) > _ROLLOUT_ORDER_V2.index(requested):
         raise PlanError(PLAN_ROLLOUT_CEILING_EXCEEDED_REASON_V2)
+
+
+def validate_rollout_within_pack_capability_v2(*, requested: str, max_supported: str) -> None:
+    """Refuses if `requested` (what the caller explicitly asked for, e.g.
+    `--rollout` on the CLI) exceeds `max_supported`
+    (`TargetPackManifestV2.max_supported_rollout_mode` -- the highest mode
+    THIS pack version genuinely wires end-to-end). Distinct from `validate_
+    rollout_ceiling_v2` above, which guards against a *resolution step*
+    silently escalating beyond what the caller asked; this one guards
+    against the caller asking for more than the pack can deliver AT ALL,
+    independent of any resolution step. Adversarial review finding,
+    confirmed and fixed: nothing previously called either function from
+    `init`, so `--rollout shadow_full` was silently accepted against a
+    pack version that ships no trusted-check integration whatsoever."""
+
+    if requested not in _ROLLOUT_ORDER_V2 or max_supported not in _ROLLOUT_ORDER_V2:
+        raise PlanError(PLAN_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2)
+    if _ROLLOUT_ORDER_V2.index(requested) > _ROLLOUT_ORDER_V2.index(max_supported):
+        raise PlanError(PLAN_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2)
