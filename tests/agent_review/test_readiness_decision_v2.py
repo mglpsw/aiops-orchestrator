@@ -913,6 +913,49 @@ def test_blocked_code_tolerates_schema_or_transport_failure_unaffected() -> None
     assert ReadinessReasonV2.POLICY_FAILURE in result.reason_codes
 
 
+def test_blocked_code_with_finding_confirmation_required_is_refused_cleanly_not_crashed() -> None:
+    """Adversarial review finding, confirmed and fixed (round 5). The
+    round-1 guard (see `test_blocked_pipeline_with_schema_or_transport_
+    failure_is_refused_cleanly_not_crashed` above) only checked the
+    `MANUAL_REQUIRED` branch, on the mistaken assumption that `BLOCKED_
+    CODE`'s allowed reason set is a strict superset of `MANUAL_REQUIRED`'s.
+    It is not: `BLOCKED_CODE` disallows `FINDING_CONFIRMATION_REQUIRED`
+    exactly like `MANUAL_REQUIRED` disallows `SCHEMA_FAILURE`/`TRANSPORT_
+    FAILURE`. A hand-crafted `--decision` file with `state=BLOCKED_CODE,
+    reason_codes=(CONFIRMED_CODE_FINDING, FINDING_CONFIRMATION_REQUIRED)`
+    -- unreachable through `compute_readiness_decision_v2`, which never
+    adds `FINDING_CONFIRMATION_REQUIRED` to a `BLOCKED_CODE` decision, but
+    not enforced against a hand-built file -- reproduced, before this fix,
+    the identical opaque `pydantic.ValidationError` several calls later
+    inside `ReviewReadinessV2.__init__` that the round-1 fix was supposed
+    to eliminate for every branch, not just `MANUAL_REQUIRED`."""
+
+    coverage = ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE, expected_files=(), reviewed_files=(), partially_reviewed_files=(),
+        missing_files=(), must_review_files=(), missing_must_review_files=(), degradation_causes=(),
+    )
+    identity = RunIdentityV2.model_validate(_identity())
+    blocker = ReadinessBlockerV2(
+        blocker_id="confirmed-finding-1", reason_code=ReadinessReasonV2.CONFIRMED_CODE_FINDING,
+        active=True, finding_id="finding-1",
+    )
+    decision = ReadinessDecisionV2(
+        state=ReadinessStateV2.BLOCKED_CODE,
+        reason_codes=(ReadinessReasonV2.CONFIRMED_CODE_FINDING, ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED),
+        blockers=(blocker,),
+        coverage=coverage,
+        pipeline=PipelineAssessmentV2(degraded=False, causes=[]),
+        run_id=compute_run_id(identity),
+        manifest_hash=identity.manifest_hash,
+    )
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+
+    with pytest.raises(ReadinessDecisionError) as exc_info:
+        _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    assert exc_info.value.reason_code == DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2
+
+
 def test_joined_with_budget_never_produces_a_truncated_suffix() -> None:
     """Adversarial review finding, confirmed and fixed. The previous
     implementation packed names against `budget` with no headroom reserved

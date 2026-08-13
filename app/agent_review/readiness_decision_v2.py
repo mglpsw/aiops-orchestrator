@@ -128,15 +128,32 @@ DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2 = (
 )
 
 _ALLOWED_STALE_REASON_CODES_V2 = frozenset({ReadinessReasonV2.HEAD_MISMATCH, ReadinessReasonV2.IDENTITY_MISMATCH})
-# MANUAL_REQUIRED's own allowed reason set (contracts_v2.py), minus the
-# finding-confirmation family folded elsewhere -- what an existing decision's
-# reason_codes must already be a subset of for the #201-C downgrade to be
-# representable at all.
+# MANUAL_REQUIRED's own allowed reason set, verbatim (contracts_v2.py's
+# `validate_state_invariants`, MANUAL_REQUIRED branch) -- what an existing
+# decision's reason_codes must already be a subset of for the #201-C
+# downgrade to that state to be representable at all. `POLICY_FAILURE` is
+# always safe (it is the one #201-C itself is about to add).
 _MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2 = frozenset(
     {
         ReadinessReasonV2.COVERAGE_FAILURE,
         ReadinessReasonV2.MODEL_UNCERTAINTY,
         ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED,
+        ReadinessReasonV2.POLICY_FAILURE,
+    }
+)
+# BLOCKED_CODE's own allowed PIPELINE reason set, verbatim (contracts_v2.py,
+# BLOCKED_CODE branch: `allowed_pipeline_reasons`) -- `CONFIRMED_CODE_FINDING`
+# itself is checked separately by the contract (it is mandatory, not part of
+# this "pipeline reasons" bucket) and is never added or removed here, so it
+# is included for completeness but never actually exercised as the subject
+# of this guard.
+_BLOCKED_CODE_SAFE_EXISTING_REASONS_V2 = frozenset(
+    {
+        ReadinessReasonV2.CONFIRMED_CODE_FINDING,
+        ReadinessReasonV2.SCHEMA_FAILURE,
+        ReadinessReasonV2.TRANSPORT_FAILURE,
+        ReadinessReasonV2.COVERAGE_FAILURE,
+        ReadinessReasonV2.MODEL_UNCERTAINTY,
         ReadinessReasonV2.POLICY_FAILURE,
     }
 )
@@ -574,7 +591,7 @@ def _apply_required_check_assessment_v2(
        both `coverage_failure` and `policy_failure` remain visible in
        `reason_codes`) -- recorded here deliberately, not discovered later.
 
-    Adversarial review finding, confirmed and fixed: `ReadinessDecisionV2`
+    Adversarial review finding, confirmed and fixed (round 1): `ReadinessDecisionV2`
     is "freely constructible" (C1's own design -- no validation at
     construction, unlike `ReviewReadinessV2`), so a `--decision` JSON file
     could carry `BLOCKED_PIPELINE` together with `SCHEMA_FAILURE`/
@@ -593,6 +610,22 @@ def _apply_required_check_assessment_v2(
     and by name, before any transformation is attempted -- fail-closed,
     per the plan's own stop condition ("readiness incapaz de representar
     ausência de autoridade sem mentir").
+
+    Adversarial review finding, confirmed and fixed (round 5): the round-1
+    fix guarded only the `MANUAL_REQUIRED` branch, on the mistaken premise
+    that `BLOCKED_CODE`'s own allowed reason set is a strict superset and
+    therefore can never be the unrepresentable branch. It is not a superset:
+    `BLOCKED_CODE` allows `SCHEMA_FAILURE`/`TRANSPORT_FAILURE` but -- like
+    `MANUAL_REQUIRED` not allowing them -- disallows `FINDING_CONFIRMATION_
+    REQUIRED`. A hand-crafted `--decision` with `state=BLOCKED_CODE,
+    reason_codes=(CONFIRMED_CODE_FINDING, FINDING_CONFIRMATION_REQUIRED)`
+    (unreachable through `compute_readiness_decision_v2`, which never adds
+    `FINDING_CONFIRMATION_REQUIRED` to a `BLOCKED_CODE` decision, but not
+    enforced against a hand-built file) reproduced the identical "opaque
+    `pydantic.ValidationError` several calls later" defect the round-1 fix
+    was supposed to eliminate everywhere. The guard below now checks
+    whichever branch `state` actually resolves to, against that branch's
+    own safe-existing-reasons set, symmetrically.
 
     A required check the assessment reports `FAILED` for is never dropped:
     `assessment.checks` -- the exact tuple `#201-C0`'s verifier accepted,
@@ -615,11 +648,15 @@ def _apply_required_check_assessment_v2(
         if decision.state is ReadinessStateV2.BLOCKED_CODE
         else ReadinessStateV2.MANUAL_REQUIRED
     )
-    if state is ReadinessStateV2.MANUAL_REQUIRED and not set(decision.reason_codes) <= _MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2:
-        # BLOCKED_CODE's own allowed pipeline-reason set already includes
-        # SCHEMA_FAILURE/TRANSPORT_FAILURE (contracts_v2.py), so only the
-        # MANUAL_REQUIRED downgrade can land on an unrepresentable
-        # combination -- see the docstring above.
+    safe_existing_reasons = (
+        _BLOCKED_CODE_SAFE_EXISTING_REASONS_V2
+        if state is ReadinessStateV2.BLOCKED_CODE
+        else _MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2
+    )
+    if not set(decision.reason_codes) <= safe_existing_reasons:
+        # See the docstring above (round 5): checked symmetrically for
+        # whichever branch `state` resolves to -- neither branch's safe set
+        # is a superset of the other's.
         raise ReadinessDecisionError(DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2)
 
     cause = PipelineDegradationCauseV2(

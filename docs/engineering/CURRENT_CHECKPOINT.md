@@ -50,7 +50,7 @@
 - `#201-A`/`#201-B1`/`#201-B2`/`#201-B3`/`#201-C0`: `merged`; `#201-B3` operational closure
   `BLOCKED_BY_CT104`; `#217` exercised path `closed_by_pr_219`, residual class `open`;
 - `#201-C`: `implemented_awaiting_merge_review` (branch local, não empurrada; review adversarial
-  não iniciado) — ver adendo;
+  em andamento, 5 rodadas, aguardando duas consecutivas limpas no mesmo HEAD) — ver adendo;
 - `#203`: `not_started`;
 - validação: `partial`;
 - change request: `not_open` no corte;
@@ -64,7 +64,9 @@
 Grant nominal do dono do repositório, escopado à implementação de `#201-C` conforme a Execution-
 Ready Engineering Specification rev.2.1 (auditada e aprovada em duas rodadas prévias — ver `#201`).
 Implementação feita em worktree novo (`/opt/agent-tools/ar-201-c-readiness-wiring`), a partir de
-`origin/master` @ `8b20ae37`, branch `feat/201-c-required-check-readiness-wiring`, seis commits.
+`origin/master` @ `8b20ae37`, branch `feat/201-c-required-check-readiness-wiring`, seis commits de
+implementação + um de checkpoint/receipt + cinco commits de correção do review adversarial (12 no
+total até este corte; a contagem cresce a cada rodada não-limpa).
 
 Entrega: novo módulo `required_check_readiness_v2.py` como choke point entre `#201-C0` e a
 readiness — deriva `required_check_names` exclusivamente de um `TargetProfileV2` confiável ligado
@@ -87,9 +89,10 @@ verificados por mutação durante a implementação (reintrodução de `except`/
 caller-supplied — ambos pegos com a mensagem certa).
 
 Nenhum contrato congelado alterado; export de schemas byte-idêntico; pin CAEM F0 verde.
-`tests/agent_review/` completo: 1727 passed, 16 skipped, 2 failed (classe `environment` — `sudo`
-ausente no sandbox, `test_isolated_executor_v2.py`, fora do escopo desta slice, idêntico à
-baseline pré-edição). `tests/evals/`: 95 passed, 4 skipped.
+`tests/agent_review/ tests/evals/` combinado: 1739 passed, 16 skipped, 2 failed (classe
+`environment` — `sudo` ausente no sandbox, `test_isolated_executor_v2.py`, fora do escopo desta
+slice, mesma classe de falha que a baseline pré-edição). Figura corrente na correção da rodada 5
+de review adversarial; será revalidada a cada rodada subsequente.
 
 Detalhes completos: `docs/checkpoints/AGENT_REVIEW_V2_201C_READINESS_WIRING.md` e
 `reports/agent-review-v2-201c-readiness-wiring-receipt.json`.

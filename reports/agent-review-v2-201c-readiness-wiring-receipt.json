@@ -14,7 +14,13 @@
     "feat(agent-review/v2): required-check precedence in readiness_decision_v2",
     "feat(agent-review/v2): single production constructor path for ReviewReadinessV2",
     "test(agent-review/v2): AST proof that the readiness path always traverses the C0 boundary",
-    "test(agent-review/v2): migrate dual-target E2E to fail-closed reality"
+    "test(agent-review/v2): migrate dual-target E2E to fail-closed reality",
+    "docs(agent-review/v2): #201-C checkpoint, changelog and receipt",
+    "fix(agent-review/v2): cap required-check detail string within its own SafeText bound",
+    "fix(agent-review/v2): refuse an unrepresentable BLOCKED_PIPELINE->MANUAL_REQUIRED downgrade cleanly",
+    "fix(agent-review/v2): stop the (+N more) truncation from corrupting itself, catch ReadinessDecisionError in the CLI",
+    "fix(agent-review/v2): make STALE genuinely sovereign -- skip #201-C0 verification entirely",
+    "fix(agent-review/v2): refuse an unrepresentable BLOCKED_CODE+FINDING_CONFIRMATION_REQUIRED downgrade cleanly (adversarial review round 5)"
   ],
   "files_added": [
     "app/agent_review/required_check_readiness_v2.py",
@@ -54,13 +60,9 @@
       "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/agent_review/ tests/evals/",
       "result": "1681 passed, 16 skipped, 2 failed (environment: sudo absent in sandbox, test_isolated_executor_v2.py, out of #201-C's scope)"
     },
-    "final_agent_review_suite": {
-      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/agent_review/",
-      "result": "1727 passed, 16 skipped, 2 failed (same environment class, unchanged)"
-    },
-    "final_evals_suite": {
-      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/evals/",
-      "result": "95 passed, 4 skipped"
+    "final_combined_suite": {
+      "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/agent_review/ tests/evals/",
+      "result": "1739 passed, 16 skipped, 2 failed (same environment class as baseline, unchanged -- test_isolated_executor_v2.py, sudo absent in sandbox). Figure current as of the round-5 adversarial-review fix commit; superseded by whatever the final two-clean-rounds HEAD measures."
     },
     "schema_export_check": {
       "command": ".venvs/aiops-orchestrator-toolrepo/bin/python scripts/export-agent-review-v2-schemas.py --check",
@@ -79,14 +81,15 @@
     "asserts": 8,
     "mutation_verified": [
       "reintroducing except RequiredCheckProvenanceErrorV2 around the C0 boundary call -- caught",
-      "reintroducing a required_check_names parameter on produce_review_readiness_v2 -- caught"
+      "reintroducing a required_check_names parameter on produce_review_readiness_v2 -- caught",
+      "reverting the round-5 symmetric representability guard back to the MANUAL_REQUIRED-only check -- test_blocked_code_with_finding_confirmation_required_is_refused_cleanly_not_crashed failed with DID NOT RAISE, confirming the guard (not the test) is what makes it pass"
     ]
   },
   "not_delivered": [
     "positive READY/BLOCKED_PIPELINE E2E through the real C0 boundary -- no legitimate authority source exists in production today (Path A has no caller; Path B refused unconditionally by verify_independent_semantic_judge_v2). Deferred to #203/CT104, marked temporary_until_203 in the architecture test.",
     "authentication of ReadinessDecisionV2/findings origin -- preexisting trust assumption from C1/C2, documented, not created or widened by #201-C.",
     "#217 closure -- the single remaining ungated door (run_synthetic_review_v2) is closed, but #217's own closure condition requires proof of exhaustiveness over the whole defect class, not absence of a known path.",
-    "adversarial review -- not run as of this receipt; see docs/checkpoints/AGENT_REVIEW_V2_201C_READINESS_WIRING.md's state vector."
+    "two consecutive clean adversarial-review rounds on the same HEAD -- in progress; five rounds run so far, each finding and fixing a genuine issue (unbounded detail string; truncation-suffix corruption x2; uncaught ReadinessDecisionError in the CLI; STALE-verification-ordering crash; BLOCKED_CODE representability-guard asymmetry). Not yet at the grant's stop condition."
   ],
   "state_vector": {
     "201_A": "MERGED",
@@ -95,7 +98,7 @@
     "201_B3": "MERGED (operational closure BLOCKED_BY_CT104)",
     "201_C0": "MERGED",
     "201_C_implementation": "COMPLETE",
-    "201_C_adversarial_review": "NOT_STARTED",
+    "201_C_adversarial_review": "IN_PROGRESS (5 rounds; awaiting two consecutive clean rounds on the same HEAD)",
     "201_C": "IMPLEMENTED_AWAITING_MERGE_REVIEW",
     "217": "OPEN_RESIDUAL_NOT_BLOCKING_C",
     "203": "NOT_STARTED",

@@ -1,7 +1,9 @@
 # `#201-C` — Required-check readiness wiring
 
-**Classe:** checkpoint de implementação. Review adversarial ainda **não**
-executado nesta rodada — ver "Estado vetorial" e "Próxima ação mínima".
+**Classe:** checkpoint de implementação. Review adversarial **em andamento**
+— 5 rodadas executadas até agora, cada uma achando e corrigindo um problema
+genuíno; aguardando duas rodadas consecutivas limpas no mesmo HEAD (condição
+de parada do grant). Ver "Estado vetorial" e "Próxima ação mínima".
 
 ## Por que esta slice existe
 
@@ -142,12 +144,49 @@ Zero mudança. `RequiredCheckResultV2`, `ReviewReadinessV2`, `RunIdentityV2`,
   `interleitos`) provando o mesmo estado honesto através dos dois profiles
   reais shipped.
 
+Contagens acima refletem o estado no fim da implementação (commit 9); as
+rodadas de review adversarial abaixo adicionaram testes de regressão
+próprios a `test_readiness_decision_v2.py` e `test_aiops_review_quality_gate_v2_cli.py`
+— ver "Review adversarial" para a lista.
+
+## Review adversarial
+
+5 rodadas executadas até o momento deste checkpoint, cada uma achando pelo
+menos um problema genuíno, reproduzido antes de corrigido, com um red test
+próprio e verificação por mutação:
+
+1. string de detalhe sem limite excedendo o bound `SafeText` do contrato
+   (`PipelineDegradationCauseV2.detail`) com um conjunto grande de required
+   checks — corrigido com truncamento determinístico.
+2. downgrade `BLOCKED_PIPELINE→MANUAL_REQUIRED` sobre uma decisão contendo
+   `SCHEMA_FAILURE`/`TRANSPORT_FAILURE` produzindo um `ReadinessDecisionV2`
+   irrepresentável, só detectado várias chamadas depois como
+   `pydantic.ValidationError` opaco — corrigido com recusa imediata e
+   nomeada (`ReadinessDecisionError`).
+3. duas variantes do sufixo `(+N more)` corrompendo-se a si mesmo em
+   `_joined_with_budget_v2`; `ReadinessDecisionError` não capturado no CLI,
+   vazando um traceback bruto — ambos corrigidos.
+4. `produce_review_readiness_v2` chamando a fronteira `#201-C0` mesmo com
+   `decision.state is STALE`, o que podia recusar por drift de profile em
+   vez de emitir `STALE` limpo — corrigido movendo o short-circuit de STALE
+   para antes da chamada à C0.
+5. o guard de irrepresentabilidade do achado #2 cobria só o ramo
+   `MANUAL_REQUIRED`; `BLOCKED_CODE` tem seu próprio conjunto de reason
+   codes permitido (que não é superconjunto do de `MANUAL_REQUIRED` —
+   ambos proíbem coisas diferentes), e uma combinação
+   `state=BLOCKED_CODE, reason_codes=(CONFIRMED_CODE_FINDING,
+   FINDING_CONFIRMATION_REQUIRED)` reproduzia o mesmo defeito de forma
+   assimétrica — corrigido generalizando o guard para checar qualquer um
+   dos dois ramos contra o conjunto seguro que de fato lhe corresponde.
+
+Nenhuma rodada chegou ainda a "limpa" — a condição de parada do grant (duas
+rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
+
 ## Gates executados
 
 | Gate | Resultado |
 |---|---|
-| `tests/agent_review/` completo | 1727 passed, 16 skipped, 2 failed (classe `environment`, sudo ausente no sandbox — `test_isolated_executor_v2.py`, arquivo fora do escopo de `#201-C`) |
-| `tests/evals/` | 95 passed, 4 skipped |
+| `tests/agent_review/ tests/evals/` combinado | 1739 passed, 16 skipped, 2 failed (classe `environment`, sudo ausente no sandbox — `test_isolated_executor_v2.py`, arquivo fora do escopo de `#201-C`) |
 | `export-agent-review-v2-schemas.py --check` | OK |
 | `verify-caem-f0-pin.py --check` | OK |
 | `ruff` | não canônico neste repositório (ausente de `requirements-dev.txt`) — gate pulado, não fabricado |
@@ -155,7 +194,11 @@ Zero mudança. `RequiredCheckResultV2`, `ReviewReadinessV2`, `RunIdentityV2`,
 
 Baseline (mesmo ambiente, HEAD `8b20ae3`, antes de qualquer edição): idêntica
 classificação — 1681/16/2 em `tests/agent_review/ tests/evals/` juntos,
-mesmas 2 falhas de ambiente. Nenhuma regressão introduzida.
+mesmas 2 falhas de ambiente. Nenhuma regressão introduzida. Figura de 1739
+corrente na correção da rodada 5 de review adversarial (ganho de +58 desde o
+baseline: testes novos + red tests de cada rodada de correção); será
+superada pelo HEAD final quando as duas rodadas limpas consecutivas forem
+alcançadas.
 
 ## O que `#201-C` não faz
 
@@ -179,7 +222,7 @@ mesmas 2 falhas de ambiente. Nenhuma regressão introduzida.
 #201_B3=MERGED (operational closure BLOCKED_BY_CT104)
 #201_C0=MERGED
 #201_C_IMPLEMENTATION=COMPLETE
-#201_C_ADVERSARIAL_REVIEW=NOT_STARTED
+#201_C_ADVERSARIAL_REVIEW=IN_PROGRESS (5 rodadas; aguardando duas consecutivas limpas no mesmo HEAD)
 #201_C=IMPLEMENTED_AWAITING_MERGE_REVIEW
 #217=OPEN_RESIDUAL_NOT_BLOCKING_C
 #203=NOT_STARTED
