@@ -22,7 +22,8 @@
     "fix(agent-review/v2): make STALE genuinely sovereign -- skip #201-C0 verification entirely",
     "fix(agent-review/v2): refuse an unrepresentable BLOCKED_CODE+FINDING_CONFIRMATION_REQUIRED downgrade cleanly (adversarial review round 5)",
     "fix(agent-review/v2): refuse pipeline-cause/blocker-id collisions cleanly, close architecture-test blind spots (adversarial review round 6)",
-    "fix(agent-review/v2): stop truncating a single overlong required-check name into a content-free suffix (adversarial review round 7)"
+    "fix(agent-review/v2): stop truncating a single overlong required-check name into a content-free suffix (adversarial review round 7)",
+    "fix(agent-review/v2): make status account for every verified check's conclusion, not only required-named ones (adversarial review round 8)"
   ],
   "files_added": [
     "app/agent_review/required_check_readiness_v2.py",
@@ -64,7 +65,7 @@
     },
     "final_combined_suite": {
       "command": ".venvs/aiops-orchestrator-toolrepo/bin/python -m pytest -q tests/agent_review/ tests/evals/",
-      "result": "1745 passed, 16 skipped, 2 failed (same environment class as baseline, unchanged -- test_isolated_executor_v2.py, sudo absent in sandbox). Figure current as of the round-7 adversarial-review fix commit; superseded by whatever the final two-clean-rounds HEAD measures."
+      "result": "1749 passed, 16 skipped, 2 failed (same environment class as baseline, unchanged -- test_isolated_executor_v2.py, sudo absent in sandbox). Figure current as of the round-8 adversarial-review fix commit; superseded by whatever the final two-clean-rounds HEAD measures."
     },
     "schema_export_check": {
       "command": ".venvs/aiops-orchestrator-toolrepo/bin/python scripts/export-agent-review-v2-schemas.py --check",
@@ -89,14 +90,15 @@
       "reverting FORBIDDEN_COMPLETENESS_PARAM_NAMES to omit required_checks -- test_forbidden_completeness_param_names_matches_its_own_docstring_claim failed",
       "simulating the pre-round-6 single-name annotation resolution directly against X | None / Optional[X] / a string forward-ref -- all three resolved to None, confirming the blind spot _annotation_names closes",
       "simulating the pre-round-6 Eq/Is-only comparator handling directly against `result.state in {ReadinessStateV2.READY}` -- resolved to None, confirming the blind spot the membership-form fix to _compares_state_to_ready_like closes",
-      "reverting the round-7 single-overlong-name truncation fix -- test_joined_with_budget_never_drops_all_content_for_a_single_overlong_name failed, asserting '(+1 more)' where a truncated real prefix of the name was expected"
+      "reverting the round-7 single-overlong-name truncation fix -- test_joined_with_budget_never_drops_all_content_for_a_single_overlong_name failed, asserting '(+1 more)' where a truncated real prefix of the name was expected",
+      "reverting the round-8 failed_check_names fix (a red non-required check alongside all-green required checks) -- both the isolated assessment test and the full-construction test failed; the latter's underlying scenario, run directly without the fix, reproduced an uncaught pydantic.ValidationError ('ready requires every deterministic required check to be green') from ReviewReadinessV2.__init__"
     ]
   },
   "not_delivered": [
     "positive READY/BLOCKED_PIPELINE E2E through the real C0 boundary -- no legitimate authority source exists in production today (Path A has no caller; Path B refused unconditionally by verify_independent_semantic_judge_v2). Deferred to #203/CT104, marked temporary_until_203 in the architecture test.",
     "authentication of ReadinessDecisionV2/findings origin -- preexisting trust assumption from C1/C2, documented, not created or widened by #201-C.",
     "#217 closure -- the single remaining ungated door (run_synthetic_review_v2) is closed, but #217's own closure condition requires proof of exhaustiveness over the whole defect class, not absence of a known path.",
-    "two consecutive clean adversarial-review rounds on the same HEAD -- in progress; seven rounds run so far, each finding and fixing at least one genuine issue (unbounded detail string; truncation-suffix corruption x2; uncaught ReadinessDecisionError in the CLI; STALE-verification-ordering crash; BLOCKED_CODE representability-guard asymmetry; pipeline-cause/blocker-id collision plus two architecture-test blind spots; single-overlong-name content loss). Not yet at the grant's stop condition."
+    "two consecutive clean adversarial-review rounds on the same HEAD -- in progress; eight rounds run so far, each finding and fixing at least one genuine issue (unbounded detail string; truncation-suffix corruption x2; uncaught ReadinessDecisionError in the CLI; STALE-verification-ordering crash; BLOCKED_CODE representability-guard asymmetry; pipeline-cause/blocker-id collision plus two architecture-test blind spots; single-overlong-name content loss; a red non-required check silently reaching a claimed-SATISFIED assessment). Not yet at the grant's stop condition."
   ],
   "state_vector": {
     "201_A": "MERGED",
@@ -105,7 +107,7 @@
     "201_B3": "MERGED (operational closure BLOCKED_BY_CT104)",
     "201_C0": "MERGED",
     "201_C_implementation": "COMPLETE",
-    "201_C_adversarial_review": "IN_PROGRESS (7 rounds; awaiting two consecutive clean rounds on the same HEAD)",
+    "201_C_adversarial_review": "IN_PROGRESS (8 rounds; awaiting two consecutive clean rounds on the same HEAD)",
     "201_C": "IMPLEMENTED_AWAITING_MERGE_REVIEW",
     "217": "OPEN_RESIDUAL_NOT_BLOCKING_C",
     "203": "NOT_STARTED",

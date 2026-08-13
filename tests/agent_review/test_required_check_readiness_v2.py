@@ -145,6 +145,39 @@ def test_an_extra_non_required_check_does_not_substitute_a_missing_required_one(
     assert assessment.checks == checks
 
 
+def test_a_red_non_required_check_never_produces_satisfied() -> None:
+    """Adversarial review finding, confirmed and fixed (round 8). Every
+    required check ("pytest") is green, but a legitimately-verified,
+    NON-required check ("lint") is red. Before the fix, `status` was
+    decided from required-name membership alone, so this reported
+    `SATISFIED` -- unchanged by `_apply_required_check_assessment_v2`'s
+    `SATISFIED` short-circuit -- even though `assessment.checks` (which
+    becomes `ReviewReadinessV2.checks` unfiltered) still carried the red
+    "lint" check. `ReviewReadinessV2.validate_state_invariants`'s READY
+    branch requires EVERY entry of `self.checks` to be green, not only the
+    required-named ones, so this combination previously crashed
+    `ReviewReadinessV2.__init__` with an uncaught `pydantic.ValidationError`
+    several calls later -- not reachable through the real C0 boundary
+    today (no positive authority source exists in production), but a real
+    latent defect at the pure-composition layer this module is exercised
+    at directly. `status` must now be `FAILED`, and "lint" must appear in
+    `failed_check_names`, so `_apply_required_check_assessment_v2` never
+    lets this combination reach construction unchanged."""
+
+    checks = (
+        _check("pytest", RequiredCheckConclusionV2.SUCCESS),
+        _check("lint", RequiredCheckConclusionV2.FAILURE),
+    )
+
+    assessment = _assess_required_checks_v2(verified_checks=checks, required_check_names=("pytest",))
+
+    assert assessment.status is RequiredCheckStatusV2.FAILED
+    assert assessment.status is not RequiredCheckStatusV2.SATISFIED
+    assert "lint" in assessment.failed_check_names
+    assert assessment.missing_check_names == ()
+    assert assessment.checks == checks
+
+
 def test_missing_and_failed_names_are_sorted_deterministically() -> None:
     checks = (
         _check("zeta", RequiredCheckConclusionV2.FAILURE),
@@ -317,6 +350,42 @@ def test_a_hand_built_attacker_submission_is_refused_uncaught_by_the_real_bounda
         )
 
     assert exc_info.value.reason_code == INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2
+
+
+def test_a_forged_submission_still_refuses_cleanly_even_when_a_different_required_check_is_also_missing(
+    tmp_path: Path,
+) -> None:
+    """Adversarial review finding (round 8, removed-behavior audit): the old
+    CLI ran completeness (`missing required check`) before provenance, so a
+    submission that was simultaneously missing "mypy" entirely AND carried
+    forged provenance on the "pytest" it DID submit would have been
+    diagnosed as `gate_required_check_missing`. `#201-C` always runs the C0
+    boundary first, so this same mixed submission now surfaces the
+    provenance error instead -- a diagnostic-ordering change, documented in
+    `_verify_and_assess_required_checks_v2`'s own docstring, not a
+    regression in the property that actually matters: the submission is
+    still refused, uncaught, with no assessment/artifact produced either
+    way. This test exists to make sure that property survives even in the
+    mixed case, which no other test exercised."""
+
+    profile_root, identity = _identity(tmp_path, required_checks=["pytest", "mypy"])
+    loaded_policy = load_authoritative_check_policy_v2(profile_root)
+    snapshot_dict = _snapshot_dict(["pytest", "mypy"])
+    snapshot = parse_authoritative_ci_snapshot_v2(json.dumps(snapshot_dict))
+
+    result, provenance_dict = _hand_built_ci_pair(
+        check_name="pytest", snapshot=snapshot, loaded_policy=loaded_policy,
+        identity=identity, origin=ORIGIN, toolchain_digest=TOOLCHAIN_DIGEST,
+    )
+    provenance = RequiredCheckProvenanceV2.model_validate(provenance_dict)
+
+    # "mypy" is not submitted at all -- missing -- while "pytest" IS
+    # submitted but with forged/invalid provenance.
+    with pytest.raises(RequiredCheckProvenanceErrorV2):
+        _verify_and_assess_required_checks_v2(
+            checks=[result], provenance=[provenance], identity=identity, origin=ORIGIN,
+            snapshot=snapshot, toolchain_digest=TOOLCHAIN_DIGEST, target_profile_root=str(profile_root),
+        )
 
 
 def test_the_submitted_sequences_are_frozen_before_verification(tmp_path: Path) -> None:

@@ -205,6 +205,32 @@ próprio e verificação por mutação:
    `budget` de 200, um nome sozinho acima do limite é um cenário
    realisticamente alcançável, não só sintético — corrigido truncando o
    próprio nome em vez de descartá-lo.
+8. um check NÃO-required, legitimamente verificado e vermelho, não afetava
+   `status` (calculado só sobre nomes required) mas sobrevivia,
+   inalterado, em `assessment.checks` → `ReviewReadinessV2.checks`. Como o
+   ramo `READY` do contrato congelado exige TODOS os `checks` verdes, não
+   só os required, essa combinação reportava `SATISFIED`, atravessava o
+   short-circuit de `_apply_required_check_assessment_v2` sem alteração, e
+   quebrava várias chamadas depois com `pydantic.ValidationError` não
+   capturado — reproduzido de ponta a ponta. Não alcançável pela fronteira
+   C0 real hoje (nenhuma autoridade positiva existe em produção), mas um
+   defeito latente real na camada de composição pura (classe B) — corrigido
+   preventivamente, antes que `#203` o torne alcançável. Corrigido fazendo
+   `status`/`failed_check_names` considerarem todo check verificado, não só
+   os de nome required. Na mesma rodada: fechada, com teste dedicado
+   (`test_blocked_code_with_transport_failure_survives_full_review_
+   readiness_construction`), a lacuna de cobertura que múltiplos revisores
+   independentes levantaram sobre `_MANUAL_REQUIRED_SAFE_EXISTING_
+   REASONS_V2`/`_BLOCKED_CODE_SAFE_EXISTING_REASONS_V2` serem cópias à mão
+   do contrato (`contracts_v2.py` é intocável por esta slice — C-3 do
+   plano — então a única defesa possível contra deriva é um teste que
+   atravesse o contrato real, não um import compartilhado); e documentada
+   (docstring + teste dedicado provando fail-closed) a inversão de
+   ordenação diagnóstica achada pelo auditor de comportamento-removido: uma
+   submissão simultaneamente incompleta E com proveniência forjada em outro
+   check agora reporta o erro de proveniência primeiro, não mais
+   `gate_required_check_missing` — mudança de diagnóstico, não de
+   comportamento fail-closed (sem artifact, exit≠0 nos dois casos).
 
 Nenhuma rodada chegou ainda a "limpa" — a condição de parada do grant (duas
 rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
@@ -213,16 +239,16 @@ rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
 
 | Gate | Resultado |
 |---|---|
-| `tests/agent_review/ tests/evals/` combinado | 1745 passed, 16 skipped, 2 failed (classe `environment`, sudo ausente no sandbox — `test_isolated_executor_v2.py`, arquivo fora do escopo de `#201-C`) |
+| `tests/agent_review/ tests/evals/` combinado | 1749 passed, 16 skipped, 2 failed (classe `environment`, sudo ausente no sandbox — `test_isolated_executor_v2.py`, arquivo fora do escopo de `#201-C`) |
 | `export-agent-review-v2-schemas.py --check` | OK |
 | `verify-caem-f0-pin.py --check` | OK |
 | `ruff` | não canônico neste repositório (ausente de `requirements-dev.txt`) — gate pulado, não fabricado |
-| CI remota (`aiops-ci`) | verde na rodada 6 (`2258d41`); pendente revalidação no HEAD da rodada 7 |
+| CI remota (`aiops-ci`) | verde na rodada 7 (`efa29de`); pendente revalidação no HEAD da rodada 8 |
 
 Baseline (mesmo ambiente, HEAD `8b20ae3`, antes de qualquer edição): idêntica
 classificação — 1681/16/2 em `tests/agent_review/ tests/evals/` juntos,
-mesmas 2 falhas de ambiente. Nenhuma regressão introduzida. Figura de 1745
-corrente na correção da rodada 7 de review adversarial (ganho de +64 desde o
+mesmas 2 falhas de ambiente. Nenhuma regressão introduzida. Figura de 1749
+corrente na correção da rodada 8 de review adversarial (ganho de +68 desde o
 baseline: testes novos + red tests de cada rodada de correção); será
 superada pelo HEAD final quando as duas rodadas limpas consecutivas forem
 alcançadas.

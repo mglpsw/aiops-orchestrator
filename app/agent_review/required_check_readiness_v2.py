@@ -72,15 +72,39 @@ AST-level proof that this stays true.
 
 ## Three outcomes, never conflated
 
-- `SATISFIED` -- every required name has a verified, green check.
-- `FAILED` -- every required name has a verified check, at least one red.
-  The red check is never dropped: it survives in `assessment.checks` and
-  therefore in the final `ReviewReadinessV2.checks`, unchanged.
+- `SATISFIED` -- every required name has a verified, green check, AND every
+  OTHER verified check the caller submitted (if any) is green too.
+- `FAILED` -- at least one verified check is red -- a required name's own
+  check, or any other submitted-and-verified check alongside it. The red
+  check is never dropped: it survives in `assessment.checks` and therefore
+  in the final `ReviewReadinessV2.checks`, unchanged.
 - `AUTHORITY_NOT_ESTABLISHED` -- at least one required name has no verified
   check at all. This name is deliberately imprecise in one direction only:
   it means "no authoritative result was established for this evaluation",
   never "it is proven none exists". Nothing in this module is positioned to
   make the stronger claim.
+
+Adversarial review finding, confirmed and fixed (round 8): `assessment.
+checks` is `verified_checks` UNFILTERED -- every check the caller submitted
+and C0 verified, not only the required-named ones (`#201-C0` verifies
+whatever it is asked to verify; nothing restricts a submission to the
+required set). That full, unfiltered tuple becomes `ReviewReadinessV2.
+checks` one layer up. `ReviewReadinessV2.validate_state_invariants`'s
+`READY` branch (`contracts_v2.py`) requires EVERY entry of `self.checks` to
+be green, not only the required-named ones. `status` therefore cannot be
+decided from required-name membership alone: a submission with every
+required check green but ONE additional, non-required, legitimately
+verified check red would previously report `SATISFIED` -- unchanged in
+`_apply_required_check_assessment_v2`'s `SATISFIED` short-circuit -- and
+then crash several calls later with an uncaught `pydantic.ValidationError`
+from `ReviewReadinessV2.__init__`, for the adjacent, non-required-check
+case of exactly the "crash instead of a representable state" defect class
+this module exists to eliminate for required checks. Not reachable through
+the real C0 boundary today (no positive authority source exists in
+production -- see the plan's own Class A/B/C split), so this was found and
+fixed at the pure-composition (Class B) layer, prospectively, before `#203`
+makes it reachable. `failed_check_names`/`status` now account for every
+verified check's conclusion, not only required-named ones.
 
 None of the three is `READY` by itself; connecting that to a
 `ReadinessStateV2` is `readiness_decision_v2.
@@ -174,12 +198,13 @@ def _assess_required_checks_v2(
     by_name = {check.check_name: check for check in verified_checks}
 
     missing_check_names = tuple(sorted(name for name in required_check_names if name not in by_name))
+    # Every verified check with a FAILURE conclusion, not only required-named
+    # ones -- see the module docstring (round 8): `assessment.checks` carries
+    # every verified check unfiltered, and the frozen `ReviewReadinessV2`
+    # contract's READY branch holds all of them, not only the required-named
+    # ones, to the same green-only bar.
     failed_check_names = tuple(
-        sorted(
-            name
-            for name in required_check_names
-            if name in by_name and by_name[name].conclusion is RequiredCheckConclusionV2.FAILURE
-        )
+        sorted({check.check_name for check in verified_checks if check.conclusion is RequiredCheckConclusionV2.FAILURE})
     )
 
     if missing_check_names:
@@ -211,7 +236,23 @@ def _verify_and_assess_required_checks_v2(
     `reassemble_and_verify_required_checks_v2` on behalf of readiness. Derives
     the required-check set itself from a trusted checkout, verifies the
     submission against the C0 boundary, and only then assesses it. Never
-    catches `RequiredCheckProvenanceErrorV2` -- see the module docstring."""
+    catches `RequiredCheckProvenanceErrorV2` -- see the module docstring.
+
+    Diagnostic-ordering note (round-8 adversarial review): completeness
+    (`_assess_required_checks_v2`, missing/failed names) is only ever
+    computed AFTER the C0 boundary call returns without raising. If a
+    submission is simultaneously missing a required check entirely AND
+    carries invalid/corrupted provenance on a DIFFERENT submitted check,
+    the boundary's provenance error is what surfaces -- not a "missing
+    required check" diagnosis, even though the missing check is, in a
+    sense, the simpler underlying problem. Deliberately not reordered:
+    running completeness first would mean asserting something about the
+    required set before the submission has been verified at all, and the
+    fail-closed OUTCOME (no artifact, nonzero exit) is identical either
+    way. This is the same precedent already accepted for the narrower
+    "extra check does not substitute for a missing one" case (see
+    `test_cli_extra_check_does_not_substitute_a_missing_required_check`),
+    generalized to the mixed case."""
 
     submitted_checks = tuple(checks)
     submitted_provenance = tuple(provenance)

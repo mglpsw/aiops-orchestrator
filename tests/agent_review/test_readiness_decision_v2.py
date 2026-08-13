@@ -913,6 +913,64 @@ def test_blocked_code_tolerates_schema_or_transport_failure_unaffected() -> None
     assert ReadinessReasonV2.POLICY_FAILURE in result.reason_codes
 
 
+def test_blocked_code_with_transport_failure_survives_full_review_readiness_construction() -> None:
+    """Adversarial review finding (round 8, raised independently by
+    multiple reviewers): `_BLOCKED_CODE_SAFE_EXISTING_REASONS_V2`/
+    `_MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2` are hand-copies of
+    `contracts_v2.py`'s own allowed-reason sets -- `contracts_v2.py`
+    cannot be touched by this slice (plan rev.2.1, C-3: frozen contract),
+    so there is no shared, single source of truth to import from instead.
+    The companion test right above this one
+    (`test_blocked_code_tolerates_schema_or_transport_failure_unaffected`)
+    only proves `_apply_required_check_assessment_v2`'s OWN guard accepts
+    `BLOCKED_CODE`+`TRANSPORT_FAILURE` -- it never proves the real, frozen
+    `ReviewReadinessV2` contract accepts it too. If the hand-copy and the
+    contract were ever to disagree, this is the only kind of test that
+    would catch it: run the combination all the way through the real
+    contract, not just through this module's own guard. See also the
+    `MANUAL_REQUIRED` siblings of this proof further down (`test_
+    blocked_pipeline_downgrade_survives_full_review_readiness_
+    construction`, `test_model_uncertainty_downgrade_survives_full_
+    review_readiness_construction`, `test_finding_confirmation_required_
+    downgrade_survives_full_review_readiness_construction`) -- this test
+    closes the `BLOCKED_CODE` gap those three left uncovered."""
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    finding = _confirmed_finding(finding_id="finding-1", head_sha=manifest.identity.head_sha)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, findings=(finding,))
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+    assert decision.state is ReadinessStateV2.BLOCKED_CODE
+
+    transport_cause = PipelineDegradationCauseV2(
+        reason_code=ReadinessReasonV2.TRANSPORT_FAILURE, component="transport", detail="synthetic"
+    )
+    transport_blocker = ReadinessBlockerV2(
+        blocker_id="transport-failure", reason_code=ReadinessReasonV2.TRANSPORT_FAILURE, active=True, finding_id=None,
+    )
+    decision_with_transport = ReadinessDecisionV2(
+        state=decision.state,
+        reason_codes=(*decision.reason_codes, ReadinessReasonV2.TRANSPORT_FAILURE),
+        blockers=(*decision.blockers, transport_blocker),
+        coverage=decision.coverage,
+        pipeline=PipelineAssessmentV2(degraded=True, causes=[*decision.pipeline.causes, transport_cause]),
+        run_id=decision.run_id,
+        manifest_hash=decision.manifest_hash,
+    )
+
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+    adjusted = _apply_required_check_assessment_v2(decision=decision_with_transport, assessment=assessment)
+    assert adjusted.state is ReadinessStateV2.BLOCKED_CODE
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=synthesis.findings, identity=manifest.identity,
+        evaluated_identity=manifest.identity, pr_state=PullRequestStateV2.OPEN, checks=[],
+    )
+
+    assert readiness.state.value == "blocked_code"
+    assert ReadinessReasonV2.TRANSPORT_FAILURE in readiness.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+
+
 def test_blocked_code_with_finding_confirmation_required_is_refused_cleanly_not_crashed() -> None:
     """Adversarial review finding, confirmed and fixed (round 5). The
     round-1 guard (see `test_blocked_pipeline_with_schema_or_transport_
@@ -1025,6 +1083,51 @@ def test_a_preexisting_required_checks_blocker_id_is_refused_cleanly_not_crashed
         _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
 
     assert exc_info.value.reason_code == DECISION_UNREPRESENTABLE_WITH_REQUIRED_CHECK_ASSESSMENT_REASON_V2
+
+
+def test_a_red_non_required_check_survives_full_review_readiness_construction_as_manual_required() -> None:
+    """Adversarial review finding (round 8), full end-to-end proof.
+    Companion to `test_a_red_non_required_check_never_produces_satisfied`
+    in `test_required_check_readiness_v2.py`: every required check
+    ("pytest") is green, one legitimately-verified NON-required check
+    ("lint") is red. Before the fix, this combination reported `SATISFIED`,
+    left a `READY` decision unchanged, and crashed `ReviewReadinessV2.
+    __init__` several calls later with an uncaught `pydantic.
+    ValidationError` -- because the frozen contract's READY branch holds
+    EVERY entry of `self.checks` to green, not only the required-named
+    ones. The fix makes `status` account for every verified check's
+    conclusion, so this combination now downgrades to a representable
+    `MANUAL_REQUIRED` artifact instead of crashing."""
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+    assert decision.state is ReadinessStateV2.READY
+
+    checks = (
+        RequiredCheckResultV2(
+            check_name="pytest", required=True, deterministic=True,
+            conclusion=RequiredCheckConclusionV2.SUCCESS, head_sha=manifest.identity.head_sha,
+        ),
+        RequiredCheckResultV2(
+            check_name="lint", required=True, deterministic=True,
+            conclusion=RequiredCheckConclusionV2.FAILURE, head_sha=manifest.identity.head_sha,
+        ),
+    )
+    assessment = _assess_required_checks_v2(verified_checks=checks, required_check_names=("pytest",))
+    assert assessment.status is RequiredCheckStatusV2.FAILED
+
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+    assert adjusted.state is ReadinessStateV2.MANUAL_REQUIRED
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=synthesis.findings, identity=manifest.identity,
+        evaluated_identity=manifest.identity, pr_state=PullRequestStateV2.OPEN, checks=assessment.checks,
+    )
+
+    assert readiness.state.value == "manual_required"
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+    assert any(c.check_name == "lint" and c.conclusion.value == "failure" for c in readiness.checks)
 
 
 def test_joined_with_budget_never_produces_a_truncated_suffix() -> None:
