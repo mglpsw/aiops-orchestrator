@@ -138,7 +138,9 @@ def _cmd_init(args: argparse.Namespace) -> int:
         return 1
 
     plan = compute_install_plan_v2(manifest=manifest, target_root=target_root, previous_receipt=None)
-    seed_content = load_seed_content_by_path_v2(toolrepo_root=toolrepo_root)
+    # Reuses manifest.toolrepo_sha rather than re-resolving -- one binding,
+    # not two independently resolved ones (spec rev.2 §3).
+    seed_content = load_seed_content_by_path_v2(toolrepo_root=toolrepo_root, toolrepo_sha=manifest.toolrepo_sha)
 
     try:
         written = apply_install_plan_v2(
