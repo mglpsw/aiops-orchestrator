@@ -244,7 +244,7 @@ rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
 | `export-agent-review-v2-schemas.py --check` | OK |
 | `verify-caem-f0-pin.py --check` | OK |
 | `ruff` | não canônico neste repositório (ausente de `requirements-dev.txt`) — gate pulado, não fabricado |
-| CI remota (`aiops-ci`) | verde na rodada 8 (`2d39d06`, HEAD atual da PR #220) |
+| CI remota (`aiops-ci`) | verde em `code_head_reviewed_through_round_8` = `2d39d06` |
 
 Baseline (mesmo ambiente, HEAD `8b20ae3`, antes de qualquer edição): idêntica
 classificação — 1681/16/2 em `tests/agent_review/ tests/evals/` juntos,
@@ -287,8 +287,10 @@ RELEASE=NOT_AUTHORIZED
 
 ## Próxima ação mínima
 
-PR #220 (draft) aberta e vinculada a `#201`; CI real verde no HEAD atual
-(`2d39d06`). Continuar o loop de review adversarial (rodada 9 em diante) até
+PR #220 (draft) aberta e vinculada a `#201`; CI real verde em
+`code_head_reviewed_through_round_8` = `2d39d06` (o HEAD vivo da PR avança a
+cada commit documental e é autoridade, lido do forge, nunca deste documento).
+Continuar o loop de review adversarial (rodada 9 em diante) até
 duas rodadas consecutivas limpas no mesmo HEAD — ainda não atingido. Merge,
 tag, release, deploy, repin, ativação CT104, início de `#203` e fechamento de
 `#201`/`#217`/`#199` permanecem fora do grant desta rodada.

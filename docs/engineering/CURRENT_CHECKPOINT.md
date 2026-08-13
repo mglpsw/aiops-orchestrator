@@ -14,9 +14,12 @@
   idêntico ao HEAD testado `00fb8b3e`).
 - AgentReview é subsistema deste repositório, não repositório separado.
 - PRs abertas no corte: PR #220 (`feat/201-c-required-check-readiness-wiring` → `master`,
-  **draft**, `#201-C`), HEAD `2d39d0686371414038be8dd61fbce25521a7bb5f`, ambos os checks
-  (`Validate repository`, `AgentReview release gates`) verdes nesse HEAD. Review adversarial
-  em andamento (8 rodadas, 0 consecutivas limpas) — ver adendo.
+  **draft**, `#201-C`). `code_head_reviewed_through_round_8`:
+  `2d39d0686371414038be8dd61fbce25521a7bb5f` — ambos os checks (`Validate repository`,
+  `AgentReview release gates`) verdes nesse SHA. Commits documentais posteriores avançam o
+  HEAD sem alterar código; o HEAD vivo da PR é autoridade e deve ser lido do forge, nunca
+  deste documento. Review adversarial em andamento (8 rodadas, 0 consecutivas limpas) — ver
+  adendo.
 
 ## Estado de referência
 
@@ -51,9 +54,10 @@
   issue (não revalidado nesta sessão);
 - `#201-A`/`#201-B1`/`#201-B2`/`#201-B3`/`#201-C0`: `merged`; `#201-B3` operational closure
   `BLOCKED_BY_CT104`; `#217` exercised path `closed_by_pr_219`, residual class `open`;
-- `#201-C`: `implemented_awaiting_merge_review` (PR #220 aberta, draft, HEAD `2d39d06`; CI real
-  verde nesse HEAD; review adversarial em andamento, 8 rodadas, 0 consecutivas limpas,
-  aguardando duas consecutivas limpas no mesmo HEAD) — ver adendo;
+- `#201-C`: `implemented_awaiting_merge_review` (PR #220 aberta, draft;
+  `code_head_reviewed_through_round_8` = `2d39d06`, CI real verde nesse SHA; review adversarial
+  em andamento, 8 rodadas, 0 consecutivas limpas, aguardando duas consecutivas limpas no mesmo
+  HEAD) — ver adendo;
 - `#203`: `not_started`;
 - validação: `partial`;
 - change request: `not_open` no corte;
@@ -69,8 +73,9 @@ Ready Engineering Specification rev.2.1 (auditada e aprovada em duas rodadas pr�
 Implementação feita em worktree novo (`/opt/agent-tools/ar-201-c-readiness-wiring`), a partir de
 `origin/master` @ `8b20ae37`, branch `feat/201-c-required-check-readiness-wiring`, seis commits de
 implementação + um de checkpoint/receipt + oito commits de correção do review adversarial (15 no
-total até este corte; a contagem cresce a cada rodada não-limpa). PR #220 aberta como **draft**,
-vinculada a `#201`, HEAD atual `2d39d0686371414038be8dd61fbce25521a7bb5f`.
+total até este corte, sem contar commits puramente documentais; a contagem cresce a cada rodada
+não-limpa). PR #220 aberta como **draft**, vinculada a `#201`;
+`code_head_reviewed_through_round_8` = `2d39d0686371414038be8dd61fbce25521a7bb5f`.
 
 Entrega: novo módulo `required_check_readiness_v2.py` como choke point entre `#201-C0` e a
 readiness — deriva `required_check_names` exclusivamente de um `TargetProfileV2` confiável ligado
@@ -95,10 +100,11 @@ caller-supplied — ambos pegos com a mensagem certa).
 Nenhum contrato congelado alterado; export de schemas byte-idêntico; pin CAEM F0 verde.
 `tests/agent_review/ tests/evals/` combinado: 1749 passed, 16 skipped, 2 failed (classe
 `environment` — `sudo` ausente no sandbox, `test_isolated_executor_v2.py`, fora do escopo desta
-slice, mesma classe de falha que a baseline pré-edição). Evidência code-equivalent medida em
-`2d39d06` (tree idêntica ao commit, reexecutada imediatamente antes de commitar); corrente na
-correção da rodada 8 de review adversarial; será revalidada a cada rodada subsequente. CI real do
-GitHub (`Validate repository`, `AgentReview release gates`) verde nesse mesmo HEAD.
+slice, mesma classe de falha que a baseline pré-edição). Evidência medida em
+`code_head_reviewed_through_round_8` = `2d39d06`, e reconfirmada idêntica no commit documental
+seguinte; corrente na correção da rodada 8 de review adversarial; será revalidada a cada rodada
+subsequente. CI real do GitHub (`Validate repository`, `AgentReview release gates`) verde nesse
+mesmo SHA.
 
 Detalhes completos: `docs/checkpoints/AGENT_REVIEW_V2_201C_READINESS_WIRING.md` e
 `reports/agent-review-v2-201c-readiness-wiring-receipt.json`.

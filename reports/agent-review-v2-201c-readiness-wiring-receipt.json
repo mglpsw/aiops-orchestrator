@@ -7,7 +7,8 @@
   "plan": "Execution-Ready Engineering Specification rev.2.1, audited and approved before implementation",
   "branch": "feat/201-c-required-check-readiness-wiring",
   "pr": "https://github.com/mglpsw/aiops-orchestrator/pull/220 (draft, open)",
-  "head_sha_at_reconciliation": "2d39d0686371414038be8dd61fbce25521a7bb5f",
+  "code_head_reviewed_through_round_8": "2d39d0686371414038be8dd61fbce25521a7bb5f",
+  "head_semantics_note": "code_head_reviewed_through_round_8 is the last SHA whose PRODUCT code was measured and CI-verified. Purely documentary commits after it advance the PR HEAD without changing app/, scripts/ or tests/, so they do not invalidate that measurement -- but they do mean this file must never call any SHA 'the current HEAD'. The live HEAD is authoritative and must be read from the forge (gh pr view 220 --json headRefOid), never from this receipt.",
   "base_sha": "8b20ae37cb28c52c49f545d15d006de2f6086388",
   "base_tree": "a4fd4840aaf31a3442f2073991aa4ac679089c43",
   "commits": [
@@ -79,7 +80,7 @@
     },
     "ruff": "not canonical in this repository (absent from requirements-dev.txt and the venv) -- gate skipped, not fabricated",
     "git_diff_check": "clean",
-    "real_ci": "not yet run -- requires push + PR (task pending at receipt time; now superseded -- PR #220 (draft) is open, and both checks, Validate repository and AgentReview release gates, are green on HEAD 2d39d0686371414038be8dd61fbce25521a7bb5f, the round-8 fix commit)"
+    "real_ci": "not yet run -- requires push + PR (task pending at original receipt time; superseded -- PR #220 (draft) is open, and both checks, Validate repository and AgentReview release gates, are green on code_head_reviewed_through_round_8 = 2d39d0686371414038be8dd61fbce25521a7bb5f, the round-8 fix commit, and re-verified green on each subsequent documentary commit)"
   },
   "architecture_proof": {
     "file": "tests/agent_review/test_required_check_readiness_arch_v2.py",
