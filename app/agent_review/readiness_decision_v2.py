@@ -696,10 +696,13 @@ def _apply_required_check_assessment_v2(
     discovered by the contract several calls downstream.
 
     A required check the assessment reports `FAILED` for is never dropped:
-    `assessment.checks` -- the exact tuple `#201-C0`'s verifier accepted,
-    including every red result -- becomes `ReviewReadinessV2.checks`
-    unchanged, one layer up in `review_readiness_emission_v2.
-    produce_review_readiness_v2`. This function only ever WIDENS the set of
+    `assessment.checks` -- the same verified set `#201-C0`'s verifier
+    accepted (canonicalized by `check_name`, per `required_check_
+    readiness_v2`'s own "Canonical check order" section -- reordered, never
+    filtered), including every red result -- becomes `ReviewReadinessV2.
+    checks` unchanged in content, one layer up in `review_readiness_
+    emission_v2.produce_review_readiness_v2`. This function only ever
+    WIDENS the set of
     reasons/blockers/causes; it never removes anything `compute_readiness_
     decision_v2` already produced, and the frozen contract's own validator
     remains the sole authority on whether the result is well-formed -- this
