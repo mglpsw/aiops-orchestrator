@@ -9,12 +9,14 @@ check_assessment_v2`) and construction (`_assemble_review_readiness_v2`):
 the module that decides never writes, and the module that writes never
 decides.
 
-## Atomicity (spec `§10`, P-T10)
+## Per-file replacement (spec `§10`, P-T10)
 
 Every file write goes to a temp file in the same directory, then
 `os.replace` (atomic on POSIX same-filesystem renames) into place -- a
 process killed mid-`apply_install_plan_v2` leaves either the old file or the
-fully-written new file at each path, never a partial write.
+fully-written new file at each path, never a partial write. This is not a
+claim of multi-file atomicity; S2B adds transactional, crash-convergent
+multi-file application and its receipt commit marker.
 
 ## Drift refusal (spec `§4.2`)
 

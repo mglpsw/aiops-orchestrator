@@ -64,6 +64,18 @@ def load_target_profile_v2(
     except OSError as exc:
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
 
+    return load_target_profile_text_v2(raw_text)
+
+
+def load_target_profile_text_v2(raw_text: str) -> TargetProfileV2:
+    """Strictly validate profile text without writing it to a target.
+
+    Install planning must validate the *prospective* seed or the currently
+    observed TARGET_OWNED bytes before it can construct a receipt.  Routing
+    that read-only path through this helper prevents preview from creating a
+    temporary target file merely to reuse :func:`load_target_profile_v2`.
+    """
+
     try:
         raw = yaml.safe_load(raw_text)
     except yaml.YAMLError as exc:

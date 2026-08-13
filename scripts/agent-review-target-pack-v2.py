@@ -41,36 +41,37 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.agent_review.profile_loader_v2 import (  # noqa: E402
-    TargetProfileLoadErrorV2,
-    compute_profile_hash_v2,
-    load_target_profile_v2,
-)
 from app.agent_review.target_pack_build_v2 import (  # noqa: E402
     TargetPackBuildError,
     build_target_pack_manifest_v2,
     load_seed_content_by_path_v2,
 )
 from app.agent_review.target_pack_doctor_v2 import run_doctor_v2  # noqa: E402
-from app.agent_review.target_pack_manifest_v2 import TargetPackFileOwnershipV2  # noqa: E402
 from app.agent_review.target_pack_install_v2 import (  # noqa: E402
     RECEIPT_RELATIVE_PATH_V2,
     TargetPackInstallError,
     apply_install_plan_v2,
     write_receipt_v2,
 )
+from app.agent_review.target_pack_operation_v2 import (  # noqa: E402
+    compute_target_pack_operation_plan_v2,
+    require_target_owned_reconciliation_acceptance_v2,
+)
 from app.agent_review.target_pack_plan_v2 import (  # noqa: E402
     PlanError,
-    compute_install_plan_v2,
     validate_rollout_within_pack_capability_v2,
 )
-from app.agent_review.target_pack_receipt_v2 import (  # noqa: E402
-    TargetInstallReceiptV2,
-    compute_target_install_receipt_hash_v2,
-)
+from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
 CLI_INPUT_INVALID_REASON_V2 = "target_pack_cli_input_invalid"
+CLI_EXPECTED_PLAN_REQUIRED_REASON_V2 = "target_pack_cli_expected_plan_required"
+CLI_EXPECTED_PLAN_MISMATCH_REASON_V2 = "target_pack_cli_expected_plan_mismatch"
+CLI_PREVIOUS_RECEIPT_INVALID_REASON_V2 = "target_pack_cli_previous_receipt_invalid"
+CLI_EXIT_SATISFIED_OR_NOOP_V2 = 0
+CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2 = 1
+CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2 = 2
+CLI_EXIT_ENVIRONMENT_OR_GATE_UNAVAILABLE_V2 = 3
 
 
 CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2 = "target_pack_cli_toolrepo_sha_unresolved"
@@ -132,7 +133,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         )
     except TargetPackBuildError as exc:
         print(f"error: {exc.reason_code}", file=sys.stderr)
-        return 1
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
 
     # Nothing previously checked `--rollout` against what this pack version
     # can actually deliver -- `init --rollout shadow_full` exited 0 and wrote
@@ -145,98 +146,58 @@ def _cmd_init(args: argparse.Namespace) -> int:
         )
     except PlanError as exc:
         print(f"error: {exc.reason_code}", file=sys.stderr)
-        return 1
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
 
-    plan = compute_install_plan_v2(manifest=manifest, target_root=target_root, previous_receipt=None)
-    # Reuses manifest.toolrepo_sha rather than re-resolving -- one binding,
-    # not two independently resolved ones (spec rev.2 §3).
+    receipt_path = target_root / RECEIPT_RELATIVE_PATH_V2
+    previous_receipt = None
+    if receipt_path.is_file():
+        try:
+            previous_receipt = TargetInstallReceiptV2.model_validate_json(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, ValidationError, ValueError):
+            print(f"error: {CLI_PREVIOUS_RECEIPT_INVALID_REASON_V2}", file=sys.stderr)
+            return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
+
     seed_content = load_seed_content_by_path_v2(toolrepo_root=toolrepo_root, toolrepo_sha=manifest.toolrepo_sha)
-
+    operation = compute_target_pack_operation_plan_v2(
+        manifest=manifest,
+        target_root=target_root,
+        target_repo=args.target_repo,
+        rollout=args.rollout,
+        seed_content_by_path=seed_content,
+        previous_receipt=previous_receipt,
+        accepted_target_owned_paths=tuple(args.accept_target_owned),
+    )
+    if not args.apply:
+        print(json.dumps(operation.plan.model_dump(mode="json"), indent=2, sort_keys=True))
+        return CLI_EXIT_SATISFIED_OR_NOOP_V2
+    if not args.expected_plan_sha256:
+        print(f"error: {CLI_EXPECTED_PLAN_REQUIRED_REASON_V2}", file=sys.stderr)
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
+    if args.expected_plan_sha256 != operation.plan.operation_plan_hash:
+        print(f"error: {CLI_EXPECTED_PLAN_MISMATCH_REASON_V2}", file=sys.stderr)
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
+    require_target_owned_reconciliation_acceptance_v2(operation.plan)
     try:
         written = apply_install_plan_v2(
-            plan=plan, manifest=manifest, target_root=target_root, seed_content_by_path=seed_content
+            plan=operation.install_plan,
+            manifest=manifest,
+            target_root=target_root,
+            seed_content_by_path=seed_content,
         )
+        if operation.should_write_receipt:
+            write_receipt_v2(
+                target_root=target_root,
+                receipt=operation.expected_receipt,
+                expected_target_root_real=operation.install_plan.target_root_real,
+            )
     except TargetPackInstallError as exc:
         print(f"error: {exc.reason_code}", file=sys.stderr)
-        return 1
-
-    # Adversarial review finding, confirmed and fixed: `generated_file_
-    # hashes`/`target_owned_paths` used to be derived from `written` --
-    # "whatever `apply_install_plan_v2` actually wrote THIS invocation" --
-    # rather than from the manifest's own ownership classification.
-    # Reproduced, two symptoms of the same root cause: (1) on a FRESH
-    # `init`, the TARGET_OWNED profile is WRITE_NEW (nothing existed
-    # before), lands in `written`, and therefore was recorded in
-    # `generated_file_hashes` even though the contract states that field
-    # holds UPSTREAM_GENERATED hashes only -- the same path was
-    # simultaneously claimed as both pack-generated content and target-
-    # owned content; (2) on a SECOND, idempotent `init` against the same
-    # target, the profile is SKIP_TARGET_OWNED (nothing written this run),
-    # so it silently dropped out of `target_owned_paths` entirely --
-    # `target_owned_paths` is supposed to be a stable declaration of what
-    # this pack version considers target-owned, not a diary of this
-    # invocation's writes. Fixed: both fields are now derived from each
-    # `PlannedFileActionV2.ownership` (the manifest's own classification,
-    # unaffected by whether a write actually happened this run), never
-    # from `written`.
-    generated_file_hashes = {
-        action.path: action.seed_content_sha256
-        for action in plan.file_actions
-        if action.ownership is TargetPackFileOwnershipV2.UPSTREAM_GENERATED
-    }
-    target_owned_paths = tuple(
-        action.path for action in plan.file_actions if action.ownership is TargetPackFileOwnershipV2.TARGET_OWNED
-    )
-    # Adversarial review finding, confirmed and fixed: this used to hardcode
-    # an all-zero sentinel here even though the real hash of the profile
-    # `init` just wrote is trivially available -- the exact same class of
-    # "fabricated-but-syntactically-valid identity" bug fixed for
-    # toolrepo_sha above, just for a value that happens to be computable
-    # rather than one that must be refused when unavailable.
-    target_profile_hash = compute_profile_hash_v2(load_target_profile_v2(target_root))
-    # There is no policy artifact shipped in this slice at all (the
-    # trusted-check inventory schema is deferred, spec `§12`). A second
-    # adversarial finding, confirmed and fixed: this used to fabricate a
-    # digest ("0" * 64) for `target_policy_hash` too -- the same class of
-    # bug as the two above, just for a value with no real content to hash
-    # at all. `target_policy_hash` is now `None` (the contract's own
-    # explicit "no policy artifact yet" representation, not a placeholder
-    # digest); a future commit that ships a real policy artifact must
-    # compute this the same way `target_profile_hash` is computed here.
-    target_policy_hash = None
-    receipt_without_hash = {
-        "schema_id": "agent-review.target-install-receipt.v2",
-        "schema_version": 2,
-        "pack_version": manifest.pack_version,
-        "toolrepo_sha": manifest.toolrepo_sha,
-        "target_repo": args.target_repo,
-        "target_profile_hash": target_profile_hash,
-        "target_policy_hash": target_policy_hash,
-        "review_pack_hashes": {},
-        "generated_file_hashes": generated_file_hashes,
-        "target_owned_paths": target_owned_paths,
-        "required_capabilities": manifest.required_capabilities,
-        "expected_runner_labels": (),
-        "required_secret_names": (),
-        "rollout_mode": args.rollout,
-        "compatibility": "compatible",
-        "previous_install_identity": None,
-    }
-    receipt_hash = compute_target_install_receipt_hash_v2(
-        TargetInstallReceiptV2.model_construct(**receipt_without_hash, receipt_hash="0" * 64)
-    )
-    receipt = TargetInstallReceiptV2(**receipt_without_hash, receipt_hash=receipt_hash)
-
-    try:
-        # Bound to the SAME root identity the plan was computed against and
-        # apply_install_plan_v2 already verified -- not re-resolved
-        # independently (P2-C, spec rev.2 §5.4).
-        write_receipt_v2(target_root=target_root, receipt=receipt, expected_target_root_real=plan.target_root_real)
-    except TargetPackInstallError as exc:
-        print(f"error: {exc.reason_code}", file=sys.stderr)
-        return 1
-    print(json.dumps({"written": list(written) + [RECEIPT_RELATIVE_PATH_V2]}, indent=2))
-    return 0
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
+    written_paths = list(written)
+    if operation.should_write_receipt:
+        written_paths.append(RECEIPT_RELATIVE_PATH_V2)
+    print(json.dumps({"operation_plan_hash": operation.plan.operation_plan_hash, "written": written_paths}, indent=2))
+    return CLI_EXIT_SATISFIED_OR_NOOP_V2
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -250,7 +211,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         )
     except TargetPackBuildError as exc:
         print(f"error: {exc.reason_code}", file=sys.stderr)
-        return 1
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
 
     report = run_doctor_v2(target_root=target_root, manifest=manifest)
     output = {
@@ -264,7 +225,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         "required_capabilities_declared": list(report.required_capabilities_declared),
     }
     print(json.dumps(output, indent=2, sort_keys=True))
-    return 0 if report.is_healthy else 1
+    return CLI_EXIT_SATISFIED_OR_NOOP_V2 if report.is_healthy else CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -277,6 +238,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     init_parser.add_argument("--target-repo", required=True, help="owner/name of the target repository")
     init_parser.add_argument("--pack-version", required=True)
     init_parser.add_argument("--rollout", default="off", choices=["off", "shadow_minimal", "shadow_full"])
+    init_parser.add_argument("--apply", action="store_true", help="apply a previewed operation plan")
+    init_parser.add_argument("--expected-plan-sha256")
+    init_parser.add_argument("--accept-target-owned", action="append", default=[])
     init_parser.set_defaults(handler=_cmd_init)
 
     doctor_parser = sub.add_parser("doctor", help="read-only diagnostics; never mutates the target")
@@ -292,19 +256,15 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         return args.handler(args)
-    except (PlanError, TargetPackInstallError, TargetPackBuildError, TargetProfileLoadErrorV2) as exc:
-        # TargetProfileLoadErrorV2 added alongside the fix that made
-        # _cmd_init compute a real target_profile_hash from whatever is
-        # actually on disk (a pre-existing, target-customized profile that
-        # is now invalid) instead of a hardcoded sentinel -- reproduced as
-        # an uncaught traceback before this except clause was extended,
-        # confirming the new read path needed the same boundary-refusal
-        # discipline every other CLI-detected failure already gets here.
+    except (PlanError, TargetPackInstallError, TargetPackBuildError) as exc:
+        # Operation planning normalises invalid TARGET_OWNED profile bytes
+        # into a typed PlanError, so every expected refusal crosses this
+        # same clean CLI boundary without exposing target content.
         print(f"error: {exc.reason_code}", file=sys.stderr)
-        return 1
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
     except ValidationError as exc:
         print(f"error: {CLI_INPUT_INVALID_REASON_V2}\n{exc}", file=sys.stderr)
-        return 1
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
 
 
 if __name__ == "__main__":

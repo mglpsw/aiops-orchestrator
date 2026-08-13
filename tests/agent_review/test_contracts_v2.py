@@ -2589,6 +2589,7 @@ def test_exported_json_schemas_are_stable_and_deny_unknown_objects() -> None:
         # manifest (config/ri/ri-b0a-2-reuse-manifest.json).
         "agent-review.target-pack-manifest.v2.schema.json",
         "agent-review.target-install-receipt.v2.schema.json",
+        "agent-review.target-pack-operation-plan.v2.schema.json",
     }
 
     for filename, schema in rendered.items():

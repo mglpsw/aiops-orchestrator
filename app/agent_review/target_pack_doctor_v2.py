@@ -27,6 +27,7 @@ values" discipline from the receipt contract.
 from __future__ import annotations
 
 import os
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,15 +36,22 @@ from app.agent_review.profile_loader_v2 import (
     compute_profile_hash_v2,
     load_target_profile_v2,
 )
-from app.agent_review.target_pack_manifest_v2 import TargetPackManifestV2
+from app.agent_review.target_pack_manifest_v2 import TargetPackManifestV2, compute_target_pack_manifest_digest_v2
 from app.agent_review.target_pack_plan_v2 import rollout_mode_exceeds_pack_capability_v2
-from app.agent_review.target_pack_receipt_v2 import RECEIPT_RELATIVE_PATH_V2, TargetInstallReceiptV2
+from app.agent_review.target_pack_receipt_v2 import (
+    RECEIPT_RELATIVE_PATH_V2,
+    TargetInstallReceiptV2,
+    compute_portable_target_root_identity_v2,
+)
 from pydantic import ValidationError
 
 DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 = "target_pack_doctor_target_root_not_a_directory"
 DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_pack_version_mismatch"
 DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_toolrepo_sha_mismatch"
+DOCTOR_RECEIPT_MANIFEST_DIGEST_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_manifest_digest_mismatch"
+DOCTOR_RECEIPT_TARGET_ROOT_IDENTITY_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_target_root_identity_mismatch"
 DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_profile_hash_mismatch"
+DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2 = "target_owned_identity_unreconciled"
 DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2 = "target_pack_doctor_receipt_rollout_exceeds_pack_capability"
 
 
@@ -138,6 +146,24 @@ def _check_receipt_v2(
         return ReceiptCheckV2(
             status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2
         )
+    if receipt.manifest_digest != compute_target_pack_manifest_digest_v2(manifest):
+        return ReceiptCheckV2(
+            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_MANIFEST_DIGEST_MISMATCH_REASON_V2
+        )
+    if receipt.portable_target_root_identity != compute_portable_target_root_identity_v2(target_repo=receipt.target_repo):
+        return ReceiptCheckV2(
+            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TARGET_ROOT_IDENTITY_MISMATCH_REASON_V2
+        )
+    for relative_path, recorded_hash in receipt.target_owned_file_hashes.items():
+        observed_path = target_root / relative_path
+        try:
+            observed_hash = hashlib.sha256(observed_path.read_bytes()).hexdigest() if observed_path.is_file() else None
+        except OSError:
+            observed_hash = None
+        if observed_hash != recorded_hash:
+            return ReceiptCheckV2(
+                status="invalid", receipt=receipt, reason_code=DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2
+            )
     if profile_check.status == "present" and receipt.target_profile_hash != profile_check.profile_hash:
         return ReceiptCheckV2(
             status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2

@@ -72,10 +72,20 @@
       "title": "Generated File Hashes",
       "type": "object"
     },
+    "manifest_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Manifest Digest",
+      "type": "string"
+    },
     "pack_version": {
       "maxLength": 512,
       "minLength": 1,
       "title": "Pack Version",
+      "type": "string"
+    },
+    "portable_target_root_identity": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Portable Target Root Identity",
       "type": "string"
     },
     "previous_install_identity": {
@@ -142,6 +152,15 @@
       "title": "Schema Version",
       "type": "integer"
     },
+    "target_owned_file_hashes": {
+      "additionalProperties": false,
+      "propertyNames": {
+        "maxLength": 512,
+        "minLength": 1
+      },
+      "title": "Target Owned File Hashes",
+      "type": "object"
+    },
     "target_owned_paths": {
       "default": [],
       "items": {
@@ -188,7 +207,9 @@
     "schema_version",
     "pack_version",
     "toolrepo_sha",
+    "manifest_digest",
     "target_repo",
+    "portable_target_root_identity",
     "target_profile_hash",
     "rollout_mode",
     "compatibility",
