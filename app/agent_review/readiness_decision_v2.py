@@ -529,6 +529,18 @@ def _joined_with_budget_v2(names: tuple[str, ...], *, budget: int) -> str:
         suffix = f" (+{len(names) - keep_count} more)"
         if len(candidate) + len(suffix) <= budget:
             return candidate + suffix
+    # Adversarial review finding, confirmed and fixed (round 7): the loop
+    # above never succeeds when even the SINGLE first name alone (plus its
+    # own suffix) exceeds `budget` -- e.g. one 300-char name at budget=200.
+    # The previous fallback dropped that name entirely, returning a
+    # content-free "(+1 more)" even though `budget` had plenty of room to
+    # show a meaningfully truncated prefix of the one name that mattered.
+    # Truncate that first name itself instead of discarding it.
+    remaining = len(names) - 1
+    suffix = f" (+{remaining} more)" if remaining else ""
+    available = budget - len(suffix)
+    if available > 0:
+        return names[0][:available] + suffix
     # budget too small even for "(+N more)" alone with zero names kept --
     # still never exceed it.
     return f"(+{len(names)} more)"[:budget]

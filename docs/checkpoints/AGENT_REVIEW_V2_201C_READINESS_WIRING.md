@@ -196,6 +196,15 @@ próprio e verificação por mutação:
    ainda descrevendo `emit_review_readiness_v2` como atual, enquanto a
    seção `#201-C` no fim do mesmo arquivo já dizia "não existe mais sob
    esse nome").
+7. `_joined_with_budget_v2` perdia todo o conteúdo quando um único nome
+   sozinho (mais o próprio sufixo) já excedia o `budget` — o fallback
+   antigo descartava o nome inteiro, devolvendo um `"(+1 more)"` sem
+   nenhuma informação sobre qual check estava em falta/falhando, mesmo
+   havendo espaço de sobra no `budget` para mostrar um prefixo truncado
+   útil. Como `SafeText` permite nomes de até 512 caracteres contra um
+   `budget` de 200, um nome sozinho acima do limite é um cenário
+   realisticamente alcançável, não só sintético — corrigido truncando o
+   próprio nome em vez de descartá-lo.
 
 Nenhuma rodada chegou ainda a "limpa" — a condição de parada do grant (duas
 rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
@@ -204,16 +213,16 @@ rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
 
 | Gate | Resultado |
 |---|---|
-| `tests/agent_review/ tests/evals/` combinado | 1744 passed, 16 skipped, 2 failed (classe `environment`, sudo ausente no sandbox — `test_isolated_executor_v2.py`, arquivo fora do escopo de `#201-C`) |
+| `tests/agent_review/ tests/evals/` combinado | 1745 passed, 16 skipped, 2 failed (classe `environment`, sudo ausente no sandbox — `test_isolated_executor_v2.py`, arquivo fora do escopo de `#201-C`) |
 | `export-agent-review-v2-schemas.py --check` | OK |
 | `verify-caem-f0-pin.py --check` | OK |
 | `ruff` | não canônico neste repositório (ausente de `requirements-dev.txt`) — gate pulado, não fabricado |
-| CI remota (`aiops-ci`) | verde na rodada 5 (`fb35d20`); pendente revalidação no HEAD da rodada 6 |
+| CI remota (`aiops-ci`) | verde na rodada 6 (`2258d41`); pendente revalidação no HEAD da rodada 7 |
 
 Baseline (mesmo ambiente, HEAD `8b20ae3`, antes de qualquer edição): idêntica
 classificação — 1681/16/2 em `tests/agent_review/ tests/evals/` juntos,
-mesmas 2 falhas de ambiente. Nenhuma regressão introduzida. Figura de 1744
-corrente na correção da rodada 6 de review adversarial (ganho de +63 desde o
+mesmas 2 falhas de ambiente. Nenhuma regressão introduzida. Figura de 1745
+corrente na correção da rodada 7 de review adversarial (ganho de +64 desde o
 baseline: testes novos + red tests de cada rodada de correção); será
 superada pelo HEAD final quando as duas rodadas limpas consecutivas forem
 alcançadas.

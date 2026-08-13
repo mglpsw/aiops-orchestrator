@@ -1051,6 +1051,29 @@ def test_joined_with_budget_never_produces_a_truncated_suffix() -> None:
     assert len(tiny_budget) <= 10
 
 
+def test_joined_with_budget_never_drops_all_content_for_a_single_overlong_name() -> None:
+    """Adversarial review finding, confirmed and fixed (round 7). When even
+    the single FIRST name alone (plus its own suffix) exceeds `budget`, the
+    previous fallback dropped it entirely, returning a content-free
+    `"(+1 more)"` -- conveying nothing about which check was missing/failed
+    -- even though `budget` had plenty of room to show a meaningfully
+    truncated prefix of that one name. `SafeText` check names may be up to
+    512 characters (`contracts_v2.py`) against this module's own 200-
+    character per-segment budget, so a single overlong name is realistically
+    reachable, not just a synthetic edge case. The result must now retain a
+    real prefix of the name instead of discarding it."""
+
+    single_overlong = _joined_with_budget_v2(("a" * 300,), budget=200)
+    assert len(single_overlong) <= 200
+    assert single_overlong == "a" * 200
+    assert single_overlong != "(+1 more)"
+
+    with_a_short_companion = _joined_with_budget_v2(("short", "b" * 300), budget=200)
+    assert len(with_a_short_companion) <= 200
+    assert with_a_short_companion.startswith("short")
+    assert "(+1 more)" in with_a_short_companion
+
+
 def test_joined_with_budget_returns_the_full_join_when_it_fits() -> None:
     assert _joined_with_budget_v2(("a", "b", "c"), budget=200) == "a, b, c"
 
