@@ -126,17 +126,23 @@ this function receives, and the reason is two steps, not one:
 `compute_required_check_digest_v2` hashes the entire canonical
 `RequiredCheckResultV2`, so two checks sharing only a `check_name` do NOT
 thereby share a digest -- differing in `conclusion`/`head_sha`/etc. would
-still differ in digest. What rules that out here is the caller,
+still differ in digest, so a bare name match is not by itself grounds for
+anything. What closes the gap is the caller,
 `_verify_and_assess_required_checks_v2`, which always calls
-`reassemble_and_verify_required_checks_v2` before assessment: for a fixed
-identity/snapshot/policy/origin, re-deriving a given `check_name` is
-deterministic, so two verified checks sharing that name in the SAME
-verified submission must be byte-identical -- and if they were not, they
-would share a digest that `verify_required_check_provenance_set_v2`
-already refuses as a duplicate (the same reasoning the existing `by_name`
-comment in `_assess_required_checks_v2` records). `check_name` is
-therefore a sufficient, tie-break-free sort key for `verified_checks`
-specifically -- not a general property of `RequiredCheckResultV2`.
+`reassemble_and_verify_required_checks_v2` before assessment, and that
+verifier re-derives each check from a fixed identity/snapshot/policy/origin
+-- a deterministic process that authorizes at most ONE digest per
+`check_name` (a CI snapshot records one result per check, not several). So
+if two entries in a VERIFIED submission share a `check_name`, they were
+both re-derived against that same single authorized digest and are
+therefore byte-identical -- and `verify_required_check_provenance_set_v2`
+already refuses outright any submission whose digests collide
+(`len(set(digests)) != len(digests)`), before assessment ever runs. Two
+verified checks can therefore never legitimately share a name at all (the
+same reasoning the existing `by_name` comment in
+`_assess_required_checks_v2` records), which is what makes `check_name` a
+sufficient, tie-break-free sort key for `verified_checks` specifically --
+not a general property of `RequiredCheckResultV2`.
 
 This is ordering normalization only. Every check is preserved -- no filter,
 no dedup, no substitution -- so nothing about `status`, precedence, or the
