@@ -2,6 +2,83 @@
 
 ## Unreleased
 
+### Fixed
+
+- **AgentReview v1 chunk planning by real hunk cost, not path length
+  (`#225`)**: the semantic chunk planner sized a chunk from
+  `max(256, len(path) * 12)` — a proxy for the file *path*, never the diff
+  it actually contains — while `chunk_payload_builder` only injected real
+  hunks and applied the 24,000-char budget afterward. A plan could declare
+  `status: complete` for a chunk the builder was always going to have to
+  truncate; on `mglpsw/AgentEscala#774`'s real canary this silently dropped
+  9 of 10 `must_review` files' hunks behind an unchanged `hunks_included`
+  count, while the quality gate correctly (but only after the fact) reported
+  `manual_review_required`.
+  - **Single shared cost authority.** New `app/agent_review/payload_cost_model.py`
+    is imported by both the planner and the builder — including the
+    `checks_context`/`evidence_context`/`contracts_context` construction
+    functions moved there from `chunk_payload_builder.py` — so there is
+    structurally one formula for what a chunk will cost, never two that can
+    drift apart again. `project_min_hunk_preserving_chars` computes the
+    payload's terminal state — every optional context already at the exact
+    minimal form the real shrink ladder converges to, every hunk left fully
+    intact — which is sound by construction: the ladder always tries that
+    state before it is ever allowed to touch a hunk.
+  - **Split before truncate.** The planner now packs each semantic group
+    with deterministic first-fit-decreasing bin packing driven by that
+    projection, splitting an oversized group across multiple chunks of the
+    same `semantic_group` (already supported by `chunk_result_parser` and
+    `pr_brief`) instead of shrinking hunks to fit one. `max_blocks`
+    selection is two-phase: every candidate partition is generated first,
+    then candidates that themselves contain a `must_review` file are always
+    selected before ones that do not, cutting across `GROUP_PRIORITY`.
+  - **Fail closed, never fragmented.** A single file whose payload exceeds
+    the budget alone is reported `must_review_payload_oversize:<path>` (or
+    `payload_oversize:<path>` if not `must_review`) and left out of the
+    plan — never silently truncated into a "partial" chunk. A `must_review`
+    file with no observable diff hunk (binary, or a diff-producer gap) is
+    `must_review_hunk_unavailable:<path>` and never counted as covered.
+    Malformed path identities (absolute, `~`-relative, traversal, empty) are
+    excluded per-file with a `path_identity_*` reason; two identities that
+    would redact to the same publishable path fail the whole plan closed
+    (`path_identity_collision`) rather than risk merging them.
+  - **Hard guard before the Router.** Nothing downstream of
+    `chunk-payload-manifest.json` (`parse-chunks`, `synthesize`,
+    `quality-gate`, `telemetry`) actually reads it, so a residual
+    hunk-transport divergence can never be reported as a mere manifest
+    limitation. `build_chunk_payloads` now refuses to route any chunk whose
+    covered-file hunk was reduced, altered, or dropped by the shrink ladder
+    — that manifest entry gets `payload_path: null` and
+    `chunk_hunk_material_not_transported:<path>`, and
+    `aiops-review-build-payloads.py` exits non-zero instead of reporting
+    `partial`/`ok: true`.
+  - **Single budget authority.** `--payload-max-chars` diverging from a
+    chunk's own planned `prompt_budget_chars` now fails closed
+    (`payload_budget_mismatch`) instead of silently overriding it — the
+    exact shape of divergence this whole fix closes, one level up.
+  - **Projection-input binding.** An explicit `--checks` /
+    `--validation-evidence` document (`aiops-review-build-payloads.py`, and
+    optionally the same new flags on `aiops-review-plan-chunks.py` for
+    projection precision) must be canonically equivalent to what the intake
+    already embeds, or the run fails closed
+    (`payload_projection_input_mismatch`) rather than let the builder review
+    a document the planner never actually projected against.
+  - **Deterministic.** `SemanticChunkPlan.created_at` now derives from
+    `intake.created_at` (was wall-clock); file order within a chunk is
+    canonical-path order, not intake order — the same intake, in any file
+    order, now produces byte-identical plans.
+  - **Additive diagnostics only.** `hunks_included` keeps its existing
+    meaning; new `hunks_fully_included`/`hunks_reduced`/`hunks_omitted`
+    counts and sanitized `files_with_hunks_reduced`/`_omitted`/`_missing`
+    path lists live only on `chunk-payload-manifest.json` entries, never on
+    the routed payload itself. `SemanticChunk.estimated_chars` changes
+    meaning (path-length proxy → real payload projection); no schema version
+    changes, no consumer decides on it directly.
+  - v2 (`*_v2.py`, `schemas/agent-review/v2/**`) is untouched — proven, not
+    just asserted, by a new AST-scanning test. See
+    `docs/AGENTESCALA_TOOL_REPO_INTEGRATION.md` for the full reason-code
+    reference AgentEscala should expect.
+
 ### Added
 
 - **`agentreview-v2-target-pack` — installable target pack, first slice
