@@ -61,22 +61,6 @@ SUSPICIOUS_MARKERS = (
     "ssh",
 )
 
-# Bounded, config-level placeholders for fields the planner cannot yet know
-# exactly (they are only resolved once `pr_brief.build_pr_brief` runs, later
-# in the same pipeline). All three are fixed-shape by construction --
-# `commit_sha` is always a 40-character git SHA, `pr_number` is a small
-# integer, and `review_mode`/`contract_pack` are short operator-configured
-# identifiers, not attacker- or diff-controlled content -- so a placeholder
-# of representative length keeps the projection sound without needing to
-# replicate `pr_brief._review_metadata`'s full identity-resolution logic
-# here. This is unlike `must_review_files`, which genuinely is unbounded
-# diff-derived content and is therefore computed exactly (see
-# `_required_files_for_projection`).
-_PLACEHOLDER_COMMIT_SHA = "f" * 40
-_PLACEHOLDER_PR_NUMBER = 999_999_999
-_PLACEHOLDER_BRIEF_REVIEW: dict[str, Any] = {"mode": "full", "contract_pack": None}
-
-
 class IntakeValidationError(ValueError):
     pass
 
@@ -114,6 +98,7 @@ def build_semantic_chunk_plan(
     max_chars_per_block: int = 24_000,
     checks: dict[str, Any] | None = None,
     validation_evidence: dict[str, Any] | None = None,
+    optional_limitations: list[str] | None = None,
 ) -> SemanticChunkPlan:
     limitations = validate_intake_contract(intake)
     target_repo = str(intake.get("target_repo", "unknown"))
@@ -205,18 +190,57 @@ def build_semantic_chunk_plan(
 
     grouped = group_files_by_semantics(packable_files)
 
-    def project_chunk_cost(group: SemanticGroup, candidate_files: list[str], brief_limitations: list[str]) -> int:
+    # Exact review identity/mode/contract_pack (P2-3): resolved through the
+    # same authority `pr_brief.build_pr_brief` will later call, with the
+    # same inputs (intake, target_repo, the now-bound checks/validation-
+    # evidence) -- never an approximate placeholder. `target`/`brief.review`
+    # are not touched by the shrink ladder either, so an under-sized
+    # placeholder would silently break P1 soundness the same way an
+    # under-sized `chunk_context.files` entry does.
+    try:
+        review_metadata = payload_cost_model.resolve_review_metadata(
+            intake=review_intake,
+            chunk_plan_target_repo=target_repo,
+            checks=effective_checks,
+            validation_evidence=effective_validation_evidence,
+        )
+    except payload_cost_model.ReviewIdentityConflictError as exc:
+        raise IntakeValidationError(exc.error_class) from exc
+    real_target = {
+        "repository": review_metadata["target_repo"],
+        "pr_number": review_metadata["pr_number"],
+        "commit_sha": review_metadata["commit_sha"],
+    }
+    real_brief_review = {
+        "mode": review_metadata["review_mode"],
+        "contract_pack": review_metadata["contract_pack"],
+    }
+
+    # Exact brief.limitations prefix (P2-2): `pr_brief.build_pr_brief`
+    # composes `brief.limitations` as `[*intake.limitations,
+    # *chunk_plan.limitations, *(optional_limitations or [])] +
+    # artifact_state_limitations(intake)`. `chunk_plan.limitations` is what
+    # the fixed point below converges to (`accumulated`); the other three
+    # sources are already fully known -- computed once, exactly, never
+    # approximated -- and never shrinkable either, so they must be present
+    # in every projection from the very first iteration.
+    intake_limitations = list(review_intake.limitations)
+    optional_limitations_resolved = list(optional_limitations or [])
+    artifact_state_limits = payload_cost_model.artifact_state_limitations(review_intake)
+    fixed_brief_limitations = [*intake_limitations, *optional_limitations_resolved, *artifact_state_limits]
+
+    def project_chunk_cost(group: SemanticGroup, candidate_files: list[str], packing_limitations: list[str]) -> int:
         return payload_cost_model.project_min_hunk_preserving_chars(
             intake=review_intake,
             chunk_files=candidate_files,
             chunk_contracts=contract_refs,
             semantic_group=group,
-            target=_placeholder_target(target_repo),
-            brief_target=_placeholder_target(target_repo),
-            brief_review=_PLACEHOLDER_BRIEF_REVIEW,
+            target=real_target,
+            brief_target=real_target,
+            brief_review=real_brief_review,
             brief_required_files=sorted(required_files),
-            brief_limitations=brief_limitations,
-            selected_contract_pack=None,
+            brief_limitations=[*fixed_brief_limitations, *packing_limitations],
+            selected_contract_pack=review_metadata["contract_pack"],
             checks=effective_checks,
             validation_evidence=effective_validation_evidence,
             hunks=hunks,
@@ -224,12 +248,13 @@ def build_semantic_chunk_plan(
         )
 
     # Amendment 2 (rev.3): packing decisions feed `chunk_plan.limitations`,
-    # which is itself embedded in every projected chunk's `brief.limitations`
-    # -- the cost that decides packing depends on packing's own output. This
-    # loop resolves that self-dependency by monotone ascent: the accumulated
-    # limitation set only ever grows (never shrinks), over a domain bounded
-    # by the number of files and groups, so it reaches a fixed point in a
-    # derivable, finite number of iterations.
+    # which is itself embedded (via the fixed prefix above) in every
+    # projected chunk's `brief.limitations` -- the cost that decides packing
+    # depends on packing's own output. This loop resolves that
+    # self-dependency by monotone ascent: the accumulated limitation set
+    # only ever grows (never shrinks), over a domain bounded by the number
+    # of files and groups, so it reaches a fixed point in a derivable,
+    # finite number of iterations.
     max_iterations = len(canonical_files) * 2 + len(GROUP_PRIORITY) * 2 + 4
     accumulated = sorted(set(limitations))
     pack_result: _PackResult | None = None
@@ -430,14 +455,6 @@ def _resolve_created_at(intake: dict[str, Any]) -> str:
     if isinstance(value, str) and value.strip():
         return value
     return utc_now_iso()
-
-
-def _placeholder_target(target_repo: str) -> dict[str, Any]:
-    return {
-        "repository": target_repo,
-        "pr_number": _PLACEHOLDER_PR_NUMBER,
-        "commit_sha": _PLACEHOLDER_COMMIT_SHA,
-    }
 
 
 def validate_intake_schema_envelope(intake: dict[str, Any]) -> list[str]:

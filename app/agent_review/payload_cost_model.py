@@ -37,6 +37,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from pathlib import Path
 from typing import Any, get_args
 
 from app.agent_review.chunk_response_contract import build_chunk_response_contract
@@ -864,6 +865,240 @@ def _assert_document_bound(
 
 
 # ---------------------------------------------------------------------------
+# File status/summary lookup (single authority; was
+# chunk_payload_builder._file_context_map). The projection needs this to
+# emit each candidate file's REAL status/summary, not a placeholder --
+# `chunk_context.files` is never touched by the shrink ladder, so a
+# placeholder shorter than the real value would under-estimate the floor.
+# ---------------------------------------------------------------------------
+
+
+def file_context_map(intake: ReviewIntake) -> dict[str, dict[str, Any]]:
+    file_context = artifact_content(intake, "file-diff-context")
+    files = _get(file_context, "files")
+    if not isinstance(files, list):
+        return {}
+    mapped: dict[str, dict[str, Any]] = {}
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        path = _clean_text(item.get("path"))
+        if not path:
+            continue
+        mapped[path] = item
+    return mapped
+
+
+# ---------------------------------------------------------------------------
+# Artifact-state limitations (single authority; was
+# pr_brief._artifact_state_limitations / ._declared_requiredness). A pure
+# function of `intake` alone, so the planner can compute the exact
+# contribution to `brief.limitations` this produces, not approximate it.
+# ---------------------------------------------------------------------------
+
+
+def _declared_requiredness(intake: ReviewIntake) -> dict[str, bool]:
+    profile = intake.target_profile if isinstance(intake.target_profile, dict) else {}
+    declarations = profile.get("artifacts")
+    if not isinstance(declarations, list):
+        return {}
+    requiredness: dict[str, bool] = {}
+    for declaration in declarations:
+        if not isinstance(declaration, dict):
+            continue
+        name = _clean_text(declaration.get("name"))
+        if name is None:
+            continue
+        requiredness[name] = bool(declaration.get("required", False))
+    return requiredness
+
+
+def artifact_state_limitations(intake: ReviewIntake) -> list[str]:
+    requiredness = _declared_requiredness(intake)
+    limitations: list[str] = []
+    for status in intake.artifact_status:
+        if status.status == "missing":
+            if status.name not in requiredness:
+                limitations.append(f"artifact_missing:{status.name}")
+            elif requiredness[status.name]:
+                limitations.append(f"required_artifact_missing:{status.name}")
+            else:
+                limitations.append(f"optional_artifact_missing:{status.name}")
+        elif status.status in {"invalid", "degraded"}:
+            limitations.append(f"artifact_invalid:{status.name}")
+    return limitations
+
+
+# ---------------------------------------------------------------------------
+# Review identity/metadata resolution (single authority; was
+# pr_brief._review_metadata and its private helpers). `build_pr_brief` and
+# the v1 planner's cost projection both call this, so a chunk's projected
+# `target` / `brief.review` fields are the real values `pr_brief` will
+# later produce, not an approximate placeholder -- `target`/`brief` are
+# never touched by the shrink ladder either.
+# ---------------------------------------------------------------------------
+
+
+class ReviewIdentityConflictError(ValueError):
+    def __init__(self, field_name: str, message: str) -> None:
+        super().__init__(message)
+        self.error_class = "review_identity_conflict"
+        self.field_name = field_name
+        self.message = message
+
+
+def coerce_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def find_key(document: Any, key: str) -> Any:
+    if isinstance(document, dict):
+        if key in document:
+            return document[key]
+        for value in document.values():
+            found = find_key(value, key)
+            if found is not None:
+                return found
+    if isinstance(document, list):
+        for value in document:
+            found = find_key(value, key)
+            if found is not None:
+                return found
+    return None
+
+
+def artifact_identity_candidates(artifacts: Any, key: str) -> list[tuple[str, Any]]:
+    if not isinstance(artifacts, dict):
+        return []
+    candidates: list[tuple[str, Any]] = []
+    for artifact_name in sorted(artifacts):
+        artifact = artifacts[artifact_name]
+        if not isinstance(artifact, dict):
+            continue
+        if key in artifact:
+            candidates.append((f"intake.artifacts.{artifact_name}.{key}", artifact.get(key)))
+        content = artifact.get("content")
+        if isinstance(content, dict) and key in content:
+            candidates.append((f"intake.artifacts.{artifact_name}.content.{key}", content.get(key)))
+    return candidates
+
+
+def resolve_identity_value(
+    field_name: str,
+    candidates: list[tuple[str, Any]],
+    *,
+    coerce,
+) -> Any:
+    values_by_source: dict[str, Any] = {}
+    for source, raw in candidates:
+        value = coerce(raw)
+        if value is None:
+            continue
+        values_by_source[source] = value
+    unique_values = sorted({value for value in values_by_source.values()}, key=lambda item: str(item))
+    if len(unique_values) > 1:
+        details = ",".join(f"{source}={values_by_source[source]}" for source in sorted(values_by_source))
+        raise ReviewIdentityConflictError(field_name, f"conflicting review identity for {field_name}: {details}")
+    if unique_values:
+        return unique_values[0]
+    return None
+
+
+def first_non_empty(*values: str | None) -> str | None:
+    for value in values:
+        if value:
+            return value
+    return None
+
+
+def resolve_review_metadata(
+    *,
+    intake: ReviewIntake,
+    chunk_plan_target_repo: str,
+    checks: dict[str, Any] | None,
+    validation_evidence: dict[str, Any] | None,
+) -> dict[str, Any]:
+    target_repo = resolve_identity_value(
+        "target_repo",
+        [
+            ("intake.target_repo", intake.target_repo),
+            ("chunk_plan.target_repo", chunk_plan_target_repo),
+            ("intake.target_profile.target_repo", find_key(intake.target_profile, "target_repo")),
+            ("checks.target_repo", find_key(checks, "target_repo")),
+            ("validation_evidence.target_repo", find_key(validation_evidence, "target_repo")),
+            *artifact_identity_candidates(intake.artifacts, "target_repo"),
+        ],
+        coerce=_clean_text,
+    )
+    if target_repo is None:
+        raise ReviewIdentityConflictError("target_repo", "missing required review identity field: target_repo")
+
+    pr_number = resolve_identity_value(
+        "pr_number",
+        [
+            ("checks.pr_number", find_key(checks, "pr_number")),
+            ("validation_evidence.pr_number", find_key(validation_evidence, "pr_number")),
+            *artifact_identity_candidates(intake.artifacts, "pr_number"),
+        ],
+        coerce=coerce_int,
+    )
+    commit_sha = resolve_identity_value(
+        "commit_sha",
+        [
+            ("checks.commit_sha", find_key(checks, "commit_sha")),
+            ("validation_evidence.commit_sha", find_key(validation_evidence, "commit_sha")),
+            *artifact_identity_candidates(intake.artifacts, "commit_sha"),
+        ],
+        coerce=_clean_text,
+    )
+
+    mode = first_non_empty(_clean_text(find_key(intake.artifacts, "review_mode")))
+    contract_pack = first_non_empty(
+        _clean_text(find_key(intake.artifacts, "contract_pack")),
+        _clean_text(find_key(intake.artifacts, "pack")),
+    )
+
+    return {
+        "target_repo": target_repo,
+        "pr_number": pr_number,
+        "commit_sha": commit_sha,
+        "review_mode": mode,
+        "contract_pack": contract_pack,
+        "warnings": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Optional-artifact loading with its reason code (single authority; was
+# aiops-review-build-payloads.py's private _load_optional_json). Both CLIs
+# that can supply --checks/--validation-evidence use this, so the planner
+# and builder observe the identical optional_artifact_missing/_invalid
+# contribution to brief.limitations for the same input.
+# ---------------------------------------------------------------------------
+
+
+def load_optional_json_with_limitation(path: Any, name: str) -> tuple[dict[str, Any] | None, list[str]]:
+    if path is None:
+        return None, [f"optional_artifact_missing:{name}"]
+    resolved = Path(path)
+    if not resolved.exists():
+        return None, [f"optional_artifact_missing:{name}"]
+    try:
+        raw = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, [f"optional_artifact_invalid:{name}"]
+    if not isinstance(raw, dict):
+        return None, [f"optional_artifact_invalid:{name}"]
+    return raw, []
+
+
+# ---------------------------------------------------------------------------
 # Worst-case chunk_id placeholder. Final chunk numbering is only known once
 # `max_blocks` selection (rev.3 SS10) has finished choosing which candidate
 # partitions survive, which happens after every candidate has already been
@@ -901,10 +1136,23 @@ def project_min_hunk_preserving_chars(
 ) -> int:
     chunk_id = WORST_CASE_CHUNK_ID
     chunk_files_sorted = sorted(chunk_files)
-    display_files = [
-        {"path": sanitize_display_path(path), "status": "unknown", "summary": None}
-        for path in chunk_files_sorted
-    ]
+    # chunk_context.files is never touched by the shrink ladder, so it must
+    # carry the REAL status/summary from file-diff-context, not a
+    # placeholder (P2-1): an arbitrarily long status/summary string would
+    # otherwise make `projected <= budget` true while the real floor is
+    # larger, and the builder would reach hunk reduction regardless of what
+    # the planner claimed. This is the same lookup _build_chunk_payload uses.
+    file_context = file_context_map(intake)
+    display_files = []
+    for path in chunk_files_sorted:
+        context = file_context.get(path, {})
+        display_files.append(
+            {
+                "path": sanitize_display_path(path),
+                "status": _clean_text(context.get("status")) or "unknown",
+                "summary": _clean_text(context.get("summary")),
+            }
+        )
     chunk_hunks_full: list[dict[str, str]] = []
     limitations: list[str] = []
     for path in chunk_files_sorted:

@@ -129,13 +129,24 @@ def _hunk(path: str, lines: int) -> str:
     return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,{lines} @@\n{body}"
 
 
-def _build_intake(files: list[str], hunk_lines: dict[str, int], must: list[str], checks_doc=None, ve_doc=None):
+def _build_intake(
+    files: list[str],
+    hunk_lines: dict[str, int],
+    must: list[str],
+    checks_doc=None,
+    ve_doc=None,
+    file_overrides: dict[str, dict] | None = None,
+    intake_limitations: list[str] | None = None,
+    artifact_status: list[dict] | None = None,
+    target_profile: dict | None = None,
+):
     diff = "\n".join(_hunk(p, hunk_lines.get(p, 5)) for p in files)
+    file_overrides = file_overrides or {}
     artifacts = {
         "file-diff-context.json": {
             "path": "file-diff-context.json",
             "content": {
-                "files": [{"path": p} for p in files],
+                "files": [{"path": p, **file_overrides.get(p, {})} for p in files],
                 "coverage_requirements": {"must_review_files": must},
             },
         },
@@ -154,37 +165,74 @@ def _build_intake(files: list[str], hunk_lines: dict[str, int], must: list[str],
             "schema_version": 1,
             "source": "aiops-review-intake",
             "target_repo": "r/t",
-            "target_profile": {},
+            "target_profile": target_profile or {},
             "created_at": "2026-08-13T00:00:00Z",
             "artifacts": artifacts,
-            "artifact_status": [],
+            "artifact_status": artifact_status or [],
             "redaction_summary": RedactionReport().model_dump(mode="json"),
-            "limitations": [],
+            "limitations": intake_limitations or [],
             "completeness": {},
             "status": "complete",
         }
     )
 
 
-def _assert_projection_sound(files: list[str], hunk_lines: dict[str, int], must: list[str] | None = None, **docs) -> None:
+def _assert_projection_sound(
+    files: list[str],
+    hunk_lines: dict[str, int],
+    must: list[str] | None = None,
+    *,
+    brief_limitations: list[str] | None = None,
+    use_real_metadata: bool = False,
+    **docs,
+) -> None:
     """actual <= projected <= budget: build the real payload at
     budget=projected and confirm hunks were never touched (P1)."""
     must = must if must is not None else files
-    intake = _build_intake(files, hunk_lines, must, **docs)
+    file_overrides = docs.pop("file_overrides", None)
+    intake_limitations = docs.pop("intake_limitations", None)
+    artifact_status = docs.pop("artifact_status", None)
+    target_profile = docs.pop("target_profile", None)
+    intake = _build_intake(
+        files,
+        hunk_lines,
+        must,
+        file_overrides=file_overrides,
+        intake_limitations=intake_limitations,
+        artifact_status=artifact_status,
+        target_profile=target_profile,
+        **docs,
+    )
     checks_doc = docs.get("checks_doc")
     ve_doc = docs.get("ve_doc")
     hunks = m.diff_by_file(intake)
+    if use_real_metadata:
+        # P2-3: exact review identity/mode/contract_pack via the same
+        # authority pr_brief.build_pr_brief calls, never a placeholder.
+        metadata = m.resolve_review_metadata(
+            intake=intake, chunk_plan_target_repo="r/t", checks=checks_doc, validation_evidence=ve_doc
+        )
+        target = {
+            "repository": metadata["target_repo"],
+            "pr_number": metadata["pr_number"],
+            "commit_sha": metadata["commit_sha"],
+        }
+        brief_review = {"mode": metadata["review_mode"], "contract_pack": metadata["contract_pack"]}
+    else:
+        target = {"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40}
+        brief_review = {"mode": "full", "contract_pack": None}
+    resolved_brief_limitations = list(brief_limitations) if brief_limitations is not None else []
     projected = m.project_min_hunk_preserving_chars(
         intake=intake,
         chunk_files=files,
         chunk_contracts=[],
         semantic_group="api_schema_contract",
-        target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
-        brief_target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
-        brief_review={"mode": "full", "contract_pack": None},
+        target=target,
+        brief_target=target,
+        brief_review=brief_review,
         brief_required_files=must,
-        brief_limitations=[],
-        selected_contract_pack=None,
+        brief_limitations=resolved_brief_limitations,
+        selected_contract_pack=brief_review.get("contract_pack"),
         checks=checks_doc,
         validation_evidence=ve_doc,
         hunks=hunks,
@@ -212,9 +260,10 @@ def _assert_projection_sound(files: list[str], hunk_lines: dict[str, int], must:
         ],
     )
     brief = PRBrief(
-        target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
-        review={"mode": "full", "contract_pack": None},
+        target=target,
+        review=brief_review,
         coverage={"required_files": must},
+        limitations=resolved_brief_limitations,
         created_at="2026-08-13T00:00:00Z",
     )
     manifest, _ = build_chunk_payloads(
@@ -317,3 +366,147 @@ def test_projection_sound_at_exact_fit_boundaries() -> None:
         # a hunk without the guard blocking it.
         if entry.payload_path is not None:
             assert "chunk_hunks_reduced" not in entry.truncation.coverage_impact
+
+
+# ---------------------------------------------------------------------------
+# PR #227 exact-HEAD adversarial review findings P2-1/P2-2/P2-3: tight-budget
+# proof that `chunk_context.files`, `brief.limitations`, and
+# `target`/`brief.review` are projected from exact facts, not an
+# approximate placeholder. Unlike the end-to-end tests in
+# test_semantic_chunker_225_red.py (which go through the planner's own
+# `max_chars_per_block` choice and can have enough slack to mask an
+# under-estimate), these set `prompt_budget_chars` to exactly the current
+# projection -- the tightest possible proof that a smaller, placeholder-based
+# projection would have been unsound at this same budget.
+# ---------------------------------------------------------------------------
+
+
+def test_red24_projection_sound_with_adversarial_file_status_and_summary() -> None:
+    """RED-24 (P2-1): chunk_context.files is never touched by the shrink
+    ladder. A `status`/`summary` this long previously projected as
+    `"unknown"`/`None` (a few bytes) instead of the real ~10,000+ characters
+    -- proven unsound below by running the exact old-style placeholder
+    through the real builder at the same tight budget.
+    """
+    files = ["backend/api/a.py", "tests/b_test.py"]
+    long_status = "modified-" + ("S" * 5000)
+    long_summary = "x" * 5000
+    file_overrides = {p: {"status": long_status, "summary": long_summary} for p in files}
+    _assert_projection_sound(files, {p: 20 for p in files}, files, file_overrides=file_overrides)
+
+
+def test_placeholder_file_status_would_have_been_unsound() -> None:
+    """Negative control for RED-24: confirms the scenario above actually
+    distinguishes real from placeholder status/summary -- projecting with
+    the OLD `"unknown"`/`None` placeholder and feeding that (too-small)
+    budget to the real builder must trip the hard guard.
+    """
+    files = ["backend/api/a.py", "tests/b_test.py"]
+    long_status = "modified-" + ("S" * 5000)
+    long_summary = "x" * 5000
+    file_overrides = {p: {"status": long_status, "summary": long_summary} for p in files}
+    intake = _build_intake(files, {p: 20 for p in files}, files, file_overrides=file_overrides)
+    hunks = m.diff_by_file(intake)
+
+    # The old, pre-fix placeholder: "unknown" / None regardless of the real
+    # file-diff-context content.
+    placeholder_payload_body_files = [
+        {"path": m.sanitize_display_path(p), "status": "unknown", "summary": None} for p in sorted(files)
+    ]
+    real_payload_body_files = [
+        {
+            "path": m.sanitize_display_path(p),
+            "status": m._clean_text(file_overrides[p]["status"]),
+            "summary": m._clean_text(file_overrides[p]["summary"]),
+        }
+        for p in sorted(files)
+    ]
+    placeholder_len = len(m.canonical_json(placeholder_payload_body_files))
+    real_len = len(m.canonical_json(real_payload_body_files))
+    assert real_len > placeholder_len + 5000, "adversarial fixture is not actually adversarial enough"
+
+    projected = m.project_min_hunk_preserving_chars(
+        intake=intake,
+        chunk_files=files,
+        chunk_contracts=[],
+        semantic_group="api_schema_contract",
+        target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
+        brief_target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
+        brief_review={"mode": "full", "contract_pack": None},
+        brief_required_files=files,
+        brief_limitations=[],
+        selected_contract_pack=None,
+        checks=None,
+        validation_evidence=None,
+        hunks=hunks,
+        created_at="2026-08-13T00:00:00Z",
+    )
+    # A budget only big enough for the OLD placeholder-sized projection is,
+    # by construction, too small for the real one.
+    old_placeholder_budget = projected - (real_len - placeholder_len)
+    assert old_placeholder_budget > 0
+
+    plan = SemanticChunkPlan(
+        target_repo="r/t",
+        max_parallel_blocks=6,
+        status="complete",
+        files_covered=files,
+        chunks=[
+            SemanticChunk(
+                chunk_id="chunk-01-api_schema_contract",
+                semantic_group="api_schema_contract",
+                order_index=0,
+                files=files,
+                artifacts=[],
+                contracts=[],
+                depends_on=[],
+                coverage="complete",
+                prompt_budget_chars=old_placeholder_budget,
+                estimated_chars=old_placeholder_budget,
+            )
+        ],
+    )
+    brief = PRBrief(
+        target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
+        review={"mode": "full", "contract_pack": None},
+        coverage={"required_files": files},
+        created_at="2026-08-13T00:00:00Z",
+    )
+    manifest, _ = build_chunk_payloads(
+        intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None
+    )
+    entry = manifest.chunks[0]
+    guard_tripped = entry.payload_path is None
+    hunks_reduced = entry.payload_path is not None and "chunk_hunks_reduced" in entry.truncation.coverage_impact
+    assert guard_tripped or hunks_reduced, (
+        "expected the placeholder-sized budget to be unsound for the real file content "
+        "(either the hard guard blocks the chunk, or a hunk gets reduced) -- if neither "
+        "happened, this negative control no longer demonstrates what RED-24 fixed"
+    )
+
+
+def test_red25_projection_sound_with_adversarial_limitations_envelope() -> None:
+    """RED-25 (P2-2): `brief.limitations` = `intake.limitations` +
+    `chunk_plan.limitations` + `optional_limitations` +
+    `artifact_state_limitations(intake)`. None of these are shrinkable.
+    """
+    files = ["backend/api/a.py"]
+    many_limitations = [f"synthetic_limitation_{i}" for i in range(80)]
+    _assert_projection_sound(files, {"backend/api/a.py": 20}, files, brief_limitations=many_limitations)
+
+
+def test_red26_projection_sound_with_adversarial_review_metadata() -> None:
+    """RED-26 (P2-3): target/brief.review metadata resolved exactly via
+    payload_cost_model.resolve_review_metadata -- no placeholder may
+    under-estimate what that resolution actually produces.
+    """
+    files = ["backend/api/a.py"]
+    checks_doc = {
+        "status": "complete",
+        "checks": [],
+        "pr_number": 999999999,
+        "commit_sha": "a" * 40,
+        "review_mode": "adversarially-long-review-mode-" + ("m" * 3000),
+        "contract_pack": "adversarially-long-contract-pack-" + ("p" * 3000),
+    }
+    _assert_projection_sound(files, {"backend/api/a.py": 20}, files, use_real_metadata=True, checks_doc=checks_doc)

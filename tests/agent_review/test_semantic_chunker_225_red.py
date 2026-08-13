@@ -55,7 +55,7 @@ def _intake(files: list[str], hunk_lines: dict[str, int], must: list[str] | None
     }
 
 
-def _build_real_payloads(intake_dict: dict, plan):
+def _build_real_payloads(intake_dict: dict, plan, *, optional_limitations: list[str] | None = None):
     intake = ReviewIntake.model_validate(intake_dict)
     brief = build_pr_brief(
         intake=intake,
@@ -63,6 +63,7 @@ def _build_real_payloads(intake_dict: dict, plan):
         redaction_report=intake.redaction_summary,
         checks=None,
         validation_evidence=None,
+        optional_limitations=optional_limitations,
     )
     return build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
 
@@ -341,3 +342,158 @@ def test_group_priority_unchanged_shape() -> None:
         "docs_changelog",
         "unknown",
     ]
+
+
+# ---------------------------------------------------------------------------
+# PR #227 exact-HEAD adversarial review, P2-1/P2-2/P2-3: the projector must
+# use exact facts for every payload field the shrink ladder never touches
+# (chunk_context.files, target/brief metadata, brief.limitations), not an
+# approximate placeholder -- proven end to end against the real builder, not
+# just the isolated projection function.
+# ---------------------------------------------------------------------------
+
+
+def _assert_real_build_never_reduces_a_hunk(intake_dict: dict, plan, *, optional_limitations=None) -> None:
+    assert plan.status == "complete", f"plan degraded unexpectedly: {plan.limitations}"
+    manifest, payloads = _build_real_payloads(intake_dict, plan, optional_limitations=optional_limitations)
+    assert manifest.payload_count == len(plan.chunks), (
+        f"hard guard blocked a chunk the planner claimed would fit: "
+        f"{[e.chunk_id for e in manifest.chunks if e.payload_path is None]}"
+    )
+    for entry in manifest.chunks:
+        assert entry.payload_path is not None
+        assert "chunk_hunks_reduced" not in entry.truncation.coverage_impact
+
+
+def test_red24_adversarial_file_context_status_summary_stays_sound() -> None:
+    """RED-24 (P2-1): chunk_context.files carries file-diff-context's real
+    status/summary, and the shrink ladder never touches that section. A very
+    long status/summary must not make `projected <= budget` true while the
+    real floor is actually larger.
+    """
+    files = ["backend/api/a.py", "tests/b_test.py"]
+    hunk_lines = {p: 30 for p in files}
+    intake_dict = _intake(files, hunk_lines, must=files)
+    long_status = "modified-" + ("S" * 4000)
+    long_summary = "This change touches many call sites: " + ("x" * 4000)
+    for item in intake_dict["artifacts"]["file-diff-context.json"]["content"]["files"]:
+        item["status"] = long_status
+        item["summary"] = long_summary
+
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=6, max_chars_per_block=24_000)
+    _assert_real_build_never_reduces_a_hunk(intake_dict, plan)
+
+
+def test_red25_adversarial_limitations_envelope_stays_sound() -> None:
+    """RED-25 (P2-2): brief.limitations = intake.limitations +
+    chunk_plan.limitations + optional_limitations +
+    artifact_state_limitations(intake). None of the first three sources are
+    shrinkable. A large adversarial value in any of them must not make the
+    projection under-estimate the real floor.
+    """
+    files = ["backend/api/a.py"]
+    hunk_lines = {"backend/api/a.py": 30}
+    intake_dict = _intake(files, hunk_lines, must=files)
+    # intake.limitations: real, pre-existing limitations from the intake
+    # build step -- adversarially many.
+    intake_dict["limitations"] = [f"synthetic_intake_limitation_{i}" for i in range(60)]
+    # artifact_state_limitations(intake): many declared-but-missing optional
+    # artifacts.
+    intake_dict["target_profile"] = {
+        "artifacts": [{"name": f"optional_artifact_{i}", "required": False} for i in range(30)]
+    }
+    intake_dict["artifact_status"] = [
+        {
+            "name": f"optional_artifact_{i}",
+            "path": f"optional_artifact_{i}.json",
+            "available": False,
+            "valid": False,
+            "status": "missing",
+        }
+        for i in range(30)
+    ]
+    optional_limitations = [f"optional_artifact_missing:external_doc_{i}" for i in range(30)]
+
+    plan = build_semantic_chunk_plan(
+        intake_dict,
+        max_blocks=6,
+        max_chars_per_block=24_000,
+        optional_limitations=optional_limitations,
+    )
+    _assert_real_build_never_reduces_a_hunk(intake_dict, plan, optional_limitations=optional_limitations)
+
+
+def test_red26_adversarial_review_metadata_stays_sound() -> None:
+    """RED-26 (P2-3): target/brief.review metadata (pr_number, commit_sha,
+    review_mode, contract_pack) is resolved exactly via
+    payload_cost_model.resolve_review_metadata, the same authority
+    pr_brief.build_pr_brief calls -- no placeholder may under-estimate what
+    that resolution actually produces.
+    """
+    files = ["backend/api/a.py"]
+    hunk_lines = {"backend/api/a.py": 30}
+    intake_dict = _intake(files, hunk_lines, must=files)
+    intake_dict["artifacts"]["checks.json"] = {
+        "path": "checks.json",
+        "content": {
+            "status": "complete",
+            "checks": [],
+            "pr_number": 999999999,
+            "commit_sha": "a" * 40,
+            "review_mode": "adversarially-long-review-mode-" + ("m" * 2000),
+            "contract_pack": "adversarially-long-contract-pack-" + ("p" * 2000),
+        },
+    }
+
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=6, max_chars_per_block=24_000)
+    _assert_real_build_never_reduces_a_hunk(intake_dict, plan)
+
+
+def test_red24_25_26_combined_adversarial_dimensions_stay_sound() -> None:
+    """All three P2 dimensions compounded at once, at #774-like hunk scale:
+    long file status/summary, a large limitations envelope from every
+    source, and adversarial review metadata, together.
+    """
+    files = ["backend/api/a.py", "backend/services/b.py", "tests/c_test.py"]
+    hunk_lines = {"backend/api/a.py": 200, "backend/services/b.py": 200, "tests/c_test.py": 200}
+    intake_dict = _intake(files, hunk_lines, must=files)
+    for item in intake_dict["artifacts"]["file-diff-context.json"]["content"]["files"]:
+        item["status"] = "modified-" + ("S" * 3000)
+        item["summary"] = "x" * 3000
+    intake_dict["limitations"] = [f"synthetic_intake_limitation_{i}" for i in range(40)]
+    intake_dict["target_profile"] = {
+        "artifacts": [{"name": f"optional_artifact_{i}", "required": False} for i in range(20)]
+    }
+    intake_dict["artifact_status"] = [
+        {
+            "name": f"optional_artifact_{i}",
+            "path": f"optional_artifact_{i}.json",
+            "available": False,
+            "valid": False,
+            "status": "missing",
+        }
+        for i in range(20)
+    ]
+    intake_dict["artifacts"]["checks.json"] = {
+        "path": "checks.json",
+        "content": {
+            "status": "complete",
+            "checks": [],
+            "pr_number": 999999999,
+            "commit_sha": "a" * 40,
+            "review_mode": "m" * 2000,
+            "contract_pack": "p" * 2000,
+        },
+    }
+    optional_limitations = [f"optional_artifact_missing:external_doc_{i}" for i in range(20)]
+
+    # The combined adversarial envelope (3000-char status/summary per file,
+    # a ~2000-char review_mode/contract_pack, dozens of limitation strings)
+    # is itself far larger than the default 24,000 budget -- a budget large
+    # enough to actually pack something is needed to exercise "hunks survive
+    # when packed", distinct from the oversize-fails-closed property already
+    # covered by test_must_review_individual_oversize_fails_closed_not_fragmented.
+    plan = build_semantic_chunk_plan(
+        intake_dict, max_blocks=6, max_chars_per_block=100_000, optional_limitations=optional_limitations
+    )
+    _assert_real_build_never_reduces_a_hunk(intake_dict, plan, optional_limitations=optional_limitations)

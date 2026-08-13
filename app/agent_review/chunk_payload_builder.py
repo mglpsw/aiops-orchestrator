@@ -720,20 +720,12 @@ def _payload_filename(chunk: SemanticChunk) -> tuple[str, list[str]]:
 
 
 
-def _file_context_map(intake: ReviewIntake) -> dict[str, dict[str, Any]]:
-    file_context = payload_cost_model.artifact_content(intake, "file-diff-context")
-    files = _get(file_context, "files")
-    if not isinstance(files, list):
-        return {}
-    mapped: dict[str, dict[str, Any]] = {}
-    for item in files:
-        if not isinstance(item, dict):
-            continue
-        path = _clean_text(item.get("path"))
-        if not path:
-            continue
-        mapped[path] = item
-    return mapped
+# file_context_map now lives in payload_cost_model as the single authority
+# both the builder and the planner's cost projection call
+# (aiops-orchestrator#225 P2-1) -- the projection must see the exact same
+# per-file status/summary the builder will emit into chunk_context.files, a
+# field the shrink ladder never touches.
+_file_context_map = payload_cost_model.file_context_map
 
 
 
