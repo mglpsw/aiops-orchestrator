@@ -2582,6 +2582,13 @@ def test_exported_json_schemas_are_stable_and_deny_unknown_objects() -> None:
         "agent-review.authoritative-check-policy.v2.schema.json",
         "agent-review.authoritative-check-snapshot.v2.schema.json",
         "agent-review.producer-attestation.v2.schema.json",
+        # #203: additive only, install-state provenance (TargetPackManifestV2
+        # written by a toolrepo release, TargetInstallReceiptV2 written to a
+        # target repo after install/upgrade) -- neither is review/readiness
+        # evidence, both classified `not_applicable` in the RI-B0a reuse
+        # manifest (config/ri/ri-b0a-2-reuse-manifest.json).
+        "agent-review.target-pack-manifest.v2.schema.json",
+        "agent-review.target-install-receipt.v2.schema.json",
     }
 
     for filename, schema in rendered.items():

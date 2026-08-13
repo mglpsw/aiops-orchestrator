@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""`agent-review target ...` -- the `agentreview-v2-target-pack` CLI (#203).
+
+Installs/diagnoses the AgentReview v2 engine's integration into a target
+repository WITHOUT forking the engine -- `#203 MAY INSTALL/CONFIGURE
+INTEGRATION. #203 MUST NEVER CREATE AUTHORITY, FORK THE ENGINE, OR SILENTLY
+PROMOTE ROLLOUT.`
+
+This first slice ships two of the seven subcommands named in the
+Execution-Ready Engineering Specification
+(`docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`) as a coherent,
+tested unit:
+
+    agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH
+    agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH
+
+`validate`/`conformance`/`install-workflows`/`upgrade`/`rollback` are
+deferred to a follow-up commit on this same branch/PR, per the spec's own
+`§12` (not silently dropped -- named there explicitly).
+
+Every subcommand is a thin wrapper: it parses args, calls exactly one
+library function in `app.agent_review.target_pack_*`, and prints/writes
+that function's result. No subcommand re-implements any decision the
+library layer already owns -- the same discipline `#201-C`'s own CLI
+(`aiops-review-quality-gate-v2.py`) already follows for readiness.
+
+`doctor` is READ-ONLY -- see `target_pack_doctor_v2.run_doctor_v2`'s own
+docstring and `tests/agent_review/test_target_pack_arch_v2.py` for the
+mechanical (AST) proof.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from app.agent_review.profile_loader_v2 import (  # noqa: E402
+    TargetProfileLoadErrorV2,
+    compute_profile_hash_v2,
+    load_target_profile_v2,
+)
+from app.agent_review.target_pack_build_v2 import (  # noqa: E402
+    TargetPackBuildError,
+    build_target_pack_manifest_v2,
+    load_seed_content_by_path_v2,
+)
+from app.agent_review.target_pack_doctor_v2 import run_doctor_v2  # noqa: E402
+from app.agent_review.target_pack_manifest_v2 import TargetPackFileOwnershipV2  # noqa: E402
+from app.agent_review.target_pack_install_v2 import (  # noqa: E402
+    RECEIPT_RELATIVE_PATH_V2,
+    TargetPackInstallError,
+    apply_install_plan_v2,
+    write_receipt_v2,
+)
+from app.agent_review.target_pack_plan_v2 import (  # noqa: E402
+    PlanError,
+    compute_install_plan_v2,
+    validate_rollout_within_pack_capability_v2,
+)
+from app.agent_review.target_pack_receipt_v2 import (  # noqa: E402
+    TargetInstallReceiptV2,
+    compute_target_install_receipt_hash_v2,
+)
+from pydantic import ValidationError  # noqa: E402
+
+CLI_INPUT_INVALID_REASON_V2 = "target_pack_cli_input_invalid"
+
+
+CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2 = "target_pack_cli_toolrepo_sha_unresolved"
+_ALL_ZERO_SHA_V2 = "0" * 40
+_GIT_SHA_HEX_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _resolve_toolrepo_sha(toolrepo_root: Path) -> str:
+    """The real `git rev-parse HEAD` of `toolrepo_root`, or a refusal.
+
+    Adversarial review finding, confirmed and fixed: the previous version
+    silently fell back to an all-zero SHA (`"0" * 40`) whenever `git
+    rev-parse` failed (e.g. `--toolrepo-root` not a real git checkout),
+    and every caller wrote that fabricated value straight into
+    `TargetPackManifestV2.toolrepo_sha`/`TargetInstallReceiptV2.
+    toolrepo_sha` -- a receipt whose entire stated purpose (spec `§4`) is
+    to be "provenance-carrying". Reproduced: `init` against a
+    non-git-checkout `--toolrepo-root` exited 0 and wrote a receipt
+    claiming `toolrepo_sha: "0000...0000"`, a fabricated identity, not a
+    refusal. Never silently fabricate provenance -- refuse instead, by
+    name."""
+
+    import subprocess
+
+    completed = subprocess.run(
+        ["git", "-C", str(toolrepo_root), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    sha = completed.stdout.strip()
+    if completed.returncode != 0 or not _GIT_SHA_HEX_RE.fullmatch(sha) or sha == _ALL_ZERO_SHA_V2:
+        raise TargetPackBuildError(CLI_TOOLREPO_SHA_UNRESOLVED_REASON_V2)
+    return sha
+
+
+def _cmd_init(args: argparse.Namespace) -> int:
+    target_root = Path(args.target_root)
+    toolrepo_root = Path(args.toolrepo_root)
+
+    # Adversarial review finding, confirmed and fixed (spec rev.2 §5.1,
+    # "preflight before mutation"): this used to call `target_root.mkdir(...)`
+    # here, before toolrepo resolution, manifest build, or the rollout check
+    # below -- so a refused `init` against a nonexistent target still left
+    # the directory behind, directly contradicting the rollout check's own
+    # (then false) "leaves nothing behind" comment and the spec's own
+    # "compute plan before touching the filesystem". Reproduced: `init
+    # --rollout shadow_full` against a nonexistent target correctly exited 1
+    # but the directory existed afterwards regardless. No directory or file
+    # creation happens until every preflight gate below has passed --
+    # `compute_install_plan_v2` tolerates a missing `target_root` (treats it
+    # as "nothing on disk yet"), and `_atomic_write_v2` creates parent
+    # directories itself, immediately before each write.
+    try:
+        manifest = build_target_pack_manifest_v2(
+            toolrepo_root=toolrepo_root,
+            toolrepo_sha=_resolve_toolrepo_sha(toolrepo_root),
+            pack_version=args.pack_version,
+        )
+    except TargetPackBuildError as exc:
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return 1
+
+    # Nothing previously checked `--rollout` against what this pack version
+    # can actually deliver -- `init --rollout shadow_full` exited 0 and wrote
+    # `rollout_mode: shadow_full` into the receipt even though this slice
+    # ships no trusted-check integration at all. Checked before any
+    # filesystem write.
+    try:
+        validate_rollout_within_pack_capability_v2(
+            requested=args.rollout, max_supported=manifest.max_supported_rollout_mode
+        )
+    except PlanError as exc:
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return 1
+
+    plan = compute_install_plan_v2(manifest=manifest, target_root=target_root, previous_receipt=None)
+    # Reuses manifest.toolrepo_sha rather than re-resolving -- one binding,
+    # not two independently resolved ones (spec rev.2 §3).
+    seed_content = load_seed_content_by_path_v2(toolrepo_root=toolrepo_root, toolrepo_sha=manifest.toolrepo_sha)
+
+    try:
+        written = apply_install_plan_v2(
+            plan=plan, manifest=manifest, target_root=target_root, seed_content_by_path=seed_content
+        )
+    except TargetPackInstallError as exc:
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return 1
+
+    # Adversarial review finding, confirmed and fixed: `generated_file_
+    # hashes`/`target_owned_paths` used to be derived from `written` --
+    # "whatever `apply_install_plan_v2` actually wrote THIS invocation" --
+    # rather than from the manifest's own ownership classification.
+    # Reproduced, two symptoms of the same root cause: (1) on a FRESH
+    # `init`, the TARGET_OWNED profile is WRITE_NEW (nothing existed
+    # before), lands in `written`, and therefore was recorded in
+    # `generated_file_hashes` even though the contract states that field
+    # holds UPSTREAM_GENERATED hashes only -- the same path was
+    # simultaneously claimed as both pack-generated content and target-
+    # owned content; (2) on a SECOND, idempotent `init` against the same
+    # target, the profile is SKIP_TARGET_OWNED (nothing written this run),
+    # so it silently dropped out of `target_owned_paths` entirely --
+    # `target_owned_paths` is supposed to be a stable declaration of what
+    # this pack version considers target-owned, not a diary of this
+    # invocation's writes. Fixed: both fields are now derived from each
+    # `PlannedFileActionV2.ownership` (the manifest's own classification,
+    # unaffected by whether a write actually happened this run), never
+    # from `written`.
+    generated_file_hashes = {
+        action.path: action.seed_content_sha256
+        for action in plan.file_actions
+        if action.ownership is TargetPackFileOwnershipV2.UPSTREAM_GENERATED
+    }
+    target_owned_paths = tuple(
+        action.path for action in plan.file_actions if action.ownership is TargetPackFileOwnershipV2.TARGET_OWNED
+    )
+    # Adversarial review finding, confirmed and fixed: this used to hardcode
+    # an all-zero sentinel here even though the real hash of the profile
+    # `init` just wrote is trivially available -- the exact same class of
+    # "fabricated-but-syntactically-valid identity" bug fixed for
+    # toolrepo_sha above, just for a value that happens to be computable
+    # rather than one that must be refused when unavailable.
+    target_profile_hash = compute_profile_hash_v2(load_target_profile_v2(target_root))
+    # There is no policy artifact shipped in this slice at all (the
+    # trusted-check inventory schema is deferred, spec `§12`). A second
+    # adversarial finding, confirmed and fixed: this used to fabricate a
+    # digest ("0" * 64) for `target_policy_hash` too -- the same class of
+    # bug as the two above, just for a value with no real content to hash
+    # at all. `target_policy_hash` is now `None` (the contract's own
+    # explicit "no policy artifact yet" representation, not a placeholder
+    # digest); a future commit that ships a real policy artifact must
+    # compute this the same way `target_profile_hash` is computed here.
+    target_policy_hash = None
+    receipt_without_hash = {
+        "schema_id": "agent-review.target-install-receipt.v2",
+        "schema_version": 2,
+        "pack_version": manifest.pack_version,
+        "toolrepo_sha": manifest.toolrepo_sha,
+        "target_repo": args.target_repo,
+        "target_profile_hash": target_profile_hash,
+        "target_policy_hash": target_policy_hash,
+        "review_pack_hashes": {},
+        "generated_file_hashes": generated_file_hashes,
+        "target_owned_paths": target_owned_paths,
+        "required_capabilities": manifest.required_capabilities,
+        "expected_runner_labels": (),
+        "required_secret_names": (),
+        "rollout_mode": args.rollout,
+        "compatibility": "compatible",
+        "previous_install_identity": None,
+    }
+    receipt_hash = compute_target_install_receipt_hash_v2(
+        TargetInstallReceiptV2.model_construct(**receipt_without_hash, receipt_hash="0" * 64)
+    )
+    receipt = TargetInstallReceiptV2(**receipt_without_hash, receipt_hash=receipt_hash)
+
+    try:
+        # Bound to the SAME root identity the plan was computed against and
+        # apply_install_plan_v2 already verified -- not re-resolved
+        # independently (P2-C, spec rev.2 §5.4).
+        write_receipt_v2(target_root=target_root, receipt=receipt, expected_target_root_real=plan.target_root_real)
+    except TargetPackInstallError as exc:
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return 1
+    print(json.dumps({"written": list(written) + [RECEIPT_RELATIVE_PATH_V2]}, indent=2))
+    return 0
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    target_root = Path(args.target_root)
+    toolrepo_root = Path(args.toolrepo_root)
+    try:
+        manifest = build_target_pack_manifest_v2(
+            toolrepo_root=toolrepo_root,
+            toolrepo_sha=_resolve_toolrepo_sha(toolrepo_root),
+            pack_version=args.pack_version,
+        )
+    except TargetPackBuildError as exc:
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return 1
+
+    report = run_doctor_v2(target_root=target_root, manifest=manifest)
+    output = {
+        "target_root": report.target_root,
+        "healthy": report.is_healthy,
+        "profile": {"status": report.profile.status, "reason_code": report.profile.reason_code},
+        "receipt": {"status": report.receipt.status, "reason_code": report.receipt.reason_code},
+        "secret_names": [
+            {"name": c.name, "declared_present": c.declared_present} for c in report.secret_names
+        ],
+        "required_capabilities_declared": list(report.required_capabilities_declared),
+    }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return 0 if report.is_healthy else 1
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    init_parser = sub.add_parser("init", help="seed a target repository (TARGET_OWNED files only, once)")
+    init_parser.add_argument("--target-root", required=True)
+    init_parser.add_argument("--toolrepo-root", required=True)
+    init_parser.add_argument("--target-repo", required=True, help="owner/name of the target repository")
+    init_parser.add_argument("--pack-version", required=True)
+    init_parser.add_argument("--rollout", default="off", choices=["off", "shadow_minimal", "shadow_full"])
+    init_parser.set_defaults(handler=_cmd_init)
+
+    doctor_parser = sub.add_parser("doctor", help="read-only diagnostics; never mutates the target")
+    doctor_parser.add_argument("--target-root", required=True)
+    doctor_parser.add_argument("--toolrepo-root", required=True)
+    doctor_parser.add_argument("--pack-version", required=True)
+    doctor_parser.set_defaults(handler=_cmd_doctor)
+
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    try:
+        return args.handler(args)
+    except (PlanError, TargetPackInstallError, TargetPackBuildError, TargetProfileLoadErrorV2) as exc:
+        # TargetProfileLoadErrorV2 added alongside the fix that made
+        # _cmd_init compute a real target_profile_hash from whatever is
+        # actually on disk (a pre-existing, target-customized profile that
+        # is now invalid) instead of a hardcoded sentinel -- reproduced as
+        # an uncaught traceback before this except clause was extended,
+        # confirming the new read path needed the same boundary-refusal
+        # discipline every other CLI-detected failure already gets here.
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return 1
+    except ValidationError as exc:
+        print(f"error: {CLI_INPUT_INVALID_REASON_V2}\n{exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

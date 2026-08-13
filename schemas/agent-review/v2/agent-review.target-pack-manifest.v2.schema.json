@@ -1,0 +1,117 @@
+{
+  "$defs": {
+    "GeneratedFileEntryV2": {
+      "additionalProperties": false,
+      "description": "One file this pack version may place in a target repository.\n`content_sha256` is the digest of the SEED/TEMPLATE content this pack\nversion ships for that path -- for `TARGET_OWNED` paths, only ever used\nonce, at `init`; for `UPSTREAM_GENERATED`, the digest `target_pack_plan_\nv2` compares the target's on-disk file against to decide safe-overwrite\nvs. drift (spec `§4.2`).",
+      "properties": {
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "ownership": {
+          "$ref": "#/$defs/TargetPackFileOwnershipV2"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "ownership",
+        "content_sha256"
+      ],
+      "title": "GeneratedFileEntryV2",
+      "type": "object"
+    },
+    "TargetPackFileOwnershipV2": {
+      "description": "`#203`'s \"safe file ownership\" classes (spec `§7`). Determines what\n`target_pack_plan_v2.compute_install_plan_v2` is ever allowed to do to a\ngiven generated path -- see that module's own docstring for the\nper-class write/diff/preserve rules. This enum is the SOLE source of\ntruth for that classification; no CLI command re-derives it from a path\npattern.",
+      "enum": [
+        "upstream_generated",
+        "target_owned",
+        "merged_declarative"
+      ],
+      "title": "TargetPackFileOwnershipV2",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The compiled description of one toolrepo release's install\ncapability. See the module docstring for why this is not\n`TargetProfileV2`.",
+  "properties": {
+    "generated_files": {
+      "items": {
+        "$ref": "#/$defs/GeneratedFileEntryV2"
+      },
+      "minItems": 1,
+      "title": "Generated Files",
+      "type": "array"
+    },
+    "max_supported_rollout_mode": {
+      "enum": [
+        "off",
+        "shadow_minimal",
+        "shadow_full"
+      ],
+      "title": "Max Supported Rollout Mode",
+      "type": "string"
+    },
+    "min_engine_contract_version": {
+      "const": 2,
+      "title": "Min Engine Contract Version",
+      "type": "integer"
+    },
+    "pack_version": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Pack Version",
+      "type": "string"
+    },
+    "required_capabilities": {
+      "items": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "title": "Required Capabilities",
+      "type": "array"
+    },
+    "schema_digests": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "title": "Schema Digests",
+      "type": "object"
+    },
+    "schema_id": {
+      "const": "agent-review.target-pack-manifest.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "toolrepo_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Toolrepo Sha",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "pack_version",
+    "toolrepo_sha",
+    "generated_files",
+    "schema_digests",
+    "required_capabilities",
+    "min_engine_contract_version",
+    "max_supported_rollout_mode"
+  ],
+  "title": "TargetPackManifestV2",
+  "type": "object"
+}

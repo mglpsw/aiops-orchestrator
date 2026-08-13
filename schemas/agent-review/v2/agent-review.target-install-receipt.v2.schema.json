@@ -1,0 +1,199 @@
+{
+  "$defs": {
+    "ReceiptIdentityRefV2": {
+      "additionalProperties": false,
+      "description": "A pointer to a PRIOR `TargetInstallReceiptV2`, used by `rollback`\n(spec `§4.3`). Carries only what `rollback` needs to verify it is\nrolling back to -- and away FROM -- the state it thinks it is: the\nprior receipt's own hash, pack version, and toolrepo SHA. Never embeds\nthe full prior receipt (that would make `TargetInstallReceiptV2`\nself-referentially unbounded in size across repeated upgrades).",
+      "properties": {
+        "pack_version": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Pack Version",
+          "type": "string"
+        },
+        "receipt_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Receipt Hash",
+          "type": "string"
+        },
+        "toolrepo_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Toolrepo Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "receipt_hash",
+        "pack_version",
+        "toolrepo_sha"
+      ],
+      "title": "ReceiptIdentityRefV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "compatibility": {
+      "enum": [
+        "compatible",
+        "major_incompatible"
+      ],
+      "title": "Compatibility",
+      "type": "string"
+    },
+    "expected_runner_labels": {
+      "default": [],
+      "items": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "title": "Expected Runner Labels",
+      "type": "array"
+    },
+    "generated_at": {
+      "anyOf": [
+        {
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Generated At"
+    },
+    "generated_file_hashes": {
+      "additionalProperties": false,
+      "propertyNames": {
+        "maxLength": 512,
+        "minLength": 1
+      },
+      "title": "Generated File Hashes",
+      "type": "object"
+    },
+    "pack_version": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Pack Version",
+      "type": "string"
+    },
+    "previous_install_identity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ReceiptIdentityRefV2"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "receipt_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Receipt Hash",
+      "type": "string"
+    },
+    "required_capabilities": {
+      "default": [],
+      "items": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "title": "Required Capabilities",
+      "type": "array"
+    },
+    "required_secret_names": {
+      "default": [],
+      "items": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        "type": "string"
+      },
+      "title": "Required Secret Names",
+      "type": "array"
+    },
+    "review_pack_hashes": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "title": "Review Pack Hashes",
+      "type": "object"
+    },
+    "rollout_mode": {
+      "enum": [
+        "off",
+        "shadow_minimal",
+        "shadow_full"
+      ],
+      "title": "Rollout Mode",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "agent-review.target-install-receipt.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "target_owned_paths": {
+      "default": [],
+      "items": {
+        "maxLength": 512,
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Target Owned Paths",
+      "type": "array"
+    },
+    "target_policy_hash": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "sha256 of the target policy artifact, or null if none exists yet",
+      "title": "Target Policy Hash"
+    },
+    "target_profile_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Target Profile Hash",
+      "type": "string"
+    },
+    "target_repo": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Target Repo",
+      "type": "string"
+    },
+    "toolrepo_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Toolrepo Sha",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "pack_version",
+    "toolrepo_sha",
+    "target_repo",
+    "target_profile_hash",
+    "rollout_mode",
+    "compatibility",
+    "receipt_hash"
+  ],
+  "title": "TargetInstallReceiptV2",
+  "type": "object"
+}

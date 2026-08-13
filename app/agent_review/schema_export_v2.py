@@ -25,6 +25,8 @@ from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanc
 from app.agent_review.review_transport_contract_v2 import ChunkReviewTransportEnvelopeV1
 from app.agent_review.run_fragment_coverage_v2 import RunFragmentCoverageReportV2
 from app.agent_review.semantic_grouping_policy_v2 import SemanticGroupingPolicyV2
+from app.agent_review.target_pack_manifest_v2 import TargetPackManifestV2
+from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2
 from app.agent_review.trusted_checks_v2 import TrustedCheckPlanV2, TrustedCheckResultV2
 
 
@@ -170,6 +172,12 @@ def render_v2_json_schemas() -> dict[str, dict[str, object]]:
         ),
         "agent-review.producer-attestation.v2.schema.json": (
             ProducerAttestationV2.model_json_schema(mode="validation")
+        ),
+        "agent-review.target-pack-manifest.v2.schema.json": (
+            TargetPackManifestV2.model_json_schema(mode="validation")
+        ),
+        "agent-review.target-install-receipt.v2.schema.json": (
+            TargetInstallReceiptV2.model_json_schema(mode="validation")
         ),
     }
     schemas = {filename: normalize_v2_json_schema(schema) for filename, schema in schemas.items()}

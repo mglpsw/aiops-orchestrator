@@ -4,6 +4,30 @@
 
 ### Added
 
+- **`agentreview-v2-target-pack` — installable target pack, first slice
+  (`#203`)**: begins packaging AgentReview v2 as an installer for consumer
+  repositories, without forking the engine. This commit ships `init` and
+  `doctor` (read-only, mechanically proven by AST/call-graph inspection),
+  two new additive contracts (`TargetPackManifestV2`,
+  `TargetInstallReceiptV2`), a pure drift/idempotence plan computer, and
+  the sole atomic-write installer. `validate`/`conformance`/
+  `install-workflows`/`upgrade`/`rollback` are deferred to a follow-up
+  commit on the same branch/PR. Full spec:
+  `docs/AGENT_REVIEW_V2_TARGET_PACK.md` and
+  `docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`. Post-adversarial-
+  review hardening on the same PR closed four in-scope defects found by an
+  exact-HEAD external review: `doctor` now cross-checks a receipt's
+  `pack_version`/`toolrepo_sha`/`target_profile_hash` against the manifest and
+  loaded profile instead of trusting structural validity alone;
+  `target_policy_hash` is `null` (not a fabricated all-zero digest) until a
+  real policy artifact ships; `generated_file_hashes`/`target_owned_paths` are
+  derived from the manifest's own ownership classification instead of "files
+  written this invocation" (previously lost `target_owned_paths` across an
+  idempotent re-`init`); and `init --rollout` is now capped by
+  `TargetPackManifestV2.max_supported_rollout_mode` so `shadow_full` cannot be
+  requested against a pack version that ships no trusted-check integration.
+  Zero existing (pre-`#203`) schema/contract touched; see the PR for the final
+  combined suite count.
 - **AgentReview v2 required-check readiness wiring (`#201-C`)**: connects
   `#201-C0`'s legitimated required checks to `ReviewReadinessV2` — the last
   piece needed for the readiness contract to represent a required-check
