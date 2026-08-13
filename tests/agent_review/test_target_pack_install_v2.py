@@ -191,6 +191,42 @@ def test_apply_refuses_to_write_through_a_directory_symlink_escaping_target_root
     assert list(outside.iterdir()) == []
 
 
+def test_apply_refuses_when_the_final_path_component_itself_is_a_preexisting_symlink(tmp_path: Path) -> None:
+    """Distinct from the intermediate-directory-symlink case above: here
+    the GENERATED FILE'S OWN path (not a parent directory) is a
+    pre-existing symlink pointing outside `target_root`. Adversarial round
+    probe, confirmed already safe by two independent mechanisms and locked
+    in here as a regression test: (1) `_verify_write_target_within_root_v2`
+    resolves the full candidate path -- including a symlinked final
+    component -- and already refuses before any write is attempted; (2)
+    even if it did not, `os.replace` never follows a final-component
+    symlink for its destination argument (POSIX `rename(2)` semantics) --
+    it replaces the symlink's own directory entry, never writes through it
+    to the link's target. Verified directly: `os.replace` onto an existing
+    symlink replaces the link itself and leaves the link's target file
+    completely untouched."""
+
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-final-component-symlink"
+    outside.mkdir()
+    escape_target = outside / "secret.txt"
+    escape_target.write_text("ORIGINAL-OUTSIDE-CONTENT", encoding="utf-8")
+
+    entry = GeneratedFileEntryV2(
+        path="a.yaml", ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED, content_sha256=_sha256(b"seed")
+    )
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+
+    # The generated file's OWN path is a preexisting symlink, not a parent.
+    (tmp_path / "a.yaml").symlink_to(escape_target)
+
+    with pytest.raises(TargetPackInstallError) as exc_info:
+        apply_install_plan_v2(plan=plan, manifest=manifest, target_root=tmp_path, seed_content_by_path={"a.yaml": b"seed"})
+
+    assert exc_info.value.reason_code == INSTALL_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert escape_target.read_text(encoding="utf-8") == "ORIGINAL-OUTSIDE-CONTENT"
+
+
 def test_apply_refuses_when_target_root_itself_was_swapped_for_a_symlink_after_planning(
     tmp_path: Path,
 ) -> None:
@@ -301,6 +337,28 @@ def _receipt() -> TargetInstallReceiptV2:
         TargetInstallReceiptV2.model_construct(**fields, receipt_hash="0" * 64)
     )
     return TargetInstallReceiptV2(**fields, receipt_hash=receipt_hash)
+
+
+def test_installed_files_are_not_more_restrictive_than_an_ordinary_write(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed:
+    `tempfile.mkstemp` creates `0600`, and `os.replace` preserves that mode
+    onto the final path -- every pack-installed file therefore landed more
+    restrictive than an ordinary write. Not a security hole (0600 is MORE
+    restrictive, never less), but a real gap against ordinary-file
+    expectations."""
+
+    import stat
+
+    content = b"seed content"
+    entry = GeneratedFileEntryV2(
+        path="a.yaml", ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED, content_sha256=_sha256(content)
+    )
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+    apply_install_plan_v2(plan=plan, manifest=manifest, target_root=tmp_path, seed_content_by_path={"a.yaml": content})
+
+    mode = stat.S_IMODE((tmp_path / "a.yaml").stat().st_mode)
+    assert mode == 0o644
 
 
 def test_write_receipt_accepts_when_root_identity_matches_the_plans(tmp_path: Path) -> None:

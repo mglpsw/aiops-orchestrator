@@ -126,6 +126,17 @@ def _atomic_write_v2(path: Path, content: bytes, *, target_root_real: Path) -> N
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(content)
+        # Adversarial review finding, confirmed and fixed: `tempfile.mkstemp`
+        # creates the temp file `0600` (owner-only), and `os.replace`
+        # preserves that mode onto the final path -- every pack-installed
+        # file therefore landed more restrictive than an ordinary write
+        # (`0644` under a typical umask), unlike anything else in this
+        # target repository. Not a security hole (0600 is MORE restrictive,
+        # never less), but a real correctness gap against ordinary-file
+        # expectations, reproduced directly. Chmod'd on the TEMP path,
+        # before the atomic rename, so the final path is never observable
+        # at the wrong mode even momentarily.
+        os.chmod(tmp_name, 0o644)
         os.replace(tmp_name, path)
     except BaseException:
         try:
