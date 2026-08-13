@@ -1,9 +1,10 @@
 # `#201-C` — Required-check readiness wiring
 
 **Classe:** checkpoint de implementação. Review adversarial **em andamento**
-— 5 rodadas executadas até agora, cada uma achando e corrigindo um problema
-genuíno; aguardando duas rodadas consecutivas limpas no mesmo HEAD (condição
-de parada do grant). Ver "Estado vetorial" e "Próxima ação mínima".
+— 8 rodadas executadas até agora, cada uma achando e corrigindo um problema
+genuíno (0 rodadas consecutivas limpas); aguardando duas rodadas consecutivas
+limpas no mesmo HEAD (condição de parada do grant). Ver "Estado vetorial" e
+"Próxima ação mínima".
 
 ## Por que esta slice existe
 
@@ -151,7 +152,7 @@ próprios a `test_readiness_decision_v2.py` e `test_aiops_review_quality_gate_v2
 
 ## Review adversarial
 
-5 rodadas executadas até o momento deste checkpoint, cada uma achando pelo
+8 rodadas executadas até o momento deste checkpoint, cada uma achando pelo
 menos um problema genuíno, reproduzido antes de corrigido, com um red test
 próprio e verificação por mutação:
 
@@ -243,7 +244,7 @@ rodadas consecutivas limpas no mesmo HEAD) ainda não foi atingida.
 | `export-agent-review-v2-schemas.py --check` | OK |
 | `verify-caem-f0-pin.py --check` | OK |
 | `ruff` | não canônico neste repositório (ausente de `requirements-dev.txt`) — gate pulado, não fabricado |
-| CI remota (`aiops-ci`) | verde na rodada 7 (`efa29de`); pendente revalidação no HEAD da rodada 8 |
+| CI remota (`aiops-ci`) | verde na rodada 8 (`2d39d06`, HEAD atual da PR #220) |
 
 Baseline (mesmo ambiente, HEAD `8b20ae3`, antes de qualquer edição): idêntica
 classificação — 1681/16/2 em `tests/agent_review/ tests/evals/` juntos,
@@ -275,7 +276,7 @@ alcançadas.
 #201_B3=MERGED (operational closure BLOCKED_BY_CT104)
 #201_C0=MERGED
 #201_C_IMPLEMENTATION=COMPLETE
-#201_C_ADVERSARIAL_REVIEW=IN_PROGRESS (5 rodadas; aguardando duas consecutivas limpas no mesmo HEAD)
+#201_C_ADVERSARIAL_REVIEW=IN_PROGRESS (8 rodadas; 0 consecutivas limpas; aguardando duas consecutivas limpas no mesmo HEAD)
 #201_C=IMPLEMENTED_AWAITING_MERGE_REVIEW
 #217=OPEN_RESIDUAL_NOT_BLOCKING_C
 #203=NOT_STARTED
@@ -286,7 +287,8 @@ RELEASE=NOT_AUTHORIZED
 
 ## Próxima ação mínima
 
-Abrir Draft PR vinculada a `#201`, aguardar CI real, solicitar review
-adversarial. Merge, tag, release, deploy, repin, ativação CT104, início de
-`#203` e fechamento de `#201`/`#217`/`#199` permanecem fora do grant desta
-rodada.
+PR #220 (draft) aberta e vinculada a `#201`; CI real verde no HEAD atual
+(`2d39d06`). Continuar o loop de review adversarial (rodada 9 em diante) até
+duas rodadas consecutivas limpas no mesmo HEAD — ainda não atingido. Merge,
+tag, release, deploy, repin, ativação CT104, início de `#203` e fechamento de
+`#201`/`#217`/`#199` permanecem fora do grant desta rodada.

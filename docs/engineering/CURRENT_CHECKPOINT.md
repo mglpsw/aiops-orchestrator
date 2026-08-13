@@ -13,8 +13,10 @@
   `master` avançou `8654272 → 8b20ae3` neste corte, verificado ao vivo (parent exato, tree
   idêntico ao HEAD testado `00fb8b3e`).
 - AgentReview é subsistema deste repositório, não repositório separado.
-- PRs abertas no corte: nenhuma. `#201-C` está implementada localmente em worktree isolado
-  (branch `feat/201-c-required-check-readiness-wiring`), ainda **não** empurrada nem em PR.
+- PRs abertas no corte: PR #220 (`feat/201-c-required-check-readiness-wiring` → `master`,
+  **draft**, `#201-C`), HEAD `2d39d0686371414038be8dd61fbce25521a7bb5f`, ambos os checks
+  (`Validate repository`, `AgentReview release gates`) verdes nesse HEAD. Review adversarial
+  em andamento (8 rodadas, 0 consecutivas limpas) — ver adendo.
 
 ## Estado de referência
 
@@ -49,8 +51,9 @@
   issue (não revalidado nesta sessão);
 - `#201-A`/`#201-B1`/`#201-B2`/`#201-B3`/`#201-C0`: `merged`; `#201-B3` operational closure
   `BLOCKED_BY_CT104`; `#217` exercised path `closed_by_pr_219`, residual class `open`;
-- `#201-C`: `implemented_awaiting_merge_review` (branch local, não empurrada; review adversarial
-  em andamento, 5 rodadas, aguardando duas consecutivas limpas no mesmo HEAD) — ver adendo;
+- `#201-C`: `implemented_awaiting_merge_review` (PR #220 aberta, draft, HEAD `2d39d06`; CI real
+  verde nesse HEAD; review adversarial em andamento, 8 rodadas, 0 consecutivas limpas,
+  aguardando duas consecutivas limpas no mesmo HEAD) — ver adendo;
 - `#203`: `not_started`;
 - validação: `partial`;
 - change request: `not_open` no corte;
@@ -65,8 +68,9 @@ Grant nominal do dono do repositório, escopado à implementação de `#201-C` c
 Ready Engineering Specification rev.2.1 (auditada e aprovada em duas rodadas prévias — ver `#201`).
 Implementação feita em worktree novo (`/opt/agent-tools/ar-201-c-readiness-wiring`), a partir de
 `origin/master` @ `8b20ae37`, branch `feat/201-c-required-check-readiness-wiring`, seis commits de
-implementação + um de checkpoint/receipt + cinco commits de correção do review adversarial (12 no
-total até este corte; a contagem cresce a cada rodada não-limpa).
+implementação + um de checkpoint/receipt + oito commits de correção do review adversarial (15 no
+total até este corte; a contagem cresce a cada rodada não-limpa). PR #220 aberta como **draft**,
+vinculada a `#201`, HEAD atual `2d39d0686371414038be8dd61fbce25521a7bb5f`.
 
 Entrega: novo módulo `required_check_readiness_v2.py` como choke point entre `#201-C0` e a
 readiness — deriva `required_check_names` exclusivamente de um `TargetProfileV2` confiável ligado
@@ -89,22 +93,26 @@ verificados por mutação durante a implementação (reintrodução de `except`/
 caller-supplied — ambos pegos com a mensagem certa).
 
 Nenhum contrato congelado alterado; export de schemas byte-idêntico; pin CAEM F0 verde.
-`tests/agent_review/ tests/evals/` combinado: 1739 passed, 16 skipped, 2 failed (classe
+`tests/agent_review/ tests/evals/` combinado: 1749 passed, 16 skipped, 2 failed (classe
 `environment` — `sudo` ausente no sandbox, `test_isolated_executor_v2.py`, fora do escopo desta
-slice, mesma classe de falha que a baseline pré-edição). Figura corrente na correção da rodada 5
-de review adversarial; será revalidada a cada rodada subsequente.
+slice, mesma classe de falha que a baseline pré-edição). Evidência code-equivalent medida em
+`2d39d06` (tree idêntica ao commit, reexecutada imediatamente antes de commitar); corrente na
+correção da rodada 8 de review adversarial; será revalidada a cada rodada subsequente. CI real do
+GitHub (`Validate repository`, `AgentReview release gates`) verde nesse mesmo HEAD.
 
 Detalhes completos: `docs/checkpoints/AGENT_REVIEW_V2_201C_READINESS_WIRING.md` e
 `reports/agent-review-v2-201c-readiness-wiring-receipt.json`.
 
-**Não coberto por este grant:** push, PR, CI real do GitHub, review adversarial, merge, tag,
-release, deploy, repin, ativação de capacidade CT104, início de `#203`, fechamento de
-`#201`/`#217`/`#199`.
+**Correção (reconciliação de evidência):** push, abertura de PR draft, CI real do GitHub e o loop
+de review adversarial **são** cobertos por este grant — já realizados (ver acima). O que
+permanece **fora** do escopo: merge, tag, release, deploy, repin, ativação de capacidade CT104,
+início de `#203`, fechamento de `#201`/`#217`/`#199`.
 
 ## Próxima ação mínima
 
-Push da branch `feat/201-c-required-check-readiness-wiring`, abertura de PR **rascunho** vinculada
-a `#201`, confirmação de CI real do GitHub verde no HEAD final, solicitação de review adversarial.
-Merge, tag, release, deploy, repin, ativação de capacidade e fechamento de `#201`/`#217`/`#199`
-permanecem retidos, cada um exigindo grant nominal próprio. `#203` não deve começar antes do
-fechamento operacional de `#201-C` (código + CI real + review adversarial estável).
+Continuar o loop de review adversarial (rodada 9 em diante) até duas rodadas consecutivas limpas
+no mesmo HEAD — condição de parada do grant, ainda não atingida (8 rodadas completas, 0
+consecutivas limpas). Merge, tag, release, deploy, repin, ativação de capacidade e fechamento de
+`#201`/`#217`/`#199` permanecem retidos, cada um exigindo grant nominal próprio. `#203` não deve
+começar antes do fechamento operacional de `#201-C` (código + CI real + review adversarial
+estável).
