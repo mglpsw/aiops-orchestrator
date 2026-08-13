@@ -92,6 +92,7 @@ from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnap
 from app.agent_review.contracts_v2 import (
     FindingLifecycleRecordV2,
     PullRequestStateV2,
+    ReadinessStateV2,
     RequiredCheckResultV2,
     ReviewReadinessV2,
     RunIdentityV2,
@@ -146,7 +147,30 @@ def produce_review_readiness_v2(
     from a ``TargetProfileV2`` loaded fresh from ``target_profile_root``
     and bound to ``evaluated_identity.profile_hash``. See that function's
     own docstring.
+
+    Adversarial review finding, confirmed and fixed: ``STALE`` is checked
+    HERE, before the ``#201-C0`` call, not only inside ``_apply_required_
+    check_assessment_v2``. A previous version called ``_verify_and_assess_
+    required_checks_v2`` unconditionally, so an EMPTY submission alongside
+    a genuinely ``STALE`` decision could still be refused if
+    ``target_profile_root`` -- a live, base/default checkout -- had moved
+    since ``evaluated_identity`` was computed, contradicting the
+    documented guarantee that STALE evidence is never even asked a
+    required-check question. A ``STALE`` decision now never reaches the
+    ``#201-C0`` boundary at all: identity/HEAD divergence already makes
+    any required-check claim non-current, so there is nothing legitimate
+    to verify it against.
     """
+
+    if decision.state is ReadinessStateV2.STALE:
+        return _assemble_review_readiness_v2(
+            decision=decision,
+            findings=findings,
+            identity=identity,
+            evaluated_identity=evaluated_identity,
+            pr_state=pr_state,
+            checks=(),
+        )
 
     assessment = _verify_and_assess_required_checks_v2(
         checks=checks,

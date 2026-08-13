@@ -136,12 +136,17 @@ def test_single_construction_site_for_review_readiness_v2() -> None:
 
 
 def test_single_caller_of_the_assembler() -> None:
+    """Single CALLER FUNCTION, not single call expression: `produce_review_
+    readiness_v2` legitimately calls `_assemble_review_readiness_v2` from
+    two branches (the STALE short-circuit and the normal path) -- both
+    still inside the one function that is the assembler's only caller."""
+
     calls = _production_calls("_assemble_review_readiness_v2")
     locations = [(str(p.relative_to(p.parents[2])), fn) for p, _, fn in calls]
-    assert len(calls) == 1, f"expected exactly one _assemble_review_readiness_v2(...) call, found {locations}"
-    path, _, func_name = calls[0]
-    assert path.name == "review_readiness_emission_v2.py"
-    assert func_name == "produce_review_readiness_v2"
+    caller_functions = {(str(p.relative_to(p.parents[2])), fn) for p, _, fn in calls}
+    assert caller_functions == {("app/agent_review/review_readiness_emission_v2.py", "produce_review_readiness_v2")}, (
+        f"expected _assemble_review_readiness_v2(...) called only from produce_review_readiness_v2, found {locations}"
+    )
 
 
 # -- corollary: single caller of the pure assessment helper ------------------

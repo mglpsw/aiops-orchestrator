@@ -997,3 +997,56 @@ def test_blocked_pipeline_downgrade_survives_full_review_readiness_construction(
     assert readiness.state.value == "manual_required"
     assert ReadinessReasonV2.COVERAGE_FAILURE in readiness.reason_codes
     assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+
+
+def test_model_uncertainty_downgrade_survives_full_review_readiness_construction() -> None:
+    """Same class of proof as `test_blocked_pipeline_downgrade_survives_
+    full_review_readiness_construction`, for the other reachable member of
+    `_MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2`: `MODEL_UNCERTAINTY` +
+    `POLICY_FAILURE` together must survive a real, fully-constructed
+    `ReviewReadinessV2`, not just the intermediate `ReadinessDecisionV2`."""
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, limitations=("model_uncertainty",))
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+    assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert ReadinessReasonV2.MODEL_UNCERTAINTY in decision.reason_codes
+
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=synthesis.findings, identity=manifest.identity,
+        evaluated_identity=manifest.identity, pr_state=PullRequestStateV2.OPEN, checks=[],
+    )
+
+    assert readiness.state.value == "manual_required"
+    assert ReadinessReasonV2.MODEL_UNCERTAINTY in readiness.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes
+
+
+def test_finding_confirmation_required_downgrade_survives_full_review_readiness_construction() -> None:
+    """Same class of proof, for `FINDING_CONFIRMATION_REQUIRED` -- the one
+    member of the safe set whose own contract invariant additionally
+    requires a matching blocker naming a real, pending, actionable new
+    finding. Proves the required-check wiring does not disturb that
+    finding-confirmation machinery."""
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    finding = _new_finding(finding_id="finding-3", head_sha=manifest.identity.head_sha)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report, findings=(finding,))
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+    assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
+    assert ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED in decision.reason_codes
+
+    assessment = _assess_required_checks_v2(verified_checks=(), required_check_names=("pytest",))
+    adjusted = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+
+    readiness = _assemble_review_readiness_v2(
+        decision=adjusted, findings=synthesis.findings, identity=manifest.identity,
+        evaluated_identity=manifest.identity, pr_state=PullRequestStateV2.OPEN, checks=[],
+    )
+
+    assert readiness.state.value == "manual_required"
+    assert ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED in readiness.reason_codes
+    assert ReadinessReasonV2.POLICY_FAILURE in readiness.reason_codes

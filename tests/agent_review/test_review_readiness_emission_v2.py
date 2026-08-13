@@ -407,3 +407,85 @@ def test_produce_review_readiness_propagates_a_forged_submission_uncaught(tmp_pa
         )
 
     assert exc_info.value.reason_code == INDEPENDENT_SEMANTIC_JUDGE_REQUIRED_REASON_V2
+
+
+def test_produce_review_readiness_emits_stale_even_when_the_trusted_profile_has_drifted_since(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed. `produce_review_
+    readiness_v2` used to call `_verify_and_assess_required_checks_v2`
+    UNCONDITIONALLY, before ever looking at `decision.state` -- so even an
+    EMPTY submission alongside a genuinely `STALE` decision could be
+    refused if `--target-profile` (a live, base/default checkout) had
+    moved since `evaluated_identity` was computed, contradicting `_apply_
+    required_check_assessment_v2`'s own documented guarantee that "STALE
+    is sovereign... never consulted". Reproduced before the fix: an empty
+    submission against a STALE decision, with the trusted profile rewritten
+    to a DIFFERENT required-check set after `evaluated_identity.profile_
+    hash` was computed, raised `RequiredCheckReadinessErrorV2` instead of
+    emitting the STALE artifact. Fixed by moving the STALE short-circuit
+    into `produce_review_readiness_v2` itself, before the `#201-C0` call --
+    a STALE decision no longer touches the boundary at all."""
+
+    import json
+
+    from app.agent_review.authoritative_ci_snapshot_v2 import parse_authoritative_ci_snapshot_v2
+    from app.agent_review.contracts_v2 import ReadinessReasonV2, RunOriginV2
+    from app.agent_review.review_readiness_emission_v2 import produce_review_readiness_v2
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import TOOLCHAIN_DIGEST, _snapshot_dict
+
+    profile_root, profile_hash = _profile_bound_identity(tmp_path, required_checks=["pytest"])
+    manifest, report = _fully_reviewed_manifest_and_report(profile_hash=profile_hash)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies(),
+        stale_reason_codes=frozenset({ReadinessReasonV2.HEAD_MISMATCH}),
+    )
+    assert decision.state is ReadinessStateV2.STALE
+
+    # The trusted profile "moves" after evaluated_identity.profile_hash was
+    # computed -- rewrite it with a different required-check set.
+    profile_file = profile_root / ".aiops" / "target-profile.v2.yaml"
+    profile_file.write_text(
+        profile_file.read_text().replace("    - pytest\n", "    - pytest\n    - mypy\n", 1), encoding="utf-8"
+    )
+    policy_file = profile_root / ".aiops" / "authoritative-checks.v2.yaml"
+    policy_file.write_text(
+        policy_file.read_text()
+        + """  - check_name: mypy
+    workflow_path: .github/workflows/authoritative-checks.yml
+    job_name: authoritative mypy
+    verifier_identity: github-actions
+    producer_kind: base_owned_workflow_run
+    producer_workflow:
+      repository: mglpsw/aiops-orchestrator
+      path: .github/workflows/authoritative-checks.yml
+      sha: "4f9a2c7e13b8d05e6a1c9f3427d8b0e5c2a71f96"
+    producer_workflow_ref: refs/heads/master
+    permitted_conclusions:
+      - success
+      - failure
+    origin_rules:
+      pull_request: synthetic_merge_parentage
+""",
+        encoding="utf-8",
+    )
+
+    origin = RunOriginV2(event_type="pull_request", event_action="synchronize", delivery_id="delivery-1")
+    empty_snapshot = parse_authoritative_ci_snapshot_v2(json.dumps(_snapshot_dict([])))
+    current_identity = manifest.identity.model_copy(update={"head_sha": "9" * 40})
+
+    readiness = produce_review_readiness_v2(
+        decision=decision,
+        findings=synthesis.findings,
+        identity=current_identity,
+        evaluated_identity=manifest.identity,
+        pr_state=PullRequestStateV2.OPEN,
+        checks=[],
+        provenance=[],
+        origin=origin,
+        snapshot=empty_snapshot,
+        toolchain_digest=TOOLCHAIN_DIGEST,
+        target_profile_root=str(profile_root),
+    )
+
+    assert readiness.state == ReadinessStateV2.STALE.value
+    assert readiness.checks == []
