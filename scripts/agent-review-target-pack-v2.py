@@ -7,8 +7,9 @@ INTEGRATION. #203 MUST NEVER CREATE AUTHORITY, FORK THE ENGINE, OR SILENTLY
 PROMOTE ROLLOUT.`
 
 This first slice ships two of the seven subcommands named in the
-Execution-Ready Engineering Specification (`/root/.claude/plans/
-203-agentreview-v2-target-pack.md`) as a coherent, tested unit:
+Execution-Ready Engineering Specification
+(`docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`) as a coherent,
+tested unit:
 
     agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH
     agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH
@@ -51,13 +52,18 @@ from app.agent_review.target_pack_build_v2 import (  # noqa: E402
     load_seed_content_by_path_v2,
 )
 from app.agent_review.target_pack_doctor_v2 import run_doctor_v2  # noqa: E402
+from app.agent_review.target_pack_manifest_v2 import TargetPackFileOwnershipV2  # noqa: E402
 from app.agent_review.target_pack_install_v2 import (  # noqa: E402
     RECEIPT_RELATIVE_PATH_V2,
     TargetPackInstallError,
     apply_install_plan_v2,
     write_receipt_v2,
 )
-from app.agent_review.target_pack_plan_v2 import PlanError, compute_install_plan_v2  # noqa: E402
+from app.agent_review.target_pack_plan_v2 import (  # noqa: E402
+    PlanError,
+    compute_install_plan_v2,
+    validate_rollout_within_pack_capability_v2,
+)
 from app.agent_review.target_pack_receipt_v2 import (  # noqa: E402
     TargetInstallReceiptV2,
     compute_target_install_receipt_hash_v2,
@@ -116,6 +122,21 @@ def _cmd_init(args: argparse.Namespace) -> int:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
 
+    # Adversarial review finding, confirmed and fixed: nothing previously
+    # checked `--rollout` against what this pack version can actually
+    # deliver -- `init --rollout shadow_full` exited 0 and wrote
+    # `rollout_mode: shadow_full` into the receipt even though this slice
+    # ships no trusted-check integration at all. Checked before any
+    # filesystem write (`compute_install_plan_v2`/`apply_install_plan_v2`
+    # come after), so a refused request leaves nothing behind.
+    try:
+        validate_rollout_within_pack_capability_v2(
+            requested=args.rollout, max_supported=manifest.max_supported_rollout_mode
+        )
+    except PlanError as exc:
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return 1
+
     plan = compute_install_plan_v2(manifest=manifest, target_root=target_root, previous_receipt=None)
     seed_content = load_seed_content_by_path_v2(toolrepo_root=toolrepo_root)
 
@@ -127,24 +148,50 @@ def _cmd_init(args: argparse.Namespace) -> int:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
 
+    # Adversarial review finding, confirmed and fixed: `generated_file_
+    # hashes`/`target_owned_paths` used to be derived from `written` --
+    # "whatever `apply_install_plan_v2` actually wrote THIS invocation" --
+    # rather than from the manifest's own ownership classification.
+    # Reproduced, two symptoms of the same root cause: (1) on a FRESH
+    # `init`, the TARGET_OWNED profile is WRITE_NEW (nothing existed
+    # before), lands in `written`, and therefore was recorded in
+    # `generated_file_hashes` even though the contract states that field
+    # holds UPSTREAM_GENERATED hashes only -- the same path was
+    # simultaneously claimed as both pack-generated content and target-
+    # owned content; (2) on a SECOND, idempotent `init` against the same
+    # target, the profile is SKIP_TARGET_OWNED (nothing written this run),
+    # so it silently dropped out of `target_owned_paths` entirely --
+    # `target_owned_paths` is supposed to be a stable declaration of what
+    # this pack version considers target-owned, not a diary of this
+    # invocation's writes. Fixed: both fields are now derived from each
+    # `PlannedFileActionV2.ownership` (the manifest's own classification,
+    # unaffected by whether a write actually happened this run), never
+    # from `written`.
     generated_file_hashes = {
         action.path: action.seed_content_sha256
         for action in plan.file_actions
-        if action.path in written
+        if action.ownership is TargetPackFileOwnershipV2.UPSTREAM_GENERATED
     }
+    target_owned_paths = tuple(
+        action.path for action in plan.file_actions if action.ownership is TargetPackFileOwnershipV2.TARGET_OWNED
+    )
     # Adversarial review finding, confirmed and fixed: this used to hardcode
     # an all-zero sentinel here even though the real hash of the profile
     # `init` just wrote is trivially available -- the exact same class of
     # "fabricated-but-syntactically-valid identity" bug fixed for
     # toolrepo_sha above, just for a value that happens to be computable
-    # rather than one that must be refused when unavailable. There is no
-    # policy artifact shipped in this slice at all (the trusted-check
-    # inventory schema is deferred, spec `§12`), so target_policy_hash has
-    # no real value to compute yet -- kept as an explicit placeholder,
-    # never silently treated as meaningful; a future commit that ships a
-    # real policy artifact must compute this the same way, not merely
-    # leave the sentinel unquestioned.
+    # rather than one that must be refused when unavailable.
     target_profile_hash = compute_profile_hash_v2(load_target_profile_v2(target_root))
+    # There is no policy artifact shipped in this slice at all (the
+    # trusted-check inventory schema is deferred, spec `§12`). A second
+    # adversarial finding, confirmed and fixed: this used to fabricate a
+    # digest ("0" * 64) for `target_policy_hash` too -- the same class of
+    # bug as the two above, just for a value with no real content to hash
+    # at all. `target_policy_hash` is now `None` (the contract's own
+    # explicit "no policy artifact yet" representation, not a placeholder
+    # digest); a future commit that ships a real policy artifact must
+    # compute this the same way `target_profile_hash` is computed here.
+    target_policy_hash = None
     receipt_without_hash = {
         "schema_id": "agent-review.target-install-receipt.v2",
         "schema_version": 2,
@@ -152,10 +199,10 @@ def _cmd_init(args: argparse.Namespace) -> int:
         "toolrepo_sha": manifest.toolrepo_sha,
         "target_repo": args.target_repo,
         "target_profile_hash": target_profile_hash,
-        "target_policy_hash": "0" * 64,  # placeholder: no policy artifact in this slice yet
+        "target_policy_hash": target_policy_hash,
         "review_pack_hashes": {},
         "generated_file_hashes": generated_file_hashes,
-        "target_owned_paths": tuple(generated_file_hashes),
+        "target_owned_paths": target_owned_paths,
         "required_capabilities": manifest.required_capabilities,
         "expected_runner_labels": (),
         "required_secret_names": (),

@@ -135,6 +135,120 @@ def test_missing_required_flag_is_refused_by_argparse_not_a_traceback(tmp_path: 
     assert "Traceback" not in result.stderr
 
 
+def test_init_refuses_a_rollout_the_pack_does_not_yet_support(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed: `init --rollout
+    shadow_full` used to exit 0 and write `rollout_mode: shadow_full` into
+    the receipt even though this slice ships no trusted-check inventory,
+    workflow integration, or `ReviewReadinessV2` wiring at all -- the
+    spec's own definition of `shadow_full`. Must refuse cleanly instead,
+    and leave nothing written."""
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+            "--rollout", "shadow_full",
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "target_pack_plan_rollout_exceeds_pack_capability" in result.stderr
+    assert not (tmp_path / ".aiops" / "install-receipt.v2.json").exists()
+
+
+def test_init_still_accepts_the_rollout_this_slice_genuinely_supports(tmp_path: Path) -> None:
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+            "--rollout", "shadow_minimal",
+        ]
+    )
+
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads((tmp_path / ".aiops" / "install-receipt.v2.json").read_text(encoding="utf-8"))
+    assert receipt["rollout_mode"] == "shadow_minimal"
+
+
+def test_init_never_records_a_target_owned_file_in_generated_file_hashes(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed: on a FRESH `init`,
+    the TARGET_OWNED profile is a `WRITE_NEW` action (nothing existed
+    before) and used to be recorded in `generated_file_hashes`, which the
+    contract reserves for UPSTREAM_GENERATED content only -- the same path
+    was simultaneously claimed as pack-generated and target-owned."""
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    receipt = json.loads((tmp_path / ".aiops" / "install-receipt.v2.json").read_text(encoding="utf-8"))
+    assert receipt["generated_file_hashes"] == {}
+    assert receipt["target_owned_paths"] == [".aiops/target-profile.v2.yaml"]
+
+
+def test_init_twice_preserves_target_owned_paths_in_the_receipt(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed: on a SECOND,
+    idempotent `init` the TARGET_OWNED profile is `SKIP_TARGET_OWNED`
+    (nothing written this invocation), and `target_owned_paths` used to be
+    derived from `written` -- so it silently went from `[".aiops/target-
+    profile.v2.yaml"]` to `[]`, even though the pack's declared ownership
+    of that path never changed. `target_owned_paths` must be a stable
+    declaration of ownership, not a diary of one invocation's writes."""
+
+    base_args = [
+        "init",
+        "--target-root", str(tmp_path),
+        "--toolrepo-root", str(REPO_ROOT),
+        "--target-repo", "owner/repo",
+        "--pack-version", "0.1.0",
+    ]
+    assert _run(base_args).returncode == 0
+    assert _run(base_args).returncode == 0
+
+    receipt = json.loads((tmp_path / ".aiops" / "install-receipt.v2.json").read_text(encoding="utf-8"))
+    assert receipt["target_owned_paths"] == [".aiops/target-profile.v2.yaml"]
+
+
+def test_init_never_fabricates_a_target_policy_hash(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed: `init` used to
+    hardcode `target_policy_hash: "0" * 64` even though no policy artifact
+    ships in this slice at all -- a syntactically valid, self-hash-
+    consistent all-zero digest that a consumer of this schema could not
+    distinguish from a real policy hash. Same class of bug as `toolrepo_
+    sha`/`target_profile_hash` above, for a value that has no real content
+    to hash yet at all: absence must be `null`, never a fabricated
+    digest."""
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    receipt = json.loads((tmp_path / ".aiops" / "install-receipt.v2.json").read_text(encoding="utf-8"))
+    assert receipt["target_policy_hash"] is None
+    assert receipt["target_policy_hash"] != "0" * 64
+
+
 def test_init_computes_a_real_target_profile_hash_not_a_sentinel(tmp_path: Path) -> None:
     """Adversarial review finding, confirmed and fixed: `init` used to
     hardcode `target_profile_hash: "0"*64` even though the real hash of

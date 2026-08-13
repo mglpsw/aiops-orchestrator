@@ -34,6 +34,7 @@ def _manifest(*entries: GeneratedFileEntryV2) -> TargetPackManifestV2:
         schema_digests={"x.json": "a" * 64},
         required_capabilities=(),
         min_engine_contract_version=2,
+        max_supported_rollout_mode="shadow_minimal",
     )
 
 

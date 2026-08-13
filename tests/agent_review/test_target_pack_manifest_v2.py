@@ -27,6 +27,7 @@ def _manifest(**overrides: object) -> TargetPackManifestV2:
         "schema_digests": {"agent-review.run.v2.schema.json": "b" * 64},
         "required_capabilities": ("router_transport",),
         "min_engine_contract_version": 2,
+        "max_supported_rollout_mode": "shadow_minimal",
     }
     fields.update(overrides)
     return TargetPackManifestV2(**fields)
