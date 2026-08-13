@@ -206,10 +206,12 @@ def _assemble_review_readiness_v2(
 
     Internal since `#201-C` (R2): the only caller in this codebase is
     ``produce_review_readiness_v2``, immediately above, which always
-    supplies ``checks`` as ``assessment.checks`` -- the exact tuple
-    ``#201-C0``'s verifier accepted, never a raw caller-supplied array. See
-    the module docstring for why this function no longer accepts one
-    directly.
+    supplies ``checks`` as ``assessment.checks`` -- the same verified set
+    ``#201-C0``'s verifier accepted (canonicalized by ``check_name``, never
+    left in caller-submission order -- see ``required_check_readiness_v2``'s
+    own "Canonical check order" section), never a raw caller-supplied
+    array. See the module docstring for why this function no longer
+    accepts one directly.
 
     ``identity`` and ``evaluated_identity`` are the SAME object except when
     the caller has independently determined staleness (the same case

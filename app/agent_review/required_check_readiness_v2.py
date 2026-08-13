@@ -106,6 +106,48 @@ fixed at the pure-composition (Class B) layer, prospectively, before `#203`
 makes it reachable. `failed_check_names`/`status` now account for every
 verified check's conclusion, not only required-named ones.
 
+## Canonical check order
+
+`assessment.checks` is sorted by `check_name`, never left in the order the
+caller happened to submit. Post-merge review finding on PR #220
+(`#220 (comment) discussion_r3773499142`), confirmed and fixed: the derived
+name lists (`failed_check_names`/`missing_check_names`) were already sorted,
+but `checks` itself preserved submission order, and
+`produce_review_readiness_v2` copies that tuple verbatim into
+`ReviewReadinessV2.checks`. Two semantically identical runs -- the same
+legitimated checks, verified against the same snapshot, differing only in
+the sequence the caller listed them -- therefore serialized to different
+artifact bytes. Reproduced directly: identical status and identical name
+lists, but `a.checks != b.checks` and different serialized bytes.
+
+Sorting by `check_name` alone is a TOTAL order here, not a partial one that
+would need a tie-break -- but only within the already-legitimated domain
+this function receives, and the reason is two steps, not one:
+`compute_required_check_digest_v2` hashes the entire canonical
+`RequiredCheckResultV2`, so two checks sharing only a `check_name` do NOT
+thereby share a digest -- differing in `conclusion`/`head_sha`/etc. would
+still differ in digest, so a bare name match is not by itself grounds for
+anything. What closes the gap is the caller,
+`_verify_and_assess_required_checks_v2`, which always calls
+`reassemble_and_verify_required_checks_v2` before assessment, and that
+verifier re-derives each check from a fixed identity/snapshot/policy/origin
+-- a deterministic process that authorizes at most ONE digest per
+`check_name` (a CI snapshot records one result per check, not several). So
+if two entries in a VERIFIED submission share a `check_name`, they were
+both re-derived against that same single authorized digest and are
+therefore byte-identical -- and `verify_required_check_provenance_set_v2`
+already refuses outright any submission whose digests collide
+(`len(set(digests)) != len(digests)`), before assessment ever runs. Two
+verified checks can therefore never legitimately share a name at all (the
+same reasoning the existing `by_name` comment in
+`_assess_required_checks_v2` records), which is what makes `check_name` a
+sufficient, tie-break-free sort key for `verified_checks` specifically --
+not a general property of `RequiredCheckResultV2`.
+
+This is ordering normalization only. Every check is preserved -- no filter,
+no dedup, no substitution -- so nothing about `status`, precedence, or the
+"a red check is never dropped" guarantee above changes.
+
 None of the three is `READY` by itself; connecting that to a
 `ReadinessStateV2` is `readiness_decision_v2.
 _apply_required_check_assessment_v2`'s job, not this module's.
@@ -214,9 +256,14 @@ def _assess_required_checks_v2(
     else:
         status = RequiredCheckStatusV2.SATISFIED
 
+    # Canonicalized by `check_name` -- see the module docstring's
+    # "Canonical check order" section. Every check is preserved; only the
+    # order is normalized.
+    canonical_checks = tuple(sorted(verified_checks, key=lambda check: check.check_name))
+
     return RequiredCheckReadinessAssessmentV2(
         status=status,
-        checks=verified_checks,
+        checks=canonical_checks,
         failed_check_names=failed_check_names,
         missing_check_names=missing_check_names,
     )

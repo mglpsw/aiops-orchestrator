@@ -175,7 +175,14 @@ def test_a_red_non_required_check_never_produces_satisfied() -> None:
     assert assessment.status is not RequiredCheckStatusV2.SATISFIED
     assert "lint" in assessment.failed_check_names
     assert assessment.missing_check_names == ()
-    assert assessment.checks == checks
+    # Unfiltered: every submitted-and-verified check survives, the red
+    # non-required one included -- which is what this test is about. Compared
+    # as a set, not positionally: `assessment.checks` is canonicalized by
+    # `check_name` (see the module docstring's "Canonical check order"), so
+    # positional equality with the SUBMISSION order would assert the very
+    # caller-order dependence that PR #220's post-merge review removed.
+    assert set(assessment.checks) == set(checks)
+    assert len(assessment.checks) == len(checks)
 
 
 def test_missing_and_failed_names_are_sorted_deterministically() -> None:
@@ -194,7 +201,16 @@ def test_missing_and_failed_names_are_sorted_deterministically() -> None:
 
 def test_check_order_does_not_change_the_assessment() -> None:
     """C-T19 at this layer: which order `checks`/`required_check_names`
-    arrive in must never change the derived status or name lists."""
+    arrive in must never change the derived status or name lists.
+
+    Post-merge review finding on PR #220 (`discussion_r3773499142`),
+    confirmed and fixed: this test used to assert ONLY the status and the
+    two name lists, and passed while `assessment.checks` still carried the
+    caller's submission order verbatim -- which
+    `produce_review_readiness_v2` then copies into
+    `ReviewReadinessV2.checks`, making semantically identical runs
+    serialize to different artifact bytes. The `checks` assertion below is
+    the one that was missing."""
 
     checks_a = (
         _check("alpha", RequiredCheckConclusionV2.SUCCESS),
@@ -208,6 +224,31 @@ def test_check_order_does_not_change_the_assessment() -> None:
     assert a.status is b.status
     assert a.failed_check_names == b.failed_check_names
     assert a.missing_check_names == b.missing_check_names
+    assert a.checks == b.checks
+    assert tuple(check.check_name for check in a.checks) == ("alpha", "beta")
+
+
+def test_canonical_check_order_preserves_every_check_including_a_red_one() -> None:
+    """Ordering normalization only: no filter, no dedup, no substitution.
+    The red check in particular must still be present -- the "a verified
+    failure is never dropped" guarantee is independent of ordering."""
+
+    checks = (
+        _check("zeta", RequiredCheckConclusionV2.SUCCESS),
+        _check("alpha", RequiredCheckConclusionV2.FAILURE),
+        _check("mid", RequiredCheckConclusionV2.SUCCESS),
+    )
+
+    assessment = _assess_required_checks_v2(
+        verified_checks=checks, required_check_names=("alpha", "mid", "zeta")
+    )
+
+    assert tuple(check.check_name for check in assessment.checks) == ("alpha", "mid", "zeta")
+    assert len(assessment.checks) == len(checks)
+    assert set(assessment.checks) == set(checks)
+    assert assessment.status is RequiredCheckStatusV2.FAILED
+    red = next(check for check in assessment.checks if check.check_name == "alpha")
+    assert red.conclusion is RequiredCheckConclusionV2.FAILURE
 
 
 @pytest.mark.parametrize("conclusion", [RequiredCheckConclusionV2.PENDING, RequiredCheckConclusionV2.MISSING])
