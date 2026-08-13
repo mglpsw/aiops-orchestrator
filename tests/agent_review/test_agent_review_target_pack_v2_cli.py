@@ -135,6 +135,62 @@ def test_missing_required_flag_is_refused_by_argparse_not_a_traceback(tmp_path: 
     assert "Traceback" not in result.stderr
 
 
+def test_init_computes_a_real_target_profile_hash_not_a_sentinel(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed: `init` used to
+    hardcode `target_profile_hash: "0"*64` even though the real hash of
+    the profile it just wrote is trivially available. Same class of
+    fabricated-identity bug as `toolrepo_sha` above."""
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    receipt = json.loads((tmp_path / ".aiops" / "install-receipt.v2.json").read_text(encoding="utf-8"))
+    assert receipt["target_profile_hash"] != "0" * 64
+
+    from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_v2
+
+    expected = compute_profile_hash_v2(load_target_profile_v2(tmp_path))
+    assert receipt["target_profile_hash"] == expected
+
+
+def test_init_refuses_cleanly_not_a_traceback_when_a_preexisting_target_owned_profile_is_invalid(
+    tmp_path: Path,
+) -> None:
+    """Adversarial review finding, confirmed and fixed: computing a real
+    target_profile_hash means `init` now READS whatever profile is
+    already on disk (relevant on a second `init` against a target whose
+    TARGET_OWNED profile was hand-edited into an invalid state) --
+    reproduced as an UNCAUGHT traceback before `main()`'s except tuple was
+    extended to cover `TargetProfileLoadErrorV2`."""
+
+    (tmp_path / ".aiops").mkdir(parents=True)
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(
+        "not: valid: yaml: at: all: :::", encoding="utf-8"
+    )
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "target_profile_unreadable" in result.stderr
+
+
 def test_init_refuses_cleanly_instead_of_fabricating_a_toolrepo_sha(tmp_path: Path) -> None:
     """Adversarial review finding, confirmed and fixed: a `--toolrepo-root`
     that is not a real git checkout previously made `init` succeed anyway,

@@ -40,6 +40,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from app.agent_review.profile_loader_v2 import (  # noqa: E402
+    TargetProfileLoadErrorV2,
+    compute_profile_hash_v2,
+    load_target_profile_v2,
+)
 from app.agent_review.target_pack_build_v2 import (  # noqa: E402
     TargetPackBuildError,
     build_target_pack_manifest_v2,
@@ -127,14 +132,27 @@ def _cmd_init(args: argparse.Namespace) -> int:
         for action in plan.file_actions
         if action.path in written
     }
+    # Adversarial review finding, confirmed and fixed: this used to hardcode
+    # an all-zero sentinel here even though the real hash of the profile
+    # `init` just wrote is trivially available -- the exact same class of
+    # "fabricated-but-syntactically-valid identity" bug fixed for
+    # toolrepo_sha above, just for a value that happens to be computable
+    # rather than one that must be refused when unavailable. There is no
+    # policy artifact shipped in this slice at all (the trusted-check
+    # inventory schema is deferred, spec `§12`), so target_policy_hash has
+    # no real value to compute yet -- kept as an explicit placeholder,
+    # never silently treated as meaningful; a future commit that ships a
+    # real policy artifact must compute this the same way, not merely
+    # leave the sentinel unquestioned.
+    target_profile_hash = compute_profile_hash_v2(load_target_profile_v2(target_root))
     receipt_without_hash = {
         "schema_id": "agent-review.target-install-receipt.v2",
         "schema_version": 2,
         "pack_version": manifest.pack_version,
         "toolrepo_sha": manifest.toolrepo_sha,
         "target_repo": args.target_repo,
-        "target_profile_hash": "0" * 64,
-        "target_policy_hash": "0" * 64,
+        "target_profile_hash": target_profile_hash,
+        "target_policy_hash": "0" * 64,  # placeholder: no policy artifact in this slice yet
         "review_pack_hashes": {},
         "generated_file_hashes": generated_file_hashes,
         "target_owned_paths": tuple(generated_file_hashes),
@@ -213,7 +231,14 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         return args.handler(args)
-    except (PlanError, TargetPackInstallError, TargetPackBuildError) as exc:
+    except (PlanError, TargetPackInstallError, TargetPackBuildError, TargetProfileLoadErrorV2) as exc:
+        # TargetProfileLoadErrorV2 added alongside the fix that made
+        # _cmd_init compute a real target_profile_hash from whatever is
+        # actually on disk (a pre-existing, target-customized profile that
+        # is now invalid) instead of a hardcoded sentinel -- reproduced as
+        # an uncaught traceback before this except clause was extended,
+        # confirming the new read path needed the same boundary-refusal
+        # discipline every other CLI-detected failure already gets here.
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
     except ValidationError as exc:
