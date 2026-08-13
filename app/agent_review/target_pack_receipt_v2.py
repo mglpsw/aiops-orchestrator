@@ -94,7 +94,23 @@ class TargetInstallReceiptV2(ContractV2Model):
     toolrepo_sha: GitSha
     target_repo: SafeText
     target_profile_hash: Sha256
-    target_policy_hash: Sha256
+    # `None` means exactly "no policy artifact exists for this install yet"
+    # -- never a digest. Adversarial review finding, confirmed and fixed:
+    # this field used to be a plain `Sha256`, and its only writer
+    # (`_cmd_init`) filled it with `"0" * 64` because no policy artifact
+    # ships in this slice at all. A syntactically valid, self-hash-
+    # consistent all-zero digest is structurally indistinguishable from a
+    # real policy hash to any consumer of this schema -- exactly the
+    # "fabricated-but-syntactically-valid identity" class already fixed
+    # for `toolrepo_sha` and `target_profile_hash` in the same review.
+    # Because this contract is new and unreleased (issue #203, this PR),
+    # the field itself is corrected now rather than deferred: absence is
+    # represented as `None`, and a future slice that ships a real policy
+    # artifact computes a genuine digest the same way `target_profile_
+    # hash` already does.
+    target_policy_hash: Sha256 | None = Field(
+        default=None, description="sha256 of the target policy artifact, or null if none exists yet"
+    )
     review_pack_hashes: Mapping[SafeIdentifier, Sha256] = Field(
         default_factory=dict, json_schema_extra={"additionalProperties": False}
     )

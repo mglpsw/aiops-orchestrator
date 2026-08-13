@@ -153,9 +153,18 @@
       "type": "array"
     },
     "target_policy_hash": {
-      "pattern": "^[0-9a-f]{64}$",
-      "title": "Target Policy Hash",
-      "type": "string"
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "sha256 of the target policy artifact, or null if none exists yet",
+      "title": "Target Policy Hash"
     },
     "target_profile_hash": {
       "pattern": "^[0-9a-f]{64}$",
@@ -181,7 +190,6 @@
     "toolrepo_sha",
     "target_repo",
     "target_profile_hash",
-    "target_policy_hash",
     "rollout_mode",
     "compatibility",
     "receipt_hash"
