@@ -62,6 +62,7 @@ RECEIPT_RELATIVE_PATH_V2 = ".aiops/install-receipt.v2.json"
 
 RECEIPT_SECRET_NAME_LOOKS_LIKE_VALUE_REASON_V2 = "target_install_receipt_secret_name_looks_like_value"
 RECEIPT_HASH_MISMATCH_REASON_V2 = "target_install_receipt_hash_mismatch"
+RECEIPT_TARGET_OWNED_PATHS_MISMATCH_REASON_V2 = "target_install_receipt_target_owned_paths_mismatch"
 
 # A NAME is short, identifier-shaped. Anything long, high-entropy, or
 # containing characters a real secret VALUE would (base64/hex runs well
@@ -92,7 +93,15 @@ class TargetInstallReceiptV2(ContractV2Model):
     schema_version: Literal[2]
     pack_version: SafeText
     toolrepo_sha: GitSha
+    # Digest of the canonical manifest bytes, not merely the toolrepo SHA.
+    # A tree can legitimately contain more than one manifest builder, so the
+    # receipt binds the exact install description consumed during planning.
+    manifest_digest: Sha256
     target_repo: SafeText
+    # Portable identity only: repository + relative install root, never an
+    # absolute workstation path. Local inode/device identity is deliberately
+    # kept out of this published contract and belongs to the apply boundary.
+    portable_target_root_identity: Sha256
     target_profile_hash: Sha256
     # `None` means exactly "no policy artifact exists for this install yet"
     # -- never a digest. Adversarial review finding, confirmed and fixed:
@@ -117,6 +126,12 @@ class TargetInstallReceiptV2(ContractV2Model):
     generated_file_hashes: Mapping[SafeText, Sha256] = Field(
         default_factory=dict, json_schema_extra={"additionalProperties": False}
     )
+    # Raw byte hashes are separate from the semantic profile/policy hashes
+    # above. A formatting-only edit may preserve semantic identity but still
+    # requires explicit reconciliation before a receipt can claim those bytes.
+    target_owned_file_hashes: Mapping[SafeText, Sha256] = Field(
+        default_factory=dict, json_schema_extra={"additionalProperties": False}
+    )
     target_owned_paths: tuple[SafeText, ...] = ()
     required_capabilities: tuple[SafeIdentifier, ...] = ()
     expected_runner_labels: tuple[SafeIdentifier, ...] = ()
@@ -132,6 +147,12 @@ class TargetInstallReceiptV2(ContractV2Model):
         for name in self.required_secret_names:
             if not _SECRET_NAME_RE.fullmatch(name):
                 raise ValueError(RECEIPT_SECRET_NAME_LOOKS_LIKE_VALUE_REASON_V2)
+        return self
+
+    @model_validator(mode="after")
+    def validate_target_owned_hashes_match_declared_paths(self) -> TargetInstallReceiptV2:
+        if set(self.target_owned_file_hashes) != set(self.target_owned_paths):
+            raise ValueError(RECEIPT_TARGET_OWNED_PATHS_MISMATCH_REASON_V2)
         return self
 
     @model_validator(mode="after")
@@ -169,3 +190,16 @@ def canonical_target_install_receipt_bytes_v2(receipt: TargetInstallReceiptV2) -
 
 def compute_target_install_receipt_hash_v2(receipt: TargetInstallReceiptV2) -> str:
     return hashlib.sha256(canonical_target_install_receipt_bytes_v2(receipt)).hexdigest()
+
+
+def compute_portable_target_root_identity_v2(*, target_repo: str, root_relative_path: str = ".") -> str:
+    """Return the public, path-free identity of a target install root.
+
+    The local realpath/device/inode tuple is intentionally not serialised in
+    a receipt or operation plan because it would disclose a target host. The
+    writer revalidates that local identity separately at apply time.
+    """
+
+    return hashlib.sha256(
+        _canonical_json_bytes_v2({"target_repo": target_repo, "root_relative_path": root_relative_path})
+    ).hexdigest()

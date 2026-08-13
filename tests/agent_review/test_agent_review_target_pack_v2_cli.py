@@ -18,10 +18,55 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CLI_PATH = REPO_ROOT / "scripts" / "agent-review-target-pack-v2.py"
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_raw(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(CLI_PATH), *args], capture_output=True, text=True, cwd=str(REPO_ROOT)
     )
+
+
+def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Exercise an explicitly preview-bound init for legacy apply tests."""
+
+    if not args or args[0] != "init" or "--apply" in args:
+        return _run_raw(args)
+    preview = _run_raw(args)
+    if preview.returncode != 0:
+        return preview
+    plan_hash = json.loads(preview.stdout)["operation_plan_hash"]
+    return _run_raw([*args, "--apply", "--expected-plan-sha256", plan_hash])
+
+
+def test_init_is_write_zero_without_apply(tmp_path: Path) -> None:
+    result = _run_raw(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / ".aiops").exists()
+    preview = json.loads(result.stdout)
+    assert preview["operation"] == "init"
+    assert preview["operation_plan_hash"]
+
+
+def test_init_refuses_an_unmatched_expected_plan_without_mutation(tmp_path: Path) -> None:
+    args = [
+        "init",
+        "--target-root", str(tmp_path),
+        "--toolrepo-root", str(REPO_ROOT),
+        "--target-repo", "owner/repo",
+        "--pack-version", "0.1.0",
+        "--apply", "--expected-plan-sha256", "0" * 64,
+    ]
+    result = _run_raw(args)
+    assert result.returncode == 2
+    assert "target_pack_cli_expected_plan_mismatch" in result.stderr
+    assert not (tmp_path / ".aiops").exists()
 
 
 def test_init_creates_the_generated_set_and_a_receipt(tmp_path: Path) -> None:
@@ -73,9 +118,105 @@ def test_init_twice_never_overwrites_the_target_owned_profile(tmp_path: Path) ->
     profile_path.write_text(profile_path.read_text(encoding="utf-8") + "\n# target customization\n", encoding="utf-8")
     customized = profile_path.read_text(encoding="utf-8")
 
-    result = _run(base_args)
+    result = _run([*base_args, "--accept-target-owned", ".aiops/target-profile.v2.yaml"])
     assert result.returncode == 0, result.stderr
     assert profile_path.read_text(encoding="utf-8") == customized
+
+
+def test_target_owned_reconciliation_requires_a_nominal_acceptance_and_never_overwrites(tmp_path: Path) -> None:
+    base_args = [
+        "init",
+        "--target-root", str(tmp_path),
+        "--toolrepo-root", str(REPO_ROOT),
+        "--target-repo", "owner/repo",
+        "--pack-version", "0.1.0",
+    ]
+    assert _run(base_args).returncode == 0
+    profile_path = tmp_path / ".aiops" / "target-profile.v2.yaml"
+    profile_path.write_text(profile_path.read_text(encoding="utf-8") + "\n# target customization\n", encoding="utf-8")
+    observed = profile_path.read_bytes()
+
+    preview = _run_raw(base_args)
+    assert preview.returncode == 0, preview.stderr
+    plan = json.loads(preview.stdout)
+    assert plan["actions"][0]["action"] == "RECONCILE_TARGET_OWNED_IDENTITY"
+    refused = _run_raw([*base_args, "--apply", "--expected-plan-sha256", plan["operation_plan_hash"]])
+    assert refused.returncode == 2
+    assert "target_owned_identity_acceptance_required" in refused.stderr
+    assert profile_path.read_bytes() == observed
+
+    accepting_preview = _run_raw([*base_args, "--accept-target-owned", ".aiops/target-profile.v2.yaml"])
+    accepting_plan = json.loads(accepting_preview.stdout)
+    applied = _run_raw(
+        [
+            *base_args,
+            "--accept-target-owned", ".aiops/target-profile.v2.yaml",
+            "--apply", "--expected-plan-sha256", accepting_plan["operation_plan_hash"],
+        ]
+    )
+    assert applied.returncode == 0, applied.stderr
+    assert profile_path.read_bytes() == observed
+
+
+def test_init_refuses_a_plan_bound_to_a_different_target_repository(tmp_path: Path) -> None:
+    base_args = [
+        "init",
+        "--target-root", str(tmp_path),
+        "--toolrepo-root", str(REPO_ROOT),
+        "--target-repo", "owner/repo",
+        "--pack-version", "0.1.0",
+    ]
+    assert _run(base_args).returncode == 0
+    foreign = _run_raw(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "other/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert foreign.returncode == 2
+    assert "target_pack_operation_foreign_identity" in foreign.stderr
+
+
+def test_init_refuses_a_valid_target_owned_profile_for_a_different_repository(tmp_path: Path) -> None:
+    (tmp_path / ".aiops").mkdir()
+    seed = (REPO_ROOT / "templates" / "agentreview-v2-target-pack" / "target-profile.v2.yaml").read_text(
+        encoding="utf-8"
+    )
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(
+        seed.replace("OWNER/REPO", "other/repo"), encoding="utf-8"
+    )
+    result = _run_raw(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 2
+    assert "target_pack_operation_foreign_identity" in result.stderr
+    assert not (tmp_path / ".aiops" / "install-receipt.v2.json").exists()
+
+
+def test_init_refuses_duplicate_nominal_target_owned_acceptance(tmp_path: Path) -> None:
+    result = _run_raw(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+            "--accept-target-owned", ".aiops/target-profile.v2.yaml",
+            "--accept-target-owned", ".aiops/target-profile.v2.yaml",
+        ]
+    )
+    assert result.returncode == 2
+    assert "target_pack_operation_duplicate_accepted_target_owned_path" in result.stderr
+    assert not (tmp_path / ".aiops").exists()
 
 
 def test_doctor_reports_unhealthy_before_init(tmp_path: Path) -> None:
@@ -206,7 +347,7 @@ def test_init_leaves_a_nonexistent_target_nonexistent_when_toolrepo_is_unresolva
     assert not target.exists()
 
 
-def test_init_still_accepts_the_rollout_this_slice_genuinely_supports(tmp_path: Path) -> None:
+def test_init_refuses_shadow_minimal_until_workflows_exist(tmp_path: Path) -> None:
     result = _run(
         [
             "init",
@@ -218,9 +359,8 @@ def test_init_still_accepts_the_rollout_this_slice_genuinely_supports(tmp_path: 
         ]
     )
 
-    assert result.returncode == 0, result.stderr
-    receipt = json.loads((tmp_path / ".aiops" / "install-receipt.v2.json").read_text(encoding="utf-8"))
-    assert receipt["rollout_mode"] == "shadow_minimal"
+    assert result.returncode != 0
+    assert "target_pack_plan_rollout_exceeds_pack_capability" in result.stderr
 
 
 def test_init_never_records_a_target_owned_file_in_generated_file_hashes(tmp_path: Path) -> None:
@@ -348,7 +488,7 @@ def test_init_refuses_cleanly_not_a_traceback_when_a_preexisting_target_owned_pr
 
     assert result.returncode != 0
     assert "Traceback" not in result.stderr
-    assert "target_profile_unreadable" in result.stderr
+    assert "target_owned_changed_invalid" in result.stderr
 
 
 def test_init_refuses_when_the_receipt_write_would_escape_target_root_via_a_symlink(tmp_path: Path) -> None:
@@ -382,6 +522,7 @@ def test_init_refuses_when_the_receipt_write_would_escape_target_root_via_a_syml
             "--toolrepo-root", str(REPO_ROOT),
             "--target-repo", "owner/repo",
             "--pack-version", "0.1.0",
+            "--accept-target-owned", ".aiops/target-profile.v2.yaml",
         ]
     )
 

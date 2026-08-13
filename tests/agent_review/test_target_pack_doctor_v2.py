@@ -14,6 +14,7 @@ from app.agent_review.target_pack_doctor_v2 import (
     DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2,
     DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2,
+    DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2,
     DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2,
     run_doctor_v2,
 )
@@ -21,8 +22,13 @@ from app.agent_review.target_pack_manifest_v2 import (
     GeneratedFileEntryV2,
     TargetPackFileOwnershipV2,
     TargetPackManifestV2,
+    compute_target_pack_manifest_digest_v2,
 )
-from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2, compute_target_install_receipt_hash_v2
+from app.agent_review.target_pack_receipt_v2 import (
+    TargetInstallReceiptV2,
+    compute_portable_target_root_identity_v2,
+    compute_target_install_receipt_hash_v2,
+)
 
 
 def _sha256(data: bytes) -> str:
@@ -110,11 +116,14 @@ def _receipt(required_secret_names: tuple[str, ...] = (), **overrides: object) -
         schema_version=2,
         pack_version="0.1.0",
         toolrepo_sha="1" * 40,
+        manifest_digest=compute_target_pack_manifest_digest_v2(_manifest()),
         target_repo="owner/repo",
+        portable_target_root_identity=compute_portable_target_root_identity_v2(target_repo="owner/repo"),
         target_profile_hash=_real_profile_hash(),
         target_policy_hash="b" * 64,
         review_pack_hashes={},
         generated_file_hashes={},
+        target_owned_file_hashes={},
         target_owned_paths=(),
         required_capabilities=(),
         expected_runner_labels=(),
@@ -246,6 +255,25 @@ def test_doctor_reports_unhealthy_when_receipt_profile_hash_does_not_match_the_l
 
     assert report.receipt.status == "invalid"
     assert report.receipt.reason_code == DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2
+
+
+def test_doctor_reports_unreconciled_target_owned_bytes_even_when_semantics_match(tmp_path: Path) -> None:
+    (tmp_path / ".aiops").mkdir()
+    profile_path = tmp_path / ".aiops" / "target-profile.v2.yaml"
+    profile_path.write_text(_VALID_PROFILE_YAML + "\n# formatting only\n", encoding="utf-8")
+    receipt = _receipt(
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8"))},
+    )
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+
+    assert report.profile.status == "present"
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2
     assert not report.is_healthy
 
 

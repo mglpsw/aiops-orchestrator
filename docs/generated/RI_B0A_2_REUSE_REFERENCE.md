@@ -52,7 +52,7 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 
 **`agent-review.run-fragment-coverage.v2`** — Proves that every diff fragment assigned to a chunk was actually reviewed (this repo's recent fail-closed coverage-proof work). RI-B0 has no concrete, currently-implemented consumer of raw fragment-coverage records today. Once RI-B0's own completeness/canonicality proof work begins (consuming CAEM's caem.assertion.v1/caem.proof-obligation.v1, both currently reserved), RI-B0 will most likely need a small adapter translating this coverage report into a completeness proof obligation -- not a direct reuse, since the two schemas serve different evidentiary roles (chunk-review completeness vs. a CAEM proof obligation's own resolution states).
 
-## Not applicable — no RI-B0 relevance today (13)
+## Not applicable — no RI-B0 relevance today (14)
 
 | Contract ID | Owner | RI-B0 role | Source |
 |---|---|---|---|
@@ -69,6 +69,7 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 | `agent-review.producer-attestation.v2` | aiops-orchestrator (app/agent_review/) | Not applicable to RI-B0. RI-B0 consumes readiness, never producer-level execution attestations. | `schemas/agent-review/v2/agent-review.producer-attestation.v2.schema.json` |
 | `agent-review.target-pack-manifest.v2` | aiops-orchestrator (app/agent_review/) | none: RI-B0 has no reason to read, cite, or depend on pack install-capability content. | `schemas/agent-review/v2/agent-review.target-pack-manifest.v2.schema.json` |
 | `agent-review.target-install-receipt.v2` | aiops-orchestrator (app/agent_review/) | none: RI-B0 has no reason to read, cite, or depend on install-state provenance. | `schemas/agent-review/v2/agent-review.target-install-receipt.v2.schema.json` |
+| `agent-review.target-pack-operation-plan.v2` | aiops-orchestrator (app/agent_review/) | none: RI-B0 has no reason to read, cite, or depend on target-pack installation planning. | `schemas/agent-review/v2/agent-review.target-pack-operation-plan.v2.schema.json` |
 
 **`agent-review.semantic-grouping-policy.v2`** — Governs how AgentReview groups diff hunks into chunks for LLM review -- an AgentReview-internal execution-planning detail with no proof-obligation or readiness-decision content relevant to RI-B0.
 
@@ -95,3 +96,5 @@ Generated from `config/ri/ri-b0a-2-reuse-manifest.json`. This view classifies ev
 **`agent-review.target-pack-manifest.v2`** — Compiled description of what one agentreview-v2-target-pack toolrepo release can install into a target repository (#203) -- install-capability provenance, not review/readiness evidence. RI-B0 has no proof-obligation or readiness-decision content relevant here.
 
 **`agent-review.target-install-receipt.v2`** — Written to .aiops/install-receipt.v2.json in a TARGET repository after a successful agentreview-v2-target-pack install/upgrade (#203) -- installation-state provenance (which pack version generated which files at which hashes), never review or readiness evidence. Deliberately not RunIdentityV2 -- identifies an installation, not a review run.
+
+**`agent-review.target-pack-operation-plan.v2`** — Hash-bound preview/apply contract for the narrow #203-S2A target-pack identity transition. It carries install provenance and named TARGET_OWNED reconciliation acceptance, never review evidence or readiness authority.

@@ -1,0 +1,198 @@
+{
+  "$defs": {
+    "TargetPackInstallIdentityV2": {
+      "additionalProperties": false,
+      "description": "Public, portable identity used to bind a plan to one install.",
+      "properties": {
+        "manifest_digest": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Digest",
+          "type": "string"
+        },
+        "pack_version": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Pack Version",
+          "type": "string"
+        },
+        "portable_target_root_identity": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Portable Target Root Identity",
+          "type": "string"
+        },
+        "target_repo": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Target Repo",
+          "type": "string"
+        },
+        "toolrepo_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Toolrepo Sha",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pack_version",
+        "toolrepo_sha",
+        "manifest_digest",
+        "target_repo",
+        "portable_target_root_identity"
+      ],
+      "title": "TargetPackInstallIdentityV2",
+      "type": "object"
+    },
+    "TargetPackOperationActionTypeV2": {
+      "enum": [
+        "WRITE_NEW",
+        "NOOP_UNCHANGED",
+        "RECONCILE_TARGET_OWNED_IDENTITY"
+      ],
+      "title": "TargetPackOperationActionTypeV2",
+      "type": "string"
+    },
+    "TargetPackOperationActionV2": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/TargetPackOperationActionTypeV2"
+        },
+        "after_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "After Sha256",
+          "type": "string"
+        },
+        "before_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Before Sha256"
+        },
+        "ownership": {
+          "const": "target_owned",
+          "title": "Ownership",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^[^*?\\[\\]]+$",
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "ownership",
+        "action",
+        "after_sha256"
+      ],
+      "title": "TargetPackOperationActionV2",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The serialisable preview contract accepted by ``--apply``.\n\n``operation_plan_hash`` excludes itself and is recomputed on validation,\nso a plan copied from preview cannot be modified or replayed against a\ndifferent source/destination identity without a typed refusal.",
+  "properties": {
+    "accepted_target_owned_paths": {
+      "default": [],
+      "items": {
+        "maxLength": 512,
+        "minLength": 1,
+        "pattern": "^[^*?\\[\\]]+$",
+        "type": "string"
+      },
+      "title": "Accepted Target Owned Paths",
+      "type": "array"
+    },
+    "actions": {
+      "items": {
+        "$ref": "#/$defs/TargetPackOperationActionV2"
+      },
+      "title": "Actions",
+      "type": "array"
+    },
+    "after_hashes": {
+      "additionalProperties": false,
+      "propertyNames": {
+        "maxLength": 512,
+        "minLength": 1
+      },
+      "title": "After Hashes",
+      "type": "object"
+    },
+    "before_hashes": {
+      "additionalProperties": false,
+      "propertyNames": {
+        "maxLength": 512,
+        "minLength": 1
+      },
+      "title": "Before Hashes",
+      "type": "object"
+    },
+    "destination_identity": {
+      "$ref": "#/$defs/TargetPackInstallIdentityV2"
+    },
+    "expected_receipt_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Expected Receipt Hash",
+      "type": "string"
+    },
+    "operation": {
+      "const": "init",
+      "title": "Operation",
+      "type": "string"
+    },
+    "operation_plan_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Operation Plan Hash",
+      "type": "string"
+    },
+    "schema_id": {
+      "const": "agent-review.target-pack-operation-plan.v2",
+      "title": "Schema Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_identity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TargetPackInstallIdentityV2"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "target_root_identity": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Target Root Identity",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_id",
+    "schema_version",
+    "operation",
+    "destination_identity",
+    "target_root_identity",
+    "actions",
+    "expected_receipt_hash",
+    "operation_plan_hash"
+  ],
+  "title": "TargetPackOperationPlanV2",
+  "type": "object"
+}

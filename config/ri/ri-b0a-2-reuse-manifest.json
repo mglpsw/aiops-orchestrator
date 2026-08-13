@@ -184,9 +184,17 @@
       "ri_b0_role": "none: RI-B0 has no reason to read, cite, or depend on install-state provenance.",
       "source_path": "schemas/agent-review/v2/agent-review.target-install-receipt.v2.schema.json",
       "state": "not_applicable"
+    },
+    {
+      "contract_id": "agent-review.target-pack-operation-plan.v2",
+      "notes": "Hash-bound preview/apply contract for the narrow #203-S2A target-pack identity transition. It carries install provenance and named TARGET_OWNED reconciliation acceptance, never review evidence or readiness authority.",
+      "owner": "aiops-orchestrator (app/agent_review/)",
+      "ri_b0_role": "none: RI-B0 has no reason to read, cite, or depend on target-pack installation planning.",
+      "source_path": "schemas/agent-review/v2/agent-review.target-pack-operation-plan.v2.schema.json",
+      "state": "not_applicable"
     }
   ],
-  "generated_from": "live schemas/agent-review/v2/*.json (19 files) and this repository's own CURRENT_CHECKPOINT.md observation of the ProjectOps track boundary",
+  "generated_from": "live schemas/agent-review/v2/*.json (20 files) and this repository's own CURRENT_CHECKPOINT.md observation of the ProjectOps track boundary",
   "schema_version": 1,
   "states": [
     "reuse",
