@@ -110,8 +110,20 @@ def _resolve_toolrepo_sha(toolrepo_root: Path) -> str:
 def _cmd_init(args: argparse.Namespace) -> int:
     target_root = Path(args.target_root)
     toolrepo_root = Path(args.toolrepo_root)
-    target_root.mkdir(parents=True, exist_ok=True)
 
+    # Adversarial review finding, confirmed and fixed (spec rev.2 §5.1,
+    # "preflight before mutation"): this used to call `target_root.mkdir(...)`
+    # here, before toolrepo resolution, manifest build, or the rollout check
+    # below -- so a refused `init` against a nonexistent target still left
+    # the directory behind, directly contradicting the rollout check's own
+    # (then false) "leaves nothing behind" comment and the spec's own
+    # "compute plan before touching the filesystem". Reproduced: `init
+    # --rollout shadow_full` against a nonexistent target correctly exited 1
+    # but the directory existed afterwards regardless. No directory or file
+    # creation happens until every preflight gate below has passed --
+    # `compute_install_plan_v2` tolerates a missing `target_root` (treats it
+    # as "nothing on disk yet"), and `_atomic_write_v2` creates parent
+    # directories itself, immediately before each write.
     try:
         manifest = build_target_pack_manifest_v2(
             toolrepo_root=toolrepo_root,
@@ -122,13 +134,11 @@ def _cmd_init(args: argparse.Namespace) -> int:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
 
-    # Adversarial review finding, confirmed and fixed: nothing previously
-    # checked `--rollout` against what this pack version can actually
-    # deliver -- `init --rollout shadow_full` exited 0 and wrote
+    # Nothing previously checked `--rollout` against what this pack version
+    # can actually deliver -- `init --rollout shadow_full` exited 0 and wrote
     # `rollout_mode: shadow_full` into the receipt even though this slice
     # ships no trusted-check integration at all. Checked before any
-    # filesystem write (`compute_install_plan_v2`/`apply_install_plan_v2`
-    # come after), so a refused request leaves nothing behind.
+    # filesystem write.
     try:
         validate_rollout_within_pack_capability_v2(
             requested=args.rollout, max_supported=manifest.max_supported_rollout_mode

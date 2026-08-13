@@ -160,6 +160,52 @@ def test_init_refuses_a_rollout_the_pack_does_not_yet_support(tmp_path: Path) ->
     assert not (tmp_path / ".aiops" / "install-receipt.v2.json").exists()
 
 
+def test_init_leaves_a_nonexistent_target_nonexistent_when_rollout_is_refused(tmp_path: Path) -> None:
+    """Adversarial review finding, confirmed and fixed (spec rev.2 §5.1):
+    `_cmd_init` used to call `target_root.mkdir(...)` before resolving the
+    toolrepo, building the manifest, or checking the rollout ceiling -- so a
+    refusal still left the directory behind, contradicting this very test's
+    neighbour's own "leaves nothing behind" claim. Uses a target path that
+    does NOT exist beforehand -- unlike a bare `tmp_path` (which pytest
+    already creates), this is what actually exercises the claim."""
+
+    target = tmp_path / "does-not-exist-yet"
+    assert not target.exists()
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(target),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+            "--rollout", "shadow_full",
+        ]
+    )
+
+    assert result.returncode != 0
+    assert not target.exists()
+
+
+def test_init_leaves_a_nonexistent_target_nonexistent_when_toolrepo_is_unresolvable(tmp_path: Path) -> None:
+    target = tmp_path / "does-not-exist-yet"
+    not_a_toolrepo = tmp_path / "not-a-git-checkout"
+    assert not target.exists()
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(target),
+            "--toolrepo-root", str(not_a_toolrepo),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode != 0
+    assert not target.exists()
+
+
 def test_init_still_accepts_the_rollout_this_slice_genuinely_supports(tmp_path: Path) -> None:
     result = _run(
         [
