@@ -106,6 +106,31 @@ fixed at the pure-composition (Class B) layer, prospectively, before `#203`
 makes it reachable. `failed_check_names`/`status` now account for every
 verified check's conclusion, not only required-named ones.
 
+## Canonical check order
+
+`assessment.checks` is sorted by `check_name`, never left in the order the
+caller happened to submit. Post-merge review finding on PR #220
+(`#220 (comment) discussion_r3773499142`), confirmed and fixed: the derived
+name lists (`failed_check_names`/`missing_check_names`) were already sorted,
+but `checks` itself preserved submission order, and
+`produce_review_readiness_v2` copies that tuple verbatim into
+`ReviewReadinessV2.checks`. Two semantically identical runs -- the same
+legitimated checks, verified against the same snapshot, differing only in
+the sequence the caller listed them -- therefore serialized to different
+artifact bytes. Reproduced directly: identical status and identical name
+lists, but `a.checks != b.checks` and different serialized bytes.
+
+Sorting by `check_name` alone is a TOTAL order here, not a partial one that
+would need a tie-break: as the `by_name` comment in
+`_assess_required_checks_v2` records, no two verified checks can share a
+`check_name` without being byte-identical, because they would then share a
+`compute_required_check_digest_v2` digest, which
+`verify_required_check_provenance_set_v2` already refuses as a duplicate.
+
+This is ordering normalization only. Every check is preserved -- no filter,
+no dedup, no substitution -- so nothing about `status`, precedence, or the
+"a red check is never dropped" guarantee above changes.
+
 None of the three is `READY` by itself; connecting that to a
 `ReadinessStateV2` is `readiness_decision_v2.
 _apply_required_check_assessment_v2`'s job, not this module's.
@@ -214,9 +239,14 @@ def _assess_required_checks_v2(
     else:
         status = RequiredCheckStatusV2.SATISFIED
 
+    # Canonicalized by `check_name` -- see the module docstring's
+    # "Canonical check order" section. Every check is preserved; only the
+    # order is normalized.
+    canonical_checks = tuple(sorted(verified_checks, key=lambda check: check.check_name))
+
     return RequiredCheckReadinessAssessmentV2(
         status=status,
-        checks=verified_checks,
+        checks=canonical_checks,
         failed_check_names=failed_check_names,
         missing_check_names=missing_check_names,
     )

@@ -14,12 +14,17 @@ from app.agent_review.contracts_v2 import (
     ReadinessStateV2,
     RequiredCheckConclusionV2,
     RequiredCheckResultV2,
+    ReviewReadinessV2,
     RunIdentityV2,
     TargetPoliciesV2,
     compute_run_id,
 )
 from app.agent_review.manifest_v2 import ManifestMaterialV2, ManifestV2, compute_manifest_hash_v2_for
-from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
+from app.agent_review.readiness_decision_v2 import (
+    _apply_required_check_assessment_v2,
+    compute_readiness_decision_v2,
+)
+from app.agent_review.required_check_readiness_v2 import _assess_required_checks_v2
 from app.agent_review.review_readiness_emission_v2 import (
     READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2,
     ReadinessEmissionError,
@@ -193,6 +198,73 @@ def test_emits_a_real_ready_artifact() -> None:
     )
     assert readiness.state is ReadinessStateV2.READY
     assert readiness.run_id == manifest.run_id
+
+
+def test_submission_order_never_changes_the_serialized_artifact_bytes() -> None:
+    """Post-merge review finding on PR #220
+    (`#220 (comment) discussion_r3773499142`), confirmed and fixed: the
+    same legitimated checks submitted in a different sequence produced a
+    different `ReviewReadinessV2.checks` order, and therefore different
+    serialized artifact bytes, for semantically identical runs.
+
+    Proved here at the Class-B composition layer -- the full chain
+    `_assess_required_checks_v2` -> `_apply_required_check_assessment_v2`
+    -> `_assemble_review_readiness_v2`, all real, none patched. Class B is
+    the correct layer for this: the property under test is canonical
+    SERIALIZATION, which is independent of authority, and the C0 boundary
+    refuses every non-empty submission in production today, so this
+    invariance is not observable end-to-end (see the `#201-C` plan's own
+    Class A/B/C split). No `produce_review_readiness_v2` /
+    `run_synthetic_review_v2` call is made and nothing is monkeypatched,
+    so `test_required_check_readiness_arch_v2.py`'s assert-7 guard is
+    unaffected."""
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
+
+    head_sha = manifest.identity.head_sha
+    checks_in_order = (
+        RequiredCheckResultV2(
+            check_name="pytest",
+            required=True,
+            deterministic=True,
+            conclusion=RequiredCheckConclusionV2.SUCCESS,
+            head_sha=head_sha,
+        ),
+        RequiredCheckResultV2(
+            check_name="mypy",
+            required=True,
+            deterministic=True,
+            conclusion=RequiredCheckConclusionV2.SUCCESS,
+            head_sha=head_sha,
+        ),
+    )
+
+    def _artifact_for(submitted: tuple[RequiredCheckResultV2, ...]) -> ReviewReadinessV2:
+        assessment = _assess_required_checks_v2(
+            verified_checks=submitted, required_check_names=("mypy", "pytest")
+        )
+        folded = _apply_required_check_assessment_v2(decision=decision, assessment=assessment)
+        return _assemble_review_readiness_v2(
+            decision=folded,
+            findings=synthesis.findings,
+            identity=manifest.identity,
+            evaluated_identity=manifest.identity,
+            pr_state=PullRequestStateV2.OPEN,
+            checks=assessment.checks,
+        )
+
+    forward = _artifact_for(checks_in_order)
+    reversed_ = _artifact_for(tuple(reversed(checks_in_order)))
+
+    # Same checks, in the same canonical order.
+    assert [check.check_name for check in forward.checks] == ["mypy", "pytest"]
+    assert forward.checks == reversed_.checks
+
+    # And therefore byte-identical serialized artifacts.
+    assert forward.model_dump_json() == reversed_.model_dump_json()
+    assert forward.model_dump(mode="json") == reversed_.model_dump(mode="json")
 
 
 def test_emits_a_real_blocked_code_artifact_with_findings() -> None:
