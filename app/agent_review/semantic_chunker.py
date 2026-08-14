@@ -210,7 +210,9 @@ def build_semantic_chunk_plan(
     # review no matter how it is packed -- fail closed instead of reporting
     # it as covered by an empty payload entry (rev.3 SS11 / RED-16).
     hunk_unavailable_must_review = sorted(
-        path for path in canonical_files if path in required_files and not hunks.get(path)
+        path
+        for path in canonical_files
+        if path in required_files and not payload_cost_model.block_has_observable_textual_hunk(hunks.get(path) or "")
     )
     hunk_unavailable_set = set(hunk_unavailable_must_review)
     for path in hunk_unavailable_must_review:

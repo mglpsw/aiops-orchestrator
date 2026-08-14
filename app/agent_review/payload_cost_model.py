@@ -196,6 +196,24 @@ def diff_by_file(intake: ReviewIntake) -> dict[str, str]:
     return dict(sorted(result.items()))
 
 
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
+
+
+def block_has_observable_textual_hunk(block: str) -> bool:
+    """C8 (post-merge debt #205): a `diff_by_file(...)` value is any
+    non-empty rendered git diff block for a path -- that includes a
+    binary-only block ("Binary files a/x and b/x differ") and a
+    metadata-only block (pure rename/mode change, no content diff), neither
+    of which contains a single line of semantically reviewable, line-level
+    content. `bool(block)` conflates all three with an observable textual
+    hunk. The one structural signal that reliably distinguishes a real
+    unified-diff hunk is its header line (`@@ -l,s +l,s @@`); content lines
+    are always prefixed with `+`/`-`/` ` so this can't false-positive on a
+    changed line that merely contains the literal text `@@`.
+    """
+    return any(_HUNK_HEADER_RE.match(line) for line in block.splitlines())
+
+
 def _resolve_diff_block_path(block_lines: list[str]) -> str | None:
     header_path = _parse_diff_path(block_lines[0])
     plus_path: str | None = None
@@ -1384,7 +1402,10 @@ def project_min_hunk_preserving_chars(
     limitations: list[str] = []
     for path in chunk_files_sorted:
         hunk = hunks.get(path)
-        if hunk:
+        # C8: a non-empty block can be binary-only or metadata-only, with
+        # no line-level content to review -- embedding it as "hunk" text
+        # would misrepresent it as reviewable diff content.
+        if hunk and block_has_observable_textual_hunk(hunk):
             chunk_hunks_full.append({"path": sanitize_display_path(path), "hunk": hunk})
         else:
             limitations.append(f"chunk_diff_hunk_missing:{sanitize_display_path(path)}")

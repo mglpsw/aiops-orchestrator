@@ -487,6 +487,69 @@ def test_real_brief_actually_hits_the_minimum_required_sections_branch() -> None
     assert "brief_budget_under_minimum_required_sections" in brief.limitations
 
 
+# ---------------------------------------------------------------------------
+# H1-B / C8 (post-merge debt, #205): a git binary-file diff block
+# ("Binary files a/x and b/x differ") is non-empty, so
+# `bool(hunks.get(path))` was True even though the block contains no `@@`
+# hunk header at all -- no line-level, semantically reviewable content. A
+# must_review file whose only diff block is binary-only was therefore
+# never flagged `must_review_hunk_unavailable:<path>` and could count as
+# covered.
+# ---------------------------------------------------------------------------
+
+
+def _intake_with_raw_diff(files: list[str], raw_diff: str, must: list[str] | None = None) -> dict:
+    must = must if must is not None else files
+    return {
+        "schema_id": "agent-review.intake.v1",
+        "schema_version": 1,
+        "source": "aiops-review-intake",
+        "target_repo": "mglpsw/AgentEscala",
+        "target_profile": {},
+        "created_at": "2026-08-13T00:00:00Z",
+        "artifacts": {
+            "file-diff-context.json": {
+                "path": "file-diff-context.json",
+                "content": {
+                    "files": [{"path": p, "status": "modified", "summary": ""} for p in files],
+                    "coverage_requirements": {"must_review_files": must},
+                },
+            },
+            "full-diff.diff": {"path": "full-diff.diff", "content": raw_diff},
+        },
+        "artifact_status": [],
+        "redaction_summary": RedactionReport().model_dump(mode="json"),
+        "limitations": [],
+        "completeness": {},
+        "status": "complete",
+    }
+
+
+def test_c8_binary_only_diff_block_is_not_an_observable_hunk() -> None:
+    binary_diff = (
+        "diff --git a/assets/logo.png b/assets/logo.png\n"
+        "index 1111111..2222222 100644\n"
+        "Binary files a/assets/logo.png and b/assets/logo.png differ"
+    )
+    intake_dict = _intake_with_raw_diff(["assets/logo.png"], binary_diff, must=["assets/logo.png"])
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=6, max_chars_per_block=24_000)
+    assert "must_review_hunk_unavailable:assets/logo.png" in plan.limitations, plan.limitations
+    assert "assets/logo.png" in plan.files_not_covered, plan.files_not_covered
+    assert plan.status == "degraded", plan.status
+
+
+def test_c8_textual_hunk_still_counts_as_covered() -> None:
+    # Positive control: an ordinary textual hunk for the same file shape
+    # must NOT be classified as hunk-unavailable -- the fix must not
+    # over-correct into rejecting real, reviewable diffs.
+    files = ["backend/api/a.py"]
+    intake_dict = _intake(files, {"backend/api/a.py": 5}, must=files)
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=6, max_chars_per_block=24_000)
+    assert not any(item.startswith("must_review_hunk_unavailable:") for item in plan.limitations), plan.limitations
+    assert "backend/api/a.py" not in plan.files_not_covered
+    assert plan.status == "complete"
+
+
 def test_red26_adversarial_review_metadata_stays_sound() -> None:
     """RED-26 (P2-3): target/brief.review metadata (pr_number, commit_sha,
     review_mode, contract_pack) is resolved exactly via

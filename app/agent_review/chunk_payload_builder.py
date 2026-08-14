@@ -170,7 +170,11 @@ def _build_chunk_payload(
     for path in sorted(chunk.files):
         hunk = diff_map.get(path)
         display = _sanitize_relative_path(path)
-        if hunk:
+        # C8: mirror the same textual-hunk-vs-binary/metadata-only-block
+        # distinction the projection uses (payload_cost_model), or a
+        # binary/metadata-only block would be embedded as if it were
+        # reviewable diff content.
+        if hunk and payload_cost_model.block_has_observable_textual_hunk(hunk):
             chunk_hunks.append({"path": display, "hunk": hunk})
             continue
         limitations.append(f"chunk_diff_hunk_missing:{display}")

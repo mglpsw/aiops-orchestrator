@@ -1034,3 +1034,116 @@ def test_projected_chars_dedupes_brief_limitations_like_the_real_builder() -> No
     # deduped list, matching the real builder's own dedup semantics
     # exactly rather than a parallel implementation.
     assert project(duplicated) == project(deduped)
+
+
+# ---------------------------------------------------------------------------
+# H1-B / C8 (post-merge debt #205): non-empty diff block != observable
+# textual hunk. Unit-level coverage for block_has_observable_textual_hunk
+# itself; the coverage-classification consequence (must_review_hunk_
+# unavailable) is covered end to end in test_semantic_chunker_225_red.py.
+# ---------------------------------------------------------------------------
+
+
+def test_block_has_observable_textual_hunk_true_for_real_hunk() -> None:
+    block = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,2 @@\n+line"
+    assert m.block_has_observable_textual_hunk(block) is True
+
+
+def test_block_has_observable_textual_hunk_false_for_binary_only_block() -> None:
+    block = "diff --git a/x.png b/x.png\nindex 111..222 100644\nBinary files a/x.png and b/x.png differ"
+    assert m.block_has_observable_textual_hunk(block) is False
+
+
+def test_block_has_observable_textual_hunk_false_for_metadata_only_block() -> None:
+    # Pure rename, no content diff at all -- no @@ hunk header emitted.
+    block = "diff --git a/old.py b/new.py\nsimilarity index 100%\nrename from old.py\nrename to new.py"
+    assert m.block_has_observable_textual_hunk(block) is False
+
+
+def test_block_has_observable_textual_hunk_false_for_empty_block() -> None:
+    assert m.block_has_observable_textual_hunk("") is False
+
+
+def test_block_has_observable_textual_hunk_does_not_false_positive_on_content_line() -> None:
+    # A changed line whose own text happens to contain "@@" must not be
+    # mistaken for a hunk header -- real headers are never prefixed with a
+    # diff content marker (+/-/space).
+    block = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,2 @@\n+email = \"a@@b.com\""
+    assert m.block_has_observable_textual_hunk(block) is True  # true because a real @@ header IS also present
+    only_content_line = "diff --git a/x.py b/x.py\n+email = \"a@@b.com\""
+    assert m.block_has_observable_textual_hunk(only_content_line) is False
+
+
+def test_real_builder_never_embeds_a_binary_only_block_as_a_hunk() -> None:
+    """C8, builder-level: a non-must_review file with only a binary block
+    must still never be embedded as if it were a reviewable hunk -- it
+    must fall through to chunk_diff_hunk_missing, same as a genuinely
+    absent diff block."""
+    intake = ReviewIntake.model_validate(
+        {
+            "schema_id": "agent-review.intake.v1",
+            "schema_version": 1,
+            "source": "aiops-review-intake",
+            "target_repo": "r/t",
+            "target_profile": {},
+            "created_at": "2026-08-13T00:00:00Z",
+            "artifacts": {
+                "file-diff-context.json": {
+                    "path": "file-diff-context.json",
+                    "content": {
+                        "files": [{"path": "assets/logo.png", "status": "modified", "summary": ""}],
+                        "coverage_requirements": {"must_review_files": []},
+                    },
+                },
+                "full-diff.diff": {
+                    "path": "full-diff.diff",
+                    "content": (
+                        "diff --git a/assets/logo.png b/assets/logo.png\n"
+                        "index 111..222 100644\n"
+                        "Binary files a/assets/logo.png and b/assets/logo.png differ"
+                    ),
+                },
+            },
+            "artifact_status": [],
+            "redaction_summary": RedactionReport().model_dump(mode="json"),
+            "limitations": [],
+            "completeness": {},
+            "status": "complete",
+        }
+    )
+    from app.agent_review.chunk_payload_builder import build_chunk_payloads
+    from app.agent_review.schemas import PRBrief, SemanticChunk, SemanticChunkPlan
+
+    plan = SemanticChunkPlan(
+        target_repo="r/t",
+        max_parallel_blocks=6,
+        status="complete",
+        files_covered=["assets/logo.png"],
+        chunks=[
+            SemanticChunk(
+                chunk_id="chunk-01-unknown",
+                semantic_group="unknown",
+                order_index=0,
+                files=["assets/logo.png"],
+                artifacts=[],
+                contracts=[],
+                depends_on=[],
+                coverage="complete",
+                prompt_budget_chars=24_000,
+                estimated_chars=1024,
+            )
+        ],
+    )
+    brief = PRBrief(
+        target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
+        review={"mode": "full", "contract_pack": None},
+        coverage={"required_files": []},
+        limitations=[],
+        created_at="2026-08-13T00:00:00Z",
+    )
+    manifest, payloads = build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
+    assert len(payloads) == 1, payloads
+    payload = next(iter(payloads.values()))
+    chunk_hunks = payload.chunk_context["chunk_hunks"]
+    assert chunk_hunks == [], chunk_hunks
+    assert "chunk_diff_hunk_missing:assets/logo.png" in payload.limitations
