@@ -47,6 +47,7 @@ from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2
 PLAN_UNKNOWN_OWNERSHIP_REASON_V2 = "target_pack_plan_unknown_ownership_class"
 PLAN_ROLLOUT_CEILING_EXCEEDED_REASON_V2 = "target_pack_plan_rollout_ceiling_exceeded"
 PLAN_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2 = "target_pack_plan_rollout_exceeds_pack_capability"
+PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_plan_path_escapes_target_root"
 
 _ROLLOUT_ORDER_V2 = ("off", "shadow_minimal", "shadow_full")
 
@@ -117,8 +118,50 @@ def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def resolve_within_target_root_v2(target_root: Path, relative_path: str | Path) -> Path:
+    """Resolve `target_root / relative_path` and refuse if it escapes.
+
+    The read-side counterpart to `target_pack_install_v2._verify_write_
+    target_within_root_v2`, which has protected the WRITE path since the
+    round-4 adversarial review. Both use the same primitive
+    (`Path.resolve(strict=False)` on root and candidate, then
+    `relative_to`) so the pack has exactly ONE definition of "contained in
+    `target_root`" rather than two that can drift apart.
+
+    `contracts_v2.RelativePath` proves a path STRING is well-formed (no
+    `..`, no absolute/drive form, normalized spelling) -- it says nothing
+    about what an EXISTING component on disk resolves to. Post-merge review
+    debt (aiops-orchestrator#205, H1A-R1), confirmed and fixed: every
+    pack-side READ (`run_doctor_v2`'s profile/receipt/target-owned reads,
+    `compute_install_plan_v2`'s drift hashing, and `compute_target_pack_
+    operation_plan_v2`'s TARGET_OWNED observation) composed
+    `target_root / relative_path` and went straight to `is_file()` /
+    `read_bytes()` / `read_text()`, all of which follow symlinks.
+    Reproduced against the exact PR HEAD: with `.aiops/target-profile.v2.
+    yaml` inside `target_root` symlinked to a file outside it,
+    `run_doctor_v2` returned `is_healthy=True` while a `Path.read_text`/
+    `read_bytes` spy recorded both reads resolving outside `target_root`.
+    The write path had been hardened for exactly this class; the read path
+    had not.
+
+    A symlink whose target stays INSIDE `target_root` is deliberately
+    ALLOWED -- containment, not symlink prohibition, is the property being
+    enforced, and that keeps this check identical in meaning to the
+    writer's. Returns the RESOLVED path so callers read through the path
+    they actually verified, never re-deriving an unverified one.
+    """
+
+    target_root_real = target_root.resolve(strict=False)
+    resolved = (target_root / relative_path).resolve(strict=False)
+    try:
+        resolved.relative_to(target_root_real)
+    except ValueError as exc:
+        raise PlanError(PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2) from exc
+    return resolved
+
+
 def _read_on_disk_sha256_v2(target_root: Path, relative_path: str) -> str | None:
-    full_path = target_root / relative_path
+    full_path = resolve_within_target_root_v2(target_root, relative_path)
     if not full_path.is_file():
         return None
     return _sha256_hex(full_path.read_bytes())

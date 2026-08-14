@@ -33,7 +33,12 @@ from app.agent_review.target_pack_manifest_v2 import (
     TargetPackManifestV2,
     compute_target_pack_manifest_digest_v2,
 )
-from app.agent_review.target_pack_plan_v2 import InstallPlanV2, PlanError, compute_install_plan_v2
+from app.agent_review.target_pack_plan_v2 import (
+    InstallPlanV2,
+    PlanError,
+    compute_install_plan_v2,
+    resolve_within_target_root_v2,
+)
 from app.agent_review.target_pack_receipt_v2 import (
     ReceiptIdentityRefV2,
     TargetInstallReceiptV2,
@@ -157,7 +162,13 @@ def _identity_from_receipt_v2(receipt: TargetInstallReceiptV2) -> TargetPackInst
 
 
 def _read_target_owned_bytes_v2(*, target_root: Path, path: str) -> bytes | None:
-    candidate = target_root / path
+    # Containment BEFORE any filesystem read (aiops-orchestrator#205,
+    # H1A-R1): `path` is a `RelativePath`, which proves the string is
+    # well-formed but not that an existing component on disk stays inside
+    # `target_root`. `resolve_within_target_root_v2` raises `PlanError`
+    # (`target_pack_plan_path_escapes_target_root`) before `is_file()` --
+    # itself a symlink-following call -- ever runs.
+    candidate = resolve_within_target_root_v2(target_root, path)
     if candidate.is_file():
         return candidate.read_bytes()
     if candidate.exists() or candidate.is_symlink():

@@ -561,7 +561,14 @@ def test_init_refuses_when_the_receipt_write_would_escape_target_root_via_a_syml
     check triggered at all) -- so the raw receipt write was the ONLY write
     touching `.aiops/`, and it silently followed the symlink, landing
     `install-receipt.v2.json` entirely outside `target_root`, exit 0, no
-    refusal. Must now refuse cleanly instead."""
+    refusal. Must now refuse cleanly instead.
+
+    Since aiops-orchestrator#205/H1A-R1 added read-side containment, the
+    escape is caught EARLIER -- at plan time, by `resolve_within_target_
+    root_v2` -- so the reported reason code is now the plan-time one rather
+    than the write-time one. Both are correct refusals of the same escape;
+    the security-relevant assertions (non-zero exit, no traceback, and
+    above all NOTHING written into the symlink target) are unchanged."""
 
     outside = tmp_path.parent / f"{tmp_path.name}-outside-receipt-escape"
     outside.mkdir()
@@ -588,9 +595,12 @@ def test_init_refuses_when_the_receipt_write_would_escape_target_root_via_a_syml
 
     assert result.returncode != 0
     assert "Traceback" not in result.stderr
-    assert "target_pack_install_path_escapes_target_root" in result.stderr
+    assert "path_escapes_target_root" in result.stderr
     # The receipt must NOT have leaked into the symlink target.
     assert not (outside / "install-receipt.v2.json").exists()
+    # Nor anything else -- the pre-existing valid profile the fixture put
+    # there is the only file that may remain.
+    assert [p.name for p in outside.iterdir()] == ["target-profile.v2.yaml"]
 
 
 def test_init_refuses_cleanly_instead_of_fabricating_a_toolrepo_sha(tmp_path: Path) -> None:

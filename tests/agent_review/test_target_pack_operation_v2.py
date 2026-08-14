@@ -19,6 +19,8 @@ import hashlib
 import re
 from pathlib import Path
 
+import pytest
+
 from app.agent_review.schema_export_v2 import render_v2_json_schemas
 from app.agent_review.target_pack_manifest_v2 import (
     GeneratedFileEntryV2,
@@ -26,6 +28,11 @@ from app.agent_review.target_pack_manifest_v2 import (
     TargetPackManifestV2,
 )
 from app.agent_review.target_pack_operation_v2 import compute_target_pack_operation_plan_v2
+from app.agent_review.target_pack_plan_v2 import (
+    PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2,
+    PlanError,
+    compute_install_plan_v2,
+)
 
 _VALID_PROFILE_YAML = b"""
 schema_id: agent-review.target-profile.v2
@@ -135,3 +142,71 @@ def test_operation_plan_schema_still_closed_to_a_key_outside_the_pattern() -> No
     schema = render_v2_json_schemas()["agent-review.target-pack-operation-plan.v2.schema.json"]
     key_pattern = next(iter(schema["properties"]["after_hashes"]["patternProperties"]))
     assert not re.fullmatch(key_pattern, "a[b].py")
+
+
+# --- H1A-R1: symlink escape on the init/preview read path ------------------
+
+
+def _plan(target_root: Path):
+    return compute_target_pack_operation_plan_v2(
+        manifest=_manifest(),
+        target_root=target_root,
+        target_repo="acme/widget",
+        rollout="off",
+        seed_content_by_path={".aiops/target-profile.v2.yaml": _VALID_PROFILE_YAML},
+        previous_receipt=None,
+    )
+
+
+def test_init_preview_refuses_a_target_owned_file_symlinked_outside_target_root(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """The independent review of PR #230 correctly noted that protecting
+    only `run_doctor_v2` would be insufficient: `init`'s own preview reads
+    observed TARGET_OWNED bytes through the same unprotected composition.
+    Reproduced before the fix; refused after."""
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (target_root / ".aiops").mkdir()
+    outside_profile = outside / "outside-profile.yaml"
+    outside_profile.write_bytes(_VALID_PROFILE_YAML)
+    (target_root / ".aiops" / "target-profile.v2.yaml").symlink_to(outside_profile)
+
+    with pytest.raises(PlanError) as exc_info:
+        _plan(target_root)
+    assert exc_info.value.reason_code == PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+def test_install_plan_refuses_a_generated_path_symlinked_outside_target_root(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """`compute_install_plan_v2`'s drift-hash read is the third reachable
+    site of the same class -- also named in the independent review."""
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (target_root / ".aiops").mkdir()
+    outside_profile = outside / "outside-profile.yaml"
+    outside_profile.write_bytes(_VALID_PROFILE_YAML)
+    (target_root / ".aiops" / "target-profile.v2.yaml").symlink_to(outside_profile)
+
+    with pytest.raises(PlanError) as exc_info:
+        compute_install_plan_v2(manifest=_manifest(), target_root=target_root, previous_receipt=None)
+    assert exc_info.value.reason_code == PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+def test_init_preview_allows_a_symlink_resolving_back_inside_target_root(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Containment, not symlink prohibition -- the same single policy the
+    writer (`target_pack_install_v2`) enforces."""
+    target_root = tmp_path_factory.mktemp("target")
+    (target_root / ".aiops").mkdir()
+    real_profile = target_root / ".aiops" / "real-profile.yaml"
+    real_profile.write_bytes(_VALID_PROFILE_YAML)
+    (target_root / ".aiops" / "target-profile.v2.yaml").symlink_to(real_profile)
+
+    result = _plan(target_root)
+
+    assert result.plan.after_hashes == {
+        ".aiops/target-profile.v2.yaml": hashlib.sha256(_VALID_PROFILE_YAML).hexdigest()
+    }

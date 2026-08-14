@@ -18,7 +18,11 @@ from app.agent_review.target_pack_manifest_v2 import (
     TargetPackFileOwnershipV2,
     TargetPackManifestV2,
 )
-from app.agent_review.target_pack_plan_v2 import compute_install_plan_v2
+from app.agent_review.target_pack_plan_v2 import (
+    PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2,
+    PlanError,
+    compute_install_plan_v2,
+)
 from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2, compute_target_install_receipt_hash_v2
 
 
@@ -165,11 +169,17 @@ def test_apply_refuses_to_write_through_a_directory_symlink_escaping_target_root
     must be refused and NOTHING written -- not silently followed to write
     pack-controlled content to an arbitrary filesystem location. Reproduced
     before the fix: the file landed inside the symlink target, outside
-    `target_root` entirely."""
+    `target_root` entirely.
 
-    outside = tmp_path.parent / f"{tmp_path.name}-outside-escape-target"
-    outside.mkdir()
-    (tmp_path / ".aiops").symlink_to(outside)
+    Exercises the genuine TOCTOU window this write-side check uniquely
+    covers: the symlink is introduced AFTER planning. Since
+    aiops-orchestrator#205/H1A-R1 added read-side containment,
+    `compute_install_plan_v2` refuses a symlink already present at plan
+    time -- so planning first against a clean tree is the only way to reach
+    (and therefore keep testing) `_atomic_write_v2`'s own check, which is
+    exactly the "swapped in during the window between plan and apply" case
+    the module docstring documents. The two checks are complementary, not
+    redundant: neither subsumes the other."""
 
     entry = GeneratedFileEntryV2(
         path=".aiops/target-profile.v2.yaml",
@@ -177,7 +187,13 @@ def test_apply_refuses_to_write_through_a_directory_symlink_escaping_target_root
         content_sha256=_sha256(b"seed"),
     )
     manifest = _manifest(entry)
+    # Plan against a clean tree -- no symlink yet.
     plan = compute_install_plan_v2(manifest=manifest, target_root=tmp_path, previous_receipt=None)
+
+    # Attacker swaps `.aiops` for an escaping symlink AFTER the plan exists.
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-escape-target"
+    outside.mkdir()
+    (tmp_path / ".aiops").symlink_to(outside)
 
     with pytest.raises(TargetPackInstallError) as exc_info:
         apply_install_plan_v2(
@@ -189,6 +205,29 @@ def test_apply_refuses_to_write_through_a_directory_symlink_escaping_target_root
 
     assert exc_info.value.reason_code == INSTALL_PATH_ESCAPES_TARGET_ROOT_REASON_V2
     assert list(outside.iterdir()) == []
+
+
+def test_plan_time_read_containment_refuses_a_symlink_present_before_planning(tmp_path: Path) -> None:
+    """The companion to the test above (aiops-orchestrator#205, H1A-R1):
+    when the escaping symlink is ALREADY present at plan time, the refusal
+    now happens at plan time, before any write is even contemplated --
+    strictly earlier than the write-side check, and covering the read that
+    the write-side check never could."""
+
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-planning-escape"
+    outside.mkdir()
+    (outside / "target-profile.v2.yaml").write_bytes(b"seed")
+    (tmp_path / ".aiops").symlink_to(outside)
+
+    entry = GeneratedFileEntryV2(
+        path=".aiops/target-profile.v2.yaml",
+        ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+        content_sha256=_sha256(b"seed"),
+    )
+    with pytest.raises(PlanError) as exc_info:
+        compute_install_plan_v2(manifest=_manifest(entry), target_root=tmp_path, previous_receipt=None)
+
+    assert exc_info.value.reason_code == PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2
 
 
 def test_apply_refuses_when_the_final_path_component_itself_is_a_preexisting_symlink(tmp_path: Path) -> None:

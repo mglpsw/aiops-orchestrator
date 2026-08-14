@@ -13,6 +13,18 @@ raises for a diagnosable target state -- it only raises for a genuinely
 unusable `target_root` (e.g. not a directory at all), which is an input
 error, not a diagnosis.
 
+## Path containment on every read
+
+Every filesystem read this module performs -- the profile, the receipt, and
+each target-owned file -- goes through `target_pack_plan_v2.resolve_within_
+target_root_v2` FIRST, and reads only the resolved path it returned. That
+is the same containment primitive (`resolve(strict=False)` on both root and
+candidate, then `relative_to`) `target_pack_install_v2` has applied to the
+WRITE path since the round-4 review, so the pack has one definition of
+"inside `target_root`", not two. A symlink resolving back inside
+`target_root` is allowed; only escape is refused, reported as
+`target_pack_doctor_path_escapes_target_root`.
+
 ## Target identity
 
 `target_repo` is a REQUIRED caller-supplied parameter, mirroring `init
@@ -40,6 +52,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agent_review.profile_loader_v2 import (
+    DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
     TargetProfileLoadErrorV2,
     compute_profile_hash_v2,
     load_target_profile_v2,
@@ -49,7 +62,11 @@ from app.agent_review.target_pack_manifest_v2 import (
     TargetPackManifestV2,
     compute_target_pack_manifest_digest_v2,
 )
-from app.agent_review.target_pack_plan_v2 import rollout_mode_exceeds_pack_capability_v2
+from app.agent_review.target_pack_plan_v2 import (
+    PlanError,
+    resolve_within_target_root_v2,
+    rollout_mode_exceeds_pack_capability_v2,
+)
 from app.agent_review.target_pack_receipt_v2 import (
     RECEIPT_RELATIVE_PATH_V2,
     TargetInstallReceiptV2,
@@ -58,6 +75,7 @@ from app.agent_review.target_pack_receipt_v2 import (
 from pydantic import ValidationError
 
 DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 = "target_pack_doctor_target_root_not_a_directory"
+DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_doctor_path_escapes_target_root"
 DOCTOR_RECEIPT_TARGET_REPO_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_target_repo_mismatch"
 DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_target_owned_set_mismatch"
 DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_pack_version_mismatch"
@@ -107,6 +125,20 @@ class DoctorReportV2:
 
 
 def _check_profile_v2(target_root: Path) -> ProfileCheckV2:
+    # Containment before load (aiops-orchestrator#205, H1A-R1):
+    # `load_target_profile_v2` composes `repo_root / relative_path` and goes
+    # straight to `is_file()`/`read_text()`, both of which follow symlinks.
+    # Verified here, at the pack's own boundary, rather than inside the
+    # loader -- the loader is shared with the review pipeline
+    # (`required_check_readiness_v2`, `payload_references_v2`), whose
+    # callers pass a trusted checkout root and are not part of this
+    # finding's surface.
+    try:
+        resolve_within_target_root_v2(target_root, DEFAULT_TARGET_PROFILE_RELATIVE_PATH)
+    except PlanError:
+        return ProfileCheckV2(
+            status="invalid", profile_hash=None, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+        )
     try:
         profile = load_target_profile_v2(str(target_root))
     except TargetProfileLoadErrorV2 as exc:
@@ -178,7 +210,10 @@ def _check_receipt_v2(
     and placing it last preserves every other check's own reason code as
     the reported cause when a receipt is ALSO wrong on an earlier axis."""
 
-    receipt_path = target_root / RECEIPT_RELATIVE_PATH_V2
+    try:
+        receipt_path = resolve_within_target_root_v2(target_root, RECEIPT_RELATIVE_PATH_V2)
+    except PlanError:
+        return ReceiptCheckV2(status="invalid", receipt=None, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2)
     if not receipt_path.is_file():
         return ReceiptCheckV2(status="missing", receipt=None, reason_code="target_pack_receipt_missing")
     try:
@@ -208,7 +243,16 @@ def _check_receipt_v2(
             status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TARGET_ROOT_IDENTITY_MISMATCH_REASON_V2
         )
     for relative_path, recorded_hash in receipt.target_owned_file_hashes.items():
-        observed_path = target_root / relative_path
+        # Containment before the read (aiops-orchestrator#205, H1A-R1). The
+        # `RelativePath` retype earlier in this PR closed the LEXICAL escape
+        # (`../`, absolute, drive-absolute); this closes the SYMLINK escape,
+        # which no string-level validation can reach.
+        try:
+            observed_path = resolve_within_target_root_v2(target_root, relative_path)
+        except PlanError:
+            return ReceiptCheckV2(
+                status="invalid", receipt=receipt, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+            )
         try:
             observed_hash = hashlib.sha256(observed_path.read_bytes()).hexdigest() if observed_path.is_file() else None
         except OSError:

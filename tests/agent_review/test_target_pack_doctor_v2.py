@@ -10,6 +10,7 @@ import pytest
 
 from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_v2
 from app.agent_review.target_pack_doctor_v2 import (
+    DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2,
     DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2,
@@ -513,3 +514,168 @@ def test_doctor_target_owned_set_reconciliation_is_order_independent(tmp_path: P
 
     assert report.receipt.status == "present"
     assert report.receipt.reason_code is None
+
+
+# --- H1A-R1: symlink-mediated read escape (independent review finding) -----
+#
+# `RelativePath` (the C1/C4 retype above) proves a path STRING is well-formed
+# -- no `..`, no absolute/drive form. It says nothing about what an EXISTING
+# component on disk resolves to. Reproduced against PR #230's own head
+# (dd6d72b) before this fix: with `.aiops/target-profile.v2.yaml` symlinked
+# outside `target_root`, `run_doctor_v2` returned `is_healthy=True` while a
+# `Path.read_text`/`read_bytes` spy recorded both the profile read and the
+# target-owned read resolving outside `target_root`.
+
+
+def _read_spy(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Records (kind, resolved_path) for every `Path` content read."""
+    seen: list[tuple[str, str]] = []
+    original_read_bytes = Path.read_bytes
+    original_read_text = Path.read_text
+
+    def spy_read_bytes(self: Path, *args: object, **kwargs: object) -> bytes:
+        seen.append(("read_bytes", str(self.resolve())))
+        return original_read_bytes(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    def spy_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        seen.append(("read_text", str(self.resolve())))
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_bytes", spy_read_bytes)
+    monkeypatch.setattr(Path, "read_text", spy_read_text)
+    return seen
+
+
+def _assert_no_read_escaped(seen: list[tuple[str, str]], target_root: Path) -> None:
+    root_real = str(target_root.resolve())
+    escaping = [entry for entry in seen if not entry[1].startswith(root_real + os.sep) and entry[1] != root_real]
+    assert not escaping, f"a read resolved outside target_root: {escaping}"
+
+
+def test_doctor_refuses_a_profile_symlinked_outside_target_root(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED for H1A-R1, narrowest form: only `target-profile.v2.yaml` is a
+    symlink pointing outside `target_root`."""
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (target_root / ".aiops").mkdir()
+    outside_profile = outside / "outside-profile.yaml"
+    outside_profile.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (target_root / ".aiops" / "target-profile.v2.yaml").symlink_to(outside_profile)
+
+    seen = _read_spy(monkeypatch)
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "invalid"
+    assert report.profile.reason_code == DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert not report.is_healthy
+    _assert_no_read_escaped(seen, target_root)
+
+
+def test_doctor_refuses_when_the_whole_aiops_directory_is_symlinked_outside(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED for H1A-R1, broadest form: an intermediate path COMPONENT
+    (`.aiops` itself) is the symlink, so both the profile and the receipt
+    resolve outside `target_root` even though every path string involved is
+    a perfectly valid `RelativePath`."""
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (outside / "install-receipt.v2.json").write_text(
+        json.dumps(_receipt().model_dump(mode="json")), encoding="utf-8"
+    )
+    (target_root / ".aiops").symlink_to(outside, target_is_directory=True)
+
+    seen = _read_spy(monkeypatch)
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.reason_code == DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert report.receipt.reason_code == DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert not report.is_healthy
+    _assert_no_read_escaped(seen, target_root)
+
+
+def test_doctor_refuses_a_target_owned_file_symlinked_outside_target_root(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED for H1A-R1 on the target-owned reconciliation loop specifically:
+    a real, in-root profile and receipt, but the receipt's target-owned
+    entry points at a path whose on-disk form escapes."""
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (target_root / ".aiops").mkdir()
+    (target_root / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    outside_owned = outside / "owned.txt"
+    outside_owned.write_text("outside content", encoding="utf-8")
+    (target_root / ".aiops" / "owned.txt").symlink_to(outside_owned)
+
+    manifest = TargetPackManifestV2(
+        schema_id="agent-review.target-pack-manifest.v2",
+        schema_version=2,
+        pack_version="0.1.0",
+        toolrepo_sha="1" * 40,
+        generated_files=(
+            GeneratedFileEntryV2(
+                path=".aiops/target-profile.v2.yaml",
+                ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+                content_sha256="a" * 64,
+            ),
+            GeneratedFileEntryV2(
+                path=".aiops/owned.txt",
+                ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+                content_sha256="b" * 64,
+            ),
+        ),
+        schema_digests={"x.json": "a" * 64},
+        required_capabilities=("router_transport",),
+        min_engine_contract_version=2,
+        max_supported_rollout_mode="shadow_minimal",
+    )
+    receipt = _receipt(
+        manifest_digest=compute_target_pack_manifest_digest_v2(manifest),
+        target_owned_paths=(".aiops/owned.txt", ".aiops/target-profile.v2.yaml"),
+        target_owned_file_hashes={
+            ".aiops/owned.txt": _sha256(b"outside content"),
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8")),
+        },
+    )
+    (target_root / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    seen = _read_spy(monkeypatch)
+    report = run_doctor_v2(target_root=target_root, manifest=manifest, target_repo="owner/repo")
+
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert not report.is_healthy
+    _assert_no_read_escaped(seen, target_root)
+
+
+def test_doctor_allows_a_symlink_that_resolves_back_inside_target_root(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """The policy is CONTAINMENT, not symlink prohibition -- identical in
+    meaning to `target_pack_install_v2`'s write-side check. Without this
+    test the fix could silently become "no symlinks at all", a second,
+    stricter policy the writer does not share."""
+    target_root = tmp_path_factory.mktemp("target")
+    (target_root / ".aiops").mkdir()
+    real_profile = target_root / ".aiops" / "real-profile.yaml"
+    real_profile.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (target_root / ".aiops" / "target-profile.v2.yaml").symlink_to(real_profile)
+    receipt = _receipt(
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8"))},
+    )
+    (target_root / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "present"
+    assert report.receipt.status == "present"
+    assert report.is_healthy
