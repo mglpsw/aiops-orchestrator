@@ -260,11 +260,19 @@ def build_semantic_chunk_plan(
     # --validation-evidence even when this planner invocation did not (or
     # vice versa) -- assume the worst case for both unconditionally rather
     # than trust that the two invocations were given symmetric flags.
+    # C6 (post-merge debt, #205): pr_brief.build_pr_brief can append
+    # BRIEF_BUDGET_UNDER_MINIMUM_LIMITATION once its own shrink ladder
+    # bottoms out and the resolved brief budget is still exceeded --
+    # whether that happens depends on the target's resolved brief budget,
+    # which this planner has no way to re-derive without re-running the
+    # real shrink ladder. Assumed unconditionally, same worst-case pattern
+    # as WORST_CASE_OPTIONAL_ARTIFACT_LIMITATIONS just below it.
     fixed_brief_limitations = [
         *intake_limitations,
         *optional_limitations_resolved,
         *artifact_state_limits,
         *payload_cost_model.WORST_CASE_OPTIONAL_ARTIFACT_LIMITATIONS,
+        payload_cost_model.BRIEF_BUDGET_UNDER_MINIMUM_LIMITATION,
     ]
 
     def project_chunk_cost(group: SemanticGroup, candidate_files: list[str], packing_limitations: list[str]) -> int:

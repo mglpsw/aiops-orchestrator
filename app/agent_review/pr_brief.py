@@ -345,8 +345,8 @@ def _apply_budget(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str,
                 break
         if not changed:
             limitations = working.get("limitations")
-            if isinstance(limitations, list) and "brief_budget_under_minimum_required_sections" not in limitations:
-                limitations.append("brief_budget_under_minimum_required_sections")
+            if isinstance(limitations, list) and payload_cost_model.BRIEF_BUDGET_UNDER_MINIMUM_LIMITATION not in limitations:
+                limitations.append(payload_cost_model.BRIEF_BUDGET_UNDER_MINIMUM_LIMITATION)
             break
 
     final_truncation, _ = _stabilize_truncation(

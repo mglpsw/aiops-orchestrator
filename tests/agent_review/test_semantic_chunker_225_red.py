@@ -423,6 +423,70 @@ def test_red25_adversarial_limitations_envelope_stays_sound() -> None:
     _assert_real_build_never_reduces_a_hunk(intake_dict, plan, optional_limitations=optional_limitations)
 
 
+# ---------------------------------------------------------------------------
+# H1-B / C6 (post-merge debt, #205): pr_brief.build_pr_brief's own
+# `_apply_budget` can append `brief_budget_under_minimum_required_sections`
+# to `pr_brief.limitations` once every shrinker has bottomed out and the
+# resolved brief budget is still exceeded. `chunk_context.brief.limitations`
+# in the real builder is `list(pr_brief.limitations)` verbatim -- so the
+# planner's own `brief_limitations` projection (semantic_chunker.py's
+# `fixed_brief_limitations`) must assume this reason code can appear too, or
+# a tight `pr_brief_max_chars` target profile makes the real emitted brief
+# section larger than what was projected.
+# ---------------------------------------------------------------------------
+
+
+def test_c6_projection_accounts_for_brief_budget_minimum_limitation() -> None:
+    files = ["backend/api/a.py"]
+    hunk_lines = {"backend/api/a.py": 30}
+    intake_dict = _intake(files, hunk_lines, must=files)
+    # A resolved brief budget this tight cannot fit even after every
+    # shrinker (validation findings, checks rows, artifact details,
+    # semantic-group files, changed-files rows) has emptied its list --
+    # _apply_budget's terminal branch fires and appends the limitation.
+    intake_dict["target_profile"] = {"pr_brief_max_chars": 1}
+
+    # `prompt_budget_chars` is always the caller's `max_chars_per_block`,
+    # not the tight projected floor -- so a generous max_chars_per_block
+    # would mask a small under-projection with slack. Learn the planner's
+    # own projected floor first, then re-plan with max_chars_per_block
+    # pinned to exactly that floor: the tightest possible proof that a
+    # smaller, under-projected floor would have let the packer size this
+    # chunk at a budget the real builder cannot honor.
+    loose_plan = build_semantic_chunk_plan(intake_dict, max_blocks=6, max_chars_per_block=1_000_000)
+    projected = loose_plan.chunks[0].estimated_chars
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=6, max_chars_per_block=projected)
+    _assert_real_build_never_reduces_a_hunk(intake_dict, plan)
+    # Stricter than the shared hunks-only helper: an *exact*-fit projection
+    # promises nothing else needs shrinking either -- any coverage_impact
+    # at all at this exact budget is itself proof the projection
+    # under-counted the real, unshrinkable brief.limitations content.
+    manifest, _ = _build_real_payloads(intake_dict, plan)
+    assert manifest.chunks[0].truncation.coverage_impact == [], manifest.chunks[0].truncation.coverage_impact
+
+
+def test_real_brief_actually_hits_the_minimum_required_sections_branch() -> None:
+    """Sanity/negative-control companion for the test above: confirms the
+    tiny `pr_brief_max_chars` fixture genuinely drives the real builder
+    into the branch under test, rather than the soundness assertion above
+    passing vacuously because the budget was never actually tight enough
+    to trigger it."""
+    files = ["backend/api/a.py"]
+    hunk_lines = {"backend/api/a.py": 30}
+    intake_dict = _intake(files, hunk_lines, must=files)
+    intake_dict["target_profile"] = {"pr_brief_max_chars": 1}
+    plan = build_semantic_chunk_plan(intake_dict, max_blocks=6, max_chars_per_block=24_000)
+    intake = ReviewIntake.model_validate(intake_dict)
+    brief = build_pr_brief(
+        intake=intake,
+        chunk_plan=plan,
+        redaction_report=intake.redaction_summary,
+        checks=None,
+        validation_evidence=None,
+    )
+    assert "brief_budget_under_minimum_required_sections" in brief.limitations
+
+
 def test_red26_adversarial_review_metadata_stays_sound() -> None:
     """RED-26 (P2-3): target/brief.review metadata (pr_number, commit_sha,
     review_mode, contract_pack) is resolved exactly via

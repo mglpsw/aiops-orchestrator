@@ -1190,6 +1190,21 @@ WORST_CASE_OPTIONAL_ARTIFACT_LIMITATIONS: list[str] = [
 
 
 # ---------------------------------------------------------------------------
+# H1-B / C6 (post-merge debt, #205): pr_brief.build_pr_brief's own
+# _apply_budget can append this reason code to pr_brief.limitations once
+# every shrinker has bottomed out and the resolved brief budget is still
+# exceeded -- and chunk_context.brief.limitations in the real builder is
+# `list(pr_brief.limitations)` verbatim. The projection has no way to know
+# in advance whether the target's resolved brief budget will actually be
+# tight enough to trigger this (that would mean re-running the real shrink
+# ladder at projection time), so -- same pattern as
+# WORST_CASE_OPTIONAL_ARTIFACT_LIMITATIONS above -- it must assume the
+# worst case unconditionally rather than silently under-count.
+# ---------------------------------------------------------------------------
+BRIEF_BUDGET_UNDER_MINIMUM_LIMITATION = "brief_budget_under_minimum_required_sections"
+
+
+# ---------------------------------------------------------------------------
 # Worst-case chunk_id placeholder. Final chunk numbering is only known once
 # `max_blocks` selection (rev.3 SS10) has finished choosing which candidate
 # partitions survive, which happens after every candidate has already been
