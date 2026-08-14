@@ -825,3 +825,162 @@ def test_bootstrap_untruncated_state_is_the_single_shared_bootstrap_authority() 
     # reproduce the identical length -- a genuine fixed point.
     _, remeasured_len = m.materialize_payload(payload, truncation=truncation)
     assert remeasured_len == exact_len
+
+
+# ---------------------------------------------------------------------------
+# H1-B / C5: canonical path identity across every context join
+# (aiops-orchestrator post-merge debt, #205). `chunk.files` is always the
+# output of `canonical_repo_path` (semantic_chunker.py), but every context
+# extraction that joins an *externally-sourced* path list against it --
+# file-diff-context, checks, validation evidence, LCI, test intelligence --
+# must canonicalize on its own side too, or a merely differently-spelled
+# but identical path silently fails to join and the context/coverage is
+# lost without any visible signal.
+# ---------------------------------------------------------------------------
+
+
+def test_file_context_map_matches_dotted_relative_path() -> None:
+    intake = ReviewIntake.model_validate(
+        {
+            "schema_id": "agent-review.intake.v1",
+            "schema_version": 1,
+            "source": "aiops-review-intake",
+            "target_repo": "r/t",
+            "target_profile": {},
+            "created_at": "2026-08-13T00:00:00Z",
+            "artifacts": {
+                "file-diff-context.json": {
+                    "path": "file-diff-context.json",
+                    "content": {
+                        "files": [{"path": "./backend/api/a.py", "status": "modified", "summary": "renamed function"}],
+                        "coverage_requirements": {},
+                    },
+                },
+                "full-diff.diff": {"path": "full-diff.diff", "content": ""},
+            },
+            "artifact_status": [],
+            "redaction_summary": RedactionReport().model_dump(mode="json"),
+            "limitations": [],
+            "completeness": {},
+            "status": "complete",
+        }
+    )
+    ctx = m.file_context_map(intake)
+    # The canonical chunk-path spelling ("backend/api/a.py") must resolve
+    # the real status/summary, not silently miss under the dotted key.
+    assert ctx.get("backend/api/a.py", {}).get("status") == "modified"
+    assert ctx.get("backend/api/a.py", {}).get("summary") == "renamed function"
+
+
+def test_projection_file_status_survives_dotted_file_diff_context_path() -> None:
+    """End-to-end reproduction of the reported defect: file-diff-context
+    spells the path with a leading `./`; chunk.files carries the canonical
+    spelling the planner always uses. Before the fix, chunk_context.files
+    silently degraded to status="unknown"/summary=None."""
+    files = ["backend/api/a.py"]
+    intake = _build_intake(
+        files,
+        {p: 5 for p in files},
+        files,
+        file_overrides={"backend/api/a.py": {"path": "./backend/api/a.py", "status": "modified", "summary": "renamed function"}},
+    )
+    hunks = m.diff_by_file(intake)
+    target = {"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40}
+    m.project_min_hunk_preserving_chars(
+        intake=intake,
+        chunk_files=files,
+        chunk_contracts=[],
+        semantic_group="api_schema_contract",
+        max_blocks=6,
+        target=target,
+        brief_target=target,
+        brief_review={"mode": "full", "contract_pack": None},
+        brief_required_files=files,
+        brief_limitations=[],
+        selected_contract_pack=None,
+        checks=None,
+        validation_evidence=None,
+        hunks=hunks,
+        created_at="2026-08-13T00:00:00Z",
+    )
+    file_context = m.file_context_map(intake)
+    assert file_context.get("backend/api/a.py", {}).get("status") == "modified"
+    assert file_context.get("backend/api/a.py", {}).get("summary") == "renamed function"
+
+
+def test_paths_from_item_canonicalizes_dotted_and_backslash_paths() -> None:
+    item = {"file_path": "./backend/api/a.py", "files": ["backend\\api\\b.py"]}
+    assert m._paths_from_item(item) == {"backend/api/a.py", "backend/api/b.py"}
+
+
+def test_paths_from_item_skips_unresolvable_paths_instead_of_crashing() -> None:
+    # Fail-closed: an absolute/traversal path cannot be a repo-relative
+    # identity, so it is excluded from the set (falls through to each
+    # consumer's own "no derivable scope" handling) rather than raising or
+    # silently comparing raw strings.
+    item = {"file_path": "/etc/passwd", "files": ["a/../../etc/passwd"]}
+    assert m._paths_from_item(item) == set()
+
+
+def test_checks_context_matches_file_scoped_failed_check_via_dotted_path() -> None:
+    checks_doc = {
+        "status": "complete",
+        "checks": [
+            {"name": "lint", "status": "failed", "command": "ruff check", "file_path": "./backend/api/a.py"},
+        ],
+    }
+    intake = _intake_with_checks(checks_doc)
+    ctx, limitations = m.checks_context(checks_doc, intake=intake, chunk_files={"backend/api/a.py"})
+    assert ctx["checks"] == [{"name": "lint", "status": "failed", "command": "ruff check", "scope": "file"}], ctx
+    assert limitations == []
+
+
+def test_evidence_context_matches_blocking_finding_via_dotted_path() -> None:
+    ve_doc = {
+        "status": "complete",
+        "blocking_findings": [
+            {"title": "unsafe eval", "file_path": "./backend/api/a.py", "severity": "high"},
+        ],
+    }
+    intake = _intake_with_checks(None)
+    ctx, _ = m.evidence_context(intake, chunk_files=["backend/api/a.py"], validation_evidence=ve_doc)
+    assert len(ctx["validation_evidence"]["blocking_findings"]) == 1
+
+
+def test_filter_lci_files_analyzed_matches_dotted_path() -> None:
+    lci_doc = {"mode": "static", "files_analyzed": ["./backend/api/a.py"], "confirmed_local_failures": []}
+    ctx, limitations = m._filter_lci(lci_doc, chunk_files={"backend/api/a.py"})
+    assert ctx["files_analyzed"] == ["backend/api/a.py"]
+    assert limitations == []
+
+
+def test_filter_lci_confirmed_local_failure_matches_dotted_path() -> None:
+    lci_doc = {
+        "mode": "static",
+        "files_analyzed": [],
+        "confirmed_local_failures": [{"title": "null deref", "file_path": "./backend/api/a.py"}],
+    }
+    ctx, limitations = m._filter_lci(lci_doc, chunk_files={"backend/api/a.py"})
+    assert len(ctx["confirmed_local_failures"]) == 1
+    assert limitations == []
+
+
+def test_filter_test_intelligence_matches_dotted_and_backslash_paths() -> None:
+    tests_doc = {
+        "mode": "pytest",
+        "changed_tests": ["./tests/test_a.py"],
+        "failed_tests": ["tests\\test_b.py"],
+    }
+    ctx = m._filter_test_intelligence(tests_doc, chunk_files={"tests/test_a.py", "tests/test_b.py"})
+    assert ctx["changed_tests"] == ["tests/test_a.py"]
+    assert ctx["failed_tests"] == ["tests/test_b.py"]
+
+
+def test_negative_control_raw_spelling_lookup_would_have_missed_the_context() -> None:
+    """Negative control for C5: confirms the scenario above actually
+    distinguishes canonical-join from raw-spelling-join -- the pre-fix
+    behavior (a plain dict keyed by the raw file-diff-context spelling,
+    looked up by the canonical chunk path) misses the entry entirely."""
+    raw_keyed = {"./backend/api/a.py": {"status": "modified", "summary": "renamed function"}}
+    canonical_chunk_path = "backend/api/a.py"
+    assert raw_keyed.get(canonical_chunk_path, {}).get("status") is None

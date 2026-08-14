@@ -571,21 +571,61 @@ def _is_global_item(item: dict[str, Any]) -> bool:
 
 
 def _paths_from_item(item: dict[str, Any]) -> set[str]:
+    """Canonical path identity for scope joins (C5, aiops-orchestrator#205
+    post-merge debt). `chunk.files` is always `canonical_repo_path` output,
+    so any externally-sourced path compared against it must go through the
+    same authority -- `sanitize_display_path` alone leaves `./`/`.`
+    segments uncollapsed and never rejects an absolute/traversal path,
+    which previously let a merely differently-spelled but identical path
+    silently fail to join, and let an unresolvable path occupy the scope
+    set as a bogus, never-matching identity instead of falling through to
+    each caller's own "no derivable scope" handling. A path that cannot be
+    canonicalized is excluded here (fail closed), not raised -- callers
+    already treat an empty scope set as "scope indeterminate", which is the
+    correct, visible outcome for a malformed source path.
+    """
     paths: set[str] = set()
     for key in ("file_path", "file", "original_file", "path"):
-        value = sanitize_display_path(_clean_text(item.get(key)) or "")
-        if value:
-            paths.add(value)
+        raw = _clean_text(item.get(key))
+        if not raw:
+            continue
+        try:
+            paths.add(canonical_repo_path(raw))
+        except PathIdentityError:
+            continue
     for key in ("files", "paths", "source_files", "related_files"):
-        for value in _sanitize_contract_paths(item.get(key)):
-            paths.add(value)
+        value = item.get(key)
+        if not isinstance(value, list):
+            continue
+        for raw in value:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            try:
+                paths.add(canonical_repo_path(raw))
+            except PathIdentityError:
+                continue
     return paths
+
+
+def _canonical_paths_in_chunk(raw_paths: list[str], *, chunk_files: set[str]) -> list[str]:
+    """Canonicalize each raw path (C5) and keep only those that join the
+    (already canonical) chunk file set, sorted for a deterministic order.
+    A path that fails to canonicalize is dropped, not compared raw."""
+    matched: set[str] = set()
+    for raw in raw_paths:
+        try:
+            canonical = canonical_repo_path(raw)
+        except PathIdentityError:
+            continue
+        if canonical in chunk_files:
+            matched.add(canonical)
+    return sorted(matched)
 
 
 def _filter_lci(document: dict[str, Any] | None, *, chunk_files: set[str]) -> tuple[dict[str, Any], list[str]]:
     if not isinstance(document, dict):
         return {"provided": False, "files_analyzed": [], "confirmed_local_failures": []}, []
-    analyzed = [path for path in _string_list(document.get("files_analyzed")) if path in chunk_files]
+    analyzed = _canonical_paths_in_chunk(_string_list(document.get("files_analyzed")), chunk_files=chunk_files)
     scoped_failures: list[dict[str, Any]] = []
     limitations = list(_string_list(document.get("limitations")))
     for item in _list(document.get("confirmed_local_failures")):
@@ -617,8 +657,8 @@ def _filter_lci(document: dict[str, Any] | None, *, chunk_files: set[str]) -> tu
 def _filter_test_intelligence(document: dict[str, Any] | None, *, chunk_files: set[str]) -> dict[str, Any]:
     if not isinstance(document, dict):
         return {"provided": False, "changed_tests": [], "failed_tests": []}
-    changed_tests = [path for path in _string_list(document.get("changed_tests")) if path in chunk_files]
-    failed_tests = [path for path in _string_list(document.get("failed_tests")) if path in chunk_files]
+    changed_tests = _canonical_paths_in_chunk(_string_list(document.get("changed_tests")), chunk_files=chunk_files)
+    failed_tests = _canonical_paths_in_chunk(_string_list(document.get("failed_tests")), chunk_files=chunk_files)
     return {
         "provided": True,
         "mode": _clean_text(document.get("mode")),
@@ -904,8 +944,18 @@ def file_context_map(intake: ReviewIntake) -> dict[str, dict[str, Any]]:
     for item in files:
         if not isinstance(item, dict):
             continue
-        path = _clean_text(item.get("path"))
-        if not path:
+        raw_path = _clean_text(item.get("path"))
+        if not raw_path:
+            continue
+        # C5: key by the same canonical identity chunk.files uses, or a
+        # merely differently-spelled but identical path (e.g. `./x` vs
+        # `x`) silently misses this entry and the lookup falls back to a
+        # placeholder status/summary. A path that cannot be canonicalized
+        # is dropped (fail closed) rather than indexed under a raw, never
+        # matching key.
+        try:
+            path = canonical_repo_path(raw_path)
+        except PathIdentityError:
             continue
         mapped[path] = item
     return mapped
