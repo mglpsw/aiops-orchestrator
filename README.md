@@ -62,14 +62,22 @@ O v2 ser o sucessor **não** significa que o v1 será removido agora.
 - Última release publicada: **`v0.22.0`**, final e imutável, em 12 de agosto de 2026,
   no commit `2ce1f45768b8779cb48ef8a302d4ed796349f0e5`.
 - `master` está **à frente** da `v0.22.0` com trabalho ainda **não publicado em
-  release**: seis slices do AgentReview v2 (incluindo a primeira do target pack) e
-  uma correção crítica do AgentReview v1 (`#225`). Uma dessas slices (`8b20ae3`)
-  também **toca** superfície CAEM/shared — move/reutiliza primitives de JSON
-  estrito/digest entre `app/caem_consumer/f0.py` e `app/common/strict_json.py`;
-  isso é uma superfície tocada, não uma mudança de comportamento comprovada
-  (testes de equivalência visam preservá-lo).
+  release**: a conclusão e o hardening do core do AgentReview v2 pós-release, a
+  primeira slice do target pack, correções de estabilização do AgentReview v1 e
+  uma reconciliação documental. Um desses commits (`8b20ae3`) também **toca**
+  superfície CAEM/shared — move/reutiliza primitives de JSON estrito/digest
+  entre `app/caem_consumer/f0.py` e `app/common/strict_json.py`; isso é uma
+  superfície tocada, não uma mudança de comportamento comprovada (testes de
+  equivalência visam preservá-lo). O delta exato é derivável do git
+  (`git log v0.22.0..master`) e está tabulado, commit a commit, em
+  [`docs/engineering/CURRENT_CHECKPOINT.md`](docs/engineering/CURRENT_CHECKPOINT.md).
 - Consumidores devem pinar um SHA completo e imutável, nunca branch ou tag móvel.
-  Um consumidor pinado na `v0.22.0` **não** possui a correção `#225`.
+  Um consumidor pinado na `v0.22.0` **não** possui as correções `#225` nem H1-B
+  do AgentReview v1.
+- Próxima fronteira de desenvolvimento: **`#203`** — completar o target pack
+  instalável. Os pré-requisitos de core (`#200`, `#201`, `#202`) estão
+  satisfeitos; essas três issues permanecem abertas por adoção de target, não
+  por lacuna de engine.
 
 Histórico: [notas de release](docs/RELEASE_NOTES.md) e os snapshots
 [`v0.22.0`](docs/RELEASE_V0_22_0.md), [`v0.21.0`](docs/RELEASE_V0_21_0.md),
