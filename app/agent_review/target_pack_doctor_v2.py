@@ -69,6 +69,7 @@ from app.agent_review.target_pack_manifest_v2 import (
     compute_target_pack_manifest_digest_v2,
 )
 from app.agent_review.target_pack_plan_v2 import (
+    PLAN_PATH_RESOLUTION_FAILED_REASON_V2,
     PlanError,
     resolve_within_target_root_v2,
     rollout_mode_exceeds_pack_capability_v2,
@@ -82,6 +83,7 @@ from pydantic import ValidationError
 
 DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 = "target_pack_doctor_target_root_not_a_directory"
 DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_doctor_path_escapes_target_root"
+DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2 = "target_pack_doctor_path_resolution_failed"
 DOCTOR_RECEIPT_TARGET_REPO_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_target_repo_mismatch"
 DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_target_owned_set_mismatch"
 DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_pack_version_mismatch"
@@ -130,6 +132,24 @@ class DoctorReportV2:
         )
 
 
+def _doctor_reason_for_plan_error_v2(exc: PlanError) -> str:
+    """Round 5, second pass (Codex shadow review of #230 at 90999f2),
+    confirmed and fixed: every `except PlanError` in this module collapsed
+    BOTH of `resolve_within_target_root_v2`'s distinct reasons -- genuine
+    containment escape and unresolvable symlink loop -- into the single
+    escape reason code, discarding the very distinction the loop fix
+    introduced its own reason code to preserve. Reproduced: a symlink loop
+    at the profile path reported `target_pack_doctor_path_escapes_target_
+    root`, indistinguishable from an actual escape, even though the
+    underlying `PlanError.reason_code` already said otherwise. This is the
+    single translation site so all three call sites below stay consistent
+    with each other and with `target_pack_plan_v2`'s own reason codes."""
+
+    if exc.reason_code == PLAN_PATH_RESOLUTION_FAILED_REASON_V2:
+        return DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2
+    return DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
 def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
     # Containment BOUND to the read, not merely checked before it
     # (aiops-orchestrator#205, H1A-R1, round 2). The first cut of this fix
@@ -166,9 +186,9 @@ def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
     # the mutable alias once the read is bound to the resolved root.
     try:
         resolved = resolve_within_target_root_v2(target_root_real, target_root_real / DEFAULT_TARGET_PROFILE_RELATIVE_PATH)
-    except PlanError:
+    except PlanError as exc:
         return ProfileCheckV2(
-            status="invalid", profile_hash=None, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+            status="invalid", profile_hash=None, reason_code=_doctor_reason_for_plan_error_v2(exc)
         )
     if not resolved.is_file():
         return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_MISSING_REASON_V2)
@@ -267,8 +287,8 @@ def _check_receipt_v2(
 
     try:
         receipt_path = resolve_within_target_root_v2(target_root_real, target_root_real / RECEIPT_RELATIVE_PATH_V2)
-    except PlanError:
-        return ReceiptCheckV2(status="invalid", receipt=None, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2)
+    except PlanError as exc:
+        return ReceiptCheckV2(status="invalid", receipt=None, reason_code=_doctor_reason_for_plan_error_v2(exc))
     if not receipt_path.is_file():
         return ReceiptCheckV2(status="missing", receipt=None, reason_code="target_pack_receipt_missing")
     try:
@@ -318,9 +338,9 @@ def _check_receipt_v2(
         # distinction matters.
         try:
             observed_path = resolve_within_target_root_v2(target_root_real, target_root_real / relative_path)
-        except PlanError:
+        except PlanError as exc:
             return ReceiptCheckV2(
-                status="invalid", receipt=receipt, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+                status="invalid", receipt=receipt, reason_code=_doctor_reason_for_plan_error_v2(exc)
             )
         try:
             observed_hash = hashlib.sha256(observed_path.read_bytes()).hexdigest() if observed_path.is_file() else None

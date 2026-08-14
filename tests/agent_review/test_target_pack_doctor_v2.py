@@ -11,6 +11,7 @@ import pytest
 from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_v2
 from app.agent_review.target_pack_doctor_v2 import (
     DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2,
+    DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2,
     DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2,
@@ -785,6 +786,26 @@ def test_doctor_returns_a_typed_refusal_for_a_symlink_loop_instead_of_crashing(t
 
     assert report.profile.status == "invalid"
     assert not report.is_healthy
+
+
+def test_doctor_distinguishes_a_resolution_loop_from_a_genuine_escape(tmp_path: Path) -> None:
+    """RED, second pass (Codex shadow review of #230 at 90999f2).
+    `_check_profile_v2`'s `except PlanError` collapsed BOTH `resolve_
+    within_target_root_v2` reasons -- genuine escape and unresolvable
+    symlink loop -- into the single escape reason code, discarding the
+    distinction the loop fix's own dedicated `PlanError` reason code
+    existed to preserve. Reproduced: a symlink loop reported `target_
+    pack_doctor_path_escapes_target_root`, indistinguishable from an
+    actual escape, even though `resolve_within_target_root_v2` already
+    raised a semantically different reason."""
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").symlink_to("target-profile.v2.yaml")
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "invalid"
+    assert report.profile.reason_code == DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2
+    assert report.profile.reason_code != DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
 
 
 def test_doctor_rejects_an_unknown_target_owned_path_before_reading_it(
