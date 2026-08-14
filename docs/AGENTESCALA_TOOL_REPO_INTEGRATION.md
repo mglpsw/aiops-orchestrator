@@ -192,6 +192,11 @@ It must never invent findings.
 
 ## Chunk cost projection and coverage fail-closed (v1, aiops-orchestrator#225)
 
+**`master`-only, not yet in a published release.** This fix (`da5a03b`) is
+merged to `master` but not in the `v0.22.0` baseline pinned today; a consumer
+on the published tag does not have this behavior yet. See
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 `aiops-review-plan-chunks.py` and `aiops-review-build-payloads.py` share a
 single cost authority (`app/agent_review/payload_cost_model.py`) so a chunk
 the planner declares `complete` is guaranteed to fit its payload budget

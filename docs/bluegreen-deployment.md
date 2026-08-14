@@ -1,6 +1,11 @@
 # Blue/Green Deployment
 
-**Status:** `HISTORICAL` — documento de fase anterior, preservado como registro. Não descreve o estado ou o caminho oficial atual; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+**Status:** `CURRENT | OPERATIONAL REFERENCE` — a topologia e os scripts
+descritos aqui permanecem ativos: `deploy/docker-compose.bluegreen.yml` é
+validado pela CI (`scripts/ci_validate.sh`), `scripts/validate_bluegreen.sh`
+continua o caminho de execução guardado, e `docs/ARCHITECTURE.md` documenta
+a mesma topologia `8000`/`8001` como corrente. Não confundir com estado de
+release ou runtime; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
 Este guia documenta a operação blue/green do AIOps no repo canônico `/opt/aiops-orchestrator`.
 

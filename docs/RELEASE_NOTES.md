@@ -134,6 +134,11 @@ release evidence.
 
 ## v0.18.0-hotfix.1 - Docker build project name alignment
 
+> Not a tag: `git tag` has no `hotfix` entry for this repository (see
+> [`RELEASE_V0_22_0.md`](RELEASE_V0_22_0.md)). This is a prose record of an
+> untagged build/deploy correction, not an independently released version —
+> do not resolve it as a release identity.
+
 ### Fixed
 
 - Docker Compose build now uses consistent project name `-p deploy` for both build and up commands

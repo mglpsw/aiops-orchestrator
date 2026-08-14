@@ -50,10 +50,14 @@ and the full threat model.
 Two of the specification's seven CLI subcommands, as a coherent, tested
 slice — `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
 remain deferred (spec `§12`; see the status table above). PR #228
-subsequently bound `init` to an explicit, schema-backed operation plan:
+subsequently bound `init` to an explicit, schema-backed operation plan. Without
+`--apply`, `init` is write-zero: it prints the operation plan and exits.
+Writing the profile/receipt requires a second, explicit invocation with
+`--apply` and the previewed plan's hash:
 
 ```text
 agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z [--rollout off|shadow_minimal|shadow_full]
+agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z --apply --expected-plan-sha256 <hash previewed above>
 agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z
 ```
 

@@ -47,7 +47,7 @@ AIOps ecosystem
 
 | Componente | Estado | Observação |
 |---|---|---|
-| AIOps Runtime | **released** | runtime CT102 reporta `0.20.0`; versionado à parte da tag do toolrepo |
+| AIOps Runtime | **released** | última implantação registrada `0.20.0` (não é observação viva do CT102); versionado à parte da tag do toolrepo |
 | AgentReview v1 | **released / maintenance / freeze** | baseline `v0.22.0`; só correções críticas/segurança/regressão |
 | AgentReview v2 | **em desenvolvimento** | não é GA, não é default, não é required check |
 | Target Pack v2 | **em desenvolvimento** | `init`/`doctor` implementados; demais subcomandos deferidos |
