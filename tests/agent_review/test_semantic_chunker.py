@@ -417,3 +417,78 @@ def test_semantic_chunker_marks_single_file_budget_overflow_as_oversize() -> Non
     assert plan.files_partially_covered == []
     assert plan.files_not_covered == [oversized]
     assert f"payload_oversize:{oversized}" in plan.limitations
+
+
+# ---------------------------------------------------------------------------
+# H1-B / C10 (post-merge debt, #205): unknown completeness != complete
+# coverage. When file-diff-context is absent, extract_files_from_intake's
+# fallback scavenges `.content.files` from whatever *other* artifact
+# happens to have one -- no artifact anywhere declares itself an
+# exhaustive changed-file enumeration, so the fallback-discovered set has
+# no completeness guarantee. `_plan_status` used to treat
+# `file_context_fallback_used` as a purely informational limitation (on
+# the assumption the fallback "still yielded every file"), which let a
+# plan that only discovered a strict subset of the real changed files
+# declare itself `complete` -- there was simply no file outside the
+# (incomplete) discovered set for `files_not_covered` to ever name.
+# ---------------------------------------------------------------------------
+
+
+def _intake_for_fallback_discovery(discovered_files: list[dict]) -> dict:
+    return {
+        "schema_version": "agent-review.intake.v1",
+        "target_repo": "mglpsw/AgentEscala",
+        "target_profile": {"domain_contracts": {"rules": []}},
+        "artifacts": {
+            "file-diff-context.json": {
+                "name": "file-diff-context.json",
+                "path": "file-diff-context.json",
+                "kind": "json",
+                "content": {"files": []},
+            },
+            "checks.json": {
+                "name": "checks.json",
+                "path": "checks.json",
+                "kind": "json",
+                "content": {"status": "ok", "files": discovered_files},
+            },
+        },
+        "artifact_status": [
+            {
+                "name": "file-diff-context.json",
+                "path": "file-diff-context.json",
+                "available": True,
+                "valid": True,
+                "status": "available",
+            },
+            {"name": "checks.json", "path": "checks.json", "available": True, "valid": True, "status": "available"},
+        ],
+        "status": "complete",
+        "limitations": [],
+        "redaction_summary": {"schema_version": "agent-review.redaction-report.v1"},
+    }
+
+
+def test_c10_fallback_discovery_cannot_declare_complete_coverage() -> None:
+    # checks.json's own `.files` field is incidental to a completely
+    # different document -- there is no contract anywhere that it lists
+    # every changed file, so a plan built entirely from this fallback
+    # source must not claim complete coverage.
+    intake_dict = _intake_for_fallback_discovery([{"path": "backend/api/a.py"}])
+    plan = build_semantic_chunk_plan(intake_dict)
+
+    assert "file_context_fallback_used" in plan.limitations
+    assert plan.status != "complete", plan.status
+    # The single discovered file is still genuinely planned/packed -- this
+    # is "coverage is unproven", never "coverage confirmed failed" for the
+    # file that *was* found.
+    assert plan.files_covered == ["backend/api/a.py"]
+
+
+def test_primary_file_diff_context_still_yields_complete_status() -> None:
+    # Positive control: the ordinary, non-fallback path (file-diff-context
+    # actually present and populated) must be unaffected -- this fix must
+    # not degrade every plan indiscriminately.
+    plan = build_semantic_chunk_plan(_intake(["backend/api/a.py"]))
+    assert "file_context_fallback_used" not in plan.limitations
+    assert plan.status == "complete"

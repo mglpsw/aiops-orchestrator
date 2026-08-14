@@ -196,6 +196,24 @@ def diff_by_file(intake: ReviewIntake) -> dict[str, str]:
     return dict(sorted(result.items()))
 
 
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@")
+
+
+def block_has_observable_textual_hunk(block: str) -> bool:
+    """C8 (post-merge debt #205): a `diff_by_file(...)` value is any
+    non-empty rendered git diff block for a path -- that includes a
+    binary-only block ("Binary files a/x and b/x differ") and a
+    metadata-only block (pure rename/mode change, no content diff), neither
+    of which contains a single line of semantically reviewable, line-level
+    content. `bool(block)` conflates all three with an observable textual
+    hunk. The one structural signal that reliably distinguishes a real
+    unified-diff hunk is its header line (`@@ -l,s +l,s @@`); content lines
+    are always prefixed with `+`/`-`/` ` so this can't false-positive on a
+    changed line that merely contains the literal text `@@`.
+    """
+    return any(_HUNK_HEADER_RE.match(line) for line in block.splitlines())
+
+
 def _resolve_diff_block_path(block_lines: list[str]) -> str | None:
     header_path = _parse_diff_path(block_lines[0])
     plus_path: str | None = None
@@ -485,8 +503,19 @@ def checks_context(
     rows = []
     limitations: list[str] = []
     for item in checks_rows:
-        item_scope_paths = _paths_from_item(item)
+        item_scope_paths, had_unresolvable = _item_scope_paths(item)
         is_global = _is_global_item(item)
+        if had_unresolvable and not item_scope_paths and not is_global:
+            # An unresolvable path is a real but invalid scope claim -- it
+            # must never fall through to the document/global-scope branch
+            # below (which is reserved for items that genuinely never had
+            # a path field at all). Only when NO usable canonical path
+            # survives at all: an item with one valid and one invalid path
+            # field still has a real, matchable scope via the valid one
+            # (PR #231 review round 2, P1).
+            name = _clean_text(item.get("name")) or "unknown_check"
+            limitations.append(f"check_scope_unclassified:{name}")
+            continue
         if item_scope_paths:
             if not item_scope_paths.intersection(chunk_files):
                 continue
@@ -570,22 +599,78 @@ def _is_global_item(item: dict[str, Any]) -> bool:
     return item.get("is_global") is True
 
 
-def _paths_from_item(item: dict[str, Any]) -> set[str]:
+def _item_scope_paths(item: dict[str, Any]) -> tuple[set[str], bool]:
+    """Canonical path identity for scope joins (C5, aiops-orchestrator#205
+    post-merge debt), plus whether any path-bearing field was present but
+    unresolvable. `chunk.files` is always `canonical_repo_path` output, so
+    any externally-sourced path compared against it must go through the
+    same authority -- `sanitize_display_path` alone leaves `./`/`.`
+    segments uncollapsed and never rejects an absolute/traversal path,
+    which previously let a merely differently-spelled but identical path
+    silently fail to join, and let an unresolvable path occupy the scope
+    set as a bogus, never-matching identity instead of falling through to
+    each caller's own "no derivable scope" handling.
+
+    The second return value exists because "no path field present at all"
+    and "a path field was present but invalid" are not the same fact, and
+    conflating them is itself a defect (PR #231 adversarial review round
+    1, P2): a caller that treats an empty scope set as "no scope info ->
+    fall back to global/document-wide inclusion" would otherwise silently
+    promote an item with an actually-invalid path to global scope --
+    strictly worse than the pre-fix bogus-non-matching-identity behavior
+    it replaced. Callers that already have their own "unclassified"
+    fallback (checks_context) must route an unresolvable path there
+    instead of the global/document-scope branch; callers with no
+    unclassified channel at all (_filter_validation_entries) must exclude
+    it outright, not include it everywhere.
+    """
     paths: set[str] = set()
+    had_unresolvable = False
     for key in ("file_path", "file", "original_file", "path"):
-        value = sanitize_display_path(_clean_text(item.get(key)) or "")
-        if value:
-            paths.add(value)
+        raw = _clean_text(item.get(key))
+        if not raw:
+            continue
+        try:
+            paths.add(canonical_repo_path(raw))
+        except PathIdentityError:
+            had_unresolvable = True
     for key in ("files", "paths", "source_files", "related_files"):
-        for value in _sanitize_contract_paths(item.get(key)):
-            paths.add(value)
-    return paths
+        value = item.get(key)
+        if not isinstance(value, list):
+            continue
+        for raw in value:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            try:
+                paths.add(canonical_repo_path(raw))
+            except PathIdentityError:
+                had_unresolvable = True
+    return paths, had_unresolvable
+
+
+def _paths_from_item(item: dict[str, Any]) -> set[str]:
+    return _item_scope_paths(item)[0]
+
+
+def _canonical_paths_in_chunk(raw_paths: list[str], *, chunk_files: set[str]) -> list[str]:
+    """Canonicalize each raw path (C5) and keep only those that join the
+    (already canonical) chunk file set, sorted for a deterministic order.
+    A path that fails to canonicalize is dropped, not compared raw."""
+    matched: set[str] = set()
+    for raw in raw_paths:
+        try:
+            canonical = canonical_repo_path(raw)
+        except PathIdentityError:
+            continue
+        if canonical in chunk_files:
+            matched.add(canonical)
+    return sorted(matched)
 
 
 def _filter_lci(document: dict[str, Any] | None, *, chunk_files: set[str]) -> tuple[dict[str, Any], list[str]]:
     if not isinstance(document, dict):
         return {"provided": False, "files_analyzed": [], "confirmed_local_failures": []}, []
-    analyzed = [path for path in _string_list(document.get("files_analyzed")) if path in chunk_files]
+    analyzed = _canonical_paths_in_chunk(_string_list(document.get("files_analyzed")), chunk_files=chunk_files)
     scoped_failures: list[dict[str, Any]] = []
     limitations = list(_string_list(document.get("limitations")))
     for item in _list(document.get("confirmed_local_failures")):
@@ -617,8 +702,8 @@ def _filter_lci(document: dict[str, Any] | None, *, chunk_files: set[str]) -> tu
 def _filter_test_intelligence(document: dict[str, Any] | None, *, chunk_files: set[str]) -> dict[str, Any]:
     if not isinstance(document, dict):
         return {"provided": False, "changed_tests": [], "failed_tests": []}
-    changed_tests = [path for path in _string_list(document.get("changed_tests")) if path in chunk_files]
-    failed_tests = [path for path in _string_list(document.get("failed_tests")) if path in chunk_files]
+    changed_tests = _canonical_paths_in_chunk(_string_list(document.get("changed_tests")), chunk_files=chunk_files)
+    failed_tests = _canonical_paths_in_chunk(_string_list(document.get("failed_tests")), chunk_files=chunk_files)
     return {
         "provided": True,
         "mode": _clean_text(document.get("mode")),
@@ -643,7 +728,15 @@ def _filter_validation_entries(
         if not isinstance(item, dict):
             continue
         is_global = _is_global_item(item)
-        item_paths = _paths_from_item(item)
+        item_paths, had_unresolvable = _item_scope_paths(item)
+        # An unresolvable path is a real but invalid scope claim -- exclude
+        # it outright rather than let an empty scope set fall through as
+        # "no scope info" and get promoted to every chunk. Only when NO
+        # usable canonical path survives at all: an item with one valid
+        # and one invalid path field still has a real, matchable scope via
+        # the valid one (PR #231 review round 2, P1).
+        if had_unresolvable and not item_paths and not is_global:
+            continue
         if not is_global and item_paths and not item_paths.intersection(chunk_files):
             continue
         sanitized = sanitize_artifact_value(item)
@@ -904,8 +997,18 @@ def file_context_map(intake: ReviewIntake) -> dict[str, dict[str, Any]]:
     for item in files:
         if not isinstance(item, dict):
             continue
-        path = _clean_text(item.get("path"))
-        if not path:
+        raw_path = _clean_text(item.get("path"))
+        if not raw_path:
+            continue
+        # C5: key by the same canonical identity chunk.files uses, or a
+        # merely differently-spelled but identical path (e.g. `./x` vs
+        # `x`) silently misses this entry and the lookup falls back to a
+        # placeholder status/summary. A path that cannot be canonicalized
+        # is dropped (fail closed) rather than indexed under a raw, never
+        # matching key.
+        try:
+            path = canonical_repo_path(raw_path)
+        except PathIdentityError:
             continue
         mapped[path] = item
     return mapped
@@ -1140,6 +1243,21 @@ WORST_CASE_OPTIONAL_ARTIFACT_LIMITATIONS: list[str] = [
 
 
 # ---------------------------------------------------------------------------
+# H1-B / C6 (post-merge debt, #205): pr_brief.build_pr_brief's own
+# _apply_budget can append this reason code to pr_brief.limitations once
+# every shrinker has bottomed out and the resolved brief budget is still
+# exceeded -- and chunk_context.brief.limitations in the real builder is
+# `list(pr_brief.limitations)` verbatim. The projection has no way to know
+# in advance whether the target's resolved brief budget will actually be
+# tight enough to trigger this (that would mean re-running the real shrink
+# ladder at projection time), so -- same pattern as
+# WORST_CASE_OPTIONAL_ARTIFACT_LIMITATIONS above -- it must assume the
+# worst case unconditionally rather than silently under-count.
+# ---------------------------------------------------------------------------
+BRIEF_BUDGET_UNDER_MINIMUM_LIMITATION = "brief_budget_under_minimum_required_sections"
+
+
+# ---------------------------------------------------------------------------
 # Worst-case chunk_id placeholder. Final chunk numbering is only known once
 # `max_blocks` selection (rev.3 SS10) has finished choosing which candidate
 # partitions survive, which happens after every candidate has already been
@@ -1319,7 +1437,10 @@ def project_min_hunk_preserving_chars(
     limitations: list[str] = []
     for path in chunk_files_sorted:
         hunk = hunks.get(path)
-        if hunk:
+        # C8: a non-empty block can be binary-only or metadata-only, with
+        # no line-level content to review -- embedding it as "hunk" text
+        # would misrepresent it as reviewable diff content.
+        if hunk and block_has_observable_textual_hunk(hunk):
             chunk_hunks_full.append({"path": sanitize_display_path(path), "hunk": hunk})
         else:
             limitations.append(f"chunk_diff_hunk_missing:{sanitize_display_path(path)}")
@@ -1355,7 +1476,12 @@ def project_min_hunk_preserving_chars(
                 "review_mode": brief_review.get("mode"),
                 "contract_pack": brief_review.get("contract_pack"),
                 "required_files": list(brief_required_files),
-                "limitations": list(brief_limitations),
+                # C7 (P3): the real builder's pr_brief always dedupes
+                # brief_limitations before publishing pr_brief.limitations
+                # (pr_brief.py's own _dedupe), and the real chunk payload
+                # embeds that deduped list verbatim -- project the same
+                # representation, not the raw, possibly-duplicated input.
+                "limitations": _dedupe(brief_limitations),
             },
             "chunk_context": chunk_context,
             "coverage": {

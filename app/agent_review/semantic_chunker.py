@@ -210,7 +210,9 @@ def build_semantic_chunk_plan(
     # review no matter how it is packed -- fail closed instead of reporting
     # it as covered by an empty payload entry (rev.3 SS11 / RED-16).
     hunk_unavailable_must_review = sorted(
-        path for path in canonical_files if path in required_files and not hunks.get(path)
+        path
+        for path in canonical_files
+        if path in required_files and not payload_cost_model.block_has_observable_textual_hunk(hunks.get(path) or "")
     )
     hunk_unavailable_set = set(hunk_unavailable_must_review)
     for path in hunk_unavailable_must_review:
@@ -260,11 +262,19 @@ def build_semantic_chunk_plan(
     # --validation-evidence even when this planner invocation did not (or
     # vice versa) -- assume the worst case for both unconditionally rather
     # than trust that the two invocations were given symmetric flags.
+    # C6 (post-merge debt, #205): pr_brief.build_pr_brief can append
+    # BRIEF_BUDGET_UNDER_MINIMUM_LIMITATION once its own shrink ladder
+    # bottoms out and the resolved brief budget is still exceeded --
+    # whether that happens depends on the target's resolved brief budget,
+    # which this planner has no way to re-derive without re-running the
+    # real shrink ladder. Assumed unconditionally, same worst-case pattern
+    # as WORST_CASE_OPTIONAL_ARTIFACT_LIMITATIONS just below it.
     fixed_brief_limitations = [
         *intake_limitations,
         *optional_limitations_resolved,
         *artifact_state_limits,
         *payload_cost_model.WORST_CASE_OPTIONAL_ARTIFACT_LIMITATIONS,
+        payload_cost_model.BRIEF_BUDGET_UNDER_MINIMUM_LIMITATION,
     ]
 
     def project_chunk_cost(group: SemanticGroup, candidate_files: list[str], packing_limitations: list[str]) -> int:
@@ -694,17 +704,30 @@ def _plan_status(
     """Plan status is a statement about *coverage*, never about how many
     limitations were recorded (AgentEscala#675, Fix C).
 
-    This deliberately does not test `limitations` for truthiness. Every
-    limitation this module raises that actually costs coverage already has a
-    structural counterpart in one of the lists checked below -- so nothing
-    coverage-bearing is lost by dropping the truthiness test. What *is*
-    dropped is the false `partial` that a purely informational limitation
-    used to produce: `intake_schema_id_missing` (an intake-envelope fact) or
-    `file_context_fallback_used` (a fallback that still yielded every file)
-    would stamp a fully covered plan as partial, and
-    `final_synthesizer._coverage` then republished it as
-    `chunk_plan_status_partial` -- reading, downstream, as a second and
-    independent coverage failure that had never happened.
+    This deliberately does not test `limitations` for truthiness in
+    general. Most limitations this module raises that actually cost
+    coverage already have a structural counterpart in one of the lists
+    checked below, so nothing coverage-bearing is lost by not testing
+    every limitation code -- `intake_schema_id_missing` is a genuinely
+    informational intake-envelope fact and stamping it `partial` would
+    read downstream, via `final_synthesizer._coverage`, as a second and
+    independent coverage failure that never happened.
+
+    `file_context_fallback_used` is a deliberate, explicit exception to
+    that rule (C10, post-merge debt #205): it used to be classed with
+    `intake_schema_id_missing` on the assumption that the fallback in
+    `extract_files_from_intake` "still yielded every file". That
+    assumption does not hold structurally -- the fallback scavenges
+    `.content.files` from whatever *other* artifact happens to have one,
+    and no artifact anywhere declares itself an exhaustive changed-file
+    enumeration. A fallback that discovers only a strict subset of the
+    real changed files has no file *outside* that (incomplete) subset for
+    `files_not_covered` to ever name, so the structural counterpart this
+    docstring otherwise relies on does not exist for this one limitation.
+    Default: `file_context_fallback_used` present -> never `complete`.
+    Would only be safe to drop if some future typed/structural property
+    proved the specific fallback source exhaustive for that run -- no such
+    property exists today, so this is not caller-overridable.
 
     `files_partially_covered` is retained for wire/field compatibility, but
     the packer built for aiops-orchestrator#225 never populates it: a group
@@ -718,6 +741,8 @@ def _plan_status(
     if files_not_covered:
         return "degraded"
     if files_partially_covered:
+        return "partial"
+    if "file_context_fallback_used" in limitations:
         return "partial"
     return "complete"
 

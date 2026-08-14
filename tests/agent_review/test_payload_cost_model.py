@@ -825,3 +825,425 @@ def test_bootstrap_untruncated_state_is_the_single_shared_bootstrap_authority() 
     # reproduce the identical length -- a genuine fixed point.
     _, remeasured_len = m.materialize_payload(payload, truncation=truncation)
     assert remeasured_len == exact_len
+
+
+# ---------------------------------------------------------------------------
+# H1-B / C5: canonical path identity across every context join
+# (aiops-orchestrator post-merge debt, #205). `chunk.files` is always the
+# output of `canonical_repo_path` (semantic_chunker.py), but every context
+# extraction that joins an *externally-sourced* path list against it --
+# file-diff-context, checks, validation evidence, LCI, test intelligence --
+# must canonicalize on its own side too, or a merely differently-spelled
+# but identical path silently fails to join and the context/coverage is
+# lost without any visible signal.
+# ---------------------------------------------------------------------------
+
+
+def test_file_context_map_matches_dotted_relative_path() -> None:
+    intake = ReviewIntake.model_validate(
+        {
+            "schema_id": "agent-review.intake.v1",
+            "schema_version": 1,
+            "source": "aiops-review-intake",
+            "target_repo": "r/t",
+            "target_profile": {},
+            "created_at": "2026-08-13T00:00:00Z",
+            "artifacts": {
+                "file-diff-context.json": {
+                    "path": "file-diff-context.json",
+                    "content": {
+                        "files": [{"path": "./backend/api/a.py", "status": "modified", "summary": "renamed function"}],
+                        "coverage_requirements": {},
+                    },
+                },
+                "full-diff.diff": {"path": "full-diff.diff", "content": ""},
+            },
+            "artifact_status": [],
+            "redaction_summary": RedactionReport().model_dump(mode="json"),
+            "limitations": [],
+            "completeness": {},
+            "status": "complete",
+        }
+    )
+    ctx = m.file_context_map(intake)
+    # The canonical chunk-path spelling ("backend/api/a.py") must resolve
+    # the real status/summary, not silently miss under the dotted key.
+    assert ctx.get("backend/api/a.py", {}).get("status") == "modified"
+    assert ctx.get("backend/api/a.py", {}).get("summary") == "renamed function"
+
+
+def test_projection_file_status_survives_dotted_file_diff_context_path() -> None:
+    """End-to-end reproduction of the reported defect: file-diff-context
+    spells the path with a leading `./`; chunk.files carries the canonical
+    spelling the planner always uses. Before the fix, chunk_context.files
+    silently degraded to status="unknown"/summary=None."""
+    files = ["backend/api/a.py"]
+    intake = _build_intake(
+        files,
+        {p: 5 for p in files},
+        files,
+        file_overrides={"backend/api/a.py": {"path": "./backend/api/a.py", "status": "modified", "summary": "renamed function"}},
+    )
+    hunks = m.diff_by_file(intake)
+    target = {"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40}
+    m.project_min_hunk_preserving_chars(
+        intake=intake,
+        chunk_files=files,
+        chunk_contracts=[],
+        semantic_group="api_schema_contract",
+        max_blocks=6,
+        target=target,
+        brief_target=target,
+        brief_review={"mode": "full", "contract_pack": None},
+        brief_required_files=files,
+        brief_limitations=[],
+        selected_contract_pack=None,
+        checks=None,
+        validation_evidence=None,
+        hunks=hunks,
+        created_at="2026-08-13T00:00:00Z",
+    )
+    file_context = m.file_context_map(intake)
+    assert file_context.get("backend/api/a.py", {}).get("status") == "modified"
+    assert file_context.get("backend/api/a.py", {}).get("summary") == "renamed function"
+
+
+def test_paths_from_item_canonicalizes_dotted_and_backslash_paths() -> None:
+    item = {"file_path": "./backend/api/a.py", "files": ["backend\\api\\b.py"]}
+    assert m._paths_from_item(item) == {"backend/api/a.py", "backend/api/b.py"}
+
+
+def test_paths_from_item_skips_unresolvable_paths_instead_of_crashing() -> None:
+    # Fail-closed: an absolute/traversal path cannot be a repo-relative
+    # identity, so it is excluded from the set (falls through to each
+    # consumer's own "no derivable scope" handling) rather than raising or
+    # silently comparing raw strings.
+    item = {"file_path": "/etc/passwd", "files": ["a/../../etc/passwd"]}
+    assert m._paths_from_item(item) == set()
+
+
+def test_checks_context_matches_file_scoped_failed_check_via_dotted_path() -> None:
+    checks_doc = {
+        "status": "complete",
+        "checks": [
+            {"name": "lint", "status": "failed", "command": "ruff check", "file_path": "./backend/api/a.py"},
+        ],
+    }
+    intake = _intake_with_checks(checks_doc)
+    ctx, limitations = m.checks_context(checks_doc, intake=intake, chunk_files={"backend/api/a.py"})
+    assert ctx["checks"] == [{"name": "lint", "status": "failed", "command": "ruff check", "scope": "file"}], ctx
+    assert limitations == []
+
+
+def test_evidence_context_matches_blocking_finding_via_dotted_path() -> None:
+    ve_doc = {
+        "status": "complete",
+        "blocking_findings": [
+            {"title": "unsafe eval", "file_path": "./backend/api/a.py", "severity": "high"},
+        ],
+    }
+    intake = _intake_with_checks(None)
+    ctx, _ = m.evidence_context(intake, chunk_files=["backend/api/a.py"], validation_evidence=ve_doc)
+    assert len(ctx["validation_evidence"]["blocking_findings"]) == 1
+
+
+def test_filter_lci_files_analyzed_matches_dotted_path() -> None:
+    lci_doc = {"mode": "static", "files_analyzed": ["./backend/api/a.py"], "confirmed_local_failures": []}
+    ctx, limitations = m._filter_lci(lci_doc, chunk_files={"backend/api/a.py"})
+    assert ctx["files_analyzed"] == ["backend/api/a.py"]
+    assert limitations == []
+
+
+def test_filter_lci_confirmed_local_failure_matches_dotted_path() -> None:
+    lci_doc = {
+        "mode": "static",
+        "files_analyzed": [],
+        "confirmed_local_failures": [{"title": "null deref", "file_path": "./backend/api/a.py"}],
+    }
+    ctx, limitations = m._filter_lci(lci_doc, chunk_files={"backend/api/a.py"})
+    assert len(ctx["confirmed_local_failures"]) == 1
+    assert limitations == []
+
+
+def test_filter_test_intelligence_matches_dotted_and_backslash_paths() -> None:
+    tests_doc = {
+        "mode": "pytest",
+        "changed_tests": ["./tests/test_a.py"],
+        "failed_tests": ["tests\\test_b.py"],
+    }
+    ctx = m._filter_test_intelligence(tests_doc, chunk_files={"tests/test_a.py", "tests/test_b.py"})
+    assert ctx["changed_tests"] == ["tests/test_a.py"]
+    assert ctx["failed_tests"] == ["tests/test_b.py"]
+
+
+def test_negative_control_raw_spelling_lookup_would_have_missed_the_context() -> None:
+    """Negative control for C5: confirms the scenario above actually
+    distinguishes canonical-join from raw-spelling-join -- the pre-fix
+    behavior (a plain dict keyed by the raw file-diff-context spelling,
+    looked up by the canonical chunk path) misses the entry entirely."""
+    raw_keyed = {"./backend/api/a.py": {"status": "modified", "summary": "renamed function"}}
+    canonical_chunk_path = "backend/api/a.py"
+    assert raw_keyed.get(canonical_chunk_path, {}).get("status") is None
+
+
+# ---------------------------------------------------------------------------
+# H1-B / C7 (P3, post-merge debt #205): the real builder's pr_brief always
+# dedupes brief_limitations via _dedupe(...) before publishing
+# pr_brief.limitations (pr_brief.py:72), and chunk_payload_builder embeds
+# that deduped list verbatim into chunk_context.brief.limitations. The
+# projection's own payload body used `list(brief_limitations)` -- no
+# dedup -- so a brief_limitations list with a duplicate (e.g. because
+# semantic_chunker.py's fixed_brief_limitations concatenates several
+# independently-sourced lists that can legitimately overlap) projected
+# larger than what the real builder ever emits. Conservative direction
+# (projection > real: never loses coverage), but can force an unnecessary
+# split/oversize refusal -- P3, not P1/P2.
+# ---------------------------------------------------------------------------
+
+
+def test_projected_chars_dedupes_brief_limitations_like_the_real_builder() -> None:
+    files = ["backend/api/a.py"]
+    intake = _build_intake(files, {p: 5 for p in files}, files)
+    hunks = m.diff_by_file(intake)
+    target = {"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40}
+    duplicated = ["optional_artifact_missing:checks", "optional_artifact_missing:checks"]
+    deduped = m._dedupe(duplicated)
+    assert len(deduped) < len(duplicated)  # sanity: the fixture has a real duplicate to collapse
+
+    def project(brief_limitations: list[str]) -> int:
+        return m.project_min_hunk_preserving_chars(
+            intake=intake,
+            chunk_files=files,
+            chunk_contracts=[],
+            semantic_group="api_schema_contract",
+            max_blocks=6,
+            target=target,
+            brief_target=target,
+            brief_review={"mode": "full", "contract_pack": None},
+            brief_required_files=files,
+            brief_limitations=brief_limitations,
+            selected_contract_pack=None,
+            checks=None,
+            validation_evidence=None,
+            hunks=hunks,
+            created_at="2026-08-13T00:00:00Z",
+        )
+
+    # The projection must dedupe on its own -- passing the raw, duplicated
+    # list must project exactly the same size as passing the already
+    # deduped list, matching the real builder's own dedup semantics
+    # exactly rather than a parallel implementation.
+    assert project(duplicated) == project(deduped)
+
+
+# ---------------------------------------------------------------------------
+# H1-B / C8 (post-merge debt #205): non-empty diff block != observable
+# textual hunk. Unit-level coverage for block_has_observable_textual_hunk
+# itself; the coverage-classification consequence (must_review_hunk_
+# unavailable) is covered end to end in test_semantic_chunker_225_red.py.
+# ---------------------------------------------------------------------------
+
+
+def test_block_has_observable_textual_hunk_true_for_real_hunk() -> None:
+    block = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,2 @@\n+line"
+    assert m.block_has_observable_textual_hunk(block) is True
+
+
+def test_block_has_observable_textual_hunk_false_for_binary_only_block() -> None:
+    block = "diff --git a/x.png b/x.png\nindex 111..222 100644\nBinary files a/x.png and b/x.png differ"
+    assert m.block_has_observable_textual_hunk(block) is False
+
+
+def test_block_has_observable_textual_hunk_false_for_metadata_only_block() -> None:
+    # Pure rename, no content diff at all -- no @@ hunk header emitted.
+    block = "diff --git a/old.py b/new.py\nsimilarity index 100%\nrename from old.py\nrename to new.py"
+    assert m.block_has_observable_textual_hunk(block) is False
+
+
+def test_block_has_observable_textual_hunk_false_for_empty_block() -> None:
+    assert m.block_has_observable_textual_hunk("") is False
+
+
+def test_block_has_observable_textual_hunk_does_not_false_positive_on_content_line() -> None:
+    # A changed line whose own text happens to contain "@@" must not be
+    # mistaken for a hunk header -- real headers are never prefixed with a
+    # diff content marker (+/-/space).
+    block = "diff --git a/x.py b/x.py\n--- a/x.py\n+++ b/x.py\n@@ -1,1 +1,2 @@\n+email = \"a@@b.com\""
+    assert m.block_has_observable_textual_hunk(block) is True  # true because a real @@ header IS also present
+    only_content_line = "diff --git a/x.py b/x.py\n+email = \"a@@b.com\""
+    assert m.block_has_observable_textual_hunk(only_content_line) is False
+
+
+def test_real_builder_never_embeds_a_binary_only_block_as_a_hunk() -> None:
+    """C8, builder-level: a non-must_review file with only a binary block
+    must still never be embedded as if it were a reviewable hunk -- it
+    must fall through to chunk_diff_hunk_missing, same as a genuinely
+    absent diff block."""
+    intake = ReviewIntake.model_validate(
+        {
+            "schema_id": "agent-review.intake.v1",
+            "schema_version": 1,
+            "source": "aiops-review-intake",
+            "target_repo": "r/t",
+            "target_profile": {},
+            "created_at": "2026-08-13T00:00:00Z",
+            "artifacts": {
+                "file-diff-context.json": {
+                    "path": "file-diff-context.json",
+                    "content": {
+                        "files": [{"path": "assets/logo.png", "status": "modified", "summary": ""}],
+                        "coverage_requirements": {"must_review_files": []},
+                    },
+                },
+                "full-diff.diff": {
+                    "path": "full-diff.diff",
+                    "content": (
+                        "diff --git a/assets/logo.png b/assets/logo.png\n"
+                        "index 111..222 100644\n"
+                        "Binary files a/assets/logo.png and b/assets/logo.png differ"
+                    ),
+                },
+            },
+            "artifact_status": [],
+            "redaction_summary": RedactionReport().model_dump(mode="json"),
+            "limitations": [],
+            "completeness": {},
+            "status": "complete",
+        }
+    )
+    from app.agent_review.chunk_payload_builder import build_chunk_payloads
+    from app.agent_review.schemas import PRBrief, SemanticChunk, SemanticChunkPlan
+
+    plan = SemanticChunkPlan(
+        target_repo="r/t",
+        max_parallel_blocks=6,
+        status="complete",
+        files_covered=["assets/logo.png"],
+        chunks=[
+            SemanticChunk(
+                chunk_id="chunk-01-unknown",
+                semantic_group="unknown",
+                order_index=0,
+                files=["assets/logo.png"],
+                artifacts=[],
+                contracts=[],
+                depends_on=[],
+                coverage="complete",
+                prompt_budget_chars=24_000,
+                estimated_chars=1024,
+            )
+        ],
+    )
+    brief = PRBrief(
+        target={"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40},
+        review={"mode": "full", "contract_pack": None},
+        coverage={"required_files": []},
+        limitations=[],
+        created_at="2026-08-13T00:00:00Z",
+    )
+    manifest, payloads = build_chunk_payloads(intake=intake, chunk_plan=plan, pr_brief=brief, checks=None, validation_evidence=None)
+    assert len(payloads) == 1, payloads
+    payload = next(iter(payloads.values()))
+    chunk_hunks = payload.chunk_context["chunk_hunks"]
+    assert chunk_hunks == [], chunk_hunks
+    assert "chunk_diff_hunk_missing:assets/logo.png" in payload.limitations
+
+
+# ---------------------------------------------------------------------------
+# H1-B / PR #231 adversarial review round 1 (P2): C5's fail-closed fix
+# introduced its own gap. Before C5, an unresolvable path (absolute or
+# traversal) went through `sanitize_display_path`, which produces a
+# non-empty `[LOCAL_PATH_REDACTED]` placeholder -- a bogus but *non-empty*
+# scope set that never intersects any real chunk_files, so these items were
+# always excluded. After C5 made `_paths_from_item` return an *empty* set
+# for unresolvable paths (indistinguishable from "no path field at all"),
+# `_filter_validation_entries` and `checks_context` both treat an empty
+# scope set as "no scope info -> include everywhere" -- silently promoting
+# an item with an actually-invalid path to global/document-wide scope,
+# which is a strictly worse outcome than either the pre-C5 or a properly
+# fail-closed behavior.
+# ---------------------------------------------------------------------------
+
+
+def test_validation_entry_with_unresolvable_path_is_excluded_not_promoted_to_global() -> None:
+    ve_doc = {
+        "status": "complete",
+        "blocking_findings": [
+            {"title": "leaked secret", "file_path": "/tmp/work/a.py", "severity": "high"},
+        ],
+    }
+    rows = m._filter_validation_entries(ve_doc, field_name="blocking_findings", chunk_files={"unrelated/file.py"})
+    assert rows == [], rows
+
+
+def test_checks_context_sole_unresolvable_scope_check_is_unclassified_not_document_scope() -> None:
+    checks_doc = {
+        "status": "complete",
+        "checks": [
+            {"name": "lint", "status": "failed", "command": "x", "file_path": "../a.py"},
+        ],
+    }
+    ctx, limitations = m.checks_context(checks_doc, intake=None, chunk_files={"unrelated/file.py"})
+    assert ctx["checks"] == [], ctx["checks"]
+    assert "check_scope_unclassified:lint" in limitations
+
+
+def test_valid_scoped_check_among_others_is_still_correctly_matched() -> None:
+    # Positive control: the fix must not regress ordinary, valid file-scoped
+    # matching -- only the invalid-path case changes behavior.
+    checks_doc = {
+        "status": "complete",
+        "checks": [
+            {"name": "lint", "status": "failed", "command": "x", "file_path": "backend/api/a.py"},
+        ],
+    }
+    ctx, limitations = m.checks_context(checks_doc, intake=None, chunk_files={"backend/api/a.py"})
+    assert ctx["checks"] == [{"name": "lint", "status": "failed", "command": "x", "scope": "file"}]
+    assert limitations == []
+
+
+def test_document_scoped_check_with_no_path_field_at_all_is_still_included() -> None:
+    # Positive control: a check that genuinely never had a path field (not
+    # merely an invalid one) must still fall through to the pre-existing
+    # document-scope inclusion path.
+    checks_doc = {
+        "status": "complete",
+        "checks": [{"name": "lint", "status": "passed", "command": "x"}],
+    }
+    ctx, limitations = m.checks_context(checks_doc, intake=None, chunk_files={"backend/api/a.py"})
+    assert ctx["checks"] == [{"name": "lint", "status": "passed", "command": "x", "scope": "document"}]
+    assert limitations == []
+
+
+# ---------------------------------------------------------------------------
+# H1-B / PR #231 adversarial review round 2 (P1): round 1's fix itself had a
+# gap. `had_unresolvable=True` fires when *any* path-bearing field on an
+# item fails to canonicalize, even if another field on the SAME item
+# canonicalized successfully -- round 1's callers dropped/unclassified the
+# whole item unconditionally on `had_unresolvable`, discarding a real,
+# valid, in-scope match. Only exclude/unclassify when NO usable canonical
+# path survives at all.
+# ---------------------------------------------------------------------------
+
+
+def test_validation_entry_with_one_valid_and_one_invalid_path_still_matches() -> None:
+    ve_doc = {
+        "status": "complete",
+        "blocking_findings": [
+            {"title": "x", "file_path": "app/a.py", "original_file": "/workspace/app/a.py"},
+        ],
+    }
+    rows = m._filter_validation_entries(ve_doc, field_name="blocking_findings", chunk_files={"app/a.py"})
+    assert len(rows) == 1, rows
+
+
+def test_checks_context_check_with_one_valid_and_one_invalid_path_still_matches() -> None:
+    checks_doc = {
+        "status": "complete",
+        "checks": [
+            {"name": "lint", "status": "failed", "command": "x", "file_path": "app/a.py", "files": ["/tmp/other.py"]},
+        ],
+    }
+    ctx, limitations = m.checks_context(checks_doc, intake=None, chunk_files={"app/a.py"})
+    assert ctx["checks"] == [{"name": "lint", "status": "failed", "command": "x", "scope": "file"}]
+    assert limitations == []
