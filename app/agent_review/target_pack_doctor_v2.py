@@ -130,7 +130,7 @@ class DoctorReportV2:
         )
 
 
-def _check_profile_v2(target_root: Path, target_root_real: Path) -> ProfileCheckV2:
+def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
     # Containment BOUND to the read, not merely checked before it
     # (aiops-orchestrator#205, H1A-R1, round 2). The first cut of this fix
     # verified containment and then discarded the result, letting
@@ -149,8 +149,23 @@ def _check_profile_v2(target_root: Path, target_root_real: Path) -> ProfileCheck
     # LoadErrorV2`'s three reason codes (MISSING/UNREADABLE/INVALID) are
     # reproduced here explicitly since the loader that used to distinguish
     # them from a bare `Path` is bypassed.
+    #
+    # Round 5 (Codex shadow review of #230 at fbc67db), confirmed and fixed:
+    # composed from `target_root / DEFAULT_TARGET_PROFILE_RELATIVE_PATH` --
+    # the CALLER's mutable alias -- rather than from `target_root_real`, the
+    # already-resolved root every other part of round 3/4's fix is bound to.
+    # If `target_root` were retargeted to a DESCENDANT of the resolved root
+    # between `run_doctor_v2` capturing `target_root_real` and this call,
+    # `relative_to(target_root_real)` still passes (the new destination is
+    # still contained), but the bytes read come from the descendant, not the
+    # location the operation is bound to -- the identical class of defect
+    # round 3 closed in `compute_target_pack_operation_plan_v2`, reachable
+    # here through a different alias. Composing from `target_root_real`
+    # itself removes the second, divergeable base entirely; `target_root`
+    # is no longer a parameter of this function because nothing in it needs
+    # the mutable alias once the read is bound to the resolved root.
     try:
-        resolved = resolve_within_target_root_v2(target_root_real, target_root / DEFAULT_TARGET_PROFILE_RELATIVE_PATH)
+        resolved = resolve_within_target_root_v2(target_root_real, target_root_real / DEFAULT_TARGET_PROFILE_RELATIVE_PATH)
     except PlanError:
         return ProfileCheckV2(
             status="invalid", profile_hash=None, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
@@ -171,7 +186,6 @@ def _check_profile_v2(target_root: Path, target_root_real: Path) -> ProfileCheck
 
 
 def _check_receipt_v2(
-    target_root: Path,
     *,
     target_root_real: Path,
     manifest: TargetPackManifestV2,
@@ -192,7 +206,8 @@ def _check_receipt_v2(
     was healthy while unable to say it was looking at the RIGHT install at
     all. Checked in this order (first mismatch wins, deterministic):
     target_repo, then pack_version, then toolrepo_sha, then manifest_digest,
-    then portable_target_root_identity, then per-file target-owned
+    then portable_target_root_identity, then the target-owned SET
+    reconciliation described below, then per-file target-owned
     reconciliation, then target_profile_hash (only when the profile itself
     loaded -- if it did not, `profile.status` already makes `is_healthy`
     false on its own, so there is nothing meaningful to compare the
@@ -201,8 +216,7 @@ def _check_receipt_v2(
     same review pass: a receipt can be internally consistent on the first
     three axes while still claiming an operational rollout state (e.g.
     `shadow_full`) the pack version being diagnosed against cannot deliver
-    at all (e.g. stale from a since-downgraded or reverted pack version),
-    then finally the target-owned SET reconciliation described below.
+    at all (e.g. stale from a since-downgraded or reverted pack version).
 
     Post-merge review debt (aiops-orchestrator#205, C2/C3), confirmed and
     fixed: two further axes were checked against nothing but the receipt's
@@ -230,15 +244,29 @@ def _check_receipt_v2(
     reconciled against the manifest's own TARGET_OWNED classification --
     the authority for what SHOULD be tracked, independent of anything the
     (possibly emptied) receipt claims -- so an emptied or narrowed claim
-    fails closed. Checked last in the sequence (see the inline comment at
-    the check site for why last does not mean weaker): the per-file loop
-    is vacuously satisfied by an empty map regardless of where in the
-    sequence it runs, so this check closes the gap no matter its position,
-    and placing it last preserves every other check's own reason code as
-    the reported cause when a receipt is ALSO wrong on an earlier axis."""
+    fails closed.
+
+    Round 5 (Codex shadow review of #230 at fbc67db), confirmed and fixed:
+    the SET check used to run LAST, after the per-file loop -- deliberately,
+    so a receipt already wrong on an earlier axis kept reporting that axis's
+    reason code. But the per-file loop reads and hashes every path the
+    receipt claims BEFORE the set check ever runs, including a path the set
+    check will go on to reject as not `TARGET_OWNED` at all. A self-hash-
+    consistent receipt could therefore make this loop `read_bytes()` an
+    arbitrary regular file inside `target_root` -- and pay the cost of
+    hashing it, unbounded by size -- for a path already knowable as invalid
+    by a single O(1) set comparison. Moved the SET check to run BEFORE the
+    per-file loop instead: it still follows every check above it (target_
+    repo, pack_version, toolrepo_sha, manifest_digest, portable_target_root
+    _identity), so a receipt wrong on one of THOSE axes still reports that
+    axis first, and every existing test that reaches deeper into this
+    function already uses a receipt whose target-owned set matches the
+    manifest -- moving the check earlier changes nothing about what those
+    tests observe, only how early a receipt-declared file the set check
+    would reject anyway stops being read at all."""
 
     try:
-        receipt_path = resolve_within_target_root_v2(target_root_real, target_root / RECEIPT_RELATIVE_PATH_V2)
+        receipt_path = resolve_within_target_root_v2(target_root_real, target_root_real / RECEIPT_RELATIVE_PATH_V2)
     except PlanError:
         return ReceiptCheckV2(status="invalid", receipt=None, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2)
     if not receipt_path.is_file():
@@ -269,13 +297,27 @@ def _check_receipt_v2(
         return ReceiptCheckV2(
             status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TARGET_ROOT_IDENTITY_MISMATCH_REASON_V2
         )
+    # Checked BEFORE the per-file loop below, not after (round 5, see this
+    # function's own docstring): the loop reads and hashes every path the
+    # receipt claims, so a set mismatch caught only afterward means an
+    # already-known-invalid, receipt-declared path was read regardless.
+    expected_target_owned_paths = frozenset(
+        entry.path for entry in manifest.generated_files if entry.ownership is TargetPackFileOwnershipV2.TARGET_OWNED
+    )
+    if set(receipt.target_owned_paths) != expected_target_owned_paths:
+        return ReceiptCheckV2(
+            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2
+        )
     for relative_path, recorded_hash in receipt.target_owned_file_hashes.items():
         # Containment before the read (aiops-orchestrator#205, H1A-R1). The
         # `RelativePath` retype earlier in this PR closed the LEXICAL escape
         # (`../`, absolute, drive-absolute); this closes the SYMLINK escape,
-        # which no string-level validation can reach.
+        # which no string-level validation can reach. Composed from
+        # `target_root_real`, not the caller's mutable `target_root` alias
+        # (round 5) -- see `_check_profile_v2`'s docstring for why the
+        # distinction matters.
         try:
-            observed_path = resolve_within_target_root_v2(target_root_real, target_root / relative_path)
+            observed_path = resolve_within_target_root_v2(target_root_real, target_root_real / relative_path)
         except PlanError:
             return ReceiptCheckV2(
                 status="invalid", receipt=receipt, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
@@ -298,22 +340,6 @@ def _check_receipt_v2(
         return ReceiptCheckV2(
             status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2
         )
-    # Checked last, deliberately, not because it is lower priority, but
-    # because it is independent of every check above it: the per-file loop
-    # above is vacuously satisfied by an EMPTY `target_owned_file_hashes`
-    # (zero iterations is not zero problems), so this set-membership check
-    # is what actually closes that gap, regardless of where in the sequence
-    # it runs. Placing it last means a receipt that already fails an
-    # earlier, more specific check (wrong pack_version, wrong toolrepo_sha,
-    # ...) still reports THAT reason first, consistent with this function's
-    # existing "first mismatch wins" contract.
-    expected_target_owned_paths = frozenset(
-        entry.path for entry in manifest.generated_files if entry.ownership is TargetPackFileOwnershipV2.TARGET_OWNED
-    )
-    if set(receipt.target_owned_paths) != expected_target_owned_paths:
-        return ReceiptCheckV2(
-            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2
-        )
 
     return ReceiptCheckV2(status="present", receipt=receipt, reason_code=None)
 
@@ -332,9 +358,8 @@ def run_doctor_v2(*, target_root: Path, manifest: TargetPackManifestV2, target_r
     # containment check below -- not re-resolved per file (round 2, see
     # `resolve_within_target_root_v2`'s own docstring).
     target_root_real = target_root.resolve(strict=False)
-    profile_check = _check_profile_v2(target_root, target_root_real)
+    profile_check = _check_profile_v2(target_root_real)
     receipt_check = _check_receipt_v2(
-        target_root,
         target_root_real=target_root_real,
         manifest=manifest,
         profile_check=profile_check,

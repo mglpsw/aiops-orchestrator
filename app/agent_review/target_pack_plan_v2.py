@@ -48,6 +48,7 @@ PLAN_UNKNOWN_OWNERSHIP_REASON_V2 = "target_pack_plan_unknown_ownership_class"
 PLAN_ROLLOUT_CEILING_EXCEEDED_REASON_V2 = "target_pack_plan_rollout_ceiling_exceeded"
 PLAN_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2 = "target_pack_plan_rollout_exceeds_pack_capability"
 PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_plan_path_escapes_target_root"
+PLAN_PATH_RESOLUTION_FAILED_REASON_V2 = "target_pack_plan_path_resolution_failed"
 
 _ROLLOUT_ORDER_V2 = ("off", "shadow_minimal", "shadow_full")
 
@@ -178,9 +179,26 @@ def resolve_within_target_root_v2(target_root_real: Path, path: Path) -> Path:
     ALLOWED -- containment, not symlink prohibition, is the property being
     enforced, and that keeps this check identical in meaning to the
     writer's.
+
+    Round 5 (Codex shadow review of #230 at fbc67db), confirmed and fixed:
+    `Path.resolve(strict=False)` raises `RuntimeError` for a symlink loop
+    (e.g. `a -> b`, `b -> a`) instead of returning or raising `OSError` --
+    unlike every other resolution failure this function's callers already
+    handle via the typed `PlanError` refusal. Uncaught, that `RuntimeError`
+    propagated out of `run_doctor_v2`/`compute_install_plan_v2` as an
+    unhandled exception -- a traceback instead of the structured invalid
+    report `doctor` promises, or the CLI's typed refusal path for `init`.
+    Reproduced directly: a receipt/manifest path traversing a symlink loop
+    inside `target_root` crashed `run_doctor_v2` uncaught. A loop is not
+    containment ESCAPE in the sense this function otherwise checks -- it
+    never resolves to any location, inside or outside `target_root` -- so
+    it gets its own reason code rather than reusing the escape one.
     """
 
-    resolved = path.resolve(strict=False)
+    try:
+        resolved = path.resolve(strict=False)
+    except RuntimeError as exc:
+        raise PlanError(PLAN_PATH_RESOLUTION_FAILED_REASON_V2) from exc
     try:
         resolved.relative_to(target_root_real)
     except ValueError as exc:
@@ -188,8 +206,8 @@ def resolve_within_target_root_v2(target_root_real: Path, path: Path) -> Path:
     return resolved
 
 
-def _read_on_disk_sha256_v2(target_root: Path, target_root_real: Path, relative_path: str) -> str | None:
-    full_path = resolve_within_target_root_v2(target_root_real, target_root / relative_path)
+def _read_on_disk_sha256_v2(target_root_real: Path, relative_path: str) -> str | None:
+    full_path = resolve_within_target_root_v2(target_root_real, target_root_real / relative_path)
     if not full_path.is_file():
         return None
     return _sha256_hex(full_path.read_bytes())
@@ -264,7 +282,7 @@ def compute_install_plan_v2(
     target_root_real = target_root.resolve(strict=False)
 
     for entry in manifest.generated_files:
-        on_disk = _read_on_disk_sha256_v2(target_root, target_root_real, entry.path)
+        on_disk = _read_on_disk_sha256_v2(target_root_real, entry.path)
         previously_recorded = recorded.get(entry.path)
         action = _classify_action_v2(
             entry=entry, on_disk_sha256=on_disk, previously_recorded_sha256=previously_recorded

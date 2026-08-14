@@ -161,7 +161,7 @@ def _identity_from_receipt_v2(receipt: TargetInstallReceiptV2) -> TargetPackInst
     )
 
 
-def _read_target_owned_bytes_v2(*, target_root: Path, target_root_real: Path, path: str) -> bytes | None:
+def _read_target_owned_bytes_v2(*, target_root_real: Path, path: str) -> bytes | None:
     # Containment BEFORE any filesystem read (aiops-orchestrator#205,
     # H1A-R1): `path` is a `RelativePath`, which proves the string is
     # well-formed but not that an existing component on disk stays inside
@@ -170,7 +170,20 @@ def _read_target_owned_bytes_v2(*, target_root: Path, target_root_real: Path, pa
     # itself a symlink-following call -- ever runs. `target_root_real` is
     # resolved once by the caller and threaded through, not re-resolved
     # per file (round 2 -- see `resolve_within_target_root_v2`'s docstring).
-    candidate = resolve_within_target_root_v2(target_root_real, target_root / path)
+    #
+    # Round 5 (Codex shadow review of #230 at fbc67db), confirmed and fixed:
+    # composed from `target_root / path` -- the caller's mutable alias --
+    # rather than `target_root_real`. If `target_root` were retargeted to a
+    # DESCENDANT of the resolved root between this operation capturing
+    # `target_root_real` and this call, the composed candidate still passes
+    # `relative_to(target_root_real)` (the new destination remains
+    # contained), but the bytes read come from the descendant, not the root
+    # `after_hashes`/`target_profile_hash`/the receipt are bound to.
+    # Reproduced directly against a two-root layout. Composing from
+    # `target_root_real` itself removes the divergeable base; `target_root`
+    # is no longer a parameter here since nothing else in this function
+    # needs the mutable alias once the read is bound to the resolved root.
+    candidate = resolve_within_target_root_v2(target_root_real, target_root_real / path)
     if candidate.is_file():
         return candidate.read_bytes()
     if candidate.exists() or candidate.is_symlink():
@@ -299,7 +312,7 @@ def compute_target_pack_operation_plan_v2(
     target_profile_hash: str | None = None
 
     for entry in target_owned_entries:
-        observed = _read_target_owned_bytes_v2(target_root=target_root, target_root_real=target_root_real, path=entry.path)
+        observed = _read_target_owned_bytes_v2(target_root_real=target_root_real, path=entry.path)
         if observed is None:
             if previous_receipt is not None:
                 raise PlanError(OPERATION_TARGET_OWNED_MISSING_INSTALLED_REASON_V2)

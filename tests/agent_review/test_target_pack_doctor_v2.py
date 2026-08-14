@@ -258,7 +258,16 @@ def test_doctor_reports_unhealthy_when_receipt_profile_hash_does_not_match_the_l
     profile was hand-edited post-install."""
     (tmp_path / ".aiops").mkdir()
     (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
-    receipt = _receipt(target_profile_hash="f" * 64)
+    # Round 5: the target-owned SET check now runs before profile_hash (it
+    # was moved ahead of the per-file loop, which now sits ahead of
+    # profile_hash too -- see `_check_receipt_v2`'s docstring). A matching
+    # set is required to reach profile_hash at all, isolating this test to
+    # the axis it actually names.
+    receipt = _receipt(
+        target_profile_hash="f" * 64,
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8"))},
+    )
     (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
         json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
     )
@@ -299,7 +308,14 @@ def test_doctor_reports_unhealthy_when_receipt_rollout_mode_exceeds_pack_capabil
     through `doctor` instead."""
     (tmp_path / ".aiops").mkdir()
     (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
-    receipt = _receipt(rollout_mode="shadow_full")
+    # Round 5: matching target-owned set required to reach past the SET
+    # check, now ahead of the per-file loop and therefore ahead of
+    # rollout_mode too -- see `_check_receipt_v2`'s docstring.
+    receipt = _receipt(
+        rollout_mode="shadow_full",
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8"))},
+    )
     (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
         json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
     )
@@ -734,7 +750,7 @@ def test_check_profile_reads_the_content_it_actually_verified_not_a_later_swap(
 
     doctor_module.resolve_within_target_root_v2 = racing_resolve
     try:
-        check = doctor_module._check_profile_v2(target_root, target_root.resolve(strict=False))
+        check = doctor_module._check_profile_v2(target_root.resolve(strict=False))
     finally:
         doctor_module.resolve_within_target_root_v2 = real_resolve
 
@@ -749,3 +765,120 @@ def test_check_profile_reads_the_content_it_actually_verified_not_a_later_swap(
     )
     assert check.profile_hash == verified_hash
     assert check.profile_hash != exfiltrated_hash
+
+
+# --- Round 5: Codex shadow review of #230 at fbc67db --------------------
+
+
+def test_doctor_returns_a_typed_refusal_for_a_symlink_loop_instead_of_crashing(tmp_path: Path) -> None:
+    """RED. `Path.resolve(strict=False)` raises `RuntimeError` for a
+    symlink loop (`a -> b`, `b -> a`), unlike every other resolution
+    failure `resolve_within_target_root_v2`'s callers already handle via
+    a typed `PlanError`. Reproduced before the fix: a loop at the profile
+    path made `run_doctor_v2` raise `RuntimeError` uncaught -- a traceback
+    instead of the structured invalid report `doctor` promises for every
+    diagnosable state."""
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").symlink_to("target-profile.v2.yaml")
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "invalid"
+    assert not report.is_healthy
+
+
+def test_doctor_rejects_an_unknown_target_owned_path_before_reading_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED. The per-file reconciliation loop used to run BEFORE the
+    target-owned SET check, so a receipt declaring a path the manifest
+    never classified as TARGET_OWNED still got that path `read_bytes()`'d
+    and hashed -- unbounded by size -- even though the set check would
+    reject the receipt anyway. Reproduced before the fix: a 5MB file
+    outside the manifest's TARGET_OWNED set was read in full despite the
+    receipt being provably invalid by a single O(1) set comparison."""
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    extra = tmp_path / ".aiops" / "unclassified-extra.bin"
+    extra.write_bytes(b"x" * (1024 * 1024))
+
+    receipt = _receipt(
+        target_owned_paths=(".aiops/target-profile.v2.yaml", ".aiops/unclassified-extra.bin"),
+        target_owned_file_hashes={
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8")),
+            ".aiops/unclassified-extra.bin": _sha256(b"x" * (1024 * 1024)),
+        },
+    )
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    calls: list[str] = []
+    original_read_bytes = Path.read_bytes
+
+    def spy_read_bytes(self: Path, *args: object, **kwargs: object) -> bytes:
+        calls.append(str(self))
+        return original_read_bytes(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_bytes", spy_read_bytes)
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2
+    assert not any("unclassified-extra.bin" in c for c in calls), (
+        "the unclassified file was read despite being provably invalid by the set check alone"
+    )
+
+
+def test_doctor_reads_are_bound_to_the_captured_root_not_a_mutable_alias(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """RED. `_check_profile_v2`/`_check_receipt_v2` used to compose reads
+    from `target_root / relative_path` -- the caller's mutable alias --
+    rather than from `target_root_real`, the value `run_doctor_v2` had
+    already resolved once. If `target_root` were retargeted to a
+    DESCENDANT of the resolved root between that single resolution and a
+    later read, the read still passed containment (the new destination
+    remains inside the old boundary) but came from the wrong location --
+    the same class of defect round 3 closed in the operation module,
+    reachable here through a different alias.
+
+    Post-fix, `_check_profile_v2` no longer even ACCEPTS the mutable
+    alias -- only `target_root_real` -- so this is provable directly: swap
+    the alias to a divergent descendant AFTER capturing `target_root_real`
+    (exactly what `run_doctor_v2` itself does at its own call site), then
+    confirm the read reflects the ORIGINAL root, structurally unable to
+    observe the swap at all."""
+    root = tmp_path_factory.mktemp("root")
+    (root / ".aiops").mkdir()
+    (root / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    sub = root / "subdir"
+    (sub / ".aiops").mkdir(parents=True)
+    (sub / ".aiops" / "target-profile.v2.yaml").write_text(
+        _VALID_PROFILE_YAML.replace("owner/repo", "acme/subdir-divergent"), encoding="utf-8"
+    )
+    live = tmp_path_factory.mktemp("live-parent") / "live"
+    live.symlink_to(root, target_is_directory=True)
+
+    import app.agent_review.target_pack_doctor_v2 as doctor_module
+
+    # Exactly what run_doctor_v2 does: resolve once, capture the value.
+    target_root_real = live.resolve(strict=False)
+    # Now retarget the alias -- this must have zero effect on the check.
+    live.unlink()
+    live.symlink_to(sub, target_is_directory=True)
+    try:
+        check = doctor_module._check_profile_v2(target_root_real)
+    finally:
+        live.unlink()
+        live.symlink_to(root, target_is_directory=True)
+
+    from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_text_v2
+
+    root_hash = compute_profile_hash_v2(load_target_profile_text_v2(_VALID_PROFILE_YAML))
+    sub_hash = compute_profile_hash_v2(
+        load_target_profile_text_v2(_VALID_PROFILE_YAML.replace("owner/repo", "acme/subdir-divergent"))
+    )
+    assert check.status == "present"
+    assert check.profile_hash == root_hash
+    assert check.profile_hash != sub_hash
