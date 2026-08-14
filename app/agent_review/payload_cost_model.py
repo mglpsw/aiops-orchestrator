@@ -503,8 +503,16 @@ def checks_context(
     rows = []
     limitations: list[str] = []
     for item in checks_rows:
-        item_scope_paths = _paths_from_item(item)
+        item_scope_paths, had_unresolvable = _item_scope_paths(item)
         is_global = _is_global_item(item)
+        if had_unresolvable and not is_global:
+            # An unresolvable path is a real but invalid scope claim -- it
+            # must never fall through to the document/global-scope branch
+            # below (which is reserved for items that genuinely never had
+            # a path field at all).
+            name = _clean_text(item.get("name")) or "unknown_check"
+            limitations.append(f"check_scope_unclassified:{name}")
+            continue
         if item_scope_paths:
             if not item_scope_paths.intersection(chunk_files):
                 continue
@@ -588,21 +596,33 @@ def _is_global_item(item: dict[str, Any]) -> bool:
     return item.get("is_global") is True
 
 
-def _paths_from_item(item: dict[str, Any]) -> set[str]:
+def _item_scope_paths(item: dict[str, Any]) -> tuple[set[str], bool]:
     """Canonical path identity for scope joins (C5, aiops-orchestrator#205
-    post-merge debt). `chunk.files` is always `canonical_repo_path` output,
-    so any externally-sourced path compared against it must go through the
+    post-merge debt), plus whether any path-bearing field was present but
+    unresolvable. `chunk.files` is always `canonical_repo_path` output, so
+    any externally-sourced path compared against it must go through the
     same authority -- `sanitize_display_path` alone leaves `./`/`.`
     segments uncollapsed and never rejects an absolute/traversal path,
     which previously let a merely differently-spelled but identical path
     silently fail to join, and let an unresolvable path occupy the scope
     set as a bogus, never-matching identity instead of falling through to
-    each caller's own "no derivable scope" handling. A path that cannot be
-    canonicalized is excluded here (fail closed), not raised -- callers
-    already treat an empty scope set as "scope indeterminate", which is the
-    correct, visible outcome for a malformed source path.
+    each caller's own "no derivable scope" handling.
+
+    The second return value exists because "no path field present at all"
+    and "a path field was present but invalid" are not the same fact, and
+    conflating them is itself a defect (PR #231 adversarial review round
+    1, P2): a caller that treats an empty scope set as "no scope info ->
+    fall back to global/document-wide inclusion" would otherwise silently
+    promote an item with an actually-invalid path to global scope --
+    strictly worse than the pre-fix bogus-non-matching-identity behavior
+    it replaced. Callers that already have their own "unclassified"
+    fallback (checks_context) must route an unresolvable path there
+    instead of the global/document-scope branch; callers with no
+    unclassified channel at all (_filter_validation_entries) must exclude
+    it outright, not include it everywhere.
     """
     paths: set[str] = set()
+    had_unresolvable = False
     for key in ("file_path", "file", "original_file", "path"):
         raw = _clean_text(item.get(key))
         if not raw:
@@ -610,7 +630,7 @@ def _paths_from_item(item: dict[str, Any]) -> set[str]:
         try:
             paths.add(canonical_repo_path(raw))
         except PathIdentityError:
-            continue
+            had_unresolvable = True
     for key in ("files", "paths", "source_files", "related_files"):
         value = item.get(key)
         if not isinstance(value, list):
@@ -621,8 +641,12 @@ def _paths_from_item(item: dict[str, Any]) -> set[str]:
             try:
                 paths.add(canonical_repo_path(raw))
             except PathIdentityError:
-                continue
-    return paths
+                had_unresolvable = True
+    return paths, had_unresolvable
+
+
+def _paths_from_item(item: dict[str, Any]) -> set[str]:
+    return _item_scope_paths(item)[0]
 
 
 def _canonical_paths_in_chunk(raw_paths: list[str], *, chunk_files: set[str]) -> list[str]:
@@ -701,7 +725,12 @@ def _filter_validation_entries(
         if not isinstance(item, dict):
             continue
         is_global = _is_global_item(item)
-        item_paths = _paths_from_item(item)
+        item_paths, had_unresolvable = _item_scope_paths(item)
+        # An unresolvable path is a real but invalid scope claim -- exclude
+        # it outright rather than let an empty scope set fall through as
+        # "no scope info" and get promoted to every chunk.
+        if had_unresolvable and not is_global:
+            continue
         if not is_global and item_paths and not item_paths.intersection(chunk_files):
             continue
         sanitized = sanitize_artifact_value(item)

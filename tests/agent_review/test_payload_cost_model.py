@@ -1147,3 +1147,69 @@ def test_real_builder_never_embeds_a_binary_only_block_as_a_hunk() -> None:
     chunk_hunks = payload.chunk_context["chunk_hunks"]
     assert chunk_hunks == [], chunk_hunks
     assert "chunk_diff_hunk_missing:assets/logo.png" in payload.limitations
+
+
+# ---------------------------------------------------------------------------
+# H1-B / PR #231 adversarial review round 1 (P2): C5's fail-closed fix
+# introduced its own gap. Before C5, an unresolvable path (absolute or
+# traversal) went through `sanitize_display_path`, which produces a
+# non-empty `[LOCAL_PATH_REDACTED]` placeholder -- a bogus but *non-empty*
+# scope set that never intersects any real chunk_files, so these items were
+# always excluded. After C5 made `_paths_from_item` return an *empty* set
+# for unresolvable paths (indistinguishable from "no path field at all"),
+# `_filter_validation_entries` and `checks_context` both treat an empty
+# scope set as "no scope info -> include everywhere" -- silently promoting
+# an item with an actually-invalid path to global/document-wide scope,
+# which is a strictly worse outcome than either the pre-C5 or a properly
+# fail-closed behavior.
+# ---------------------------------------------------------------------------
+
+
+def test_validation_entry_with_unresolvable_path_is_excluded_not_promoted_to_global() -> None:
+    ve_doc = {
+        "status": "complete",
+        "blocking_findings": [
+            {"title": "leaked secret", "file_path": "/tmp/work/a.py", "severity": "high"},
+        ],
+    }
+    rows = m._filter_validation_entries(ve_doc, field_name="blocking_findings", chunk_files={"unrelated/file.py"})
+    assert rows == [], rows
+
+
+def test_checks_context_sole_unresolvable_scope_check_is_unclassified_not_document_scope() -> None:
+    checks_doc = {
+        "status": "complete",
+        "checks": [
+            {"name": "lint", "status": "failed", "command": "x", "file_path": "../a.py"},
+        ],
+    }
+    ctx, limitations = m.checks_context(checks_doc, intake=None, chunk_files={"unrelated/file.py"})
+    assert ctx["checks"] == [], ctx["checks"]
+    assert "check_scope_unclassified:lint" in limitations
+
+
+def test_valid_scoped_check_among_others_is_still_correctly_matched() -> None:
+    # Positive control: the fix must not regress ordinary, valid file-scoped
+    # matching -- only the invalid-path case changes behavior.
+    checks_doc = {
+        "status": "complete",
+        "checks": [
+            {"name": "lint", "status": "failed", "command": "x", "file_path": "backend/api/a.py"},
+        ],
+    }
+    ctx, limitations = m.checks_context(checks_doc, intake=None, chunk_files={"backend/api/a.py"})
+    assert ctx["checks"] == [{"name": "lint", "status": "failed", "command": "x", "scope": "file"}]
+    assert limitations == []
+
+
+def test_document_scoped_check_with_no_path_field_at_all_is_still_included() -> None:
+    # Positive control: a check that genuinely never had a path field (not
+    # merely an invalid one) must still fall through to the pre-existing
+    # document-scope inclusion path.
+    checks_doc = {
+        "status": "complete",
+        "checks": [{"name": "lint", "status": "passed", "command": "x"}],
+    }
+    ctx, limitations = m.checks_context(checks_doc, intake=None, chunk_files={"backend/api/a.py"})
+    assert ctx["checks"] == [{"name": "lint", "status": "passed", "command": "x", "scope": "document"}]
+    assert limitations == []
