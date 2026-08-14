@@ -141,20 +141,37 @@ def validate_trusted_check_authority_v2(value: object) -> TrustedCheckAuthorityV
     common case costs nothing extra), or a `str` that is a legitimate
     Pydantic-coercible value for this enum. Every other input -- `None`,
     an unrelated type, a malformed string, or an object whose `__eq__`/
-    `__hash__` might otherwise satisfy a naive `==`-based check -- fails
+    `__hash__`/`__class__` might otherwise satisfy a naive check -- fails
     closed. There is no default and nothing here is ever promoted to
-    `TRUSTED` on failure. The `str` restriction is deliberately
-    `type(value) is str`, not `isinstance(value, str)` (PR #233 review
-    round 1, P1): `TrustedCheckAuthorityV2(value)` looks the value up via
-    the object's own `__hash__`/`__eq__` -- `isinstance` alone would admit
-    a `str` SUBCLASS whose overridden `__hash__`/`__eq__` make it hash and
-    compare like `"trusted"` regardless of its real underlying text (e.g.
-    an actual value of `"admin"` spoofed to resolve to the genuine
-    `TRUSTED` member). An exact-type check means the object handed to the
-    enum's value lookup is always a real, unsubclassed `str`, whose
-    `__hash__`/`__eq__` cannot have been overridden.
+    `TRUSTED` on failure.
+
+    Both type checks below are deliberately `type(value) is ...`, never
+    `isinstance(value, ...)` (PR #233 review rounds 1-2, P1 each):
+
+    - `type(value) is str`, not `isinstance(value, str)`:
+      `TrustedCheckAuthorityV2(value)` looks the value up via the
+      object's own `__hash__`/`__eq__` -- `isinstance` alone would admit
+      a `str` SUBCLASS whose overridden `__hash__`/`__eq__` make it hash
+      and compare like `"trusted"` regardless of its real underlying text
+      (e.g. an actual value of `"admin"` spoofed to resolve to the
+      genuine `TRUSTED` member).
+    - `type(value) is TrustedCheckAuthorityV2`, not
+      `isinstance(value, TrustedCheckAuthorityV2)`: Python's `isinstance`
+      consults an object's `__class__` attribute, which an arbitrary
+      object can override with a property returning
+      `TrustedCheckAuthorityV2` even though it is not a member of it --
+      `isinstance` alone would return that object UNCHANGED (not the
+      real enum, not a rejection), breaking this function's own "every
+      other input fails closed" contract; the object would then reach a
+      Pydantic model boundary downstream as a raw, uncaught
+      `ValidationError` instead of this function's own typed exception.
+
+    An exact-type check on both branches means every value this function
+    returns is either the real enum singleton or was built by the enum's
+    own constructor from a genuine, unsubclassed `str` -- never an
+    object whose class-identity or hash/eq semantics were spoofed.
     """
-    if isinstance(value, TrustedCheckAuthorityV2):
+    if type(value) is TrustedCheckAuthorityV2:
         return value
     if type(value) is str:
         try:

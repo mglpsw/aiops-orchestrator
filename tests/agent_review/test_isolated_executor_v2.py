@@ -1583,3 +1583,25 @@ def test_c9_round2_spoofed_str_subclass_never_resolves_to_trusted(repo_root):
         execute_trusted_check_plan_v2(
             plan, repo_root=repo_root, inventory=inventory, authority=_SpoofedStrAuthority("admin"),
         )
+
+
+def test_c9_round3_spoofed_class_property_never_passes_the_boundary(repo_root):
+    """PR #233 review round 2, P1: `isinstance(value, TrustedCheckAuthorityV2)`
+    can be fooled by any object exposing a `__class__` PROPERTY that
+    returns `TrustedCheckAuthorityV2` -- Python's `isinstance` consults
+    `__class__`, unlike `type(value) is ...`. The validator's first check
+    returned such an object UNCHANGED (not the real enum, not a rejection),
+    breaking the documented "everything else fails closed" contract."""
+    from app.agent_review.trusted_checks_v2 import TrustedCheckAuthorityBoundaryErrorV2
+
+    class _FakeClassAuthority:
+        @property
+        def __class__(self):
+            return TrustedCheckAuthorityV2
+
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    with pytest.raises(TrustedCheckAuthorityBoundaryErrorV2):
+        execute_trusted_check_plan_v2(
+            plan, repo_root=repo_root, inventory=inventory, authority=_FakeClassAuthority(),
+        )
