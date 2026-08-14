@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import re
+
 import pytest
 from pydantic import ValidationError
 
+from app.agent_review.schema_export_v2 import render_v2_json_schemas
 from app.agent_review.target_pack_receipt_v2 import (
     RECEIPT_HASH_MISMATCH_REASON_V2,
     RECEIPT_SECRET_NAME_LOOKS_LIKE_VALUE_REASON_V2,
@@ -133,3 +137,87 @@ def test_previous_install_identity_round_trips() -> None:
     ref = ReceiptIdentityRefV2(receipt_hash="e" * 64, pack_version="0.1.0", toolrepo_sha="2" * 40)
     receipt = _valid_receipt(previous_install_identity=ref)
     assert receipt.previous_install_identity == ref
+
+
+# --- Post-merge review debt (aiops-orchestrator#205, C1/C4) -----------------
+
+
+def test_target_owned_file_hashes_schema_can_represent_a_real_non_empty_receipt() -> None:
+    """RED for C1: the previous schema had `additionalProperties: false`
+    with no `properties`/`patternProperties` at all, so only `{}` ever
+    validated -- yet every successful `init` writes a receipt whose
+    `target_owned_file_hashes` has at least one entry (the profile seed).
+    The fixture's own default already carries a real non-empty map
+    (`_receipt_fields()`'s `.aiops/target-profile.v2.yaml` entry); this
+    proves the PUBLISHED schema, not just the Pydantic model, can accept
+    it."""
+
+    schema = render_v2_json_schemas()["agent-review.target-install-receipt.v2.schema.json"]
+    field_schema = schema["properties"]["target_owned_file_hashes"]
+    assert field_schema.get("additionalProperties") is False
+    assert "patternProperties" in field_schema, (
+        "no patternProperties on a closed map means only {} can ever validate"
+    )
+    key_pattern = next(iter(field_schema["patternProperties"]))
+    value_schema = field_schema["patternProperties"][key_pattern]
+
+    receipt = _valid_receipt()
+    for key, value in receipt.target_owned_file_hashes.items():
+        assert re.fullmatch(key_pattern, key)
+        assert re.fullmatch(value_schema["pattern"], value)
+
+
+def test_target_owned_file_hashes_schema_still_rejects_a_glob_shaped_key() -> None:
+    """The fix must not simply open the map to arbitrary keys -- a key
+    containing glob metacharacters (rejected by `RelativePath` itself)
+    must still fail the exported `patternProperties` regex."""
+
+    schema = render_v2_json_schemas()["agent-review.target-install-receipt.v2.schema.json"]
+    key_pattern = next(iter(schema["properties"]["target_owned_file_hashes"]["patternProperties"]))
+    assert not re.fullmatch(key_pattern, "a[b].py")
+
+
+@pytest.mark.parametrize(
+    "escaping_path",
+    [
+        "../canary.txt",
+        "/etc/passwd",
+        "C:/canary.txt",
+        "a/../../canary.txt",
+        "a/./b",
+    ],
+)
+def test_target_owned_paths_rejects_a_path_that_would_escape_target_root(escaping_path: str) -> None:
+    """RED for C4: `target_owned_paths`/`target_owned_file_hashes` used to
+    be `SafeText`, which rejects control characters and secret-shaped
+    values but never traversal or absolute paths. `RelativePath` rejects
+    all of these at construction time -- before
+    `target_pack_doctor_v2._check_receipt_v2` ever reads a path derived
+    from this field."""
+
+    fields = _receipt_fields(
+        target_owned_paths=(escaping_path,),
+        target_owned_file_hashes={escaping_path: "c" * 64},
+    )
+    computed_input = TargetInstallReceiptV2.model_construct(**fields, receipt_hash="0" * 64)
+    with pytest.raises(ValidationError):
+        TargetInstallReceiptV2(**fields, receipt_hash=compute_target_install_receipt_hash_v2(computed_input))
+
+
+def test_a_malicious_receipt_document_never_reaches_pydantic_construction_incomplete() -> None:
+    """Mutation-adjacent control: confirms the escaping-path receipt in the
+    parametrized test above fails during VALIDATION (raises before a
+    `TargetInstallReceiptV2` instance with the bad path ever exists), not
+    merely after -- i.e. there is no window where application code could
+    hold a constructed receipt carrying an escaping path."""
+
+    fields = _receipt_fields(
+        target_owned_paths=("../canary.txt",), target_owned_file_hashes={"../canary.txt": "c" * 64}
+    )
+    computed_input = TargetInstallReceiptV2.model_construct(**fields, receipt_hash="0" * 64)
+    receipt_hash = compute_target_install_receipt_hash_v2(computed_input)
+    with pytest.raises(ValidationError) as exc_info:
+        TargetInstallReceiptV2.model_validate_json(json.dumps({**fields, "receipt_hash": receipt_hash}))
+    # A ValidationError from model_validate_json means no instance was ever
+    # constructed -- there is no partially-built receipt to inspect.
+    assert "target_owned" in str(exc_info.value) or "path" in str(exc_info.value).lower()

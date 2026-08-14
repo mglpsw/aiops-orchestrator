@@ -122,6 +122,12 @@
     },
     "after_hashes": {
       "additionalProperties": false,
+      "patternProperties": {
+        "^[^*?\\[\\]]+$": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
       "propertyNames": {
         "maxLength": 512,
         "minLength": 1
@@ -131,6 +137,12 @@
     },
     "before_hashes": {
       "additionalProperties": false,
+      "patternProperties": {
+        "^[^*?\\[\\]]+$": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
       "propertyNames": {
         "maxLength": 512,
         "minLength": 1

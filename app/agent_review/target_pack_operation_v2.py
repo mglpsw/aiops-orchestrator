@@ -33,7 +33,12 @@ from app.agent_review.target_pack_manifest_v2 import (
     TargetPackManifestV2,
     compute_target_pack_manifest_digest_v2,
 )
-from app.agent_review.target_pack_plan_v2 import InstallPlanV2, PlanError, compute_install_plan_v2
+from app.agent_review.target_pack_plan_v2 import (
+    InstallPlanV2,
+    PlanError,
+    compute_install_plan_v2,
+    resolve_within_target_root_v2,
+)
 from app.agent_review.target_pack_receipt_v2 import (
     ReceiptIdentityRefV2,
     TargetInstallReceiptV2,
@@ -91,10 +96,20 @@ class TargetPackOperationPlanV2(ContractV2Model):
     destination_identity: TargetPackInstallIdentityV2
     target_root_identity: Sha256
     actions: tuple[TargetPackOperationActionV2, ...]
-    before_hashes: Mapping[SafeText, Sha256] = Field(
+    # Post-merge review debt (aiops-orchestrator#205, C1), confirmed and
+    # fixed: `SafeText` keys have no `Field(pattern=...)`, so combined with
+    # this field's `additionalProperties: False` override the exported
+    # schema had no `properties`/`patternProperties` at all -- only `{}`
+    # validated. `compute_target_pack_operation_plan_v2` populates both maps
+    # on every real preview (one entry per TARGET_OWNED file), so the
+    # artifact this module's own code produces could never validate against
+    # its own published schema. `RelativePath` matches what these keys
+    # already are (`entry.path`, itself `RelativePath`-typed on
+    # `GeneratedFileEntryV2`) and gives Pydantic a real pattern to export.
+    before_hashes: Mapping[RelativePath, Sha256] = Field(
         default_factory=dict, json_schema_extra={"additionalProperties": False}
     )
-    after_hashes: Mapping[SafeText, Sha256] = Field(
+    after_hashes: Mapping[RelativePath, Sha256] = Field(
         default_factory=dict, json_schema_extra={"additionalProperties": False}
     )
     accepted_target_owned_paths: tuple[RelativePath, ...] = ()
@@ -146,8 +161,29 @@ def _identity_from_receipt_v2(receipt: TargetInstallReceiptV2) -> TargetPackInst
     )
 
 
-def _read_target_owned_bytes_v2(*, target_root: Path, path: str) -> bytes | None:
-    candidate = target_root / path
+def _read_target_owned_bytes_v2(*, target_root_real: Path, path: str) -> bytes | None:
+    # Containment BEFORE any filesystem read (aiops-orchestrator#205,
+    # H1A-R1): `path` is a `RelativePath`, which proves the string is
+    # well-formed but not that an existing component on disk stays inside
+    # `target_root`. `resolve_within_target_root_v2` raises `PlanError`
+    # (`target_pack_plan_path_escapes_target_root`) before `is_file()` --
+    # itself a symlink-following call -- ever runs. `target_root_real` is
+    # resolved once by the caller and threaded through, not re-resolved
+    # per file (round 2 -- see `resolve_within_target_root_v2`'s docstring).
+    #
+    # Round 5 (Codex shadow review of #230 at fbc67db), confirmed and fixed:
+    # composed from `target_root / path` -- the caller's mutable alias --
+    # rather than `target_root_real`. If `target_root` were retargeted to a
+    # DESCENDANT of the resolved root between this operation capturing
+    # `target_root_real` and this call, the composed candidate still passes
+    # `relative_to(target_root_real)` (the new destination remains
+    # contained), but the bytes read come from the descendant, not the root
+    # `after_hashes`/`target_profile_hash`/the receipt are bound to.
+    # Reproduced directly against a two-root layout. Composing from
+    # `target_root_real` itself removes the divergeable base; `target_root`
+    # is no longer a parameter here since nothing else in this function
+    # needs the mutable alias once the read is bound to the resolved root.
+    candidate = resolve_within_target_root_v2(target_root_real, target_root_real / path)
     if candidate.is_file():
         return candidate.read_bytes()
     if candidate.exists() or candidate.is_symlink():
@@ -251,6 +287,24 @@ def compute_target_pack_operation_plan_v2(
     install_plan = compute_install_plan_v2(
         manifest=manifest, target_root=target_root, previous_receipt=previous_receipt
     )
+    # Exactly ONE resolution of `target_root` per operation -- not once per
+    # file, and not once here plus again inside `compute_install_plan_v2`.
+    # Round 3 finding (aiops-orchestrator#205, H1A-R1), confirmed by
+    # reproduction: with two independent resolutions, swapping `target_root`
+    # between them produced one preview whose `install_plan.target_root_real`
+    # named one root while its `after_hashes`/`target_profile_hash` -- and
+    # therefore the receipt built from them -- were read from another. The
+    # install description and the evidence describing it must agree on which
+    # target they refer to.
+    #
+    # Round 4: the first version of that fix passed this operation's own
+    # resolution DOWN into `compute_install_plan_v2` as a parameter, which
+    # turned the containment boundary into a caller-supplied value and was
+    # reproducibly widenable by passing an ancestor directory. The direction
+    # is now inverted -- the plan owns the single resolution and this
+    # operation CONSUMES it -- so there is one resolution, and no caller
+    # anywhere can choose the boundary.
+    target_root_real = Path(install_plan.target_root_real)
     actions: list[TargetPackOperationActionV2] = []
     before_hashes: dict[str, str] = {}
     after_hashes: dict[str, str] = {}
@@ -258,7 +312,7 @@ def compute_target_pack_operation_plan_v2(
     target_profile_hash: str | None = None
 
     for entry in target_owned_entries:
-        observed = _read_target_owned_bytes_v2(target_root=target_root, path=entry.path)
+        observed = _read_target_owned_bytes_v2(target_root_real=target_root_real, path=entry.path)
         if observed is None:
             if previous_receipt is not None:
                 raise PlanError(OPERATION_TARGET_OWNED_MISSING_INSTALLED_REASON_V2)

@@ -10,9 +10,13 @@ import pytest
 
 from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_v2
 from app.agent_review.target_pack_doctor_v2 import (
+    DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2,
+    DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2,
     DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2,
+    DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2,
+    DOCTOR_RECEIPT_TARGET_REPO_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2,
     DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2,
     DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2,
@@ -142,7 +146,7 @@ def _receipt(required_secret_names: tuple[str, ...] = (), **overrides: object) -
 
 def test_doctor_reports_missing_profile_and_receipt_without_creating_anything(tmp_path: Path) -> None:
     before = list(tmp_path.iterdir())
-    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
 
     assert report.profile.status == "missing"
     assert report.receipt.status == "missing"
@@ -154,7 +158,7 @@ def test_doctor_reports_missing_profile_and_receipt_without_creating_anything(tm
 def test_doctor_reports_invalid_profile_without_mutating(tmp_path: Path) -> None:
     (tmp_path / ".aiops").mkdir()
     (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text("not: valid: yaml: at: all: :::", encoding="utf-8")
-    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
     assert report.profile.status in {"invalid", "missing"}
     assert not report.is_healthy
 
@@ -163,9 +167,18 @@ def test_doctor_reports_healthy_when_everything_present(tmp_path: Path) -> None:
     (tmp_path / ".aiops").mkdir()
     (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
     receipt_path = tmp_path / ".aiops" / "install-receipt.v2.json"
-    receipt_path.write_text(json.dumps(_receipt().model_dump(mode="json")), encoding="utf-8")
+    # A genuinely healthy install's receipt DOES record its target-owned
+    # set -- every real `init` populates it (aiops-orchestrator#205, C3).
+    # An empty default here would (correctly, post-fix) no longer count as
+    # healthy, since it would not match the manifest's own TARGET_OWNED
+    # classification.
+    receipt = _receipt(
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8"))},
+    )
+    receipt_path.write_text(json.dumps(receipt.model_dump(mode="json")), encoding="utf-8")
 
-    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
 
     assert report.profile.status == "present"
     assert report.profile.profile_hash is not None
@@ -183,7 +196,7 @@ def test_doctor_checks_secret_name_presence_never_value(tmp_path: Path, monkeypa
     monkeypatch.setenv("AGENT_ROUTER_API_KEY", "this-value-must-never-appear-in-the-report")
     monkeypatch.delenv("MISSING_SECRET_NAME", raising=False)
 
-    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
 
     by_name = {check.name: check.declared_present for check in report.secret_names}
     assert by_name == {"AGENT_ROUTER_API_KEY": True, "MISSING_SECRET_NAME": False}
@@ -196,7 +209,7 @@ def test_doctor_refuses_a_target_root_that_is_not_a_directory(tmp_path: Path) ->
     not_a_dir = tmp_path / "not-a-dir.txt"
     not_a_dir.write_text("x", encoding="utf-8")
     with pytest.raises(NotADirectoryError) as exc_info:
-        run_doctor_v2(target_root=not_a_dir, manifest=_manifest())
+        run_doctor_v2(target_root=not_a_dir, manifest=_manifest(), target_repo="owner/repo")
     assert DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 in str(exc_info.value)
 
 
@@ -214,7 +227,7 @@ def test_doctor_reports_unhealthy_when_receipt_pack_version_does_not_match_the_m
         json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
     )
 
-    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
 
     assert report.receipt.status == "invalid"
     assert report.receipt.reason_code == DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2
@@ -229,7 +242,7 @@ def test_doctor_reports_unhealthy_when_receipt_toolrepo_sha_does_not_match_the_m
         json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
     )
 
-    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
 
     assert report.receipt.status == "invalid"
     assert report.receipt.reason_code == DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2
@@ -246,12 +259,21 @@ def test_doctor_reports_unhealthy_when_receipt_profile_hash_does_not_match_the_l
     profile was hand-edited post-install."""
     (tmp_path / ".aiops").mkdir()
     (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
-    receipt = _receipt(target_profile_hash="f" * 64)
+    # Round 5: the target-owned SET check now runs before profile_hash (it
+    # was moved ahead of the per-file loop, which now sits ahead of
+    # profile_hash too -- see `_check_receipt_v2`'s docstring). A matching
+    # set is required to reach profile_hash at all, isolating this test to
+    # the axis it actually names.
+    receipt = _receipt(
+        target_profile_hash="f" * 64,
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8"))},
+    )
     (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
         json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
     )
 
-    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
 
     assert report.receipt.status == "invalid"
     assert report.receipt.reason_code == DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2
@@ -269,7 +291,7 @@ def test_doctor_reports_unreconciled_target_owned_bytes_even_when_semantics_matc
         json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
     )
 
-    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
 
     assert report.profile.status == "present"
     assert report.receipt.status == "invalid"
@@ -287,12 +309,19 @@ def test_doctor_reports_unhealthy_when_receipt_rollout_mode_exceeds_pack_capabil
     through `doctor` instead."""
     (tmp_path / ".aiops").mkdir()
     (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
-    receipt = _receipt(rollout_mode="shadow_full")
+    # Round 5: matching target-owned set required to reach past the SET
+    # check, now ahead of the per-file loop and therefore ahead of
+    # rollout_mode too -- see `_check_receipt_v2`'s docstring.
+    receipt = _receipt(
+        rollout_mode="shadow_full",
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8"))},
+    )
     (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
         json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
     )
 
-    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
 
     assert report.receipt.status == "invalid"
     assert report.receipt.reason_code == DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2
@@ -303,15 +332,574 @@ def test_doctor_skips_profile_hash_comparison_when_profile_itself_is_not_loadabl
     """When the profile is missing entirely, there is nothing meaningful
     to compare a receipt's `target_profile_hash` claim against -- doctor
     must not crash trying, and `is_healthy` is already false via
-    `profile.status`, not via a spurious profile-hash reason code."""
-    receipt = _receipt()
+    `profile.status`, not via a spurious profile-hash reason code.
+
+    Uses a manifest with no TARGET_OWNED entries at all (an
+    UPSTREAM_GENERATED-only pack version) so an empty
+    `target_owned_paths` legitimately matches it -- this test's premise
+    (the profile file is entirely absent) is otherwise incompatible with
+    the target-owned reconciliation `#205`/C3 added: the profile IS the
+    only TARGET_OWNED path the shared `_manifest()` fixture declares, so a
+    receipt cannot claim to have reconciled it while the file is absent."""
+    manifest = TargetPackManifestV2(
+        schema_id="agent-review.target-pack-manifest.v2",
+        schema_version=2,
+        pack_version="0.1.0",
+        toolrepo_sha="1" * 40,
+        generated_files=(
+            GeneratedFileEntryV2(
+                path="templates/workflow.yml",
+                ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED,
+                content_sha256="a" * 64,
+            ),
+        ),
+        schema_digests={"x.json": "a" * 64},
+        required_capabilities=("router_transport",),
+        min_engine_contract_version=2,
+        max_supported_rollout_mode="shadow_minimal",
+    )
+    receipt = _receipt(manifest_digest=compute_target_pack_manifest_digest_v2(manifest))
     (tmp_path / ".aiops").mkdir()
     (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
         json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
     )
 
-    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest())
+    report = run_doctor_v2(target_root=tmp_path, manifest=manifest, target_repo="owner/repo")
 
     assert report.profile.status == "missing"
     assert report.receipt.status == "present"
     assert not report.is_healthy
+
+
+# --- Post-merge review debt (aiops-orchestrator#205, C2/C3) -----------------
+
+
+def test_doctor_reports_healthy_for_correct_target_repo(tmp_path: Path) -> None:
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    receipt = _receipt(
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8"))},
+    )
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.is_healthy
+
+
+def test_doctor_refuses_a_receipt_transplanted_from_a_different_target(tmp_path: Path) -> None:
+    """RED for C2, library level (see the CLI-level end-to-end reproduction
+    in `test_agent_review_target_pack_v2_cli.py`). Previously,
+    `run_doctor_v2` had no `target_repo` parameter at all -- the only
+    identity source was `receipt.portable_target_root_identity`, which is
+    itself derived from `receipt.target_repo`, so a receipt is always
+    internally self-consistent no matter which target it actually came
+    from. Confirmed by reproduction before this fix: copying a healthy
+    install's `.aiops/` into an unrelated `tmp_path` reported
+    `healthy: true` regardless of which repository was actually being
+    diagnosed."""
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    receipt = _receipt(
+        target_repo="acme/original-repo",
+        portable_target_root_identity=compute_portable_target_root_identity_v2(target_repo="acme/original-repo"),
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8"))},
+    )
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="acme/a-completely-different-repo")
+
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_RECEIPT_TARGET_REPO_MISMATCH_REASON_V2
+    assert not report.is_healthy
+
+
+def test_doctor_refuses_a_receipt_whose_target_owned_set_was_shrunk_to_empty(tmp_path: Path) -> None:
+    """RED for C3. Reproduced before this fix: shrinking a receipt's
+    `target_owned_paths`/`target_owned_file_hashes` to `{}` makes the
+    per-file reconciliation loop iterate zero times -- trivially
+    "successful" -- while a SEPARATE tampered on-disk profile (with
+    `target_profile_hash` realigned to the tampered bytes, so the
+    unrelated profile-hash check also passes) went completely
+    unreconciled. `healthy: true` was reported for a target-owned file
+    that was never read, hashed, or compared against anything."""
+    (tmp_path / ".aiops").mkdir()
+    tampered_profile = _VALID_PROFILE_YAML + "\n# attacker-injected line\n"
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(tampered_profile, encoding="utf-8")
+    with tempfile.TemporaryDirectory() as raw_dir:
+        root = Path(raw_dir)
+        (root / ".aiops").mkdir()
+        (root / ".aiops" / "target-profile.v2.yaml").write_text(tampered_profile, encoding="utf-8")
+        tampered_profile_hash = compute_profile_hash_v2(load_target_profile_v2(str(root)))
+
+    receipt = _receipt(target_owned_paths=(), target_owned_file_hashes={}, target_profile_hash=tampered_profile_hash)
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2
+    assert not report.is_healthy
+
+
+def test_doctor_refuses_a_receipt_whose_target_owned_set_is_a_strict_superset(tmp_path: Path) -> None:
+    """Adversarial matrix item: the reconciliation must be a SET equality,
+    not merely "does the receipt cover at least what the manifest
+    requires" -- a receipt that also claims an extra, manifest-unknown
+    target-owned path is equally not describing this pack version's real
+    TARGET_OWNED set."""
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    # The extra path is a REAL file on disk with a hash that matches the
+    # receipt's own claim -- the per-file loop alone would pass it (there
+    # is nothing "unreconciled" about it byte-for-byte). Only the set
+    # comparison against the manifest's actual TARGET_OWNED classification
+    # can catch a claim of ownership over a path the manifest never
+    # declared as TARGET_OWNED at all.
+    (tmp_path / ".aiops" / "extra-unknown-file.txt").write_text("attacker content", encoding="utf-8")
+    receipt = _receipt(
+        target_owned_paths=(".aiops/target-profile.v2.yaml", ".aiops/extra-unknown-file.txt"),
+        target_owned_file_hashes={
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8")),
+            ".aiops/extra-unknown-file.txt": _sha256(b"attacker content"),
+        },
+    )
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2
+
+
+def test_doctor_target_owned_set_reconciliation_is_order_independent(tmp_path: Path) -> None:
+    """PASSO 3 item 11: the manifest's TARGET_OWNED set and the receipt's
+    claimed set are compared as sets, so declaration order never affects
+    the outcome. Uses a local two-entry manifest (the shared `_manifest()`
+    fixture only has one TARGET_OWNED path) so there is a real permutation
+    to prove order-independence with."""
+    manifest = TargetPackManifestV2(
+        schema_id="agent-review.target-pack-manifest.v2",
+        schema_version=2,
+        pack_version="0.1.0",
+        toolrepo_sha="1" * 40,
+        generated_files=(
+            GeneratedFileEntryV2(
+                path=".aiops/target-profile.v2.yaml",
+                ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+                content_sha256="a" * 64,
+            ),
+            GeneratedFileEntryV2(
+                path=".aiops/second-target-owned.yaml",
+                ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+                content_sha256="b" * 64,
+            ),
+        ),
+        schema_digests={"x.json": "a" * 64},
+        required_capabilities=("router_transport",),
+        min_engine_contract_version=2,
+        max_supported_rollout_mode="shadow_minimal",
+    )
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (tmp_path / ".aiops" / "second-target-owned.yaml").write_text("x", encoding="utf-8")
+    # Receipt's tuple order is the REVERSE of the manifest's declaration
+    # order above -- the comparison must not care.
+    receipt = _receipt(
+        manifest_digest=compute_target_pack_manifest_digest_v2(manifest),
+        target_owned_paths=(".aiops/second-target-owned.yaml", ".aiops/target-profile.v2.yaml"),
+        target_owned_file_hashes={
+            ".aiops/second-target-owned.yaml": _sha256(b"x"),
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8")),
+        },
+    )
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=manifest, target_repo="owner/repo")
+
+    assert report.receipt.status == "present"
+    assert report.receipt.reason_code is None
+
+
+# --- H1A-R1: symlink-mediated read escape (independent review finding) -----
+#
+# `RelativePath` (the C1/C4 retype above) proves a path STRING is well-formed
+# -- no `..`, no absolute/drive form. It says nothing about what an EXISTING
+# component on disk resolves to. Reproduced against PR #230's own head
+# (dd6d72b) before this fix: with `.aiops/target-profile.v2.yaml` symlinked
+# outside `target_root`, `run_doctor_v2` returned `is_healthy=True` while a
+# `Path.read_text`/`read_bytes` spy recorded both the profile read and the
+# target-owned read resolving outside `target_root`.
+
+
+def _read_spy(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    """Records (kind, resolved_path) for every `Path` content read."""
+    seen: list[tuple[str, str]] = []
+    original_read_bytes = Path.read_bytes
+    original_read_text = Path.read_text
+
+    def spy_read_bytes(self: Path, *args: object, **kwargs: object) -> bytes:
+        seen.append(("read_bytes", str(self.resolve())))
+        return original_read_bytes(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    def spy_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        seen.append(("read_text", str(self.resolve())))
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_bytes", spy_read_bytes)
+    monkeypatch.setattr(Path, "read_text", spy_read_text)
+    return seen
+
+
+def _assert_no_read_escaped(seen: list[tuple[str, str]], target_root: Path) -> None:
+    root_real = str(target_root.resolve())
+    escaping = [entry for entry in seen if not entry[1].startswith(root_real + os.sep) and entry[1] != root_real]
+    assert not escaping, f"a read resolved outside target_root: {escaping}"
+
+
+def test_doctor_refuses_a_profile_symlinked_outside_target_root(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED for H1A-R1, narrowest form: only `target-profile.v2.yaml` is a
+    symlink pointing outside `target_root`."""
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (target_root / ".aiops").mkdir()
+    outside_profile = outside / "outside-profile.yaml"
+    outside_profile.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (target_root / ".aiops" / "target-profile.v2.yaml").symlink_to(outside_profile)
+
+    seen = _read_spy(monkeypatch)
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "invalid"
+    assert report.profile.reason_code == DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert not report.is_healthy
+    _assert_no_read_escaped(seen, target_root)
+
+
+def test_doctor_refuses_when_the_whole_aiops_directory_is_symlinked_outside(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED for H1A-R1, broadest form: an intermediate path COMPONENT
+    (`.aiops` itself) is the symlink, so both the profile and the receipt
+    resolve outside `target_root` even though every path string involved is
+    a perfectly valid `RelativePath`."""
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (outside / "install-receipt.v2.json").write_text(
+        json.dumps(_receipt().model_dump(mode="json")), encoding="utf-8"
+    )
+    (target_root / ".aiops").symlink_to(outside, target_is_directory=True)
+
+    seen = _read_spy(monkeypatch)
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.reason_code == DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert report.receipt.reason_code == DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert not report.is_healthy
+    _assert_no_read_escaped(seen, target_root)
+
+
+def test_doctor_refuses_a_target_owned_file_symlinked_outside_target_root(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED for H1A-R1 on the target-owned reconciliation loop specifically:
+    a real, in-root profile and receipt, but the receipt's target-owned
+    entry points at a path whose on-disk form escapes."""
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (target_root / ".aiops").mkdir()
+    (target_root / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    outside_owned = outside / "owned.txt"
+    outside_owned.write_text("outside content", encoding="utf-8")
+    (target_root / ".aiops" / "owned.txt").symlink_to(outside_owned)
+
+    manifest = TargetPackManifestV2(
+        schema_id="agent-review.target-pack-manifest.v2",
+        schema_version=2,
+        pack_version="0.1.0",
+        toolrepo_sha="1" * 40,
+        generated_files=(
+            GeneratedFileEntryV2(
+                path=".aiops/target-profile.v2.yaml",
+                ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+                content_sha256="a" * 64,
+            ),
+            GeneratedFileEntryV2(
+                path=".aiops/owned.txt",
+                ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+                content_sha256="b" * 64,
+            ),
+        ),
+        schema_digests={"x.json": "a" * 64},
+        required_capabilities=("router_transport",),
+        min_engine_contract_version=2,
+        max_supported_rollout_mode="shadow_minimal",
+    )
+    receipt = _receipt(
+        manifest_digest=compute_target_pack_manifest_digest_v2(manifest),
+        target_owned_paths=(".aiops/owned.txt", ".aiops/target-profile.v2.yaml"),
+        target_owned_file_hashes={
+            ".aiops/owned.txt": _sha256(b"outside content"),
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8")),
+        },
+    )
+    (target_root / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    seen = _read_spy(monkeypatch)
+    report = run_doctor_v2(target_root=target_root, manifest=manifest, target_repo="owner/repo")
+
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert not report.is_healthy
+    _assert_no_read_escaped(seen, target_root)
+
+
+def test_doctor_allows_a_symlink_that_resolves_back_inside_target_root(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """The policy is CONTAINMENT, not symlink prohibition -- identical in
+    meaning to `target_pack_install_v2`'s write-side check. Without this
+    test the fix could silently become "no symlinks at all", a second,
+    stricter policy the writer does not share."""
+    target_root = tmp_path_factory.mktemp("target")
+    (target_root / ".aiops").mkdir()
+    real_profile = target_root / ".aiops" / "real-profile.yaml"
+    real_profile.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (target_root / ".aiops" / "target-profile.v2.yaml").symlink_to(real_profile)
+    receipt = _receipt(
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8"))},
+    )
+    (target_root / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "present"
+    assert report.receipt.status == "present"
+    assert report.is_healthy
+
+
+# --- H1A-R1, round 2: the check must be BOUND to the read, not merely --
+# --- run before it (second independent review of #230's first fix) -----
+
+
+def test_check_profile_reads_the_content_it_actually_verified_not_a_later_swap(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """RED, round 2. The first cut of H1A-R1 called
+    `resolve_within_target_root_v2` and discarded its return value,
+    letting `load_target_profile_v2` independently re-derive `target_root
+    / relative_path` and re-traverse it -- the containment check and the
+    actual read were two separate filesystem traversals of the same
+    (mutable) symlink, connected only by timing, not by construction.
+
+    Deterministic reproduction (no real race required): swap the symlink
+    to point OUTSIDE `target_root` as a side effect of
+    `resolve_within_target_root_v2` returning -- i.e. strictly AFTER the
+    containment check has already passed, strictly BEFORE any content is
+    read. Against the pre-round-2 code this made `_check_profile_v2`
+    report `status="present"` with a profile hash computed from content
+    outside `target_root`. Confirmed by loading the swapped file directly:
+    its `identity.repo` carried a distinguishing marker the real profile
+    does not.
+
+    Post-fix, `_check_profile_v2` reads through the exact `Path` object
+    `resolve_within_target_root_v2` returned -- an already-fully-resolved,
+    symlink-free absolute path -- so swapping the ORIGINAL symlink after
+    the fact cannot change what gets read at all."""
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (target_root / ".aiops").mkdir()
+    real_profile = target_root / ".aiops" / "real-profile.yaml"
+    real_profile.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    outside_profile = outside / "outside-profile.yaml"
+    outside_profile.write_text(_VALID_PROFILE_YAML.replace("owner/repo", "acme/exfiltrated-via-toctou"))
+    symlink_path = target_root / ".aiops" / "target-profile.v2.yaml"
+    symlink_path.symlink_to(real_profile)
+
+    import app.agent_review.target_pack_doctor_v2 as doctor_module
+
+    real_resolve = doctor_module.resolve_within_target_root_v2
+
+    def racing_resolve(target_root_real: Path, path: Path) -> Path:
+        result = real_resolve(target_root_real, path)
+        # Attacker acts in the gap between "containment verified" and
+        # "content read" -- simulated deterministically rather than by
+        # trying to literally win a race.
+        symlink_path.unlink()
+        symlink_path.symlink_to(outside_profile)
+        return result
+
+    doctor_module.resolve_within_target_root_v2 = racing_resolve
+    try:
+        check = doctor_module._check_profile_v2(target_root.resolve(strict=False))
+    finally:
+        doctor_module.resolve_within_target_root_v2 = real_resolve
+
+    assert check.status == "present"
+    # The load-bearing assertion: the hash must match the content that was
+    # ACTUALLY VERIFIED (real_profile), never the post-swap outside content.
+    from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_text_v2
+
+    verified_hash = compute_profile_hash_v2(load_target_profile_text_v2(_VALID_PROFILE_YAML))
+    exfiltrated_hash = compute_profile_hash_v2(
+        load_target_profile_text_v2(_VALID_PROFILE_YAML.replace("owner/repo", "acme/exfiltrated-via-toctou"))
+    )
+    assert check.profile_hash == verified_hash
+    assert check.profile_hash != exfiltrated_hash
+
+
+# --- Round 5: Codex shadow review of #230 at fbc67db --------------------
+
+
+def test_doctor_returns_a_typed_refusal_for_a_symlink_loop_instead_of_crashing(tmp_path: Path) -> None:
+    """RED. `Path.resolve(strict=False)` raises `RuntimeError` for a
+    symlink loop (`a -> b`, `b -> a`), unlike every other resolution
+    failure `resolve_within_target_root_v2`'s callers already handle via
+    a typed `PlanError`. Reproduced before the fix: a loop at the profile
+    path made `run_doctor_v2` raise `RuntimeError` uncaught -- a traceback
+    instead of the structured invalid report `doctor` promises for every
+    diagnosable state."""
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").symlink_to("target-profile.v2.yaml")
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "invalid"
+    assert not report.is_healthy
+
+
+def test_doctor_distinguishes_a_resolution_loop_from_a_genuine_escape(tmp_path: Path) -> None:
+    """RED, second pass (Codex shadow review of #230 at 90999f2).
+    `_check_profile_v2`'s `except PlanError` collapsed BOTH `resolve_
+    within_target_root_v2` reasons -- genuine escape and unresolvable
+    symlink loop -- into the single escape reason code, discarding the
+    distinction the loop fix's own dedicated `PlanError` reason code
+    existed to preserve. Reproduced: a symlink loop reported `target_
+    pack_doctor_path_escapes_target_root`, indistinguishable from an
+    actual escape, even though `resolve_within_target_root_v2` already
+    raised a semantically different reason."""
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").symlink_to("target-profile.v2.yaml")
+
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "invalid"
+    assert report.profile.reason_code == DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2
+    assert report.profile.reason_code != DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+def test_doctor_rejects_an_unknown_target_owned_path_before_reading_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED. The per-file reconciliation loop used to run BEFORE the
+    target-owned SET check, so a receipt declaring a path the manifest
+    never classified as TARGET_OWNED still got that path `read_bytes()`'d
+    and hashed -- unbounded by size -- even though the set check would
+    reject the receipt anyway. Reproduced before the fix: a 5MB file
+    outside the manifest's TARGET_OWNED set was read in full despite the
+    receipt being provably invalid by a single O(1) set comparison."""
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    extra = tmp_path / ".aiops" / "unclassified-extra.bin"
+    extra.write_bytes(b"x" * (1024 * 1024))
+
+    receipt = _receipt(
+        target_owned_paths=(".aiops/target-profile.v2.yaml", ".aiops/unclassified-extra.bin"),
+        target_owned_file_hashes={
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8")),
+            ".aiops/unclassified-extra.bin": _sha256(b"x" * (1024 * 1024)),
+        },
+    )
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    calls: list[str] = []
+    original_read_bytes = Path.read_bytes
+
+    def spy_read_bytes(self: Path, *args: object, **kwargs: object) -> bytes:
+        calls.append(str(self))
+        return original_read_bytes(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_bytes", spy_read_bytes)
+    report = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2
+    assert not any("unclassified-extra.bin" in c for c in calls), (
+        "the unclassified file was read despite being provably invalid by the set check alone"
+    )
+
+
+def test_doctor_reads_are_bound_to_the_captured_root_not_a_mutable_alias(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """RED. `_check_profile_v2`/`_check_receipt_v2` used to compose reads
+    from `target_root / relative_path` -- the caller's mutable alias --
+    rather than from `target_root_real`, the value `run_doctor_v2` had
+    already resolved once. If `target_root` were retargeted to a
+    DESCENDANT of the resolved root between that single resolution and a
+    later read, the read still passed containment (the new destination
+    remains inside the old boundary) but came from the wrong location --
+    the same class of defect round 3 closed in the operation module,
+    reachable here through a different alias.
+
+    Post-fix, `_check_profile_v2` no longer even ACCEPTS the mutable
+    alias -- only `target_root_real` -- so this is provable directly: swap
+    the alias to a divergent descendant AFTER capturing `target_root_real`
+    (exactly what `run_doctor_v2` itself does at its own call site), then
+    confirm the read reflects the ORIGINAL root, structurally unable to
+    observe the swap at all."""
+    root = tmp_path_factory.mktemp("root")
+    (root / ".aiops").mkdir()
+    (root / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    sub = root / "subdir"
+    (sub / ".aiops").mkdir(parents=True)
+    (sub / ".aiops" / "target-profile.v2.yaml").write_text(
+        _VALID_PROFILE_YAML.replace("owner/repo", "acme/subdir-divergent"), encoding="utf-8"
+    )
+    live = tmp_path_factory.mktemp("live-parent") / "live"
+    live.symlink_to(root, target_is_directory=True)
+
+    import app.agent_review.target_pack_doctor_v2 as doctor_module
+
+    # Exactly what run_doctor_v2 does: resolve once, capture the value.
+    target_root_real = live.resolve(strict=False)
+    # Now retarget the alias -- this must have zero effect on the check.
+    live.unlink()
+    live.symlink_to(sub, target_is_directory=True)
+    try:
+        check = doctor_module._check_profile_v2(target_root_real)
+    finally:
+        live.unlink()
+        live.symlink_to(root, target_is_directory=True)
+
+    from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_text_v2
+
+    root_hash = compute_profile_hash_v2(load_target_profile_text_v2(_VALID_PROFILE_YAML))
+    sub_hash = compute_profile_hash_v2(
+        load_target_profile_text_v2(_VALID_PROFILE_YAML.replace("owner/repo", "acme/subdir-divergent"))
+    )
+    assert check.status == "present"
+    assert check.profile_hash == root_hash
+    assert check.profile_hash != sub_hash

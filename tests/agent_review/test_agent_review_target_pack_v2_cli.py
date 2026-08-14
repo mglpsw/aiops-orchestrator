@@ -10,6 +10,7 @@ build}_v2.py`).
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -221,7 +222,10 @@ def test_init_refuses_duplicate_nominal_target_owned_acceptance(tmp_path: Path) 
 
 def test_doctor_reports_unhealthy_before_init(tmp_path: Path) -> None:
     result = _run(
-        ["doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT), "--pack-version", "0.1.0"]
+        [
+            "doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo", "--pack-version", "0.1.0",
+        ]
     )
     assert result.returncode == 1
     report = json.loads(result.stdout)
@@ -240,7 +244,10 @@ def test_doctor_reports_healthy_after_init(tmp_path: Path) -> None:
     assert _run(init_args).returncode == 0
 
     result = _run(
-        ["doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT), "--pack-version", "0.1.0"]
+        [
+            "doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo", "--pack-version", "0.1.0",
+        ]
     )
     report = json.loads(result.stdout)
     # profile.status is "present" -- healthy overall depends on required_checks
@@ -258,14 +265,20 @@ def test_doctor_never_creates_or_modifies_anything(tmp_path: Path) -> None:
     tmp_path.mkdir(exist_ok=True)
     before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
     for _ in range(2):
-        _run(["doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT), "--pack-version", "0.1.0"])
+        _run([
+            "doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo", "--pack-version", "0.1.0",
+        ])
     after = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
     assert before == after == []
 
 
 def test_doctor_never_prints_a_traceback_for_a_healthy_or_unhealthy_target(tmp_path: Path) -> None:
     result = _run(
-        ["doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT), "--pack-version", "0.1.0"]
+        [
+            "doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo", "--pack-version", "0.1.0",
+        ]
     )
     assert "Traceback" not in result.stderr
 
@@ -274,6 +287,53 @@ def test_missing_required_flag_is_refused_by_argparse_not_a_traceback(tmp_path: 
     result = _run(["doctor", "--target-root", str(tmp_path)])
     assert result.returncode != 0
     assert "Traceback" not in result.stderr
+
+
+def test_doctor_target_repo_flag_is_required(tmp_path: Path) -> None:
+    """Post-merge review debt (aiops-orchestrator#205, C2): `doctor` used to
+    have no `--target-repo` at all, so it could only check a receipt's
+    identity claims against itself. Argparse-level proof that the new flag
+    is mandatory, not merely conventionally passed everywhere in this
+    file's other tests."""
+
+    result = _run(
+        ["doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT), "--pack-version", "0.1.0"]
+    )
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "--target-repo" in result.stderr
+
+
+def test_doctor_refuses_an_aiops_directory_transplanted_from_a_different_target(tmp_path: Path, tmp_path_factory) -> None:
+    """Post-merge review debt (aiops-orchestrator#205, C2), end-to-end
+    reproduction of the original finding: a healthy install's `.aiops/`
+    directory, copied verbatim into an unrelated target root, must NOT be
+    reported healthy just because every field the receipt claims is
+    internally self-consistent. `doctor` now requires the operator to
+    assert which target it is actually diagnosing, independent of
+    anything the copied receipt claims about itself."""
+
+    source_root = tmp_path_factory.mktemp("source-target")
+    init_args = [
+        "init",
+        "--target-root", str(source_root),
+        "--toolrepo-root", str(REPO_ROOT),
+        "--target-repo", "acme/source-repo",
+        "--pack-version", "0.1.0",
+    ]
+    assert _run(init_args).returncode == 0
+
+    shutil.copytree(source_root / ".aiops", tmp_path / ".aiops")
+
+    result = _run(
+        [
+            "doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "acme/actually-different-repo", "--pack-version", "0.1.0",
+        ]
+    )
+    report = json.loads(result.stdout)
+    assert report["healthy"] is False
+    assert report["receipt"]["reason_code"] == "target_pack_doctor_receipt_target_repo_mismatch"
 
 
 def test_init_refuses_a_rollout_the_pack_does_not_yet_support(tmp_path: Path) -> None:
@@ -501,7 +561,14 @@ def test_init_refuses_when_the_receipt_write_would_escape_target_root_via_a_syml
     check triggered at all) -- so the raw receipt write was the ONLY write
     touching `.aiops/`, and it silently followed the symlink, landing
     `install-receipt.v2.json` entirely outside `target_root`, exit 0, no
-    refusal. Must now refuse cleanly instead."""
+    refusal. Must now refuse cleanly instead.
+
+    Since aiops-orchestrator#205/H1A-R1 added read-side containment, the
+    escape is caught EARLIER -- at plan time, by `resolve_within_target_
+    root_v2` -- so the reported reason code is now the plan-time one rather
+    than the write-time one. Both are correct refusals of the same escape;
+    the security-relevant assertions (non-zero exit, no traceback, and
+    above all NOTHING written into the symlink target) are unchanged."""
 
     outside = tmp_path.parent / f"{tmp_path.name}-outside-receipt-escape"
     outside.mkdir()
@@ -528,9 +595,12 @@ def test_init_refuses_when_the_receipt_write_would_escape_target_root_via_a_syml
 
     assert result.returncode != 0
     assert "Traceback" not in result.stderr
-    assert "target_pack_install_path_escapes_target_root" in result.stderr
+    assert "path_escapes_target_root" in result.stderr
     # The receipt must NOT have leaked into the symlink target.
     assert not (outside / "install-receipt.v2.json").exists()
+    # Nor anything else -- the pre-existing valid profile the fixture put
+    # there is the only file that may remain.
+    assert [p.name for p in outside.iterdir()] == ["target-profile.v2.yaml"]
 
 
 def test_init_refuses_cleanly_instead_of_fabricating_a_toolrepo_sha(tmp_path: Path) -> None:
