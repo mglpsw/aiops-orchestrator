@@ -274,8 +274,10 @@ quando o gate estiver ausente, inválido ou contraditório. Consulte o
 
 Linha sucessora, **não GA e não default**. Recebe toda a engenharia nova: contratos
 com binding verificado, extração e redação de conteúdo real, proveniência
-autoritativa de checks, readiness determinístico e o **target pack**, que instala o
-engine em repositórios alvo sem forkar o engine.
+autoritativa de checks, readiness determinístico e o **target pack**, cujo papel
+final é instalar o engine em repositórios alvo sem forkar o engine — a slice
+atual (`init`/`doctor`) faz seed apenas de profile/integration metadata, não
+instala o engine ainda; ver [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 Adoção atual é `shadow`/opt-in e pinada separadamente do v1. Nenhum consumidor tem o
 v2 como autoridade de merge. Contratos: [`docs/AGENT_REVIEW_V2_CONTRACTS.md`](docs/AGENT_REVIEW_V2_CONTRACTS.md).

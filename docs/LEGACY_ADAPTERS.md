@@ -1,6 +1,10 @@
 # Legacy Adapters
 
-**Status:** `HISTORICAL` — documento de fase anterior, preservado como registro. Não descreve o estado ou o caminho oficial atual; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+**Status:** `CURRENT | SECURITY BOUNDARY` — não é apenas histórico: descreve uma
+fronteira de segurança e compatibilidade ativa, aplicada por
+`tests/test_legacy_adapter_quarantine.py` (`/v1/aiops/actions/run` não alcança
+estes adapters). Ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md) para o runner
+oficial.
 
 The repository still contains execution adapters that predate the controlled AIOps runner.
 They are kept for historical compatibility and for legacy flows, but they are not part of

@@ -14,7 +14,7 @@ binding). Not yet in any published release.
 
 | Subcommand | Status | Notes |
 |---|---|---|
-| `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile |
+| `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile — repeating `init` after a target edits `.aiops/target-profile.v2.yaml` requires naming the path via `--accept-target-owned` on both the preview and the `--apply` call, or `apply` fails with `target_owned_identity_acceptance_required`; the profile bytes themselves are left untouched |
 | `doctor` | `IMPLEMENTED` | read-only, proven by AST/call-graph inspection |
 | operation-plan binding | `IMPLEMENTED` | `target_pack_operation_v2.py` + its own schema (PR #228) |
 | `validate` | `DEFERRED` | spec `§12` |

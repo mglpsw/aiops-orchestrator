@@ -33,8 +33,9 @@ concede autoridade e não substitui consulta viva ao forge.
 | `da5a03b` | **v1** — chunk planning por custo real de hunk, fail closed | `#225` / PR #227 |
 | `7a6c659` | v2 — target-pack: fecha C1-C4 (schema, identidade `--target-repo`, reconciliação de set target-owned, symlink/path containment) + achados do Codex shadow review | `#205`/H1-A / PR #230 |
 
-Cinco dos oito commits tocam exclusivamente superfície v2 sem tocar nenhum
-arquivo v1 nem CAEM/shared; `8b20ae3` toca v2 **e** um módulo CAEM/shared
+Seis dos oito commits tocam exclusivamente superfície v2 sem tocar nenhum
+arquivo v1 nem CAEM/shared (`8654272`, `7500966`, `5a1677f`, `79c7b2f`,
+`7284528`, `7a6c659`); `8b20ae3` toca v2 **e** um módulo CAEM/shared
 compartilhado (`app/common/strict_json.py`, `app/caem_consumer/f0.py`) — os
 testes de equivalência visam preservar comportamento, mas isso permanece uma
 superfície não-v2 tocada, não apenas v2; `7a6c659` toca exclusivamente
