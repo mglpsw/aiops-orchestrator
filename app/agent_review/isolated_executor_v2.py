@@ -180,6 +180,7 @@ from app.agent_review.trusted_checks_v2 import (
     TrustedCheckResultMaterialV2,
     TrustedCheckResultV2,
     compute_trusted_check_result_sha256_v2,
+    validate_trusted_check_authority_v2,
 )
 
 EXECUTOR_REASON_COMMAND_NOT_IN_INVENTORY_V2 = "isolated_executor_command_not_in_inventory"
@@ -1170,7 +1171,18 @@ def execute_trusted_check_plan_v2(
 
     Before any process exists, each check's inventory entry is classified
     (#201-B3): ``TRUSTED`` is refused for any command whose effective class
-    is not ``data_only_host_tool`` -- see ``trusted_check_authority_v2``."""
+    is not ``data_only_host_tool`` -- see ``trusted_check_authority_v2``.
+
+    ``authority`` is validated here, first, before anything else (H1-C,
+    C9): the ``TrustedCheckAuthorityValueV2`` annotation above is a
+    Pydantic-only alias that performs no coercion on a bare function
+    parameter, and every privileged decision downstream compares
+    ``authority`` by identity (``is TrustedCheckAuthorityV2.TRUSTED``). A
+    caller passing anything other than the real enum member -- including
+    the semantically-equal string ``"trusted"`` -- would otherwise
+    silently defeat those checks rather than trip them."""
+
+    authority = validate_trusted_check_authority_v2(authority)
 
     if not _inventory_keys_match_command_tokens_v2(inventory):
         return _refuse_whole_plan_v2(

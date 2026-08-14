@@ -106,6 +106,57 @@ class TrustedCheckAuthorityV2(str, Enum):
 TrustedCheckAuthorityValueV2 = Annotated[TrustedCheckAuthorityV2, Field(strict=False)]
 
 
+class TrustedCheckAuthorityBoundaryErrorV2(ValueError):
+    """Raised by `validate_trusted_check_authority_v2` when a caller-
+    supplied `authority` value cannot be validated as a real
+    `TrustedCheckAuthorityV2` member. Carries a stable `reason_code`
+    only -- never the raw invalid value, which may not even be safe or
+    meaningful to include in a message."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+TRUSTED_CHECK_AUTHORITY_BOUNDARY_INVALID_REASON_V2 = "trusted_check_authority_boundary_invalid"
+
+
+def validate_trusted_check_authority_v2(value: object) -> TrustedCheckAuthorityV2:
+    """The single runtime boundary for `authority` on every plain-function
+    entry point in the trusted-check v2 surface (H1-C, post-merge debt
+    #205, origin #212: C9).
+
+    `TrustedCheckAuthorityValueV2` (`Annotated[TrustedCheckAuthorityV2,
+    Field(strict=False)]`) only coerces a string into the real enum member
+    INSIDE a validated Pydantic model field. A type annotation on a bare
+    function parameter -- even this exact alias -- performs no validation
+    or coercion at all: nothing runs at call time to enforce it. Every
+    privileged `authority is TrustedCheckAuthorityV2.TRUSTED` decision in
+    `isolated_executor_v2.py` depends on `authority` already being the
+    real, canonical enum singleton, so this must run before any such
+    decision is made, not deferred to whenever (if ever) the value later
+    gets embedded in a Pydantic model.
+
+    Accepts the real enum member unchanged (returned by identity -- the
+    common case costs nothing extra), or a `str` that is a legitimate
+    Pydantic-coercible value for this enum. Every other input -- `None`,
+    an unrelated type, a malformed string, or an object whose `__eq__`/
+    `__hash__` might otherwise satisfy a naive `==`-based check -- fails
+    closed. There is no default and nothing here is ever promoted to
+    `TRUSTED` on failure; the `str` restriction (before ever touching the
+    enum's own value lookup) means a spoofed object can never even reach
+    a comparison against the real values, let alone satisfy one.
+    """
+    if isinstance(value, TrustedCheckAuthorityV2):
+        return value
+    if isinstance(value, str):
+        try:
+            return TrustedCheckAuthorityV2(value)
+        except ValueError:
+            pass
+    raise TrustedCheckAuthorityBoundaryErrorV2(TRUSTED_CHECK_AUTHORITY_BOUNDARY_INVALID_REASON_V2)
+
+
 class TrustedCheckOutcomeV2(str, Enum):
     """Every way a trusted check can conclude. Only SUCCESS/FAILURE are
     "resolved" (the check ran to completion and produced a real verdict);
