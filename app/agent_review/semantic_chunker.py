@@ -704,17 +704,30 @@ def _plan_status(
     """Plan status is a statement about *coverage*, never about how many
     limitations were recorded (AgentEscala#675, Fix C).
 
-    This deliberately does not test `limitations` for truthiness. Every
-    limitation this module raises that actually costs coverage already has a
-    structural counterpart in one of the lists checked below -- so nothing
-    coverage-bearing is lost by dropping the truthiness test. What *is*
-    dropped is the false `partial` that a purely informational limitation
-    used to produce: `intake_schema_id_missing` (an intake-envelope fact) or
-    `file_context_fallback_used` (a fallback that still yielded every file)
-    would stamp a fully covered plan as partial, and
-    `final_synthesizer._coverage` then republished it as
-    `chunk_plan_status_partial` -- reading, downstream, as a second and
-    independent coverage failure that had never happened.
+    This deliberately does not test `limitations` for truthiness in
+    general. Most limitations this module raises that actually cost
+    coverage already have a structural counterpart in one of the lists
+    checked below, so nothing coverage-bearing is lost by not testing
+    every limitation code -- `intake_schema_id_missing` is a genuinely
+    informational intake-envelope fact and stamping it `partial` would
+    read downstream, via `final_synthesizer._coverage`, as a second and
+    independent coverage failure that never happened.
+
+    `file_context_fallback_used` is a deliberate, explicit exception to
+    that rule (C10, post-merge debt #205): it used to be classed with
+    `intake_schema_id_missing` on the assumption that the fallback in
+    `extract_files_from_intake` "still yielded every file". That
+    assumption does not hold structurally -- the fallback scavenges
+    `.content.files` from whatever *other* artifact happens to have one,
+    and no artifact anywhere declares itself an exhaustive changed-file
+    enumeration. A fallback that discovers only a strict subset of the
+    real changed files has no file *outside* that (incomplete) subset for
+    `files_not_covered` to ever name, so the structural counterpart this
+    docstring otherwise relies on does not exist for this one limitation.
+    Default: `file_context_fallback_used` present -> never `complete`.
+    Would only be safe to drop if some future typed/structural property
+    proved the specific fallback source exhaustive for that run -- no such
+    property exists today, so this is not caller-overridable.
 
     `files_partially_covered` is retained for wire/field compatibility, but
     the packer built for aiops-orchestrator#225 never populates it: a group
@@ -728,6 +741,8 @@ def _plan_status(
     if files_not_covered:
         return "degraded"
     if files_partially_covered:
+        return "partial"
+    if "file_context_fallback_used" in limitations:
         return "partial"
     return "complete"
 
