@@ -1420,7 +1420,12 @@ def project_min_hunk_preserving_chars(
                 "review_mode": brief_review.get("mode"),
                 "contract_pack": brief_review.get("contract_pack"),
                 "required_files": list(brief_required_files),
-                "limitations": list(brief_limitations),
+                # C7 (P3): the real builder's pr_brief always dedupes
+                # brief_limitations before publishing pr_brief.limitations
+                # (pr_brief.py's own _dedupe), and the real chunk payload
+                # embeds that deduped list verbatim -- project the same
+                # representation, not the raw, possibly-duplicated input.
+                "limitations": _dedupe(brief_limitations),
             },
             "chunk_context": chunk_context,
             "coverage": {

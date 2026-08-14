@@ -984,3 +984,53 @@ def test_negative_control_raw_spelling_lookup_would_have_missed_the_context() ->
     raw_keyed = {"./backend/api/a.py": {"status": "modified", "summary": "renamed function"}}
     canonical_chunk_path = "backend/api/a.py"
     assert raw_keyed.get(canonical_chunk_path, {}).get("status") is None
+
+
+# ---------------------------------------------------------------------------
+# H1-B / C7 (P3, post-merge debt #205): the real builder's pr_brief always
+# dedupes brief_limitations via _dedupe(...) before publishing
+# pr_brief.limitations (pr_brief.py:72), and chunk_payload_builder embeds
+# that deduped list verbatim into chunk_context.brief.limitations. The
+# projection's own payload body used `list(brief_limitations)` -- no
+# dedup -- so a brief_limitations list with a duplicate (e.g. because
+# semantic_chunker.py's fixed_brief_limitations concatenates several
+# independently-sourced lists that can legitimately overlap) projected
+# larger than what the real builder ever emits. Conservative direction
+# (projection > real: never loses coverage), but can force an unnecessary
+# split/oversize refusal -- P3, not P1/P2.
+# ---------------------------------------------------------------------------
+
+
+def test_projected_chars_dedupes_brief_limitations_like_the_real_builder() -> None:
+    files = ["backend/api/a.py"]
+    intake = _build_intake(files, {p: 5 for p in files}, files)
+    hunks = m.diff_by_file(intake)
+    target = {"repository": "r/t", "pr_number": 1, "commit_sha": "a" * 40}
+    duplicated = ["optional_artifact_missing:checks", "optional_artifact_missing:checks"]
+    deduped = m._dedupe(duplicated)
+    assert len(deduped) < len(duplicated)  # sanity: the fixture has a real duplicate to collapse
+
+    def project(brief_limitations: list[str]) -> int:
+        return m.project_min_hunk_preserving_chars(
+            intake=intake,
+            chunk_files=files,
+            chunk_contracts=[],
+            semantic_group="api_schema_contract",
+            max_blocks=6,
+            target=target,
+            brief_target=target,
+            brief_review={"mode": "full", "contract_pack": None},
+            brief_required_files=files,
+            brief_limitations=brief_limitations,
+            selected_contract_pack=None,
+            checks=None,
+            validation_evidence=None,
+            hunks=hunks,
+            created_at="2026-08-13T00:00:00Z",
+        )
+
+    # The projection must dedupe on its own -- passing the raw, duplicated
+    # list must project exactly the same size as passing the already
+    # deduped list, matching the real builder's own dedup semantics
+    # exactly rather than a parallel implementation.
+    assert project(duplicated) == project(deduped)
