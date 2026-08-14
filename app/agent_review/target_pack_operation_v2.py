@@ -271,17 +271,27 @@ def compute_target_pack_operation_plan_v2(
     else:
         source = None
 
+    # Resolved exactly once for this ENTIRE operation -- not once per file,
+    # and not once here plus again inside `compute_install_plan_v2`. Round 3
+    # finding (aiops-orchestrator#205, H1A-R1), confirmed by reproduction:
+    # with two independent resolutions, swapping `target_root` between them
+    # produced one preview whose `install_plan.target_root_real` named one
+    # root while its `after_hashes`/`target_profile_hash` -- and therefore
+    # the receipt built from them -- were read from another. The install
+    # description and the evidence describing it must agree on which target
+    # they refer to, so the plan is bound to this single resolution too.
+    target_root_real = target_root.resolve(strict=False)
     install_plan = compute_install_plan_v2(
-        manifest=manifest, target_root=target_root, previous_receipt=previous_receipt
+        manifest=manifest,
+        target_root=target_root,
+        previous_receipt=previous_receipt,
+        target_root_real=target_root_real,
     )
     actions: list[TargetPackOperationActionV2] = []
     before_hashes: dict[str, str] = {}
     after_hashes: dict[str, str] = {}
     target_owned_hashes: dict[str, str] = {}
     target_profile_hash: str | None = None
-    # Resolved exactly once for this loop, not once per entry -- see
-    # `resolve_within_target_root_v2`'s own docstring, round 2.
-    target_root_real = target_root.resolve(strict=False)
 
     for entry in target_owned_entries:
         observed = _read_target_owned_bytes_v2(target_root=target_root, target_root_real=target_root_real, path=entry.path)

@@ -226,11 +226,30 @@ def compute_install_plan_v2(
     manifest: TargetPackManifestV2,
     target_root: Path,
     previous_receipt: TargetInstallReceiptV2 | None,
+    target_root_real: Path | None = None,
 ) -> InstallPlanV2:
     """Pure. Reads `target_root`'s current file CONTENT to compute
     on-disk hashes (this is read-only inspection, not mutation -- the same
     boundary `run_doctor_v2` depends on to prove itself read-only by
-    construction), never writes anything."""
+    construction), never writes anything.
+
+    `target_root_real` lets a CALLER that has already resolved
+    `target_root` bind this plan to that exact resolution instead of
+    letting this function resolve independently. Round 3 finding
+    (aiops-orchestrator#205, H1A-R1), confirmed by reproduction:
+    `compute_target_pack_operation_plan_v2` used to resolve `target_root`
+    for its own TARGET_OWNED loop AND call this function, which resolved
+    again -- two independent resolutions inside one logical operation,
+    contradicting the "resolved exactly once per operation" property this
+    module's own `resolve_within_target_root_v2` docstring claims. With
+    `target_root` swapped between the two resolutions, a single preview
+    returned an `InstallPlanV2` bound to one root while the operation's
+    `after_hashes`/`target_profile_hash` (and therefore the receipt it
+    builds) were read from a DIFFERENT root -- an install description and
+    the evidence describing it disagreeing about which target they refer
+    to. Passing the caller's already-resolved root closes that window;
+    resolving here remains the default for callers that have no prior
+    resolution to bind to."""
 
     actions: list[PlannedFileActionV2] = []
     drifted: list[str] = []
@@ -238,7 +257,8 @@ def compute_install_plan_v2(
     recorded = previous_receipt.generated_file_hashes if previous_receipt is not None else {}
     # Resolved exactly once for the whole call, not once per entry -- see
     # `resolve_within_target_root_v2`'s own docstring, round 2.
-    target_root_real = target_root.resolve(strict=False)
+    if target_root_real is None:
+        target_root_real = target_root.resolve(strict=False)
 
     for entry in manifest.generated_files:
         on_disk = _read_on_disk_sha256_v2(target_root, target_root_real, entry.path)

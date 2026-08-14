@@ -194,6 +194,75 @@ def test_install_plan_refuses_a_generated_path_symlinked_outside_target_root(
     assert exc_info.value.reason_code == PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2
 
 
+def test_one_operation_binds_the_install_plan_and_its_evidence_to_a_single_root(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED, round 3. `compute_target_pack_operation_plan_v2` used to
+    resolve `target_root` for its own TARGET_OWNED loop AND separately
+    call `compute_install_plan_v2`, which resolved again -- two
+    independent resolutions inside one logical operation, contradicting
+    the "resolved exactly once per operation" property
+    `resolve_within_target_root_v2`'s docstring claims.
+
+    Reproduced before the fix: swapping `target_root` between the two
+    resolutions produced ONE preview whose `install_plan.target_root_real`
+    named rootA while its `after_hashes` -- and therefore the
+    `target_profile_hash` and receipt built from them -- were read from
+    rootB. An install description and the evidence describing it
+    disagreeing about which target they refer to is precisely the identity
+    property `#203`'s receipt contract exists to guarantee.
+
+    After the fix the operation resolves once and binds the plan to that
+    resolution, so a mid-operation root swap makes the subsequent read
+    fall outside the bound root and fail closed instead of silently
+    producing a self-inconsistent plan."""
+    root_a = tmp_path_factory.mktemp("root-a")
+    root_b = tmp_path_factory.mktemp("root-b")
+    for root, suffix in ((root_a, b""), (root_b, b"\n# divergent-marker\n")):
+        (root / ".aiops").mkdir()
+        (root / ".aiops" / "target-profile.v2.yaml").write_bytes(_VALID_PROFILE_YAML + suffix)
+    live = tmp_path_factory.mktemp("live-parent") / "live"
+    live.symlink_to(root_a, target_is_directory=True)
+
+    import app.agent_review.target_pack_operation_v2 as operation_module
+
+    real_compute = operation_module.compute_install_plan_v2
+
+    def racing_compute(**kwargs: object):
+        # Root points at B for exactly the duration of the inner plan
+        # computation, then back at A. If the inner call resolves
+        # independently it captures B; if it is bound to the root this
+        # operation already resolved, it stays A. The surrounding loop
+        # sees A either way, so the ONLY observable difference is whether
+        # the plan and the evidence agree.
+        live.unlink()
+        live.symlink_to(root_b, target_is_directory=True)
+        try:
+            return real_compute(**kwargs)  # type: ignore[arg-type]
+        finally:
+            live.unlink()
+            live.symlink_to(root_a, target_is_directory=True)
+
+    monkeypatch.setattr(operation_module, "compute_install_plan_v2", racing_compute)
+
+    # Bound to a single root, the mid-operation swap is DETECTED and the
+    # whole preview fails closed. Unbound (the pre-fix behaviour), the
+    # inner call silently resolves root B, the outer loop reads root A,
+    # and a self-inconsistent plan is returned with no error at all --
+    # which is exactly what makes this a real defect rather than a
+    # cosmetic one.
+    with pytest.raises(PlanError) as exc_info:
+        compute_target_pack_operation_plan_v2(
+            manifest=_manifest(),
+            target_root=live,
+            target_repo="acme/widget",
+            rollout="off",
+            seed_content_by_path={".aiops/target-profile.v2.yaml": _VALID_PROFILE_YAML},
+            previous_receipt=None,
+        )
+    assert exc_info.value.reason_code == PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
 def test_init_preview_allows_a_symlink_resolving_back_inside_target_root(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
