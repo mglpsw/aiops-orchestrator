@@ -14,7 +14,7 @@ binding). Not yet in any published release.
 
 | Subcommand | Status | Notes |
 |---|---|---|
-| `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile — repeating `init` after a target edits `.aiops/target-profile.v2.yaml` requires naming the path via `--accept-target-owned` on both the preview and the `--apply` call, or `apply` fails with `target_owned_identity_acceptance_required`; the profile bytes themselves are left untouched |
+| `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile — repeating `init` after a target edits `.aiops/target-profile.v2.yaml` requires naming the path via `--accept-target-owned` on both the preview and the `--apply` call, or `apply` fails with `target_owned_identity_acceptance_required`; the profile bytes themselves are left untouched. **This pack version's `max_supported_rollout_mode` is `off`** — `--rollout off` is the only value this slice accepts; `shadow_minimal`/`shadow_full` are interface/future options and are refused before preview or apply |
 | `doctor` | `IMPLEMENTED` | read-only, proven by AST/call-graph inspection |
 | operation-plan binding | `IMPLEMENTED` | `target_pack_operation_v2.py` + its own schema (PR #228) |
 | `validate` | `DEFERRED` | spec `§12` |
@@ -53,10 +53,15 @@ remain deferred (spec `§12`; see the status table above). PR #228
 subsequently bound `init` to an explicit, schema-backed operation plan. Without
 `--apply`, `init` is write-zero: it prints the operation plan and exits.
 Writing the profile/receipt requires a second, explicit invocation with
-`--apply` and the previewed plan's hash:
+`--apply` and the previewed plan's hash. `--rollout` accepts `off`,
+`shadow_minimal` and `shadow_full` at the CLI/argparse level, but **this pack
+version's `max_supported_rollout_mode` is `off`** (`target_pack_build_v2.py`)
+— any request for `shadow_minimal`/`shadow_full` is refused before preview or
+apply; they exist as interface/future options only, not usable capability
+today:
 
 ```text
-agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z [--rollout off|shadow_minimal|shadow_full]
+agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z --rollout off   # only currently-supported value
 agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z --apply --expected-plan-sha256 <hash previewed above>
 agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z
 ```

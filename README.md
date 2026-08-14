@@ -63,7 +63,11 @@ O v2 ser o sucessor **não** significa que o v1 será removido agora.
   no commit `2ce1f45768b8779cb48ef8a302d4ed796349f0e5`.
 - `master` está **à frente** da `v0.22.0` com trabalho ainda **não publicado em
   release**: seis slices do AgentReview v2 (incluindo a primeira do target pack) e
-  uma correção crítica do AgentReview v1 (`#225`).
+  uma correção crítica do AgentReview v1 (`#225`). Uma dessas slices (`8b20ae3`)
+  também **toca** superfície CAEM/shared — move/reutiliza primitives de JSON
+  estrito/digest entre `app/caem_consumer/f0.py` e `app/common/strict_json.py`;
+  isso é uma superfície tocada, não uma mudança de comportamento comprovada
+  (testes de equivalência visam preservá-lo).
 - Consumidores devem pinar um SHA completo e imutável, nunca branch ou tag móvel.
   Um consumidor pinado na `v0.22.0` **não** possui a correção `#225`.
 
