@@ -11,8 +11,8 @@ Execution-Ready Engineering Specification
 (`docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`) as a coherent,
 tested unit:
 
-    agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH
-    agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH
+    agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME
+    agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME
 
 `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback` are
 deferred to a follow-up commit on this same branch/PR, per the spec's own
@@ -213,7 +213,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
 
-    report = run_doctor_v2(target_root=target_root, manifest=manifest)
+    report = run_doctor_v2(target_root=target_root, manifest=manifest, target_repo=args.target_repo)
     output = {
         "target_root": report.target_root,
         "healthy": report.is_healthy,
@@ -246,6 +246,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     doctor_parser = sub.add_parser("doctor", help="read-only diagnostics; never mutates the target")
     doctor_parser.add_argument("--target-root", required=True)
     doctor_parser.add_argument("--toolrepo-root", required=True)
+    doctor_parser.add_argument("--target-repo", required=True, help="owner/name of the target repository")
     doctor_parser.add_argument("--pack-version", required=True)
     doctor_parser.set_defaults(handler=_cmd_doctor)
 

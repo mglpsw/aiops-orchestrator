@@ -91,10 +91,20 @@ class TargetPackOperationPlanV2(ContractV2Model):
     destination_identity: TargetPackInstallIdentityV2
     target_root_identity: Sha256
     actions: tuple[TargetPackOperationActionV2, ...]
-    before_hashes: Mapping[SafeText, Sha256] = Field(
+    # Post-merge review debt (aiops-orchestrator#205, C1), confirmed and
+    # fixed: `SafeText` keys have no `Field(pattern=...)`, so combined with
+    # this field's `additionalProperties: False` override the exported
+    # schema had no `properties`/`patternProperties` at all -- only `{}`
+    # validated. `compute_target_pack_operation_plan_v2` populates both maps
+    # on every real preview (one entry per TARGET_OWNED file), so the
+    # artifact this module's own code produces could never validate against
+    # its own published schema. `RelativePath` matches what these keys
+    # already are (`entry.path`, itself `RelativePath`-typed on
+    # `GeneratedFileEntryV2`) and gives Pydantic a real pattern to export.
+    before_hashes: Mapping[RelativePath, Sha256] = Field(
         default_factory=dict, json_schema_extra={"additionalProperties": False}
     )
-    after_hashes: Mapping[SafeText, Sha256] = Field(
+    after_hashes: Mapping[RelativePath, Sha256] = Field(
         default_factory=dict, json_schema_extra={"additionalProperties": False}
     )
     accepted_target_owned_paths: tuple[RelativePath, ...] = ()

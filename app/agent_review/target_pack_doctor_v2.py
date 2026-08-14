@@ -13,6 +13,14 @@ raises for a diagnosable target state -- it only raises for a genuinely
 unusable `target_root` (e.g. not a directory at all), which is an input
 error, not a diagnosis.
 
+## Target identity
+
+`target_repo` is a REQUIRED caller-supplied parameter, mirroring `init
+--target-repo`. It is the independent ground truth doctor checks a
+receipt's own `target_repo` claim against -- never derived from anything
+already on disk, which a receipt (or a whole `.aiops/` directory) copied
+from a different install could otherwise assert about itself uncontested.
+
 ## Secret handling
 
 `_check_secret_names_v2` checks whether an expected secret NAME exists as
@@ -36,7 +44,11 @@ from app.agent_review.profile_loader_v2 import (
     compute_profile_hash_v2,
     load_target_profile_v2,
 )
-from app.agent_review.target_pack_manifest_v2 import TargetPackManifestV2, compute_target_pack_manifest_digest_v2
+from app.agent_review.target_pack_manifest_v2 import (
+    TargetPackFileOwnershipV2,
+    TargetPackManifestV2,
+    compute_target_pack_manifest_digest_v2,
+)
 from app.agent_review.target_pack_plan_v2 import rollout_mode_exceeds_pack_capability_v2
 from app.agent_review.target_pack_receipt_v2 import (
     RECEIPT_RELATIVE_PATH_V2,
@@ -46,6 +58,8 @@ from app.agent_review.target_pack_receipt_v2 import (
 from pydantic import ValidationError
 
 DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 = "target_pack_doctor_target_root_not_a_directory"
+DOCTOR_RECEIPT_TARGET_REPO_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_target_repo_mismatch"
+DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_target_owned_set_mismatch"
 DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_pack_version_mismatch"
 DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_toolrepo_sha_mismatch"
 DOCTOR_RECEIPT_MANIFEST_DIGEST_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_manifest_digest_mismatch"
@@ -103,7 +117,7 @@ def _check_profile_v2(target_root: Path) -> ProfileCheckV2:
 
 
 def _check_receipt_v2(
-    target_root: Path, *, manifest: TargetPackManifestV2, profile_check: ProfileCheckV2
+    target_root: Path, *, manifest: TargetPackManifestV2, profile_check: ProfileCheckV2, target_repo: str
 ) -> ReceiptCheckV2:
     """A receipt that parses successfully is not yet a receipt that
     describes THIS install. Adversarial review finding, confirmed and
@@ -118,16 +132,51 @@ def _check_receipt_v2(
     `status="present"` and `is_healthy=True` -- doctor asserted an install
     was healthy while unable to say it was looking at the RIGHT install at
     all. Checked in this order (first mismatch wins, deterministic):
-    pack_version, then toolrepo_sha, then target_profile_hash (only when
-    the profile itself loaded -- if it did not, `profile.status` already
-    makes `is_healthy` false on its own, so there is nothing meaningful to
-    compare the receipt's claim against), then rollout_mode against the
-    CURRENT manifest's `max_supported_rollout_mode` -- a follow-on finding
-    from the same review pass: a receipt can be internally consistent on
-    the first three axes while still claiming an operational rollout state
-    (e.g. `shadow_full`) the pack version being diagnosed against cannot
-    deliver at all (e.g. stale from a since-downgraded or reverted pack
-    version)."""
+    target_repo, then pack_version, then toolrepo_sha, then manifest_digest,
+    then portable_target_root_identity, then per-file target-owned
+    reconciliation, then target_profile_hash (only when the profile itself
+    loaded -- if it did not, `profile.status` already makes `is_healthy`
+    false on its own, so there is nothing meaningful to compare the
+    receipt's claim against), then rollout_mode against the CURRENT
+    manifest's `max_supported_rollout_mode` -- a follow-on finding from the
+    same review pass: a receipt can be internally consistent on the first
+    three axes while still claiming an operational rollout state (e.g.
+    `shadow_full`) the pack version being diagnosed against cannot deliver
+    at all (e.g. stale from a since-downgraded or reverted pack version),
+    then finally the target-owned SET reconciliation described below.
+
+    Post-merge review debt (aiops-orchestrator#205, C2/C3), confirmed and
+    fixed: two further axes were checked against nothing but the receipt's
+    own self-reported fields. (1) `portable_target_root_identity` was
+    compared against `compute_portable_target_root_identity_v2(target_repo
+    =receipt.target_repo)` -- a hash of the receipt's OWN claimed
+    `target_repo`, so a receipt copied wholesale from a different target
+    (e.g. `.aiops/` copied between two checkouts) passed every check, since
+    every field it claims is internally self-consistent by construction.
+    Reproduced: copying an install's `.aiops/` directory into an unrelated
+    target root reported `healthy: true`. `target_repo` is now REQUIRED
+    from the caller (mirroring `init --target-repo`, the same CLI-supplied
+    ground truth `init` already uses to establish what target it is
+    writing to) and checked FIRST -- an independent source, not the
+    receipt asserting its own identity to itself. (2) the per-file
+    reconciliation loop below only ever iterated
+    `receipt.target_owned_file_hashes`, so a receipt whose TARGET_OWNED set
+    had been shrunk to `{}` (or to any subset smaller than the manifest's
+    real TARGET_OWNED set) skipped reconciliation for every omitted path
+    entirely -- a tampered TARGET_OWNED file with no corresponding receipt
+    entry was never read, never hashed, never flagged. Reproduced: shrinking
+    a receipt's target-owned set to empty while separately tampering the
+    on-disk profile (and realigning `target_profile_hash` to the tampered
+    bytes) reported `healthy: true`. The receipt's claimed set is now
+    reconciled against the manifest's own TARGET_OWNED classification --
+    the authority for what SHOULD be tracked, independent of anything the
+    (possibly emptied) receipt claims -- so an emptied or narrowed claim
+    fails closed. Checked last in the sequence (see the inline comment at
+    the check site for why last does not mean weaker): the per-file loop
+    is vacuously satisfied by an empty map regardless of where in the
+    sequence it runs, so this check closes the gap no matter its position,
+    and placing it last preserves every other check's own reason code as
+    the reported cause when a receipt is ALSO wrong on an earlier axis."""
 
     receipt_path = target_root / RECEIPT_RELATIVE_PATH_V2
     if not receipt_path.is_file():
@@ -138,6 +187,10 @@ def _check_receipt_v2(
     except (OSError, ValidationError, ValueError):
         return ReceiptCheckV2(status="invalid", receipt=None, reason_code="target_pack_receipt_invalid")
 
+    if receipt.target_repo != target_repo:
+        return ReceiptCheckV2(
+            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TARGET_REPO_MISMATCH_REASON_V2
+        )
     if receipt.pack_version != manifest.pack_version:
         return ReceiptCheckV2(
             status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2
@@ -174,6 +227,22 @@ def _check_receipt_v2(
         return ReceiptCheckV2(
             status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2
         )
+    # Checked last, deliberately, not because it is lower priority, but
+    # because it is independent of every check above it: the per-file loop
+    # above is vacuously satisfied by an EMPTY `target_owned_file_hashes`
+    # (zero iterations is not zero problems), so this set-membership check
+    # is what actually closes that gap, regardless of where in the sequence
+    # it runs. Placing it last means a receipt that already fails an
+    # earlier, more specific check (wrong pack_version, wrong toolrepo_sha,
+    # ...) still reports THAT reason first, consistent with this function's
+    # existing "first mismatch wins" contract.
+    expected_target_owned_paths = frozenset(
+        entry.path for entry in manifest.generated_files if entry.ownership is TargetPackFileOwnershipV2.TARGET_OWNED
+    )
+    if set(receipt.target_owned_paths) != expected_target_owned_paths:
+        return ReceiptCheckV2(
+            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2
+        )
 
     return ReceiptCheckV2(status="present", receipt=receipt, reason_code=None)
 
@@ -184,12 +253,14 @@ def _check_secret_names_v2(names: tuple[str, ...]) -> tuple[SecretNameCheckV2, .
     return tuple(SecretNameCheckV2(name=name, declared_present=name in os.environ) for name in names)
 
 
-def run_doctor_v2(*, target_root: Path, manifest: TargetPackManifestV2) -> DoctorReportV2:
+def run_doctor_v2(*, target_root: Path, manifest: TargetPackManifestV2, target_repo: str) -> DoctorReportV2:
     if not target_root.is_dir():
         raise NotADirectoryError(DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2)
 
     profile_check = _check_profile_v2(target_root)
-    receipt_check = _check_receipt_v2(target_root, manifest=manifest, profile_check=profile_check)
+    receipt_check = _check_receipt_v2(
+        target_root, manifest=manifest, profile_check=profile_check, target_repo=target_repo
+    )
     expected_secret_names = receipt_check.receipt.required_secret_names if receipt_check.receipt else ()
 
     return DoctorReportV2(

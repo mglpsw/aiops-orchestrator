@@ -45,6 +45,7 @@ from pydantic import Field, model_validator
 from app.agent_review.contracts_v2 import (
     ContractV2Model,
     GitSha,
+    RelativePath,
     Rfc3339Timestamp,
     SafeIdentifier,
     SafeText,
@@ -129,10 +130,26 @@ class TargetInstallReceiptV2(ContractV2Model):
     # Raw byte hashes are separate from the semantic profile/policy hashes
     # above. A formatting-only edit may preserve semantic identity but still
     # requires explicit reconciliation before a receipt can claim those bytes.
-    target_owned_file_hashes: Mapping[SafeText, Sha256] = Field(
+    #
+    # Post-merge review debt (aiops-orchestrator#205, C1/C4), confirmed and
+    # fixed: these keys/elements used to be `SafeText`, which has no
+    # `Field(pattern=...)` Pydantic can turn into a JSON Schema
+    # `patternProperties`/array-`items` constraint -- combined with this
+    # field's own `additionalProperties: False` override, the EXPORTED
+    # schema had no `properties`/`patternProperties` at all, so only `{}`
+    # ever validated. A real receipt (every successful `init` records at
+    # least the profile seed's hash here) could never validate against its
+    # own published schema. `RelativePath` is the correct type regardless of
+    # the schema defect -- these values are always `entry.path` from
+    # `GeneratedFileEntryV2.path: RelativePath` (`target_pack_manifest_v2`)
+    # -- and it doubles as path confinement: `_validate_relative_path`
+    # rejects `../` traversal, absolute POSIX/Windows-drive paths, and
+    # non-normalized spellings at parse time, before doctor's reconciliation
+    # loop ever reads a byte from disk.
+    target_owned_file_hashes: Mapping[RelativePath, Sha256] = Field(
         default_factory=dict, json_schema_extra={"additionalProperties": False}
     )
-    target_owned_paths: tuple[SafeText, ...] = ()
+    target_owned_paths: tuple[RelativePath, ...] = ()
     required_capabilities: tuple[SafeIdentifier, ...] = ()
     expected_runner_labels: tuple[SafeIdentifier, ...] = ()
     required_secret_names: tuple[SafeIdentifier, ...] = ()
