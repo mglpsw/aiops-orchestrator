@@ -424,3 +424,112 @@ def test_validate_does_not_create_a_missing_target_root():
     report = run_validate_v2(target_root=root)
     assert report.is_valid is False
     assert not root.exists()
+
+
+# ---------------------------------------------------------------------------
+# PR #235 adversarial review round 1 -- all LIVE_CONFIRMED
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["shadow_minimal", "shadow_full"])
+def test_receipt_rollout_above_this_packs_ceiling_fails_closed(target_root, mode):
+    """F1: a self-consistent receipt recording a rollout this pack cannot
+    deliver describes an operational state that does not exist. This slice
+    ships ceiling `off`, no workflows and no trusted-check wiring."""
+    from app.agent_review.target_pack_validate_v2 import VALIDATE_ROLLOUT_ABOVE_CEILING_REASON_V2
+
+    _install(target_root, receipt=_receipt(rollout_mode=mode), profile=_VALID_PROFILE_YAML)
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
+    assert _check(report, "rollout_ceiling").reason_code == VALIDATE_ROLLOUT_ABOVE_CEILING_REASON_V2
+
+
+def test_rollout_off_is_accepted(target_root):
+    _install(target_root, receipt=_receipt(rollout_mode="off"), profile=_VALID_PROFILE_YAML)
+    assert _check(run_validate_v2(target_root=target_root), "rollout_ceiling").status == STATUS_PASS_V2
+
+
+def test_profile_identity_must_agree_with_receipt_target_repo(target_root):
+    """F2: profile identifies repository B while a self-consistent receipt
+    identifies A. Every prior check passed because `_root_identity_check_v2`
+    derives its expectation from the receipt's OWN target_repo -- a closed
+    loop that can never disagree with itself."""
+    from app.agent_review.target_pack_validate_v2 import VALIDATE_PROFILE_IDENTITY_MISMATCH_REASON_V2
+
+    foreign = _VALID_PROFILE_YAML.replace("repo: owner/repo", "repo: attacker/other")
+    with tempfile.TemporaryDirectory() as raw:
+        p = Path(raw)
+        (p / ".aiops").mkdir()
+        (p / _PROFILE_RELATIVE_PATH).write_text(foreign, encoding="utf-8")
+        foreign_hash = compute_profile_hash_v2(load_target_profile_v2(str(p)))
+
+    _install(
+        target_root,
+        receipt=_receipt(
+            target_profile_hash=foreign_hash,
+            target_owned_file_hashes={_PROFILE_RELATIVE_PATH: _sha256(foreign.encode("utf-8"))},
+        ),
+        profile=foreign,
+    )
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
+    assert _check(report, "profile_identity").reason_code == VALIDATE_PROFILE_IDENTITY_MISMATCH_REASON_V2
+
+
+def test_receipt_omitting_the_profile_from_target_owned_set_fails_closed(target_root):
+    """F6: an empty/партial target-owned set means the drift loop iterates
+    over nothing and returns pass. Because `target_profile_hash` is computed
+    from PARSED canonical content, a comment-only edit preserves it -- so a
+    stale receipt plus a formatting edit validates clean."""
+    from app.agent_review.target_pack_validate_v2 import VALIDATE_PROFILE_NOT_TARGET_OWNED_REASON_V2
+
+    _install(
+        target_root,
+        receipt=_receipt(target_owned_file_hashes={}, target_owned_paths=()),
+        profile=_VALID_PROFILE_YAML,
+    )
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
+    assert _check(report, "target_owned").reason_code == VALIDATE_PROFILE_NOT_TARGET_OWNED_REASON_V2
+
+
+def test_comment_only_profile_edit_is_still_caught_as_drift(target_root):
+    """The concrete consequence of F6: a comment-only edit preserves the
+    semantic profile hash, so byte-level drift detection is the only thing
+    that can catch it."""
+    _install(target_root, receipt=_receipt(), profile=_VALID_PROFILE_YAML)
+    (target_root / _PROFILE_RELATIVE_PATH).write_text(
+        _VALID_PROFILE_YAML + "\n# comment-only edit\n", encoding="utf-8"
+    )
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
+    assert _check(report, "profile_hash").status == STATUS_PASS_V2  # semantic hash unchanged ...
+    assert _check(report, "target_owned").reason_code == VALIDATE_TARGET_OWNED_DRIFT_REASON_V2  # ... bytes caught it
+
+
+def test_uncustomized_seed_identity_placeholder_is_not_a_mismatch(target_root):
+    """The shipped seed carries a visible `OWNER/REPO` marker instead of a
+    real identity, so no target-specific material is baked into the generic
+    artifact. A freshly initialised target legitimately still has it, and
+    that must not be reported as a foreign identity -- the same allowance
+    the canonical operation writer makes, imported rather than restated."""
+    from app.agent_review.target_pack_operation_v2 import SEED_PROFILE_IDENTITY_PLACEHOLDER_V2
+
+    seed = _VALID_PROFILE_YAML.replace("repo: owner/repo", f"repo: {SEED_PROFILE_IDENTITY_PLACEHOLDER_V2}")
+    with tempfile.TemporaryDirectory() as raw:
+        p = Path(raw)
+        (p / ".aiops").mkdir()
+        (p / _PROFILE_RELATIVE_PATH).write_text(seed, encoding="utf-8")
+        seed_hash = compute_profile_hash_v2(load_target_profile_v2(str(p)))
+
+    _install(
+        target_root,
+        receipt=_receipt(
+            target_profile_hash=seed_hash,
+            target_owned_file_hashes={_PROFILE_RELATIVE_PATH: _sha256(seed.encode("utf-8"))},
+        ),
+        profile=seed,
+    )
+    report = run_validate_v2(target_root=target_root)
+    assert _check(report, "profile_identity").status == STATUS_PASS_V2
+    assert report.is_valid is True

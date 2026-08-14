@@ -69,11 +69,13 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from app.agent_review.contracts_v2 import TargetProfileV2
 from app.agent_review.profile_loader_v2 import (
     TargetProfileLoadErrorV2,
     compute_profile_hash_v2,
-    load_target_profile_v2,
+    load_target_profile_text_v2,
 )
+from app.agent_review.target_pack_operation_v2 import SEED_PROFILE_IDENTITY_PLACEHOLDER_V2
 from app.agent_review.target_pack_plan_v2 import (
     PLAN_PATH_RESOLUTION_FAILED_REASON_V2,
     PlanError,
@@ -107,6 +109,18 @@ VALIDATE_PATH_RESOLUTION_FAILED_REASON_V2 = "target_pack_validate_path_resolutio
 VALIDATE_TRUSTED_CHECK_INVENTORY_DEFERRED_REASON_V2 = (
     "target_pack_validate_trusted_check_inventory_deferred_until_inventory_slice"
 )
+VALIDATE_ROLLOUT_ABOVE_CEILING_REASON_V2 = "target_pack_validate_rollout_above_pack_ceiling"
+VALIDATE_PROFILE_IDENTITY_MISMATCH_REASON_V2 = "target_pack_validate_profile_identity_mismatch"
+VALIDATE_PROFILE_NOT_TARGET_OWNED_REASON_V2 = "target_pack_validate_profile_not_in_target_owned_set"
+
+# The rollout ceiling THIS pack version can actually deliver. `validate` is
+# target-only by design (no `--toolrepo-root`), so it cannot read a live
+# manifest's `max_supported_rollout_mode`; it binds to the same constant the
+# builder ships instead. Raising the real ceiling (S3, once workflows and
+# trusted-check wiring exist) must raise this in the same change -- the
+# capability and the validation of it move together, or one silently
+# outruns the other.
+VALIDATED_MAX_ROLLOUT_MODE_V2 = "off"
 
 _PROFILE_RELATIVE_PATH_V2 = ".aiops/target-profile.v2.yaml"
 
@@ -115,8 +129,10 @@ TARGET_ROOT_CHECK_V2 = "target_root"
 RECEIPT_CHECK_V2 = "receipt"
 PROFILE_CHECK_V2 = "profile"
 PROFILE_HASH_CHECK_V2 = "profile_hash"
+PROFILE_IDENTITY_CHECK_V2 = "profile_identity"
 ROOT_IDENTITY_CHECK_V2 = "root_identity"
 TARGET_OWNED_CHECK_V2 = "target_owned"
+ROLLOUT_CEILING_CHECK_V2 = "rollout_ceiling"
 TRUSTED_CHECK_INVENTORY_CHECK_V2 = "trusted_check_inventory"
 
 
@@ -195,10 +211,11 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
     receipt, receipt_check = _load_receipt_v2(target_root_real)
     checks.append(receipt_check)
 
-    profile_hash, profile_check = _load_profile_v2(target_root_real)
+    profile, profile_check = _load_profile_v2(target_root_real)
     checks.append(profile_check)
 
-    if receipt is not None and profile_hash is not None:
+    if receipt is not None and profile is not None:
+        profile_hash = compute_profile_hash_v2(profile)
         checks.append(
             ValidateCheckV2(PROFILE_HASH_CHECK_V2, STATUS_PASS_V2)
             if receipt.target_profile_hash == profile_hash
@@ -206,10 +223,12 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
                 PROFILE_HASH_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_HASH_MISMATCH_REASON_V2
             )
         )
+        checks.append(_profile_identity_check_v2(profile, receipt))
 
     if receipt is not None:
         checks.append(_root_identity_check_v2(receipt))
         checks.append(_target_owned_check_v2(target_root_real, receipt))
+        checks.append(_rollout_ceiling_check_v2(receipt))
 
     checks.append(_trusted_check_inventory_check_v2())
     return ValidateReportV2(target_root=str(target_root), checks=tuple(checks))
@@ -254,23 +273,77 @@ def _load_receipt_v2(target_root_real: Path) -> tuple[TargetInstallReceiptV2 | N
     return receipt, ValidateCheckV2(RECEIPT_CHECK_V2, STATUS_PASS_V2)
 
 
-def _load_profile_v2(target_root_real: Path) -> tuple[str | None, ValidateCheckV2]:
+def _load_profile_v2(target_root_real: Path) -> tuple[TargetProfileV2 | None, ValidateCheckV2]:
+    """Parse the profile from the EXACT bytes read through the contained
+    resolved path.
+
+    PR #235 review round 1, confirmed: the first cut resolved the path for
+    containment and then handed `target_root_real` to
+    `load_target_profile_v2`, which rebuilt and re-traversed the path
+    itself. A profile symlink retargeted between those two traversals was
+    read from outside `target_root` -- the exact check-then-rederive flaw
+    already found and fixed once on the doctor path (H1A-R1). Reading the
+    bytes here and parsing them with `load_target_profile_text_v2` keeps
+    the containment decision bound to the read.
+    """
+
     try:
-        resolved = resolve_within_target_root_v2(
-            target_root_real, target_root_real / _PROFILE_RELATIVE_PATH_V2
-        )
+        raw = _read_contained_bytes_v2(target_root_real, _PROFILE_RELATIVE_PATH_V2)
     except PlanError as exc:
         return None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, _validate_reason_for_plan_error_v2(exc))
-
-    if not resolved.is_file():
+    except FileNotFoundError:
         return None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_MISSING_REASON_V2)
-
-    try:
-        profile = load_target_profile_v2(str(target_root_real))
-    except TargetProfileLoadErrorV2:
+    except OSError:
         return None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_INVALID_REASON_V2)
 
-    return compute_profile_hash_v2(profile), ValidateCheckV2(PROFILE_CHECK_V2, STATUS_PASS_V2)
+    try:
+        profile = load_target_profile_text_v2(raw.decode("utf-8"))
+    except (TargetProfileLoadErrorV2, UnicodeDecodeError):
+        return None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_INVALID_REASON_V2)
+
+    return profile, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_PASS_V2)
+
+
+def _profile_identity_check_v2(profile: TargetProfileV2, receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
+    """The profile's own authored identity must name the same repository
+    the receipt does.
+
+    PR #235 review round 1, confirmed: without this, the identity story is
+    a closed loop -- `_root_identity_check_v2` derives its expectation from
+    `receipt.target_repo`, so it can never disagree with the receipt, and
+    nothing compared the receipt against the profile the target actually
+    authored. A profile naming repository B installed under a receipt
+    naming A passed every check.
+    """
+
+    # The un-customized seed marker is NOT a mismatch: a freshly
+    # initialised target legitimately still carries it. Same allowance the
+    # canonical operation writer already makes
+    # (`target_pack_operation_v2._profile_hash_for_bytes_v2`), imported
+    # rather than restated so the two cannot drift apart.
+    if profile.identity.repo in {receipt.target_repo, SEED_PROFILE_IDENTITY_PLACEHOLDER_V2}:
+        return ValidateCheckV2(PROFILE_IDENTITY_CHECK_V2, STATUS_PASS_V2)
+    return ValidateCheckV2(
+        PROFILE_IDENTITY_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_IDENTITY_MISMATCH_REASON_V2
+    )
+
+
+def _rollout_ceiling_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
+    """A receipt may not record a rollout mode this pack version cannot
+    deliver.
+
+    PR #235 review round 1, confirmed: a self-consistent receipt recording
+    `shadow_minimal`/`shadow_full` validated clean, even though this slice
+    ships ceiling `off`, installs no workflows and wires no trusted checks
+    -- validation was accepting an operational state the installed
+    capability cannot provide.
+    """
+
+    if receipt.rollout_mode == VALIDATED_MAX_ROLLOUT_MODE_V2:
+        return ValidateCheckV2(ROLLOUT_CEILING_CHECK_V2, STATUS_PASS_V2)
+    return ValidateCheckV2(
+        ROLLOUT_CEILING_CHECK_V2, STATUS_FAIL_V2, VALIDATE_ROLLOUT_ABOVE_CEILING_REASON_V2
+    )
 
 
 def _root_identity_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
@@ -286,7 +359,21 @@ def _target_owned_check_v2(target_root_real: Path, receipt: TargetInstallReceipt
 
     Deterministic order: paths are walked sorted, first failure wins, so
     two runs over the same tree always produce the same reason code.
+
+    The profile MUST appear in the recorded set (PR #235 review round 1,
+    confirmed). Without that requirement an empty or partial
+    `target_owned_file_hashes` made this loop iterate over nothing and
+    return `pass` -- and because `target_profile_hash` is computed from
+    PARSED canonical content, a comment- or formatting-only edit preserves
+    the semantic hash too, so a stale receipt plus a cosmetic edit
+    validated completely clean. Byte-level drift detection is the only
+    check that catches that class, so its input set cannot be optional.
     """
+
+    if _PROFILE_RELATIVE_PATH_V2 not in receipt.target_owned_file_hashes:
+        return ValidateCheckV2(
+            TARGET_OWNED_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_NOT_TARGET_OWNED_REASON_V2
+        )
 
     for relative_path in sorted(receipt.target_owned_file_hashes):
         expected = receipt.target_owned_file_hashes[relative_path]

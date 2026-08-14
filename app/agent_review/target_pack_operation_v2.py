@@ -191,6 +191,14 @@ def _read_target_owned_bytes_v2(*, target_root_real: Path, path: str) -> bytes |
     return None
 
 
+# The visible marker the shipped first-init seed carries in place of a real
+# repository identity, so no target-specific material is baked into the
+# generic artifact. Named here and imported by `target_pack_validate_v2` so
+# the writer and the validator can never disagree about what counts as an
+# un-customized seed (PR #235 review round 1).
+SEED_PROFILE_IDENTITY_PLACEHOLDER_V2 = "OWNER/REPO"
+
+
 def _profile_hash_for_bytes_v2(*, content: bytes, target_repo: str) -> str:
     try:
         profile = load_target_profile_text_v2(content.decode("utf-8"))
@@ -200,7 +208,7 @@ def _profile_hash_for_bytes_v2(*, content: bytes, target_repo: str) -> str:
     # no target-specific material is baked into the generic artifact. Once a
     # target replaces it, its profile identity must bind to the CLI target
     # repository before it can be reconciled into a receipt.
-    if profile.identity.repo not in {target_repo, "OWNER/REPO"}:
+    if profile.identity.repo not in {target_repo, SEED_PROFILE_IDENTITY_PLACEHOLDER_V2}:
         raise PlanError(OPERATION_FOREIGN_IDENTITY_REASON_V2)
     return compute_profile_hash_v2(profile)
 

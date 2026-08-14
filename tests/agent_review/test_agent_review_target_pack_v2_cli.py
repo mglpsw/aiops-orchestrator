@@ -766,3 +766,23 @@ def test_conformance_refuses_a_malformed_matrix(tmp_path: Path) -> None:
     result = _run(["conformance", "--matrix", str(matrix)])
     assert result.returncode == 2
     assert "target_pack_conformance_matrix_invalid" in result.stderr
+
+
+def test_conformance_refuses_a_matrix_with_duplicate_keys(tmp_path: Path) -> None:
+    """PR #235 review round 1: plain `json.loads` silently keeps only the
+    LAST duplicated key, so an ambiguous target-authored matrix would be
+    interpreted from one of two `cases` values while still being eligible
+    for a successful conformance result. Strict parsing refuses it."""
+
+    alpha = tmp_path / "alpha"
+    alpha.mkdir()
+    _init_a_real_target(alpha, repo="acme/alpha-service")
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text(
+        '{"cases": [{"case_id": "a", "target_root": "%s", "expectation": "eligible"}],'
+        ' "cases": []}' % str(alpha),
+        encoding="utf-8",
+    )
+    result = _run(["conformance", "--matrix", str(matrix)])
+    assert result.returncode == 2
+    assert "target_pack_conformance_matrix_unreadable" in result.stderr

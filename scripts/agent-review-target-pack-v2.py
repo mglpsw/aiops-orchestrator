@@ -14,9 +14,11 @@ tested unit:
     agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME
     agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME
 
-`validate`/`conformance`/`install-workflows`/`upgrade`/`rollback` are
-deferred to a follow-up commit on this same branch/PR, per the spec's own
-`§12` (not silently dropped -- named there explicitly).
+`install-workflows`/`upgrade`/`rollback` remain deferred per the spec's own
+`§12`/`§14` (not silently dropped -- named there explicitly). `validate` and
+`conformance` shipped in slice 2 (`#203-S2`): `validate` is read-only and
+target-only (no toolrepo checkout required), and `conformance` is synthetic
+and offline -- never a real target, which is `#204`'s charter.
 
 Every subcommand is a thin wrapper: it parses args, calls exactly one
 library function in `app.agent_review.target_pack_*`, and prints/writes
@@ -46,6 +48,7 @@ from app.agent_review.target_pack_build_v2 import (  # noqa: E402
     build_target_pack_manifest_v2,
     load_seed_content_by_path_v2,
 )
+from app.common.strict_json import strict_json_loads  # noqa: E402
 from app.agent_review.target_pack_conformance_v2 import (  # noqa: E402
     ConformanceCaseV2,
     ConformanceExpectationV2,
@@ -273,7 +276,15 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
 
     matrix_path = Path(args.matrix)
     try:
-        raw = json.loads(matrix_path.read_text(encoding="utf-8"))
+        # strict_json_loads, not json.loads (PR #235 review round 1,
+        # confirmed): plain json.loads silently keeps only the LAST of a
+        # duplicated key, so a matrix with two `cases` keys would be
+        # interpreted from one of them while still being eligible for a
+        # successful conformance result. This is target-authored contract
+        # input; ambiguity in it must be refused, not resolved by
+        # last-writer-wins. Reuses the repository's existing primitive
+        # rather than adding a second parser.
+        raw = strict_json_loads(matrix_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         print(f"error: {CONFORMANCE_MATRIX_UNREADABLE_REASON_V2}", file=sys.stderr)
         return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2

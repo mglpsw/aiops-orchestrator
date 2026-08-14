@@ -71,8 +71,9 @@ and the full threat model.
 ## What was delivered in the first slice (PR #223)
 
 Two of the specification's seven CLI subcommands, as a coherent, tested
-slice — `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
-remain deferred (spec `§12`; see the status table above). PR #228
+slice. (`validate` and `conformance` were subsequently delivered by slice 2,
+`#203-S2` — see the status table above; `install-workflows`/`upgrade`/`rollback`
+remain deferred, spec `§12`/`§14`.) PR #228
 subsequently bound `init` to an explicit, schema-backed operation plan. Without
 `--apply`, `init` is write-zero: it prints the operation plan and exits.
 Writing the profile/receipt requires a second, explicit invocation with
@@ -179,10 +180,10 @@ Combined suite (full `tests/`): 2497 passed, 16 skipped, 2 failed
 `test_isolated_executor_v2.py`, unrelated to `#203`). Schema export
 byte-identical; CAEM F0 pin unchanged.
 
-## Deferred (spec `§12`, not silently dropped)
+## Deferred (spec `§12`/`§14`, not silently dropped)
 
-- `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
-  subcommands.
+- `install-workflows`/`upgrade`/`rollback` subcommands. (`validate` and
+  `conformance` are no longer deferred — delivered by `#203-S2`.)
 - Workflow templates (`evidence.yml`/`analysis.yml`/`publish.yml`).
 - Trusted-check inventory schema + integration into the `#201-C0`
   provenance chain.

@@ -346,3 +346,105 @@ def test_conformance_makes_no_network_call(two_targets, monkeypatch):
     alpha, beta = two_targets
     report = run_conformance_v2(cases=(_eligible(alpha), _eligible(beta)))
     assert report.is_conformant is True
+
+
+# ---------------------------------------------------------------------------
+# PR #235 adversarial review round 1 -- all LIVE_CONFIRMED
+# ---------------------------------------------------------------------------
+
+
+def test_the_same_target_listed_twice_is_not_two_targets(two_targets):
+    """F3: the minimum-cases gate counted matrix ENTRIES, not distinct
+    target roots, so one directory under two case ids satisfied a claim
+    that requires two independent targets."""
+    from app.agent_review.target_pack_conformance_v2 import CONFORMANCE_DUPLICATE_TARGET_ROOT_REASON_V2
+
+    alpha, _beta = two_targets
+    report = run_conformance_v2(
+        cases=(
+            ConformanceCaseV2("one", alpha, ConformanceExpectationV2.ELIGIBLE),
+            ConformanceCaseV2("two", alpha, ConformanceExpectationV2.ELIGIBLE),
+        )
+    )
+    assert report.is_conformant is False
+    assert CONFORMANCE_DUPLICATE_TARGET_ROOT_REASON_V2 in report.reason_codes
+
+
+def test_a_matrix_of_only_unreadable_roots_is_never_conformant():
+    """F4: an unreadable root produced `is_valid=False`, which happened to
+    MATCH an `ineligible` expectation -- so a matrix of two nonexistent
+    directories reported success having validated nothing at all."""
+    missing_a = Path(tempfile.mkdtemp()) / "nope-a"
+    missing_b = Path(tempfile.mkdtemp()) / "nope-b"
+    report = run_conformance_v2(
+        cases=(
+            ConformanceCaseV2("a", missing_a, ConformanceExpectationV2.INELIGIBLE),
+            ConformanceCaseV2("b", missing_b, ConformanceExpectationV2.INELIGIBLE),
+        )
+    )
+    assert report.is_conformant is False
+
+
+def test_unreadable_root_fails_even_when_declared_ineligible(two_targets):
+    alpha, _beta = two_targets
+    missing = Path(tempfile.mkdtemp()) / "nope"
+    report = run_conformance_v2(
+        cases=(
+            _eligible(alpha),
+            ConformanceCaseV2("missing", missing, ConformanceExpectationV2.INELIGIBLE),
+        )
+    )
+    assert report.is_conformant is False
+    failing = [c for c in report.cases if not c.matched_expectation]
+    assert CONFORMANCE_CASE_TARGET_UNREADABLE_REASON_V2 in failing[0].observed_reason_codes
+
+
+def test_uniformity_is_actually_compared_not_merely_claimed(two_targets):
+    """F5, the most consequential: this module's docstring claims to prove
+    that targets differing only in authored identity produce identical
+    checks/order/statuses -- but the decision compared ONLY each case's
+    validity boolean. Two ELIGIBLE-expectation targets could therefore
+    produce different check shapes and still be called conformant, which
+    is exactly the repository-name branch this is supposed to detect."""
+    from app.agent_review.target_pack_conformance_v2 import CONFORMANCE_NON_UNIFORM_SHAPE_REASON_V2
+
+    alpha, beta = two_targets
+    # Same expectation, but make beta fail for a reason alpha does not, so
+    # the check SHAPES diverge while both remain "as expected" booleans.
+    (beta / RECEIPT_RELATIVE_PATH_V2).unlink()
+    report = run_conformance_v2(
+        cases=(
+            ConformanceCaseV2("alpha", alpha, ConformanceExpectationV2.INELIGIBLE),
+            ConformanceCaseV2("beta", beta, ConformanceExpectationV2.INELIGIBLE),
+        )
+    )
+    # alpha is actually VALID so it already mismatches; the point is that
+    # divergent shapes must be reported, not silently accepted.
+    assert report.is_conformant is False
+
+
+def test_two_ineligible_targets_failing_differently_are_not_uniform(two_targets):
+    """The precise F5 scenario: both cases match their INELIGIBLE
+    expectation, yet fail for entirely different reasons -- so the boolean
+    agreed while the observable behaviour did not."""
+    from app.agent_review.target_pack_conformance_v2 import CONFORMANCE_NON_UNIFORM_SHAPE_REASON_V2
+
+    alpha, beta = two_targets
+    (alpha / RECEIPT_RELATIVE_PATH_V2).unlink()
+    (beta / _PROFILE_RELATIVE_PATH).write_text("not a valid profile", encoding="utf-8")
+    report = run_conformance_v2(
+        cases=(
+            ConformanceCaseV2("alpha", alpha, ConformanceExpectationV2.INELIGIBLE),
+            ConformanceCaseV2("beta", beta, ConformanceExpectationV2.INELIGIBLE),
+        )
+    )
+    assert report.is_conformant is False
+    assert CONFORMANCE_NON_UNIFORM_SHAPE_REASON_V2 in report.reason_codes
+
+
+def test_uniform_eligible_targets_remain_conformant(two_targets):
+    """Positive control for F5: the fix must not make every run
+    non-uniform -- two genuinely equivalent targets still conform."""
+    alpha, beta = two_targets
+    report = run_conformance_v2(cases=(_eligible(alpha), _eligible(beta)))
+    assert report.is_conformant is True
