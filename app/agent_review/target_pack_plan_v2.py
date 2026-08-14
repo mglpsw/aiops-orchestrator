@@ -47,6 +47,8 @@ from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2
 PLAN_UNKNOWN_OWNERSHIP_REASON_V2 = "target_pack_plan_unknown_ownership_class"
 PLAN_ROLLOUT_CEILING_EXCEEDED_REASON_V2 = "target_pack_plan_rollout_ceiling_exceeded"
 PLAN_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2 = "target_pack_plan_rollout_exceeds_pack_capability"
+PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_plan_path_escapes_target_root"
+PLAN_PATH_RESOLUTION_FAILED_REASON_V2 = "target_pack_plan_path_resolution_failed"
 
 _ROLLOUT_ORDER_V2 = ("off", "shadow_minimal", "shadow_full")
 
@@ -117,8 +119,95 @@ def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _read_on_disk_sha256_v2(target_root: Path, relative_path: str) -> str | None:
-    full_path = target_root / relative_path
+def resolve_within_target_root_v2(target_root_real: Path, path: Path) -> Path:
+    """Resolve `path` and refuse if it escapes `target_root_real`.
+
+    The read-side counterpart to `target_pack_install_v2._verify_write_
+    target_within_root_v2`, which has protected the WRITE path since the
+    round-4 adversarial review. Deliberately the SAME signature shape as
+    that function (a pre-resolved root plus a full candidate path, not a
+    root-plus-relative-suffix this function composes itself) and the SAME
+    primitive (`Path.resolve(strict=False)` on the candidate, then
+    `relative_to` against the root), so the pack has exactly ONE
+    definition of "contained in `target_root`" rather than two that can
+    drift apart -- and so every caller resolves `target_root` itself
+    exactly ONCE per operation and threads that single value through every
+    check, matching `apply_install_plan_v2`'s own `target_root_real =
+    target_root.resolve(strict=False)` -> threaded into every `_atomic_
+    write_v2` call, rather than re-resolving the root on every single
+    file (round 2 finding, see below).
+
+    `contracts_v2.RelativePath` proves a path STRING is well-formed (no
+    `..`, no absolute/drive form, normalized spelling) -- it says nothing
+    about what an EXISTING component on disk resolves to. Post-merge review
+    debt (aiops-orchestrator#205, H1A-R1), confirmed and fixed: every
+    pack-side READ (`run_doctor_v2`'s profile/receipt/target-owned reads,
+    `compute_install_plan_v2`'s drift hashing, and `compute_target_pack_
+    operation_plan_v2`'s TARGET_OWNED observation) composed
+    `target_root / relative_path` and went straight to `is_file()` /
+    `read_bytes()` / `read_text()`, all of which follow symlinks.
+    Reproduced against the exact PR HEAD: with `.aiops/target-profile.v2.
+    yaml` inside `target_root` symlinked to a file outside it,
+    `run_doctor_v2` returned `is_healthy=True` while a `Path.read_text`/
+    `read_bytes` spy recorded both reads resolving outside `target_root`.
+    The write path had been hardened for exactly this class; the read path
+    had not.
+
+    Round 2 (independent re-review of the first fix): confirmed and fixed
+    two further gaps. (1) `target_pack_doctor_v2._check_profile_v2`
+    verified containment and then discarded the result, letting
+    `load_target_profile_v2` independently re-derive `target_root /
+    relative_path` and re-traverse it -- the check and the read were bound
+    only by timing coincidence, not by construction. Reproduced
+    deterministically (no real race needed): swapping the symlink to point
+    outside `target_root` immediately after the passing containment check
+    but before the read made the profile check report `status="present"`
+    with a hash computed from content OUTSIDE `target_root`. Every caller
+    now reads through the exact `Path` this function returns, never a
+    separately re-derived one -- `_check_profile_v2` was the one holdout,
+    now fixed the same way every other site already was. (2) this
+    function used to resolve `target_root` itself, on every call --
+    `target_pack_doctor_v2._check_receipt_v2`'s per-file loop called it
+    once per target-owned entry, so `target_root`'s own resolution could
+    legitimately differ between files checked in the same `run_doctor_v2`
+    invocation if `target_root` itself were swapped mid-loop, the same
+    class of root-swap concern `apply_install_plan_v2`'s own docstring
+    names for the write side. Now takes an already-resolved
+    `target_root_real`, resolved exactly once by each caller.
+
+    A symlink whose target stays INSIDE `target_root` is deliberately
+    ALLOWED -- containment, not symlink prohibition, is the property being
+    enforced, and that keeps this check identical in meaning to the
+    writer's.
+
+    Round 5 (Codex shadow review of #230 at fbc67db), confirmed and fixed:
+    `Path.resolve(strict=False)` raises `RuntimeError` for a symlink loop
+    (e.g. `a -> b`, `b -> a`) instead of returning or raising `OSError` --
+    unlike every other resolution failure this function's callers already
+    handle via the typed `PlanError` refusal. Uncaught, that `RuntimeError`
+    propagated out of `run_doctor_v2`/`compute_install_plan_v2` as an
+    unhandled exception -- a traceback instead of the structured invalid
+    report `doctor` promises, or the CLI's typed refusal path for `init`.
+    Reproduced directly: a receipt/manifest path traversing a symlink loop
+    inside `target_root` crashed `run_doctor_v2` uncaught. A loop is not
+    containment ESCAPE in the sense this function otherwise checks -- it
+    never resolves to any location, inside or outside `target_root` -- so
+    it gets its own reason code rather than reusing the escape one.
+    """
+
+    try:
+        resolved = path.resolve(strict=False)
+    except RuntimeError as exc:
+        raise PlanError(PLAN_PATH_RESOLUTION_FAILED_REASON_V2) from exc
+    try:
+        resolved.relative_to(target_root_real)
+    except ValueError as exc:
+        raise PlanError(PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2) from exc
+    return resolved
+
+
+def _read_on_disk_sha256_v2(target_root_real: Path, relative_path: str) -> str | None:
+    full_path = resolve_within_target_root_v2(target_root_real, target_root_real / relative_path)
     if not full_path.is_file():
         return None
     return _sha256_hex(full_path.read_bytes())
@@ -159,15 +248,41 @@ def compute_install_plan_v2(
     """Pure. Reads `target_root`'s current file CONTENT to compute
     on-disk hashes (this is read-only inspection, not mutation -- the same
     boundary `run_doctor_v2` depends on to prove itself read-only by
-    construction), never writes anything."""
+    construction), never writes anything.
+
+    This function resolves `target_root` ITSELF and never accepts a
+    caller-supplied resolution. Round 4 finding (aiops-orchestrator#205,
+    H1A-R1), confirmed by reproduction: an earlier version of the round-3
+    fix took an optional `target_root_real` parameter so a caller could
+    bind the plan to a root it had already resolved. That parameter was a
+    containment-WIDENING vector -- passing any ANCESTOR of the real
+    `target_root` (e.g. its parent directory) made every containment check
+    inside this function evaluate against the wider root, so a symlink
+    inside `target_root` pointing at a sibling directory passed
+    containment and its content was read, while `plan.target_root_real`
+    recorded the wider root. Reproduced directly: with the correct root
+    the same layout is refused (`target_pack_plan_path_escapes_target_
+    root`); with the parent passed as `target_root_real` the read of
+    `<parent>/sibling/leak.txt` succeeded. A security primitive must not
+    depend on its callers passing the right boundary, so the boundary is
+    no longer a parameter at all.
+
+    `InstallPlanV2.target_root_real` is therefore the single authoritative
+    resolution for the whole operation: `compute_target_pack_operation_
+    plan_v2` consumes it rather than resolving again, which is what keeps
+    "one operation, one resolution" true without reintroducing a
+    caller-supplied boundary."""
 
     actions: list[PlannedFileActionV2] = []
     drifted: list[str] = []
 
     recorded = previous_receipt.generated_file_hashes if previous_receipt is not None else {}
+    # Resolved exactly once for the whole call, not once per entry -- see
+    # `resolve_within_target_root_v2`'s own docstring, round 2.
+    target_root_real = target_root.resolve(strict=False)
 
     for entry in manifest.generated_files:
-        on_disk = _read_on_disk_sha256_v2(target_root, entry.path)
+        on_disk = _read_on_disk_sha256_v2(target_root_real, entry.path)
         previously_recorded = recorded.get(entry.path)
         action = _classify_action_v2(
             entry=entry, on_disk_sha256=on_disk, previously_recorded_sha256=previously_recorded
@@ -188,7 +303,7 @@ def compute_install_plan_v2(
     return InstallPlanV2(
         file_actions=tuple(actions),
         drifted_paths=tuple(drifted),
-        target_root_real=str(target_root.resolve(strict=False)),
+        target_root_real=str(target_root_real),
     )
 
 

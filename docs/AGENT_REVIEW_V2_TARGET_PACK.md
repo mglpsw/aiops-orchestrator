@@ -30,7 +30,7 @@ are deferred to a follow-up commit on the same branch/PR (spec `§12`):
 
 ```text
 agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z [--rollout off|shadow_minimal|shadow_full]
-agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH --pack-version X.Y.Z
+agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z
 ```
 
 ### New contracts (additive, non-wire; zero existing schema touched)

@@ -154,6 +154,12 @@
     },
     "target_owned_file_hashes": {
       "additionalProperties": false,
+      "patternProperties": {
+        "^[^*?\\[\\]]+$": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
       "propertyNames": {
         "maxLength": 512,
         "minLength": 1
@@ -166,6 +172,7 @@
       "items": {
         "maxLength": 512,
         "minLength": 1,
+        "pattern": "^[^*?\\[\\]]+$",
         "type": "string"
       },
       "title": "Target Owned Paths",
