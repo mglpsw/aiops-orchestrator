@@ -1560,3 +1560,26 @@ def test_c9_real_enum_authority_still_works_unchanged(repo_root, require_strong_
     )
     assert executed[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS
     assert executed[0].result.authority is TrustedCheckAuthorityV2.TRUSTED
+
+
+def test_c9_round2_spoofed_str_subclass_never_resolves_to_trusted(repo_root):
+    """PR #233 review round 1, P1: `isinstance(value, str)` admits any str
+    SUBCLASS, and `TrustedCheckAuthorityV2(value)` looks the value up via
+    the object's own (overridable) `__hash__`/`__eq__` -- a subclass whose
+    real content is "admin" but that hashes and compares like "trusted"
+    resolved to the genuine TRUSTED member."""
+    from app.agent_review.trusted_checks_v2 import TrustedCheckAuthorityBoundaryErrorV2
+
+    class _SpoofedStrAuthority(str):
+        def __eq__(self, other):
+            return other == "trusted"
+
+        def __hash__(self):
+            return hash("trusted")
+
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    with pytest.raises(TrustedCheckAuthorityBoundaryErrorV2):
+        execute_trusted_check_plan_v2(
+            plan, repo_root=repo_root, inventory=inventory, authority=_SpoofedStrAuthority("admin"),
+        )

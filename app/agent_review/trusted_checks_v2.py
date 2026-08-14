@@ -143,13 +143,20 @@ def validate_trusted_check_authority_v2(value: object) -> TrustedCheckAuthorityV
     an unrelated type, a malformed string, or an object whose `__eq__`/
     `__hash__` might otherwise satisfy a naive `==`-based check -- fails
     closed. There is no default and nothing here is ever promoted to
-    `TRUSTED` on failure; the `str` restriction (before ever touching the
-    enum's own value lookup) means a spoofed object can never even reach
-    a comparison against the real values, let alone satisfy one.
+    `TRUSTED` on failure. The `str` restriction is deliberately
+    `type(value) is str`, not `isinstance(value, str)` (PR #233 review
+    round 1, P1): `TrustedCheckAuthorityV2(value)` looks the value up via
+    the object's own `__hash__`/`__eq__` -- `isinstance` alone would admit
+    a `str` SUBCLASS whose overridden `__hash__`/`__eq__` make it hash and
+    compare like `"trusted"` regardless of its real underlying text (e.g.
+    an actual value of `"admin"` spoofed to resolve to the genuine
+    `TRUSTED` member). An exact-type check means the object handed to the
+    enum's value lookup is always a real, unsubclassed `str`, whose
+    `__hash__`/`__eq__` cannot have been overridden.
     """
     if isinstance(value, TrustedCheckAuthorityV2):
         return value
-    if isinstance(value, str):
+    if type(value) is str:
         try:
             return TrustedCheckAuthorityV2(value)
         except ValueError:
