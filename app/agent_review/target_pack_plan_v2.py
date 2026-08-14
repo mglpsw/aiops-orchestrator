@@ -118,15 +118,23 @@ def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def resolve_within_target_root_v2(target_root: Path, relative_path: str | Path) -> Path:
-    """Resolve `target_root / relative_path` and refuse if it escapes.
+def resolve_within_target_root_v2(target_root_real: Path, path: Path) -> Path:
+    """Resolve `path` and refuse if it escapes `target_root_real`.
 
     The read-side counterpart to `target_pack_install_v2._verify_write_
     target_within_root_v2`, which has protected the WRITE path since the
-    round-4 adversarial review. Both use the same primitive
-    (`Path.resolve(strict=False)` on root and candidate, then
-    `relative_to`) so the pack has exactly ONE definition of "contained in
-    `target_root`" rather than two that can drift apart.
+    round-4 adversarial review. Deliberately the SAME signature shape as
+    that function (a pre-resolved root plus a full candidate path, not a
+    root-plus-relative-suffix this function composes itself) and the SAME
+    primitive (`Path.resolve(strict=False)` on the candidate, then
+    `relative_to` against the root), so the pack has exactly ONE
+    definition of "contained in `target_root`" rather than two that can
+    drift apart -- and so every caller resolves `target_root` itself
+    exactly ONCE per operation and threads that single value through every
+    check, matching `apply_install_plan_v2`'s own `target_root_real =
+    target_root.resolve(strict=False)` -> threaded into every `_atomic_
+    write_v2` call, rather than re-resolving the root on every single
+    file (round 2 finding, see below).
 
     `contracts_v2.RelativePath` proves a path STRING is well-formed (no
     `..`, no absolute/drive form, normalized spelling) -- it says nothing
@@ -144,15 +152,35 @@ def resolve_within_target_root_v2(target_root: Path, relative_path: str | Path) 
     The write path had been hardened for exactly this class; the read path
     had not.
 
+    Round 2 (independent re-review of the first fix): confirmed and fixed
+    two further gaps. (1) `target_pack_doctor_v2._check_profile_v2`
+    verified containment and then discarded the result, letting
+    `load_target_profile_v2` independently re-derive `target_root /
+    relative_path` and re-traverse it -- the check and the read were bound
+    only by timing coincidence, not by construction. Reproduced
+    deterministically (no real race needed): swapping the symlink to point
+    outside `target_root` immediately after the passing containment check
+    but before the read made the profile check report `status="present"`
+    with a hash computed from content OUTSIDE `target_root`. Every caller
+    now reads through the exact `Path` this function returns, never a
+    separately re-derived one -- `_check_profile_v2` was the one holdout,
+    now fixed the same way every other site already was. (2) this
+    function used to resolve `target_root` itself, on every call --
+    `target_pack_doctor_v2._check_receipt_v2`'s per-file loop called it
+    once per target-owned entry, so `target_root`'s own resolution could
+    legitimately differ between files checked in the same `run_doctor_v2`
+    invocation if `target_root` itself were swapped mid-loop, the same
+    class of root-swap concern `apply_install_plan_v2`'s own docstring
+    names for the write side. Now takes an already-resolved
+    `target_root_real`, resolved exactly once by each caller.
+
     A symlink whose target stays INSIDE `target_root` is deliberately
     ALLOWED -- containment, not symlink prohibition, is the property being
     enforced, and that keeps this check identical in meaning to the
-    writer's. Returns the RESOLVED path so callers read through the path
-    they actually verified, never re-deriving an unverified one.
+    writer's.
     """
 
-    target_root_real = target_root.resolve(strict=False)
-    resolved = (target_root / relative_path).resolve(strict=False)
+    resolved = path.resolve(strict=False)
     try:
         resolved.relative_to(target_root_real)
     except ValueError as exc:
@@ -160,8 +188,8 @@ def resolve_within_target_root_v2(target_root: Path, relative_path: str | Path) 
     return resolved
 
 
-def _read_on_disk_sha256_v2(target_root: Path, relative_path: str) -> str | None:
-    full_path = resolve_within_target_root_v2(target_root, relative_path)
+def _read_on_disk_sha256_v2(target_root: Path, target_root_real: Path, relative_path: str) -> str | None:
+    full_path = resolve_within_target_root_v2(target_root_real, target_root / relative_path)
     if not full_path.is_file():
         return None
     return _sha256_hex(full_path.read_bytes())
@@ -208,9 +236,12 @@ def compute_install_plan_v2(
     drifted: list[str] = []
 
     recorded = previous_receipt.generated_file_hashes if previous_receipt is not None else {}
+    # Resolved exactly once for the whole call, not once per entry -- see
+    # `resolve_within_target_root_v2`'s own docstring, round 2.
+    target_root_real = target_root.resolve(strict=False)
 
     for entry in manifest.generated_files:
-        on_disk = _read_on_disk_sha256_v2(target_root, entry.path)
+        on_disk = _read_on_disk_sha256_v2(target_root, target_root_real, entry.path)
         previously_recorded = recorded.get(entry.path)
         action = _classify_action_v2(
             entry=entry, on_disk_sha256=on_disk, previously_recorded_sha256=previously_recorded
@@ -231,7 +262,7 @@ def compute_install_plan_v2(
     return InstallPlanV2(
         file_actions=tuple(actions),
         drifted_paths=tuple(drifted),
-        target_root_real=str(target_root.resolve(strict=False)),
+        target_root_real=str(target_root_real),
     )
 
 

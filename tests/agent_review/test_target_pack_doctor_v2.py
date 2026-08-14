@@ -679,3 +679,73 @@ def test_doctor_allows_a_symlink_that_resolves_back_inside_target_root(
     assert report.profile.status == "present"
     assert report.receipt.status == "present"
     assert report.is_healthy
+
+
+# --- H1A-R1, round 2: the check must be BOUND to the read, not merely --
+# --- run before it (second independent review of #230's first fix) -----
+
+
+def test_check_profile_reads_the_content_it_actually_verified_not_a_later_swap(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """RED, round 2. The first cut of H1A-R1 called
+    `resolve_within_target_root_v2` and discarded its return value,
+    letting `load_target_profile_v2` independently re-derive `target_root
+    / relative_path` and re-traverse it -- the containment check and the
+    actual read were two separate filesystem traversals of the same
+    (mutable) symlink, connected only by timing, not by construction.
+
+    Deterministic reproduction (no real race required): swap the symlink
+    to point OUTSIDE `target_root` as a side effect of
+    `resolve_within_target_root_v2` returning -- i.e. strictly AFTER the
+    containment check has already passed, strictly BEFORE any content is
+    read. Against the pre-round-2 code this made `_check_profile_v2`
+    report `status="present"` with a profile hash computed from content
+    outside `target_root`. Confirmed by loading the swapped file directly:
+    its `identity.repo` carried a distinguishing marker the real profile
+    does not.
+
+    Post-fix, `_check_profile_v2` reads through the exact `Path` object
+    `resolve_within_target_root_v2` returned -- an already-fully-resolved,
+    symlink-free absolute path -- so swapping the ORIGINAL symlink after
+    the fact cannot change what gets read at all."""
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (target_root / ".aiops").mkdir()
+    real_profile = target_root / ".aiops" / "real-profile.yaml"
+    real_profile.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    outside_profile = outside / "outside-profile.yaml"
+    outside_profile.write_text(_VALID_PROFILE_YAML.replace("owner/repo", "acme/exfiltrated-via-toctou"))
+    symlink_path = target_root / ".aiops" / "target-profile.v2.yaml"
+    symlink_path.symlink_to(real_profile)
+
+    import app.agent_review.target_pack_doctor_v2 as doctor_module
+
+    real_resolve = doctor_module.resolve_within_target_root_v2
+
+    def racing_resolve(target_root_real: Path, path: Path) -> Path:
+        result = real_resolve(target_root_real, path)
+        # Attacker acts in the gap between "containment verified" and
+        # "content read" -- simulated deterministically rather than by
+        # trying to literally win a race.
+        symlink_path.unlink()
+        symlink_path.symlink_to(outside_profile)
+        return result
+
+    doctor_module.resolve_within_target_root_v2 = racing_resolve
+    try:
+        check = doctor_module._check_profile_v2(target_root, target_root.resolve(strict=False))
+    finally:
+        doctor_module.resolve_within_target_root_v2 = real_resolve
+
+    assert check.status == "present"
+    # The load-bearing assertion: the hash must match the content that was
+    # ACTUALLY VERIFIED (real_profile), never the post-swap outside content.
+    from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_text_v2
+
+    verified_hash = compute_profile_hash_v2(load_target_profile_text_v2(_VALID_PROFILE_YAML))
+    exfiltrated_hash = compute_profile_hash_v2(
+        load_target_profile_text_v2(_VALID_PROFILE_YAML.replace("owner/repo", "acme/exfiltrated-via-toctou"))
+    )
+    assert check.profile_hash == verified_hash
+    assert check.profile_hash != exfiltrated_hash

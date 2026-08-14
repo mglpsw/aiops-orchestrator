@@ -17,11 +17,15 @@ error, not a diagnosis.
 
 Every filesystem read this module performs -- the profile, the receipt, and
 each target-owned file -- goes through `target_pack_plan_v2.resolve_within_
-target_root_v2` FIRST, and reads only the resolved path it returned. That
-is the same containment primitive (`resolve(strict=False)` on both root and
-candidate, then `relative_to`) `target_pack_install_v2` has applied to the
-WRITE path since the round-4 review, so the pack has one definition of
-"inside `target_root`", not two. A symlink resolving back inside
+target_root_v2` FIRST, and reads only the resolved `Path` it returned, never
+a separately re-derived one. That is the same containment primitive
+(`resolve(strict=False)` on the candidate, then `relative_to` a
+once-resolved root) `target_pack_install_v2` has applied to the WRITE path
+since the round-4 review, so the pack has one definition of "inside
+`target_root`", not two. `run_doctor_v2` resolves `target_root` exactly
+once per invocation and threads that single value through every check
+below it -- never re-resolved per file -- matching `apply_install_plan_v2`'s
+own `target_root_real` threading. A symlink resolving back inside
 `target_root` is allowed; only escape is refused, reported as
 `target_pack_doctor_path_escapes_target_root`.
 
@@ -53,9 +57,11 @@ from pathlib import Path
 
 from app.agent_review.profile_loader_v2 import (
     DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
+    TARGET_PROFILE_MISSING_REASON_V2,
+    TARGET_PROFILE_UNREADABLE_REASON_V2,
     TargetProfileLoadErrorV2,
     compute_profile_hash_v2,
-    load_target_profile_v2,
+    load_target_profile_text_v2,
 )
 from app.agent_review.target_pack_manifest_v2 import (
     TargetPackFileOwnershipV2,
@@ -124,23 +130,39 @@ class DoctorReportV2:
         )
 
 
-def _check_profile_v2(target_root: Path) -> ProfileCheckV2:
-    # Containment before load (aiops-orchestrator#205, H1A-R1):
-    # `load_target_profile_v2` composes `repo_root / relative_path` and goes
-    # straight to `is_file()`/`read_text()`, both of which follow symlinks.
-    # Verified here, at the pack's own boundary, rather than inside the
-    # loader -- the loader is shared with the review pipeline
-    # (`required_check_readiness_v2`, `payload_references_v2`), whose
-    # callers pass a trusted checkout root and are not part of this
-    # finding's surface.
+def _check_profile_v2(target_root: Path, target_root_real: Path) -> ProfileCheckV2:
+    # Containment BOUND to the read, not merely checked before it
+    # (aiops-orchestrator#205, H1A-R1, round 2). The first cut of this fix
+    # verified containment and then discarded the result, letting
+    # `load_target_profile_v2` independently re-derive `target_root /
+    # relative_path` and re-traverse it -- the check and the read observed
+    # the same symlink only by coincidence of timing, not by construction.
+    # Confirmed exploitable deterministically (no real race needed):
+    # swapping the symlink to point outside `target_root` immediately after
+    # the passing containment check, but before the read, made this
+    # function report `status="present"` with a hash computed from content
+    # OUTSIDE `target_root`. Reading through `resolved` directly, and
+    # parsing via `load_target_profile_text_v2` (the same "I already have
+    # the bytes, do not re-derive a path" entry point `target_pack_
+    # operation_v2._profile_hash_for_bytes_v2` already uses) closes that:
+    # there is no second path composition left to race. `TargetProfile
+    # LoadErrorV2`'s three reason codes (MISSING/UNREADABLE/INVALID) are
+    # reproduced here explicitly since the loader that used to distinguish
+    # them from a bare `Path` is bypassed.
     try:
-        resolve_within_target_root_v2(target_root, DEFAULT_TARGET_PROFILE_RELATIVE_PATH)
+        resolved = resolve_within_target_root_v2(target_root_real, target_root / DEFAULT_TARGET_PROFILE_RELATIVE_PATH)
     except PlanError:
         return ProfileCheckV2(
             status="invalid", profile_hash=None, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
         )
+    if not resolved.is_file():
+        return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_MISSING_REASON_V2)
     try:
-        profile = load_target_profile_v2(str(target_root))
+        raw_text = resolved.read_text(encoding="utf-8")
+    except OSError:
+        return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_UNREADABLE_REASON_V2)
+    try:
+        profile = load_target_profile_text_v2(raw_text)
     except TargetProfileLoadErrorV2 as exc:
         return ProfileCheckV2(status="missing", profile_hash=None, reason_code=exc.reason_code)
     except ValidationError:
@@ -149,7 +171,12 @@ def _check_profile_v2(target_root: Path) -> ProfileCheckV2:
 
 
 def _check_receipt_v2(
-    target_root: Path, *, manifest: TargetPackManifestV2, profile_check: ProfileCheckV2, target_repo: str
+    target_root: Path,
+    *,
+    target_root_real: Path,
+    manifest: TargetPackManifestV2,
+    profile_check: ProfileCheckV2,
+    target_repo: str,
 ) -> ReceiptCheckV2:
     """A receipt that parses successfully is not yet a receipt that
     describes THIS install. Adversarial review finding, confirmed and
@@ -211,7 +238,7 @@ def _check_receipt_v2(
     the reported cause when a receipt is ALSO wrong on an earlier axis."""
 
     try:
-        receipt_path = resolve_within_target_root_v2(target_root, RECEIPT_RELATIVE_PATH_V2)
+        receipt_path = resolve_within_target_root_v2(target_root_real, target_root / RECEIPT_RELATIVE_PATH_V2)
     except PlanError:
         return ReceiptCheckV2(status="invalid", receipt=None, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2)
     if not receipt_path.is_file():
@@ -248,7 +275,7 @@ def _check_receipt_v2(
         # (`../`, absolute, drive-absolute); this closes the SYMLINK escape,
         # which no string-level validation can reach.
         try:
-            observed_path = resolve_within_target_root_v2(target_root, relative_path)
+            observed_path = resolve_within_target_root_v2(target_root_real, target_root / relative_path)
         except PlanError:
             return ReceiptCheckV2(
                 status="invalid", receipt=receipt, reason_code=DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
@@ -301,9 +328,17 @@ def run_doctor_v2(*, target_root: Path, manifest: TargetPackManifestV2, target_r
     if not target_root.is_dir():
         raise NotADirectoryError(DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2)
 
-    profile_check = _check_profile_v2(target_root)
+    # Resolved exactly once per invocation and threaded through every
+    # containment check below -- not re-resolved per file (round 2, see
+    # `resolve_within_target_root_v2`'s own docstring).
+    target_root_real = target_root.resolve(strict=False)
+    profile_check = _check_profile_v2(target_root, target_root_real)
     receipt_check = _check_receipt_v2(
-        target_root, manifest=manifest, profile_check=profile_check, target_repo=target_repo
+        target_root,
+        target_root_real=target_root_real,
+        manifest=manifest,
+        profile_check=profile_check,
+        target_repo=target_repo,
     )
     expected_secret_names = receipt_check.receipt.required_secret_names if receipt_check.receipt else ()
 

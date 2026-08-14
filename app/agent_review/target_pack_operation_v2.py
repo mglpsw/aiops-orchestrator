@@ -161,14 +161,16 @@ def _identity_from_receipt_v2(receipt: TargetInstallReceiptV2) -> TargetPackInst
     )
 
 
-def _read_target_owned_bytes_v2(*, target_root: Path, path: str) -> bytes | None:
+def _read_target_owned_bytes_v2(*, target_root: Path, target_root_real: Path, path: str) -> bytes | None:
     # Containment BEFORE any filesystem read (aiops-orchestrator#205,
     # H1A-R1): `path` is a `RelativePath`, which proves the string is
     # well-formed but not that an existing component on disk stays inside
     # `target_root`. `resolve_within_target_root_v2` raises `PlanError`
     # (`target_pack_plan_path_escapes_target_root`) before `is_file()` --
-    # itself a symlink-following call -- ever runs.
-    candidate = resolve_within_target_root_v2(target_root, path)
+    # itself a symlink-following call -- ever runs. `target_root_real` is
+    # resolved once by the caller and threaded through, not re-resolved
+    # per file (round 2 -- see `resolve_within_target_root_v2`'s docstring).
+    candidate = resolve_within_target_root_v2(target_root_real, target_root / path)
     if candidate.is_file():
         return candidate.read_bytes()
     if candidate.exists() or candidate.is_symlink():
@@ -277,9 +279,12 @@ def compute_target_pack_operation_plan_v2(
     after_hashes: dict[str, str] = {}
     target_owned_hashes: dict[str, str] = {}
     target_profile_hash: str | None = None
+    # Resolved exactly once for this loop, not once per entry -- see
+    # `resolve_within_target_root_v2`'s own docstring, round 2.
+    target_root_real = target_root.resolve(strict=False)
 
     for entry in target_owned_entries:
-        observed = _read_target_owned_bytes_v2(target_root=target_root, path=entry.path)
+        observed = _read_target_owned_bytes_v2(target_root=target_root, target_root_real=target_root_real, path=entry.path)
         if observed is None:
             if previous_receipt is not None:
                 raise PlanError(OPERATION_TARGET_OWNED_MISSING_INSTALLED_REASON_V2)
