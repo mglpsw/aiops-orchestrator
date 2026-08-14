@@ -170,15 +170,27 @@ prose can never push a deterministic reason code out of the comment.
 
 `SemanticChunkPlan.status` is a statement about coverage. It is `degraded`
 when file context is missing, when the intake itself is degraded, or when
-files are uncovered; `partial` when files are partially covered; `complete`
-otherwise. An informational limitation with no coverage consequence — such as
-`intake_schema_id_missing` or `file_context_fallback_used` — is still
-recorded, but never degrades the plan.
+files are uncovered; `partial` when files are partially covered, or when
+`file_context_fallback_used` is present; `complete` otherwise.
+`intake_schema_id_missing` is a genuinely informational intake-envelope fact
+and never degrades the plan.
+
+`file_context_fallback_used` is a deliberate exception, not an
+informational limitation (H1-B, post-merge debt #205): when
+`file-diff-context` is absent, file discovery falls back to scavenging
+`.content.files` from whatever other artifact happens to have one, and no
+artifact anywhere declares itself an exhaustive changed-file enumeration.
+A fallback that discovers only a strict subset of the real changed files
+has no file outside that (incomplete) subset for `files_not_covered` to
+ever name, so this limitation alone forces `partial`, by default, unless
+some future typed/structural property proves the specific fallback
+source exhaustive.
 
 Every limitation that does cost coverage already has a structural counterpart
 in the plan's own lists: `chunk_budget_exceeded:<group>` always accompanies a
-non-empty `files_partially_covered`, and `max_blocks_exceeded` always
-accompanies a non-empty `files_not_covered`.
+non-empty `files_partially_covered`, `max_blocks_exceeded` always accompanies
+a non-empty `files_not_covered`, and `file_context_fallback_used` is the one
+limitation code that forces `partial` on its own.
 
 ### Missing artifacts are classified by declared requiredness
 

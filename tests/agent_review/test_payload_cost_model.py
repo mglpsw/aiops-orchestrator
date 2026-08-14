@@ -1213,3 +1213,37 @@ def test_document_scoped_check_with_no_path_field_at_all_is_still_included() -> 
     ctx, limitations = m.checks_context(checks_doc, intake=None, chunk_files={"backend/api/a.py"})
     assert ctx["checks"] == [{"name": "lint", "status": "passed", "command": "x", "scope": "document"}]
     assert limitations == []
+
+
+# ---------------------------------------------------------------------------
+# H1-B / PR #231 adversarial review round 2 (P1): round 1's fix itself had a
+# gap. `had_unresolvable=True` fires when *any* path-bearing field on an
+# item fails to canonicalize, even if another field on the SAME item
+# canonicalized successfully -- round 1's callers dropped/unclassified the
+# whole item unconditionally on `had_unresolvable`, discarding a real,
+# valid, in-scope match. Only exclude/unclassify when NO usable canonical
+# path survives at all.
+# ---------------------------------------------------------------------------
+
+
+def test_validation_entry_with_one_valid_and_one_invalid_path_still_matches() -> None:
+    ve_doc = {
+        "status": "complete",
+        "blocking_findings": [
+            {"title": "x", "file_path": "app/a.py", "original_file": "/workspace/app/a.py"},
+        ],
+    }
+    rows = m._filter_validation_entries(ve_doc, field_name="blocking_findings", chunk_files={"app/a.py"})
+    assert len(rows) == 1, rows
+
+
+def test_checks_context_check_with_one_valid_and_one_invalid_path_still_matches() -> None:
+    checks_doc = {
+        "status": "complete",
+        "checks": [
+            {"name": "lint", "status": "failed", "command": "x", "file_path": "app/a.py", "files": ["/tmp/other.py"]},
+        ],
+    }
+    ctx, limitations = m.checks_context(checks_doc, intake=None, chunk_files={"app/a.py"})
+    assert ctx["checks"] == [{"name": "lint", "status": "failed", "command": "x", "scope": "file"}]
+    assert limitations == []

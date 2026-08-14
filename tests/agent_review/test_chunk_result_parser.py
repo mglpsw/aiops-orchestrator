@@ -502,3 +502,20 @@ def test_model_echo_of_a_deterministic_code_is_not_a_second_cause(tmp_path: Path
     assert results.model_reported_limitations == [
         "chunk_plan_status_degraded:the plan looked degraded to me"
     ]
+
+
+def test_partial_chunk_plan_status_propagates_to_result_status(tmp_path: Path) -> None:
+    """H1-B / PR #231 review round 2, P1: a `partial` chunk_plan.status
+    (e.g. C10's file_context_fallback_used case) must not silently become
+    `complete` just because every chunk that WAS produced parsed cleanly --
+    final_synthesizer/quality_gate already treat `chunk_results.status ==
+    "partial"` as blocking in every gate check, but _result_status never
+    read `chunk_plan.status == "partial"` in the first place, so a partial
+    plan's uncertainty never reached them."""
+    responses = _responses_dir(tmp_path)
+    chunk = _chunk()
+    _write_response(responses, chunk=chunk, confirmed_findings=[_finding(severity="P2")])
+
+    results = parse_chunk_results(_plan([chunk], status="partial"), responses_dir=responses)
+
+    assert results.status == "partial"

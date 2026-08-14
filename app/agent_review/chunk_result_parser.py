@@ -200,6 +200,14 @@ def _result_status(*, chunk_plan: SemanticChunkPlan, parsed_count: int, failed_c
         return "degraded"
     if failed_count:
         return "partial"
+    # H1-B (C10, post-merge debt #205; PR #231 review round 2, P1): a
+    # `partial` chunk_plan (unproven coverage, e.g. file_context_fallback_
+    # used) must not read downstream as `complete` just because every
+    # chunk that was actually produced happened to parse cleanly --
+    # final_synthesizer and quality_gate already treat "partial" as
+    # blocking wherever they read `chunk_results.status`.
+    if chunk_plan.status == "partial":
+        return "partial"
     return "complete"
 
 

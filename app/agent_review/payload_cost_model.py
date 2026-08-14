@@ -505,11 +505,14 @@ def checks_context(
     for item in checks_rows:
         item_scope_paths, had_unresolvable = _item_scope_paths(item)
         is_global = _is_global_item(item)
-        if had_unresolvable and not is_global:
+        if had_unresolvable and not item_scope_paths and not is_global:
             # An unresolvable path is a real but invalid scope claim -- it
             # must never fall through to the document/global-scope branch
             # below (which is reserved for items that genuinely never had
-            # a path field at all).
+            # a path field at all). Only when NO usable canonical path
+            # survives at all: an item with one valid and one invalid path
+            # field still has a real, matchable scope via the valid one
+            # (PR #231 review round 2, P1).
             name = _clean_text(item.get("name")) or "unknown_check"
             limitations.append(f"check_scope_unclassified:{name}")
             continue
@@ -728,8 +731,11 @@ def _filter_validation_entries(
         item_paths, had_unresolvable = _item_scope_paths(item)
         # An unresolvable path is a real but invalid scope claim -- exclude
         # it outright rather than let an empty scope set fall through as
-        # "no scope info" and get promoted to every chunk.
-        if had_unresolvable and not is_global:
+        # "no scope info" and get promoted to every chunk. Only when NO
+        # usable canonical path survives at all: an item with one valid
+        # and one invalid path field still has a real, matchable scope via
+        # the valid one (PR #231 review round 2, P1).
+        if had_unresolvable and not item_paths and not is_global:
             continue
         if not is_global and item_paths and not item_paths.intersection(chunk_files):
             continue
