@@ -566,11 +566,42 @@ adoption, Class C execution, CT104 canaries, release/pinning — `#204`/`#205`.
 
 ## 14. Deferred (explicitly, not silently)
 
-- `validate` / `conformance` / `install-workflows` / `upgrade` / `rollback` and
-  the real workflow templates — later `#203` slices. Slice 1 ships `init` +
-  `doctor`.
+- `install-workflows` / `upgrade` / `rollback` and the real workflow templates —
+  later `#203` slices. Slice 1 (S1) shipped `init` + `doctor`; slice 2 (S2)
+  shipped `validate` + synthetic/offline `conformance`.
 - `TrustedCheckInventoryV2` and the `#201-C0` trusted-check wiring, and with it
   any genuine `SHADOW_FULL` capability.
+
+### 14.1 Which slice makes `§7`'s validation applicable  *(S2 clarification)*
+
+`§7` describes the FINAL architecture, in which `validate`/`doctor` also
+cross-check a target's trusted-check inventory against
+`TargetProfileV2.policies.required_checks`. Read alone it can look like a
+requirement already owed by `validate`. It is not, and this section says when
+it becomes one — the end-state requirement in `§7` is unchanged, only its
+applicability is made explicit:
+
+```text
+S2  (this slice)
+    validate/doctor verify ONLY currently delivered capabilities:
+      profile + manifest + receipt + identity + ownership + drift
+      + rollout ceiling
+    The trusted-check dimension is reported `unavailable` with a
+    deferral reason code -- never `pass`, never omitted.
+
+S3  introduces TrustedCheckInventoryV2 + its seed template +
+    install-workflows/wiring. From that slice on, `§7`'s
+    inventory <-> policies.required_checks cross-check becomes
+    applicable to validate/doctor, and only then may the rollout
+    ceiling rise above `off`.
+```
+
+The reason is structural, not scheduling convenience: the pack currently
+generates exactly one file (`.aiops/target-profile.v2.yaml`), no inventory
+contract exists in `app/` or `schemas/`, and the seed profile ships
+`required_checks: [REPLACE_ME_WITH_A_REAL_REQUIRED_CHECK_NAME]`. A `validate`
+that claimed to have checked an inventory under those conditions would be
+asserting a capability with no producer behind it.
 - Multi-file crash-convergence metamorphic test (§5.5) — owed by the first slice
   that writes more than one file.
 - Class C / real dual-target adoption — `#204` (§10).

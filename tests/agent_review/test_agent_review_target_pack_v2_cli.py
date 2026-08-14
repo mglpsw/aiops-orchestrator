@@ -631,3 +631,138 @@ def test_init_refuses_cleanly_instead_of_fabricating_a_toolrepo_sha(tmp_path: Pa
     assert "Traceback" not in result.stderr
     assert "target_pack_cli_toolrepo_sha_unresolved" in result.stderr
     assert not (target_root / ".aiops" / "install-receipt.v2.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# #203-S2: validate / conformance through the real entry point
+# ---------------------------------------------------------------------------
+
+
+def _init_a_real_target(tmp_path: Path, repo: str = "owner/repo") -> None:
+    assert (
+        _run(
+            [
+                "init", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT),
+                "--target-repo", repo, "--pack-version", "0.1.0",
+            ]
+        ).returncode
+        == 0
+    )
+
+
+def test_validate_passes_on_a_real_freshly_initialised_target(tmp_path: Path) -> None:
+    """The strongest end-to-end statement in this slice: `validate` is run
+    against a target produced by the REAL `init`, not a hand-built
+    fixture. If init and validate ever disagreed about the shape of an
+    installation, this is what would catch it."""
+
+    _init_a_real_target(tmp_path)
+    result = _run(["validate", "--target-root", str(tmp_path)])
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["valid"] is True
+
+
+def test_validate_needs_no_toolrepo_argument(tmp_path: Path) -> None:
+    """`validate` deliberately takes only `--target-root` -- a consumer
+    repository must be able to run it without a toolrepo checkout."""
+
+    _init_a_real_target(tmp_path)
+    assert _run(["validate", "--target-root", str(tmp_path)]).returncode == 0
+    rejected = _run_raw(["validate", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT)])
+    assert rejected.returncode != 0
+
+
+def test_validate_never_claims_the_trusted_check_dimension_passed(tmp_path: Path) -> None:
+    """#203-S2 ships no trusted-check inventory contract, so the CLI must
+    surface that dimension as explicitly unvalidated -- never fold it into
+    a bare `valid: true`."""
+
+    _init_a_real_target(tmp_path)
+    report = json.loads(_run(["validate", "--target-root", str(tmp_path)]).stdout)
+    assert "trusted_check_inventory" in report["unvalidated_capabilities"]
+    statuses = {c["name"]: c["status"] for c in report["checks"]}
+    assert statuses["trusted_check_inventory"] == "unavailable"
+
+
+def test_validate_fails_closed_on_drift_after_a_real_init(tmp_path: Path) -> None:
+    _init_a_real_target(tmp_path)
+    profile = tmp_path / ".aiops" / "target-profile.v2.yaml"
+    profile.write_text(profile.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8")
+    result = _run(["validate", "--target-root", str(tmp_path)])
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["valid"] is False
+
+
+def test_validate_reports_a_never_initialised_target_as_invalid(tmp_path: Path) -> None:
+    result = _run(["validate", "--target-root", str(tmp_path)])
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["valid"] is False
+
+
+def test_conformance_over_two_real_targets_is_synthetic_only(tmp_path: Path) -> None:
+    alpha = tmp_path / "alpha"
+    beta = tmp_path / "beta"
+    alpha.mkdir()
+    beta.mkdir()
+    _init_a_real_target(alpha, repo="acme/alpha-service")
+    _init_a_real_target(beta, repo="globex/beta-platform")
+
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {"case_id": "alpha", "target_root": str(alpha), "expectation": "eligible"},
+                    {"case_id": "beta", "target_root": str(beta), "expectation": "eligible"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _run(["conformance", "--matrix", str(matrix)])
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["synthetic_pack_conformance"] is True
+    # The claim is scoped: nothing here may be published as dual-target.
+    assert "dual_target_conformance" not in report
+
+
+def test_conformance_detects_a_violating_target(tmp_path: Path) -> None:
+    alpha = tmp_path / "alpha"
+    beta = tmp_path / "beta"
+    alpha.mkdir()
+    beta.mkdir()
+    _init_a_real_target(alpha, repo="acme/alpha-service")
+    _init_a_real_target(beta, repo="globex/beta-platform")
+    (beta / ".aiops" / "install-receipt.v2.json").unlink()
+
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {"case_id": "alpha", "target_root": str(alpha), "expectation": "eligible"},
+                    {"case_id": "beta", "target_root": str(beta), "expectation": "eligible"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _run(["conformance", "--matrix", str(matrix)])
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["synthetic_pack_conformance"] is False
+
+
+def test_conformance_refuses_an_unreadable_matrix(tmp_path: Path) -> None:
+    result = _run(["conformance", "--matrix", str(tmp_path / "nope.json")])
+    assert result.returncode == 2
+    assert "target_pack_conformance_matrix_unreadable" in result.stderr
+
+
+def test_conformance_refuses_a_malformed_matrix(tmp_path: Path) -> None:
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text(json.dumps({"cases": [{"case_id": "x"}]}), encoding="utf-8")
+    result = _run(["conformance", "--matrix", str(matrix)])
+    assert result.returncode == 2
+    assert "target_pack_conformance_matrix_invalid" in result.stderr

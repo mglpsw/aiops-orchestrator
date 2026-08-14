@@ -17,8 +17,8 @@ binding). Not yet in any published release.
 | `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile — repeating `init` after a target edits `.aiops/target-profile.v2.yaml` requires naming the path via `--accept-target-owned` on both the preview and the `--apply` call, or `apply` fails with `target_owned_identity_acceptance_required`; the profile bytes themselves are left untouched. **This pack version's `max_supported_rollout_mode` is `off`** — `--rollout off` is the only value this slice accepts; `shadow_minimal`/`shadow_full` are interface/future options and are refused before preview or apply |
 | `doctor` | `IMPLEMENTED` | read-only, proven by AST/call-graph inspection |
 | operation-plan binding | `IMPLEMENTED` | `target_pack_operation_v2.py` + its own schema (PR #228) |
-| `validate` | `DEFERRED` | spec `§12` |
-| `conformance` | `DEFERRED` | spec `§12`; target adoption is `#204`'s charter |
+| `validate` | `IMPLEMENTED` | read-only and **target-only** — takes just `--target-root`, so a consumer repository can run it in its own CI with no toolrepo checkout. Proven read-only by AST/call-graph inspection, same as `doctor`. Validates receipt/profile parse, profile-hash agreement, portable root identity, target-owned drift and path containment. The trusted-check dimension is reported `unavailable`, never `pass` — see below |
+| `conformance` | `IMPLEMENTED` (synthetic/offline) | proves the one generic pack behaves identically across ≥2 synthetic targets and detects violations in each. No real target, no network, no Router, no provider, no GitHub, no secrets. Reported as `synthetic_pack_conformance`, never `dual_target_conformance` — real dual-target adoption is `#204` |
 | `install-workflows` | `DEFERRED` | workflow templates not shipped |
 | `upgrade` | `DEFERRED` | only command that changes rollout mode |
 | `rollback` | `DEFERRED` | spec `§12` |
@@ -26,6 +26,29 @@ binding). Not yet in any published release.
 
 Deferred means specified and intentionally not shipped — never silently dropped,
 and never described as available.
+
+### What `validate` deliberately does NOT check yet
+
+The specification's `§7` end state has `validate`/`doctor` also loading a
+target's trusted-check inventory and cross-checking it against
+`TargetProfileV2.policies.required_checks`. That is **not** available at this
+capability level, and `validate` says so explicitly rather than passing:
+
+```json
+{"name": "trusted_check_inventory", "status": "unavailable",
+ "reason_code": "target_pack_validate_trusted_check_inventory_deferred_until_inventory_slice"}
+```
+
+`TrustedCheckInventoryV2` does not exist, no trusted-check seed template ships,
+no workflows are installed, and `max_supported_rollout_mode` is still `off` —
+`§14` of the same spec defers all of it. Validating an inventory the pack never
+installs, against a contract that does not exist, would be validating nothing.
+
+The same honesty applies to the report as a whole: `valid: true` means *no
+applicable check failed*, not *everything the final architecture will check has
+been checked*. Whatever was not validated is listed in
+`unvalidated_capabilities`, so the absence of a capability can never be read as
+successful validation of it.
 
 ## What this is
 

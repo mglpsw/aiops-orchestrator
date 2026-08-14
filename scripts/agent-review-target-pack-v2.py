@@ -46,7 +46,13 @@ from app.agent_review.target_pack_build_v2 import (  # noqa: E402
     build_target_pack_manifest_v2,
     load_seed_content_by_path_v2,
 )
+from app.agent_review.target_pack_conformance_v2 import (  # noqa: E402
+    ConformanceCaseV2,
+    ConformanceExpectationV2,
+    run_conformance_v2,
+)
 from app.agent_review.target_pack_doctor_v2 import run_doctor_v2  # noqa: E402
+from app.agent_review.target_pack_validate_v2 import run_validate_v2  # noqa: E402
 from app.agent_review.target_pack_install_v2 import (  # noqa: E402
     RECEIPT_RELATIVE_PATH_V2,
     TargetPackInstallError,
@@ -68,6 +74,9 @@ CLI_INPUT_INVALID_REASON_V2 = "target_pack_cli_input_invalid"
 CLI_EXPECTED_PLAN_REQUIRED_REASON_V2 = "target_pack_cli_expected_plan_required"
 CLI_EXPECTED_PLAN_MISMATCH_REASON_V2 = "target_pack_cli_expected_plan_mismatch"
 CLI_PREVIOUS_RECEIPT_INVALID_REASON_V2 = "target_pack_cli_previous_receipt_invalid"
+CONFORMANCE_MATRIX_UNREADABLE_REASON_V2 = "target_pack_conformance_matrix_unreadable"
+CONFORMANCE_MATRIX_INVALID_REASON_V2 = "target_pack_conformance_matrix_invalid"
+
 CLI_EXIT_SATISFIED_OR_NOOP_V2 = 0
 CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2 = 1
 CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2 = 2
@@ -228,6 +237,80 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return CLI_EXIT_SATISFIED_OR_NOOP_V2 if report.is_healthy else CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2
 
 
+def _cmd_validate(args: argparse.Namespace) -> int:
+    """Thin wrapper: parses args, calls exactly one library function, prints
+    its result. Read-only -- `run_validate_v2` is held to that mechanically
+    by `tests/agent_review/test_target_pack_arch_v2.py`.
+
+    Note `validate` needs only `--target-root`: unlike `doctor` it never
+    rebuilds the upstream manifest, so a consumer repository can run it in
+    its own CI with no toolrepo checkout at all.
+    """
+
+    report = run_validate_v2(target_root=Path(args.target_root))
+    output = {
+        "target_root": report.target_root,
+        "valid": report.is_valid,
+        "checks": [
+            {"name": c.name, "status": c.status, "reason_code": c.reason_code} for c in report.checks
+        ],
+        # Surfaced explicitly so a consumer cannot read `valid: true` as
+        # "everything the final architecture will check has been checked".
+        "unvalidated_capabilities": list(report.unvalidated_capabilities),
+    }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return CLI_EXIT_SATISFIED_OR_NOOP_V2 if report.is_valid else CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2
+
+
+def _cmd_conformance(args: argparse.Namespace) -> int:
+    """Synthetic/offline conformance over a declared matrix of targets.
+
+    The matrix is a JSON file: `{"cases": [{"case_id", "target_root",
+    "expectation"}]}` where `expectation` is `eligible`/`ineligible`. It is
+    target-authored input, never a pack-generated artifact, and nothing in
+    it may name a real consumer -- `#204` owns real targets.
+    """
+
+    matrix_path = Path(args.matrix)
+    try:
+        raw = json.loads(matrix_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print(f"error: {CONFORMANCE_MATRIX_UNREADABLE_REASON_V2}", file=sys.stderr)
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
+
+    try:
+        cases = tuple(
+            ConformanceCaseV2(
+                case_id=str(entry["case_id"]),
+                target_root=Path(entry["target_root"]),
+                expectation=ConformanceExpectationV2(entry["expectation"]),
+            )
+            for entry in raw["cases"]
+        )
+    except (KeyError, TypeError, ValueError):
+        print(f"error: {CONFORMANCE_MATRIX_INVALID_REASON_V2}", file=sys.stderr)
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
+
+    report = run_conformance_v2(cases=cases)
+    output = {
+        # Deliberately NOT "dual_target_conformance": this is synthetic and
+        # offline. Real dual-target adoption is #204 (spec §10).
+        "synthetic_pack_conformance": report.is_conformant,
+        "reason_codes": list(report.reason_codes),
+        "cases": [
+            {
+                "case_id": case.case_id,
+                "expectation": case.expectation.value,
+                "matched_expectation": case.matched_expectation,
+                "observed_reason_codes": list(case.observed_reason_codes),
+            }
+            for case in report.cases
+        ],
+    }
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return CLI_EXIT_SATISFIED_OR_NOOP_V2 if report.is_conformant else CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -249,6 +332,20 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     doctor_parser.add_argument("--target-repo", required=True, help="owner/name of the target repository")
     doctor_parser.add_argument("--pack-version", required=True)
     doctor_parser.set_defaults(handler=_cmd_doctor)
+
+    validate_parser = sub.add_parser(
+        "validate",
+        help="read-only, target-only validation of an installed pack; needs no toolrepo checkout",
+    )
+    validate_parser.add_argument("--target-root", required=True)
+    validate_parser.set_defaults(handler=_cmd_validate)
+
+    conformance_parser = sub.add_parser(
+        "conformance",
+        help="synthetic/offline conformance over a declared matrix of targets (never a real target)",
+    )
+    conformance_parser.add_argument("--matrix", required=True, help="path to the conformance matrix JSON")
+    conformance_parser.set_defaults(handler=_cmd_conformance)
 
     return parser.parse_args(argv)
 

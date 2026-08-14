@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### Added
+
+- **AgentReview v2 target pack: offline `validate` and synthetic
+  `conformance` (`#203-S2`)**: the second `#203` slice, taking the pack from
+  two of seven subcommands to four.
+  - **`validate` is target-only and read-only.** Unlike `doctor` — which
+    needs `--toolrepo-root`/`--pack-version` to rebuild the upstream manifest
+    and answer *"does this install match the pack it claims to come from?"* —
+    `validate` takes only `--target-root` and answers *"is this target's own
+    installed state internally coherent, undrifted and contained?"*. A
+    consumer repository can therefore run it in its own CI with no toolrepo
+    checkout, no network and no upstream artifact. It checks receipt/profile
+    parse, profile-hash agreement, portable root identity, target-owned drift
+    and path containment, reusing `resolve_within_target_root_v2` so
+    containment stays bound to the read (H1A-R1). Read-only-ness is proven
+    mechanically by AST/call-graph inspection, the same discipline already
+    applied to `doctor`, now parameterized over both modules.
+  - **`conformance` is synthetic and offline.** It proves two properties and
+    only these two: that the one generic pack produces identical checks and
+    statuses across independently-authored targets differing only in their
+    authored identity (so a target-name branch would break it), and that a
+    target declared ineligible *actually* fails validation (so conformance
+    cannot degenerate into "everything passed"). No real target, no network,
+    no Router, no provider, no GitHub, no secrets, no runner. Reported as
+    `synthetic_pack_conformance`, never `dual_target_conformance` — real
+    dual-target adoption remains `#204`'s charter.
+  - **Capability honesty.** The spec's `§7` end state has `validate` also
+    cross-checking a trusted-check inventory against
+    `policies.required_checks`, but `§14` defers `TrustedCheckInventoryV2`,
+    no seed template ships, and the pack still generates exactly one file. So
+    that dimension reports `status: "unavailable"` with a deferral reason
+    code — never `pass`, never omitted — and `validate`'s report carries an
+    explicit `unvalidated_capabilities` list so `valid: true` can never be
+    read as "everything was checked". New spec `§14.1` records which slice
+    makes `§7`'s requirement applicable, without weakening `§7` itself.
+  - No new public schema; the existing manifest/receipt/profile contracts
+    were sufficient. `max_supported_rollout_mode` remains `off`; no
+    trusted-check wiring, workflow installation or Path A reachability is
+    introduced.
+
 ### Fixed
 
 - **AgentReview v1 chunk planning by real hunk cost, not path length

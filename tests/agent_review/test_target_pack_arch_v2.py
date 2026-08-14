@@ -13,11 +13,19 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = REPO_ROOT / "app" / "agent_review"
 TEMPLATES_DIR = REPO_ROOT / "templates" / "agentreview-v2-target-pack"
 DOCTOR_MODULE_PATH = APP_DIR / "target_pack_doctor_v2.py"
+VALIDATE_MODULE_PATH = APP_DIR / "target_pack_validate_v2.py"
 TARGET_PACK_MODULE_PATHS = sorted(APP_DIR.glob("target_pack_*.py"))
+
+# Every module whose own docstring claims READ-ONLY BY CONSTRUCTION. A
+# claim in prose is not a guarantee; each one below is held to the same
+# mechanical proof (#203-S2 adds `validate` to what `doctor` established).
+_READ_ONLY_MODULE_PATHS_V2 = (DOCTOR_MODULE_PATH, VALIDATE_MODULE_PATH)
 
 # Attribute names that, called on ANY object, would indicate a write/mutate
 # operation. Deliberately broad (matches the method name regardless of
@@ -49,8 +57,9 @@ def _parse(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
-def test_doctor_module_calls_no_filesystem_mutating_primitive() -> None:
-    tree = _parse(DOCTOR_MODULE_PATH)
+@pytest.mark.parametrize("module_path", _READ_ONLY_MODULE_PATHS_V2, ids=lambda p: p.name)
+def test_read_only_module_calls_no_filesystem_mutating_primitive(module_path: Path) -> None:
+    tree = _parse(module_path)
     offenders: list[str] = []
 
     for node in ast.walk(tree):
@@ -58,12 +67,12 @@ def test_doctor_module_calls_no_filesystem_mutating_primitive() -> None:
             continue
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_ATTR_CALLS_V2:
-            offenders.append(f"{DOCTOR_MODULE_PATH.name}:{func.attr}() at line {node.lineno}")
+            offenders.append(f"{module_path.name}:{func.attr}() at line {node.lineno}")
         elif isinstance(func, ast.Name) and func.id in _FORBIDDEN_MODULE_CALLS_V2:
-            offenders.append(f"{DOCTOR_MODULE_PATH.name}:{func.id}() at line {node.lineno}")
+            offenders.append(f"{module_path.name}:{func.id}() at line {node.lineno}")
 
     assert not offenders, (
-        f"target_pack_doctor_v2.py calls a filesystem-mutating primitive, "
+        f"{module_path.name} calls a filesystem-mutating primitive, "
         f"violating its own 'READ-ONLY BY CONSTRUCTION' docstring guarantee: {offenders}"
     )
 
@@ -84,6 +93,23 @@ def test_run_doctor_v2_has_no_mutating_parameter() -> None:
             assert not offending, f"run_doctor_v2 accepts a write-shaped parameter: {offending}"
             return
     raise AssertionError("run_doctor_v2 not found in target_pack_doctor_v2.py")
+
+
+def test_run_validate_v2_has_no_mutating_parameter() -> None:
+    """Same second, independent check for `#203-S2`'s `run_validate_v2`:
+    the AST scan above proves this module writes nothing ITSELF, but a
+    write-shaped parameter would let a caller push a write through it
+    without any literal write primitive appearing in this file."""
+
+    tree = _parse(VALIDATE_MODULE_PATH)
+    forbidden_param_names = {"plan", "force_overwrite_paths", "seed_content_by_path", "write", "apply"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "run_validate_v2":
+            all_args = [*node.args.args, *node.args.kwonlyargs, *node.args.posonlyargs]
+            offending = [arg.arg for arg in all_args if arg.arg in forbidden_param_names]
+            assert not offending, f"run_validate_v2 accepts a write-shaped parameter: {offending}"
+            return
+    raise AssertionError("run_validate_v2 not found in target_pack_validate_v2.py")
 
 
 # Real target/consumer names and target-specific tool commands. If any of
