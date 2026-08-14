@@ -1,5 +1,7 @@
 # `#201-C0` — Authoritative CI provenance bridge
 
+**Status:** `CHECKPOINT SNAPSHOT` — registro da slice no corte em que foi escrito. Não é estado atual; ver [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md).
+
 **Classe:** implementação observada nesta sessão. Revalidar runs/issues antes de qualquer ação.
 **Base:** `master` @ `865427224b3d10a9ce4858183e5848351672935e` (squash de PR #218, `#201-B3`).
 **Plano canônico:** [`#201` comment 5258778428](https://github.com/mglpsw/aiops-orchestrator/issues/201#issuecomment-5258778428).

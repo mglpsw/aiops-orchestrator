@@ -1,5 +1,7 @@
 # AIOps Blue/Green Operations
 
+**Status:** `HISTORICAL` — documento de fase anterior, preservado como registro. Não descreve o estado ou o caminho oficial atual; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Este documento descreve a operação blue/green do AIOps no CT 102 usando o repo canônico `/opt/aiops-orchestrator`.
 
 ## Papéis dos runtimes

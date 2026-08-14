@@ -1,5 +1,7 @@
 # `#201-B3` — adversarial hardening of trusted checks
 
+**Status:** `CHECKPOINT SNAPSHOT` — registro da slice no corte em que foi escrito. Não é estado atual; ver [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md).
+
 Refs `aiops-orchestrator#201`, third slice, child of the distribution epic
 `aiops-orchestrator#199`. Base: `#201-B2` (PR #212, squash `57e0b05`).
 

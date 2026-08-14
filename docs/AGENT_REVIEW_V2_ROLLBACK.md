@@ -1,5 +1,7 @@
 # AgentReview v2 rollback runbook
 
+**Status:** `CURRENT | V2 DEVELOPMENT` — linha sucessora em desenvolvimento; não é GA, não é default e não é required check. Estado atual: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Refs #133 (parent #89, epic #80, roadmap #46). This is the rollback
 procedure for the **AgentReview v2 toolrepo consumption pin** in a target
 repository's workflow — distinct from `docs/ROLLBACK.md`, which covers the

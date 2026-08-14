@@ -1,16 +1,33 @@
 # AIOps Orchestrator — Project Status
 
+**Status:** `CANONICAL | CURRENT` · corte 2026-08-14
+
+Autoridade factual curta sobre o estado do repositório. O roadmap canônico é a
+issue [#46](https://github.com/mglpsw/aiops-orchestrator/issues/46) — este documento
+não o duplica.
+
 ## Canonical checkpoint
 
-The current final release is `v0.20.0`, published on 19 July 2026 from:
+The current final release is `v0.22.0`, published on 12 August 2026 from:
 
 ```text
-13695c73d1da9f16eba5c20e6478e7d51aefbb45
+2ce1f45768b8779cb48ef8a302d4ed796349f0e5
 ```
 
-The signed `v0.20.0-rc.1` and `v0.20.0` tags resolve to that same commit.
-The previous final release and rollback ref is `v0.19.0` at
-`9c90eac6205782a17a1567737aef026728f88089`.
+It is final and immutable. The previous final release and rollback ref is
+`v0.21.0` at `273864eaa01dfb708a5a26d3756e16c6cd918a9f`.
+
+### `master` is ahead of the published release
+
+`master` carries work that is **not in any published release**: six AgentReview v2
+slices (trusted-check hardening, CI provenance bridge, required-check readiness
+wiring, verified-check ordering, and the first target-pack slice with its init-plan
+binding) and one **critical AgentReview v1 fix** (`#225`, chunk planning by real hunk
+cost).
+
+A consumer pinned at `v0.22.0` does **not** have the `#225` fix. Publishing a new
+release, repinning any consumer, and running a fresh canary are separate, still
+pending actions, each under its own authorization.
 
 ## Product surfaces
 
@@ -25,24 +42,25 @@ authority boundaries must remain explicit.
 AgentReview must never run on CT102. CT102 must never be used as a staging
 environment for AgentReview.
 
-## Runtime status
+## Runtime version vs. toolrepo release
 
-The production runtime reports `0.20.0`. Release validation accepted:
+These are independent and must not be conflated:
 
-- `/health`: HTTP 200 and healthy;
-- `/ready`: HTTP 200 and ready;
-- `/metrics`: HTTP 200;
-- database, providers and action catalog: ready;
-- new container: running and healthy;
-- restart count: `0`;
-- `OOMKilled`: `false`;
-- no critical runtime errors;
-- previous `0.19.0` image retained for rollback;
-- `aiops-orchestrator-next` unchanged.
+| Identity | Value | Meaning |
+|---|---|---|
+| Toolrepo release tag | `v0.22.0` | what a consumer pins for AgentReview |
+| Deployed AIOps runtime | `0.20.0` (`app/__init__.py`) | what CT102 reports |
 
-There was no database migration, route change, provider change, action-catalog
-change or runtime API behavior change in `v0.20.0`. The runtime-facing change
-was the reported application version.
+`__version__` tracks the **runtime** and was deliberately left unchanged by the
+`v0.21.0` and `v0.22.0` toolrepo releases. Publishing a toolrepo release does not
+deploy anything and does not change the runtime version.
+
+The last recorded CT102 runtime validation was performed for the `0.20.0` deploy
+(health, readiness, metrics, database/providers/action catalog ready, no critical
+errors, previous image retained for rollback). That deploy introduced no database
+migration, route change, provider change, action-catalog change or runtime API
+behavior change. **That is a historical record, not a current health assertion** —
+runtime health must be observed live, never read from this document.
 
 ## Runtime architecture
 
@@ -66,7 +84,12 @@ The official runner is `app/agent_router/services/action_runner.py`. Legacy
 executors under `app/adapters/` are compatibility code and are not part of the
 official execution path.
 
-## AgentReview v0.20.0
+## AgentReview v1 — released, maintenance/freeze
+
+The v1 line is published and **frozen for features**: only critical bug, security,
+regression and migration-compatibility changes are accepted. Its published baseline
+is `v0.22.0`. The `#225` chunk-planning fix is merged to `master` and awaiting a
+release.
 
 The offline deterministic pipeline is:
 
@@ -175,29 +198,46 @@ operation. Offline documentation or AgentReview work does not authorize it.
 - automatic contract suggestion application;
 - using telemetry score as a merge decision.
 
-## Current follow-up direction
+## AgentReview v2 — successor in development
 
-The `v0.20.0` release track is complete. Future work should be scoped in
-separate issues and releases. Candidate areas are target-repository wrapper
-adoption, validation-evidence enrichment and optional second-opinion design.
-None of those areas changes the `v0.20.0` contract retroactively.
+The v2 line is the successor and receives all new engineering. It is **not GA, not
+default, and not a required check** in any target repository. Adoption today is
+`shadow`/opt-in, pinned independently of v1.
 
-### AgentReview v2 contract work in development
+Delivered on `master` (not yet in a published release):
 
-Issue #80 is developing a separate AgentReview v2 line. Its first delivery
-defines strict run, chunk payload, response envelope, target profile, and review
-readiness contracts plus byte-reproducible JSON Schemas. The run identity has an
-independent `manifest_hash`; payload and received-response hashes are computed
-and validated from documented canonical JSON preimages; readiness can represent
-expected/evaluated identity, PR state, checks, total/must-review coverage,
-degradation, and lifecycle decisions. This is contract-foundation work only: v2
-is not active in the AgentReview CLIs, planner, builder, parser, synthesizer,
-quality gate, Router, or target workflows.
+- verified run/payload/response/profile/readiness contracts with byte-reproducible
+  JSON Schemas;
+- real hunk-content extraction, redaction and declarative DLP enforcement;
+- trusted-check contracts, offline simulator and isolated executor;
+- authoritative CI provenance bridge and required-check readiness wiring;
+- `agentreview-v2-target-pack`, first slice.
 
-The complete v1 pipeline and quality gate from `v0.20.0` remain operational and
-authoritative. Future migrations must select v2 explicitly, preserve a
-documented v1 compatibility window, and never silently mix contract versions.
-See [AgentReview v2 contracts](AGENT_REVIEW_V2_CONTRACTS.md).
+The complete v1 pipeline and quality gate remain operational and authoritative.
+Migration must select v2 explicitly, preserve a documented v1 compatibility window,
+and never silently mix contract versions. "v2 is the successor" does **not** mean v1
+is removed now. See [AgentReview v2 contracts](AGENT_REVIEW_V2_CONTRACTS.md).
+
+### Target Pack v2
+
+`IMPLEMENTED`: `init`, `doctor`, and operation-plan binding.
+`DEFERRED`: `validate`, `conformance`, `install-workflows`, `upgrade`, `rollback`.
+See [target pack](AGENT_REVIEW_V2_TARGET_PACK.md).
+
+## Release work still pending
+
+- decide the version number for the next v1 release (not decided; not authorized
+  by any document in this repository);
+- publish that release;
+- repin the consumer and observe a fresh canary;
+- reconcile the v1 freeze/GA track (`#221`).
+
+## Explicitly not started
+
+- v2 release/tag and v2 GA declaration;
+- unified installer (v1-compat + v2 + dual-shadow);
+- promotion of v2 to default or required in any target;
+- removal or deprecation timeline for v1.
 
 ## Canonical references
 
@@ -207,6 +247,9 @@ See [AgentReview v2 contracts](AGENT_REVIEW_V2_CONTRACTS.md).
 - [AgentReview E2E pipeline](AGENT_REVIEW_E2E_PIPELINE.md)
 - [AgentReview quality gate](AGENT_REVIEW_QUALITY_GATE.md)
 - [AgentEscala target-repository contract](AGENTESCALA_TARGET_REPO_CONTRACT.md)
-- [Release v0.20.0](RELEASE_V0_20_0.md)
+- [AgentReview v2 contracts](AGENT_REVIEW_V2_CONTRACTS.md)
+- [AgentReview v2 target pack](AGENT_REVIEW_V2_TARGET_PACK.md)
+- [Release notes](RELEASE_NOTES.md) — historical snapshots
 - [Environment boundaries](ENVIRONMENT_BOUNDARIES.md)
 - [Testing](TESTING.md)
+- Roadmap: [issue #46](https://github.com/mglpsw/aiops-orchestrator/issues/46)

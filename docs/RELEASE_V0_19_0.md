@@ -1,5 +1,7 @@
 # Release v0.19.0
 
+**Status:** `RELEASE SNAPSHOT` — registro histórico desta release, preservado como publicado. Não descreve o estado atual do repositório; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 ## 1. Objetivo
 
 Historical release record for `v0.19.0`, finalized on 2 June 2026 after the

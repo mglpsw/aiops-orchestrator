@@ -1,5 +1,7 @@
 # `#203` — `agentreview-v2-target-pack` — Execution-Ready Engineering Specification **rev.2**
 
+**Status:** `CHECKPOINT SNAPSHOT` — registro da slice no corte em que foi escrito. Não é estado atual; ver [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md).
+
 **Status:** current specification for `#203`. Supersedes rev.1 in full.
 
 **rev.1 = historical design baseline.** Its architecture was approved and is

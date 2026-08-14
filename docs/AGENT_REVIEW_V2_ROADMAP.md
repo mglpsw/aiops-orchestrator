@@ -1,8 +1,23 @@
 # AgentReview v2 — roadmap de conclusão, Codex e adoção multi-target
 
+> **Status: `SUPERSEDED` → [issue #46](https://github.com/mglpsw/aiops-orchestrator/issues/46)**
+>
+> Este documento é um **snapshot histórico de 2026-07-23**, preservado como registro
+> do planejamento daquele corte. Ele **não** é o roadmap corrente e não deve ser lido
+> como estado atual.
+>
+> O roadmap canônico do repositório é a issue
+> [#46](https://github.com/mglpsw/aiops-orchestrator/issues/46) — única autoridade
+> normativa de roadmap. Não existe segundo roadmap normativo no tree.
+>
+> O que mudou desde este snapshot, entre outras coisas: o épico de execução migrou de
+> `#80` para `#199` (distribution), com as slices `#200`–`#205`; a baseline v1 avançou
+> de `v0.20.0` para `v0.22.0`; e o target pack `#203` teve sua primeira slice entregue.
+> Estado factual corrente: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 **Estado em 2026-07-23 (America/Sao_Paulo)**  
 **Roadmap issue:** [#46](https://github.com/mglpsw/aiops-orchestrator/issues/46)  
-**Epic de execução:** [#80](https://github.com/mglpsw/aiops-orchestrator/issues/80)
+**Epic de execução (no corte):** [#80](https://github.com/mglpsw/aiops-orchestrator/issues/80)
 
 ## 1. Decisão executiva
 

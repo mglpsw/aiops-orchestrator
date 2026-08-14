@@ -1,5 +1,7 @@
 # Registro canônico dos repositórios
 
+**Status:** `CHECKPOINT SNAPSHOT` — observação datada; revalidar ao vivo antes de agir.
+
 **Observado em:** 30 de julho de 2026, 12:32:30 (America/Sao_Paulo)  
 **Fonte:** consulta viva pelo conector GitHub.  
 **Regra:** branches e HEADs abaixo são checkpoint; revalidar antes de qualquer ação.

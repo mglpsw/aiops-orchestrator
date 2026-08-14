@@ -1,6 +1,19 @@
 # Manual Oficial do Projeto AIOps / Homelab
 
-## Estado atual, arquitetura, operação, auditoria e roadmap
+> **Status: `CHECKPOINT SNAPSHOT` — consolidação de 19 de julho de 2026.**
+>
+> Este manual é uma consolidação **datada**, ligada à baseline de código declarada
+> abaixo. Ele não descreve o estado atual do repositório e não é o roadmap canônico.
+>
+> - Estado factual corrente: [`PROJECT_STATUS.md`](PROJECT_STATUS.md)
+> - Arquitetura corrente: [`ARCHITECTURE.md`](ARCHITECTURE.md)
+> - Roadmap canônico: [issue #46](https://github.com/mglpsw/aiops-orchestrator/issues/46)
+>
+> Desde esta consolidação a baseline v1 publicada avançou de `v0.20.0` para
+> `v0.22.0`, e a linha AgentReview v2 (contratos, trusted checks, target pack) foi
+> desenvolvida — nada disso está refletido abaixo.
+
+## Arquitetura, operação e auditoria no corte de 2026-07-19
 
 **Documento:** AIOPS-MANUAL-001
 
@@ -11,11 +24,11 @@
 **Baseline do código:** `13695c73d1da9f16eba5c20e6478e7d51aefbb45`
 após o merge de `mglpsw/aiops-orchestrator#78`
 
-**Release produtivo do runtime:** `v0.20.0`
+**Release produtivo do runtime no corte:** `v0.20.0`
 
-**Release track atual:** `v0.20.0 — AgentReview Quality Gate`, concluído
+**Release track no corte:** `v0.20.0 — AgentReview Quality Gate`, concluído
 
-**Status do documento:** baseline oficial versionada no repositório
+**Status do documento:** snapshot histórico versionado no repositório
 
 ---
 

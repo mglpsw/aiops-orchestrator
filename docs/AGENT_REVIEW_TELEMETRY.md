@@ -1,5 +1,7 @@
 # AgentReview Telemetry
 
+**Status:** `STABLE CONTRACT | V1` — a linha v1 está released e em manutenção/freeze. Referências a `v0.20.0` abaixo descrevem quando cada contrato foi entregue; a baseline v1 publicada hoje é `v0.22.0`. Estado atual: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 The AgentReview telemetry baseline observes existing offline artifacts after the
 deterministic quality gate and writes `review-telemetry.json`.
 

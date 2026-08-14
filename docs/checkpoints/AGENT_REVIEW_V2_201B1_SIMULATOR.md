@@ -1,5 +1,7 @@
 # Checkpoint — AgentReview v2 trusted checks: offline simulator slice (#201-B1)
 
+**Status:** `CHECKPOINT SNAPSHOT` — registro da slice no corte em que foi escrito. Não é estado atual; ver [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md).
+
 ```yaml
 subject:
   repository: mglpsw/aiops-orchestrator

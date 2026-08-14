@@ -1,5 +1,7 @@
 # AgentReview Engine
 
+**Status:** `STABLE CONTRACT | V1` — a linha v1 está released e em manutenção/freeze. Referências a `v0.20.0` abaixo descrevem quando cada contrato foi entregue; a baseline v1 publicada hoje é `v0.22.0`. Estado atual: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 AgentReview Engine is the offline deterministic review engine delivered in the
 `v0.20.0` line of `aiops-orchestrator`. Its implemented pipeline covers intake
 and redaction, semantic chunk planning, deterministic PR brief and bounded

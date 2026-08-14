@@ -1,5 +1,7 @@
 # Legacy Adapters
 
+**Status:** `HISTORICAL` — documento de fase anterior, preservado como registro. Não descreve o estado ou o caminho oficial atual; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 The repository still contains execution adapters that predate the controlled AIOps runner.
 They are kept for historical compatibility and for legacy flows, but they are not part of
 `POST /v1/aiops/actions/run`.

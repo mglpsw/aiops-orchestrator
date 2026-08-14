@@ -1,5 +1,7 @@
 # AgentReview v2 shadow/advisory rollout specification
 
+**Status:** `CURRENT | V2 DEVELOPMENT` — linha sucessora em desenvolvimento; não é GA, não é default e não é required check. Estado atual: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Refs #133 (parent #89, epic #80, roadmap #46). Specifies how a target
 repository adopts AgentReview v2 reversibly. This is a **specification**
 only — it authorizes no PR, no write, and no configuration change in any

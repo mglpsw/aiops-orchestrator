@@ -1,5 +1,7 @@
 # Release Notes
 
+**Status:** `RELEASE SNAPSHOT` — histórico acumulado de releases publicadas. Estado atual do repositório: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 ## v0.21.0 - AgentReview v2 Offline and Shadow Adoption
 
 > Backfilled: this entry was never added when the tag was cut on 2026-08-04.

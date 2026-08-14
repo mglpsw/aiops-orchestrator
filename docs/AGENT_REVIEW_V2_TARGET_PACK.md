@@ -1,9 +1,31 @@
 # AgentReview v2 — `agentreview-v2-target-pack` (`#203`)
 
+**Status:** `CURRENT | V2 DEVELOPMENT` — not GA, not default, not a required check.
+
 Refs `#203`, child of distribution epic `#199`. Depends on the core
 reconciliation of `#200`/`#201`/`#202` (all `CORE_COMPLETE`, see the
 reconciliation comments on those issues and on `#199`, posted after PR #220
 merged).
+
+## Subcommand status
+
+Merged to `master` across PR #223 (first slice) and PR #228 (operation-plan
+binding). Not yet in any published release.
+
+| Subcommand | Status | Notes |
+|---|---|---|
+| `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile |
+| `doctor` | `IMPLEMENTED` | read-only, proven by AST/call-graph inspection |
+| operation-plan binding | `IMPLEMENTED` | `target_pack_operation_v2.py` + its own schema (PR #228) |
+| `validate` | `DEFERRED` | spec `§12` |
+| `conformance` | `DEFERRED` | spec `§12`; target adoption is `#204`'s charter |
+| `install-workflows` | `DEFERRED` | workflow templates not shipped |
+| `upgrade` | `DEFERRED` | only command that changes rollout mode |
+| `rollback` | `DEFERRED` | spec `§12` |
+| trusted-check inventory integration | `PLANNED` | into the `#201-C0` provenance chain |
+
+Deferred means specified and intentionally not shipped — never silently dropped,
+and never described as available.
 
 ## What this is
 
@@ -22,11 +44,12 @@ Full design: `docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`
 contract shapes, CLI surface, install/drift/rollback semantics, rollout
 modes, trusted-check ownership, and the full threat model.
 
-## What is delivered in this first commit
+## What was delivered in the first slice (PR #223)
 
 Two of the specification's seven CLI subcommands, as a coherent, tested
 slice — `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
-are deferred to a follow-up commit on the same branch/PR (spec `§12`):
+remain deferred (spec `§12`; see the status table above). PR #228
+subsequently bound `init` to an explicit, schema-backed operation plan:
 
 ```text
 agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z [--rollout off|shadow_minimal|shadow_full]

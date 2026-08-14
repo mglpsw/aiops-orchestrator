@@ -1,5 +1,7 @@
 # Checkpoint — adversarial audit follow-up on #200-B/#200-C (post-merge)
 
+**Status:** `CHECKPOINT SNAPSHOT` — registro da slice no corte em que foi escrito. Não é estado atual; ver [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md).
+
 ```yaml
 subject:
   repository: mglpsw/aiops-orchestrator

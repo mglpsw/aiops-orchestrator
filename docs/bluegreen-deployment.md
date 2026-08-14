@@ -1,5 +1,7 @@
 # Blue/Green Deployment
 
+**Status:** `HISTORICAL` — documento de fase anterior, preservado como registro. Não descreve o estado ou o caminho oficial atual; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Este guia documenta a operação blue/green do AIOps no repo canônico `/opt/aiops-orchestrator`.
 
 ## Topologia

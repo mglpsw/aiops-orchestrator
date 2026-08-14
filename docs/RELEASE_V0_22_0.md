@@ -1,5 +1,7 @@
 # Release v0.22.0 — AgentReview v1 evidence taxonomy and v2 review-content extraction
 
+**Status:** `RELEASE SNAPSHOT` — registro histórico desta release, preservado como publicado. Não descreve o estado atual do repositório; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Refs `AgentEscala#675` (v1 evidence taxonomy, #213/#214), `#199` (v2
 distribution epic, slices #200-A/#200-B/#200-C/#201-A/#201-B1/#201-B2 and
 their adversarial-audit follow-up). The release itself — tag, artifact

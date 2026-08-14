@@ -1,5 +1,7 @@
 # ADR — AgentReview v2 semantic content contract (#200-A)
 
+**Status:** `ADR` — decisão registrada no corte em que foi tomada. Estado atual: [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md).
+
 **Status:** accepted
 **Scope:** `aiops-orchestrator#200-A`, first slice of the distribution epic
 `aiops-orchestrator#199`
