@@ -1,9 +1,31 @@
 # AgentReview v2 — `agentreview-v2-target-pack` (`#203`)
 
+**Status:** `CURRENT | V2 DEVELOPMENT` — not GA, not default, not a required check.
+
 Refs `#203`, child of distribution epic `#199`. Depends on the core
 reconciliation of `#200`/`#201`/`#202` (all `CORE_COMPLETE`, see the
 reconciliation comments on those issues and on `#199`, posted after PR #220
 merged).
+
+## Subcommand status
+
+Merged to `master` across PR #223 (first slice) and PR #228 (operation-plan
+binding). Not yet in any published release.
+
+| Subcommand | Status | Notes |
+|---|---|---|
+| `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile — repeating `init` after a target edits `.aiops/target-profile.v2.yaml` requires naming the path via `--accept-target-owned` on both the preview and the `--apply` call, or `apply` fails with `target_owned_identity_acceptance_required`; the profile bytes themselves are left untouched. **This pack version's `max_supported_rollout_mode` is `off`** — `--rollout off` is the only value this slice accepts; `shadow_minimal`/`shadow_full` are interface/future options and are refused before preview or apply |
+| `doctor` | `IMPLEMENTED` | read-only, proven by AST/call-graph inspection |
+| operation-plan binding | `IMPLEMENTED` | `target_pack_operation_v2.py` + its own schema (PR #228) |
+| `validate` | `DEFERRED` | spec `§12` |
+| `conformance` | `DEFERRED` | spec `§12`; target adoption is `#204`'s charter |
+| `install-workflows` | `DEFERRED` | workflow templates not shipped |
+| `upgrade` | `DEFERRED` | only command that changes rollout mode |
+| `rollback` | `DEFERRED` | spec `§12` |
+| trusted-check inventory integration | `PLANNED` | into the `#201-C0` provenance chain |
+
+Deferred means specified and intentionally not shipped — never silently dropped,
+and never described as available.
 
 ## What this is
 
@@ -18,18 +40,29 @@ own profile, domain contracts, DLP extensions, and trusted-check inventory.
 ```
 
 Full design: `docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`
-(Execution-Ready Engineering Specification rev.1) — ownership boundary,
-contract shapes, CLI surface, install/drift/rollback semantics, rollout
-modes, trusted-check ownership, and the full threat model.
+(Execution-Ready Engineering Specification **rev.2**, current — supersedes
+rev.1 in full) — ownership boundary, contract shapes, CLI surface,
+install/drift/rollback semantics, rollout modes, trusted-check ownership,
+and the full threat model.
 
-## What is delivered in this first commit
+## What was delivered in the first slice (PR #223)
 
 Two of the specification's seven CLI subcommands, as a coherent, tested
 slice — `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
-are deferred to a follow-up commit on the same branch/PR (spec `§12`):
+remain deferred (spec `§12`; see the status table above). PR #228
+subsequently bound `init` to an explicit, schema-backed operation plan. Without
+`--apply`, `init` is write-zero: it prints the operation plan and exits.
+Writing the profile/receipt requires a second, explicit invocation with
+`--apply` and the previewed plan's hash. `--rollout` accepts `off`,
+`shadow_minimal` and `shadow_full` at the CLI/argparse level, but **this pack
+version's `max_supported_rollout_mode` is `off`** (`target_pack_build_v2.py`)
+— any request for `shadow_minimal`/`shadow_full` is refused before preview or
+apply; they exist as interface/future options only, not usable capability
+today:
 
 ```text
-agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z [--rollout off|shadow_minimal|shadow_full]
+agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z --rollout off   # only currently-supported value
+agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z --apply --expected-plan-sha256 <hash previewed above>
 agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME --pack-version X.Y.Z
 ```
 

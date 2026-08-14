@@ -1,6 +1,12 @@
 # `#203` — `agentreview-v2-target-pack` — Execution-Ready Engineering Specification **rev.2**
 
-**Status:** current specification for `#203`. Supersedes rev.1 in full.
+**Status:** `OPERATIVE SPECIFICATION | V2 DEVELOPMENT` — current specification for
+`#203`, supersedes rev.1 in full, still the authority `AGENT_REVIEW_V2_TARGET_PACK.md`
+cites for every deferred (`§12`) subcommand's classification. Not superseded by
+any later document. This is distinct from the SHA/PR/issue-state snapshot
+embedded in its own body, which the "Live-state rule" below already marks as
+dated, never a live trigger. For overall repository state, see
+[`../PROJECT_STATUS.md`](../PROJECT_STATUS.md).
 
 **rev.1 = historical design baseline.** Its architecture was approved and is
 substantially carried forward here; it is preserved in Git history and is no

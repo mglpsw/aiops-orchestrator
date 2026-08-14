@@ -1,7 +1,10 @@
 # AgentReview documentation index
 
-This directory contains the canonical documentation for the deterministic
-AgentReview engine delivered in `v0.20.0`.
+**Status:** `STABLE CONTRACT | V1`
+
+Index for the deterministic **AgentReview v1** engine — released and in
+maintenance/freeze, published baseline `v0.22.0`. The **v2** successor line is
+documented separately under `AGENT_REVIEW_V2_*.md` and is not covered here.
 
 ## Start here
 
@@ -44,7 +47,7 @@ code and tests are authoritative.
 
 ## Non-negotiable boundaries
 
-- AgentReview runs only in CT104 dev/toolrepo mode.
+- AgentReview runs in dev/toolrepo mode only — currently CT104.
 - It never runs on CT102.
 - AIOps AgentReview CLIs do not call providers, Agent Router, GitHub write APIs,
   Docker, SSH, deploy or restart.
@@ -58,6 +61,6 @@ code and tests are authoritative.
 
 ## Release reference
 
-- [`RELEASE_V0_20_0.md`](RELEASE_V0_20_0.md)
-- [`PROJECT_STATUS.md`](PROJECT_STATUS.md)
+- [`PROJECT_STATUS.md`](PROJECT_STATUS.md) — current factual state
+- [`RELEASE_NOTES.md`](RELEASE_NOTES.md) — historical release snapshots
 - [`TESTING.md`](TESTING.md)

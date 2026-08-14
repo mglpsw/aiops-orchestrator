@@ -1,5 +1,7 @@
 # AIOps Diagnostic Engine v1 Plan
 
+**Status:** `HISTORICAL` — documento de fase anterior, preservado como registro. Não descreve o estado ou o caminho oficial atual; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 ## Objetivo
 AIOps v1 sera somente diagnostico, sem execucao real.
 

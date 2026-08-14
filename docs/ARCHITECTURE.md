@@ -1,5 +1,7 @@
 # AIOps Orchestrator — Arquitetura Canônica
 
+**Status:** `CANONICAL | CURRENT`
+
 ## Visão geral
 
 O AIOps Orchestrator é um sistema seguro e modular de orquestração orientado
@@ -8,11 +10,63 @@ por diagnóstico. Separa **observar** (coletar sinais e diagnosticar),
 aprovação) e **revisar software** (pipeline offline determinístico em ambiente
 separado).
 
-**Release atual: `v0.20.0`.** O runner read-only está ativo no caminho
-produtivo do CT102. O AgentReview roda exclusivamente no CT104 e produz
-artifacts determinísticos até `review-quality-gate.json`, sem executar código do
-target repo nem chamar providers diretamente. Qualquer execução mutável, bridge
-ou remediação automática continua fora do contrato.
+Última release publicada: **`v0.22.0`**; `master` contém trabalho ainda não
+publicado — ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md). Qualquer execução mutável,
+bridge ou remediação automática continua fora do contrato.
+
+Este documento separa deliberadamente:
+
+- **(A) arquitetura lógica** — quais componentes existem e como se relacionam;
+- **(B) topologia de deployment** — em quais máquinas eles rodam hoje.
+
+A topologia é uma escolha operacional corrente, **não** uma propriedade dos
+componentes. "O AgentReview é CT104" é uma afirmação incorreta: o AgentReview é um
+engine offline que *atualmente* roda no CT104.
+
+---
+
+## (A) Arquitetura lógica
+
+```text
+Target repositories (artifacts sanitizados)
+        │
+        ▼
+AgentReview  ── v1 (released/frozen) │ v2 (successor, em desenvolvimento)
+        │                            └─ Target Pack — instalação em repos alvo
+        ▼
+Quality gate / readiness determinístico   ← autoridade de decisão
+        │
+        ▼
+Publisher no repositório alvo (fail-closed)
+
+        ↕ CAEM — contratos, evidência, reprodutibilidade, semântica de execução
+        ↕ Agent Router — transporte de inferência, seleção de provider/modelo
+```
+
+```text
+AIOps runtime
+        ↕ Agent Router
+        ↕ fontes de observabilidade (Prometheus, estado do serviço)
+```
+
+Fronteiras invioláveis, independentes de topologia:
+
+- a CI determinística mantém autoridade sobre testes; LLM é advisory;
+- o publisher não altera código, deploy ou infraestrutura;
+- não há auto-merge, auto-deploy ou remediação de produção por LLM;
+- acesso ao Router não autoriza host, SSH, Docker ou filesystem;
+- um job de análise não ganha permissão de escrita/publicação;
+- evidência/proof não concede autoridade.
+
+## (B) Topologia de deployment atual
+
+| Componente | Onde roda hoje | Papel |
+|---|---|---|
+| AIOps runtime | CT102 | runtime produtivo |
+| AgentReview (v1 e v2) | CT104 | tooling offline/dev |
+
+O AgentReview não roda no CT102, e o CT102 nunca é staging do AgentReview. Se a
+topologia mudar, esta seção muda — a seção (A) não.
 
 ---
 
@@ -133,9 +187,12 @@ Reage a comentários de PR com `/agent review`, `/agent review llm` e `/agent as
 - **Fallbacks:** respostas separadas para `/agent ask`, com fallback para `GITHUB_STEP_SUMMARY`
   quando o comentário do PR não puder ser criado
 
-### Componente: AgentReview Engine offline
+### Componente: AgentReview Engine offline — v1
 
-Constrói e valida o contexto de review no CT104 sem chamar diretamente Agent
+**Estado: released, maintenance/freeze.** Baseline publicada `v0.22.0`. Só recebe
+correção crítica, de segurança, de regressão ou de compatibilidade de migração.
+
+Constrói e valida o contexto de review sem chamar diretamente Agent
 Router, providers, GitHub write APIs, CT102, Docker, SSH ou deploy.
 
 - **Implementado:** `app/agent_review/` e `scripts/aiops-review-*.py`
@@ -149,6 +206,57 @@ Router, providers, GitHub write APIs, CT102, Docker, SSH ou deploy.
   automaticamente
 - **Target repo:** outputs ficam fora do working tree e o consumo deve fixar um
   SHA completo e imutável deste toolrepo
+
+### Componente: AgentReview Engine — v2
+
+**Estado: sucessor em desenvolvimento. Não é GA, não é default, não é required
+check.** Adoção atual é `shadow`/opt-in, pinada separadamente do v1.
+
+- **Implementado:** `app/agent_review/*_v2.py`, `schemas/agent-review/v2/**`,
+  `scripts/aiops-review-*-v2.py`
+- **Contratos:** run/payload/response/profile/readiness com binding verificado e
+  JSON Schemas byte-reproduzíveis
+- **Conteúdo:** extração e redação de conteúdo real de hunk, DLP declarativa
+- **Trusted checks:** contratos host-owned, simulador offline e executor isolado
+  cujo verdict deriva exclusivamente do exit code observado pelo kernel
+- **Proveniência:** bridge autoritativa de checks de CI e wiring de required check
+  na readiness determinística
+- **Autoridade:** `ReviewReadinessV2` determinístico; o texto do modelo é advisory
+
+A coexistência v1/v2 é deliberada. O v2 ser o sucessor não implica remoção do v1;
+nenhuma migração ocorre implicitamente e versões de contrato nunca se misturam.
+
+### Componente: AgentReview Target Pack (v2)
+
+**Estado: em desenvolvimento.** Papel arquitetural final: instalar o engine v2
+em um repositório alvo sem forkar o engine. O toolrepo é dono do engine, dos
+templates genéricos e do compilador/instalador; o alvo é dono do próprio
+profile, contratos de domínio, extensões de DLP e inventário de trusted
+checks.
+
+A slice atual **não instala o engine ainda**. `init` faz seed apenas do
+profile/integration metadata (`TARGET_OWNED`, hoje um único arquivo:
+`.aiops/target-profile.v2.yaml`), com `max_supported_rollout_mode` travado em
+`off` quando aplicável — instalação de workflow/engine permanece deferida
+(`install-workflows`, abaixo).
+
+- **Implementado:** `init` (seed de profile, não do engine), `doctor`
+  (read-only), binding de operation plan
+- **Deferido:** `validate`, `conformance`, `install-workflows` (é aqui que o
+  engine propriamente seria instalado), `upgrade`, `rollback`
+- **Garantia:** pode instalar/configurar integração; nunca cria autoridade, nunca
+  forka o engine e nunca promove rollout silenciosamente
+
+### Componente: CAEM (consumo)
+
+Norma externa de contratos, evidência, reprodutibilidade e semântica de execução.
+A norma pertence ao repositório `mglpsw/caem`; aqui ela é **consumida**, nunca
+corrigida localmente.
+
+- **Implementado:** `app/caem_consumer/`, `config/caem/caem-3.0-f0.pin.json`
+- **Identidade:** o pin F0 é a única fonte de identidade; material 2.1.0 anterior
+  está em quarantine com `authority_effect=none`
+- **Garantia:** evidência e proof não concedem autoridade
 
 ### Componente: Chat / OpenWebUI Intents
 

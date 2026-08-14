@@ -1,5 +1,7 @@
 # AgentReview v2 — trusted checks: contracts (#201-A)
 
+**Status:** `CURRENT | V2 DEVELOPMENT` — linha sucessora em desenvolvimento; não é GA, não é default e não é required check. Estado atual: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Refs `aiops-orchestrator#201`, first slice of the distribution epic
 `aiops-orchestrator#199`. This document is the operational reference for
 the plan/result/promotion contracts; design rationale for each decision

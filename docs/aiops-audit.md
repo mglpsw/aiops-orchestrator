@@ -1,5 +1,7 @@
 # AIOps Audit
 
+**Status:** `HISTORICAL` — documento de fase anterior, preservado como registro. Não descreve o estado ou o caminho oficial atual; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 ## Estado atual
 
 O repo `aiops-orchestrator` ja opera como um orquestrador de tarefas orientado por LLM, mas hoje ele mistura tres coisas no mesmo fluxo: diagnostico/classificacao, planejamento e execucao real de comandos. O caminho principal passa por `POST /v1/chat/ingest`, gera um plano, valida por policy e, se o risco permitir, chama executores que podem abrir shell local, SSH ou Docker.

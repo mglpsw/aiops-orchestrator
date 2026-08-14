@@ -1,5 +1,7 @@
 # Handoff to `agent-router-api`
 
+**Status:** `HISTORICAL` — documento de fase anterior, preservado como registro. Não descreve o estado ou o caminho oficial atual; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 ## State of the canonical AIOps
 
 The canonical AIOps path in this repository is now the read-only, audited, approval-gated

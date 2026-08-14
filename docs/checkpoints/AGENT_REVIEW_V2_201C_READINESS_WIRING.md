@@ -1,5 +1,7 @@
 # `#201-C` — Required-check readiness wiring
 
+**Status:** `CHECKPOINT SNAPSHOT` — registro da slice no corte em que foi escrito. Não é estado atual; ver [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md).
+
 **Classe:** checkpoint de implementação. Review adversarial **em andamento**
 — 9 rodadas executadas até agora, cada uma achando e corrigindo um problema
 genuíno (0 rodadas consecutivas limpas); aguardando duas rodadas consecutivas

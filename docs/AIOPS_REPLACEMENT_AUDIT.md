@@ -1,5 +1,7 @@
 # AIOps Replacement Audit
 
+**Status:** `HISTORICAL` — documento de fase anterior, preservado como registro. Não descreve o estado ou o caminho oficial atual; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 ## Conclusão
 
 **Status:** `partially_replaced`

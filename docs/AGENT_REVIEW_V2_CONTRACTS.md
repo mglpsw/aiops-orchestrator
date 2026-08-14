@@ -1,5 +1,7 @@
 # AgentReview v2 contract foundation
 
+**Status:** `CURRENT | V2 DEVELOPMENT` — linha sucessora em desenvolvimento; não é GA, não é default e não é required check. Estado atual: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Issue #80 introduces an explicitly versioned contract line alongside the
 operational AgentReview v1 pipeline from `v0.20.0`. This first delivery freezes
 only strict v2 data models and JSON Schemas. It does not activate v2 in a CLI,

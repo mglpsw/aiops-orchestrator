@@ -1,5 +1,7 @@
 # Release v0.21.0 — AgentReview v2 Offline and Shadow Adoption
 
+**Status:** `RELEASE SNAPSHOT` — registro histórico desta release, preservado como publicado. Não descreve o estado atual do repositório; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Refs #89 (parent #80, roadmap #46). Prepared by #133 (this document); the
 release itself — tag, GitHub Release, artifact publication — is a
 protected action requiring its own `publish_release` grant, not authorized

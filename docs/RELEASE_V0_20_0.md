@@ -1,5 +1,7 @@
 # Release v0.20.0
 
+**Status:** `RELEASE SNAPSHOT` — registro histórico desta release, preservado como publicado. Não descreve o estado atual do repositório; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 ## 1. Release identity
 
 - Release: `v0.20.0` — AgentReview Quality Gate track.

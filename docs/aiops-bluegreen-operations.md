@@ -1,5 +1,11 @@
 # AIOps Blue/Green Operations
 
+**Status:** `CURRENT | OPERATIONAL REFERENCE` — mesmo fluxo (`scripts/validate_bluegreen.sh`,
+`scripts/compare_aiops_runtimes.sh`) permanece o caminho oficial de validação
+blue/green, validado pela CI e coerente com a topologia `8000`/`8001` de
+`docs/ARCHITECTURE.md`. Não confundir com estado de release ou runtime; ver
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Este documento descreve a operação blue/green do AIOps no CT 102 usando o repo canônico `/opt/aiops-orchestrator`.
 
 ## Papéis dos runtimes

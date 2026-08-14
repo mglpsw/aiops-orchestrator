@@ -1,5 +1,7 @@
 # AgentReview v2 — minimal offline toolrepo installation
 
+**Status:** `CURRENT | V2 DEVELOPMENT` — linha sucessora em desenvolvimento; não é GA, não é default e não é required check. Estado atual: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Refs #85. Describes how a target repository's privileged workflow (CT104 or
 equivalent offline runner) installs the AgentReview engine without pulling
 in any AIOps runtime dependency (FastAPI, Uvicorn, SQLAlchemy, database

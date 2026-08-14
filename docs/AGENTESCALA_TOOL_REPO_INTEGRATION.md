@@ -1,5 +1,7 @@
 # AgentEscala Tool Repo Integration
 
+**Status:** `STABLE CONTRACT | V1` — a linha v1 está released e em manutenção/freeze. Referências a `v0.20.0` abaixo descrevem quando cada contrato foi entregue; a baseline v1 publicada hoje é `v0.22.0`. Estado atual: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Status: supplemental guidance. The canonical wrapper contract is
 `docs/AGENTESCALA_TARGET_REPO_CONTRACT.md`.
 
@@ -189,6 +191,11 @@ may either omit the expected chunk response or emit an empty degraded response.
 It must never invent findings.
 
 ## Chunk cost projection and coverage fail-closed (v1, aiops-orchestrator#225)
+
+**`master`-only, not yet in a published release.** This fix (`da5a03b`) is
+merged to `master` but not in the `v0.22.0` baseline pinned today; a consumer
+on the published tag does not have this behavior yet. See
+[`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
 `aiops-review-plan-chunks.py` and `aiops-review-build-payloads.py` share a
 single cost authority (`app/agent_review/payload_cost_model.py`) so a chunk

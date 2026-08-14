@@ -326,12 +326,17 @@
     found while auditing this — a model emitting a bare code from
     `CRITICAL_LIMITATIONS` (e.g. `coverage_missing`, with no `:` suffix to
     tell it apart) drove `status` to `degraded` and the verdict to
-    `manual_review_required` on a fully covered review. `ChunkResults`,
-    `FinalReview` and `ReviewQualityGate` gain an additive
-    `model_reported_limitations`; `schema_version` stays `1` and consumers
-    reading only `limitations` are unaffected. The rendered markdown gives
-    each namespace its own heading and caps them independently, so model
-    prose can no longer evict deterministic codes from the comment.
+    `manual_review_required` on a fully covered review. `ChunkResults` and
+    `FinalReview` gain an additive `model_reported_limitations`, carried
+    through to the rendered Markdown; `ReviewQualityGate` has no such field
+    and `evaluate_review_quality_gate` does not read one -- the gate's
+    transport ends at the synthesizer. `schema_version` stays `1` and
+    consumers reading only `limitations` are unaffected. The rendered
+    markdown gives each namespace its own heading and caps them
+    independently, so model prose can no longer evict deterministic codes
+    from the comment.
+    (Correction, `#214`/`#229`: this entry originally also named
+    `ReviewQualityGate` as a recipient of the field; it never was one.)
   - **Artifact requiredness.** `pr_brief` emitted `artifact_missing:<name>`
     for every absent artifact, ignoring the `required: false` already
     declared in the target profile — which is why a trusted recomputation

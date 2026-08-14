@@ -1,5 +1,7 @@
 # AgentReview v1/v2 compatibility matrix
 
+**Status:** `CURRENT | V2 DEVELOPMENT` — linha sucessora em desenvolvimento; não é GA, não é default e não é required check. Estado atual: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 Refs #133 (parent #89, epic #80, roadmap #46). Describes how v1 and v2
 coexist during the shadow adoption period. Neither version is being
 retired by this document; retirement is a separate, future release.

@@ -1,5 +1,7 @@
 # Homelab Handoff — aiops-orchestrator
 
+**Status:** `HISTORICAL` — documento de fase anterior, preservado como registro. Não descreve o estado ou o caminho oficial atual; ver [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+
 > **Data:** 2026-04-27
 > **Destino:** Prometheus CT 200 / Grafana CT 200
 > **Fonte de verdade de métricas:** `docs/metrics-contract.md`
