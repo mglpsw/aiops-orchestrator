@@ -19,17 +19,31 @@ It is final and immutable. The previous final release and rollback ref is
 
 ### `master` is ahead of the published release
 
-`master` carries work that is **not in any published release**: seven AgentReview v2
-commits (trusted-check hardening, the CI provenance bridge — which also extracted
-shared JSON/digest primitives into `app/common/strict_json.py`, a CAEM/shared surface
-touch, not only v2 — required-check readiness wiring, verified-check ordering, the
-first target-pack slice with its init-plan binding, and `#230`'s post-merge
-identity-hardening on that same target-pack surface) and one **critical AgentReview
-v1 fix** (`#225`, chunk planning by real hunk cost).
+`master` carries work that is **not in any published release**. As observed at
+`abe034ad24c89e6167c1f05797178e57d49fdd63`, the delta is 11 commits:
 
-A consumer pinned at `v0.22.0` does **not** have the `#225` fix. Publishing a new
-release, repinning any consumer, and running a fresh canary are separate, still
-pending actions, each under its own authorization.
+- **AgentReview v2 core and hardening** — trusted-check hardening, the CI
+  provenance bridge (which also extracted shared JSON/digest primitives into
+  `app/common/strict_json.py`, a CAEM/shared surface touch, not only v2),
+  required-check readiness wiring, verified-check ordering, plus `#230`'s
+  post-merge identity-hardening (H1-A) and `#233`'s trusted-authority runtime
+  boundary fix (H1-C);
+- **the first target-pack slice** with its init-plan binding;
+- **AgentReview v1 stabilization** — `#225` (chunk planning by real hunk cost)
+  and `#231`/H1-B (planner soundness: canonical path identity, brief-budget
+  projection, dedupe parity, binary-vs-textual hunks, fallback completeness);
+- **documentation reconciliation** (`#229`), `.md`-only.
+
+A consumer pinned at `v0.22.0` does **not** have the `#225` or H1-B v1 fixes.
+Publishing a new release, repinning any consumer, and running a fresh canary are
+separate, still pending actions, each under its own authorization.
+
+The post-merge review debt tracked in `#205` (C1-C10) is now **entirely
+`fixed_and_verified`** across H1-A, H1-B and H1-C. That does **not** make the
+`POST_MERGE_REVIEW_DEBT_GATE` satisfied: `#232` (P2, AgentReview v1 — a
+non-`must_review` file with no textual hunk still counts as covered) remains
+`OPEN` and deliberately deferred. It does not block `#203` or `#204`, but it
+requires an explicit disposition before the `#205` release candidate.
 
 ## Product surfaces
 
@@ -223,17 +237,40 @@ Delivered on `master`, not yet in a published release:
 
 - authoritative CI provenance bridge and required-check readiness wiring;
 - `agentreview-v2-target-pack` (`init`/`doctor`, operation-plan binding, and
-  the post-merge identity-hardening closed in `#230`).
+  the post-merge identity-hardening closed in `#230`);
+- the trusted-authority runtime boundary fix closed in `#233` (H1-C).
 
 The complete v1 pipeline and quality gate remain operational and authoritative.
 Migration must select v2 explicitly, preserve a documented v1 compatibility window,
 and never silently mix contract versions. "v2 is the successor" does **not** mean v1
 is removed now. See [AgentReview v2 contracts](AGENT_REVIEW_V2_CONTRACTS.md).
 
+### Core prerequisites for `#203` are satisfied; the issues stay open
+
+`#200`, `#201` and `#202` remain formally `OPEN`, but for **target-adoption**
+reasons, not engine gaps. Each carries a published per-criterion reconciliation
+against the live code:
+
+| Issue | Core state | Formal closure waits on |
+|---|---|---|
+| `#200` real review content | `CORE_SYNTHETIC: COMPLETE` | first real AgentEscala semantic canary (`AgentEscala#759`) |
+| `#201` trusted checks | `CORE: COMPLETE` | real target adoption (`AgentEscala#750`) |
+| `#202` path codec | `CORE: COMPLETE` | consumer repin/migration to the upstream codec (`AgentEscala#752`) |
+
+None of the three blocks `#203`. Their checkboxes are not treated as a second
+state machine — the per-criterion classification in each issue's reconciliation
+comment is the source of truth.
+
 ### Target Pack v2
 
-`IMPLEMENTED`: `init`, `doctor`, and operation-plan binding.
-`DEFERRED`: `validate`, `conformance`, `install-workflows`, `upgrade`, `rollback`.
+`IMPLEMENTED`: `init`, `doctor`, operation-plan binding, and the H1-A identity
+hardening.
+`NOT YET IMPLEMENTED`: `validate`, `conformance`, `install-workflows`,
+`upgrade`, `rollback`.
+
+This pack version's `max_supported_rollout_mode` is `off` — `shadow_minimal`
+and `shadow_full` are interface-level options that are refused before preview
+or apply. `#203` is the next active implementation frontier.
 See [target pack](AGENT_REVIEW_V2_TARGET_PACK.md).
 
 ## Release work still pending
