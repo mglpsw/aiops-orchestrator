@@ -12,11 +12,12 @@ concede autoridade e não substitui consulta viva ao forge.
 
 - Repositório canônico: [`mglpsw/aiops-orchestrator`](https://github.com/mglpsw/aiops-orchestrator)
 - Branch padrão: `master`
-- HEAD observado: `da5a03b4b444f00319e553b613cafcb44a98b132`
-  (squash merge de PR #227, `#225` — chunk planning por custo real de hunk).
+- HEAD observado: `7a6c6595b32373e2c297fd90dd7726974d69fa24`
+  (squash merge de PR #230 — fecha C1-C4 e achados de review pós-merge na
+  superfície de identidade do target-pack).
 - Última release publicada: `v0.22.0` → `2ce1f45768b8779cb48ef8a302d4ed796349f0e5`,
   final, imutável, publicada em 2026-08-12.
-- `master` está **7 commits à frente** da `v0.22.0`. Esse delta é **unreleased**.
+- `master` está **8 commits à frente** da `v0.22.0`. Esse delta é **unreleased**.
 - AgentReview é subsistema deste repositório, não repositório separado.
 
 ### Delta unreleased (`v0.22.0..master`)
@@ -24,14 +25,20 @@ concede autoridade e não substitui consulta viva ao forge.
 | Commit | Escopo | Issue/PR |
 |---|---|---|
 | `8654272` | v2 — adversarial hardening de trusted checks | `#201-B3` / PR #218 |
-| `8b20ae3` | v2 — authoritative CI provenance bridge | `#201-C0` / PR #219 |
+| `8b20ae3` | v2 — authoritative CI provenance bridge; **também** extrai primitives de JSON estrito/digest de `app/caem_consumer/f0.py` para `app/common/strict_json.py` (superfície CAEM/shared, não só v2) | `#201-C0` / PR #219 |
 | `7500966` | v2 — required-check readiness wiring | `#201-C` / PR #220 |
 | `5a1677f` | v2 — canonicalize verified check order | PR #224 |
 | `79c7b2f` | v2 — `agentreview-v2-target-pack`, `init`/`doctor` | `#203` / PR #223 |
 | `7284528` | v2 — bind target pack init plans | PR #228 |
 | `da5a03b` | **v1** — chunk planning por custo real de hunk, fail closed | `#225` / PR #227 |
+| `7a6c659` | v2 — target-pack: fecha C1-C4 (schema, identidade `--target-repo`, reconciliação de set target-owned, symlink/path containment) + achados do Codex shadow review | `#205`/H1-A / PR #230 |
 
-Seis dos sete commits tocam exclusivamente superfície v2; `da5a03b` (o fix v1) não
+Cinco dos oito commits tocam exclusivamente superfície v2 sem tocar nenhum
+arquivo v1 nem CAEM/shared; `8b20ae3` toca v2 **e** um módulo CAEM/shared
+compartilhado (`app/common/strict_json.py`, `app/caem_consumer/f0.py`) — os
+testes de equivalência visam preservar comportamento, mas isso permanece uma
+superfície não-v2 tocada, não apenas v2; `7a6c659` toca exclusivamente
+`target_pack_*_v2.py` e seus testes/schemas (v2); `da5a03b` (o fix v1) não
 toca nenhum arquivo v2.
 
 ## Estado de referência
@@ -49,8 +56,14 @@ toca nenhum arquivo v2.
 - **AgentReview v2:** successor em desenvolvimento ativo. Não é GA, não é default,
   não é required check em nenhum target.
 - **Target pack (`#203`):** primeira slice mergeada (`init`, `doctor`) mais o binding de
-  operation plans (PR #228). `validate`/`conformance`/`install-workflows`/`upgrade`/
-  `rollback` permanecem deferidos.
+  operation plans (PR #228). `init` hoje faz seed apenas de profile/integration
+  metadata — não instala o engine; `install-workflows` (deferido) é onde a
+  instalação do engine propriamente aconteceria. PR #230 fechou C1-C4 e achados
+  subsequentes de Codex shadow review na superfície de identidade (schema,
+  `--target-repo` obrigatório em `doctor`, reconciliação do set target-owned,
+  containment de symlink/path) — dívida pós-merge, não nova capability.
+  `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback` permanecem
+  deferidos.
 - **ProjectOps v1:** trilha separada de inteligência de CI, advisory e fail-safe; não
   revalidada neste corte.
 - análise por LLM é advisory; `review-quality-gate.json` / `ReviewReadinessV2` e a CI
@@ -82,13 +95,16 @@ Repin é ação protegida e não foi executado neste corte.
 - `#213`, `#222`: `open`;
 - release v2: `not_created`;
 - deployment AgentReview: offline/advisory no CT104;
-- runtime AIOps implantado no CT102: `0.20.0` (`app/__init__.py`), independente da
+- última implantação registrada do runtime AIOps no CT102: `0.20.0`
+  (`app/__init__.py`) — o que a árvore fonte deste checkout declara ter sido
+  validado no último deploy, não uma observação viva do CT102; independente da
   tag do toolrepo — releases de toolrepo não implantam runtime;
 - validação: `partial`;
 - observation: métricas/false-positive loop a ampliar.
 
 ## Próxima ação mínima
 
-Concluir a reconciliação documental, depois decidir a versão da próxima release v1
-sob grant próprio. Merge, tag, release, repin, canário, deploy e fechamento de
-`#221`/`#217`/`#199` permanecem retidos, cada um exigindo grant nominal.
+Concluir a reconciliação documental (PR #229), depois decidir a versão da
+próxima release v1 sob grant próprio. Merge, tag, release, repin, canário,
+deploy e fechamento de `#221`/`#217`/`#199` permanecem retidos, cada um
+exigindo grant nominal.

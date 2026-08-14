@@ -2,6 +2,47 @@
 
 **Status:** `RELEASE SNAPSHOT` — histórico acumulado de releases publicadas. Estado atual do repositório: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
+## v0.22.0 - AgentReview v1 Evidence Taxonomy and v2 Review-Content Extraction
+
+> Backfilled: this entry was never added when the tag was cut on 2026-08-12.
+> See [`RELEASE_V0_22_0.md`](RELEASE_V0_22_0.md) for the full release
+> contract; content here is summarized strictly from that document, not new
+> claims.
+
+### Final identity
+
+- Final tag: `v0.22.0`
+- RC tag: `v0.22.0-rc.1`
+- Shared target SHA: `2ce1f45768b8779cb48ef8a302d4ed796349f0e5`
+- Same commit as the RC — no code changed after the RC
+
+### Highlights
+
+- **AgentReview v1 evidence taxonomy** (`AgentEscala#675`, upstream #214):
+  provenance separation (`model_reported_limitations` kept out of the
+  deterministic `limitations` namespace), `required_artifact_missing:` vs.
+  `optional_artifact_missing:` in `pr_brief`, and `semantic_chunker`'s plan
+  status deriving from coverage facts instead of limitation presence
+- **AgentReview v2 review content** (#200-A/#200-B/#200-C): `ReviewContentV2`
+  sidecar, transport-echo integrity anchor, real hunk-content extraction and
+  redaction, declarative DLP enforcement, Agent Router transport wiring
+- **AgentReview v2 trusted-check contracts and executor** (#201-A, #201-B1,
+  #201-B2): host-owned `TrustedCheckPlanV2`/`TrustedCheckResultV2`
+  contracts, the offline simulator, and the real isolated executor
+
+### Compatibility
+
+- does not remove, deprecate, or change the v1 consumer contract beyond the
+  evidence-taxonomy fixes above (`schema_version` stays `1`)
+- does not promote v2 to default or required for any target
+- does not write to any consumer repository or touch CT102
+- AgentEscala pin remained `v0.20.0` at release time (unchanged by this
+  release)
+
+See [`RELEASE_V0_22_0.md`](RELEASE_V0_22_0.md) for the complete contract.
+
+---
+
 ## v0.21.0 - AgentReview v2 Offline and Shadow Adoption
 
 > Backfilled: this entry was never added when the tag was cut on 2026-08-04.

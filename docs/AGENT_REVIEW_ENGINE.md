@@ -151,9 +151,12 @@ engine never merges them:
   or `manual_review_required`.
 - `model_reported_limitations` is what the **model** said about its own work,
   taken verbatim from `ChunkResponse.limitations` (whose `type` and `detail`
-  are unconstrained free text). It is carried through the parser, the
-  synthesizer and the quality gate so a target can publish it, and is read by
-  no decision anywhere in the pipeline.
+  are unconstrained free text). It is carried through `ChunkResults` (the
+  parser) and `FinalReview` (the synthesizer, including the rendered
+  Markdown) so a target can publish it. `ReviewQualityGate` has no
+  `model_reported_limitations` field, and `evaluate_review_quality_gate`
+  does not read it -- the gate's transport ends at the synthesizer, and is
+  read by no decision anywhere in the pipeline.
 
 The invariant is: *LLM-authored content never creates deterministic coverage
 or readiness state.* Both fields are additive; `schema_version` stays `1`, and

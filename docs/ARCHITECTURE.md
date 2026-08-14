@@ -228,13 +228,22 @@ nenhuma migração ocorre implicitamente e versões de contrato nunca se mistura
 
 ### Componente: AgentReview Target Pack (v2)
 
-**Estado: em desenvolvimento.** Instala o engine v2 em um repositório alvo sem
-forkar o engine. O toolrepo é dono do engine, dos templates genéricos e do
-compilador/instalador; o alvo é dono do próprio profile, contratos de domínio,
-extensões de DLP e inventário de trusted checks.
+**Estado: em desenvolvimento.** Papel arquitetural final: instalar o engine v2
+em um repositório alvo sem forkar o engine. O toolrepo é dono do engine, dos
+templates genéricos e do compilador/instalador; o alvo é dono do próprio
+profile, contratos de domínio, extensões de DLP e inventário de trusted
+checks.
 
-- **Implementado:** `init`, `doctor` (read-only), binding de operation plan
-- **Deferido:** `validate`, `conformance`, `install-workflows`, `upgrade`, `rollback`
+A slice atual **não instala o engine ainda**. `init` faz seed apenas do
+profile/integration metadata (`TARGET_OWNED`, hoje um único arquivo:
+`.aiops/target-profile.v2.yaml`), com `max_supported_rollout_mode` travado em
+`off` quando aplicável — instalação de workflow/engine permanece deferida
+(`install-workflows`, abaixo).
+
+- **Implementado:** `init` (seed de profile, não do engine), `doctor`
+  (read-only), binding de operation plan
+- **Deferido:** `validate`, `conformance`, `install-workflows` (é aqui que o
+  engine propriamente seria instalado), `upgrade`, `rollback`
 - **Garantia:** pode instalar/configurar integração; nunca cria autoridade, nunca
   forka o engine e nunca promove rollout silenciosamente
 

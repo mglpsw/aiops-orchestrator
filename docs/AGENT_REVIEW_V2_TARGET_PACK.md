@@ -40,9 +40,10 @@ own profile, domain contracts, DLP extensions, and trusted-check inventory.
 ```
 
 Full design: `docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`
-(Execution-Ready Engineering Specification rev.1) — ownership boundary,
-contract shapes, CLI surface, install/drift/rollback semantics, rollout
-modes, trusted-check ownership, and the full threat model.
+(Execution-Ready Engineering Specification **rev.2**, current — supersedes
+rev.1 in full) — ownership boundary, contract shapes, CLI surface,
+install/drift/rollback semantics, rollout modes, trusted-check ownership,
+and the full threat model.
 
 ## What was delivered in the first slice (PR #223)
 

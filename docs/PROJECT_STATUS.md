@@ -19,11 +19,13 @@ It is final and immutable. The previous final release and rollback ref is
 
 ### `master` is ahead of the published release
 
-`master` carries work that is **not in any published release**: six AgentReview v2
-slices (trusted-check hardening, CI provenance bridge, required-check readiness
-wiring, verified-check ordering, and the first target-pack slice with its init-plan
-binding) and one **critical AgentReview v1 fix** (`#225`, chunk planning by real hunk
-cost).
+`master` carries work that is **not in any published release**: seven AgentReview v2
+commits (trusted-check hardening, the CI provenance bridge — which also extracted
+shared JSON/digest primitives into `app/common/strict_json.py`, a CAEM/shared surface
+touch, not only v2 — required-check readiness wiring, verified-check ordering, the
+first target-pack slice with its init-plan binding, and `#230`'s post-merge
+identity-hardening on that same target-pack surface) and one **critical AgentReview
+v1 fix** (`#225`, chunk planning by real hunk cost).
 
 A consumer pinned at `v0.22.0` does **not** have the `#225` fix. Publishing a new
 release, repinning any consumer, and running a fresh canary are separate, still
@@ -49,11 +51,15 @@ These are independent and must not be conflated:
 | Identity | Value | Meaning |
 |---|---|---|
 | Toolrepo release tag | `v0.22.0` | what a consumer pins for AgentReview |
-| Deployed AIOps runtime | `0.20.0` (`app/__init__.py`) | what CT102 reports |
+| Last recorded AIOps runtime deployment | `0.20.0` (`app/__init__.py`) | last version this checkout's own source tree reports having been validated at deploy time |
 
 `__version__` tracks the **runtime** and was deliberately left unchanged by the
 `v0.21.0` and `v0.22.0` toolrepo releases. Publishing a toolrepo release does not
-deploy anything and does not change the runtime version.
+deploy anything and does not change the runtime version. `app/__init__.py`
+proves only what the source tree declares, never what CT102 currently reports —
+CT102 may have been deployed, rolled back, or redeployed independently of this
+checkout since that value was last set. This table is not a live runtime
+observation; see the paragraph below.
 
 The last recorded CT102 runtime validation was performed for the `0.20.0` deploy
 (health, readiness, metrics, database/providers/action catalog ready, no critical
@@ -204,14 +210,20 @@ The v2 line is the successor and receives all new engineering. It is **not GA, n
 default, and not a required check** in any target repository. Adoption today is
 `shadow`/opt-in, pinned independently of v1.
 
-Delivered on `master` (not yet in a published release):
+Already shipped in a published release, not merely on `master`:
 
-- verified run/payload/response/profile/readiness contracts with byte-reproducible
-  JSON Schemas;
-- real hunk-content extraction, redaction and declarative DLP enforcement;
-- trusted-check contracts, offline simulator and isolated executor;
+- **`v0.21.0`**: the complete v2 engine foundation — run/manifest/payload
+  assembly, verified binding, coverage, lifecycle, readiness, quality gate,
+  CLIs, byte-reproducible JSON Schemas, dual-target conformance;
+- **`v0.22.0`**: real hunk-content extraction, redaction, declarative DLP
+  enforcement, and the trusted-check contracts, offline simulator, and real
+  isolated executor.
+
+Delivered on `master`, not yet in a published release:
+
 - authoritative CI provenance bridge and required-check readiness wiring;
-- `agentreview-v2-target-pack`, first slice.
+- `agentreview-v2-target-pack` (`init`/`doctor`, operation-plan binding, and
+  the post-merge identity-hardening closed in `#230`).
 
 The complete v1 pipeline and quality gate remain operational and authoritative.
 Migration must select v2 explicitly, preserve a documented v1 compatibility window,
