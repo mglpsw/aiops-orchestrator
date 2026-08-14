@@ -106,6 +106,81 @@ class TrustedCheckAuthorityV2(str, Enum):
 TrustedCheckAuthorityValueV2 = Annotated[TrustedCheckAuthorityV2, Field(strict=False)]
 
 
+class TrustedCheckAuthorityBoundaryErrorV2(ValueError):
+    """Raised by `validate_trusted_check_authority_v2` when a caller-
+    supplied `authority` value cannot be validated as a real
+    `TrustedCheckAuthorityV2` member. Carries a stable `reason_code`
+    only -- never the raw invalid value, which may not even be safe or
+    meaningful to include in a message."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+TRUSTED_CHECK_AUTHORITY_BOUNDARY_INVALID_REASON_V2 = "trusted_check_authority_boundary_invalid"
+
+
+def validate_trusted_check_authority_v2(value: object) -> TrustedCheckAuthorityV2:
+    """The single runtime boundary for `authority` on every plain-function
+    entry point in the trusted-check v2 surface (H1-C, post-merge debt
+    #205, origin #212: C9).
+
+    `TrustedCheckAuthorityValueV2` (`Annotated[TrustedCheckAuthorityV2,
+    Field(strict=False)]`) only coerces a string into the real enum member
+    INSIDE a validated Pydantic model field. A type annotation on a bare
+    function parameter -- even this exact alias -- performs no validation
+    or coercion at all: nothing runs at call time to enforce it. Every
+    privileged `authority is TrustedCheckAuthorityV2.TRUSTED` decision in
+    `isolated_executor_v2.py` depends on `authority` already being the
+    real, canonical enum singleton, so this must run before any such
+    decision is made, not deferred to whenever (if ever) the value later
+    gets embedded in a Pydantic model.
+
+    Accepts the real enum member unchanged (returned by identity -- the
+    common case costs nothing extra), or a `str` that is a legitimate
+    Pydantic-coercible value for this enum. Every other input -- `None`,
+    an unrelated type, a malformed string, or an object whose `__eq__`/
+    `__hash__`/`__class__` might otherwise satisfy a naive check -- fails
+    closed. There is no default and nothing here is ever promoted to
+    `TRUSTED` on failure.
+
+    Both type checks below are deliberately `type(value) is ...`, never
+    `isinstance(value, ...)` (PR #233 review rounds 1-2, P1 each):
+
+    - `type(value) is str`, not `isinstance(value, str)`:
+      `TrustedCheckAuthorityV2(value)` looks the value up via the
+      object's own `__hash__`/`__eq__` -- `isinstance` alone would admit
+      a `str` SUBCLASS whose overridden `__hash__`/`__eq__` make it hash
+      and compare like `"trusted"` regardless of its real underlying text
+      (e.g. an actual value of `"admin"` spoofed to resolve to the
+      genuine `TRUSTED` member).
+    - `type(value) is TrustedCheckAuthorityV2`, not
+      `isinstance(value, TrustedCheckAuthorityV2)`: Python's `isinstance`
+      consults an object's `__class__` attribute, which an arbitrary
+      object can override with a property returning
+      `TrustedCheckAuthorityV2` even though it is not a member of it --
+      `isinstance` alone would return that object UNCHANGED (not the
+      real enum, not a rejection), breaking this function's own "every
+      other input fails closed" contract; the object would then reach a
+      Pydantic model boundary downstream as a raw, uncaught
+      `ValidationError` instead of this function's own typed exception.
+
+    An exact-type check on both branches means every value this function
+    returns is either the real enum singleton or was built by the enum's
+    own constructor from a genuine, unsubclassed `str` -- never an
+    object whose class-identity or hash/eq semantics were spoofed.
+    """
+    if type(value) is TrustedCheckAuthorityV2:
+        return value
+    if type(value) is str:
+        try:
+            return TrustedCheckAuthorityV2(value)
+        except ValueError:
+            pass
+    raise TrustedCheckAuthorityBoundaryErrorV2(TRUSTED_CHECK_AUTHORITY_BOUNDARY_INVALID_REASON_V2)
+
+
 class TrustedCheckOutcomeV2(str, Enum):
     """Every way a trusted check can conclude. Only SUCCESS/FAILURE are
     "resolved" (the check ran to completion and produced a real verdict);

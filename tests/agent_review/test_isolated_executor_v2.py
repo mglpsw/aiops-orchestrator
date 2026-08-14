@@ -1420,3 +1420,188 @@ def test_subject_code_never_reaches_eligibility_however_clean_the_run(repo_root,
     assert executed[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS
     assert assessment.containment == STATE_VERIFIED_V2
     assert assessment.promotion_eligibility == ELIGIBILITY_INELIGIBLE_V2
+
+
+# ---------------------------------------------------------------------------
+# H1-C / C9 (post-merge debt #205, origin PR #212): `execute_trusted_check_
+# plan_v2`'s `authority` parameter is annotated `TrustedCheckAuthorityValueV2`
+# -- a Pydantic-only alias that coerces a string into the real enum member
+# ONLY inside a validated model field. On a bare function parameter the
+# annotation is completely inert: nothing coerces or validates it, so a
+# caller passing the plain string `"trusted"` reaches every downstream
+# `authority is TrustedCheckAuthorityV2.TRUSTED` privileged decision as a
+# non-identical object -- the `is` check silently fails, and a
+# semantically-TRUSTED request is treated as NOT trusted (e.g. it is no
+# longer refused when only weak isolation is available -- the opposite of
+# fail-closed for the one gate that exists specifically to prevent a weakly
+# isolated execution from ever backing a promotable TRUSTED result).
+# ---------------------------------------------------------------------------
+
+
+def test_c9_reproduction_string_and_enum_trusted_disagree_by_identity():
+    """The exact reproducer from the checkpoint: `==` says these are the
+    same authority, `is` says they are not -- and the executor's privileged
+    decisions use `is`."""
+    assert "trusted" == TrustedCheckAuthorityV2.TRUSTED
+    assert not ("trusted" is TrustedCheckAuthorityV2.TRUSTED)
+
+
+def test_c9_string_trusted_over_weak_isolation_is_refused_just_like_the_enum(repo_root, monkeypatch):
+    """The core RED test: with only weak isolation available, the real enum
+    TRUSTED is refused (test_execute_refuses_trusted_authority_when_only_
+    weak_isolation_is_available, already passing). Before the fix, the
+    semantically-identical string "trusted" was NOT refused -- it fell
+    through the `authority is TrustedCheckAuthorityV2.TRUSTED` check as a
+    non-identical object and ran the check under weak isolation instead."""
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    monkeypatch.setattr(
+        isolated_executor_module, "_select_isolation_strategy_v2", lambda: (False, ())
+    )
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory, authority="trusted",
+    )
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.INFRA_FAILURE
+    assert executed[0].diagnostic_reason == EXECUTOR_REASON_ISOLATION_TOO_WEAK_FOR_TRUSTED_V2
+    assert executed[0].result.authority is TrustedCheckAuthorityV2.TRUSTED
+
+
+def test_c9_string_untrusted_advisory_over_weak_isolation_still_allowed(repo_root, monkeypatch):
+    """Positive control: the legitimate permissive case (UNTRUSTED_ADVISORY
+    over weak isolation, already allowed for the enum) must still work for
+    the equivalent string -- the fix must normalize, not just reject."""
+    import app.agent_review.isolated_executor_v2 as isolated_executor_module
+
+    weak_prefix = (
+        "unshare", "--user", "--map-root-user",
+        *isolated_executor_module.NAMESPACE_FLAGS_V2, "--",
+    )
+    if not isolated_executor_module._probe_prefix_works_v2(weak_prefix):
+        pytest.skip("this environment cannot create an unprivileged user namespace")
+    monkeypatch.setattr(
+        isolated_executor_module, "_select_isolation_strategy_v2", lambda: (False, weak_prefix)
+    )
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory, authority="untrusted_advisory",
+    )
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS
+    assert executed[0].result.authority is TrustedCheckAuthorityV2.UNTRUSTED_ADVISORY
+
+
+def test_c9_string_trusted_still_gets_full_isolation_when_available(repo_root, require_strong_isolation):
+    """Positive control: the ordinary happy path (string "trusted" with
+    real strong isolation available) must produce the same SUCCESS the
+    real enum already produces -- normalization must not degrade the
+    legitimate case either."""
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory, authority="trusted",
+    )
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS
+    assert executed[0].result.authority is TrustedCheckAuthorityV2.TRUSTED
+
+
+@pytest.mark.parametrize("bad_value", ["admin", "TRUSTED", "Trusted", "untrusted", "", "  trusted  "])
+def test_c9_invalid_authority_strings_are_refused_closed(repo_root, bad_value):
+    from app.agent_review.trusted_checks_v2 import TrustedCheckAuthorityBoundaryErrorV2
+
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    with pytest.raises(TrustedCheckAuthorityBoundaryErrorV2):
+        execute_trusted_check_plan_v2(plan, repo_root=repo_root, inventory=inventory, authority=bad_value)
+
+
+@pytest.mark.parametrize("bad_value", [None, 1, True, False, 3.14, object(), ["trusted"], {"authority": "trusted"}])
+def test_c9_non_string_non_enum_authority_is_refused_closed(repo_root, bad_value):
+    from app.agent_review.trusted_checks_v2 import TrustedCheckAuthorityBoundaryErrorV2
+
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    with pytest.raises(TrustedCheckAuthorityBoundaryErrorV2):
+        execute_trusted_check_plan_v2(plan, repo_root=repo_root, inventory=inventory, authority=bad_value)
+
+
+def test_c9_malicious_eq_object_never_satisfies_trusted_authority(repo_root):
+    """A caller-suppliable object whose `__eq__`/`__hash__` lie about
+    equaling the real TRUSTED value must never be accepted as authority --
+    proves the boundary does not fall back to `==`-based comparison
+    against the raw caller-supplied object, which a spoofed object could
+    satisfy, as a substitute for real validation."""
+    from app.agent_review.trusted_checks_v2 import TrustedCheckAuthorityBoundaryErrorV2
+
+    class _SpoofedAuthority:
+        def __eq__(self, other):
+            return True
+
+        def __hash__(self):
+            return hash("trusted")
+
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    with pytest.raises(TrustedCheckAuthorityBoundaryErrorV2):
+        execute_trusted_check_plan_v2(
+            plan, repo_root=repo_root, inventory=inventory, authority=_SpoofedAuthority(),
+        )
+
+
+def test_c9_real_enum_authority_still_works_unchanged(repo_root, require_strong_isolation):
+    """Positive control: passing the real enum member (the only input the
+    pre-fix code ever handled correctly) must behave identically after the
+    fix."""
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    executed = execute_trusted_check_plan_v2(
+        plan, repo_root=repo_root, inventory=inventory, authority=TrustedCheckAuthorityV2.TRUSTED,
+    )
+    assert executed[0].result.outcome is TrustedCheckOutcomeV2.SUCCESS
+    assert executed[0].result.authority is TrustedCheckAuthorityV2.TRUSTED
+
+
+def test_c9_round2_spoofed_str_subclass_never_resolves_to_trusted(repo_root):
+    """PR #233 review round 1, P1: `isinstance(value, str)` admits any str
+    SUBCLASS, and `TrustedCheckAuthorityV2(value)` looks the value up via
+    the object's own (overridable) `__hash__`/`__eq__` -- a subclass whose
+    real content is "admin" but that hashes and compares like "trusted"
+    resolved to the genuine TRUSTED member."""
+    from app.agent_review.trusted_checks_v2 import TrustedCheckAuthorityBoundaryErrorV2
+
+    class _SpoofedStrAuthority(str):
+        def __eq__(self, other):
+            return other == "trusted"
+
+        def __hash__(self):
+            return hash("trusted")
+
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    with pytest.raises(TrustedCheckAuthorityBoundaryErrorV2):
+        execute_trusted_check_plan_v2(
+            plan, repo_root=repo_root, inventory=inventory, authority=_SpoofedStrAuthority("admin"),
+        )
+
+
+def test_c9_round3_spoofed_class_property_never_passes_the_boundary(repo_root):
+    """PR #233 review round 2, P1: `isinstance(value, TrustedCheckAuthorityV2)`
+    can be fooled by any object exposing a `__class__` PROPERTY that
+    returns `TrustedCheckAuthorityV2` -- Python's `isinstance` consults
+    `__class__`, unlike `type(value) is ...`. The validator's first check
+    returned such an object UNCHANGED (not the real enum, not a rejection),
+    breaking the documented "everything else fails closed" contract."""
+    from app.agent_review.trusted_checks_v2 import TrustedCheckAuthorityBoundaryErrorV2
+
+    class _FakeClassAuthority:
+        @property
+        def __class__(self):
+            return TrustedCheckAuthorityV2
+
+    inventory = {"token": _py("import sys; sys.exit(0)")}
+    plan = _plan(inventory=inventory)
+    with pytest.raises(TrustedCheckAuthorityBoundaryErrorV2):
+        execute_trusted_check_plan_v2(
+            plan, repo_root=repo_root, inventory=inventory, authority=_FakeClassAuthority(),
+        )
