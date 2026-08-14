@@ -16,6 +16,7 @@ identical defect.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import re
 from pathlib import Path
 
@@ -260,6 +261,62 @@ def test_one_operation_binds_the_install_plan_and_its_evidence_to_a_single_root(
             seed_content_by_path={".aiops/target-profile.v2.yaml": _VALID_PROFILE_YAML},
             previous_receipt=None,
         )
+    assert exc_info.value.reason_code == PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+def test_the_containment_boundary_is_never_a_caller_supplied_value(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """RED, round 4. The first version of the round-3 fix let a caller pass
+    an already-resolved `target_root_real` into `compute_install_plan_v2`
+    so the operation could bind the plan to its own resolution. That made
+    the containment BOUNDARY itself caller-supplied, and it was
+    reproducibly widenable: passing any ancestor of the real
+    `target_root` (its parent directory) made every containment check
+    evaluate against the wider root, so a symlink inside `target_root`
+    pointing at a SIBLING directory passed containment and its content was
+    read -- while `plan.target_root_real` recorded the wider root.
+
+    Reproduced before the fix: with the correct root the layout below is
+    refused; with the parent passed as `target_root_real`, the read of
+    `<parent>/sibling/leak.txt` succeeded.
+
+    A security primitive must not depend on callers passing the right
+    boundary, so the parameter no longer exists at all -- this test locks
+    that structurally, and the layout below stays refused because the
+    function resolves its own root."""
+    parent = tmp_path_factory.mktemp("parent")
+    target = parent / "target"
+    (target / ".aiops").mkdir(parents=True)
+    sibling = parent / "sibling"
+    sibling.mkdir()
+    (sibling / "leak.txt").write_bytes(b"sibling content outside the target")
+    (target / ".aiops" / "owned.txt").symlink_to(sibling / "leak.txt")
+
+    manifest = TargetPackManifestV2(
+        schema_id="agent-review.target-pack-manifest.v2",
+        schema_version=2,
+        pack_version="0.1.0",
+        toolrepo_sha="1" * 40,
+        generated_files=(
+            GeneratedFileEntryV2(
+                path=".aiops/owned.txt",
+                ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+                content_sha256="a" * 64,
+            ),
+        ),
+        schema_digests={"x.json": "a" * 64},
+        required_capabilities=(),
+        min_engine_contract_version=2,
+        max_supported_rollout_mode="shadow_minimal",
+    )
+
+    # Structural: there is no boundary parameter to widen.
+    assert "target_root_real" not in inspect.signature(compute_install_plan_v2).parameters
+
+    # Behavioural: the sibling-escaping symlink is refused on its own merits.
+    with pytest.raises(PlanError) as exc_info:
+        compute_install_plan_v2(manifest=manifest, target_root=target, previous_receipt=None)
     assert exc_info.value.reason_code == PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2
 
 

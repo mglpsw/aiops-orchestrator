@@ -226,30 +226,34 @@ def compute_install_plan_v2(
     manifest: TargetPackManifestV2,
     target_root: Path,
     previous_receipt: TargetInstallReceiptV2 | None,
-    target_root_real: Path | None = None,
 ) -> InstallPlanV2:
     """Pure. Reads `target_root`'s current file CONTENT to compute
     on-disk hashes (this is read-only inspection, not mutation -- the same
     boundary `run_doctor_v2` depends on to prove itself read-only by
     construction), never writes anything.
 
-    `target_root_real` lets a CALLER that has already resolved
-    `target_root` bind this plan to that exact resolution instead of
-    letting this function resolve independently. Round 3 finding
-    (aiops-orchestrator#205, H1A-R1), confirmed by reproduction:
-    `compute_target_pack_operation_plan_v2` used to resolve `target_root`
-    for its own TARGET_OWNED loop AND call this function, which resolved
-    again -- two independent resolutions inside one logical operation,
-    contradicting the "resolved exactly once per operation" property this
-    module's own `resolve_within_target_root_v2` docstring claims. With
-    `target_root` swapped between the two resolutions, a single preview
-    returned an `InstallPlanV2` bound to one root while the operation's
-    `after_hashes`/`target_profile_hash` (and therefore the receipt it
-    builds) were read from a DIFFERENT root -- an install description and
-    the evidence describing it disagreeing about which target they refer
-    to. Passing the caller's already-resolved root closes that window;
-    resolving here remains the default for callers that have no prior
-    resolution to bind to."""
+    This function resolves `target_root` ITSELF and never accepts a
+    caller-supplied resolution. Round 4 finding (aiops-orchestrator#205,
+    H1A-R1), confirmed by reproduction: an earlier version of the round-3
+    fix took an optional `target_root_real` parameter so a caller could
+    bind the plan to a root it had already resolved. That parameter was a
+    containment-WIDENING vector -- passing any ANCESTOR of the real
+    `target_root` (e.g. its parent directory) made every containment check
+    inside this function evaluate against the wider root, so a symlink
+    inside `target_root` pointing at a sibling directory passed
+    containment and its content was read, while `plan.target_root_real`
+    recorded the wider root. Reproduced directly: with the correct root
+    the same layout is refused (`target_pack_plan_path_escapes_target_
+    root`); with the parent passed as `target_root_real` the read of
+    `<parent>/sibling/leak.txt` succeeded. A security primitive must not
+    depend on its callers passing the right boundary, so the boundary is
+    no longer a parameter at all.
+
+    `InstallPlanV2.target_root_real` is therefore the single authoritative
+    resolution for the whole operation: `compute_target_pack_operation_
+    plan_v2` consumes it rather than resolving again, which is what keeps
+    "one operation, one resolution" true without reintroducing a
+    caller-supplied boundary."""
 
     actions: list[PlannedFileActionV2] = []
     drifted: list[str] = []
@@ -257,8 +261,7 @@ def compute_install_plan_v2(
     recorded = previous_receipt.generated_file_hashes if previous_receipt is not None else {}
     # Resolved exactly once for the whole call, not once per entry -- see
     # `resolve_within_target_root_v2`'s own docstring, round 2.
-    if target_root_real is None:
-        target_root_real = target_root.resolve(strict=False)
+    target_root_real = target_root.resolve(strict=False)
 
     for entry in manifest.generated_files:
         on_disk = _read_on_disk_sha256_v2(target_root, target_root_real, entry.path)

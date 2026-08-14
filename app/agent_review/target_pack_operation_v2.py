@@ -271,22 +271,27 @@ def compute_target_pack_operation_plan_v2(
     else:
         source = None
 
-    # Resolved exactly once for this ENTIRE operation -- not once per file,
-    # and not once here plus again inside `compute_install_plan_v2`. Round 3
-    # finding (aiops-orchestrator#205, H1A-R1), confirmed by reproduction:
-    # with two independent resolutions, swapping `target_root` between them
-    # produced one preview whose `install_plan.target_root_real` named one
-    # root while its `after_hashes`/`target_profile_hash` -- and therefore
-    # the receipt built from them -- were read from another. The install
-    # description and the evidence describing it must agree on which target
-    # they refer to, so the plan is bound to this single resolution too.
-    target_root_real = target_root.resolve(strict=False)
     install_plan = compute_install_plan_v2(
-        manifest=manifest,
-        target_root=target_root,
-        previous_receipt=previous_receipt,
-        target_root_real=target_root_real,
+        manifest=manifest, target_root=target_root, previous_receipt=previous_receipt
     )
+    # Exactly ONE resolution of `target_root` per operation -- not once per
+    # file, and not once here plus again inside `compute_install_plan_v2`.
+    # Round 3 finding (aiops-orchestrator#205, H1A-R1), confirmed by
+    # reproduction: with two independent resolutions, swapping `target_root`
+    # between them produced one preview whose `install_plan.target_root_real`
+    # named one root while its `after_hashes`/`target_profile_hash` -- and
+    # therefore the receipt built from them -- were read from another. The
+    # install description and the evidence describing it must agree on which
+    # target they refer to.
+    #
+    # Round 4: the first version of that fix passed this operation's own
+    # resolution DOWN into `compute_install_plan_v2` as a parameter, which
+    # turned the containment boundary into a caller-supplied value and was
+    # reproducibly widenable by passing an ancestor directory. The direction
+    # is now inverted -- the plan owns the single resolution and this
+    # operation CONSUMES it -- so there is one resolution, and no caller
+    # anywhere can choose the boundary.
+    target_root_real = Path(install_plan.target_root_real)
     actions: list[TargetPackOperationActionV2] = []
     before_hashes: dict[str, str] = {}
     after_hashes: dict[str, str] = {}
