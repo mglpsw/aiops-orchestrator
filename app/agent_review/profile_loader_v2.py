@@ -60,8 +60,15 @@ def load_target_profile_v2(
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_MISSING_REASON_V2)
 
     try:
+        # `UnicodeDecodeError` as well as `OSError`: a target-authored file
+        # holding invalid UTF-8 fails in `read_text`'s DECODE step, which
+        # is a `ValueError`, not an `OSError`. Third instance of the same
+        # class as the `ReaderError` finding -- a statement that touches
+        # target-authored bytes sitting outside its own boundary -- found
+        # by sweeping every such layer rather than waiting for a report.
+        # The policy loader already did this correctly and is the control.
         raw_text = profile_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
 
     return load_target_profile_text_v2(raw_text)

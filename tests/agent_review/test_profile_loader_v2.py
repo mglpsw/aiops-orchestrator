@@ -609,3 +609,25 @@ def test_the_parse_boundary_is_total_over_the_whole_tag_space() -> None:
             except Exception as exc:  # noqa: BLE001 -- the assertion IS that this is unreachable
                 escaped[f"!!{tag} {payload[:16]}"] = type(exc).__name__
     assert not escaped, f"target-authored YAML escaped the typed contract: {escaped}"
+
+
+def test_the_boundary_covers_the_FILE_layer_not_only_the_text_layer(tmp_path: Path) -> None:
+    """The typed contract must hold for every layer that touches
+    target-authored bytes, not only the one that parses them.
+
+    The tag/character fuzz guard runs against `load_target_profile_text_v2`
+    and is therefore structurally blind to the file-reading wrapper above
+    it. A profile holding invalid UTF-8 fails in `read_text`'s DECODE
+    step -- a `ValueError`, not an `OSError` -- and escaped the contract
+    entirely. Same class as the loader-construction finding: right
+    boundary, wrong layer.
+    """
+    from app.agent_review.profile_loader_v2 import load_target_profile_v2
+
+    root = tmp_path / "target"
+    (root / ".aiops").mkdir(parents=True)
+    (root / ".aiops" / "target-profile.v2.yaml").write_bytes(b"identity: \xff\xfe not utf8\n")
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_v2(root)
+    assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2
