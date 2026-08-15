@@ -325,6 +325,14 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
                 "expectation": case.expectation.value,
                 "matched_expectation": case.matched_expectation,
                 "observed_reason_codes": list(case.observed_reason_codes),
+                # Carried per case (PR #235 review round 4): `validate`'s
+                # own output preserves this qualification, but conformance
+                # emitted only FAILURE reason codes -- and `unavailable`
+                # checks are deliberately excluded from those -- so a
+                # passing matrix reported success with no trace that the
+                # trusted-check dimension was never validated. That is the
+                # capability-honesty rule leaking at a second surface.
+                "unvalidated_capabilities": list(case.validate_report.unvalidated_capabilities),
             }
             for case in report.cases
         ],

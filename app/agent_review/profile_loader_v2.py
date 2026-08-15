@@ -32,34 +32,58 @@ TARGET_PROFILE_INVALID_REASON_V2 = "target_profile_invalid"
 DEFAULT_TARGET_PROFILE_RELATIVE_PATH = Path(".aiops") / "target-profile.v2.yaml"
 
 
-def _construct_mapping_rejecting_duplicates_v2(loader: yaml.SafeLoader, node: yaml.Node, deep: bool = False):
-    """Refuse a YAML mapping with a repeated key instead of silently
-    keeping the last one. Same construction as
-    `authoritative_check_policy_v2`'s loader; kept local rather than
-    imported so this module keeps no dependency on the authorization
-    surface."""
-
-    mapping: dict = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        if key in mapping:
-            raise yaml.constructor.ConstructorError(
-                "while constructing a mapping",
-                node.start_mark,
-                f"found duplicate key {key!r}",
-                key_node.start_mark,
-            )
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
 class _DuplicateKeyRejectingProfileLoaderV2(yaml.SafeLoader):
-    """`yaml.SafeLoader`, except every mapping refuses a duplicate key."""
+    """`yaml.SafeLoader` that refuses a repeated mapping key.
 
+    PyYAML silently keeps the LAST of a duplicated key, so an ambiguous
+    profile parses clean and a different YAML implementation -- or a human
+    auditor -- reading the same bytes can see a different value than the
+    one that was validated and recorded (PR #235 review round 3).
 
-_DuplicateKeyRejectingProfileLoaderV2.add_constructor(
-    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_rejecting_duplicates_v2
-)
+    Implemented by overriding `construct_mapping` rather than replacing the
+    mapping constructor outright (PR #235 review round 4, two regressions
+    my first cut introduced):
+
+    - it calls `super().construct_mapping`, which runs `flatten_mapping`
+      first, so YAML **merge keys** (`<<: *anchor`) keep working. Replacing
+      the constructor skipped that flattening and turned previously valid
+      profiles into hard failures across every caller of this loader.
+    - it guards hashability before the membership test. A sequence or
+      mapping used as a key (`? [a, b]`) is unhashable, so `key in seen`
+      raised a bare `TypeError` that escaped the `yaml.YAMLError`
+      normalisation boundary below and surfaced as a traceback from both
+      `validate` and `init` instead of a reason-coded refusal.
+    """
+
+    def construct_mapping(self, node, deep: bool = False):  # type: ignore[override]
+        # flatten_mapping FIRST. It resolves `<<:` merge keys into real
+        # entries; scanning before it runs would hand `construct_object` a
+        # merge-tagged key, which has no constructor and raises. It is also
+        # what `SafeLoader.construct_mapping` does internally, so calling it
+        # here keeps the duplicate scan and the real construction looking at
+        # the same, already-flattened node.
+        self.flatten_mapping(node)
+        seen: set = set()
+        for key_node, _value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicated = key in seen
+            except TypeError as exc:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"unhashable key {key!r}",
+                    key_node.start_mark,
+                ) from exc
+            if duplicated:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
 
 
 class TargetProfileLoadErrorV2(ValueError):

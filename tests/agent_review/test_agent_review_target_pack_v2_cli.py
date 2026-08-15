@@ -846,3 +846,31 @@ def test_conformance_cli_takes_no_target_root_argument(tmp_path: Path) -> None:
     alpha, _beta = _two_real_targets(tmp_path)
     result = _run_raw(["conformance", "--matrix", "x.json", "--target-root", str(alpha)])
     assert result.returncode != 0
+
+
+def test_conformance_output_surfaces_unvalidated_capabilities(tmp_path: Path) -> None:
+    """PR #235 review round 4: a passing conformance run reported success
+    with no trace that the trusted-check dimension was never validated --
+    `observed_reason_codes` carries only FAILURES, and `unavailable` checks
+    are deliberately excluded from those. The capability-honesty
+    qualification `validate` preserves must survive this second surface."""
+
+    alpha, beta = _two_real_targets(tmp_path)
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {"case_id": "alpha", "target_root": str(alpha), "expectation": "eligible"},
+                    {"case_id": "beta", "target_root": str(beta), "expectation": "eligible"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _run(["conformance", "--matrix", str(matrix)])
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["synthetic_pack_conformance"] is True
+    for case in report["cases"]:
+        assert "trusted_check_inventory" in case["unvalidated_capabilities"]

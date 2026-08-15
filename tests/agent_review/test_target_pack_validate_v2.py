@@ -584,3 +584,71 @@ def test_profile_with_duplicate_yaml_keys_is_refused(target_root):
     report = run_validate_v2(target_root=target_root)
     assert report.is_valid is False
     assert _check(report, "profile").reason_code == VALIDATE_PROFILE_INVALID_REASON_V2
+
+
+# ---------------------------------------------------------------------------
+# PR #235 adversarial review round 4
+# ---------------------------------------------------------------------------
+
+
+def test_receipt_declaring_an_undeclared_target_owned_path_is_refused(target_root):
+    """F2: a receipt listing an extra path (e.g. README.md) validated
+    clean, disagreeing with the canonical operation planner AND letting
+    receipt-authored input steer which files validate reads and hashes."""
+    from app.agent_review.target_pack_validate_v2 import VALIDATE_TARGET_OWNED_SET_UNEXPECTED_REASON_V2
+
+    (target_root / "README.md").write_text("hello", encoding="utf-8")
+    _install(
+        target_root,
+        receipt=_receipt(
+            target_owned_file_hashes={
+                _PROFILE_RELATIVE_PATH: _sha256(_VALID_PROFILE_YAML.encode("utf-8")),
+                "README.md": _sha256(b"hello"),
+            },
+            target_owned_paths=(_PROFILE_RELATIVE_PATH, "README.md"),
+        ),
+        profile=_VALID_PROFILE_YAML,
+    )
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
+    assert _check(report, "target_owned").reason_code == VALIDATE_TARGET_OWNED_SET_UNEXPECTED_REASON_V2
+
+
+def test_profile_yaml_merge_keys_still_load(target_root):
+    """F4 was a REGRESSION my own round-3 fix introduced: replacing the
+    mapping constructor skipped PyYAML's flatten_mapping, so previously
+    valid profiles using `<<: *anchor` became hard failures across every
+    caller of the shared loader."""
+    import yaml
+
+    from app.agent_review.profile_loader_v2 import _DuplicateKeyRejectingProfileLoaderV2
+
+    document = yaml.load(
+        "base: &b\n  default_branch: main\nidentity:\n  <<: *b\n  repo: owner/repo\n",
+        Loader=_DuplicateKeyRejectingProfileLoaderV2,
+    )
+    assert document["identity"] == {"default_branch": "main", "repo": "owner/repo"}
+
+
+def test_profile_with_unhashable_yaml_key_is_reason_coded_not_a_traceback():
+    """F1, also a regression from round 3: an unhashable key (`? [a, b]`)
+    made the duplicate membership test raise a bare TypeError that escaped
+    the `yaml.YAMLError` normalisation boundary."""
+    from app.agent_review.profile_loader_v2 import (
+        TargetProfileLoadErrorV2,
+        load_target_profile_text_v2,
+    )
+
+    with pytest.raises(TargetProfileLoadErrorV2):
+        load_target_profile_text_v2("? [a, b]\n: value\n")
+
+
+def test_profile_duplicate_key_rejection_survives_the_merge_key_fix():
+    """Guard against the fix for F4 quietly undoing round 3's own fix."""
+    from app.agent_review.profile_loader_v2 import (
+        TargetProfileLoadErrorV2,
+        load_target_profile_text_v2,
+    )
+
+    with pytest.raises(TargetProfileLoadErrorV2):
+        load_target_profile_text_v2("a: 1\na: 2\n")

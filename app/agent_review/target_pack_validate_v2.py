@@ -114,6 +114,7 @@ VALIDATE_ROLLOUT_ABOVE_CEILING_REASON_V2 = "target_pack_validate_rollout_above_p
 VALIDATE_PROFILE_IDENTITY_MISMATCH_REASON_V2 = "target_pack_validate_profile_identity_mismatch"
 VALIDATE_PROFILE_NOT_TARGET_OWNED_REASON_V2 = "target_pack_validate_profile_not_in_target_owned_set"
 VALIDATE_RECEIPT_MAJOR_INCOMPATIBLE_REASON_V2 = "target_pack_validate_receipt_major_incompatible"
+VALIDATE_TARGET_OWNED_SET_UNEXPECTED_REASON_V2 = "target_pack_validate_target_owned_set_unexpected"
 
 # The rollout ceiling THIS pack version can actually deliver. `validate` is
 # target-only by design (no `--toolrepo-root`), so it cannot read a live
@@ -125,6 +126,14 @@ VALIDATE_RECEIPT_MAJOR_INCOMPATIBLE_REASON_V2 = "target_pack_validate_receipt_ma
 VALIDATED_MAX_ROLLOUT_MODE_V2 = "off"
 
 _PROFILE_RELATIVE_PATH_V2 = ".aiops/target-profile.v2.yaml"
+
+# The complete TARGET_OWNED set this pack version delivers. A receipt may
+# not declare anything else (PR #235 review round 4): the canonical
+# operation planner already refuses a receipt whose target-owned set
+# differs from the manifest's, and accepting extras here would both
+# disagree with that writer and let receipt-authored input steer which
+# files `validate` reads and hashes under the target root.
+DELIVERED_TARGET_OWNED_PATHS_V2 = frozenset({_PROFILE_RELATIVE_PATH_V2})
 
 # Check names, stable identifiers a consumer can match on.
 TARGET_ROOT_CHECK_V2 = "target_root"
@@ -214,7 +223,7 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
     receipt, receipt_check = _load_receipt_v2(target_root_real)
     checks.append(receipt_check)
 
-    profile, profile_check = _load_profile_v2(target_root_real)
+    profile, profile_bytes, profile_check = _load_profile_v2(target_root_real)
     checks.append(profile_check)
 
     if receipt is not None and profile is not None:
@@ -230,7 +239,7 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
 
     if receipt is not None:
         checks.append(_root_identity_check_v2(receipt))
-        checks.append(_target_owned_check_v2(target_root_real, receipt))
+        checks.append(_target_owned_check_v2(target_root_real, receipt, profile_bytes))
         checks.append(_rollout_ceiling_check_v2(receipt))
         checks.append(_compatibility_check_v2(receipt))
 
@@ -292,7 +301,9 @@ def _load_receipt_v2(target_root_real: Path) -> tuple[TargetInstallReceiptV2 | N
     return receipt, ValidateCheckV2(RECEIPT_CHECK_V2, STATUS_PASS_V2)
 
 
-def _load_profile_v2(target_root_real: Path) -> tuple[TargetProfileV2 | None, ValidateCheckV2]:
+def _load_profile_v2(
+    target_root_real: Path,
+) -> tuple[TargetProfileV2 | None, bytes | None, ValidateCheckV2]:
     """Parse the profile from the EXACT bytes read through the contained
     resolved path.
 
@@ -309,18 +320,26 @@ def _load_profile_v2(target_root_real: Path) -> tuple[TargetProfileV2 | None, Va
     try:
         raw = _read_contained_bytes_v2(target_root_real, _PROFILE_RELATIVE_PATH_V2)
     except PlanError as exc:
-        return None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, _validate_reason_for_plan_error_v2(exc))
+        return None, None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, _validate_reason_for_plan_error_v2(exc))
     except FileNotFoundError:
-        return None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_MISSING_REASON_V2)
+        return None, None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_MISSING_REASON_V2)
     except OSError:
-        return None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_INVALID_REASON_V2)
+        return None, None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_INVALID_REASON_V2)
 
     try:
         profile = load_target_profile_text_v2(raw.decode("utf-8"))
     except (TargetProfileLoadErrorV2, UnicodeDecodeError):
-        return None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_INVALID_REASON_V2)
+        return None, None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_INVALID_REASON_V2)
 
-    return profile, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_PASS_V2)
+    # Return the BYTES too, so every later check about the profile is made
+    # against this one snapshot (PR #235 review round 4). Re-reading the
+    # path for the byte-level drift check opened a TOCTOU window: a
+    # receipt carrying the semantic hash of version A and the raw hash of
+    # version B passed both checks if the file was swapped between the two
+    # reads, even though no single on-disk profile ever matched both
+    # claims. Containment being bound to the read does not help when the
+    # read happens twice.
+    return profile, raw, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_PASS_V2)
 
 
 def _profile_identity_check_v2(profile: TargetProfileV2, receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
@@ -387,7 +406,9 @@ def _compatibility_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
     )
 
 
-def _target_owned_check_v2(target_root_real: Path, receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
+def _target_owned_check_v2(
+    target_root_real: Path, receipt: TargetInstallReceiptV2, profile_bytes: bytes | None
+) -> ValidateCheckV2:
     """Every target-owned path the receipt recorded must still be present,
     contained, and byte-identical to the hash the receipt recorded.
 
@@ -408,8 +429,20 @@ def _target_owned_check_v2(target_root_real: Path, receipt: TargetInstallReceipt
         return ValidateCheckV2(
             TARGET_OWNED_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_NOT_TARGET_OWNED_REASON_V2
         )
+    if set(receipt.target_owned_file_hashes) != DELIVERED_TARGET_OWNED_PATHS_V2:
+        return ValidateCheckV2(
+            TARGET_OWNED_CHECK_V2, STATUS_FAIL_V2, VALIDATE_TARGET_OWNED_SET_UNEXPECTED_REASON_V2
+        )
 
     for relative_path in sorted(receipt.target_owned_file_hashes):
+        if relative_path == _PROFILE_RELATIVE_PATH_V2 and profile_bytes is not None:
+            # Reuse the snapshot the semantic checks were made against
+            # rather than re-reading (see `_load_profile_v2`).
+            if hashlib.sha256(profile_bytes).hexdigest() != receipt.target_owned_file_hashes[relative_path]:
+                return ValidateCheckV2(
+                    TARGET_OWNED_CHECK_V2, STATUS_FAIL_V2, VALIDATE_TARGET_OWNED_DRIFT_REASON_V2
+                )
+            continue
         expected = receipt.target_owned_file_hashes[relative_path]
         try:
             raw = _read_contained_bytes_v2(target_root_real, relative_path)
