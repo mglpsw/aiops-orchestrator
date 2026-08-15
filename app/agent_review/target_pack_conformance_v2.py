@@ -65,6 +65,7 @@ CONFORMANCE_NO_COMPARABLE_COHORT_REASON_V2 = "target_pack_conformance_no_compara
 CONFORMANCE_DUPLICATE_CASE_ID_REASON_V2 = "target_pack_conformance_duplicate_case_id"
 CONFORMANCE_INVALID_CASE_ID_REASON_V2 = "target_pack_conformance_invalid_case_id"
 CONFORMANCE_TARGET_ROOT_UNRESOLVABLE_REASON_V2 = "target_pack_conformance_target_root_unresolvable"
+CONFORMANCE_SINGLE_AUTHORED_IDENTITY_REASON_V2 = "target_pack_conformance_single_authored_identity"
 
 # A conformance claim proven against a single target is not a conformance
 # claim -- "the same pack works everywhere" needs at least two somewheres.
@@ -91,6 +92,11 @@ class ConformanceCaseResultV2:
     expectation: ConformanceExpectationV2
     validate_report: ValidateReportV2
     matched_expectation: bool
+    # `receipt.target_repo` for this case, or None when no receipt parsed.
+    # Used only for the distinct-identity property (see
+    # `_distinct_authored_identities_v2`); never for a per-case decision,
+    # so the pack still branches on no target's name anywhere.
+    authored_identity: str | None = None
 
     @property
     def observed_reason_codes(self) -> tuple[str, ...]:
@@ -137,6 +143,20 @@ class ConformanceReportV2:
                 for case in self.cases
             ),
         )
+
+
+def _authored_identity_v2(resolved_root: Path) -> str | None:
+    """The `receipt.target_repo` this installation is bound to, or None if
+    no receipt parses.
+
+    Read through `validate`'s own contained loaders, so it inherits the
+    same containment and total-parse-boundary guarantees rather than
+    opening a second, weaker read path into the target.
+    """
+
+    from app.agent_review.target_pack_validate_v2 import authored_target_identity_v2
+
+    return authored_target_identity_v2(target_root=resolved_root)
 
 
 def _unreadable_report_v2(target_root: Path) -> ValidateReportV2:
@@ -222,10 +242,12 @@ def run_conformance_v2(*, cases: tuple[ConformanceCaseV2, ...]) -> ConformanceRe
             report = _unreadable_report_v2(resolved_root)
             unreadable_case_ids.append(case.case_id)
             matched = False
+            authored_identity = None
         else:
             report = run_validate_v2(target_root=resolved_root)
             expected_valid = case.expectation is ConformanceExpectationV2.ELIGIBLE
             matched = report.is_valid == expected_valid
+            authored_identity = _authored_identity_v2(resolved_root)
 
         results.append(
             ConformanceCaseResultV2(
@@ -233,6 +255,7 @@ def run_conformance_v2(*, cases: tuple[ConformanceCaseV2, ...]) -> ConformanceRe
                 expectation=case.expectation,
                 validate_report=report,
                 matched_expectation=matched,
+                authored_identity=authored_identity,
             )
         )
 
@@ -276,6 +299,32 @@ def _uniformity_reason_codes_v2(results: tuple[ConformanceCaseResultV2, ...]) ->
     # still reporting conformance. At least one cohort must contain two
     # distinct targets or the uniformity claim is withheld rather than
     # asserted vacuously.
-    if not any(len(group) >= MINIMUM_CONFORMANCE_CASES_V2 for group in by_expectation.values()):
+    comparable = [g for g in by_expectation.values() if len(g) >= MINIMUM_CONFORMANCE_CASES_V2]
+    if not comparable:
         return (CONFORMANCE_NO_COMPARABLE_COHORT_REASON_V2,)
+
+    # Property 5: the comparable cohort must contain >= 2 SEMANTICALLY
+    # distinct targets, not merely two directories. Two copies of one
+    # installation have distinct roots and identical authored identity, so
+    # comparing them proves only that the pack is deterministic -- a
+    # repository-name branch keyed on any OTHER identity stays invisible.
+    #
+    # Authored identity is `receipt.target_repo`, the identity the pack
+    # actually binds an install to. Deliberately NOT the profile's
+    # `identity.repo`: that may legitimately still hold the generic seed
+    # placeholder, which is the same value in every freshly initialised
+    # target and would therefore make every cohort look identical.
+    if not any(_distinct_authored_identities_v2(group) >= MINIMUM_CONFORMANCE_CASES_V2 for group in comparable):
+        return (CONFORMANCE_SINGLE_AUTHORED_IDENTITY_REASON_V2,)
     return ()
+
+
+def _distinct_authored_identities_v2(group: list[ConformanceCaseResultV2]) -> int:
+    """How many distinct `receipt.target_repo` values a cohort contains.
+
+    A case whose receipt could not be parsed contributes no identity --
+    it cannot be counted toward a distinctness claim it never established.
+    """
+
+    identities = {case.authored_identity for case in group if case.authored_identity is not None}
+    return len(identities)

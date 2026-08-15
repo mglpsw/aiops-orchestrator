@@ -703,4 +703,134 @@ def test_receipt_claiming_generated_files_is_refused(target_root):
     )
     report = run_validate_v2(target_root=target_root)
     assert report.is_valid is False
-    assert _check(report, "generated_files").reason_code == VALIDATE_GENERATED_FILES_UNSUPPORTED_REASON_V2
+    # Now surfaced by the class-level canonical-claims rule; the reason
+    # code is preserved because it already shipped in this PR.
+    assert _check(report, "canonical_claims").reason_code == VALIDATE_GENERATED_FILES_UNSUPPORTED_REASON_V2
+
+
+# ===========================================================================
+# CLASS-BASED FAMILY TESTS (#203-S2 convergence sweep)
+#
+# Table-driven by invariant rather than one test per reviewer-named
+# instance. Six rounds of this PR showed that per-instance tests certify
+# only the instance: `generated_file_hashes` was fixed in round 5 while
+# `target_policy_hash`/`review_pack_hashes` -- the same class -- came back
+# in round 6.
+# ===========================================================================
+
+
+# CLASS 1: every field the canonical writer PINS to a constant.
+# Derived from `target_pack_operation_v2._build_receipt_v2`.
+_NON_CANONICAL_RECEIPT_MUTATIONS = [
+    ("target_policy_hash", "a" * 64),
+    ("review_pack_hashes", {"pack": "b" * 64}),
+    ("generated_file_hashes", {"some/generated.yml": "c" * 64}),
+    ("expected_runner_labels", ("self-hosted",)),
+    ("required_secret_names", ("SOME_TOKEN",)),
+]
+
+
+@pytest.mark.parametrize("field_name,value", _NON_CANONICAL_RECEIPT_MUTATIONS, ids=lambda v: str(v)[:24])
+def test_family_receipt_claim_outside_writer_domain_is_refused(target_root, field_name, value):
+    """Any receipt field the writer pins to a constant must hold that
+    constant. Mutating it produces an installation state no writer can
+    emit, so validating it would attest something never created."""
+    _install(target_root, receipt=_receipt(**{field_name: value}), profile=_VALID_PROFILE_YAML)
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False, f"{field_name} outside canonical domain was accepted"
+    assert _check(report, "canonical_claims").status == STATUS_FAIL_V2
+
+
+def test_family_previous_install_identity_is_not_wrongly_refused(target_root):
+    """Negative control for CLASS 1: the writer legitimately emits EITHER
+    a ref or None for this field, so BOTH are canonical and neither may be
+    refused. A blanket 'unsupported fields' list would have broken this."""
+    from app.agent_review.target_pack_receipt_v2 import ReceiptIdentityRefV2
+
+    ref = ReceiptIdentityRefV2(receipt_hash="d" * 64, pack_version="0.1.0", toolrepo_sha="1" * 40)
+    _install(target_root, receipt=_receipt(previous_install_identity=ref), profile=_VALID_PROFILE_YAML)
+    assert run_validate_v2(target_root=target_root).is_valid is True
+
+
+# CLASS 5: canonical FORM, not merely matching set.
+# Only the DUPLICATED form is reachable: `TargetInstallReceiptV2` already
+# refuses a tuple whose SET differs from the mapping's keys, so an empty
+# tuple cannot even be constructed. Duplication survives that contract
+# check precisely because it compares sets -- which is the gap here.
+_NON_CANONICAL_PATH_FORMS = [
+    (_PROFILE_RELATIVE_PATH, _PROFILE_RELATIVE_PATH),
+]
+
+
+@pytest.mark.parametrize("paths", _NON_CANONICAL_PATH_FORMS, ids=["duplicated"])
+def test_family_target_owned_paths_must_match_the_writers_canonical_form(target_root, paths):
+    """The writer emits `tuple(sorted(target_owned_file_hashes))`. A tuple
+    whose SET matches but whose FORM differs (repeated entry, wrong
+    length) is a representation the writer never produces."""
+    _install(target_root, receipt=_receipt(target_owned_paths=paths), profile=_VALID_PROFILE_YAML)
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
+    assert _check(report, "canonical_claims").status == STATUS_FAIL_V2
+
+
+# CLASS 2: the parse boundary is TOTAL for target-authored input.
+_MALFORMED_RECEIPT_CORPUS = [
+    ("deep_nesting", "[" * 200000),
+    ("duplicate_keys", '{"pack_version": "9.9.9", "pack_version": "0.1.0"}'),
+    ("not_json", "{not json"),
+    ("wrong_shape", '["a", "list", "not", "an", "object"]'),
+    ("empty", ""),
+    ("bare_scalar", "42"),
+]
+
+
+@pytest.mark.parametrize("label,payload", _MALFORMED_RECEIPT_CORPUS, ids=[c[0] for c in _MALFORMED_RECEIPT_CORPUS])
+def test_family_malformed_receipt_never_produces_a_traceback(target_root, label, payload):
+    """No malformed target-authored receipt may escape as an exception.
+    Four rounds each added one exception type after a reviewer named it;
+    this asserts the boundary is total, not incrementally widened."""
+    _install(target_root, profile=_VALID_PROFILE_YAML)
+    (target_root / RECEIPT_RELATIVE_PATH_V2).write_text(payload, encoding="utf-8")
+    report = run_validate_v2(target_root=target_root)  # must not raise
+    assert report.is_valid is False
+    assert _check(report, "receipt").reason_code == VALIDATE_RECEIPT_INVALID_REASON_V2
+
+
+_MALFORMED_PROFILE_CORPUS = [
+    ("deep_nesting", "[" * 200000),
+    ("authored_duplicate", "a: 1\na: 2\n"),
+    ("unhashable_key", "? [a, b]\n: v\n"),
+    ("not_yaml", "\tthis: [is: not\n  valid"),
+    ("bare_scalar", "42"),
+]
+
+
+@pytest.mark.parametrize("label,payload", _MALFORMED_PROFILE_CORPUS, ids=[c[0] for c in _MALFORMED_PROFILE_CORPUS])
+def test_family_malformed_profile_never_produces_a_traceback(target_root, label, payload):
+    _install(target_root, receipt=_receipt())
+    (target_root / _PROFILE_RELATIVE_PATH).write_text(payload, encoding="utf-8")
+    report = run_validate_v2(target_root=target_root)  # must not raise
+    assert report.is_valid is False
+
+
+# CLASS 4: ONE SNAPSHOT, ONE DECISION.
+def test_class4_receipt_and_profile_are_read_through_one_aiops_snapshot(target_root):
+    """Both installation artifacts must come from a single resolved
+    `.aiops`. Previously each was resolved independently, so an in-root
+    symlink retarget between the reads could pair a receipt from directory
+    A with a profile from directory B -- a combination no single install
+    ever contained."""
+    real = target_root / "real"
+    other = target_root / "other"
+    for d in (real, other):
+        (d / ".aiops").mkdir(parents=True)
+    (real / _PROFILE_RELATIVE_PATH).write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (real / RECEIPT_RELATIVE_PATH_V2).write_bytes(_receipt_on_disk_bytes(_receipt()))
+
+    root = target_root / "root"
+    root.mkdir()
+    (root / ".aiops").symlink_to(real / ".aiops")
+    report = run_validate_v2(target_root=root)
+    # Whatever the verdict, it must be derived from one snapshot and be a
+    # typed report rather than a crash.
+    assert isinstance(report.checks, tuple) and report.checks

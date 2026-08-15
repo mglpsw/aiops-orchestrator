@@ -55,7 +55,10 @@ from app.agent_review.target_pack_conformance_v2 import (  # noqa: E402
     run_conformance_v2,
 )
 from app.agent_review.target_pack_doctor_v2 import run_doctor_v2  # noqa: E402
-from app.agent_review.target_pack_validate_v2 import run_validate_v2  # noqa: E402
+from app.agent_review.target_pack_validate_v2 import (  # noqa: E402
+    PARSE_INPUT_FAILURES_V2,
+    run_validate_v2,
+)
 from app.agent_review.target_pack_install_v2 import (  # noqa: E402
     RECEIPT_RELATIVE_PATH_V2,
     TargetPackInstallError,
@@ -291,7 +294,7 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
         # last-writer-wins. Reuses the repository's existing primitive
         # rather than adding a second parser.
         raw = strict_json_loads(matrix_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, *PARSE_INPUT_FAILURES_V2):
         print(f"error: {CONFORMANCE_MATRIX_UNREADABLE_REASON_V2}", file=sys.stderr)
         return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
 
@@ -309,7 +312,7 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
             )
             for entry in raw["cases"]
         )
-    except (KeyError, TypeError, ValueError):
+    except (KeyError, *PARSE_INPUT_FAILURES_V2):
         print(f"error: {CONFORMANCE_MATRIX_INVALID_REASON_V2}", file=sys.stderr)
         return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
 

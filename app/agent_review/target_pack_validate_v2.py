@@ -116,6 +116,8 @@ VALIDATE_PROFILE_NOT_TARGET_OWNED_REASON_V2 = "target_pack_validate_profile_not_
 VALIDATE_RECEIPT_MAJOR_INCOMPATIBLE_REASON_V2 = "target_pack_validate_receipt_major_incompatible"
 VALIDATE_TARGET_OWNED_SET_UNEXPECTED_REASON_V2 = "target_pack_validate_target_owned_set_unexpected"
 VALIDATE_GENERATED_FILES_UNSUPPORTED_REASON_V2 = "target_pack_validate_generated_files_unsupported"
+VALIDATE_RECEIPT_NON_CANONICAL_CLAIM_REASON_V2 = "target_pack_validate_receipt_non_canonical_claim"
+VALIDATE_TARGET_OWNED_PATHS_NON_CANONICAL_REASON_V2 = "target_pack_validate_target_owned_paths_non_canonical"
 
 # The rollout ceiling THIS pack version can actually deliver. `validate` is
 # target-only by design (no `--toolrepo-root`), so it cannot read a live
@@ -146,6 +148,7 @@ ROOT_IDENTITY_CHECK_V2 = "root_identity"
 TARGET_OWNED_CHECK_V2 = "target_owned"
 ROLLOUT_CEILING_CHECK_V2 = "rollout_ceiling"
 GENERATED_FILES_CHECK_V2 = "generated_files"
+CANONICAL_CLAIMS_CHECK_V2 = "canonical_claims"
 COMPATIBILITY_CHECK_V2 = "compatibility"
 TRUSTED_CHECK_INVENTORY_CHECK_V2 = "trusted_check_inventory"
 
@@ -178,6 +181,28 @@ class ValidateReportV2:
         return tuple(check.name for check in self.checks if check.status == STATUS_UNAVAILABLE_V2)
 
 
+# CLASS 2 -- TOTAL PARSE BOUNDARY.
+#
+# Target-authored input must never produce a traceback for malformed
+# content. Four separate rounds of this PR each added one more exception
+# type after a reviewer named it (duplicate JSON keys, YAML `TypeError`,
+# path `RuntimeError`, then `RecursionError`), which is the wrong shape:
+# the boundary should be TOTAL by construction, not incrementally widened.
+#
+# Deliberately NOT `except Exception`: an internal programmer bug must not
+# be relabelled as invalid target input. Only failure classes that a
+# parser can legitimately raise for malformed *input* are listed, and
+# filesystem/containment failures stay separate so they keep their own
+# distinguishable reason codes.
+PARSE_INPUT_FAILURES_V2: tuple[type[BaseException], ...] = (
+    ValidationError,
+    ValueError,          # includes json.JSONDecodeError and yaml.YAMLError subclasses
+    UnicodeDecodeError,  # (also a ValueError, listed for intent)
+    RecursionError,      # deeply nested JSON/YAML
+    TypeError,           # parser handed a shape the constructor cannot use
+)
+
+
 def _validate_reason_for_plan_error_v2(exc: PlanError) -> str:
     """Single translation site, mirroring `target_pack_doctor_v2`'s own --
     a symlink loop and a genuine containment escape must not collapse into
@@ -188,13 +213,75 @@ def _validate_reason_for_plan_error_v2(exc: PlanError) -> str:
     return VALIDATE_PATH_ESCAPES_TARGET_ROOT_REASON_V2
 
 
-def _read_contained_bytes_v2(target_root_real: Path, relative_path: str) -> bytes:
+# CLASS 4 -- ONE SNAPSHOT, ONE DECISION.
+#
+# Every validation decision about one installation must be built from a
+# SINGLE observed filesystem identity. Stated here as a module invariant
+# rather than re-learned per bug: this rule was rediscovered four times in
+# this PR (target_root resolve, profile resolve/read, profile semantic vs
+# raw bytes, conformance resolved roots) and each time it was applied only
+# to the site the reviewer named.
+#
+# Concretely, `run_validate_v2`:
+#   1. resolves `target_root` once;
+#   2. resolves the contained `.aiops` directory ONCE;
+#   3. derives both artifact paths from that snapshot;
+#   4. reads each artifact once and reuses those bytes for every decision;
+#   5. never re-resolves, and never returns to the mutable original alias.
+#
+# Without step 2, `.aiops` was resolved independently per artifact, so an
+# in-root symlink retargeted between the two reads let the receipt come
+# from directory A and the profile from directory B -- a pair that no
+# single installation ever contained.
+_AIOPS_DIR_RELATIVE_PATH_V2 = ".aiops"
+
+
+def _resolve_aiops_dir_v2(target_root_real: Path) -> Path:
+    """The single contained `.aiops` snapshot both artifacts are read
+    through. Raises `PlanError` if it escapes the root."""
+
+    return resolve_within_target_root_v2(
+        target_root_real, target_root_real / _AIOPS_DIR_RELATIVE_PATH_V2
+    )
+
+
+def _read_contained_bytes_v2(target_root_real: Path, relative_path: str, aiops_dir: Path | None = None) -> bytes:
     """Resolve INSIDE the root and read through the resolved path, so the
     containment decision is bound to the read rather than merely preceding
-    it (H1A-R1)."""
+    it (H1A-R1).
 
+    When `aiops_dir` is supplied, the path is derived from that already
+    resolved snapshot instead of re-resolving from the root -- see the
+    ONE SNAPSHOT, ONE DECISION note above.
+    """
+
+    if aiops_dir is not None and relative_path.startswith(_AIOPS_DIR_RELATIVE_PATH_V2 + "/"):
+        leaf = relative_path[len(_AIOPS_DIR_RELATIVE_PATH_V2) + 1 :]
+        resolved = resolve_within_target_root_v2(target_root_real, aiops_dir / leaf)
+        return resolved.read_bytes()
     resolved = resolve_within_target_root_v2(target_root_real, target_root_real / relative_path)
     return resolved.read_bytes()
+
+
+def authored_target_identity_v2(*, target_root: Path) -> str | None:
+    """`receipt.target_repo` for an installed target, or None if no
+    receipt parses.
+
+    Exposed for `target_pack_conformance_v2`'s distinct-identity property.
+    Deliberately routed through this module's own contained, total-parse
+    loaders so the conformance layer never opens a second, weaker read
+    path into a target.
+    """
+
+    if not target_root.is_dir():
+        return None
+    target_root_real = target_root.resolve(strict=False)
+    try:
+        aiops_dir: Path | None = _resolve_aiops_dir_v2(target_root_real)
+    except PlanError:
+        aiops_dir = None
+    receipt, _check = _load_receipt_v2(target_root_real, aiops_dir)
+    return None if receipt is None else receipt.target_repo
 
 
 def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
@@ -222,10 +309,20 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
     checks.append(ValidateCheckV2(TARGET_ROOT_CHECK_V2, STATUS_PASS_V2))
     target_root_real = target_root.resolve(strict=False)
 
-    receipt, receipt_check = _load_receipt_v2(target_root_real)
+    # ONE SNAPSHOT, ONE DECISION: resolve `.aiops` exactly once and read
+    # BOTH installation artifacts through it.
+    try:
+        aiops_dir: Path | None = _resolve_aiops_dir_v2(target_root_real)
+    except PlanError as exc:
+        aiops_dir = None
+        checks.append(
+            ValidateCheckV2(TARGET_ROOT_CHECK_V2, STATUS_FAIL_V2, _validate_reason_for_plan_error_v2(exc))
+        )
+
+    receipt, receipt_check = _load_receipt_v2(target_root_real, aiops_dir)
     checks.append(receipt_check)
 
-    profile, profile_bytes, profile_check = _load_profile_v2(target_root_real)
+    profile, profile_bytes, profile_check = _load_profile_v2(target_root_real, aiops_dir)
     checks.append(profile_check)
 
     if receipt is not None and profile is not None:
@@ -241,10 +338,10 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
 
     if receipt is not None:
         checks.append(_root_identity_check_v2(receipt))
-        checks.append(_target_owned_check_v2(target_root_real, receipt, profile_bytes))
+        checks.append(_target_owned_check_v2(target_root_real, receipt, profile_bytes, aiops_dir))
         checks.append(_rollout_ceiling_check_v2(receipt))
         checks.append(_compatibility_check_v2(receipt))
-        checks.append(_generated_files_check_v2(receipt))
+        checks.append(_canonical_claims_check_v2(receipt))
 
     checks.append(_trusted_check_inventory_check_v2())
     return ValidateReportV2(target_root=str(target_root), checks=tuple(checks))
@@ -258,7 +355,9 @@ def _trusted_check_inventory_check_v2() -> ValidateCheckV2:
     )
 
 
-def _load_receipt_v2(target_root_real: Path) -> tuple[TargetInstallReceiptV2 | None, ValidateCheckV2]:
+def _load_receipt_v2(
+    target_root_real: Path, aiops_dir: Path | None
+) -> tuple[TargetInstallReceiptV2 | None, ValidateCheckV2]:
     """Parse the receipt, contained.
 
     Note there is deliberately NO separate "receipt_hash" check here.
@@ -273,7 +372,7 @@ def _load_receipt_v2(target_root_real: Path) -> tuple[TargetInstallReceiptV2 | N
     """
 
     try:
-        raw = _read_contained_bytes_v2(target_root_real, RECEIPT_RELATIVE_PATH_V2)
+        raw = _read_contained_bytes_v2(target_root_real, RECEIPT_RELATIVE_PATH_V2, aiops_dir)
     except PlanError as exc:
         return None, ValidateCheckV2(RECEIPT_CHECK_V2, STATUS_FAIL_V2, _validate_reason_for_plan_error_v2(exc))
     except FileNotFoundError:
@@ -298,14 +397,14 @@ def _load_receipt_v2(target_root_real: Path) -> tuple[TargetInstallReceiptV2 | N
         # permissive path ever sees it.
         strict_json_loads(text)
         receipt = TargetInstallReceiptV2.model_validate_json(text)
-    except (ValidationError, ValueError, UnicodeDecodeError):
+    except PARSE_INPUT_FAILURES_V2:
         return None, ValidateCheckV2(RECEIPT_CHECK_V2, STATUS_FAIL_V2, VALIDATE_RECEIPT_INVALID_REASON_V2)
 
     return receipt, ValidateCheckV2(RECEIPT_CHECK_V2, STATUS_PASS_V2)
 
 
 def _load_profile_v2(
-    target_root_real: Path,
+    target_root_real: Path, aiops_dir: Path | None
 ) -> tuple[TargetProfileV2 | None, bytes | None, ValidateCheckV2]:
     """Parse the profile from the EXACT bytes read through the contained
     resolved path.
@@ -321,7 +420,7 @@ def _load_profile_v2(
     """
 
     try:
-        raw = _read_contained_bytes_v2(target_root_real, _PROFILE_RELATIVE_PATH_V2)
+        raw = _read_contained_bytes_v2(target_root_real, _PROFILE_RELATIVE_PATH_V2, aiops_dir)
     except PlanError as exc:
         return None, None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, _validate_reason_for_plan_error_v2(exc))
     except FileNotFoundError:
@@ -331,7 +430,7 @@ def _load_profile_v2(
 
     try:
         profile = load_target_profile_text_v2(raw.decode("utf-8"))
-    except (TargetProfileLoadErrorV2, UnicodeDecodeError):
+    except (TargetProfileLoadErrorV2, *PARSE_INPUT_FAILURES_V2):
         return None, None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, VALIDATE_PROFILE_INVALID_REASON_V2)
 
     # Return the BYTES too, so every later check about the profile is made
@@ -394,19 +493,74 @@ def _root_identity_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
     return ValidateCheckV2(ROOT_IDENTITY_CHECK_V2, STATUS_FAIL_V2, VALIDATE_ROOT_IDENTITY_MISMATCH_REASON_V2)
 
 
-def _generated_files_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
-    """This pack version ships zero `UPSTREAM_GENERATED` entries and its
-    canonical writer emits `{}`, so a non-empty claim describes an install
-    the writer cannot produce (PR #235 review round 5). Refused now rather
-    than accepted unverified; the slice that actually ships generated files
-    replaces this with byte verification.
-    """
+# CLASS 1 + CLASS 5 -- CANONICAL RECEIPT CLAIMS.
+#
+# Derived MECHANICALLY from `target_pack_operation_v2._build_receipt_v2`,
+# the only canonical writer, rather than from a hand-kept list of
+# "unsupported fields". Two earlier rounds each fixed one field of this
+# family in isolation (`generated_file_hashes`, then
+# `target_policy_hash`/`review_pack_hashes` came back), which is why this
+# is now one rule over a declared table.
+#
+# The rule: a field the writer PINS to a constant may only ever hold that
+# constant. A receipt outside the writer's own output domain describes an
+# installation this pack version cannot produce, so validating it would
+# attest state that no writer ever created.
+#
+# Fields deliberately NOT listed:
+#   pack_version / toolrepo_sha / manifest_digest / required_capabilities
+#       -- writer copies them from the manifest; `validate` is target-only
+#          and has no manifest to compare against (that is `doctor`'s job).
+#   target_repo / portable_target_root_identity / target_profile_hash
+#       -- caller/content derived, already cross-checked elsewhere here.
+#   rollout_mode -- has its own ceiling check.
+#   previous_install_identity -- the writer legitimately emits EITHER a
+#       ref (when a previous receipt existed) or None, so both forms are
+#       canonical and neither may be refused.
+_WRITER_PINNED_RECEIPT_FIELDS_V2: tuple[tuple[str, object], ...] = (
+    ("target_policy_hash", None),
+    ("review_pack_hashes", {}),
+    # zero UPSTREAM_GENERATED entries exist in this pack version's
+    # manifest, so the writer's comprehension always yields {}.
+    ("generated_file_hashes", {}),
+    ("expected_runner_labels", ()),
+    ("required_secret_names", ()),
+    ("compatibility", "compatible"),
+)
 
-    if not receipt.generated_file_hashes:
-        return ValidateCheckV2(GENERATED_FILES_CHECK_V2, STATUS_PASS_V2)
-    return ValidateCheckV2(
-        GENERATED_FILES_CHECK_V2, STATUS_FAIL_V2, VALIDATE_GENERATED_FILES_UNSUPPORTED_REASON_V2
-    )
+
+def _canonical_claims_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
+    for field_name, canonical in _WRITER_PINNED_RECEIPT_FIELDS_V2:
+        observed = getattr(receipt, field_name)
+        # Normalise container types before comparing: the contract stores
+        # mappings/sequences in its own types, so `{} != Mapping()` would
+        # otherwise fire spuriously.
+        if isinstance(canonical, dict):
+            matches = dict(observed) == canonical
+        elif isinstance(canonical, tuple):
+            matches = tuple(observed) == canonical
+        else:
+            matches = observed == canonical
+        if matches:
+            continue
+        # `generated_file_hashes` keeps its own established reason code --
+        # it already shipped in this PR and consumers may match on it.
+        reason = (
+            VALIDATE_GENERATED_FILES_UNSUPPORTED_REASON_V2
+            if field_name == "generated_file_hashes"
+            else VALIDATE_RECEIPT_NON_CANONICAL_CLAIM_REASON_V2
+        )
+        return ValidateCheckV2(CANONICAL_CLAIMS_CHECK_V2, STATUS_FAIL_V2, reason)
+
+    # CLASS 5 -- canonical FORM, not merely set equality. The writer emits
+    # `tuple(sorted(target_owned_file_hashes))`, so a tuple that is
+    # unsorted, or repeats a path while the mapping holds one key, is a
+    # representation the writer never produces even though its SET matches.
+    if tuple(receipt.target_owned_paths) != tuple(sorted(receipt.target_owned_file_hashes)):
+        return ValidateCheckV2(
+            CANONICAL_CLAIMS_CHECK_V2, STATUS_FAIL_V2, VALIDATE_TARGET_OWNED_PATHS_NON_CANONICAL_REASON_V2
+        )
+    return ValidateCheckV2(CANONICAL_CLAIMS_CHECK_V2, STATUS_PASS_V2)
 
 
 def _compatibility_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
@@ -425,7 +579,10 @@ def _compatibility_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
 
 
 def _target_owned_check_v2(
-    target_root_real: Path, receipt: TargetInstallReceiptV2, profile_bytes: bytes | None
+    target_root_real: Path,
+    receipt: TargetInstallReceiptV2,
+    profile_bytes: bytes | None,
+    aiops_dir: Path | None = None,
 ) -> ValidateCheckV2:
     """Every target-owned path the receipt recorded must still be present,
     contained, and byte-identical to the hash the receipt recorded.
@@ -463,7 +620,7 @@ def _target_owned_check_v2(
             continue
         expected = receipt.target_owned_file_hashes[relative_path]
         try:
-            raw = _read_contained_bytes_v2(target_root_real, relative_path)
+            raw = _read_contained_bytes_v2(target_root_real, relative_path, aiops_dir)
         except PlanError as exc:
             return ValidateCheckV2(TARGET_OWNED_CHECK_V2, STATUS_FAIL_V2, _validate_reason_for_plan_error_v2(exc))
         except FileNotFoundError:

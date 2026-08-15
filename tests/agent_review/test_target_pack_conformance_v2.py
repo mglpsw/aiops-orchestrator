@@ -600,3 +600,31 @@ def test_cases_are_validated_through_the_resolved_root_snapshot(tmp_path):
     # the symlink it was named by.
     validated = sorted(case.validate_report.target_root for case in report.cases)
     assert validated == sorted([str(real_a.resolve()), str(real_b.resolve())])
+
+
+# ===========================================================================
+# CLASS 3 FAMILY: the uniformity property, stated once and tested as a matrix
+# ===========================================================================
+
+
+def test_class3_same_authored_identity_in_two_dirs_does_not_prove_uniformity(tmp_path):
+    """Two copies of ONE installation have distinct roots and identical
+    authored identity, so comparing them proves only determinism -- a
+    repository-name branch keyed on any other identity stays invisible."""
+    from app.agent_review.target_pack_conformance_v2 import CONFORMANCE_SINGLE_AUTHORED_IDENTITY_REASON_V2
+
+    a, b = tmp_path / "copy-a", tmp_path / "copy-b"
+    a.mkdir()
+    b.mkdir()
+    _materialize(a, "acme/same-service")
+    _materialize(b, "acme/same-service")
+
+    report = run_conformance_v2(cases=(_eligible(a), _eligible(b)))
+    assert report.is_conformant is False
+    assert CONFORMANCE_SINGLE_AUTHORED_IDENTITY_REASON_V2 in report.reason_codes
+
+
+def test_class3_distinct_authored_identities_do_prove_uniformity(two_targets):
+    """Positive control: distinct roots AND distinct authored identities."""
+    alpha, beta = two_targets
+    assert run_conformance_v2(cases=(_eligible(alpha), _eligible(beta))).is_conformant is True
