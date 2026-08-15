@@ -61,6 +61,9 @@ CONFORMANCE_CASE_TARGET_UNREADABLE_REASON_V2 = "target_pack_conformance_case_tar
 CONFORMANCE_TOO_FEW_CASES_REASON_V2 = "target_pack_conformance_too_few_cases"
 CONFORMANCE_DUPLICATE_TARGET_ROOT_REASON_V2 = "target_pack_conformance_duplicate_target_root"
 CONFORMANCE_NON_UNIFORM_SHAPE_REASON_V2 = "target_pack_conformance_non_uniform_check_shape"
+CONFORMANCE_NO_COMPARABLE_COHORT_REASON_V2 = "target_pack_conformance_no_comparable_cohort"
+CONFORMANCE_DUPLICATE_CASE_ID_REASON_V2 = "target_pack_conformance_duplicate_case_id"
+CONFORMANCE_INVALID_CASE_ID_REASON_V2 = "target_pack_conformance_invalid_case_id"
 
 # A conformance claim proven against a single target is not a conformance
 # claim -- "the same pack works everywhere" needs at least two somewheres.
@@ -169,6 +172,16 @@ def run_conformance_v2(*, cases: tuple[ConformanceCaseV2, ...]) -> ConformanceRe
     if len(set(resolved_roots)) < MINIMUM_CONFORMANCE_CASES_V2:
         return ConformanceReportV2(cases=(), reason_codes=(CONFORMANCE_DUPLICATE_TARGET_ROOT_REASON_V2,))
 
+    # Case ids must be unique, non-empty strings (PR #235 review round 2,
+    # confirmed): they are how a consumer attributes a failure or an
+    # evidence record back to its matrix entry, so two indistinguishable
+    # ids make the report unattributable even when the run itself is fine.
+    case_ids = [case.case_id for case in cases]
+    if any(not isinstance(cid, str) or not cid.strip() for cid in case_ids):
+        return ConformanceReportV2(cases=(), reason_codes=(CONFORMANCE_INVALID_CASE_ID_REASON_V2,))
+    if len(set(case_ids)) != len(case_ids):
+        return ConformanceReportV2(cases=(), reason_codes=(CONFORMANCE_DUPLICATE_CASE_ID_REASON_V2,))
+
     results: list[ConformanceCaseResultV2] = []
     unreadable_case_ids: list[str] = []
     for case in cases:
@@ -228,4 +241,14 @@ def _uniformity_reason_codes_v2(results: tuple[ConformanceCaseResultV2, ...]) ->
         shapes = {case.observable_shape for case in group}
         if len(shapes) > 1:
             return (CONFORMANCE_NON_UNIFORM_SHAPE_REASON_V2,)
+
+    # A cohort of ONE compares nothing (PR #235 review round 2, confirmed
+    # -- a gap in round 1's own fix). Grouping by expectation meant the
+    # minimal legal matrix, one eligible plus one ineligible target,
+    # produced two singleton cohorts and therefore zero comparisons, while
+    # still reporting conformance. At least one cohort must contain two
+    # distinct targets or the uniformity claim is withheld rather than
+    # asserted vacuously.
+    if not any(len(group) >= MINIMUM_CONFORMANCE_CASES_V2 for group in by_expectation.values()):
+        return (CONFORMANCE_NO_COMPARABLE_COHORT_REASON_V2,)
     return ()

@@ -786,3 +786,63 @@ def test_conformance_refuses_a_matrix_with_duplicate_keys(tmp_path: Path) -> Non
     result = _run(["conformance", "--matrix", str(matrix)])
     assert result.returncode == 2
     assert "target_pack_conformance_matrix_unreadable" in result.stderr
+
+
+def _two_real_targets(tmp_path: Path) -> tuple[Path, Path]:
+    alpha, beta = tmp_path / "alpha", tmp_path / "beta"
+    alpha.mkdir()
+    beta.mkdir()
+    _init_a_real_target(alpha, repo="acme/alpha-service")
+    _init_a_real_target(beta, repo="globex/beta-platform")
+    return alpha, beta
+
+
+def test_conformance_refuses_non_string_case_ids(tmp_path: Path) -> None:
+    """PR #235 review round 2: `str()` coercion collapsed distinct JSON
+    inputs -- case ids `1` and `"1"` both became `"1"`, producing two
+    indistinguishable identities so a consumer could not attribute a
+    failure back to its matrix entry."""
+
+    alpha, beta = _two_real_targets(tmp_path)
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {"case_id": 1, "target_root": str(alpha), "expectation": "eligible"},
+                    {"case_id": "1", "target_root": str(beta), "expectation": "eligible"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _run(["conformance", "--matrix", str(matrix)])
+    assert result.returncode == 2
+    assert "target_pack_conformance_matrix_invalid" in result.stderr
+
+
+def test_conformance_refuses_duplicate_case_ids(tmp_path: Path) -> None:
+    alpha, beta = _two_real_targets(tmp_path)
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {"case_id": "same", "target_root": str(alpha), "expectation": "eligible"},
+                    {"case_id": "same", "target_root": str(beta), "expectation": "eligible"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _run(["conformance", "--matrix", str(matrix)])
+    assert result.returncode == 1
+    assert "target_pack_conformance_duplicate_case_id" in json.loads(result.stdout)["reason_codes"]
+
+
+def test_conformance_cli_takes_no_target_root_argument(tmp_path: Path) -> None:
+    """rev.3 spec correction: each matrix entry carries its own target
+    root, so a single --target-root cannot express a multi-target claim."""
+    alpha, _beta = _two_real_targets(tmp_path)
+    result = _run_raw(["conformance", "--matrix", "x.json", "--target-root", str(alpha)])
+    assert result.returncode != 0

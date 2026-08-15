@@ -236,14 +236,28 @@ init        --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME
             --pack-version X.Y.Z [--rollout off|shadow_minimal|shadow_full]
 doctor      --target-root PATH --toolrepo-root PATH --pack-version X.Y.Z   # READ-ONLY
 validate    --target-root PATH
-conformance --target-root PATH --matrix PATH
+conformance --matrix PATH                                   # rev.3, see below
 install-workflows --target-root PATH [--dry-run]
 upgrade     --target-root PATH [--dry-run] [--yes]
 rollback    --target-root PATH [--dry-run] [--yes]
 ```
 
-`init` and `doctor` are implemented (slice 1). The rest are specified here and
-deferred (§12).
+`init`, `doctor` (slice 1) and `validate`, `conformance` (slice 2, `#203-S2`)
+are implemented. The rest are specified here and deferred (§12/§14).
+
+**`conformance` takes no `--target-root`** *(rev.3 correction)*. rev.2 wrote
+`conformance --target-root PATH --matrix PATH`, which contradicts this same
+spec's `§10`/`§11` requirement that conformance pass *"for >= 2 targets"*: a
+single `--target-root` cannot express a multi-target claim. Each matrix entry
+carries its own `target_root`, so the matrix alone defines the target set:
+
+```json
+{"cases": [{"case_id": "...", "target_root": "...", "expectation": "eligible|ineligible"}]}
+```
+
+The matrix is target-authored input, never a pack-generated artifact, and is
+parsed with duplicate-key rejection — an ambiguous contract document is
+refused rather than resolved by last-writer-wins.
 
 `doctor` is **READ-ONLY by construction**: it accepts no mutating parameter and
 calls no write/mkdir/rename/remove primitive anywhere in its call graph, proven

@@ -264,16 +264,26 @@ def test_drifted_target_is_detected(two_targets):
     assert VALIDATE_TARGET_OWNED_DRIFT_REASON_V2 in failing[0].observed_reason_codes
 
 
-def test_expected_violation_is_conformant_when_it_actually_violates(two_targets):
+def test_expected_violation_is_conformant_when_it_actually_violates(tmp_path):
     """A case declared INELIGIBLE must actually fail validation. This is
-    what stops conformance from degenerating into "everything passes"."""
-    alpha, beta = two_targets
-    (beta / RECEIPT_RELATIVE_PATH_V2).unlink()
+    what stops conformance from degenerating into "everything passes".
+
+    Uses THREE targets deliberately: after PR #235 review round 2, a
+    matrix of one eligible plus one ineligible target is refused for a
+    different reason (two singleton cohorts compare nothing), so proving
+    the detection property needs a cohort that is genuinely comparable."""
+    alpha, beta, gamma = tmp_path / "alpha", tmp_path / "beta", tmp_path / "gamma"
+    for path, repo in ((alpha, "acme/alpha"), (beta, "globex/beta"), (gamma, "initech/gamma")):
+        path.mkdir()
+        _materialize(path, repo)
+    (gamma / RECEIPT_RELATIVE_PATH_V2).unlink()
+
     report = run_conformance_v2(
         cases=(
             _eligible(alpha),
+            _eligible(beta),
             ConformanceCaseV2(
-                case_id="beta", target_root=beta, expectation=ConformanceExpectationV2.INELIGIBLE
+                case_id="gamma", target_root=gamma, expectation=ConformanceExpectationV2.INELIGIBLE
             ),
         )
     )
@@ -448,3 +458,61 @@ def test_uniform_eligible_targets_remain_conformant(two_targets):
     alpha, beta = two_targets
     report = run_conformance_v2(cases=(_eligible(alpha), _eligible(beta)))
     assert report.is_conformant is True
+
+
+# ---------------------------------------------------------------------------
+# PR #235 adversarial review round 2
+# ---------------------------------------------------------------------------
+
+
+def test_singleton_cohorts_cannot_claim_uniformity(two_targets):
+    """R1, a gap in round 1's OWN fix: grouping by expectation means a
+    minimal matrix of one eligible + one ineligible target produces two
+    singleton cohorts, so no two shapes are ever compared and the
+    uniformity claim is vacuous -- a target-name branch affecting either
+    target escapes entirely."""
+    from app.agent_review.target_pack_conformance_v2 import CONFORMANCE_NO_COMPARABLE_COHORT_REASON_V2
+
+    alpha, beta = two_targets
+    (beta / RECEIPT_RELATIVE_PATH_V2).unlink()
+    report = run_conformance_v2(
+        cases=(
+            ConformanceCaseV2("alpha", alpha, ConformanceExpectationV2.ELIGIBLE),
+            ConformanceCaseV2("beta", beta, ConformanceExpectationV2.INELIGIBLE),
+        )
+    )
+    assert report.is_conformant is False
+    assert CONFORMANCE_NO_COMPARABLE_COHORT_REASON_V2 in report.reason_codes
+
+
+def test_a_cohort_of_two_eligible_targets_satisfies_the_comparison_requirement(two_targets):
+    """Positive control for R1: two targets in the SAME cohort are
+    genuinely compared, so the uniformity claim is earned."""
+    alpha, beta = two_targets
+    report = run_conformance_v2(cases=(_eligible(alpha), _eligible(beta)))
+    assert report.is_conformant is True
+
+
+def test_case_ids_must_be_unique_nonempty_strings():
+    """R5 is enforced at the library boundary too, not only in the CLI."""
+    from app.agent_review.target_pack_conformance_v2 import CONFORMANCE_DUPLICATE_CASE_ID_REASON_V2
+
+    base = Path(tempfile.mkdtemp())
+    a, b = base / "a", base / "b"
+    a.mkdir()
+    b.mkdir()
+    _materialize(a, "acme/a")
+    _materialize(b, "globex/b")
+    try:
+        report = run_conformance_v2(
+            cases=(
+                ConformanceCaseV2("dup", a, ConformanceExpectationV2.ELIGIBLE),
+                ConformanceCaseV2("dup", b, ConformanceExpectationV2.ELIGIBLE),
+            )
+        )
+        assert report.is_conformant is False
+        assert CONFORMANCE_DUPLICATE_CASE_ID_REASON_V2 in report.reason_codes
+    finally:
+        import shutil
+
+        shutil.rmtree(base, ignore_errors=True)

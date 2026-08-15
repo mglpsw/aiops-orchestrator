@@ -265,6 +265,12 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return CLI_EXIT_SATISFIED_OR_NOOP_V2 if report.is_valid else CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2
 
 
+def _require_case_id_v2(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TypeError("case_id must be a non-empty string")
+    return value
+
+
 def _cmd_conformance(args: argparse.Namespace) -> int:
     """Synthetic/offline conformance over a declared matrix of targets.
 
@@ -292,7 +298,12 @@ def _cmd_conformance(args: argparse.Namespace) -> int:
     try:
         cases = tuple(
             ConformanceCaseV2(
-                case_id=str(entry["case_id"]),
+                # NOT str(...): coercion collapsed distinct JSON inputs
+                # (`1` and `"1"` both became `"1"`), producing two
+                # indistinguishable case identities so a consumer could not
+                # attribute a failure back to its matrix entry. The declared
+                # contract is a string; anything else is refused.
+                case_id=_require_case_id_v2(entry["case_id"]),
                 target_root=Path(entry["target_root"]),
                 expectation=ConformanceExpectationV2(entry["expectation"]),
             )

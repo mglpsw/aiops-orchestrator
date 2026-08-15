@@ -533,3 +533,34 @@ def test_uncustomized_seed_identity_placeholder_is_not_a_mismatch(target_root):
     report = run_validate_v2(target_root=target_root)
     assert _check(report, "profile_identity").status == STATUS_PASS_V2
     assert report.is_valid is True
+
+
+def test_receipt_with_duplicate_json_keys_is_refused(target_root):
+    """R2: `model_validate_json` accepts whichever value the parser picked
+    for a duplicated key rather than rejecting the ambiguous document, so
+    the documented strict receipt-parse gate was bypassed."""
+    _install(target_root, receipt=_receipt(), profile=_VALID_PROFILE_YAML)
+    original = json.loads((target_root / RECEIPT_RELATIVE_PATH_V2).read_text(encoding="utf-8"))
+    duplicated = '{"pack_version": "9.9.9", ' + json.dumps(original)[1:]
+    (target_root / RECEIPT_RELATIVE_PATH_V2).write_text(duplicated, encoding="utf-8")
+
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
+    assert _check(report, "receipt").reason_code == VALIDATE_RECEIPT_INVALID_REASON_V2
+
+
+def test_major_incompatible_receipt_fails_closed(target_root):
+    """R4: the contract carries `compatibility` precisely so an install
+    can declare itself incompatible; treating it as inert let `validate`
+    exit 0 on an installation that says it must not be used."""
+    from app.agent_review.target_pack_validate_v2 import VALIDATE_RECEIPT_MAJOR_INCOMPATIBLE_REASON_V2
+
+    _install(target_root, receipt=_receipt(compatibility="major_incompatible"), profile=_VALID_PROFILE_YAML)
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
+    assert _check(report, "compatibility").reason_code == VALIDATE_RECEIPT_MAJOR_INCOMPATIBLE_REASON_V2
+
+
+def test_compatible_receipt_passes_the_compatibility_check(target_root):
+    _install(target_root, receipt=_receipt(compatibility="compatible"), profile=_VALID_PROFILE_YAML)
+    assert _check(run_validate_v2(target_root=target_root), "compatibility").status == STATUS_PASS_V2

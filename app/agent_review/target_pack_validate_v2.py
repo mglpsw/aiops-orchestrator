@@ -70,6 +70,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from app.agent_review.contracts_v2 import TargetProfileV2
+from app.common.strict_json import strict_json_loads
 from app.agent_review.profile_loader_v2 import (
     TargetProfileLoadErrorV2,
     compute_profile_hash_v2,
@@ -112,6 +113,7 @@ VALIDATE_TRUSTED_CHECK_INVENTORY_DEFERRED_REASON_V2 = (
 VALIDATE_ROLLOUT_ABOVE_CEILING_REASON_V2 = "target_pack_validate_rollout_above_pack_ceiling"
 VALIDATE_PROFILE_IDENTITY_MISMATCH_REASON_V2 = "target_pack_validate_profile_identity_mismatch"
 VALIDATE_PROFILE_NOT_TARGET_OWNED_REASON_V2 = "target_pack_validate_profile_not_in_target_owned_set"
+VALIDATE_RECEIPT_MAJOR_INCOMPATIBLE_REASON_V2 = "target_pack_validate_receipt_major_incompatible"
 
 # The rollout ceiling THIS pack version can actually deliver. `validate` is
 # target-only by design (no `--toolrepo-root`), so it cannot read a live
@@ -133,6 +135,7 @@ PROFILE_IDENTITY_CHECK_V2 = "profile_identity"
 ROOT_IDENTITY_CHECK_V2 = "root_identity"
 TARGET_OWNED_CHECK_V2 = "target_owned"
 ROLLOUT_CEILING_CHECK_V2 = "rollout_ceiling"
+COMPATIBILITY_CHECK_V2 = "compatibility"
 TRUSTED_CHECK_INVENTORY_CHECK_V2 = "trusted_check_inventory"
 
 
@@ -229,6 +232,7 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
         checks.append(_root_identity_check_v2(receipt))
         checks.append(_target_owned_check_v2(target_root_real, receipt))
         checks.append(_rollout_ceiling_check_v2(receipt))
+        checks.append(_compatibility_check_v2(receipt))
 
     checks.append(_trusted_check_inventory_check_v2())
     return ValidateReportV2(target_root=str(target_root), checks=tuple(checks))
@@ -266,7 +270,22 @@ def _load_receipt_v2(target_root_real: Path) -> tuple[TargetInstallReceiptV2 | N
         return None, ValidateCheckV2(RECEIPT_CHECK_V2, STATUS_FAIL_V2, VALIDATE_RECEIPT_INVALID_REASON_V2)
 
     try:
-        receipt = TargetInstallReceiptV2.model_validate_json(raw.decode("utf-8"))
+        # strict_json_loads FIRST (PR #235 review round 2, confirmed):
+        # `model_validate_json` silently accepts whichever value its parser
+        # picked for a duplicated key, so a receipt carrying two
+        # `pack_version` entries validated clean and kept a self-consistent
+        # hash -- the documented "parses strictly" gate was bypassed by an
+        # ambiguous document. The repository's own duplicate-key/non-finite
+        # rejecting primitive runs before the model ever sees the data.
+        text = raw.decode("utf-8")
+        # Gate only: its return value is deliberately discarded. Parsing
+        # the model FROM the dict would change existing semantics (this
+        # contract is strict-mode, and `model_validate_json` is what
+        # coerces JSON arrays into the declared tuples), so the strict
+        # parser runs purely to REJECT an ambiguous document before the
+        # permissive path ever sees it.
+        strict_json_loads(text)
+        receipt = TargetInstallReceiptV2.model_validate_json(text)
     except (ValidationError, ValueError, UnicodeDecodeError):
         return None, ValidateCheckV2(RECEIPT_CHECK_V2, STATUS_FAIL_V2, VALIDATE_RECEIPT_INVALID_REASON_V2)
 
@@ -351,6 +370,21 @@ def _root_identity_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
     if receipt.portable_target_root_identity == expected:
         return ValidateCheckV2(ROOT_IDENTITY_CHECK_V2, STATUS_PASS_V2)
     return ValidateCheckV2(ROOT_IDENTITY_CHECK_V2, STATUS_FAIL_V2, VALIDATE_ROOT_IDENTITY_MISMATCH_REASON_V2)
+
+
+def _compatibility_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
+    """A receipt declaring itself major-incompatible must not validate.
+
+    PR #235 review round 2, confirmed: `compatibility` exists precisely so
+    an install can state it must not be used, and treating it as inert let
+    `validate` exit 0 on an installation that says otherwise about itself.
+    """
+
+    if receipt.compatibility == "compatible":
+        return ValidateCheckV2(COMPATIBILITY_CHECK_V2, STATUS_PASS_V2)
+    return ValidateCheckV2(
+        COMPATIBILITY_CHECK_V2, STATUS_FAIL_V2, VALIDATE_RECEIPT_MAJOR_INCOMPATIBLE_REASON_V2
+    )
 
 
 def _target_owned_check_v2(target_root_real: Path, receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
