@@ -52,6 +52,7 @@ from pathlib import Path
 
 from app.agent_review.target_pack_validate_v2 import (
     STATUS_FAIL_V2,
+    TARGET_ROOT_CHECK_V2,
     ValidateCheckV2,
     ValidateReportV2,
     run_validate_v2,
@@ -145,14 +146,20 @@ class ConformanceReportV2:
         )
 
 
-def _unreadable_report_v2(target_root: Path) -> ValidateReportV2:
-    return ValidateReportV2(
-        target_root=str(target_root),
-        checks=(
-            ValidateCheckV2(
-                "target_root", STATUS_FAIL_V2, CONFORMANCE_CASE_TARGET_UNREADABLE_REASON_V2
-            ),
-        ),
+def _report_says_target_root_unusable_v2(report: ValidateReportV2) -> bool:
+    """Whether the fixture itself was unusable, read OFF the report.
+
+    Deliberately keyed on the target-root check FAILING for ANY reason,
+    not just "not a directory": every such reason means validation never
+    reached the installation, so the case exercised no declared contract
+    violation whatever its expectation says. Narrowing this to one reason
+    code would rebuild the same gap one reason code at a time -- the
+    Class 2 mistake in a different place.
+    """
+
+    return any(
+        check.name == TARGET_ROOT_CHECK_V2 and check.status == STATUS_FAIL_V2
+        for check in report.checks
     )
 
 
@@ -218,19 +225,33 @@ def run_conformance_v2(*, cases: tuple[ConformanceCaseV2, ...]) -> ConformanceRe
     # prevent. Same "one snapshot, one decision" invariant as the profile
     # byte-snapshot fix in round 4.
     for case, resolved_root in zip(cases, resolved_roots):
-        if not resolved_root.is_dir():
+        # ONE SNAPSHOT PER CASE -- at the CLASSIFICATION boundary too.
+        #
+        # Round 8, Class 4 recurrence at the multi-case decision boundary.
+        # Unreadability used to be decided by a separate
+        # `resolved_root.is_dir()` PRE-READ while `run_validate_v2` read
+        # the root state again. A case that disappeared between those two
+        # reads was validated as "not a directory" -> `is_valid=False`,
+        # which happens to SATISFY an `ineligible` expectation, so
+        # `matched` became true while NO matrix-level unreadable reason was
+        # recorded. Combined with a separate eligible pair supplying
+        # distinct identities, the whole matrix could report conformant
+        # without ever exercising the declared violation.
+        #
+        # The report is now the single source of BOTH the verdict and the
+        # classification, so the two can never describe different states.
+        report = run_validate_v2(target_root=resolved_root)
+        if _report_says_target_root_unusable_v2(report):
             # An unreadable fixture is a MATRIX failure regardless of the
             # declared expectation (PR #235 review round 1, confirmed):
             # `is_valid=False` happened to satisfy an `ineligible`
             # expectation, so a matrix of nonexistent directories reported
             # success having validated nothing and having exercised no
             # intentional contract violation.
-            report = _unreadable_report_v2(resolved_root)
             unreadable_case_ids.append(case.case_id)
             matched = False
             authored_identity = None
         else:
-            report = run_validate_v2(target_root=resolved_root)
             expected_valid = case.expectation is ConformanceExpectationV2.ELIGIBLE
             matched = report.is_valid == expected_valid
             # ONE SNAPSHOT PER CASE: the identity comes out of the report

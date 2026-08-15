@@ -64,6 +64,7 @@ needs the stronger statement must read `unvalidated_capabilities`.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -524,7 +525,8 @@ def _root_identity_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
 #   rollout_mode -- has its own ceiling check.
 #   previous_install_identity -- the writer legitimately emits EITHER a
 #       ref (when a previous receipt existed) or None, so both forms are
-#       canonical and neither may be refused.
+#       canonical and neither may be refused. It is NOT unconstrained,
+#       though: see the relations table below.
 _WRITER_PINNED_RECEIPT_FIELDS_V2: tuple[tuple[str, object], ...] = (
     ("target_policy_hash", None),
     ("review_pack_hashes", {}),
@@ -534,6 +536,55 @@ _WRITER_PINNED_RECEIPT_FIELDS_V2: tuple[tuple[str, object], ...] = (
     ("expected_runner_labels", ()),
     ("required_secret_names", ()),
     ("compatibility", "compatible"),
+)
+
+
+# CLASS 1, SECOND CATEGORY -- WRITER-DERIVED RELATIONS.
+#
+# Round 8, Class 1 recurrence. The constant table above answers "may this
+# field hold this value?", but not every field the writer emits is a
+# constant: some are FUNCTIONS of other fields in the same receipt.
+#
+# `previous_install_identity` was excluded from the constant table for a
+# reason that was correct -- the writer emits a ref OR None, so neither
+# form may be refused -- and was then accepted in ANY shape, which was
+# wrong for a second reason the exclusion never stated: the writer cannot
+# emit an ARBITRARY ref either.
+#
+# `compute_target_pack_operation_plan_v2` raises
+# `OPERATION_FOREIGN_IDENTITY` unless the previous receipt's install
+# identity EQUALS the destination identity, and `_build_receipt_v2` then
+# copies `pack_version`/`toolrepo_sha` off that same previous receipt.
+# So for any receipt this pack can emit, the reference's `pack_version`
+# and `toolrepo_sha` necessarily equal the current receipt's own.
+#
+# The ref's `receipt_hash` is deliberately NOT constrained: it belongs to
+# a prior receipt that `validate` -- target-only, with no install history
+# -- cannot see, so any claim about it would be unfounded.
+#
+# CLASS 5 belongs to this same category (`target_owned_paths` is a
+# function of `target_owned_file_hashes`) and is folded in here rather
+# than kept as a separate special case.
+_WRITER_DERIVED_RECEIPT_RELATIONS_V2: tuple[
+    tuple[str, Callable[[TargetInstallReceiptV2], bool], str], ...
+] = (
+    (
+        "target_owned_paths == sorted(target_owned_file_hashes)",
+        lambda r: tuple(r.target_owned_paths) == tuple(sorted(r.target_owned_file_hashes)),
+        VALIDATE_TARGET_OWNED_PATHS_NON_CANONICAL_REASON_V2,
+    ),
+    (
+        "previous_install_identity.pack_version == pack_version",
+        lambda r: r.previous_install_identity is None
+        or r.previous_install_identity.pack_version == r.pack_version,
+        VALIDATE_RECEIPT_NON_CANONICAL_CLAIM_REASON_V2,
+    ),
+    (
+        "previous_install_identity.toolrepo_sha == toolrepo_sha",
+        lambda r: r.previous_install_identity is None
+        or r.previous_install_identity.toolrepo_sha == r.toolrepo_sha,
+        VALIDATE_RECEIPT_NON_CANONICAL_CLAIM_REASON_V2,
+    ),
 )
 
 
@@ -560,14 +611,14 @@ def _canonical_claims_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheck
         )
         return ValidateCheckV2(CANONICAL_CLAIMS_CHECK_V2, STATUS_FAIL_V2, reason)
 
-    # CLASS 5 -- canonical FORM, not merely set equality. The writer emits
-    # `tuple(sorted(target_owned_file_hashes))`, so a tuple that is
-    # unsorted, or repeats a path while the mapping holds one key, is a
-    # representation the writer never produces even though its SET matches.
-    if tuple(receipt.target_owned_paths) != tuple(sorted(receipt.target_owned_file_hashes)):
-        return ValidateCheckV2(
-            CANONICAL_CLAIMS_CHECK_V2, STATUS_FAIL_V2, VALIDATE_TARGET_OWNED_PATHS_NON_CANONICAL_REASON_V2
-        )
+    # Writer-derived relations, including CLASS 5's canonical FORM: the
+    # writer emits `tuple(sorted(target_owned_file_hashes))`, so a tuple
+    # that is unsorted, or repeats a path while the mapping holds one key,
+    # is a representation the writer never produces even though its SET
+    # matches.
+    for _relation, holds, reason_code in _WRITER_DERIVED_RECEIPT_RELATIONS_V2:
+        if not holds(receipt):
+            return ValidateCheckV2(CANONICAL_CLAIMS_CHECK_V2, STATUS_FAIL_V2, reason_code)
     return ValidateCheckV2(CANONICAL_CLAIMS_CHECK_V2, STATUS_PASS_V2)
 
 

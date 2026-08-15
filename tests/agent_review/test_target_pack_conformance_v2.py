@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from app.agent_review.target_pack_validate_v2 import (
     VALIDATE_PROFILE_HASH_MISMATCH_REASON_V2,
     VALIDATE_RECEIPT_MISSING_REASON_V2,
     VALIDATE_TARGET_OWNED_DRIFT_REASON_V2,
+    VALIDATE_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2,
 )
 
 _PROFILE_RELATIVE_PATH = ".aiops/target-profile.v2.yaml"
@@ -197,6 +199,12 @@ def _eligible(root: Path) -> ConformanceCaseV2:
     )
 
 
+def _ineligible(root: Path) -> ConformanceCaseV2:
+    return ConformanceCaseV2(
+        case_id=root.name, target_root=root, expectation=ConformanceExpectationV2.INELIGIBLE
+    )
+
+
 # ---------------------------------------------------------------------------
 # Core property: one generic pack, several targets, same behaviour
 # ---------------------------------------------------------------------------
@@ -315,11 +323,15 @@ def test_unreadable_target_root_is_a_case_failure_not_a_crash():
             cases=(_eligible(missing), _eligible(other)),
         )
         assert report.is_conformant is False
+        # Matrix level keeps the conformance-specific signal...
+        assert CONFORMANCE_CASE_TARGET_UNREADABLE_REASON_V2 in report.reason_codes
+        # ...while the CASE now carries validate's own finding, because the
+        # case report IS validate's report (round 8): unreadability is
+        # classified from it rather than from a separate pre-read, so
+        # conformance no longer synthesises a stand-in report.
         failing = [c for c in report.cases if not c.matched_expectation]
-        assert CONFORMANCE_CASE_TARGET_UNREADABLE_REASON_V2 in failing[0].observed_reason_codes
+        assert VALIDATE_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 in failing[0].observed_reason_codes
     finally:
-        import shutil
-
         shutil.rmtree(other, ignore_errors=True)
 
 
@@ -405,8 +417,9 @@ def test_unreadable_root_fails_even_when_declared_ineligible(two_targets):
         )
     )
     assert report.is_conformant is False
+    assert CONFORMANCE_CASE_TARGET_UNREADABLE_REASON_V2 in report.reason_codes
     failing = [c for c in report.cases if not c.matched_expectation]
-    assert CONFORMANCE_CASE_TARGET_UNREADABLE_REASON_V2 in failing[0].observed_reason_codes
+    assert VALIDATE_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 in failing[0].observed_reason_codes
 
 
 def test_uniformity_is_actually_compared_not_merely_claimed(two_targets):
@@ -673,6 +686,51 @@ def test_class4_identity_cannot_come_from_a_receipt_swapped_after_validation(tmp
     assert [case.authored_identity for case in report.cases] == ["acme/same", "acme/same"]
     assert report.is_conformant is False
     assert CONFORMANCE_SINGLE_AUTHORED_IDENTITY_REASON_V2 in report.reason_codes
+
+
+def test_class4_case_vanishing_before_validation_is_unreadable_not_matched(tmp_path, monkeypatch):
+    """Round 8, Class 4 recurrence at the MULTI-CASE decision boundary.
+
+    Unreadability used to be decided by a `resolved_root.is_dir()`
+    pre-read while `run_validate_v2` read the root again. An `ineligible`
+    case that vanished in between validated as "not a directory" ->
+    `is_valid=False`, which SATISFIES an ineligible expectation, so
+    `matched` became true and no matrix-level unreadable reason was
+    recorded. Paired with an eligible cohort supplying distinct
+    identities, the matrix reported conformant while the declared
+    violation was never exercised.
+    """
+    from app.agent_review import target_pack_conformance_v2 as conformance_module
+
+    alpha, beta = tmp_path / "alpha", tmp_path / "beta"
+    alpha.mkdir()
+    beta.mkdir()
+    _materialize(alpha, "acme/alpha-service")
+    _materialize(beta, "globex/beta-platform")
+
+    # The ineligible fixture exists at gate time and is removed in the
+    # window before its own validation.
+    vanishing = tmp_path / "vanishing"
+    vanishing.mkdir()
+    _materialize(vanishing, "initech/gamma")
+
+    real_run_validate = conformance_module.run_validate_v2
+
+    def vanish_then_validate(*, target_root):
+        if Path(target_root).resolve() == vanishing.resolve() and vanishing.exists():
+            shutil.rmtree(vanishing)
+        return real_run_validate(target_root=target_root)
+
+    monkeypatch.setattr(conformance_module, "run_validate_v2", vanish_then_validate)
+
+    report = run_conformance_v2(
+        cases=(_eligible(alpha), _eligible(beta), _ineligible(vanishing)),
+    )
+
+    assert report.is_conformant is False
+    assert CONFORMANCE_CASE_TARGET_UNREADABLE_REASON_V2 in report.reason_codes
+    vanished = next(c for c in report.cases if c.case_id == _ineligible(vanishing).case_id)
+    assert vanished.matched_expectation is False, "a fixture that never existed cannot match"
 
 
 def test_class4_no_target_root_taking_identity_entry_point_survives(tmp_path):

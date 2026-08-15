@@ -40,8 +40,8 @@ from app.agent_review.target_pack_manifest_v2 import (
 )
 from app.agent_review.target_pack_receipt_v2 import (
     RECEIPT_RELATIVE_PATH_V2,
+    ReceiptIdentityRefV2,
     TargetInstallReceiptV2,
-
     compute_portable_target_root_identity_v2,
     compute_target_install_receipt_hash_v2,
 )
@@ -744,8 +744,13 @@ def test_family_receipt_claim_outside_writer_domain_is_refused(target_root, fiel
 def test_family_previous_install_identity_is_not_wrongly_refused(target_root):
     """Negative control for CLASS 1: the writer legitimately emits EITHER
     a ref or None for this field, so BOTH are canonical and neither may be
-    refused. A blanket 'unsupported fields' list would have broken this."""
-    from app.agent_review.target_pack_receipt_v2 import ReceiptIdentityRefV2
+    refused. A blanket 'unsupported fields' list would have broken this.
+
+    Round 8 refined what "canonical ref" means -- the values below agree
+    with the current receipt, which is exactly the writer's own domain
+    (see `_WRITER_DERIVED_RECEIPT_RELATIONS_V2`). The ref's `receipt_hash`
+    remains unconstrained here on purpose: it belongs to a prior receipt
+    `validate` cannot see."""
 
     ref = ReceiptIdentityRefV2(receipt_hash="d" * 64, pack_version="0.1.0", toolrepo_sha="1" * 40)
     _install(target_root, receipt=_receipt(previous_install_identity=ref), profile=_VALID_PROFILE_YAML)
@@ -771,6 +776,54 @@ def test_family_target_owned_paths_must_match_the_writers_canonical_form(target_
     report = run_validate_v2(target_root=target_root)
     assert report.is_valid is False
     assert _check(report, "canonical_claims").status == STATUS_FAIL_V2
+
+
+# CLASS 1, SECOND CATEGORY: writer-derived RELATIONS between fields.
+#
+# Round 8 recurrence. The constant table covers fields pinned to a value;
+# these are fields whose legal domain is a FUNCTION of other fields in the
+# same receipt. `previous_install_identity` was correctly kept out of the
+# constant table (ref OR None are both canonical) and then wrongly
+# accepted in any shape: the operation planner refuses a previous receipt
+# unless its install identity equals the destination's, so a
+# writer-emitted ref always agrees with the current receipt on these.
+_NON_CANONICAL_PREVIOUS_INSTALL_REFS = [
+    ("foreign_pack_version", {"pack_version": "9.9.9"}),
+    ("foreign_toolrepo_sha", {"toolrepo_sha": "f" * 40}),
+    ("both_foreign", {"pack_version": "9.9.9", "toolrepo_sha": "f" * 40}),
+]
+
+
+@pytest.mark.parametrize(
+    "label,overrides",
+    _NON_CANONICAL_PREVIOUS_INSTALL_REFS,
+    ids=[c[0] for c in _NON_CANONICAL_PREVIOUS_INSTALL_REFS],
+)
+def test_family_previous_install_reference_must_agree_with_the_current_receipt(
+    target_root, label, overrides
+):
+    """A reference carrying values this pack could never have copied."""
+    ref_fields = {"receipt_hash": "a" * 64, "pack_version": "0.1.0", "toolrepo_sha": "1" * 40}
+    ref_fields.update(overrides)
+    receipt = _receipt(previous_install_identity=ReceiptIdentityRefV2(**ref_fields))
+    _install(target_root, receipt=receipt, profile=_VALID_PROFILE_YAML)
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False, f"{label} was accepted"
+    assert _check(report, "canonical_claims").status == STATUS_FAIL_V2
+
+
+def test_previous_install_reference_hash_is_deliberately_unconstrained(target_root):
+    """The ref's `receipt_hash` points at a PRIOR receipt that `validate`
+    -- target-only, no install history -- cannot see, so constraining it
+    would assert something unverifiable. Pins that boundary so a later
+    round does not "tighten" it into an unfounded claim."""
+    receipt = _receipt(
+        previous_install_identity=ReceiptIdentityRefV2(
+            receipt_hash="9" * 64, pack_version="0.1.0", toolrepo_sha="1" * 40
+        )
+    )
+    _install(target_root, receipt=receipt, profile=_VALID_PROFILE_YAML)
+    assert run_validate_v2(target_root=target_root).is_valid is True
 
 
 # CLASS 2: the parse boundary is TOTAL for target-authored input.
