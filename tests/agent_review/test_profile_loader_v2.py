@@ -562,3 +562,50 @@ def test_the_sequence_spelling_of_multiple_merge_sources_stays_legal() -> None:
     assert excinfo.value.reason_code == TARGET_PROFILE_INVALID_REASON_V2, (
         "the sequence spelling was rejected at the YAML layer; legal merge semantics regressed"
     )
+
+
+# Every tag YAML 1.1 defines, plus payloads chosen to break each
+# constructor's own internals (empty text it indexes, text absent from its
+# lookup table, text its regex will not match, a number past the digit
+# limit). NOT a list of "inputs someone reported".
+_STANDARD_YAML_TAGS = [
+    "null", "bool", "int", "float", "binary", "timestamp",
+    "str", "seq", "map", "set", "omap", "pairs", "value",
+]
+_MALFORMED_SCALAR_PAYLOADS = [
+    "", "nope", "[1,2]", "{a: b}", "9" * 5000, "9999-99-99", "!!!", "0x", "-", "@@@@", "AAAA====",
+    # Forbidden CHARACTERS, not just malformed values. These make
+    # `yaml.SafeLoader(text)` raise while the loader object is still being
+    # constructed -- so they probe statements the earlier corpus never
+    # reached, because it only exercised documents that got as far as
+    # having a parser at all.
+    "a\x00b", "a\x07b", "a\ud800b", "\x1b[31m",
+]
+
+
+def test_the_parse_boundary_is_total_over_the_whole_tag_space() -> None:
+    """The boundary's completeness, PROVEN rather than asserted.
+
+    Four exception types were added to this boundary one at a time, each
+    after it was reported, while the corpus that claimed to prove totality
+    only exercised STRUCTURAL malformation -- bad tags on non-mapping
+    nodes, unhashable keys, truncated documents -- and never reached
+    PyYAML's scalar constructors at all. `KeyError`, `IndexError` and
+    `AttributeError` were found by fuzzing this space, not by report.
+
+    A new PyYAML version, or a tag this repository has never used, is
+    caught here instead of by the next reviewer.
+    """
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    escaped: dict[str, str] = {}
+    for tag in _STANDARD_YAML_TAGS:
+        for payload in _MALFORMED_SCALAR_PAYLOADS:
+            document = f"x: !!{tag} {payload}\n" if payload else f"x: !!{tag}\n"
+            try:
+                load_target_profile_text_v2(document)
+            except TargetProfileLoadErrorV2:
+                continue
+            except Exception as exc:  # noqa: BLE001 -- the assertion IS that this is unreachable
+                escaped[f"!!{tag} {payload[:16]}"] = type(exc).__name__
+    assert not escaped, f"target-authored YAML escaped the typed contract: {escaped}"

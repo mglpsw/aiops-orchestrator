@@ -89,6 +89,18 @@ POLICY_ENTRY_NOT_REQUIRED_REASON_V2 = "authoritative_check_policy_entry_not_requ
 POLICY_WORKFLOW_REF_NOT_BASE_OWNED_REASON_V2 = "authoritative_check_policy_workflow_ref_not_base_owned"
 
 
+# PyYAML's scalar constructors fail in four distinct ways against
+# target-authored text -- see `profile_loader_v2` for the enumeration and
+# for the fuzz guard that proves this set is complete. Shared shape, shared
+# list, so the two YAML authorities cannot drift apart on it.
+_SCALAR_CONSTRUCTOR_FAILURES_V2: tuple[type[BaseException], ...] = (
+    ValueError,
+    KeyError,
+    IndexError,
+    AttributeError,
+)
+
+
 class AuthoritativeCheckPolicyErrorV2(ValueError):
     """Carries a stable `reason_code` only -- never raw YAML, the original
     exception text, or a local path."""
@@ -373,7 +385,7 @@ def load_authoritative_check_policy_v2(
 
     try:
         raw = yaml.load(raw_bytes.decode("utf-8"), Loader=_DuplicateKeyRejectingLoaderV2)
-    except (yaml.YAMLError, UnicodeDecodeError, RecursionError, ValueError) as exc:
+    except (yaml.YAMLError, UnicodeDecodeError, RecursionError, *_SCALAR_CONSTRUCTOR_FAILURES_V2) as exc:
         # RecursionError: deeply nested target-authored YAML.
         # ValueError: PyYAML's SCALAR constructors raise it bare for
         # target-triggerable input (`!!int nope`, out-of-range

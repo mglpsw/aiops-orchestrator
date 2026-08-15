@@ -75,12 +75,27 @@ _YAML_MERGE_TAG_V2 = "tag:yaml.org,2002:merge"
 _YAML_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (
     yaml.YAMLError,
     RecursionError,
-    # PyYAML's SCALAR constructors raise bare `ValueError` for
-    # target-triggerable input -- `!!int nope`, `!!float nope`, an
-    # out-of-range `!!timestamp`, an integer past the interpreter's digit
-    # limit. None of those is a `YAMLError`, so all four escaped this
-    # contract as tracebacks despite the totality tests.
+    # PyYAML's scalar constructors do not validate the text they are
+    # handed: they index it, slice it, look it up in a table and call
+    # Python builtins on it. Against target-authored input each of those
+    # fails in its own way, and NONE of them is a `YAMLError`:
+    #
+    #   !!int nope        int()          -> ValueError
+    #   !!int ""          text[0]        -> IndexError
+    #   !!bool nope       bool_values[]  -> KeyError
+    #   !!timestamp nope  regex .group() -> AttributeError
+    #
+    # The set below is enumerated, but its COMPLETENESS is not asserted --
+    # it is proven by `test_the_parse_boundary_is_total_over_the_whole_tag_space`,
+    # which fuzzes every standard YAML tag against a malformed-payload
+    # corpus and fails if anything escapes. That guard exists because the
+    # first four types were added one at a time as each was reported,
+    # while the corpus that "proved totality" only ever exercised
+    # STRUCTURAL malformation and never reached this code path at all.
     ValueError,
+    KeyError,
+    IndexError,
+    AttributeError,
 )
 
 
@@ -246,13 +261,22 @@ def _parse_unambiguous_yaml_v2(raw_text: str) -> object:
     by unpacking `node.value` before that guard could run.
     """
 
-    loader = yaml.SafeLoader(raw_text)
+    # The loader is CONSTRUCTED inside the boundary, not before it.
+    # `yaml.SafeLoader(raw_text)` scans the stream eagerly and raises
+    # `ReaderError` for a forbidden character (NUL, BEL, a lone surrogate)
+    # while the object is still being built. `ReaderError` IS a
+    # `YAMLError` and was already in the failure set -- it escaped purely
+    # because the statement sat one line above the `try`. The boundary has
+    # to cover every statement that touches target-authored bytes, not
+    # just the ones that obviously parse.
+    loader = None
     try:
         # The typed refusal is raised AFTER this block, never inside it.
         # `TargetProfileLoadErrorV2` is itself a `ValueError`, and the
         # boundary now catches `ValueError` -- raising it here would let
         # the handler swallow its own typed refusal and relabel it.
         try:
+            loader = yaml.SafeLoader(raw_text)
             node = loader.get_single_node()
             ambiguous = node is None or _first_ambiguous_key_v2(loader, node) is not None
             if not ambiguous:
@@ -260,7 +284,8 @@ def _parse_unambiguous_yaml_v2(raw_text: str) -> object:
         except _YAML_PARSE_FAILURES_V2 as exc:
             raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
     finally:
-        loader.dispose()
+        if loader is not None:
+            loader.dispose()
     raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
 
 

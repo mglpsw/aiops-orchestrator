@@ -463,3 +463,37 @@ def test_merge_keys_remain_unsupported_in_the_authoritative_policy(tmp_path: Pat
     with pytest.raises(AuthoritativeCheckPolicyErrorV2) as excinfo:
         load_authoritative_check_policy_v2(policy_root)
     assert excinfo.value.reason_code == POLICY_UNREADABLE_REASON_V2
+
+
+def test_the_policy_parse_boundary_is_total_over_the_whole_tag_space(tmp_path: Path) -> None:
+    """Same fuzz guard, second authority.
+
+    Asserted here too rather than assumed to follow from the profile
+    loader: these are two independent loaders, and `required_check_
+    readiness_v2` consumes BOTH -- so a boundary proven only on one side
+    leaves the other free to escape into the same function."""
+    from tests.agent_review.test_profile_loader_v2 import (
+        _MALFORMED_SCALAR_PAYLOADS,
+        _STANDARD_YAML_TAGS,
+    )
+
+    policy_root = tmp_path / "target"
+    (policy_root / ".aiops").mkdir(parents=True)
+    policy_path = policy_root / ".aiops" / "authoritative-checks.v2.yaml"
+
+    escaped: dict[str, str] = {}
+    for tag in _STANDARD_YAML_TAGS:
+        for payload in _MALFORMED_SCALAR_PAYLOADS:
+            document = f"x: !!{tag} {payload}\n" if payload else f"x: !!{tag}\n"
+            # Written as BYTES with `surrogatepass`: this loader reads the
+            # file and decodes it itself, so a lone surrogate must reach
+            # its own `UnicodeDecodeError` arm rather than being blocked by
+            # the test harness's encoder.
+            policy_path.write_bytes(document.encode("utf-8", errors="surrogatepass"))
+            try:
+                load_authoritative_check_policy_v2(policy_root)
+            except AuthoritativeCheckPolicyErrorV2:
+                continue
+            except Exception as exc:  # noqa: BLE001 -- the assertion IS that this is unreachable
+                escaped[f"!!{tag} {payload[:16]}"] = type(exc).__name__
+    assert not escaped, f"target-authored policy YAML escaped the typed contract: {escaped}"
