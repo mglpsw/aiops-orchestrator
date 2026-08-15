@@ -903,3 +903,24 @@ def test_doctor_reads_are_bound_to_the_captured_root_not_a_mutable_alias(
     assert check.status == "present"
     assert check.profile_hash == root_hash
     assert check.profile_hash != sub_hash
+
+
+def test_doctor_reason_codes_an_invalid_utf8_profile_instead_of_crashing(tmp_path: Path) -> None:
+    """`doctor` reads the profile itself, so the profile loader's own
+    boundary does not protect it.
+
+    A target-authored profile holding invalid UTF-8 fails in read_text's
+    DECODE step -- a `ValueError`, not an `OSError` -- and escaped as a
+    traceback from a command whose whole contract is "every check reports
+    PRESENT/MISSING/INVALID, never raises for a diagnosable state".
+    """
+    root = tmp_path / "target"
+    (root / ".aiops").mkdir(parents=True)
+    (root / ".aiops" / "target-profile.v2.yaml").write_bytes(b"identity: \xff\xfe not utf8\n")
+
+    from app.agent_review.profile_loader_v2 import TARGET_PROFILE_UNREADABLE_REASON_V2
+    from app.agent_review.target_pack_doctor_v2 import _check_profile_v2
+
+    check = _check_profile_v2(root.resolve())
+    assert check.status == "missing"
+    assert check.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2

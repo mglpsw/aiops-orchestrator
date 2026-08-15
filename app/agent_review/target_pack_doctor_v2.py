@@ -194,8 +194,14 @@ def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
     if not resolved.is_file():
         return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_MISSING_REASON_V2)
     try:
+        # `UnicodeDecodeError` as well as `OSError`: a target-authored
+        # profile holding invalid UTF-8 fails in read_text's DECODE step,
+        # which is a `ValueError`, not an `OSError`, and reached the CLI as
+        # a traceback. Same class as the loader-construction and
+        # file-wrapper findings -- a statement touching target-authored
+        # bytes outside its own boundary.
         raw_text = resolved.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_UNREADABLE_REASON_V2)
     try:
         profile = load_target_profile_text_v2(raw_text)
