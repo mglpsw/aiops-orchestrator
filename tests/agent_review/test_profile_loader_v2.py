@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -270,25 +271,16 @@ def _valid_profile_yaml(**identity: str) -> str:
     return _json.dumps(data)
 
 
+# AMBIGUITY, with STRING keys -- so this family exercises duplicate
+# detection itself, not the string-key domain rule that now precedes it.
+# Every entry means two things to two conforming readers.
 _DUPLICATE_KEY_CORPUS = [
     ("plain_duplicate", "identity:\n  repo: a/b\n  default_branch: main\n  repo: attacker/evil\n"),
-    # CONSTRUCTED-key collisions. Each pair has DISTINCT tags and distinct
-    # lexical forms, so a scan comparing `(tag, raw text)` sees two keys --
-    # while the constructed mapping keeps exactly one. Independent review
-    # of PR-A found all of these passing the earlier scan clean.
-    ("constructed_yes_true", "identity:\n  yes: 1\n  true: 2\n"),
-    ("constructed_int_float", "identity:\n  1: a\n  1.0: b\n"),
-    ("constructed_hex_dec", "identity:\n  0x10: a\n  16: b\n"),
-    ("constructed_tilde_null", "identity:\n  ~: a\n  null: b\n"),
-    ("constructed_bool_spellings", "identity:\n  on: 1\n  On: 2\n  TRUE: 3\n"),
-    # JSON-PROJECTION collision: two genuinely distinct constructed keys
-    # that `json.dumps` renders identically, so the validation round-trip
-    # would MANUFACTURE a literal duplicate-key document.
-    ("projected_str_vs_int", 'identity:\n  "1": a\n  1: b\n'),
-    ("projected_str_vs_bool", 'identity:\n  "true": a\n  true: b\n'),
+    ("quoted_vs_plain", 'identity:\n  repo: a/b\n  "repo": attacker/evil\n'),
+    ("single_vs_double_quoted", "identity:\n  'repo': a/b\n  \"repo\": attacker/evil\n"),
     ("duplicate_inside_inline_merge_source", "identity:\n  <<: {repo: a/b, repo: attacker/evil}\n"),
     ("duplicate_in_anchored_merge_source", "src: &s {repo: a/b, repo: attacker/evil}\nidentity:\n  <<: *s\n"),
-    ("duplicate_at_top_level", "schema_version: 2\nschema_version: 3\n"),
+    ("duplicate_at_top_level", "schema_id: a\nschema_id: b\n"),
     ("duplicate_nested_in_sequence", "artifacts:\n  - {artifact_id: a, artifact_id: b}\n"),
 ]
 
@@ -297,21 +289,59 @@ _DUPLICATE_KEY_CORPUS = [
     "label,text", _DUPLICATE_KEY_CORPUS, ids=[c[0] for c in _DUPLICATE_KEY_CORPUS]
 )
 def test_family_duplicate_keys_are_refused_wherever_they_appear(label: str, text: str) -> None:
-    """A duplicated key makes the document ambiguous: `yaml.safe_load`
-    resolves it last-wins, so the SAME bytes mean different things to a
-    first-wins reader or a human auditor. Since this loader also backs the
-    writer, an ambiguous profile would mint a receipt and a
-    `target_profile_hash` for one of two readings.
-
-    `duplicate_inside_inline_merge_source` is the case a construction-time
-    scan misses entirely: the merge key is skipped before the constructor
-    ever descends into the source mapping.
-    """
+    """A duplicated key makes the document mean two different things to two
+    conforming readers -- `yaml.safe_load` keeps the last, a first-wins
+    reader or a human auditor sees the first. Because this loader also
+    backs the install WRITER, an ambiguous profile would mint a receipt and
+    a `target_profile_hash` for one reading while the other stays equally
+    defensible."""
     from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
 
     with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
         load_target_profile_text_v2(text)
     assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2, label
+
+
+# NON-STRING constructed keys: outside TargetProfileV2's domain entirely.
+# Refused as contract-invalid BEFORE reaching the duplicate hash table --
+# which is also what removes the integer-hash-collision attack, since a
+# colliding key is refused on sight rather than inserted.
+_NON_STRING_KEY_CORPUS = [
+    ("int_key", "identity:\n  1: a\n"),
+    ("float_key", "identity:\n  1.5: a\n"),
+    ("bool_key", "identity:\n  yes: a\n"),
+    ("null_key", "identity:\n  ~: a\n"),
+    ("hex_int_key", "identity:\n  0x10: a\n"),
+    # The collapse pairs from earlier rounds: still refused, now by domain
+    # rather than by ambiguity, and refused EARLIER.
+    ("collapse_yes_true", "identity:\n  yes: 1\n  true: 2\n"),
+    ("collapse_int_float", "identity:\n  1: a\n  1.0: b\n"),
+    ("collapse_bool_spellings", "identity:\n  on: 1\n  On: 2\n  TRUE: 3\n"),
+    ("projection_str_vs_int", 'identity:\n  "1": a\n  1: b\n'),
+    ("projection_str_vs_bool", 'identity:\n  "true": a\n  true: b\n'),
+]
+
+
+@pytest.mark.parametrize(
+    "label,text", _NON_STRING_KEY_CORPUS, ids=[c[0] for c in _NON_STRING_KEY_CORPUS]
+)
+def test_family_non_string_constructed_keys_are_refused_as_contract_invalid(
+    label: str, text: str
+) -> None:
+    """`TargetProfileV2` is JSON-shaped: strict models, `extra="forbid"`,
+    named fields, and canonical JSON has no non-string object keys. A key
+    constructing to int/float/bool/None is already outside that domain, so
+    refusing it is EARLY enforcement of a property the contract has -- not
+    a new restriction on the language.
+
+    Deliberately not a key-count ceiling: a cap would be a genuinely new
+    property ("N+1 fields refused by quantity") the contract does not have.
+    """
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_INVALID_REASON_V2, label
 
 
 # Positive corpus: every form below is legal YAML that `yaml.safe_load`
@@ -449,30 +479,34 @@ def test_recursive_alias_terminates_deterministically() -> None:
 
 
 def test_the_validation_round_trip_cannot_manufacture_a_duplicate_key_document() -> None:
-    """Directly pins the projection defect, not just its symptom.
+    """Pins the class, and the reason it is now closed one layer earlier.
 
     `json.dumps` coerces non-string mapping keys to strings, so a profile
     with `{"1": a, 1: b}` -- two legitimately distinct constructed keys --
     used to be re-serialised as the literal duplicate-key document
     `{"identity": {"1": "a", "1": "b"}}` and handed to a last-wins parser.
-    An authority whose stated contract is refusing last-wins ambiguity must
-    not produce an ambiguous document itself."""
+    An authority whose contract is refusing last-wins ambiguity must not
+    produce an ambiguous document itself.
+
+    The offending key is non-string, so it is now refused as
+    contract-invalid before construction completes. The separate
+    JSON-projection check was removed as SUBSUMED rather than kept as
+    unreachable code -- for a string key, projection is the identity
+    function, so a projection collision is just a constructed-key
+    collision. This test is what would notice if the string-key rule were
+    ever relaxed without restoring that check.
+    """
     import json as _json
 
-    from app.agent_review.profile_loader_v2 import (
-        TARGET_PROFILE_UNREADABLE_REASON_V2,
-        _parse_unambiguous_yaml_v2,
-    )
+    from app.agent_review.profile_loader_v2 import _parse_unambiguous_yaml_v2
 
-    text = 'identity:\n  "1": a\n  1: b\n'
     with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
-        _parse_unambiguous_yaml_v2(text)
-    assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2
+        _parse_unambiguous_yaml_v2('identity:\n  "1": a\n  1: b\n')
+    assert excinfo.value.reason_code == TARGET_PROFILE_INVALID_REASON_V2
 
     # Control: had it been accepted, this is the document that would have
     # been produced -- json.dumps really does collapse the two keys.
-    collapsed = _json.dumps({"1": "a", 1: "b"})
-    assert collapsed.count('"1"') == 2, collapsed
+    assert _json.dumps({"1": "a", 1: "b"}).count('"1"') == 2
 
 
 _SCALAR_CONSTRUCTOR_FAILURE_CORPUS = [
@@ -584,7 +618,12 @@ _MALFORMED_SCALAR_PAYLOADS = [
 
 
 def test_the_parse_boundary_is_total_over_the_whole_tag_space() -> None:
-    """The boundary's completeness, PROVEN rather than asserted.
+    """Systematic evidence for the boundary -- NOT a completeness proof.
+
+    A finite corpus covers the families enumerated below and the mutations
+    demonstrate it discriminates them. It does not demonstrate every
+    possible PyYAML behaviour, and the name of this test should not be read
+    as claiming that.
 
     Four exception types were added to this boundary one at a time, each
     after it was reported, while the corpus that claimed to prove totality
@@ -694,3 +733,110 @@ def test_duplicate_scanning_is_not_quadratic_in_the_number_of_keys() -> None:
     small, large = elapsed(2500), elapsed(20000)
     ratio = large / small
     assert ratio < 15, f"scan grew {ratio:.1f}x for 8x keys; linear membership suspected"
+
+
+_KEY_INTERNAL_AMBIGUITY_CORPUS = [
+    ("duplicate_inside_mapping_key", "m:\n  ? !!str {=: repo, =: default_branch}\n  : v\n"),
+    ("duplicate_inside_nested_mapping_key", "m:\n  ? !!str {a: {d: 1, d: 2}}\n  : v\n"),
+    ("duplicate_inside_sequence_key", "m:\n  ? !!str [{d: 1, d: 2}]\n  : v\n"),
+]
+
+
+@pytest.mark.parametrize(
+    "label,text",
+    _KEY_INTERNAL_AMBIGUITY_CORPUS,
+    ids=[c[0] for c in _KEY_INTERNAL_AMBIGUITY_CORPUS],
+)
+def test_family_ambiguity_inside_a_key_node_is_refused(label: str, text: str) -> None:
+    """The walk must reach every authored mapping, wherever it sits.
+
+    A key may itself be a mapping or a sequence carrying its own pairs.
+    The walk enqueued only each pair's VALUE, so a duplicate authored
+    INSIDE a key -- `? !!str {=: repo, =: default_branch}` -- was never
+    scanned at all.
+
+    This is the same class one level further in: round 4 fixed WHICH keys
+    get compared, by constructed value rather than node shape; this fixes
+    what lives INSIDE a key.
+    """
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2, label
+
+
+def test_adversarial_hash_colliding_keys_never_reach_the_duplicate_table() -> None:
+    """The structural property, asserted directly rather than by timing.
+
+    Integer keys chosen as multiples of `sys.hash_info.modulus` all hash to
+    0, so inserting them degrades set membership to a linear scan and
+    restores the quadratic behaviour the set was introduced to remove.
+
+    The defence is not a size ceiling and not a faster container: such a
+    key is refused as contract-invalid on sight, so it never enters the
+    table at all. The invariant is
+    NON_STRING_CONSTRUCTED_KEY_NEVER_REACHES_HASH_TABLE, and it is checked
+    here by asserting the refusal and its disposition -- wall-clock timing
+    is kept only as a separate regression discriminator, never as proof of
+    complexity.
+    """
+    from app.agent_review.profile_loader_v2 import _parse_unambiguous_yaml_v2
+
+    modulus = sys.hash_info.modulus
+    assert hash(modulus) == hash(2 * modulus) == 0, "precondition: these keys collide"
+
+    document = "identity:\n" + "".join(f"  {modulus * (i + 1)}: v\n" for i in range(64))
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        _parse_unambiguous_yaml_v2(document)
+    assert excinfo.value.reason_code == TARGET_PROFILE_INVALID_REASON_V2
+
+
+_SEMANTICALLY_INERT_CORPUS = {
+    "plain": "a: 1\nb: {c: 2}\n",
+    "anchor_alias": "a: &x {t: 1}\nb: *x\nc: *x\n",
+    "merge": "a: &x {t: 1}\nb: {<<: *x}\n",
+    "merge_override": "a: &x {t: 1}\nb: {<<: *x, t: 2}\n",
+    "merge_sequence": "a: &x {p: 1}\nb: &y {q: 2}\nc: {<<: [*x, *y], r: 3}\n",
+    "merge_chain": "a: &x {t: 1}\nb: &y {<<: *x, t: 2}\nc: {<<: *y, t: 3}\n",
+    "alias_inside_sequence": "a: &x {t: 1}\nb: [*x, *x, {n: 1}]\n",
+    "deep_nesting": "a: {b: {c: {d: {e: [1, 2, {f: 3}]}}}}\n",
+    "shared_scalar_anchor": "a: &s hello\nb: *s\nc: [*s, *s]\n",
+    "explicit_scalar_tags": "a: !!int 7\nb: !!float 1.5\nc: !!bool yes\nd: !!null ~\n",
+    "sequence_of_mappings": "a:\n  - {x: 1}\n  - {y: 2}\n",
+    "empty_containers": "a: {}\nb: []\n",
+    "block_scalars": "a: |\n  line1\n  line2\nb: >\n  folded\n",
+}
+
+
+@pytest.mark.parametrize("label", sorted(_SEMANTICALLY_INERT_CORPUS))
+def test_the_key_pre_pass_is_semantically_inert(label: str) -> None:
+    """Constructing every key BEFORE `construct_document` must not change
+    what the document becomes.
+
+    The scan calls `construct_object(key_node, deep=True)` for every key
+    shape, populating the loader's constructor cache before the document is
+    built. That is the module's load-bearing assumption: if the pre-pass
+    perturbed construction, the authority would validate one document and
+    return another.
+
+    Asserted against stock `yaml.safe_load` -- the reference semantics --
+    rather than against a hand-written expectation.
+    """
+    text = _SEMANTICALLY_INERT_CORPUS[label]
+    from app.agent_review.profile_loader_v2 import _parse_unambiguous_yaml_v2
+
+    assert _parse_unambiguous_yaml_v2(text) == yaml.safe_load(text)
+
+
+def test_the_pre_pass_preserves_alias_object_identity() -> None:
+    """Two references to one anchor must remain the SAME object, as under
+    stock `safe_load`. A pre-pass that rebuilt aliased nodes separately
+    would silently turn shared structure into copies."""
+    from app.agent_review.profile_loader_v2 import _parse_unambiguous_yaml_v2
+
+    text = "a: &x {t: 1}\nb: *x\n"
+    reference = yaml.safe_load(text)
+    produced = _parse_unambiguous_yaml_v2(text)
+    assert reference["a"] is reference["b"], "precondition: safe_load shares the object"
+    assert produced["a"] is produced["b"]

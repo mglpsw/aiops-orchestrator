@@ -150,32 +150,15 @@ def _constructed_key_v2(loader: yaml.SafeLoader, key_node: yaml.Node) -> object:
     return key
 
 
-def _json_projected_key_v2(key: object) -> str | None:
-    """How `json.dumps` will render this key, or None if it cannot.
+def _first_contract_violation_v2(loader: yaml.SafeLoader, root: yaml.Node) -> str | None:
+    """Walk the COMPOSED node graph; return the reason code for the first
+    refusal, or None.
 
-    The profile is validated by round-tripping the constructed mapping
-    through JSON text, and `json.dumps` COERCES non-string keys to
-    strings. So `{"1": a, 1: b}` -- two genuinely distinct constructed
-    keys -- becomes the literal duplicate-key document
-    `{"1": "a", "1": "b"}`, which the JSON parser then resolves
-    last-wins. Refusing ambiguity while MANUFACTURING an ambiguous
-    document one step later would defeat the whole authority, so the
-    projection is checked here too.
-    """
+    Two refusals live here, with different dispositions:
 
-    if isinstance(key, str):
-        return key
-    if isinstance(key, bool):  # before int: bool IS an int in Python
-        return "true" if key else "false"
-    if key is None:
-        return "null"
-    if isinstance(key, (int, float)):
-        return str(key)
-    return None
+    - a key outside the contract's domain  -> `target_profile_invalid`
+    - an ambiguous document                -> `target_profile_unreadable`
 
-
-def _first_ambiguous_key_v2(loader: yaml.SafeLoader, root: yaml.Node) -> str | None:
-    """Walk the COMPOSED node graph and return the first ambiguous key.
 
     Why the node graph, and why before construction:
 
@@ -227,10 +210,32 @@ def _first_ambiguous_key_v2(loader: yaml.SafeLoader, root: yaml.Node) -> str | N
         # input controlled the work. Measured 10.8ms -> 128.6ms from 200 to
         # 1600 keys before this change.
         constructed_keys: set[object] = set()
-        projected_keys: set[str] = set()
+        # Keys that cannot be CONSTRUCTED are still authored keys.
+        #
+        # Skipping them assumed "PyYAML will refuse the document anyway".
+        # False when an enclosing tag swallows them: in
+        # `? !!str {=: repo, =: default_branch}` both inner keys carry
+        # `tag:yaml.org,2002:value`, which SafeLoader has no constructor
+        # for -- yet the `!!str` on the enclosing mapping constructs the
+        # whole thing to `'repo'`, so the first `=` silently wins and a
+        # different reader could equally produce `'default_branch'`.
+        # Compared structurally instead, in their own namespace so a
+        # surrogate can never collide with a real constructed value.
+        unconstructible_keys: set[tuple[str, str]] = set()
         merge_keys_seen = 0
         for key_node, value_node in node.value:
             stack.append(value_node)
+            # The KEY node is walked too. A key may itself be a mapping or
+            # sequence carrying its own authored pairs -- e.g.
+            # `? !!str {=: repo, =: default_branch}` holds a duplicate `=`
+            # INSIDE the key -- and enqueueing only the value left that
+            # subtree unscanned.
+            #
+            # Same class one level in again: round 4 fixed WHICH keys are
+            # compared; this fixes what lives inside a key. The walk must
+            # reach every authored mapping in the document, wherever it
+            # sits.
+            stack.append(key_node)
             if key_node.tag == _YAML_MERGE_TAG_V2:
                 # `<<` is not a key of this mapping; its source is scanned
                 # on its own terms via `value_node` above.
@@ -249,22 +254,50 @@ def _first_ambiguous_key_v2(loader: yaml.SafeLoader, root: yaml.Node) -> str | N
                 # merge keys unconditionally let through.
                 merge_keys_seen += 1
                 if merge_keys_seen > 1:
-                    return "<<"
+                    return TARGET_PROFILE_UNREADABLE_REASON_V2
                 continue
 
             key = _constructed_key_v2(loader, key_node)
+            if key is not _UNCOMPARABLE_KEY_V2 and not isinstance(key, str):
+                # A key that CONSTRUCTS to a non-string is already outside
+                # `TargetProfileV2`'s domain: the contract is JSON-shaped,
+                # its models are strict and `extra="forbid"`, and canonical
+                # JSON has no non-string object keys. Enforcing that here
+                # is early validation of a property the contract already
+                # has -- not a new restriction on the language.
+                #
+                # It also removes an attack rather than mitigating it.
+                # Integer keys chosen as multiples of `sys.hash_info.
+                # modulus` all hash to 0, so they degrade set membership
+                # to a linear scan and restore the quadratic behaviour the
+                # set was introduced to remove. Refusing on the FIRST such
+                # key means they never enter the table and the mapping is
+                # never fully constructed.
+                #
+                # Deliberately NOT a key-count ceiling: a cap would be a
+                # genuinely new property ("a document with N+1 fields is
+                # refused by quantity") that the contract does not have.
+                #
+                # This rule SUBSUMES the earlier JSON-projection check.
+                # That check existed because `json.dumps` coerces
+                # non-string keys, so `{"1": a, 1: b}` was re-serialised as
+                # a literal duplicate-key document. With non-string keys
+                # refused here, projection is the identity function on the
+                # keys that survive, and a projection collision is just a
+                # constructed-key collision. The check was removed rather
+                # than kept as unreachable code -- but if this rule is ever
+                # relaxed, the projection check must come back with it.
+                return TARGET_PROFILE_INVALID_REASON_V2
             if key is _UNCOMPARABLE_KEY_V2:
+                if isinstance(key_node, yaml.ScalarNode):
+                    surrogate = (key_node.tag, key_node.value)
+                    if surrogate in unconstructible_keys:
+                        return TARGET_PROFILE_UNREADABLE_REASON_V2
+                    unconstructible_keys.add(surrogate)
                 continue
             if key in constructed_keys:
-                return str(key_node.value)
+                return TARGET_PROFILE_UNREADABLE_REASON_V2
             constructed_keys.add(key)
-
-            projected = _json_projected_key_v2(key)
-            if projected is None:
-                continue
-            if projected in projected_keys:
-                return str(key_node.value)
-            projected_keys.add(projected)
     return None
 
 
@@ -295,6 +328,7 @@ def _parse_unambiguous_yaml_v2(raw_text: str) -> object:
     # to cover every statement that touches target-authored bytes, not
     # just the ones that obviously parse.
     loader = None
+    reason = TARGET_PROFILE_UNREADABLE_REASON_V2
     try:
         # The typed refusal is raised AFTER this block, never inside it.
         # `TargetProfileLoadErrorV2` is itself a `ValueError`, and the
@@ -303,15 +337,19 @@ def _parse_unambiguous_yaml_v2(raw_text: str) -> object:
         try:
             loader = yaml.SafeLoader(raw_text)
             node = loader.get_single_node()
-            ambiguous = node is None or _first_ambiguous_key_v2(loader, node) is not None
-            if not ambiguous:
+            reason = (
+                TARGET_PROFILE_UNREADABLE_REASON_V2
+                if node is None
+                else _first_contract_violation_v2(loader, node)
+            )
+            if reason is None:
                 return loader.construct_document(node)
         except _YAML_PARSE_FAILURES_V2 as exc:
             raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
     finally:
         if loader is not None:
             loader.dispose()
-    raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
+    raise TargetProfileLoadErrorV2(reason)
 
 
 def load_target_profile_text_v2(raw_text: str) -> TargetProfileV2:
