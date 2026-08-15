@@ -272,6 +272,20 @@ def _valid_profile_yaml(**identity: str) -> str:
 
 _DUPLICATE_KEY_CORPUS = [
     ("plain_duplicate", "identity:\n  repo: a/b\n  default_branch: main\n  repo: attacker/evil\n"),
+    # CONSTRUCTED-key collisions. Each pair has DISTINCT tags and distinct
+    # lexical forms, so a scan comparing `(tag, raw text)` sees two keys --
+    # while the constructed mapping keeps exactly one. Independent review
+    # of PR-A found all of these passing the earlier scan clean.
+    ("constructed_yes_true", "identity:\n  yes: 1\n  true: 2\n"),
+    ("constructed_int_float", "identity:\n  1: a\n  1.0: b\n"),
+    ("constructed_hex_dec", "identity:\n  0x10: a\n  16: b\n"),
+    ("constructed_tilde_null", "identity:\n  ~: a\n  null: b\n"),
+    ("constructed_bool_spellings", "identity:\n  on: 1\n  On: 2\n  TRUE: 3\n"),
+    # JSON-PROJECTION collision: two genuinely distinct constructed keys
+    # that `json.dumps` renders identically, so the validation round-trip
+    # would MANUFACTURE a literal duplicate-key document.
+    ("projected_str_vs_int", 'identity:\n  "1": a\n  1: b\n'),
+    ("projected_str_vs_bool", 'identity:\n  "true": a\n  true: b\n'),
     ("duplicate_inside_inline_merge_source", "identity:\n  <<: {repo: a/b, repo: attacker/evil}\n"),
     ("duplicate_in_anchored_merge_source", "src: &s {repo: a/b, repo: attacker/evil}\nidentity:\n  <<: *s\n"),
     ("duplicate_at_top_level", "schema_version: 2\nschema_version: 3\n"),
@@ -419,3 +433,43 @@ def test_family_malformed_profile_yaml_is_reason_coded_never_a_raw_exception(
         TARGET_PROFILE_UNREADABLE_REASON_V2,
         TARGET_PROFILE_INVALID_REASON_V2,
     }, label
+
+
+def test_recursive_alias_terminates_deterministically() -> None:
+    """A self-referential anchor must not hang the scan.
+
+    `visited` is keyed on node identity precisely so the composed graph's
+    cycle is walked once. Termination is asserted here rather than left to
+    the incidental `json.dumps` circular-reference guard downstream, which
+    a later refactor of the validation round-trip could remove."""
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    with pytest.raises(TargetProfileLoadErrorV2):
+        load_target_profile_text_v2("identity: &x {self: *x}\n")
+
+
+def test_the_validation_round_trip_cannot_manufacture_a_duplicate_key_document() -> None:
+    """Directly pins the projection defect, not just its symptom.
+
+    `json.dumps` coerces non-string mapping keys to strings, so a profile
+    with `{"1": a, 1: b}` -- two legitimately distinct constructed keys --
+    used to be re-serialised as the literal duplicate-key document
+    `{"identity": {"1": "a", "1": "b"}}` and handed to a last-wins parser.
+    An authority whose stated contract is refusing last-wins ambiguity must
+    not produce an ambiguous document itself."""
+    import json as _json
+
+    from app.agent_review.profile_loader_v2 import (
+        TARGET_PROFILE_UNREADABLE_REASON_V2,
+        _parse_unambiguous_yaml_v2,
+    )
+
+    text = 'identity:\n  "1": a\n  1: b\n'
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        _parse_unambiguous_yaml_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2
+
+    # Control: had it been accepted, this is the document that would have
+    # been produced -- json.dumps really does collapse the two keys.
+    collapsed = _json.dumps({"1": "a", 1: "b"})
+    assert collapsed.count('"1"') == 2, collapsed

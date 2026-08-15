@@ -53,6 +53,7 @@ which is the failure mode this whole slice exists to remove.
 from __future__ import annotations
 
 import json
+from collections.abc import Hashable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -105,11 +106,42 @@ def _construct_mapping_rejecting_duplicates_v2(loader: yaml.SafeLoader, node: ya
     implementation, reading the same bytes could see a different value for a
     duplicated key than the one this loader used -- for example a different
     `verifier_identity` -- and end up validating a producer this loader did
-    not."""
+    not.
+
+    Keys are compared AFTER construction, so `yes:`/`true:` and `1:`/`1.0:`
+    are already caught here -- they collapse to one key in `mapping`.
+
+    The `isinstance` guard below is PyYAML's own, restored. Replacing the
+    mapping constructor removed it, so an explicitly tagged non-mapping
+    node (`identity: !!map foo`, `!!map [1, 2]`) reached the unpacking loop
+    and raised a raw `ValueError`/`TypeError` that escaped this module's
+    `(yaml.YAMLError, UnicodeDecodeError)` boundary entirely -- reaching
+    `required_check_readiness_v2` as a traceback. Same escaping class the
+    profile loader had; found by sweeping for it rather than by report.
+
+    Merge keys remain UNSUPPORTED here, deliberately and unchanged: this
+    loader registers no merge constructor, so `<<:` still fails closed with
+    a typed `ConstructorError`. Making merges work is a capability decision
+    about the authoritative-policy language, not a side effect of fixing an
+    exception boundary."""
+
+    if not isinstance(node, yaml.MappingNode):
+        raise yaml.constructor.ConstructorError(
+            None, None, f"expected a mapping node, but found {node.id}", node.start_mark
+        )
 
     mapping: dict = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
+        # PyYAML's second guard, also lost when the constructor was
+        # replaced: an unhashable key (`? [a, b]`) otherwise reached the
+        # membership test below and raised a raw `TypeError`. Found by the
+        # totality family test, not by report -- which is the point of
+        # asserting the boundary as a family rather than per named input.
+        if not isinstance(key, Hashable):
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark, "found unhashable key", key_node.start_mark
+            )
         if key in mapping:
             raise yaml.constructor.ConstructorError(
                 "while constructing a mapping",
@@ -341,7 +373,10 @@ def load_authoritative_check_policy_v2(
 
     try:
         raw = yaml.load(raw_bytes.decode("utf-8"), Loader=_DuplicateKeyRejectingLoaderV2)
-    except (yaml.YAMLError, UnicodeDecodeError) as exc:
+    except (yaml.YAMLError, UnicodeDecodeError, RecursionError) as exc:
+        # RecursionError: deeply nested target-authored YAML. Listed so the
+        # boundary is total for the input classes this document can carry,
+        # not widened one exception at a time as they are reported.
         raise AuthoritativeCheckPolicyErrorV2(POLICY_UNREADABLE_REASON_V2) from exc
 
     if not isinstance(raw, dict):

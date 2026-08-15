@@ -75,22 +75,57 @@ _YAML_MERGE_TAG_V2 = "tag:yaml.org,2002:merge"
 _YAML_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (yaml.YAMLError, RecursionError)
 
 
-def _comparable_key_v2(key_node: yaml.Node) -> tuple[str, str] | None:
-    """A cheap identity for duplicate comparison, or None when the key is
-    not a scalar.
+_UNCOMPARABLE_KEY_V2 = object()
 
-    Complex (sequence/mapping) keys are deliberately not compared here:
-    they are unhashable in Python, so PyYAML's own constructor refuses them
-    with a `ConstructorError`, which this module already normalises.
+
+def _constructed_key_v2(loader: yaml.SafeLoader, key_node: yaml.Node) -> object:
+    """The key value a consumer will actually see, or a sentinel.
+
+    Ambiguity is a property of the CONSUMED mapping, not of the source
+    text. `(tag, raw text)` -- what this compared before -- treats
+    `yes:`/`true:`, `1:`/`1.0:`, `0x10:`/`16:`, `~:`/`null:` and
+    `on:`/`On:`/`TRUE:` as distinct, because their tags and lexical forms
+    genuinely differ. Every one of those pairs collapses to ONE key in the
+    constructed mapping, which is exactly the "same bytes, two readings"
+    condition this loader exists to refuse.
+
+    Only SCALAR keys are constructed: a complex key is unhashable, so
+    PyYAML's own constructor refuses it with a `ConstructorError` this
+    module already normalises. Construction is cached on the loader and
+    reused by `construct_document`, so this adds no second reading.
     """
 
-    if isinstance(key_node, yaml.ScalarNode):
-        return (key_node.tag, key_node.value)
+    if not isinstance(key_node, yaml.ScalarNode):
+        return _UNCOMPARABLE_KEY_V2
+    return loader.construct_object(key_node, deep=False)
+
+
+def _json_projected_key_v2(key: object) -> str | None:
+    """How `json.dumps` will render this key, or None if it cannot.
+
+    The profile is validated by round-tripping the constructed mapping
+    through JSON text, and `json.dumps` COERCES non-string keys to
+    strings. So `{"1": a, 1: b}` -- two genuinely distinct constructed
+    keys -- becomes the literal duplicate-key document
+    `{"1": "a", "1": "b"}`, which the JSON parser then resolves
+    last-wins. Refusing ambiguity while MANUFACTURING an ambiguous
+    document one step later would defeat the whole authority, so the
+    projection is checked here too.
+    """
+
+    if isinstance(key, str):
+        return key
+    if isinstance(key, bool):  # before int: bool IS an int in Python
+        return "true" if key else "false"
+    if key is None:
+        return "null"
+    if isinstance(key, (int, float)):
+        return str(key)
     return None
 
 
-def _first_duplicate_key_v2(root: yaml.Node) -> str | None:
-    """Walk the COMPOSED node graph and return the first duplicated key.
+def _first_ambiguous_key_v2(loader: yaml.SafeLoader, root: yaml.Node) -> str | None:
+    """Walk the COMPOSED node graph and return the first ambiguous key.
 
     Why the node graph, and why before construction:
 
@@ -98,16 +133,28 @@ def _first_duplicate_key_v2(root: yaml.Node) -> str | None:
     merge target's `node.value` in place, splicing the source's pairs into
     it. It also defers nested constructions and drains them breadth-first,
     so a shallower mapping can flatten an anchor before that anchor's own
-    mapping has been constructed. A duplicate scan running during
-    construction therefore sees a different node list depending on nesting
-    DEPTH -- rejecting legal merge overrides in some documents while
-    missing real duplicates in others.
+    mapping has been constructed. A scan running during construction
+    therefore sees a different node list depending on nesting DEPTH --
+    rejecting legal merge overrides in some documents while missing real
+    duplicates in others.
 
-    Composing first and scanning the untouched graph removes depth from the
-    question entirely. Merge SOURCES are reached as ordinary mapping nodes
-    through their value node, so a duplicate inside an inline `<<: {...}`
-    is caught, while keys a merge legitimately CONTRIBUTES are never
-    confused with keys the mapping declares itself.
+    Composing first and scanning the untouched graph removes depth from
+    the question entirely. Merge SOURCES are reached as ordinary mapping
+    nodes through their value node, so a duplicate inside an inline
+    `<<: {...}` is caught, while keys a merge legitimately CONTRIBUTES are
+    never confused with keys the mapping declares itself.
+
+    Two collisions are refused, because the profile is consumed through
+    both representations:
+
+    1. CONSTRUCTED-key collision -- two authored keys that become one key
+       in the Python mapping.
+    2. JSON-PROJECTED-key collision -- two distinct constructed keys that
+       `json.dumps` renders as one, in the round-trip this module uses to
+       validate.
+
+    `visited` is keyed on node IDENTITY so a mapping reachable by several
+    aliases is scanned once and a recursive alias terminates.
     """
 
     visited: set[int] = set()
@@ -118,22 +165,40 @@ def _first_duplicate_key_v2(root: yaml.Node) -> str | None:
             continue
         visited.add(id(node))
 
-        if isinstance(node, yaml.MappingNode):
-            seen: set[tuple[str, str]] = set()
-            for key_node, value_node in node.value:
-                stack.append(value_node)
-                if key_node.tag == _YAML_MERGE_TAG_V2:
-                    # `<<` is not a key of this mapping; its source is
-                    # scanned on its own terms via `value_node` above.
-                    continue
-                identity = _comparable_key_v2(key_node)
-                if identity is None:
-                    continue
-                if identity in seen:
-                    return str(key_node.value)
-                seen.add(identity)
-        elif isinstance(node, yaml.SequenceNode):
+        if isinstance(node, yaml.SequenceNode):
             stack.extend(node.value)
+            continue
+        if not isinstance(node, yaml.MappingNode):
+            continue
+
+        constructed_keys: list[object] = []
+        projected_keys: set[str] = set()
+        for key_node, value_node in node.value:
+            stack.append(value_node)
+            if key_node.tag == _YAML_MERGE_TAG_V2:
+                # `<<` is not a key of this mapping; its source is scanned
+                # on its own terms via `value_node` above.
+                continue
+
+            key = _constructed_key_v2(loader, key_node)
+            if key is _UNCOMPARABLE_KEY_V2:
+                continue
+            try:
+                already_present = key in constructed_keys
+            except TypeError:
+                # Unhashable/uncomparable constructed key: SafeLoader
+                # refuses it downstream with its own typed error.
+                continue
+            if already_present:
+                return str(key_node.value)
+            constructed_keys.append(key)
+
+            projected = _json_projected_key_v2(key)
+            if projected is None:
+                continue
+            if projected in projected_keys:
+                return str(key_node.value)
+            projected_keys.add(projected)
     return None
 
 
@@ -160,7 +225,7 @@ def _parse_unambiguous_yaml_v2(raw_text: str) -> object:
         node = loader.get_single_node()
         if node is None:
             raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
-        if _first_duplicate_key_v2(node) is not None:
+        if _first_ambiguous_key_v2(loader, node) is not None:
             raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
         return loader.construct_document(node)
     except _YAML_PARSE_FAILURES_V2 as exc:

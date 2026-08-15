@@ -65,8 +65,20 @@ RECEIPT_RELATIVE_PATH_V2 = ".aiops/install-receipt.v2.json"
 RECEIPT_SECRET_NAME_LOOKS_LIKE_VALUE_REASON_V2 = "target_install_receipt_secret_name_looks_like_value"
 RECEIPT_HASH_MISMATCH_REASON_V2 = "target_install_receipt_hash_mismatch"
 RECEIPT_TARGET_OWNED_PATHS_MISMATCH_REASON_V2 = "target_install_receipt_target_owned_paths_mismatch"
-RECEIPT_AMBIGUOUS_REASON_V2 = "target_install_receipt_ambiguous"
-RECEIPT_UNREADABLE_REASON_V2 = "target_install_receipt_unreadable"
+# ONE reason code, deliberately.
+#
+# An earlier cut split this into `..._ambiguous` / `..._unreadable` /
+# `..._invalid`. Independent review showed all three were DEAD: both
+# readers catch the broad `ValueError` arm and substitute their own flat
+# reason code, so `.reason_code` was never read by anyone. A duplicated-key
+# receipt was therefore indistinguishable from a truncated file at every
+# consumer -- the distinction existed only in this module's tests.
+#
+# Publishing the distinction would require changing those consumers, which
+# is out of scope here. So the subtype is not invented until something
+# consumes it: a typed reason no caller reads is a refactor, not a finding
+# closed. What matters operationally -- the receipt is REFUSED, fail-closed
+# -- is unchanged either way.
 RECEIPT_INVALID_REASON_V2 = "target_install_receipt_invalid"
 
 
@@ -246,17 +258,22 @@ def load_target_install_receipt_bytes_v2(raw: bytes | str) -> TargetInstallRecei
     contract is strict-mode, so it will not coerce the JSON arrays back
     into the tuples the model declares. The authoritative parse is
     `model_validate_json` over the same bytes.
+
+    KNOWN RESIDUAL, recorded rather than silently carried: those are two
+    different JSON parsers, and they do not accept exactly the same
+    language (`NaN`, lone surrogates). Well-formed receipt bytes are
+    currently the INTERSECTION of the two, which is not stated as a
+    contract anywhere. Collapsing them to one reading requires resolving
+    strict-mode tuple coercion and is out of this slice's scope.
+
+    Every failure yields ONE reason code -- see the constant above for why
+    no subtype is invented here.
     """
 
     try:
         strict_json_loads(raw)
     except _RECEIPT_PARSE_FAILURES_V2 as exc:
-        reason = (
-            RECEIPT_AMBIGUOUS_REASON_V2
-            if "DUPLICATE_JSON_KEY" in str(exc)
-            else RECEIPT_UNREADABLE_REASON_V2
-        )
-        raise TargetInstallReceiptLoadErrorV2(reason) from exc
+        raise TargetInstallReceiptLoadErrorV2(RECEIPT_INVALID_REASON_V2) from exc
 
     try:
         return TargetInstallReceiptV2.model_validate_json(raw)

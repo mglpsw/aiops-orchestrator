@@ -631,3 +631,43 @@ def test_init_refuses_cleanly_instead_of_fabricating_a_toolrepo_sha(tmp_path: Pa
     assert "Traceback" not in result.stderr
     assert "target_pack_cli_toolrepo_sha_unresolved" in result.stderr
     assert not (target_root / ".aiops" / "install-receipt.v2.json").exists()
+
+
+def test_a_duplicate_key_receipt_is_refused_consistently_by_every_reader(tmp_path: Path) -> None:
+    """One ambiguous receipt, every reader agrees.
+
+    Duplicating a key leaves valid JSON, and `receipt_hash` is computed
+    from the PARSED model, so the self-hash still verifies -- the document
+    stays internally consistent while meaning two different things to a
+    last-wins and a first-wins reader. Before the shared authority, each
+    reader parsed privately: the same bytes could be refused by one and
+    trusted by another.
+
+    Asserted through the real CLI across BOTH readers, because a shared
+    authority that only its own unit tests exercise proves nothing about
+    the surfaces that actually consume it.
+    """
+    target = tmp_path / "target"
+    target.mkdir()
+    base = [
+        "init", "--target-root", str(target), "--toolrepo-root", str(REPO_ROOT),
+        "--target-repo", "acme/svc", "--pack-version", "0.1.0", "--rollout", "off",
+    ]
+    assert _run(base).returncode == 0
+
+    receipt_path = target / ".aiops" / "install-receipt.v2.json"
+    raw = receipt_path.read_text(encoding="utf-8")
+    ambiguous = raw.replace('"pack_version":', '"pack_version": "9.9.9",\n  "pack_version":', 1)
+    assert json.loads(ambiguous)["pack_version"] != "9.9.9", "must remain valid, last-wins JSON"
+    receipt_path.write_text(ambiguous, encoding="utf-8")
+
+    doctor = _run_raw([
+        "doctor", "--target-root", str(target), "--toolrepo-root", str(REPO_ROOT),
+        "--target-repo", "acme/svc", "--pack-version", "0.1.0",
+    ])
+    reinit = _run_raw(base)
+
+    assert doctor.returncode != 0, "doctor accepted an ambiguous receipt"
+    assert json.loads(doctor.stdout)["receipt"]["status"] == "invalid"
+    assert reinit.returncode != 0, "init accepted an ambiguous receipt as previous_receipt"
+    assert "Traceback" not in doctor.stderr and "Traceback" not in reinit.stderr

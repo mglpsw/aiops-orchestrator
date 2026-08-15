@@ -400,3 +400,66 @@ def test_reordering_entries_does_not_move_the_semantic_digest(tmp_path: Path) ->
     assert {e.check_name for e in reversed_loaded.policy.authoritative_checks} == {"pytest", "mypy"}
     assert forward_loaded.policy_source_bytes_digest != reversed_loaded.policy_source_bytes_digest
     assert forward_loaded.policy_source_semantic_digest == reversed_loaded.policy_source_semantic_digest
+
+
+# ===========================================================================
+# PR-A rev.3: the SECOND target-authored YAML authority.
+#
+# Found by sweeping for the class rather than by report: this module carries
+# its own loader, so fixing `profile_loader_v2` alone left
+# `required_check_readiness_v2` -- which consumes BOTH loaders, two lines
+# apart -- still exposed to the identical escaping-exception defect.
+# ===========================================================================
+
+_MALFORMED_POLICY_YAML_CORPUS = [
+    ("explicit_map_tag_on_scalar", "identity: !!map foo"),
+    ("explicit_map_tag_on_sequence", "identity: !!map [1, 2]"),
+    ("explicit_set_tag", "identity: !!set [a, b]"),
+    ("unhashable_key", "? [a, b]\n: value"),
+    ("not_yaml_at_all", "identity: [unclosed"),
+    ("plain_duplicate_key", "a: 1\na: 2"),
+    ("constructed_duplicate_yes_true", "yes: 1\ntrue: 2"),
+]
+
+
+@pytest.mark.parametrize(
+    "label,text",
+    _MALFORMED_POLICY_YAML_CORPUS,
+    ids=[c[0] for c in _MALFORMED_POLICY_YAML_CORPUS],
+)
+def test_family_malformed_policy_yaml_never_leaks_a_raw_parser_exception(
+    tmp_path: Path, label: str, text: str
+) -> None:
+    """Total typed boundary for this authority too.
+
+    Before this change, an explicitly tagged non-mapping node reached the
+    replaced constructor's unpacking loop and raised a raw
+    `ValueError`/`TypeError` straight past
+    `(yaml.YAMLError, UnicodeDecodeError)` -- surfacing in
+    `required_check_readiness_v2` as a traceback rather than a reason code.
+    """
+    policy_root = tmp_path / "target"
+    (policy_root / ".aiops").mkdir(parents=True)
+    (policy_root / ".aiops" / "authoritative-checks.v2.yaml").write_text(text, encoding="utf-8")
+
+    with pytest.raises(AuthoritativeCheckPolicyErrorV2) as excinfo:
+        load_authoritative_check_policy_v2(policy_root)
+    assert excinfo.value.reason_code, label
+
+
+def test_merge_keys_remain_unsupported_in_the_authoritative_policy(tmp_path: Path) -> None:
+    """Capability boundary, asserted so it cannot widen by accident.
+
+    Fixing the exception boundary must NOT quietly teach this loader to
+    resolve `<<:`. Whether the authoritative-policy language gains merge
+    keys is a separate capability decision; today it fails closed with a
+    typed error, and this pins that."""
+    policy_root = tmp_path / "target"
+    (policy_root / ".aiops").mkdir(parents=True)
+    (policy_root / ".aiops" / "authoritative-checks.v2.yaml").write_text(
+        "base: &b {schema_id: x}\npolicy:\n  <<: *b\n", encoding="utf-8"
+    )
+
+    with pytest.raises(AuthoritativeCheckPolicyErrorV2) as excinfo:
+        load_authoritative_check_policy_v2(policy_root)
+    assert excinfo.value.reason_code == POLICY_UNREADABLE_REASON_V2
