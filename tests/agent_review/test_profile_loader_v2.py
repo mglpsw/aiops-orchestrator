@@ -840,3 +840,50 @@ def test_the_pre_pass_preserves_alias_object_identity() -> None:
     produced = _parse_unambiguous_yaml_v2(text)
     assert reference["a"] is reference["b"], "precondition: safe_load shares the object"
     assert produced["a"] is produced["b"]
+
+
+# A mapping node with a NON-DEFAULT tag is not consumed as a mapping: its
+# constructor selects an entry by TAG and discards the rest. Scanning its
+# pairs as ordinary authored entries was wrong in BOTH directions.
+_TAGGED_NODE_CORPUS_REFUSED = [
+    # Two entries the constructor cannot tell apart -- same tag, different
+    # raw values -- so the first silently wins and another reader could
+    # take the second. Comparing (tag, value) saw them as distinct.
+    ("same_tag_distinct_values", "m:\n  ? !!str {!!value a: x, !!value b: y}\n  : v\n"),
+    ("duplicate_value_key", "m:\n  ? !!str {=: repo, =: default_branch}\n  : v\n"),
+]
+_TAGGED_NODE_CORPUS_ACCEPTED = [
+    # The integer sibling is NEVER constructed: the string constructor
+    # consumes the `=` entry and stops. Refusing the profile for a key that
+    # never reaches a consumed mapping is over-refusal.
+    ("unconsumed_sibling", "m:\n  ? !!str {=: repo, 123: ignored}\n  : v\n"),
+]
+
+
+@pytest.mark.parametrize(
+    "label,text", _TAGGED_NODE_CORPUS_REFUSED, ids=[c[0] for c in _TAGGED_NODE_CORPUS_REFUSED]
+)
+def test_family_ambiguity_in_a_tagged_node_is_refused(label: str, text: str) -> None:
+    """Entries a tagged constructor cannot discriminate are ambiguous.
+
+    `!!str` selects by key TAG alone, so two entries sharing a tag mean two
+    readings of the same bytes regardless of their raw values."""
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2, label
+
+
+@pytest.mark.parametrize(
+    "label,text", _TAGGED_NODE_CORPUS_ACCEPTED, ids=[c[0] for c in _TAGGED_NODE_CORPUS_ACCEPTED]
+)
+def test_family_unconsumed_entries_do_not_trigger_the_domain_rule(label: str, text: str) -> None:
+    """The string-key domain rule applies to CONSUMED mappings only.
+
+    A key that never reaches a consumed mapping cannot violate a contract
+    about consumed mappings. Asserted as acceptance parity with stock
+    `safe_load`, so the rule cannot quietly become an over-refusal."""
+    from app.agent_review.profile_loader_v2 import _parse_unambiguous_yaml_v2
+
+    assert _parse_unambiguous_yaml_v2(text) == yaml.safe_load(text), label

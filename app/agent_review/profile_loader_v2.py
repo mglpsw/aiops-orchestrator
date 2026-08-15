@@ -93,13 +93,14 @@ _YAML_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (
     #   !!bool nope       bool_values[]  -> KeyError
     #   !!timestamp nope  regex .group() -> AttributeError
     #
-    # The set below is enumerated, but its COMPLETENESS is not asserted --
-    # it is proven by `test_the_parse_boundary_is_total_over_the_whole_tag_space`,
-    # which fuzzes every standard YAML tag against a malformed-payload
-    # corpus and fails if anything escapes. That guard exists because the
-    # first four types were added one at a time as each was reported,
-    # while the corpus that "proved totality" only ever exercised
-    # STRUCTURAL malformation and never reached this code path at all.
+    # The set below is enumerated, and its completeness is NOT proven.
+    # `test_the_parse_boundary_is_total_over_the_whole_tag_space` gives
+    # systematic evidence over the families it enumerates, and mutations
+    # show it discriminates them -- that is strong support, not a
+    # demonstration that no other PyYAML behaviour can escape. The guard
+    # exists because the first types were added one at a time as each was
+    # reported, while the corpus that then claimed totality only exercised
+    # STRUCTURAL malformation and never reached this code path.
     ValueError,
     KeyError,
     IndexError,
@@ -202,6 +203,37 @@ def _first_contract_violation_v2(loader: yaml.SafeLoader, root: yaml.Node) -> st
             stack.extend(node.value)
             continue
         if not isinstance(node, yaml.MappingNode):
+            continue
+
+        # SCAN ACCORDING TO HOW THE NODE WILL BE CONSUMED.
+        #
+        # A mapping node carrying a non-default tag is not consumed as a
+        # mapping at all: `!!str {=: repo, 123: ignored}` is handed to the
+        # string constructor, which selects an entry BY TAG and never
+        # constructs the integer sibling. Treating its pairs as ordinary
+        # authored entries was wrong in both directions --
+        #
+        #   under-refusing: `!!str {!!value a: x, !!value b: y}` has two
+        #     entries the constructor cannot tell apart (same tag), so the
+        #     first silently wins; comparing `(tag, value)` saw them as
+        #     distinct and accepted the document.
+        #
+        #   over-refusing: the integer sibling above is never consumed, yet
+        #     the string-key domain rule rejected the whole profile for it.
+        #
+        # So: default-tagged mappings are consumed mappings and get the
+        # full contract treatment; otherwise entries are compared by the
+        # only thing their constructor discriminates on -- the key tag --
+        # and the domain rule does not apply to keys that never reach a
+        # consumed mapping.
+        if node.tag != yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG:
+            selected_tags: set[str] = set()
+            for key_node, value_node in node.value:
+                stack.append(value_node)
+                stack.append(key_node)
+                if key_node.tag in selected_tags:
+                    return TARGET_PROFILE_UNREADABLE_REASON_V2
+                selected_tags.add(key_node.tag)
             continue
 
         # A SET, not a list. Membership on a list is linear, so a mapping
