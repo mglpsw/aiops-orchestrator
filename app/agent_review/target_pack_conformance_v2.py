@@ -204,19 +204,26 @@ def run_conformance_v2(*, cases: tuple[ConformanceCaseV2, ...]) -> ConformanceRe
 
     results: list[ConformanceCaseResultV2] = []
     unreadable_case_ids: list[str] = []
-    for case in cases:
-        if not case.target_root.is_dir():
+    # Validate through the SAME resolved snapshot uniqueness was checked
+    # against (PR #235 review round 5). Re-deriving from the mutable
+    # `case.target_root` let two roots that resolved distinctly at gate time
+    # both land on one directory if a symlink was retargeted in between --
+    # recreating precisely the self-comparison the uniqueness gate exists to
+    # prevent. Same "one snapshot, one decision" invariant as the profile
+    # byte-snapshot fix in round 4.
+    for case, resolved_root in zip(cases, resolved_roots):
+        if not resolved_root.is_dir():
             # An unreadable fixture is a MATRIX failure regardless of the
             # declared expectation (PR #235 review round 1, confirmed):
             # `is_valid=False` happened to satisfy an `ineligible`
             # expectation, so a matrix of nonexistent directories reported
             # success having validated nothing and having exercised no
             # intentional contract violation.
-            report = _unreadable_report_v2(case.target_root)
+            report = _unreadable_report_v2(resolved_root)
             unreadable_case_ids.append(case.case_id)
             matched = False
         else:
-            report = run_validate_v2(target_root=case.target_root)
+            report = run_validate_v2(target_root=resolved_root)
             expected_valid = case.expectation is ConformanceExpectationV2.ELIGIBLE
             matched = report.is_valid == expected_valid
 

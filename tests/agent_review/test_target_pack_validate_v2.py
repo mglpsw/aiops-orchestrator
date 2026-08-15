@@ -652,3 +652,55 @@ def test_profile_duplicate_key_rejection_survives_the_merge_key_fix():
 
     with pytest.raises(TargetProfileLoadErrorV2):
         load_target_profile_text_v2("a: 1\na: 2\n")
+
+
+# ---------------------------------------------------------------------------
+# PR #235 adversarial review round 5
+# ---------------------------------------------------------------------------
+
+
+def test_yaml_merge_defaults_stay_overridable():
+    """P1, a REGRESSION from the round-4 merge-key fix: `flatten_mapping`
+    prepends merged entries into `node.value`, so flattening before the
+    duplicate scan made YAML's standard override pattern look like a
+    duplicated key. Scanning the ORIGINAL node -- skipping merge nodes --
+    distinguishes an authored duplicate from an intentional override."""
+    import yaml
+
+    from app.agent_review.profile_loader_v2 import _DuplicateKeyRejectingProfileLoaderV2
+
+    document = yaml.load(
+        "d: &d\n  timeout: 10\n  retries: 3\nobj:\n  <<: *d\n  timeout: 30\n",
+        Loader=_DuplicateKeyRejectingProfileLoaderV2,
+    )
+    assert document["obj"] == {"timeout": 30, "retries": 3}
+
+
+def test_multiple_merge_keys_in_one_mapping_still_load():
+    """PyYAML permits several `<<` in one mapping; the duplicate scan must
+    not treat the merge key itself as a repeated key."""
+    import yaml
+
+    from app.agent_review.profile_loader_v2 import _DuplicateKeyRejectingProfileLoaderV2
+
+    document = yaml.load(
+        "x: &x\n  a: 1\ny: &y\n  b: 2\nobj:\n  <<: *x\n  <<: *y\n",
+        Loader=_DuplicateKeyRejectingProfileLoaderV2,
+    )
+    assert document["obj"] == {"a": 1, "b": 2}
+
+
+def test_receipt_claiming_generated_files_is_refused(target_root):
+    """This pack version ships zero UPSTREAM_GENERATED entries and its
+    writer emits `{}`, so a non-empty claim describes an install the writer
+    cannot produce -- and nothing verified those files existed."""
+    from app.agent_review.target_pack_validate_v2 import VALIDATE_GENERATED_FILES_UNSUPPORTED_REASON_V2
+
+    _install(
+        target_root,
+        receipt=_receipt(generated_file_hashes={"some/generated.yml": _sha256(b"nope")}),
+        profile=_VALID_PROFILE_YAML,
+    )
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
+    assert _check(report, "generated_files").reason_code == VALIDATE_GENERATED_FILES_UNSUPPORTED_REASON_V2

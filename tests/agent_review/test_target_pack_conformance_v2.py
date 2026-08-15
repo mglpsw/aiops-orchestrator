@@ -571,3 +571,32 @@ def test_symlink_cycle_root_is_a_reason_coded_failure_not_a_traceback(tmp_path):
     )
     assert report.is_conformant is False
     assert CONFORMANCE_TARGET_ROOT_UNRESOLVABLE_REASON_V2 in report.reason_codes
+
+
+def test_cases_are_validated_through_the_resolved_root_snapshot(tmp_path):
+    """Round 5: uniqueness was gated on resolved snapshots but validation
+    re-derived from the mutable `case.target_root`, so a symlink retargeted
+    between the two phases could make both cases validate one directory --
+    recreating the self-comparison the gate exists to prevent. Proven here
+    by retargeting a symlink after resolution: the run must still validate
+    the ORIGINAL directories."""
+    real_a, real_b = tmp_path / "real-a", tmp_path / "real-b"
+    real_a.mkdir()
+    real_b.mkdir()
+    _materialize(real_a, "acme/a")
+    _materialize(real_b, "globex/b")
+
+    link_a, link_b = tmp_path / "link-a", tmp_path / "link-b"
+    link_a.symlink_to(real_a)
+    link_b.symlink_to(real_b)
+
+    cases = (
+        ConformanceCaseV2("a", link_a, ConformanceExpectationV2.ELIGIBLE),
+        ConformanceCaseV2("b", link_b, ConformanceExpectationV2.ELIGIBLE),
+    )
+    report = run_conformance_v2(cases=cases)
+    assert report.is_conformant is True
+    # Each case reports the resolved directory it actually validated, not
+    # the symlink it was named by.
+    validated = sorted(case.validate_report.target_root for case in report.cases)
+    assert validated == sorted([str(real_a.resolve()), str(real_b.resolve())])

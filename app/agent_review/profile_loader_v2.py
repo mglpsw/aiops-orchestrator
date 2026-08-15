@@ -33,38 +33,46 @@ DEFAULT_TARGET_PROFILE_RELATIVE_PATH = Path(".aiops") / "target-profile.v2.yaml"
 
 
 class _DuplicateKeyRejectingProfileLoaderV2(yaml.SafeLoader):
-    """`yaml.SafeLoader` that refuses a repeated mapping key.
+    """`yaml.SafeLoader` that refuses a key repeated **within one authored
+    mapping**, while leaving every other PyYAML behaviour intact.
 
-    PyYAML silently keeps the LAST of a duplicated key, so an ambiguous
-    profile parses clean and a different YAML implementation -- or a human
-    auditor -- reading the same bytes can see a different value than the
-    one that was validated and recorded (PR #235 review round 3).
+    Why it exists: PyYAML silently keeps the LAST of a duplicated key, so an
+    ambiguous profile parses clean and a different YAML implementation -- or
+    a human auditor -- reading the same bytes can see a different value than
+    the one that was validated and recorded (PR #235 review round 3).
 
-    Implemented by overriding `construct_mapping` rather than replacing the
-    mapping constructor outright (PR #235 review round 4, two regressions
-    my first cut introduced):
+    Three separate regressions were introduced getting this right, all
+    against callers that previously worked, so the boundaries are spelled
+    out rather than left implicit:
 
-    - it calls `super().construct_mapping`, which runs `flatten_mapping`
-      first, so YAML **merge keys** (`<<: *anchor`) keep working. Replacing
-      the constructor skipped that flattening and turned previously valid
-      profiles into hard failures across every caller of this loader.
-    - it guards hashability before the membership test. A sequence or
-      mapping used as a key (`? [a, b]`) is unhashable, so `key in seen`
-      raised a bare `TypeError` that escaped the `yaml.YAMLError`
-      normalisation boundary below and surfaced as a traceback from both
-      `validate` and `init` instead of a reason-coded refusal.
+    - **Merge keys must still resolve** (round 4). Replacing the mapping
+      constructor outright skipped `flatten_mapping`, breaking every
+      profile using `<<: *anchor`. Construction is delegated to `super()`,
+      which flattens as usual.
+    - **Merged defaults must stay overridable** (round 5). Flattening
+      first and then scanning ALSO rejected YAML's standard override
+      pattern -- `{<<: *defaults, timeout: 30}` where `defaults` already
+      defines `timeout` -- because `flatten_mapping` prepends merged
+      entries into `node.value`, making a legitimate override look like a
+      duplicate. The scan therefore runs on the ORIGINAL node, before any
+      flattening, and skips merge nodes entirely: only keys literally
+      written twice in the same mapping are duplicates.
+    - **Unhashable keys must fail closed, not crash** (round 4). A
+      sequence or mapping used as a key (`? [a, b]`) is unhashable, so the
+      membership test raised a bare `TypeError` that escaped the
+      `yaml.YAMLError` normalisation boundary and surfaced as a traceback.
     """
 
+    _MERGE_TAG_V2 = "tag:yaml.org,2002:merge"
+
     def construct_mapping(self, node, deep: bool = False):  # type: ignore[override]
-        # flatten_mapping FIRST. It resolves `<<:` merge keys into real
-        # entries; scanning before it runs would hand `construct_object` a
-        # merge-tagged key, which has no constructor and raises. It is also
-        # what `SafeLoader.construct_mapping` does internally, so calling it
-        # here keeps the duplicate scan and the real construction looking at
-        # the same, already-flattened node.
-        self.flatten_mapping(node)
         seen: set = set()
         for key_node, _value_node in node.value:
+            # Skip `<<` itself: it is not an authored key, and constructing
+            # it raises (no constructor for the merge tag). Multiple merge
+            # keys in one mapping are legal PyYAML and stay legal here.
+            if key_node.tag == self._MERGE_TAG_V2:
+                continue
             key = self.construct_object(key_node, deep=deep)
             try:
                 duplicated = key in seen

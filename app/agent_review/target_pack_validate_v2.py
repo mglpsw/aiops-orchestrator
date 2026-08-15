@@ -115,6 +115,7 @@ VALIDATE_PROFILE_IDENTITY_MISMATCH_REASON_V2 = "target_pack_validate_profile_ide
 VALIDATE_PROFILE_NOT_TARGET_OWNED_REASON_V2 = "target_pack_validate_profile_not_in_target_owned_set"
 VALIDATE_RECEIPT_MAJOR_INCOMPATIBLE_REASON_V2 = "target_pack_validate_receipt_major_incompatible"
 VALIDATE_TARGET_OWNED_SET_UNEXPECTED_REASON_V2 = "target_pack_validate_target_owned_set_unexpected"
+VALIDATE_GENERATED_FILES_UNSUPPORTED_REASON_V2 = "target_pack_validate_generated_files_unsupported"
 
 # The rollout ceiling THIS pack version can actually deliver. `validate` is
 # target-only by design (no `--toolrepo-root`), so it cannot read a live
@@ -144,6 +145,7 @@ PROFILE_IDENTITY_CHECK_V2 = "profile_identity"
 ROOT_IDENTITY_CHECK_V2 = "root_identity"
 TARGET_OWNED_CHECK_V2 = "target_owned"
 ROLLOUT_CEILING_CHECK_V2 = "rollout_ceiling"
+GENERATED_FILES_CHECK_V2 = "generated_files"
 COMPATIBILITY_CHECK_V2 = "compatibility"
 TRUSTED_CHECK_INVENTORY_CHECK_V2 = "trusted_check_inventory"
 
@@ -242,6 +244,7 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
         checks.append(_target_owned_check_v2(target_root_real, receipt, profile_bytes))
         checks.append(_rollout_ceiling_check_v2(receipt))
         checks.append(_compatibility_check_v2(receipt))
+        checks.append(_generated_files_check_v2(receipt))
 
     checks.append(_trusted_check_inventory_check_v2())
     return ValidateReportV2(target_root=str(target_root), checks=tuple(checks))
@@ -389,6 +392,21 @@ def _root_identity_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
     if receipt.portable_target_root_identity == expected:
         return ValidateCheckV2(ROOT_IDENTITY_CHECK_V2, STATUS_PASS_V2)
     return ValidateCheckV2(ROOT_IDENTITY_CHECK_V2, STATUS_FAIL_V2, VALIDATE_ROOT_IDENTITY_MISMATCH_REASON_V2)
+
+
+def _generated_files_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
+    """This pack version ships zero `UPSTREAM_GENERATED` entries and its
+    canonical writer emits `{}`, so a non-empty claim describes an install
+    the writer cannot produce (PR #235 review round 5). Refused now rather
+    than accepted unverified; the slice that actually ships generated files
+    replaces this with byte verification.
+    """
+
+    if not receipt.generated_file_hashes:
+        return ValidateCheckV2(GENERATED_FILES_CHECK_V2, STATUS_PASS_V2)
+    return ValidateCheckV2(
+        GENERATED_FILES_CHECK_V2, STATUS_FAIL_V2, VALIDATE_GENERATED_FILES_UNSUPPORTED_REASON_V2
+    )
 
 
 def _compatibility_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
