@@ -72,7 +72,16 @@ _YAML_MERGE_TAG_V2 = "tag:yaml.org,2002:merge"
 # Parse failures that target-authored YAML may legitimately produce. NOT
 # `Exception`: an internal programmer error must not be relabelled as
 # invalid target input.
-_YAML_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (yaml.YAMLError, RecursionError)
+_YAML_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (
+    yaml.YAMLError,
+    RecursionError,
+    # PyYAML's SCALAR constructors raise bare `ValueError` for
+    # target-triggerable input -- `!!int nope`, `!!float nope`, an
+    # out-of-range `!!timestamp`, an integer past the interpreter's digit
+    # limit. None of those is a `YAMLError`, so all four escaped this
+    # contract as tracebacks despite the totality tests.
+    ValueError,
+)
 
 
 _UNCOMPARABLE_KEY_V2 = object()
@@ -173,11 +182,28 @@ def _first_ambiguous_key_v2(loader: yaml.SafeLoader, root: yaml.Node) -> str | N
 
         constructed_keys: list[object] = []
         projected_keys: set[str] = set()
+        merge_keys_seen = 0
         for key_node, value_node in node.value:
             stack.append(value_node)
             if key_node.tag == _YAML_MERGE_TAG_V2:
                 # `<<` is not a key of this mapping; its source is scanned
                 # on its own terms via `value_node` above.
+                #
+                # But at most ONE may be authored. YAML 1.1 permits a
+                # single merge key, whose value may be a SEQUENCE of
+                # sources; PyYAML tolerates several separate `<<` keys and
+                # resolves them differently from the sequence spelling:
+                #
+                #     {<<: [*a, *b]}      -> first source wins
+                #     {<<: *a, <<: *b}    -> last declaration wins
+                #
+                # So a mapping with two authored `<<` means different
+                # things to two conforming readers -- the same ambiguity
+                # class this authority exists to refuse, which skipping
+                # merge keys unconditionally let through.
+                merge_keys_seen += 1
+                if merge_keys_seen > 1:
+                    return "<<"
                 continue
 
             key = _constructed_key_v2(loader, key_node)
@@ -222,16 +248,20 @@ def _parse_unambiguous_yaml_v2(raw_text: str) -> object:
 
     loader = yaml.SafeLoader(raw_text)
     try:
-        node = loader.get_single_node()
-        if node is None:
-            raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
-        if _first_ambiguous_key_v2(loader, node) is not None:
-            raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
-        return loader.construct_document(node)
-    except _YAML_PARSE_FAILURES_V2 as exc:
-        raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
+        # The typed refusal is raised AFTER this block, never inside it.
+        # `TargetProfileLoadErrorV2` is itself a `ValueError`, and the
+        # boundary now catches `ValueError` -- raising it here would let
+        # the handler swallow its own typed refusal and relabel it.
+        try:
+            node = loader.get_single_node()
+            ambiguous = node is None or _first_ambiguous_key_v2(loader, node) is not None
+            if not ambiguous:
+                return loader.construct_document(node)
+        except _YAML_PARSE_FAILURES_V2 as exc:
+            raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
     finally:
         loader.dispose()
+    raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
 
 
 def load_target_profile_text_v2(raw_text: str) -> TargetProfileV2:

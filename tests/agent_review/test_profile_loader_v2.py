@@ -473,3 +473,92 @@ def test_the_validation_round_trip_cannot_manufacture_a_duplicate_key_document()
     # been produced -- json.dumps really does collapse the two keys.
     collapsed = _json.dumps({"1": "a", 1: "b"})
     assert collapsed.count('"1"') == 2, collapsed
+
+
+_SCALAR_CONSTRUCTOR_FAILURE_CORPUS = [
+    ("bad_int_tag", "identity: {repo: !!int nope}"),
+    ("bad_float_tag", "identity: {repo: !!float nope}"),
+    ("out_of_range_timestamp", "identity: {repo: !!timestamp 9999-99-99}"),
+    ("integer_past_digit_limit", "identity: {repo: " + "9" * 5000 + "}"),
+]
+
+
+@pytest.mark.parametrize(
+    "label,text",
+    _SCALAR_CONSTRUCTOR_FAILURE_CORPUS,
+    ids=[c[0] for c in _SCALAR_CONSTRUCTOR_FAILURE_CORPUS],
+)
+def test_family_scalar_constructor_failures_are_reason_coded(label: str, text: str) -> None:
+    """PyYAML's scalar constructors raise BARE `ValueError`, not `YAMLError`.
+
+    Four target-triggerable inputs escaped the typed contract as
+    tracebacks while the earlier totality corpus passed, because that
+    corpus only exercised structural malformation. The boundary is a
+    property of the exception SET, so it is asserted over a corpus that
+    reaches a different PyYAML code path."""
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2, label
+
+
+def test_a_typed_refusal_is_never_relabelled_by_its_own_boundary() -> None:
+    """`TargetProfileLoadErrorV2` IS a `ValueError`, and the boundary now
+    catches `ValueError`. Raising the refusal inside the guarded block
+    would let the handler swallow and re-wrap it -- losing nothing today,
+    but turning any future distinct reason code into `unreadable`. The
+    refusal is therefore raised outside the block, and this pins it."""
+    from app.agent_review.profile_loader_v2 import (
+        TARGET_PROFILE_UNREADABLE_REASON_V2 as UNREADABLE,
+        _parse_unambiguous_yaml_v2,
+    )
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        _parse_unambiguous_yaml_v2("identity:\n  repo: a\n  repo: b\n")
+    assert excinfo.value.reason_code == UNREADABLE
+    # A relabelled refusal would carry the original as __cause__.
+    assert not isinstance(excinfo.value.__cause__, TargetProfileLoadErrorV2)
+
+
+_MERGE_CARDINALITY_CORPUS = [
+    ("two_merge_keys_complementary", "r: &r {repo: a/b}\nd: &d {default_branch: main}\nidentity:\n  <<: *r\n  <<: *d\n"),
+    ("two_merge_keys_overlapping", "a: &a {k: 1}\nb: &b {k: 2}\nc:\n  <<: *a\n  <<: *b\n"),
+    ("three_merge_keys", "a: &a {p: 1}\nb: &b {q: 2}\nc: &c {r: 3}\nd:\n  <<: *a\n  <<: *b\n  <<: *c\n"),
+]
+
+
+@pytest.mark.parametrize(
+    "label,text", _MERGE_CARDINALITY_CORPUS, ids=[c[0] for c in _MERGE_CARDINALITY_CORPUS]
+)
+def test_family_a_mapping_may_author_at_most_one_merge_key(label: str, text: str) -> None:
+    """Two authored `<<` keys are ambiguous across conforming readers.
+
+    YAML 1.1 permits ONE merge key whose value may be a sequence of
+    sources. PyYAML tolerates several and resolves them differently from
+    the sequence spelling -- `{<<: [*a, *b]}` takes the FIRST source's
+    value, `{<<: *a, <<: *b}` takes the LAST declaration's. Same intent,
+    two spellings, opposite results: exactly the same-bytes ambiguity the
+    authority refuses everywhere else.
+
+    Skipping merge keys unconditionally -- correct for "a merge key is not
+    an authored key" -- silently also skipped counting them."""
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2, label
+
+
+def test_the_sequence_spelling_of_multiple_merge_sources_stays_legal() -> None:
+    """Negative control: ONE `<<` whose value is a sequence is the legal,
+    unambiguous way to merge several sources, and must not be refused."""
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    text = "a: &a {p: 1}\nb: &b {q: 2}\nc: {<<: [*a, *b], r: 3}\n"
+    assert yaml.safe_load(text)["c"] == {"p": 1, "q": 2, "r": 3}
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_INVALID_REASON_V2, (
+        "the sequence spelling was rejected at the YAML layer; legal merge semantics regressed"
+    )

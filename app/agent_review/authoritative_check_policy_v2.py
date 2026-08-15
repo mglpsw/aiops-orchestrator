@@ -373,10 +373,19 @@ def load_authoritative_check_policy_v2(
 
     try:
         raw = yaml.load(raw_bytes.decode("utf-8"), Loader=_DuplicateKeyRejectingLoaderV2)
-    except (yaml.YAMLError, UnicodeDecodeError, RecursionError) as exc:
-        # RecursionError: deeply nested target-authored YAML. Listed so the
-        # boundary is total for the input classes this document can carry,
-        # not widened one exception at a time as they are reported.
+    except (yaml.YAMLError, UnicodeDecodeError, RecursionError, ValueError) as exc:
+        # RecursionError: deeply nested target-authored YAML.
+        # ValueError: PyYAML's SCALAR constructors raise it bare for
+        # target-triggerable input (`!!int nope`, out-of-range
+        # `!!timestamp`, an integer past the interpreter's digit limit).
+        # Listed together so the boundary is total for the input classes
+        # this document can carry, rather than widened one exception at a
+        # time as each is reported.
+        #
+        # Safe to catch `ValueError` here even though
+        # `AuthoritativeCheckPolicyErrorV2` is one: this block guards only
+        # `yaml.load`, and the typed refusal is raised in the handler, so
+        # it can never swallow its own error.
         raise AuthoritativeCheckPolicyErrorV2(POLICY_UNREADABLE_REASON_V2) from exc
 
     if not isinstance(raw, dict):
