@@ -299,7 +299,37 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
 
     checks: list[ValidateCheckV2] = []
 
-    if not target_root.is_dir():
+    # CLASS 4, FOURTH SCOPING -- resolve BEFORE deciding, so the root
+    # status and every subsequent read come from ONE resolution.
+    #
+    # This check used to run `target_root.is_dir()` and only afterwards
+    # resolve the root. A root removed between those two calls produced a
+    # report carrying `target_root: pass` alongside failing receipt/profile
+    # checks -- so `_report_says_target_root_unusable_v2` (round 8) could
+    # not see the unreadable fixture, its failure satisfied an `ineligible`
+    # expectation, and a separate eligible cohort carried the matrix to
+    # conformant. Round 8 fixed WHO classifies; this fixes the check being
+    # classified, which was itself derived from a stale pre-read.
+    #
+    # Residual, stated rather than implied: `Path`-based APIs cannot make
+    # stat-then-read atomic, so a root removed AFTER this resolution still
+    # fails at the reads. What is closed is the inconsistent PAIR -- a
+    # passing root status that no read agrees with. Full atomicity needs
+    # directory-FD/openat semantics and is a separate decision.
+    try:
+        target_root_real = target_root.resolve(strict=False)
+    except (RuntimeError, OSError):
+        return ValidateReportV2(
+            target_root=str(target_root),
+            checks=(
+                ValidateCheckV2(
+                    TARGET_ROOT_CHECK_V2, STATUS_FAIL_V2, PLAN_PATH_RESOLUTION_FAILED_REASON_V2
+                ),
+                _trusted_check_inventory_check_v2(),
+            ),
+        )
+
+    if not target_root_real.is_dir():
         return ValidateReportV2(
             target_root=str(target_root),
             checks=(
@@ -311,7 +341,6 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
         )
 
     checks.append(ValidateCheckV2(TARGET_ROOT_CHECK_V2, STATUS_PASS_V2))
-    target_root_real = target_root.resolve(strict=False)
 
     # ONE SNAPSHOT, ONE DECISION: resolve `.aiops` exactly once and read
     # BOTH installation artifacts through it.
@@ -504,29 +533,26 @@ def _root_identity_check_v2(receipt: TargetInstallReceiptV2) -> ValidateCheckV2:
 
 # CLASS 1 + CLASS 5 -- CANONICAL RECEIPT CLAIMS.
 #
-# Derived MECHANICALLY from `target_pack_operation_v2._build_receipt_v2`,
-# the only canonical writer, rather than from a hand-kept list of
-# "unsupported fields". Two earlier rounds each fixed one field of this
-# family in isolation (`generated_file_hashes`, then
-# `target_policy_hash`/`review_pack_hashes` came back), which is why this
-# is now one rule over a declared table.
-#
 # The rule: a field the writer PINS to a constant may only ever hold that
 # constant. A receipt outside the writer's own output domain describes an
 # installation this pack version cannot produce, so validating it would
 # attest state that no writer ever created.
 #
-# Fields deliberately NOT listed:
-#   pack_version / toolrepo_sha / manifest_digest / required_capabilities
-#       -- writer copies them from the manifest; `validate` is target-only
-#          and has no manifest to compare against (that is `doctor`'s job).
-#   target_repo / portable_target_root_identity / target_profile_hash
-#       -- caller/content derived, already cross-checked elsewhere here.
-#   rollout_mode -- has its own ceiling check.
-#   previous_install_identity -- the writer legitimately emits EITHER a
-#       ref (when a previous receipt existed) or None, so both forms are
-#       canonical and neither may be refused. It is NOT unconstrained,
-#       though: see the relations table below.
+# This comment previously claimed the table was "derived MECHANICALLY"
+# from `target_pack_operation_v2._build_receipt_v2`. It was not -- it was
+# hand-transcribed, and four separate rounds (5, 6, 8, 9) each found one
+# more field missing from it: `generated_file_hashes`, then
+# `target_policy_hash`/`review_pack_hashes`, then the relational
+# `previous_install_identity`, then `generated_at` -- the last pinned by
+# OMISSION, which is the hardest kind to transcribe because the writer
+# never mentions it at all.
+#
+# The claim is now enforced instead of asserted:
+# `test_the_pinned_table_matches_the_real_writer` builds canonical
+# receipts with the REAL writer across two distinct installs, and any
+# field that does not vary between them must appear either here or in
+# `_INTENTIONALLY_UNPINNED_RECEIPT_FIELDS_V2` with a stated reason. A new
+# receipt field cannot silently default to unchecked.
 _WRITER_PINNED_RECEIPT_FIELDS_V2: tuple[tuple[str, object], ...] = (
     ("target_policy_hash", None),
     ("review_pack_hashes", {}),
@@ -536,7 +562,41 @@ _WRITER_PINNED_RECEIPT_FIELDS_V2: tuple[tuple[str, object], ...] = (
     ("expected_runner_labels", ()),
     ("required_secret_names", ()),
     ("compatibility", "compatible"),
+    # Pinned by OMISSION: `_build_receipt_v2` never supplies this, so the
+    # contract default is the only value the writer can produce. Round 9
+    # found it missing precisely because "the writer never mentions it"
+    # reads as "nothing to transcribe" -- and it is excluded from the hash
+    # preimage, so a tampered timestamp keeps a valid self-hash.
+    ("generated_at", None),
 )
+
+
+# Fields intentionally OUTSIDE the pinned table, each with the reason it
+# cannot be pinned. Declared rather than left implicit so that
+# `test_the_pinned_table_matches_the_real_writer` can prove the two sets
+# TOGETHER cover every receipt field: adding a field to the contract then
+# forces an explicit decision instead of silently defaulting to unchecked.
+#
+# This is what "derived mechanically from the writer" has to mean. Rounds
+# 5, 6, 8 and 9 each found one more field missing from a table whose
+# comment already claimed to be mechanically derived while actually being
+# hand-transcribed.
+_INTENTIONALLY_UNPINNED_RECEIPT_FIELDS_V2: dict[str, str] = {
+    "schema_id": "contract literal, enforced by the model itself",
+    "schema_version": "contract literal, enforced by the model itself",
+    "receipt_hash": "self-hash, validated by the contract's own model_validator",
+    "pack_version": "manifest-derived; validate is target-only (doctor's job)",
+    "toolrepo_sha": "manifest-derived; validate is target-only (doctor's job)",
+    "manifest_digest": "manifest-derived; validate is target-only (doctor's job)",
+    "required_capabilities": "manifest-derived; validate is target-only (doctor's job)",
+    "target_repo": "caller-supplied identity; cross-checked against the profile",
+    "portable_target_root_identity": "relation, enforced by _root_identity_check_v2",
+    "target_profile_hash": "content-derived, enforced by the profile-hash check",
+    "target_owned_file_hashes": "content-derived, enforced by the target-owned drift check",
+    "target_owned_paths": "relation, enforced by _WRITER_DERIVED_RECEIPT_RELATIONS_V2",
+    "previous_install_identity": "relation, enforced by _WRITER_DERIVED_RECEIPT_RELATIONS_V2",
+    "rollout_mode": "enforced by its own ceiling check",
+}
 
 
 # CLASS 1, SECOND CATEGORY -- WRITER-DERIVED RELATIONS.

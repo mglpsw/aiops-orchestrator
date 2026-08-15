@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import os
 import tempfile
 from pathlib import Path
@@ -809,6 +810,128 @@ def test_family_previous_install_reference_must_agree_with_the_current_receipt(
     _install(target_root, receipt=receipt, profile=_VALID_PROFILE_YAML)
     report = run_validate_v2(target_root=target_root)
     assert report.is_valid is False, f"{label} was accepted"
+    assert _check(report, "canonical_claims").status == STATUS_FAIL_V2
+
+
+def test_class4_root_removed_before_resolution_never_reports_target_root_pass(target_root, monkeypatch):
+    """Round 9, CLASS 4 fourth scoping.
+
+    `run_validate_v2` used to call `target_root.is_dir()` and only then
+    resolve the root. A root removed in that window produced a report
+    carrying `target_root: pass` beside failing receipt/profile checks --
+    an internally inconsistent verdict. Downstream that was worse than
+    cosmetic: conformance's round-8 classifier keys on the target-root
+    check, so it could not see the unreadable fixture, the failure
+    satisfied an `ineligible` expectation, and a separate eligible cohort
+    carried the matrix to conformant.
+
+    Resolution now happens FIRST and the status is derived from it, so a
+    passing root status cannot coexist with reads that found nothing.
+    """
+    _install(target_root, receipt=_receipt(), profile=_VALID_PROFILE_YAML)
+
+    real_resolve = Path.resolve
+    removed = {"done": False}
+
+    def remove_then_resolve(self, *args, **kwargs):
+        # The window the pre-fix ordering left open.
+        if not removed["done"] and self == target_root:
+            removed["done"] = True
+            shutil.rmtree(target_root, ignore_errors=True)
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", remove_then_resolve)
+
+    report = run_validate_v2(target_root=target_root)
+
+    root_check = _check(report, "target_root")
+    assert root_check.status == STATUS_FAIL_V2, (
+        "target_root reported non-failing for a root that no longer exists; "
+        f"checks={[(c.name, c.status, c.reason_code) for c in report.checks]}"
+    )
+    assert report.is_valid is False
+
+
+def _canonical_receipt_for(repo: str) -> TargetInstallReceiptV2:
+    """A receipt built by the REAL canonical writer, not by this file's
+    `_receipt` fixture. The point of the guard below is to compare the
+    tables against what actually gets written."""
+    from app.agent_review.target_pack_operation_v2 import (
+        TargetPackInstallIdentityV2,
+        _build_receipt_v2,
+    )
+
+    manifest = _manifest()
+    return _build_receipt_v2(
+        manifest=manifest,
+        identity=TargetPackInstallIdentityV2(
+            pack_version=manifest.pack_version,
+            toolrepo_sha=manifest.toolrepo_sha,
+            manifest_digest=compute_target_pack_manifest_digest_v2(manifest),
+            target_repo=repo,
+            portable_target_root_identity=compute_portable_target_root_identity_v2(target_repo=repo),
+        ),
+        rollout="off",
+        target_owned_file_hashes={_PROFILE_RELATIVE_PATH: _sha256(repo.encode("utf-8"))},
+        target_profile_hash=_sha256(repo.encode("utf-8")),
+        previous_receipt=None,
+    )
+
+
+def test_the_pinned_table_matches_the_real_writer():
+    """The mechanical guard the pinned table's comment used to only CLAIM.
+
+    Rounds 5, 6, 8 and 9 each found one more field missing from a
+    hand-transcribed table. This derives the answer from the real writer
+    instead: build canonical receipts for two DISTINCT installs, and any
+    field that does not vary between them is, by construction, one the
+    writer pins -- so it must be covered either by the pinned table or by
+    the explicit exclusions, with a stated reason.
+
+    `generated_at` is exactly the case transcription misses: the writer
+    never mentions it, so there is nothing to copy, yet the contract
+    default is the only value it can hold.
+    """
+    from app.agent_review.target_pack_validate_v2 import (
+        _INTENTIONALLY_UNPINNED_RECEIPT_FIELDS_V2,
+        _WRITER_PINNED_RECEIPT_FIELDS_V2,
+    )
+
+    first = _canonical_receipt_for("acme/alpha-service")
+    second = _canonical_receipt_for("globex/beta-platform")
+
+    invariant_fields = {
+        name
+        for name in type(first).model_fields
+        if getattr(first, name) == getattr(second, name)
+    }
+    accounted = {name for name, _ in _WRITER_PINNED_RECEIPT_FIELDS_V2} | set(
+        _INTENTIONALLY_UNPINNED_RECEIPT_FIELDS_V2
+    )
+
+    unaccounted = invariant_fields - accounted
+    assert not unaccounted, (
+        f"writer-invariant receipt fields absent from both tables: {sorted(unaccounted)}. "
+        "Pin them, or add them to _INTENTIONALLY_UNPINNED_RECEIPT_FIELDS_V2 with a reason."
+    )
+
+    # And nothing may be listed that is not a real field.
+    assert accounted <= set(type(first).model_fields), (
+        f"tables name fields the contract does not have: "
+        f"{sorted(accounted - set(type(first).model_fields))}"
+    )
+
+
+def test_a_tampered_generated_at_is_refused(target_root):
+    """The round-9 instance, kept as a behavioural test beside the guard.
+
+    `generated_at` is deliberately excluded from the canonical hash
+    preimage, so a tampered timestamp keeps a VALID self-hash -- the
+    receipt stays internally consistent while describing an install the
+    writer cannot emit."""
+    _install(target_root, receipt=_receipt(generated_at="2020-01-01T00:00:00Z"), profile=_VALID_PROFILE_YAML)
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
     assert _check(report, "canonical_claims").status == STATUS_FAIL_V2
 
 
