@@ -165,6 +165,21 @@ class ValidateReportV2:
     target_root: str
     checks: tuple[ValidateCheckV2, ...]
 
+    # CLASS 4, WIDENED -- the authored identity is carried OUT of the same
+    # snapshot the checks were computed from, rather than left for a
+    # caller to go read for itself.
+    #
+    # Round 7 showed the earlier statement of the rule ("read both
+    # installation artifacts through one snapshot") was scoped one level
+    # too narrow: it governed reads INSIDE this function while the new
+    # Class 3 distinctness property reopened the receipt afterwards. A
+    # receipt swapped between the two reads yields checks describing the
+    # old installation and an identity from its replacement. The rule is
+    # therefore: ONE SNAPSHOT PER CASE, spanning every read that feeds one
+    # decision -- so identity ships in the report and no consumer has a
+    # second read path to get it wrong with.
+    authored_target_identity: str | None = None
+
     @property
     def is_valid(self) -> bool:
         """No APPLICABLE check failed.
@@ -263,25 +278,13 @@ def _read_contained_bytes_v2(target_root_real: Path, relative_path: str, aiops_d
     return resolved.read_bytes()
 
 
-def authored_target_identity_v2(*, target_root: Path) -> str | None:
-    """`receipt.target_repo` for an installed target, or None if no
-    receipt parses.
-
-    Exposed for `target_pack_conformance_v2`'s distinct-identity property.
-    Deliberately routed through this module's own contained, total-parse
-    loaders so the conformance layer never opens a second, weaker read
-    path into a target.
-    """
-
-    if not target_root.is_dir():
-        return None
-    target_root_real = target_root.resolve(strict=False)
-    try:
-        aiops_dir: Path | None = _resolve_aiops_dir_v2(target_root_real)
-    except PlanError:
-        aiops_dir = None
-    receipt, _check = _load_receipt_v2(target_root_real, aiops_dir)
-    return None if receipt is None else receipt.target_repo
+# NOTE: there is deliberately no `authored_target_identity_v2(target_root)`
+# helper here. It existed, and it was the Class 3/4 recurrence found in
+# round 7: routing a SECOND read through this module's contained loaders
+# inherited containment and the parse boundary, but not the snapshot --
+# the receipt could be replaced between `run_validate_v2` and the identity
+# read. Identity now ships on `ValidateReportV2`, so there is no
+# target-root-taking entry point for a caller to reintroduce that gap.
 
 
 def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
@@ -344,7 +347,12 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
         checks.append(_canonical_claims_check_v2(receipt))
 
     checks.append(_trusted_check_inventory_check_v2())
-    return ValidateReportV2(target_root=str(target_root), checks=tuple(checks))
+    return ValidateReportV2(
+        target_root=str(target_root),
+        checks=tuple(checks),
+        # From the receipt THIS pass parsed -- never a re-read.
+        authored_target_identity=None if receipt is None else receipt.target_repo,
+    )
 
 
 def _trusted_check_inventory_check_v2() -> ValidateCheckV2:

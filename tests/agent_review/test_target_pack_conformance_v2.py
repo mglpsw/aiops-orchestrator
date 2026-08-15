@@ -628,3 +628,59 @@ def test_class3_distinct_authored_identities_do_prove_uniformity(two_targets):
     """Positive control: distinct roots AND distinct authored identities."""
     alpha, beta = two_targets
     assert run_conformance_v2(cases=(_eligible(alpha), _eligible(beta))).is_conformant is True
+
+
+def test_class4_identity_cannot_come_from_a_receipt_swapped_after_validation(tmp_path, monkeypatch):
+    """Round 7, Class 3/4 recurrence: the distinctness property used to
+    RE-READ the receipt after `run_validate_v2` returned.
+
+    Routing that second read through validate's own contained loaders
+    inherited containment and the parse boundary but NOT the snapshot, so
+    a receipt replaced in between produced checks describing installation
+    A and an identity taken from installation B. Two copies of ONE target
+    could then be made to look like two distinct identities and satisfy a
+    uniformity claim that compared nothing.
+
+    Simulates exactly that race: validation runs against `acme/same`, then
+    the receipt is swapped before the identity would have been read.
+    """
+    from app.agent_review import target_pack_conformance_v2 as conformance_module
+    from app.agent_review.target_pack_conformance_v2 import (
+        CONFORMANCE_SINGLE_AUTHORED_IDENTITY_REASON_V2,
+    )
+
+    a, b = tmp_path / "copy-a", tmp_path / "copy-b"
+    a.mkdir()
+    b.mkdir()
+    _materialize(a, "acme/same")
+    _materialize(b, "acme/same")
+
+    real_run_validate = conformance_module.run_validate_v2
+    swapped_in = {str(a.resolve()): "attacker/alpha", str(b.resolve()): "attacker/beta"}
+
+    def swap_receipt_after_validating(*, target_root):
+        report = real_run_validate(target_root=target_root)
+        replacement = swapped_in.get(str(Path(target_root).resolve()))
+        if replacement is not None:  # the window between the two reads
+            _materialize(Path(target_root), replacement)
+        return report
+
+    monkeypatch.setattr(conformance_module, "run_validate_v2", swap_receipt_after_validating)
+
+    report = run_conformance_v2(cases=(_eligible(a), _eligible(b)))
+
+    # Identity must describe what was VALIDATED, not what is on disk now.
+    assert [case.authored_identity for case in report.cases] == ["acme/same", "acme/same"]
+    assert report.is_conformant is False
+    assert CONFORMANCE_SINGLE_AUTHORED_IDENTITY_REASON_V2 in report.reason_codes
+
+
+def test_class4_no_target_root_taking_identity_entry_point_survives(tmp_path):
+    """Guards against reintroducing the second read path itself.
+
+    The round-7 defect was reachable only because an identity helper took
+    a `target_root` and went to disk on its own. Identity now ships on the
+    report, so no such entry point should exist to be called again."""
+    from app.agent_review import target_pack_validate_v2
+
+    assert not hasattr(target_pack_validate_v2, "authored_target_identity_v2")

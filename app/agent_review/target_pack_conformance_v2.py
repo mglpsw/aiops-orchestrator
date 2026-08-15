@@ -145,20 +145,6 @@ class ConformanceReportV2:
         )
 
 
-def _authored_identity_v2(resolved_root: Path) -> str | None:
-    """The `receipt.target_repo` this installation is bound to, or None if
-    no receipt parses.
-
-    Read through `validate`'s own contained loaders, so it inherits the
-    same containment and total-parse-boundary guarantees rather than
-    opening a second, weaker read path into the target.
-    """
-
-    from app.agent_review.target_pack_validate_v2 import authored_target_identity_v2
-
-    return authored_target_identity_v2(target_root=resolved_root)
-
-
 def _unreadable_report_v2(target_root: Path) -> ValidateReportV2:
     return ValidateReportV2(
         target_root=str(target_root),
@@ -247,7 +233,11 @@ def run_conformance_v2(*, cases: tuple[ConformanceCaseV2, ...]) -> ConformanceRe
             report = run_validate_v2(target_root=resolved_root)
             expected_valid = case.expectation is ConformanceExpectationV2.ELIGIBLE
             matched = report.is_valid == expected_valid
-            authored_identity = _authored_identity_v2(resolved_root)
+            # ONE SNAPSHOT PER CASE: the identity comes out of the report
+            # this validation produced, NOT from a second read of the same
+            # root. Re-reading would let a receipt swapped in between the
+            # two reads pair these checks with a different identity.
+            authored_identity = report.authored_target_identity
 
         results.append(
             ConformanceCaseResultV2(
