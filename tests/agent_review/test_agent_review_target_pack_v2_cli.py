@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CLI_PATH = REPO_ROOT / "scripts" / "agent-review-target-pack-v2.py"
 
@@ -786,6 +788,43 @@ def test_conformance_refuses_a_matrix_with_duplicate_keys(tmp_path: Path) -> Non
     result = _run(["conformance", "--matrix", str(matrix)])
     assert result.returncode == 2
     assert "target_pack_conformance_matrix_unreadable" in result.stderr
+
+
+_MALFORMED_MATRIX_CORPUS = [
+    ("deep_nesting", "[" * 200000),
+    ("duplicate_keys", '{"cases": [], "cases": []}'),
+    ("not_json", "{not json"),
+    ("wrong_shape", '["a", "list", "not", "an", "object"]'),
+    ("empty", ""),
+    ("bare_scalar", "42"),
+    ("null_cases", '{"cases": null}'),
+]
+
+
+@pytest.mark.parametrize(
+    "label,payload", _MALFORMED_MATRIX_CORPUS, ids=[c[0] for c in _MALFORMED_MATRIX_CORPUS]
+)
+def test_family_malformed_matrix_never_produces_a_traceback(
+    tmp_path: Path, label: str, payload: str
+) -> None:
+    """The conformance matrix is target-authored input, so it is subject to
+    the same total parse boundary as the receipt and the profile.
+
+    The receipt boundary was widened four times, once per exception a
+    reviewer happened to name; the matrix is the third parse site of the
+    same class and is asserted as a family here so it cannot repeat that
+    history. The contract is uniform across the corpus: exit 2, a reason
+    code, and never a traceback -- not a specific reason per payload."""
+
+    matrix = tmp_path / "matrix.json"
+    matrix.write_text(payload, encoding="utf-8")
+    result = _run(["conformance", "--matrix", str(matrix)])
+    assert result.returncode == 2, f"{label} did not reach the invalid-input exit"
+    assert "Traceback" not in result.stderr, f"{label} escaped as an unhandled exception"
+    assert (
+        "target_pack_conformance_matrix_unreadable" in result.stderr
+        or "target_pack_conformance_matrix_invalid" in result.stderr
+    ), f"{label} produced no matrix reason code"
 
 
 def _two_real_targets(tmp_path: Path) -> tuple[Path, Path]:
