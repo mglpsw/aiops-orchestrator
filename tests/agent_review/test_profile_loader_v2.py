@@ -631,3 +631,66 @@ def test_the_boundary_covers_the_FILE_layer_not_only_the_text_layer(tmp_path: Pa
     with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
         load_target_profile_v2(root)
     assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2
+
+
+def test_a_non_scalar_key_that_constructs_to_a_string_is_still_a_duplicate() -> None:
+    """Comparability is decided by the CONSTRUCTED value, never the node.
+
+    The scan used to skip any non-`ScalarNode` key, on the assumption that
+    a complex key is unhashable and PyYAML would refuse it anyway. An
+    explicitly tagged node constructs to whatever its tag says, so
+    `? !!str {=: repo}` yields the ordinary hashable string `repo` -- and
+    the collision with a plain `repo:` was skipped on sight of the node
+    type."""
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    text = "identity:\n  ? !!str {=: repo}\n  : attacker/evil\n  repo: acme/svc\n"
+    assert yaml.safe_load(text)["identity"] == {"repo": "acme/svc"}, "one key survives construction"
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2
+
+
+def test_a_genuinely_unhashable_key_is_still_refused_by_the_loader() -> None:
+    """Negative control for the same change: constructing every key must
+    not turn an unhashable key into a crash. It stays PyYAML's own typed
+    refusal."""
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    with pytest.raises(TargetProfileLoadErrorV2):
+        load_target_profile_text_v2("? [a, b]\n: value\n")
+
+
+def test_duplicate_scanning_is_not_quadratic_in_the_number_of_keys() -> None:
+    """Target-authored input must not control superlinear work.
+
+    The scan runs BEFORE schema validation can reject extra fields, so a
+    large mapping of unique keys was scanned with LINEAR membership per
+    key.
+
+    Asserted as a growth RATIO, and deliberately at sizes where the
+    quadratic term dominates. A first version of this test used 400->3200
+    keys and did NOT discriminate: at that scale PyYAML's own O(n) parse
+    cost swamps the membership cost, and the defective implementation
+    passed. Measured separation at these sizes is 8.0x (set) versus 28.7x
+    (list), so the threshold below fails on the CURVE rather than on a
+    slow runner.
+    """
+    import time
+
+    from app.agent_review.profile_loader_v2 import _parse_unambiguous_yaml_v2
+
+    def elapsed(n: int) -> float:
+        document = "identity:\n" + "".join(f"  k{i}: v\n" for i in range(n))
+        start = time.perf_counter()
+        try:
+            _parse_unambiguous_yaml_v2(document)
+        except TargetProfileLoadErrorV2:
+            pass
+        return time.perf_counter() - start
+
+    elapsed(500)  # warm up interpreter/caches
+    small, large = elapsed(2500), elapsed(20000)
+    ratio = large / small
+    assert ratio < 15, f"scan grew {ratio:.1f}x for 8x keys; linear membership suspected"

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Hashable
 from pathlib import Path
 
 import yaml
@@ -120,15 +121,33 @@ def _constructed_key_v2(loader: yaml.SafeLoader, key_node: yaml.Node) -> object:
     constructed mapping, which is exactly the "same bytes, two readings"
     condition this loader exists to refuse.
 
-    Only SCALAR keys are constructed: a complex key is unhashable, so
-    PyYAML's own constructor refuses it with a `ConstructorError` this
-    module already normalises. Construction is cached on the loader and
-    reused by `construct_document`, so this adds no second reading.
+    EVERY key is constructed, not only scalars. Skipping non-scalar nodes
+    assumed "complex key implies unhashable, so PyYAML refuses it anyway".
+    That is false: an explicitly tagged node constructs to whatever its
+    tag says, so
+
+        ? !!str {=: repo}
+        : attacker/evil
+        repo: acme/svc
+
+    yields the ordinary hashable string key `repo` twice, and the earlier
+    scan skipped the first one on sight of its node type. What decides
+    comparability is the CONSTRUCTED value's hashability -- the same
+    property the consumed mapping uses -- never the node's shape.
+
+    Construction is cached on the loader and reused by
+    `construct_document`, so this adds no second reading.
     """
 
-    if not isinstance(key_node, yaml.ScalarNode):
+    try:
+        key = loader.construct_object(key_node, deep=True)
+    except _YAML_PARSE_FAILURES_V2:
+        # Unconstructible key: PyYAML refuses the document downstream with
+        # its own typed error, which this module normalises.
         return _UNCOMPARABLE_KEY_V2
-    return loader.construct_object(key_node, deep=False)
+    if not isinstance(key, Hashable):
+        return _UNCOMPARABLE_KEY_V2
+    return key
 
 
 def _json_projected_key_v2(key: object) -> str | None:
@@ -202,7 +221,12 @@ def _first_ambiguous_key_v2(loader: yaml.SafeLoader, root: yaml.Node) -> str | N
         if not isinstance(node, yaml.MappingNode):
             continue
 
-        constructed_keys: list[object] = []
+        # A SET, not a list. Membership on a list is linear, so a mapping
+        # of n unique keys cost O(n^2) to scan -- and the scan runs BEFORE
+        # schema validation can reject the extra fields, so target-authored
+        # input controlled the work. Measured 10.8ms -> 128.6ms from 200 to
+        # 1600 keys before this change.
+        constructed_keys: set[object] = set()
         projected_keys: set[str] = set()
         merge_keys_seen = 0
         for key_node, value_node in node.value:
@@ -231,15 +255,9 @@ def _first_ambiguous_key_v2(loader: yaml.SafeLoader, root: yaml.Node) -> str | N
             key = _constructed_key_v2(loader, key_node)
             if key is _UNCOMPARABLE_KEY_V2:
                 continue
-            try:
-                already_present = key in constructed_keys
-            except TypeError:
-                # Unhashable/uncomparable constructed key: SafeLoader
-                # refuses it downstream with its own typed error.
-                continue
-            if already_present:
+            if key in constructed_keys:
                 return str(key_node.value)
-            constructed_keys.append(key)
+            constructed_keys.add(key)
 
             projected = _json_projected_key_v2(key)
             if projected is None:
