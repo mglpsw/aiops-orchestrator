@@ -247,3 +247,175 @@ def test_policy_hash_changes_independently_of_unrelated_profile_fields(tmp_path:
     _write_profile(different_root, different_policy)
     changed_policy = load_target_profile_v2(different_root)
     assert compute_policy_hash_v2(changed_policy) != compute_policy_hash_v2(baseline)
+
+
+# ===========================================================================
+# PR-A: ONE strict semantics for target-authored profile YAML
+#
+# Duplicate detection runs over the COMPOSED NODE GRAPH, before construction
+# and before `flatten_mapping` splices merge sources into their parents.
+# Doing it during construction is what made the earlier attempt depth-
+# sensitive: PyYAML drains deferred constructors breadth-first, so a
+# shallower node could flatten an anchor in place before the anchor's own
+# mapping was ever constructed.
+# ===========================================================================
+
+
+def _valid_profile_yaml(**identity: str) -> str:
+    import json as _json
+
+    data = _profile_dict()
+    if identity:
+        data["identity"] = {"repo": identity["repo"], "default_branch": "main"}
+    return _json.dumps(data)
+
+
+_DUPLICATE_KEY_CORPUS = [
+    ("plain_duplicate", "identity:\n  repo: a/b\n  default_branch: main\n  repo: attacker/evil\n"),
+    ("duplicate_inside_inline_merge_source", "identity:\n  <<: {repo: a/b, repo: attacker/evil}\n"),
+    ("duplicate_in_anchored_merge_source", "src: &s {repo: a/b, repo: attacker/evil}\nidentity:\n  <<: *s\n"),
+    ("duplicate_at_top_level", "schema_version: 2\nschema_version: 3\n"),
+    ("duplicate_nested_in_sequence", "artifacts:\n  - {artifact_id: a, artifact_id: b}\n"),
+]
+
+
+@pytest.mark.parametrize(
+    "label,text", _DUPLICATE_KEY_CORPUS, ids=[c[0] for c in _DUPLICATE_KEY_CORPUS]
+)
+def test_family_duplicate_keys_are_refused_wherever_they_appear(label: str, text: str) -> None:
+    """A duplicated key makes the document ambiguous: `yaml.safe_load`
+    resolves it last-wins, so the SAME bytes mean different things to a
+    first-wins reader or a human auditor. Since this loader also backs the
+    writer, an ambiguous profile would mint a receipt and a
+    `target_profile_hash` for one of two readings.
+
+    `duplicate_inside_inline_merge_source` is the case a construction-time
+    scan misses entirely: the merge key is skipped before the constructor
+    ever descends into the source mapping.
+    """
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2, label
+
+
+# Positive corpus: every form below is legal YAML that `yaml.safe_load`
+# accepts, and NONE of it may be refused. A merge OVERRIDE is not a
+# duplicate -- `<<` supplies defaults that the mapping's own key replaces.
+_LEGAL_MERGE_CORPUS = [
+    ("plain_anchor_no_merge", "a: &x {t: 30}\nb: *x\n"),
+    ("simple_merge", "a: &x {t: 30}\nb: {<<: *x}\n"),
+    ("merge_override_same_depth", "a: &x {t: 30}\nb: {<<: *x, t: 60}\n"),
+    ("nested_anchor_merged_shallower", "base: &b {t: 30}\nouter: {inner: &m {<<: *b, t: 60}}\nd: {<<: *m}\n"),
+    ("multiple_merge_sources", "a: &x {p: 1}\nb: &y {q: 2}\nc: {<<: [*x, *y], r: 3}\n"),
+    ("merge_chain_with_overrides", "a: &x {t: 1}\nb: &y {<<: *x, t: 2}\nc: {<<: *y, t: 3}\n"),
+    ("repeated_alias_same_anchor", "a: &x {t: 1}\nb: *x\nc: *x\nd: {<<: *x}\n"),
+]
+
+
+@pytest.mark.parametrize(
+    "label,text", _LEGAL_MERGE_CORPUS, ids=[c[0] for c in _LEGAL_MERGE_CORPUS]
+)
+def test_family_legal_anchor_and_merge_forms_are_never_refused_as_unreadable(
+    label: str, text: str
+) -> None:
+    """Regression guard for the whole anchor/merge surface.
+
+    These documents are not valid `TargetProfileV2` instances, so they must
+    fail at the CONTRACT layer (`invalid`) -- never at the YAML layer
+    (`unreadable`). Any duplicate-detection strategy that rejects one of
+    these has broken YAML semantics rather than tightened them, and this
+    loader is shared by every profile reader AND the writer.
+    """
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    assert yaml.safe_load(text) is not None, f"{label} must be legal YAML to begin with"
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_INVALID_REASON_V2, (
+        f"{label} was rejected at the YAML layer; legal merge semantics regressed"
+    )
+
+
+def test_a_real_profile_using_merge_overrides_still_loads() -> None:
+    """End-to-end positive control: a genuinely VALID profile authored with
+    an anchor and a merge override must load, validate, and actually
+    inherit the merged fields."""
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    text = """
+schema_id: agent-review.target-profile.v2
+schema_version: 2
+source: repo-profile
+identity: {repo: acme/svc, default_branch: main}
+artifacts:
+  - &art_defaults
+    artifact_id: full-diff
+    path: artifacts/full.diff
+    kind: diff
+    required: true
+    max_bytes: 1000000
+  - <<: *art_defaults
+    artifact_id: second
+    path: artifacts/second.diff
+budgets:
+  max_chunks: 16
+  total_prompt_chars: 250000
+  max_chars_per_chunk: 24000
+  max_files_per_chunk: 50
+  max_contracts_per_chunk: 50
+must_review: {paths: [], patterns: [], artifact_ids: [], minimum_coverage: complete}
+policies:
+  network_policy: forbidden
+  fail_closed: true
+  redaction_required: true
+  allow_partial_coverage: false
+  required_checks: [pytest]
+  allowed_semantic_groups: [primary_backend_logic]
+  coverage_failure_state: manual_required
+  model_uncertainty_state: manual_required
+contracts: []
+limitations: []
+"""
+    profile = load_target_profile_text_v2(text)
+    assert [a.artifact_id for a in profile.artifacts] == ["full-diff", "second"]
+    # The merge really supplied the inherited fields, and the mapping's own
+    # keys really overrode the merged ones.
+    assert profile.artifacts[1].max_bytes == 1000000
+    assert profile.artifacts[1].path == "artifacts/second.diff"
+
+
+_MALFORMED_YAML_CORPUS = [
+    ("explicit_map_tag_on_sequence", "identity: !!map [1, 2]"),
+    ("explicit_map_tag_on_scalar", "identity: !!map foo"),
+    ("explicit_set_tag", "identity: !!set [a, b]"),
+    ("unhashable_key", "? [a, b]\n: value"),
+    ("not_yaml_at_all", "identity: [unclosed"),
+    ("empty_document", ""),
+    ("bare_scalar_document", "42"),
+]
+
+
+@pytest.mark.parametrize(
+    "label,text", _MALFORMED_YAML_CORPUS, ids=[c[0] for c in _MALFORMED_YAML_CORPUS]
+)
+def test_family_malformed_profile_yaml_is_reason_coded_never_a_raw_exception(
+    label: str, text: str
+) -> None:
+    """Target-authored YAML must never escape as an untyped exception.
+
+    An explicitly tagged non-mapping node is the case that broke a
+    construction-time override: it unpacked `node.value` as key/value pairs
+    before PyYAML's own `isinstance(node, MappingNode)` guard could run, so
+    a raw `TypeError`/`ValueError` escaped past every caller's
+    `TargetProfileLoadErrorV2` boundary and reached the CLI as a traceback.
+    """
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code in {
+        TARGET_PROFILE_UNREADABLE_REASON_V2,
+        TARGET_PROFILE_INVALID_REASON_V2,
+    }, label

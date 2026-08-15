@@ -221,3 +221,88 @@ def test_a_malicious_receipt_document_never_reaches_pydantic_construction_incomp
     # A ValidationError from model_validate_json means no instance was ever
     # constructed -- there is no partially-built receipt to inspect.
     assert "target_owned" in str(exc_info.value) or "path" in str(exc_info.value).lower()
+
+
+# ===========================================================================
+# PR-A: ONE strict semantics for target-authored receipt JSON
+#
+# `init`, `doctor` (and any future reader) must agree about which receipt
+# BYTES are well-formed. They previously each called
+# `model_validate_json` directly, which delegates duplicate-key handling to
+# the JSON parser -- silently last-wins -- so one ambiguous document could
+# be simultaneously refused by one reader and trusted by another.
+# ===========================================================================
+
+
+def _receipt_json_bytes(receipt: TargetInstallReceiptV2) -> bytes:
+    import json as _json
+
+    return (_json.dumps(receipt.model_dump(mode="json"), sort_keys=True, indent=2) + "\n").encode("utf-8")
+
+
+def test_the_shared_authority_accepts_a_canonical_receipt() -> None:
+    """Positive control: the authority must not be stricter than the
+    canonical writer's own output."""
+    from app.agent_review.target_pack_receipt_v2 import load_target_install_receipt_bytes_v2
+
+    original = _valid_receipt()
+    parsed = load_target_install_receipt_bytes_v2(_receipt_json_bytes(original))
+    assert parsed == original
+
+
+def test_a_duplicated_receipt_key_is_refused_even_though_the_self_hash_stays_valid() -> None:
+    """The dangerous shape: duplicating a key leaves valid JSON, and the
+    self-hash is computed from the PARSED model, so `receipt_hash` still
+    verifies. Only rejecting the ambiguity itself catches it -- and a
+    first-wins reader or a human auditor would see `9.9.9`.
+    """
+    from app.agent_review.target_pack_receipt_v2 import (
+        TargetInstallReceiptLoadErrorV2,
+        load_target_install_receipt_bytes_v2,
+    )
+
+    raw = _receipt_json_bytes(_valid_receipt()).decode("utf-8")
+    ambiguous = raw.replace('"pack_version":', '"pack_version": "9.9.9",\n  "pack_version":', 1)
+    import json as _json
+
+    assert _json.loads(ambiguous)["pack_version"] != "9.9.9", "last-wins must still parse as JSON"
+
+    with pytest.raises(TargetInstallReceiptLoadErrorV2):
+        load_target_install_receipt_bytes_v2(ambiguous.encode("utf-8"))
+
+
+_MALFORMED_RECEIPT_CORPUS = [
+    ("deep_nesting", b"[" * 200_000),
+    ("not_json", b"{not json"),
+    ("wrong_shape", b'["a", "list"]'),
+    ("empty", b""),
+    ("bare_scalar", b"42"),
+    ("non_finite", b'{"pack_version": NaN}'),
+    ("invalid_utf8", b'{"pack_version": "\xff\xfe"}'),
+]
+
+
+@pytest.mark.parametrize(
+    "label,payload", _MALFORMED_RECEIPT_CORPUS, ids=[c[0] for c in _MALFORMED_RECEIPT_CORPUS]
+)
+def test_family_malformed_receipt_bytes_are_reason_coded_never_raw(label: str, payload: bytes) -> None:
+    """Target-authored bytes must never escape the authority as an untyped
+    exception. Asserted as a family so the boundary cannot be widened one
+    exception type at a time, which is how the earlier attempt drifted."""
+    from app.agent_review.target_pack_receipt_v2 import (
+        TargetInstallReceiptLoadErrorV2,
+        load_target_install_receipt_bytes_v2,
+    )
+
+    with pytest.raises(TargetInstallReceiptLoadErrorV2) as excinfo:
+        load_target_install_receipt_bytes_v2(payload)
+    assert excinfo.value.reason_code, label
+
+
+def test_the_authority_error_is_a_valueerror_so_existing_callers_still_fail_closed() -> None:
+    """Both current readers catch `(OSError, ValidationError, ValueError)`.
+    Keeping the typed error a `ValueError` subclass means adopting the
+    authority cannot silently turn a handled refusal into a traceback."""
+    from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptLoadErrorV2
+
+    assert issubclass(TargetInstallReceiptLoadErrorV2, ValueError)

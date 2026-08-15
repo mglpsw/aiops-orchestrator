@@ -78,6 +78,7 @@ from app.agent_review.target_pack_receipt_v2 import (
     RECEIPT_RELATIVE_PATH_V2,
     TargetInstallReceiptV2,
     compute_portable_target_root_identity_v2,
+    load_target_install_receipt_bytes_v2,
 )
 from pydantic import ValidationError
 
@@ -292,8 +293,11 @@ def _check_receipt_v2(
     if not receipt_path.is_file():
         return ReceiptCheckV2(status="missing", receipt=None, reason_code="target_pack_receipt_missing")
     try:
-        raw = receipt_path.read_text(encoding="utf-8")
-        receipt = TargetInstallReceiptV2.model_validate_json(raw)
+        # THE shared authority -- never `model_validate_json` directly.
+        # Reading the receipt through a private parse is what let `doctor`
+        # call a duplicated-key receipt healthy while `init` acted on a
+        # different reading of the same bytes.
+        receipt = load_target_install_receipt_bytes_v2(receipt_path.read_bytes())
     except (OSError, ValidationError, ValueError):
         return ReceiptCheckV2(status="invalid", receipt=None, reason_code="target_pack_receipt_invalid")
 
