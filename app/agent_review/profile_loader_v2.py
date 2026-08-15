@@ -32,6 +32,36 @@ TARGET_PROFILE_INVALID_REASON_V2 = "target_profile_invalid"
 DEFAULT_TARGET_PROFILE_RELATIVE_PATH = Path(".aiops") / "target-profile.v2.yaml"
 
 
+def _construct_mapping_rejecting_duplicates_v2(loader: yaml.SafeLoader, node: yaml.Node, deep: bool = False):
+    """Refuse a YAML mapping with a repeated key instead of silently
+    keeping the last one. Same construction as
+    `authoritative_check_policy_v2`'s loader; kept local rather than
+    imported so this module keeps no dependency on the authorization
+    surface."""
+
+    mapping: dict = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+class _DuplicateKeyRejectingProfileLoaderV2(yaml.SafeLoader):
+    """`yaml.SafeLoader`, except every mapping refuses a duplicate key."""
+
+
+_DuplicateKeyRejectingProfileLoaderV2.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_rejecting_duplicates_v2
+)
+
+
 class TargetProfileLoadErrorV2(ValueError):
     """Raised for every profile-loading failure. Carries a stable
     ``reason_code`` only -- never raw YAML/JSON content, the original
@@ -77,7 +107,21 @@ def load_target_profile_text_v2(raw_text: str) -> TargetProfileV2:
     """
 
     try:
-        raw = yaml.safe_load(raw_text)
+        # Duplicate-key rejection, not `yaml.safe_load` (PR #235 review
+        # round 3, confirmed): PyYAML silently keeps the LAST of a repeated
+        # mapping key, so a profile declaring `identity.repo` twice parsed
+        # clean -- and because the reconciliation writer uses this same
+        # loader, it could mint a self-consistent receipt and raw-byte hash
+        # for the ambiguous document. Another YAML implementation, or a
+        # human auditor, reading the same bytes could see a different
+        # identity than the one that was validated and recorded. Fixed in
+        # the SHARED loader deliberately: putting it only in `validate`
+        # would let the writer and the validator disagree about which
+        # documents are well-formed, the exact drift class this slice
+        # already had to fix once for the seed-identity placeholder.
+        # Mirrors `authoritative_check_policy_v2`'s own precedent for
+        # authorization YAML.
+        raw = yaml.load(raw_text, Loader=_DuplicateKeyRejectingProfileLoaderV2)
     except yaml.YAMLError as exc:
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
 

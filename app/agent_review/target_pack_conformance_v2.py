@@ -64,6 +64,7 @@ CONFORMANCE_NON_UNIFORM_SHAPE_REASON_V2 = "target_pack_conformance_non_uniform_c
 CONFORMANCE_NO_COMPARABLE_COHORT_REASON_V2 = "target_pack_conformance_no_comparable_cohort"
 CONFORMANCE_DUPLICATE_CASE_ID_REASON_V2 = "target_pack_conformance_duplicate_case_id"
 CONFORMANCE_INVALID_CASE_ID_REASON_V2 = "target_pack_conformance_invalid_case_id"
+CONFORMANCE_TARGET_ROOT_UNRESOLVABLE_REASON_V2 = "target_pack_conformance_target_root_unresolvable"
 
 # A conformance claim proven against a single target is not a conformance
 # claim -- "the same pack works everywhere" needs at least two somewheres.
@@ -168,8 +169,27 @@ def run_conformance_v2(*, cases: tuple[ConformanceCaseV2, ...]) -> ConformanceRe
     # target while satisfying a claim that requires two. Compared by
     # resolved path so two spellings of one directory cannot masquerade as
     # two targets either.
-    resolved_roots = [case.target_root.resolve(strict=False) for case in cases]
-    if len(set(resolved_roots)) < MINIMUM_CONFORMANCE_CASES_V2:
+    # Resolution itself can fail: `Path.resolve(strict=False)` raises
+    # RuntimeError on a symlink cycle (PR #235 review round 3, confirmed),
+    # and this ran eagerly before any per-case handling -- so a
+    # target-authored matrix produced a traceback instead of the promised
+    # reason-coded result. Normalised into a matrix-level refusal.
+    resolved_roots: list[Path] = []
+    for case in cases:
+        try:
+            resolved_roots.append(case.target_root.resolve(strict=False))
+        except (RuntimeError, OSError):
+            return ConformanceReportV2(
+                cases=(), reason_codes=(CONFORMANCE_TARGET_ROOT_UNRESOLVABLE_REASON_V2,)
+            )
+
+    # EVERY case root must be distinct, not merely "at least two distinct
+    # roots overall" (PR #235 review round 3, confirmed -- the third
+    # consecutive round to find a gap in this same guarantee). A matrix of
+    # {A eligible, A eligible, B ineligible} passed a set-size floor AND
+    # produced a two-member cohort, but that cohort compared A with itself,
+    # so uniformity across distinct targets was still never tested.
+    if len(set(resolved_roots)) != len(resolved_roots):
         return ConformanceReportV2(cases=(), reason_codes=(CONFORMANCE_DUPLICATE_TARGET_ROOT_REASON_V2,))
 
     # Case ids must be unique, non-empty strings (PR #235 review round 2,

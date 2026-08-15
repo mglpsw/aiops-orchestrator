@@ -564,3 +564,23 @@ def test_major_incompatible_receipt_fails_closed(target_root):
 def test_compatible_receipt_passes_the_compatibility_check(target_root):
     _install(target_root, receipt=_receipt(compatibility="compatible"), profile=_VALID_PROFILE_YAML)
     assert _check(run_validate_v2(target_root=target_root), "compatibility").status == STATUS_PASS_V2
+
+
+def test_profile_with_duplicate_yaml_keys_is_refused(target_root):
+    """T3: `yaml.safe_load` silently keeps the LAST of a duplicated mapping
+    key, so a profile declaring `repo` twice parsed clean -- and because the
+    reconciliation writer uses the same loader, it could mint a
+    self-consistent receipt and raw-byte hash for the ambiguous document.
+    Another YAML implementation, or an auditor, could read a different
+    identity from the same bytes."""
+    duplicated = _VALID_PROFILE_YAML.replace(
+        "  repo: owner/repo", "  repo: attacker/other\n  repo: owner/repo"
+    )
+    _install(
+        target_root,
+        receipt=_receipt(target_owned_file_hashes={_PROFILE_RELATIVE_PATH: _sha256(duplicated.encode("utf-8"))}),
+        profile=duplicated,
+    )
+    report = run_validate_v2(target_root=target_root)
+    assert report.is_valid is False
+    assert _check(report, "profile").reason_code == VALIDATE_PROFILE_INVALID_REASON_V2

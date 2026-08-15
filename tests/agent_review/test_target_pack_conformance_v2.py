@@ -516,3 +516,58 @@ def test_case_ids_must_be_unique_nonempty_strings():
         import shutil
 
         shutil.rmtree(base, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# PR #235 adversarial review round 3
+# ---------------------------------------------------------------------------
+
+
+def test_every_case_root_must_be_unique_not_merely_two_distinct(tmp_path):
+    """T1, the third consecutive round to find a gap in the uniformity
+    guarantee. Round 2 required "at least two distinct roots overall" and a
+    cohort of >= 2 cases -- but a matrix of {A eligible, A eligible, B
+    ineligible} satisfies both while the only comparable cohort compares A
+    with ITSELF. Uniqueness must be per-case, not a set-size floor."""
+    from app.agent_review.target_pack_conformance_v2 import CONFORMANCE_DUPLICATE_TARGET_ROOT_REASON_V2
+
+    alpha, beta = tmp_path / "alpha", tmp_path / "beta"
+    alpha.mkdir()
+    beta.mkdir()
+    _materialize(alpha, "acme/alpha")
+    _materialize(beta, "globex/beta")
+    (beta / RECEIPT_RELATIVE_PATH_V2).unlink()
+
+    report = run_conformance_v2(
+        cases=(
+            ConformanceCaseV2("one", alpha, ConformanceExpectationV2.ELIGIBLE),
+            ConformanceCaseV2("two", alpha, ConformanceExpectationV2.ELIGIBLE),
+            ConformanceCaseV2("three", beta, ConformanceExpectationV2.INELIGIBLE),
+        )
+    )
+    assert report.is_conformant is False
+    assert CONFORMANCE_DUPLICATE_TARGET_ROOT_REASON_V2 in report.reason_codes
+
+
+def test_symlink_cycle_root_is_a_reason_coded_failure_not_a_traceback(tmp_path):
+    """T2: `Path.resolve(strict=False)` raises RuntimeError on a symlink
+    cycle, and that ran in an eager comprehension before any per-case
+    handling -- so a target-authored matrix produced a traceback instead of
+    the promised reason-coded result."""
+    from app.agent_review.target_pack_conformance_v2 import CONFORMANCE_TARGET_ROOT_UNRESOLVABLE_REASON_V2
+
+    ok = tmp_path / "ok"
+    ok.mkdir()
+    _materialize(ok, "acme/ok")
+    loop_a, loop_b = tmp_path / "loop-a", tmp_path / "loop-b"
+    loop_a.symlink_to(loop_b)
+    loop_b.symlink_to(loop_a)
+
+    report = run_conformance_v2(
+        cases=(
+            ConformanceCaseV2("loop", loop_a, ConformanceExpectationV2.INELIGIBLE),
+            ConformanceCaseV2("ok", ok, ConformanceExpectationV2.ELIGIBLE),
+        )
+    )
+    assert report.is_conformant is False
+    assert CONFORMANCE_TARGET_ROOT_UNRESOLVABLE_REASON_V2 in report.reason_codes
