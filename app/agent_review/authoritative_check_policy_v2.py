@@ -53,6 +53,7 @@ which is the failure mode this whole slice exists to remove.
 from __future__ import annotations
 
 import json
+from collections.abc import Hashable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -107,9 +108,18 @@ def _construct_mapping_rejecting_duplicates_v2(loader: yaml.SafeLoader, node: ya
     `verifier_identity` -- and end up validating a producer this loader did
     not."""
 
+    if not isinstance(node, yaml.MappingNode):
+        raise yaml.constructor.ConstructorError(
+            None, None, f"expected a mapping node, but found {node.id}", node.start_mark
+        )
+
     mapping: dict = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
+        if not isinstance(key, Hashable):
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark, "found unhashable key", key_node.start_mark
+            )
         if key in mapping:
             raise yaml.constructor.ConstructorError(
                 "while constructing a mapping",
@@ -341,7 +351,8 @@ def load_authoritative_check_policy_v2(
 
     try:
         raw = yaml.load(raw_bytes.decode("utf-8"), Loader=_DuplicateKeyRejectingLoaderV2)
-    except (yaml.YAMLError, UnicodeDecodeError) as exc:
+    except (yaml.YAMLError, UnicodeDecodeError, RecursionError, ValueError, KeyError,
+            IndexError, AttributeError, TypeError) as exc:
         raise AuthoritativeCheckPolicyErrorV2(POLICY_UNREADABLE_REASON_V2) from exc
 
     if not isinstance(raw, dict):

@@ -61,7 +61,10 @@ from app.agent_review.target_pack_plan_v2 import (  # noqa: E402
     PlanError,
     validate_rollout_within_pack_capability_v2,
 )
-from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2  # noqa: E402
+from app.agent_review.target_pack_receipt_v2 import (  # noqa: E402
+    TargetInstallReceiptV2,
+    load_target_install_receipt_bytes_v2,
+)
 from pydantic import ValidationError  # noqa: E402
 
 CLI_INPUT_INVALID_REASON_V2 = "target_pack_cli_input_invalid"
@@ -152,7 +155,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
     previous_receipt = None
     if receipt_path.is_file():
         try:
-            previous_receipt = TargetInstallReceiptV2.model_validate_json(receipt_path.read_text(encoding="utf-8"))
+            # THE shared authority -- see target_pack_receipt_v2.
+            previous_receipt = load_target_install_receipt_bytes_v2(receipt_path.read_bytes())
         except (OSError, ValidationError, ValueError):
             print(f"error: {CLI_PREVIOUS_RECEIPT_INVALID_REASON_V2}", file=sys.stderr)
             return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
