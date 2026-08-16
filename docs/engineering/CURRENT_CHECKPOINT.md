@@ -1,26 +1,62 @@
 # CURRENT CHECKPOINT — AIOps/AgentReview
 
 **Status:** `CANONICAL | CURRENT`
-**Corte temporal:** 2026-08-14 (America/Sao_Paulo)
+**Corte temporal:** 2026-08-16 (America/Sao_Paulo)
 **Classe:** estado observado; revalidar HEAD, runs e issues antes de qualquer ação.
 
 Este documento é importado pelo `CLAUDE.md` do repositório, portanto entra no
 contexto de toda sessão de agente. Ele descreve o estado observado no corte, não
 concede autoridade e não substitui consulta viva ao forge.
 
-## Identidade viva observada
+## Identidade — âncora vs. HEAD vivo
+
+Este documento não pode conter de forma estável o próprio SHA resultante do
+commit que o contém: publicar essa afirmação dentro do commit que a produz a
+torna obsoleta no instante do merge — exatamente o defeito que `70ba4e3`
+(`#234`) cometeu ao ancorar o checkpoint na sua própria base e deixá-lo
+desatualizado. Três identidades são mantidas deliberadamente separadas:
+
+```yaml
+state_anchor:
+  implementation_anchor:
+    sha: 0cdb9615637e3e0563d5caa9ef58b25c01c68fdb
+    source: "PR #239 squash merge"
+    meaning: >-
+      estado congelado do repositório contendo a implementação já descrita
+      abaixo (institucionalização de #238: ADR, postmortem, preflight,
+      corpus executável) — não uma alegação de HEAD vivo atual.
+
+  release_baseline:
+    version: v0.22.0
+    sha: 2ce1f45768b8779cb48ef8a302d4ed796349f0e5
+    published: 2026-08-12
+    immutable: true
+
+  checkpoint_document:
+    identity: containing_commit
+    role: documentation_only
+    excluded_from_implementation_anchor: true
+    note: >-
+      o commit que introduz esta revisão do documento é doc-only e
+      deliberadamente não é adicionado à tabela de delta como se fosse parte
+      da implementação que a tabela descreve.
+
+  live_master:
+    source_of_truth: GitHub
+    hardcoded_sha: false
+    instruction: >-
+      revalidar via forge antes de qualquer ação; nunca assumir este
+      documento como HEAD atual.
+```
 
 - Repositório canônico: [`mglpsw/aiops-orchestrator`](https://github.com/mglpsw/aiops-orchestrator)
 - Branch padrão: `master`
-- HEAD observado: `abe034ad24c89e6167c1f05797178e57d49fdd63`
-  (squash merge de PR #233 — H1-C, fecha C9 na fronteira de autoridade
-  runtime do executor de trusted checks v2).
-- Última release publicada: `v0.22.0` → `2ce1f45768b8779cb48ef8a302d4ed796349f0e5`,
-  final, imutável, publicada em 2026-08-12.
-- `master` está **11 commits à frente** da `v0.22.0`. Esse delta é **unreleased**.
 - AgentReview é subsistema deste repositório, não repositório separado.
 
-### Delta unreleased (`v0.22.0..master`)
+### Delta unreleased observado até o `implementation_anchor` (`v0.22.0@2ce1f457..0cdb961`)
+
+No estado-âncora acima, o intervalo `v0.22.0..<implementation_anchor>` contém
+**14 commits**. Esse delta é **unreleased**.
 
 | Commit | Escopo | Issue/PR |
 |---|---|---|
@@ -35,16 +71,24 @@ concede autoridade e não substitui consulta viva ao forge.
 | `fdf89f7` | **docs** — reconciliação de verdade documental do repositório (estado canônico, navegação, separação v1/v2); diff exclusivamente `.md` | `#229` |
 | `ffa3040` | **v1** — H1-B: fecha C5 (canonical path identity nos joins de contexto), C6 (projeção do brief minimum-budget), C7 (dedupe parity, P3), C8 (bloco binário não é hunk textual) e C10 (fallback não declara cobertura completa) | `#205`/H1-B / PR #231 |
 | `abe034a` | v2 — H1-C: fecha C9 (fronteira runtime de `authority`; annotation Pydantic é inerte em parâmetro de função comum) | `#205`/H1-C / PR #233 |
+| `70ba4e3` | **docs** — refresh do checkpoint após fechamento H1 (`README.md`, `docs/PROJECT_STATUS.md`, `docs/engineering/CURRENT_CHECKPOINT.md`); diff exclusivamente `.md`; âncora deixada em `abe034a`, tornando-se stale — o defeito que este próprio documento agora corrige | `#234` |
+| `6d613cf` | v2 — deriva ambiguidade YAML de `TargetProfile` do próprio parser stock, substituindo a autoridade anterior (`#235`→`#236` superseded); introduz `_CollisionRefusingSafeLoaderV2` | `#203-S2` PR-A / PR #237 |
+| `0cdb961` | **v2, superfície de teste/docs apenas** — institucionaliza as lições de `#237` em ADR normativo, postmortem, Structural Change Preflight reutilizável e corpus de regressão executável (49 casos, 8 rounds de review adversarial exact-HEAD, 25 achados P2 fechados); zero mudança em `app/**` ou `schemas/**`, verificado por identidade de byte | `#238` / PR #239 |
 
-Classificação de superfície dos 11 commits: **sete** tocam exclusivamente
-superfície v2 (`8654272`, `7500966`, `5a1677f`, `79c7b2f`, `7284528`,
-`7a6c659`, `abe034a`); `8b20ae3` toca v2 **e** um módulo CAEM/shared
-compartilhado (`app/common/strict_json.py`, `app/caem_consumer/f0.py`) — os
-testes de equivalência visam preservar comportamento, mas isso permanece uma
-superfície não-v2 tocada, não apenas v2; **dois** tocam exclusivamente
-superfície v1 sem tocar nenhum arquivo v2 (`da5a03b`, `ffa3040` — este último
-também atualiza `docs/AGENT_REVIEW_ENGINE.md` para acompanhar a mudança de
-comportamento de C10); `fdf89f7` é `.md`-only.
+Classificação de superfície dos 14 commits: **oito** tocam superfície de
+código de produção v2 exclusivamente (`8654272`, `7500966`, `5a1677f`,
+`79c7b2f`, `7284528`, `7a6c659`, `abe034a`, `6d613cf`); `8b20ae3` toca v2
+**e** um módulo CAEM/shared compartilhado (`app/common/strict_json.py`,
+`app/caem_consumer/f0.py`) — os testes de equivalência visam preservar
+comportamento, mas isso permanece uma superfície não-v2 tocada, não apenas
+v2; **dois** tocam exclusivamente superfície v1 sem tocar nenhum arquivo v2
+(`da5a03b`, `ffa3040` — este último também atualiza
+`docs/AGENT_REVIEW_ENGINE.md` para acompanhar a mudança de comportamento de
+C10); **dois** são `.md`-only (`fdf89f7`, `70ba4e3`); **um** (`0cdb961`) é
+v2 de teste/documentação apenas — fixtures (`CORPUS.json`, `.yamlcase`),
+módulos pytest sob `tests/agent_review/`, ADR/postmortem/preflight e
+`CHANGELOG.md` — sem tocar `app/**` ou `schemas/**`; não é agrupado com os
+dois `.md`-only porque inclui fixtures e código de teste, não apenas prosa.
 
 ### Dívida pós-merge do checkpoint `#205` (C1-C10)
 
@@ -73,7 +117,9 @@ issue_232:
 `#232` foi levantada durante o review adversarial da H1-B (arquivo sem hunk
 textual e fora de `must_review_files` ainda conta como coberto). A correção
 tentada mostrou blast radius além do escopo H1-B e foi revertida
-deliberadamente; ver a própria `#232` para o caminho proposto.
+deliberadamente; ver a própria `#232` para o caminho proposto. Não
+revalidada além do estado `OPEN` neste corte — nenhum commit do delta acima
+toca essa superfície.
 
 ## Estado de referência
 
@@ -90,6 +136,18 @@ deliberadamente; ver a própria `#232` para o caminho proposto.
   cada um sob grant próprio. Dívida conhecida remanescente: `#232` (P2, deferida).
 - **AgentReview v2:** successor em desenvolvimento ativo. Não é GA, não é default,
   não é required check em nenhum target.
+- **AgentReview v2 — processo institucionalizado (`#238`, PR #239):** a sequência
+  PR-A de autoridade YAML de `TargetProfile` (`#235`→`#236` superseded→`#237`
+  shipped) está documentada em
+  [`docs/adr/ADR_AGENT_REVIEW_V2_TARGET_PROFILE_YAML_AUTHORITY.md`](../adr/ADR_AGENT_REVIEW_V2_TARGET_PROFILE_YAML_AUTHORITY.md)
+  e
+  [`docs/engineering/AGENT_REVIEW_V2_YAML_AUTHORITY_POSTMORTEM.md`](AGENT_REVIEW_V2_YAML_AUTHORITY_POSTMORTEM.md),
+  com corpus executável de regressão em
+  `tests/agent_review/fixtures/target_profile_yaml/`. O Structural Change
+  Preflight reutilizável que essa sequência motivou está em
+  [`docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md`](STRUCTURAL_CHANGE_PREFLIGHT.md)
+  e é a autoridade **exclusiva** de critérios/limiares STOP/REDESIGN —
+  `PROJECT_OVERLAY.md` aponta para ele sem duplicar.
 
 #### Issue aberta ≠ pré-requisito técnico não satisfeito
 
@@ -121,7 +179,9 @@ verdade.
   aconteceria. O `max_supported_rollout_mode` desta versão do pack é `off`:
   `shadow_minimal`/`shadow_full` são opções de interface recusadas antes de preview ou
   apply. `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback` permanecem
-  **não implementados**. `#203` é a próxima fronteira de implementação ativa.
+  **não implementados**. `#203` é a próxima fronteira de implementação ativa; o
+  trabalho de `#237`/`#239` fechou a autoridade de leitura YAML que `#203-S2` PR-A
+  precisava, mas `validate`/`conformance` (PR-B/PR-C) em si não avançaram neste corte.
 - **ProjectOps v1:** trilha separada de inteligência de CI, advisory e fail-safe; não
   revalidada neste corte.
 - análise por LLM é advisory; `review-quality-gate.json` / `ReviewReadinessV2` e a CI
@@ -139,7 +199,9 @@ v1  2ce1f45768b8779cb48ef8a302d4ed796349f0e5   (v0.22.0)  — lane operacional
 v2  273864eaa01dfb708a5a26d3756e16c6cd918a9f   (v0.21.0)  — shadow
 ```
 
-Repin é ação protegida e não foi executado neste corte.
+Repin é ação protegida e não foi executado neste corte; pins não
+revalidados diretamente no repositório alvo neste corte, herdados do
+checkpoint anterior.
 
 ## Estado vetorial
 
@@ -152,6 +214,17 @@ Repin é ação protegida e não foi executado neste corte.
 - `#232`: `open`, deferida deliberadamente, não bloqueia `#203`/`#204`;
 - implementação v2/target-pack: `in_progress`; core `#200`/`#201`/`#202`
   `CORE_COMPLETE` e suficiente para `#203`;
+- `#203-S2` PR-A (autoridade YAML de `TargetProfile`): `merged_unreleased`
+  (`6d613cf`, PR #237); PR-B (`validate`) e PR-C (`conformance`) **não
+  iniciados**;
+- `#238` (institucionalização das lições de PR-A): `OPEN` — implementação
+  entregue via PR #239 (squash `0cdb961`), 8 rounds de review adversarial
+  exact-HEAD, 25 achados P2 confirmados e fechados; a issue foi
+  auto-fechada pelo merge por um link de desenvolvimento independente do
+  texto `Refs #238` do corpo da PR, e reaberta manualmente
+  (`stateReason: REOPENED`); fecha somente quando este documento de
+  reconciliação de checkpoint for mergeado, sob grant separado — não por
+  este commit, que permanece Draft até decisão de merge própria;
 - `#199`/`#200`/`#201`/`#202`/`#203`/`#204`/`#205`: `open` — `#200`/`#201`/`#202`
   por adoção de target, `#203` por implementação genuinamente incompleta,
   `#204`/`#205` não iniciadas;
@@ -168,10 +241,18 @@ Repin é ação protegida e não foi executado neste corte.
 
 ## Próxima ação mínima
 
-Retomar a `#203` — completar o target pack instalável — sobre este `master`.
-Os pré-requisitos de core (`#200`/`#201`/`#202`) estão satisfeitos e a dívida
-C1-C10 está fechada; `#232` permanece aberta mas não bloqueia `#203`.
+A ação mínima imediata é o fechamento de `#238` pelo merge deste próprio
+documento de reconciliação de checkpoint, sob grant nominal específico —
+não concedido pela criação deste PR.
 
-Merge, tag, release, repin, canário, deploy, adoção de target e fechamento de
-`#221`/`#217`/`#199` permanecem retidos, cada um exigindo grant nominal. A
-disposição de `#232` é exigida antes do release candidate da `#205`.
+Após esse fechamento, retomar `#203` — completar o target pack instalável,
+começando por PR-B (`target validate`) sobre este `implementation_anchor`.
+Os pré-requisitos de core (`#200`/`#201`/`#202`) estão satisfeitos, a
+dívida C1-C10 está fechada, e a autoridade de leitura YAML que PR-B
+consome (`#237`) está institucionalizada (`#238`/PR #239); `#232`
+permanece aberta mas não bloqueia `#203`.
+
+Merge deste documento, tag, release, repin, canário, deploy, adoção de
+target e fechamento de `#221`/`#217`/`#199` permanecem retidos, cada um
+exigindo grant nominal. A disposição de `#232` é exigida antes do release
+candidate da `#205`.
