@@ -40,8 +40,9 @@ import json
 import re
 from typing import Literal, Mapping
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
+from app.common.strict_json import strict_json_loads
 from app.agent_review.contracts_v2 import (
     ContractV2Model,
     GitSha,
@@ -64,6 +65,35 @@ RECEIPT_RELATIVE_PATH_V2 = ".aiops/install-receipt.v2.json"
 RECEIPT_SECRET_NAME_LOOKS_LIKE_VALUE_REASON_V2 = "target_install_receipt_secret_name_looks_like_value"
 RECEIPT_HASH_MISMATCH_REASON_V2 = "target_install_receipt_hash_mismatch"
 RECEIPT_TARGET_OWNED_PATHS_MISMATCH_REASON_V2 = "target_install_receipt_target_owned_paths_mismatch"
+
+# ONE reason code, deliberately. Publishing a finer taxonomy would require
+# changing both readers, which is out of scope; a typed reason no caller
+# reads is a refactor, not a finding closed. The receipt is refused either
+# way, fail-closed.
+RECEIPT_INVALID_REASON_V2 = "target_install_receipt_invalid"
+
+
+class TargetInstallReceiptLoadErrorV2(ValueError):
+    """Every failure of the shared receipt-loading authority.
+
+    A `ValueError` because that is what a typed target-authored
+    parse-input failure IS -- not because the existing call sites happen to
+    catch `ValueError`. Designing the hierarchy around existing `except`
+    clauses is how an improvement lands invisible. Carries a stable
+    `reason_code` only, never raw receipt content or a local path."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+_RECEIPT_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (
+    ValidationError,
+    ValueError,
+    UnicodeDecodeError,
+    RecursionError,
+    TypeError,
+)
 
 # A NAME is short, identifier-shaped. Anything long, high-entropy, or
 # containing characters a real secret VALUE would (base64/hex runs well
@@ -207,6 +237,37 @@ def canonical_target_install_receipt_bytes_v2(receipt: TargetInstallReceiptV2) -
 
 def compute_target_install_receipt_hash_v2(receipt: TargetInstallReceiptV2) -> str:
     return hashlib.sha256(canonical_target_install_receipt_bytes_v2(receipt)).hexdigest()
+
+
+def load_target_install_receipt_bytes_v2(raw: bytes | str) -> TargetInstallReceiptV2:
+    """THE authority for turning target-authored receipt bytes into a
+    receipt. `init`, `doctor` and any future reader go through this.
+
+    Each reader previously called `model_validate_json` directly, which
+    delegates duplicate-key handling to the JSON parser and silently keeps
+    the LAST occurrence. Because `receipt_hash` is computed from the PARSED
+    model, a duplicated key leaves the self-hash valid -- so the same bytes
+    could be refused by one reader and trusted by another while a human
+    auditing the file saw a third thing.
+
+    `strict_json_loads` is a GATE whose result is discarded: the contract
+    is strict-mode and will not coerce JSON arrays into the declared
+    tuples, so `model_validate_json` remains the authoritative parse.
+
+    Known residual: those are two different JSON parsers and they do not
+    accept exactly the same language (`NaN`, lone surrogates), so
+    well-formed receipt bytes are currently their INTERSECTION, which is
+    stated nowhere as a contract.
+    """
+
+    try:
+        strict_json_loads(raw)
+    except _RECEIPT_PARSE_FAILURES_V2 as exc:
+        raise TargetInstallReceiptLoadErrorV2(RECEIPT_INVALID_REASON_V2) from exc
+    try:
+        return TargetInstallReceiptV2.model_validate_json(raw)
+    except _RECEIPT_PARSE_FAILURES_V2 as exc:
+        raise TargetInstallReceiptLoadErrorV2(RECEIPT_INVALID_REASON_V2) from exc
 
 
 def compute_portable_target_root_identity_v2(*, target_repo: str, root_relative_path: str = ".") -> str:

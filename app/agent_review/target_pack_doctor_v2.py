@@ -78,6 +78,7 @@ from app.agent_review.target_pack_receipt_v2 import (
     RECEIPT_RELATIVE_PATH_V2,
     TargetInstallReceiptV2,
     compute_portable_target_root_identity_v2,
+    load_target_install_receipt_bytes_v2,
 )
 from pydantic import ValidationError
 
@@ -193,8 +194,12 @@ def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
     if not resolved.is_file():
         return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_MISSING_REASON_V2)
     try:
+        # `UnicodeDecodeError` as well as `OSError`: `doctor` reads the
+        # profile itself, so the loader's own boundary does not protect it,
+        # and a target-authored file holding invalid UTF-8 fails in
+        # read_text's DECODE step -- a `ValueError`, not an `OSError`.
         raw_text = resolved.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_UNREADABLE_REASON_V2)
     try:
         profile = load_target_profile_text_v2(raw_text)
@@ -292,8 +297,8 @@ def _check_receipt_v2(
     if not receipt_path.is_file():
         return ReceiptCheckV2(status="missing", receipt=None, reason_code="target_pack_receipt_missing")
     try:
-        raw = receipt_path.read_text(encoding="utf-8")
-        receipt = TargetInstallReceiptV2.model_validate_json(raw)
+        # THE shared authority -- never `model_validate_json` directly.
+        receipt = load_target_install_receipt_bytes_v2(receipt_path.read_bytes())
     except (OSError, ValidationError, ValueError):
         return ReceiptCheckV2(status="invalid", receipt=None, reason_code="target_pack_receipt_invalid")
 
