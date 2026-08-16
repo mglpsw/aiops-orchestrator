@@ -263,24 +263,31 @@ issue_238:
 
 ## Próxima ação mínima
 
-A entrega técnica de `#238` está completa (PR #239 e PR #240, ambas já
-mergeadas). A disposição final da issue continua sendo uma ação de forge
-separada e deliberada, ainda não executada como tal — as transições
-automáticas de estado observadas até aqui (ver `issue_238` acima) não
-contam como essa ação controlada. Revalidar o estado vivo da issue no
-forge antes de assumir qualquer disposição; não assumir `OPEN` nem
-qualquer outro estado a partir deste documento.
+A entrega técnica de `#238` está completa (PR #239, PR #240 e esta própria
+reconciliação, todas já mergeadas ou em qualificação). O estado de `#238` é
+consultado no forge e **não é fixado neste documento** — nem como "ainda
+pendente", nem como "já concluído", já que qualquer uma das duas afirmações
+envelhece no exato momento em que a outra passa a valer:
 
-Quando essa disposição deliberada ocorrer, retomar `#203` — completar o
-target pack instalável, começando por PR-B (`target validate`).
-`implementation_anchor` (`0cdb961`) permanece a identidade **histórica**
-desta implementação, mas PR-B deve ramificar da `master` viva revalidada
-no forge no momento em que começar, não deste anchor congelado — pelo
-mesmo motivo pelo qual este documento evita se autorreferenciar. Os
-pré-requisitos de core (`#200`/`#201`/`#202`) estão satisfeitos, a dívida
-C1-C10 está fechada, e a autoridade de leitura YAML que PR-B consome
-(`#237`) está institucionalizada via `#238`; `#232` permanece aberta mas
-não bloqueia `#203`.
+- se a consulta viva indicar que `#238` **ainda não** está com disposição
+  final registrada, essa disposição permanece uma ação de forge separada,
+  deliberada, sujeita a grant nominal — as transições automáticas de
+  estado eventualmente observadas (ver `issue_238` acima) não contam como
+  essa ação controlada;
+- se a consulta viva indicar `#238` com disposição final registrada, o
+  blocker processual para `PR-B` está removido, e a próxima implementação
+  (`#203` — completar o target pack instalável, começando por PR-B/`target
+  validate`) só pode começar sob **novo grant**, ramificando da `master`
+  viva revalidada no momento em que começar.
+
+Em ambos os casos, `implementation_anchor` (`0cdb961`) permanece apenas a
+identidade **histórica** desta institucionalização — nunca uma base
+operacional para PR-B, pelo mesmo motivo pelo qual este documento evita se
+autorreferenciar. Os pré-requisitos de core (`#200`/`#201`/`#202`) estão
+satisfeitos, a dívida C1-C10 está fechada, e a autoridade de leitura YAML
+que PR-B consome (`#237`) está institucionalizada via `#238`; `#232`
+permanece aberta mas não bloqueia `#203` — fatos duráveis, independentes
+do estado de `#238`.
 
 Merges futuros de PRs que referenciam `#238` devem sanitizar título e
 corpo de squash contra referências de palavra-chave de fechamento de
@@ -289,7 +296,9 @@ o GitHub sintetizar a mensagem de squash a partir dos commits
 constituintes sem revisão prévia; esse foi exatamente o vetor das duas
 transições automáticas registradas acima.
 
-Fechamento deliberado da issue, tag, release, repin, canário, deploy,
-adoção de target e fechamento de `#221`/`#217`/`#199` permanecem retidos,
-cada um exigindo grant nominal. A disposição de `#232` é exigida antes do
-release candidate da `#205`.
+Enquanto o forge não reportar `#238` com disposição final registrada, essa
+disposição exige grant nominal próprio, distinto do grant de merge desta
+ou de qualquer PR anterior. Tag, release, repin, canário, deploy e adoção
+de target permanecem retidos incondicionalmente, cada um exigindo grant
+nominal; o mesmo vale para a disposição de `#221`/`#217`/`#199`. A
+disposição de `#232` é exigida antes do release candidate da `#205`.
