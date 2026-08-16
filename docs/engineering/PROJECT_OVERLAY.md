@@ -80,3 +80,9 @@ Review textual do modelo é advisory. `review-readiness` determinístico é a de
 ## AIOps semanal
 
 A coleta pode marcar janelas críticas, agregar métricas/logs sanitizados e gerar review periódico de bugs, gargalos e hipóteses. Recomendações devem incluir evidência, confiança, contra-hipóteses e próxima investigação. Ação corretiva abre fluxo separado com task contract e grant.
+
+## Mudança estrutural
+
+Mudanças estruturais devem responder [`STRUCTURAL_CHANGE_PREFLIGHT.md`](STRUCTURAL_CHANGE_PREFLIGHT.md) antes da implementação e registrar as respostas na PR.
+
+Os critérios, limiares e procedimento de `STOP/REDESIGN` são definidos exclusivamente nesse preflight e não são duplicados neste overlay.

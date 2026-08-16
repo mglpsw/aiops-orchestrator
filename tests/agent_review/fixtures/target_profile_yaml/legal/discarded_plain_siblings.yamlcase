@@ -1,0 +1,3 @@
+m:
+  ? !!str {=: identity, left: one, right: two}
+  : v

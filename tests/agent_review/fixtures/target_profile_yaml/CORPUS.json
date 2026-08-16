@@ -1,0 +1,749 @@
+[
+  {
+    "case_id": "aliases_repeated",
+    "classification": "legal",
+    "fixture_path": "legal/aliases_repeated.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "block_scalars",
+    "classification": "legal",
+    "fixture_path": "legal/block_scalars.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "discarded_plain_siblings",
+    "classification": "legal",
+    "fixture_path": "legal/discarded_plain_siblings.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236,
+      "review_round": 7,
+      "note": "walker began refusing this; safe counterexample"
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "empty_containers",
+    "classification": "legal",
+    "fixture_path": "legal/empty_containers.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "explicit_scalar_tags",
+    "classification": "legal",
+    "fixture_path": "legal/explicit_scalar_tags.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "legal_value_key_retagged",
+    "classification": "legal",
+    "fixture_path": "legal/legal_value_key_retagged.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236,
+      "review_round": 7,
+      "note": "walker began refusing this; safe counterexample"
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "nested_anchors",
+    "classification": "legal",
+    "fixture_path": "legal/nested_anchors.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "plain_profile_shape",
+    "classification": "legal",
+    "fixture_path": "legal/plain_profile_shape.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "sequence_of_mappings",
+    "classification": "legal",
+    "fixture_path": "legal/sequence_of_mappings.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "tagged_str_map_key",
+    "classification": "legal",
+    "fixture_path": "legal/tagged_str_map_key.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "unconsumed_int_sibling",
+    "classification": "legal",
+    "fixture_path": "legal/unconsumed_int_sibling.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": null,
+    "property_family": "stock_parity",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236,
+      "review_round": 7,
+      "note": "walker began refusing this; safe counterexample"
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "collapse_bool_spellings",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/collapse_bool_spellings.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "collapse_hex_dec",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/collapse_hex_dec.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "collapse_int_float",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/collapse_int_float.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "collapse_tilde_null",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/collapse_tilde_null.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "collapse_yes_true",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/collapse_yes_true.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "contextual_nested_value",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/contextual_nested_value.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "value_tag_multiple_candidates",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "duplicate_inside_key_mapping",
+    "classification": "malformed",
+    "fixture_path": "malformed/duplicate_inside_key_mapping.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236
+    },
+    "notes": "Reclassified from ambiguous/mapping_assignment_collision under round-3 review (#239): the outer complex key is tagged !!str but is a MappingNode with no `!!value`-tagged entry, so construct_scalar falls through to stock's own scalar check and raises ConstructorError -- verified via the __cause__ chain to NOT be AmbiguousProfileDocumentV2, and via direct mutation probing that neither collision point's guard accounts for the refusal. The nested duplicate `d` key is never reached; this case's disposition was always correct (refused, target_profile_unreadable), only its declared family/classification were wrong.",
+    "limitations": null
+  },
+  {
+    "case_id": "duplicate_nested_in_sequence",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/duplicate_nested_in_sequence.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "plain_duplicate_divergent",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/plain_duplicate_divergent.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": "collision_point_1",
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "plain_duplicate_same_value",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/plain_duplicate_same_value.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236,
+      "note": "deliberate strictness increase; round 7 A,B,A falsified result-comparison"
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "quoted_vs_plain",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/quoted_vs_plain.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "repeated_value_masking_aba",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/repeated_value_masking_aba.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236,
+      "review_round": 7,
+      "note": "P2 reproducer"
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "tagged_str_duplicate_value_key",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/tagged_str_duplicate_value_key.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "value_tag_multiple_candidates",
+    "mutation_target": "collision_point_2",
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "tagged_str_same_tag_distinct",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/tagged_str_same_tag_distinct.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "value_tag_multiple_candidates",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "type_collision_binary_vs_str",
+    "classification": "ambiguous",
+    "fixture_path": "ambiguous/type_collision_binary_vs_str.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "mapping_assignment_collision",
+    "mutation_target": null,
+    "origin": {
+      "pr": 236,
+      "review_round": 7,
+      "note": "P1 reproducer"
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "duplicate_merge_keys",
+    "classification": "invalid",
+    "fixture_path": "invalid/duplicate_merge_keys.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_invalid",
+    "property_family": "merge_key_unsupported",
+    "mutation_target": "merge_bypass",
+    "origin": {
+      "pr": 237
+    },
+    "notes": "mutation_target: bypassing the _document_uses_merge_v2 guard sends this case's two <<: pairs through stock flatten_mapping, which splices both merge sources' 'k' key into the mapping and re-triggers collision point 1 -- observed reason code flips target_profile_invalid -> target_profile_unreadable. Chosen over simple_merge/merge_sequence, whose post-bypass parse instead fails contract validation with the SAME reason-code string, which would mask the mutation.",
+    "limitations": null
+  },
+  {
+    "case_id": "inline_merge_source",
+    "classification": "invalid",
+    "fixture_path": "invalid/inline_merge_source.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_invalid",
+    "property_family": "merge_key_unsupported",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "manufactured_json_duplicate",
+    "classification": "invalid",
+    "fixture_path": "invalid/manufactured_json_duplicate.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_invalid",
+    "property_family": "contract_validation",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237,
+      "note": "round-7 self-discovered JSON round-trip duplicate manufacture"
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "merge_chain",
+    "classification": "invalid",
+    "fixture_path": "invalid/merge_chain.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_invalid",
+    "property_family": "merge_key_unsupported",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "merge_override",
+    "classification": "invalid",
+    "fixture_path": "invalid/merge_override.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_invalid",
+    "property_family": "merge_key_unsupported",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "merge_sequence",
+    "classification": "invalid",
+    "fixture_path": "invalid/merge_sequence.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_invalid",
+    "property_family": "merge_key_unsupported",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "nested_merge_shallower",
+    "classification": "invalid",
+    "fixture_path": "invalid/nested_merge_shallower.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_invalid",
+    "property_family": "merge_key_unsupported",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "recursive_alias_value",
+    "classification": "invalid",
+    "fixture_path": "invalid/recursive_alias_value.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_invalid",
+    "property_family": "contract_validation",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "simple_merge",
+    "classification": "invalid",
+    "fixture_path": "invalid/simple_merge.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_invalid",
+    "property_family": "merge_key_unsupported",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": "step-4 observation: bypassing the merge guard on this single-key-source case still parses without a residual collision and is refused only by unrelated contract validation, with the SAME reason-code string as the real disposition -- does not discriminate the merge-guard mutation; see duplicate_merge_keys.",
+    "limitations": null
+  },
+  {
+    "case_id": "bad_bool_tag",
+    "classification": "malformed",
+    "fixture_path": "malformed/bad_bool_tag.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "bad_int_tag",
+    "classification": "malformed",
+    "fixture_path": "malformed/bad_int_tag.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "bad_timestamp_tag",
+    "classification": "malformed",
+    "fixture_path": "malformed/bad_timestamp_tag.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "bare_scalar",
+    "classification": "malformed",
+    "fixture_path": "malformed/bare_scalar.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "non_mapping_document",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "bel_character",
+    "classification": "malformed",
+    "fixture_path": "malformed/bel_character.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "empty_document",
+    "classification": "malformed",
+    "fixture_path": "malformed/empty_document.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "non_mapping_document",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "empty_int_tag",
+    "classification": "malformed",
+    "fixture_path": "malformed/empty_int_tag.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "integer_past_digit_limit",
+    "classification": "malformed",
+    "fixture_path": "malformed/integer_past_digit_limit.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "lone_surrogate",
+    "classification": "malformed",
+    "fixture_path": "malformed/lone_surrogate.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "surrogatepass",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "mapping_shaped_timestamp",
+    "classification": "malformed",
+    "fixture_path": "malformed/mapping_shaped_timestamp.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "not_yaml",
+    "classification": "malformed",
+    "fixture_path": "malformed/not_yaml.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "nul_character",
+    "classification": "malformed",
+    "fixture_path": "malformed/nul_character.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "recursive_alias_key",
+    "classification": "malformed",
+    "fixture_path": "malformed/recursive_alias_key.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  },
+  {
+    "case_id": "unhashable_key",
+    "classification": "malformed",
+    "fixture_path": "malformed/unhashable_key.yamlcase",
+    "text_encoding": "utf-8",
+    "decode_errors": "strict",
+    "expected_reason_code": "target_profile_unreadable",
+    "property_family": "stock_parse_failure",
+    "mutation_target": null,
+    "origin": {
+      "pr": 237
+    },
+    "notes": null,
+    "limitations": null
+  }
+]

@@ -6,13 +6,21 @@ binding delivery (#83, `docs/AGENT_REVIEW_V2_BINDING.md`).
 ## Strict loader
 
 `app/agent_review/profile_loader_v2.py` (`load_target_profile_v2`) loads a
-target profile from `<repo_root>/.aiops/target-profile.v2.yaml` and fully
-revalidates it through `TargetProfileV2.model_validate_json(..., strict=True)`
--- never through JSON Schema alone, and never through a plain-dict
-`model_validate` call (which, unlike `model_validate_json`, allows Python-side
-enum-from-string coercion even under `strict=True`; this loader always
-round-trips through JSON text so strict mode is uniform for every nested
-field).
+target profile from `<repo_root>/.aiops/target-profile.v2.yaml`, reads it
+through a collision-observing YAML authority (below), then fully
+revalidates the result **directly** against `TargetProfileV2` via
+`TargetProfileV2.model_validate(raw)` -- never through JSON Schema alone,
+and never through a `json.dumps`/`model_validate_json` round-trip. A JSON
+round-trip would coerce non-string mapping keys to strings, which can
+manufacture a literal duplicate-key JSON document out of two Python keys
+that were never in collision -- a second, downstream key-resolution policy
+applied by the very step that exists to guarantee only one such policy
+ever runs. Direct `model_validate` and the removed round-trip were measured
+to agree on the shipped seed template (`templates/agentreview-v2-target-pack/
+target-profile.v2.yaml`) and four independent field-level variants of it
+before the round-trip was removed -- not on the YAML-authority corpus's
+`legal/` fixtures, which are deliberately minimal reading-level YAML
+fragments, not generally valid `TargetProfileV2` documents.
 
 Unlike v1's `repo_profile.load_repo_profile`, there is no silent
 degradation to a placeholder profile. Every failure raises
@@ -20,11 +28,55 @@ degradation to a placeholder profile. Every failure raises
 
 - `target_profile_missing` -- the file does not exist;
 - `target_profile_unreadable` -- the file exists but cannot be read, is not
-  valid YAML, or does not parse into a mapping;
-- `target_profile_invalid` -- the document parses, but fails full v2
-  schema/contract validation (unknown field, missing required field, type
-  coercion, a path outside the safe grammar, an empty `required_checks`
-  list, or an attempt to weaken a hard boundary).
+  valid UTF-8, is not valid YAML, does not parse into a mapping, or is
+  **ambiguous** (below);
+- `target_profile_invalid` -- the document reads to exactly one meaning but
+  fails full v2 schema/contract validation (unknown field, missing required
+  field, type coercion, a path outside the safe grammar, an empty
+  `required_checks` list, an attempt to weaken a hard boundary), or
+  **authors a YAML merge key** (below).
+
+### YAML ambiguity authority
+
+A target-authored profile is YAML the toolrepo does not control, so the
+loader must answer a question a generic parser does not: would **stock
+PyYAML itself** have silently selected between competing authored entries
+in these bytes? (The broader question — could *any* conforming reader have
+seen a different value — is what motivated the design, but is **not** what
+the mechanism delivers; see the ADR's known-limitations section on YAML
+1.1/1.2 scalar resolution.) The
+authority (`_CollisionRefusingSafeLoaderV2`) refuses at the exact point
+stock `yaml.SafeLoader` would otherwise pick silently among competing
+authored entries -- a duplicate key at mapping-assignment time, or more
+than one `!!value` candidate when a mapping is consumed as a scalar --
+instead of letting the ambiguity resolve and hoping the caller never
+notices. **A duplicate authored key is refused even when every occurrence
+carries the same value**: this authority never compares the values a
+document's readings would produce, so "this duplicate happens to be
+harmless" is not a distinction it draws.
+
+For a document that **reaches the reading** -- parseable, merge-free, and
+free of either collision -- the authority's reading is **value-identical**
+to stock `yaml.safe_load` on the same bytes: anchors, aliases, explicit
+tags, and block scalars all behave exactly as PyYAML documents them, and
+nothing in this authority re-derives PyYAML's own parsing rules. The
+qualifier is load-bearing, not hedging: a merge-carrying document is
+refused by the composition-level pre-pass (below) *before* any value is
+constructed, and malformed input produces no value at all, so for those
+two classes there is no reading for the equality to range over. Parity is
+also parity with **this** pinned PyYAML specifically -- see the ADR's
+known-limitations section on YAML 1.1/1.2 scalar resolution.
+
+**YAML merge keys (`<<:`) are not part of the accepted language.** A
+document containing `<<:` anywhere is refused with `target_profile_invalid`
+before the collision-observing reading ever runs, matching
+`app/agent_review/authoritative_check_policy_v2.py`, which has never
+supported `<<:` either.
+
+The normative decision and its rationale (including why an earlier
+node-graph-walking design was superseded) live in
+[`adr/ADR_AGENT_REVIEW_V2_TARGET_PROFILE_YAML_AUTHORITY.md`](adr/ADR_AGENT_REVIEW_V2_TARGET_PROFILE_YAML_AUTHORITY.md);
+this section describes only the resulting consumer-visible behaviour.
 
 ### Hard boundaries a target cannot weaken
 

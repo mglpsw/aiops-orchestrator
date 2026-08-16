@@ -1,0 +1,3 @@
+base: &b {t: 30}
+outer: {inner: &m {<<: *b, t: 60}}
+d: {<<: *m}
