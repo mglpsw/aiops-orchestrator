@@ -1,0 +1,3 @@
+m:
+  ? !!str {=: repo, =: default_branch}
+  : v

@@ -1,0 +1,2 @@
+identity:
+  <<: {repo: a/b, repo: evil}

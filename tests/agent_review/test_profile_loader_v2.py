@@ -10,10 +10,14 @@ from app.agent_review.profile_loader_v2 import (
     TARGET_PROFILE_MISSING_REASON_V2,
     TARGET_PROFILE_UNREADABLE_REASON_V2,
     TargetProfileLoadErrorV2,
+    _read_unambiguously_v2,
     compute_policy_hash_v2,
     compute_profile_hash_v2,
+    load_target_profile_text_v2,
     load_target_profile_v2,
 )
+from tests.agent_review.target_profile_yaml_corpus import case as corpus_case
+from tests.agent_review.target_profile_yaml_corpus import cases as corpus_cases
 
 
 def _profile_dict(**overrides: object) -> dict[str, object]:
@@ -253,156 +257,83 @@ def test_policy_hash_changes_independently_of_unrelated_profile_fields(tmp_path:
 # Target-profile YAML ambiguity authority.
 #
 # Ambiguity is DERIVED from the parser, not re-derived from its rules: the
-# same bytes are read under both duplicate-resolution policies, and a
-# document is refused when the two conforming readings disagree.
+# authority observes the exact point the real constructor is about to
+# resolve a collision between two entries the document authored, and
+# refuses before the resolution happens. It does not compare two readings
+# and it does not canonicalise or project to JSON to decide anything --
+# see `docs/adr/ADR_AGENT_REVIEW_V2_TARGET_PROFILE_YAML_AUTHORITY.md` for
+# the normative decision and `docs/engineering/
+# AGENT_REVIEW_V2_YAML_AUTHORITY_POSTMORTEM.md` for why the earlier
+# comparison-based design was superseded.
 #
-# The corpus below is the accumulated adversarial corpus of PR #236's seven
-# review rounds. Its point is that NONE of these classes needs a rule of
-# its own any more -- no scalar/mapping-key distinction, no `!!value` rule,
-# no JSON-projection rule, no constructed-key hash table, no merge
-# cardinality machinery. They are consequences of measuring what the parser
-# consumes.
-#
-# The corpus is systematic evidence over the families it enumerates. It is
-# not a completeness proof over PyYAML.
+# The corpus itself lives in `tests/agent_review/fixtures/
+# target_profile_yaml/` (`CORPUS.json` + one `.yamlcase` file per case),
+# not inline here -- it is the accumulated adversarial and safe
+# counterexample corpus of PR #236's seven review rounds plus PR #237's
+# reproducers, with every case's disposition and exact reason code
+# observed against this module, never guessed. It is systematic evidence
+# over the families it enumerates, not a completeness proof over PyYAML.
 # ===========================================================================
 
-_AMBIGUOUS_CORPUS = [
-    ("plain_duplicate_divergent", "identity:\n  repo: a/b\n  repo: attacker/evil\n"),
-    # Refused even though both occurrences carry the SAME value.
-    #
-    # A deliberate strictness increase over the superseded design, which
-    # accepted this because "the two readings agree". That reasoning is
-    # exactly what round 7 falsified: a key authored as A, B, A also makes
-    # the readings agree, while plainly containing a conflict. Once the
-    # authority stops comparing results, "harmless duplicate" is no longer
-    # a distinction it can draw -- and drawing it would mean predicting
-    # what the values will be, which is the class of reasoning being
-    # removed. Matches `authoritative_check_policy_v2`, which refuses
-    # duplicates regardless of value.
-    ("plain_duplicate_same_value", "identity:\n  repo: a/b\n  repo: a/b\n"),
-    # The round-7 P2 reproducer: agreement at the ends, conflict in the
-    # middle.
-    ("repeated_value_masking_aba", "identity:\n  repo: A\n  repo: B\n  repo: A\n"),
-    # The round-7 P1 reproducer: distinct scalar TYPES whose textual
-    # representations coincide. No canonicalisation is involved any more,
-    # so the collapse it exploited cannot occur.
-    ("type_collision_binary_vs_str", 'identity:\n  repo: !!binary YXBwL3g=\n  repo: "b\'app/x\'"\n'),
-    ("quoted_vs_plain", 'identity:\n  repo: a/b\n  "repo": attacker/evil\n'),
-    ("collapse_yes_true", "identity:\n  yes: 1\n  true: 2\n"),
-    ("collapse_int_float", "identity:\n  1: a\n  1.0: b\n"),
-    ("collapse_hex_dec", "identity:\n  0x10: a\n  16: b\n"),
-    ("collapse_tilde_null", "identity:\n  ~: a\n  null: b\n"),
-    ("collapse_bool_spellings", "identity:\n  on: 1\n  On: 2\n  TRUE: 3\n"),
-    ("tagged_str_duplicate_value_key", "m:\n  ? !!str {=: repo, =: default_branch}\n  : v\n"),
-    ("tagged_str_same_tag_distinct", "m:\n  ? !!str {!!value a: x, !!value b: y}\n  : v\n"),
-    ("contextual_nested_value", "m:\n  ? !!str {=: {!!value left: repo, !!value right: db}}\n  : v\n"),
-    ("duplicate_inside_key_mapping", "m:\n  ? !!str {a: {d: 1, d: 2}}\n  : v\n"),
-    ("duplicate_nested_in_sequence", "artifacts:\n  - {artifact_id: a, artifact_id: b}\n"),
-]
 
-
-@pytest.mark.parametrize("label,text", _AMBIGUOUS_CORPUS, ids=[c[0] for c in _AMBIGUOUS_CORPUS])
-def test_family_ambiguous_documents_are_refused(label: str, text: str) -> None:
-    """Two conforming readings of these bytes disagree, so no receipt or
-    `target_profile_hash` may be minted from either."""
-    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
-
+@pytest.mark.parametrize(
+    "case", corpus_cases("ambiguous"), ids=[c.case_id for c in corpus_cases("ambiguous")]
+)
+def test_family_ambiguous_documents_are_refused(case) -> None:
+    """A collision the real constructor would have to resolve silently is
+    refused instead, so no receipt or `target_profile_hash` may be minted
+    from either candidate reading."""
     with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
-        load_target_profile_text_v2(text)
-    assert excinfo.value.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2, label
+        load_target_profile_text_v2(case.text)
+    assert excinfo.value.reason_code == case.expected_reason_code, case.case_id
 
 
-_SAFE_CORPUS = [
-    ("plain_profile_shape", "identity: {repo: owner/repo, default_branch: main}\n"),
-    ("nested_anchors", "a: &x {t: 1}\nb: {c: *x}\nd: *x\n"),
-    ("aliases_repeated", "a: &x {t: 1}\nb: *x\nc: *x\n"),
-    ("explicit_scalar_tags", "a: !!int 7\nb: !!float 1.5\nc: !!bool yes\n"),
-    ("tagged_str_map_key", "m:\n  ? !!str {=: repo}\n  : v\n"),
-    # Round 7 safe counterexamples -- the walker began refusing all three.
-    ("legal_value_key_retagged", "identity: {!!value repo: owner/repo, default_branch: main}\n"),
-    ("discarded_plain_siblings", "m:\n  ? !!str {=: identity, left: one, right: two}\n  : v\n"),
-    ("unconsumed_int_sibling", "m:\n  ? !!str {=: repo, 123: ignored}\n  : v\n"),
-    ("block_scalars", "a: |\n  l1\n  l2\nb: >\n  folded\n"),
-    ("empty_containers", "a: {}\nb: []\n"),
-    ("sequence_of_mappings", "a:\n  - {x: 1}\n  - {y: 2}\n"),
-]
-
-
-@pytest.mark.parametrize("label,text", _SAFE_CORPUS, ids=[c[0] for c in _SAFE_CORPUS])
-def test_family_legal_documents_read_exactly_as_stock_safeloader(label: str, text: str) -> None:
+@pytest.mark.parametrize(
+    "case", corpus_cases("legal"), ids=[c.case_id for c in corpus_cases("legal")]
+)
+def test_family_legal_documents_read_exactly_as_stock_safeloader(case) -> None:
     """The authority must agree with stock `yaml.safe_load` on every legal
     document.
 
     Asserted as EQUALITY, not as "does not raise". The previous design's
     worst failures were over-refusals -- documents stock YAML accepts,
     rejected because a re-derived rule mismodelled the parser -- and only
-    an equality assertion catches that direction."""
-    from app.agent_review.profile_loader_v2 import _read_unambiguously_v2
+    an equality assertion catches that direction.
 
-    assert _read_unambiguously_v2(text) == yaml.safe_load(text), label
-
-
-_MERGE_CORPUS = [
-    ("simple_merge", "a: &x {t: 1}\nb: {<<: *x}\n"),
-    ("merge_override", "a: &x {t: 1}\nb: {<<: *x, t: 2}\n"),
-    ("merge_sequence", "a: &x {p: 1}\nb: &y {q: 2}\nc: {<<: [*x, *y], r: 3}\n"),
-    ("merge_chain", "a: &x {t: 1}\nb: &y {<<: *x, t: 2}\nc: {<<: *y, t: 3}\n"),
-    ("duplicate_merge_keys", "a: &x {k: 1}\nb: &y {k: 2}\nc:\n  <<: *x\n  <<: *y\n"),
-    ("inline_merge_source", "identity:\n  <<: {repo: a/b, repo: evil}\n"),
-    ("nested_merge_shallower", "base: &b {t: 30}\nouter: {inner: &m {<<: *b, t: 60}}\nd: {<<: *m}\n"),
-]
+    `legal` is a YAML-authority reading-level property (parity with stock
+    `safe_load`), not a claim that the fragment is a contractually valid
+    `TargetProfileV2` -- most of these documents are deliberately not.
+    """
+    assert _read_unambiguously_v2(case.text) == yaml.safe_load(case.text), case.case_id
 
 
-@pytest.mark.parametrize("label,text", _MERGE_CORPUS, ids=[c[0] for c in _MERGE_CORPUS])
-def test_family_merge_keys_are_not_part_of_the_profile_language(label: str, text: str) -> None:
-    """`<<:` is unsupported, matching `authoritative_check_policy_v2`,
-    which has never supported it.
-
-    This is a language decision, taken deliberately. YAML's merge spec
-    already defines which entry wins, so a duplicate-resolution policy
-    cannot be varied independently of it without re-deriving merge
-    provenance -- which is exactly the re-derivation this design exists to
-    remove. Refusing merge keeps the authority a measurement rather than a
-    reimplementation."""
-    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
-
-    assert yaml.safe_load(text) is not None, "precondition: legal YAML"
+@pytest.mark.parametrize(
+    "case", corpus_cases("invalid"), ids=[c.case_id for c in corpus_cases("invalid")]
+)
+def test_family_invalid_documents_are_refused_by_language_or_contract(case) -> None:
+    """Legal, unambiguous YAML that the profile language or contract
+    refuses anyway: merge keys (`<<:` is not part of the language
+    `TargetProfileV2` accepts, matching `authoritative_check_policy_v2`,
+    which has never supported it), a document whose only collision is
+    manufactured by an intermediate JSON round-trip that no longer exists,
+    and a document that reads without ambiguity but fails contract
+    validation on an unknown field."""
+    assert yaml.safe_load(case.text) is not None, f"{case.case_id}: precondition is legal YAML"
     with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
-        load_target_profile_text_v2(text)
-    assert excinfo.value.reason_code == TARGET_PROFILE_INVALID_REASON_V2, label
+        load_target_profile_text_v2(case.text)
+    assert excinfo.value.reason_code == case.expected_reason_code, case.case_id
 
 
-_MALFORMED_CORPUS = [
-    ("bad_int_tag", "x: !!int nope\n"),
-    ("empty_int_tag", "x: !!int \n"),
-    ("bad_bool_tag", "x: !!bool nope\n"),
-    ("bad_timestamp_tag", "x: !!timestamp nope\n"),
-    ("mapping_shaped_timestamp", "x: !!timestamp {=: 2020-01-01}\n"),
-    ("integer_past_digit_limit", "x: " + "9" * 5000 + "\n"),
-    ("unhashable_key", "? [a, b]\n: value\n"),
-    ("recursive_alias_value", "a: &x {self: *x}\n"),
-    ("recursive_alias_key", "? &x {self: *x}\n: v\n"),
-    ("not_yaml", "identity: [unclosed\n"),
-    ("empty_document", ""),
-    ("bare_scalar", "42\n"),
-    ("nul_character", "x: a\x00b\n"),
-    ("bel_character", "x: a\x07b\n"),
-    ("lone_surrogate", "x: a\ud800b\n"),
-]
-
-
-@pytest.mark.parametrize("label,text", _MALFORMED_CORPUS, ids=[c[0] for c in _MALFORMED_CORPUS])
-def test_family_malformed_input_is_reason_coded_never_raw(label: str, text: str) -> None:
-    """Target-authored YAML never escapes as an untyped exception."""
-    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
-
+@pytest.mark.parametrize(
+    "case", corpus_cases("malformed"), ids=[c.case_id for c in corpus_cases("malformed")]
+)
+def test_family_malformed_input_is_reason_coded_never_raw(case) -> None:
+    """Target-authored YAML never escapes as an untyped exception, and the
+    exact reason code is asserted -- not membership in the two-valued
+    reason-code set, which would prove only that the error is typed."""
     with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
-        load_target_profile_text_v2(text)
-    assert excinfo.value.reason_code in {
-        TARGET_PROFILE_UNREADABLE_REASON_V2,
-        TARGET_PROFILE_INVALID_REASON_V2,
-    }, label
+        load_target_profile_text_v2(case.text)
+    assert excinfo.value.reason_code == case.expected_reason_code, case.case_id
 
 
 def test_the_file_layer_normalises_invalid_utf8(tmp_path: Path) -> None:
@@ -421,8 +352,6 @@ def test_the_file_layer_normalises_invalid_utf8(tmp_path: Path) -> None:
 def test_the_shipped_seed_template_still_loads() -> None:
     """End-to-end control: the template this pack installs must survive the
     authority."""
-    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
-
     seed = Path(__file__).resolve().parents[2] / "templates" / "agentreview-v2-target-pack" / "target-profile.v2.yaml"
     assert load_target_profile_text_v2(seed.read_text(encoding="utf-8")).identity.repo
 
@@ -431,21 +360,21 @@ def test_no_intermediate_step_manufactures_a_duplicate_key_interpretation() -> N
     """Self-discovered during the round-7 verdict, and fixed by removing
     the step rather than by adding a rule.
 
-    `{"1": a, 1: b}` has two DISTINCT Python keys and no collision, so the
-    authority accepts it. The previous validation step then ran
-    `json.dumps`, which coerces non-string keys to strings, producing the
-    literal duplicate-key document `{"1": "a", "1": "b"}` and reparsing it
-    last-wins -- a second key-resolution policy introduced downstream of
-    the authority whose entire purpose is refusing one.
+    `{"1": a, 1: b}` (corpus case `manufactured_json_duplicate`, held once,
+    in the corpus, not as a second literal copy here) has two DISTINCT
+    Python keys and no collision, so the authority accepts it. The
+    previous validation step then ran `json.dumps`, which coerces
+    non-string keys to strings, producing the literal duplicate-key
+    document `{"1": "a", "1": "b"}` and reparsing it last-wins -- a second
+    key-resolution policy introduced downstream of the authority whose
+    entire purpose is refusing one.
 
     Contract validation is now direct, so no intermediate step can
     manufacture an interpretation. The document is still refused, but by
     the CONTRACT (unknown fields), which is the layer that owns that
     decision.
     """
-    from app.agent_review.profile_loader_v2 import _read_unambiguously_v2, load_target_profile_text_v2
-
-    text = 'identity:\n  "1": a\n  1: b\n'
+    text = corpus_case("manufactured_json_duplicate").text
     parsed = _read_unambiguously_v2(text)
     assert parsed == yaml.safe_load(text), "the authority must not alter a collision-free document"
     assert set(parsed["identity"]) == {"1", 1}, "both distinct keys survive; nothing was collapsed"

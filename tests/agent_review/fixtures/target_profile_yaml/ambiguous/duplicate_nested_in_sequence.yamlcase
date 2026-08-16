@@ -1,0 +1,2 @@
+artifacts:
+  - {artifact_id: a, artifact_id: b}

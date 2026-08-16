@@ -1,0 +1,4 @@
+identity:
+  on: 1
+  On: 2
+  TRUE: 3

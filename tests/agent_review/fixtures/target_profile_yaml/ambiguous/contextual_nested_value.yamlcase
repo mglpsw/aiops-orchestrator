@@ -1,0 +1,3 @@
+m:
+  ? !!str {=: {!!value left: repo, !!value right: db}}
+  : v
