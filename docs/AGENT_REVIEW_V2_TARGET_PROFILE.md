@@ -39,8 +39,12 @@ degradation to a placeholder profile. Every failure raises
 ### YAML ambiguity authority
 
 A target-authored profile is YAML the toolrepo does not control, so the
-loader must answer a question a generic parser does not: could a different
-conforming reader have seen a different value for the same bytes? The
+loader must answer a question a generic parser does not: would **stock
+PyYAML itself** have silently selected between competing authored entries
+in these bytes? (The broader question — could *any* conforming reader have
+seen a different value — is what motivated the design, but is **not** what
+the mechanism delivers; see the ADR's known-limitations section on YAML
+1.1/1.2 scalar resolution.) The
 authority (`_CollisionRefusingSafeLoaderV2`) refuses at the exact point
 stock `yaml.SafeLoader` would otherwise pick silently among competing
 authored entries -- a duplicate key at mapping-assignment time, or more

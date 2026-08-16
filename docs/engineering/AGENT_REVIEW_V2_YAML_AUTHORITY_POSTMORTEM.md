@@ -27,11 +27,22 @@ text / node representation
 ```
 
 The property this authority needs to guarantee lives at the *authority
-boundary* — "does this reading match what a different conforming reader
-would produce." Both superseded designs instead wrote rules against the
-*text/node representation* or the *constructed value*, one or two layers
-below where the property actually lives, and had to keep patching the gap
-between the two.
+boundary* — "would the parser itself have silently selected here." Both
+superseded designs instead wrote rules against the *text/node
+representation* or the *constructed value*, one or two layers below where
+the property actually lives, and had to keep patching the gap between the
+two.
+
+Note on scope, added under round-7 review of `#238`: earlier drafts of this
+paragraph phrased the boundary property as "does this reading match what a
+different conforming reader would produce." That overstates what the
+shipped mechanism delivers — it observes stock PyYAML's own selection
+points, not agreement across conforming implementations. The distinction is
+not pedantic here: it is the same class of defect this postmortem exists to
+record (a claim stated one layer away from the authority that actually
+decides it), so leaving it uncorrected in the document that names the
+pattern would have been its own instance of the pattern. See the ADR's
+"Known completeness limitations".
 
 ## Minimal chronology
 

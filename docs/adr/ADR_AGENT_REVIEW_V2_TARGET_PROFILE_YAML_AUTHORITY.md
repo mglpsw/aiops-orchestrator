@@ -6,8 +6,13 @@
 **Scope:** `aiops-orchestrator#203-S2`, PR-A of the target-pack validation/conformance slice under `#203`
 **Decides:** how ambiguity in a target-authored `.aiops/target-profile.v2.yaml`
 is determined, and which YAML language subset the profile accepts, so that
-no receipt or `profile_hash`/`policy_hash` is ever minted over a reading a
-different conforming parse could have disagreed with
+no receipt or `profile_hash`/`policy_hash` is minted over a reading where
+**stock PyYAML** would have silently selected between competing authored
+entries at either of the two instrumented collision points. This is
+deliberately **not** a claim about every conforming YAML implementation —
+see "Known completeness limitations" for the verified `max_bytes: 012`
+counter-example, where the pinned PyYAML and a YAML 1.2 reader disagree
+without either collision point firing.
 
 This ADR is written retrospectively, at the merge of `#237`, directly from
 the shipped source in `app/agent_review/profile_loader_v2.py` — not from
@@ -27,6 +32,14 @@ mapping consumed as a scalar with more than one `!!value` candidate), can
 this loader mint a `profile_hash`/`policy_hash` and receipt over *a*
 reading, when a different conforming parser — or a human auditor — might
 have seen a different one?
+
+That is the *motivating* question. What this ADR decides is narrower than
+what that question asks, and deliberately so: the mechanism answers it for
+the two points where **stock PyYAML itself** would silently select between
+competing authored entries, and does not answer it for divergences between
+conforming implementations that involve no such selection. The gap between
+the motivating question and the delivered guarantee is stated concretely in
+"Known completeness limitations" rather than left implicit here.
 
 Two earlier designs for this loader (recorded in closed, unmerged PRs
 `#235` and `#236`) were superseded before this one was accepted. Both are
