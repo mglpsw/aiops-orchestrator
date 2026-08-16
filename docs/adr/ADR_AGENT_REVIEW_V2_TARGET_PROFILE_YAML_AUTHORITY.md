@@ -183,9 +183,13 @@ documents outside `.aiops/target-profile.v2.yaml`.
 ## Required conformance evidence
 
 - Every case in `tests/agent_review/fixtures/target_profile_yaml/`
-  (`legal/`, `ambiguous/`, `invalid/`, `malformed/`) passes under its
-  declared `expected_disposition`/`expected_reason_code`, observed against
-  this module, not assumed.
+  (`legal/`, `ambiguous/`, `invalid/`, `malformed/`) passes under the
+  disposition its `classification` derives (`legal` reads to a value
+  identical to stock `yaml.safe_load`; every other classification is
+  refused) and its declared `expected_reason_code`, observed against this
+  module, not assumed. `classification` is the sole authority for
+  disposition — no `expected_disposition` field exists in the corpus
+  metadata to declare or contradict it.
 - Every `legal` case asserts **value equality** with stock
   `yaml.safe_load`, not merely the absence of an exception.
 - At least one committed, production-path mutation test exists per

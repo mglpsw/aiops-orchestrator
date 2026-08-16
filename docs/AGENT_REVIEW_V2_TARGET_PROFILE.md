@@ -16,8 +16,11 @@ manufacture a literal duplicate-key JSON document out of two Python keys
 that were never in collision -- a second, downstream key-resolution policy
 applied by the very step that exists to guarantee only one such policy
 ever runs. Direct `model_validate` and the removed round-trip were measured
-to agree on every valid profile in the corpus before the round-trip was
-removed.
+to agree on the shipped seed template (`templates/agentreview-v2-target-pack/
+target-profile.v2.yaml`) and four independent field-level variants of it
+before the round-trip was removed -- not on the YAML-authority corpus's
+`legal/` fixtures, which are deliberately minimal reading-level YAML
+fragments, not generally valid `TargetProfileV2` documents.
 
 Unlike v1's `repo_profile.load_repo_profile`, there is no silent
 degradation to a placeholder profile. Every failure raises

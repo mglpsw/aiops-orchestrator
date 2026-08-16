@@ -58,6 +58,18 @@ HOME -- consistently:
   test-only vocabulary.
 - a redundant ``sys.path.insert`` duplicated what pytest's own rootdir
   insertion already provides; removed.
+
+Round-2 review of the round-1 fix (exact HEAD `105b032310`) found one more
+instance of the same class: ``property_family`` was validated against the
+full ``PROPERTY_FAMILIES`` vocabulary regardless of ``classification``, so
+an `ambiguous` case could declare `stock_parity` -- a family that only
+describes `legal` cases -- and load anyway; vocabulary membership alone
+checks a value's spelling, not its truth. Fixed by
+``CLASSIFICATION_PROPERTY_FAMILIES``, coupling ``property_family`` to
+``classification`` the same way ``entry_point``/``expected_disposition``
+already are, with a module-load-time assertion that the mapping partitions
+``PROPERTY_FAMILIES`` exactly (no family orphaned, none shared across two
+classifications).
 """
 
 from __future__ import annotations
@@ -92,6 +104,27 @@ PROPERTY_FAMILIES = frozenset(
         "contract_validation",
         "stock_parity",
     }
+)
+
+# Round-2 review found that validating `property_family` against
+# PROPERTY_FAMILIES alone checks only its SPELLING, not its truth: an
+# `ambiguous` case could declare `stock_parity` (a family that only
+# describes `legal` cases) and still load, because vocabulary membership
+# says nothing about which family a given classification can actually
+# demonstrate. This couples the two, the same way classification already
+# determines `entry_point`/`expected_disposition`.
+CLASSIFICATION_PROPERTY_FAMILIES: dict[str, frozenset[str]] = {
+    "legal": frozenset({"stock_parity"}),
+    "ambiguous": frozenset({"mapping_assignment_collision", "value_tag_multiple_candidates"}),
+    "invalid": frozenset({"merge_key_unsupported", "contract_validation"}),
+    "malformed": frozenset({"constructor_failure", "non_mapping_document"}),
+}
+assert set(CLASSIFICATION_PROPERTY_FAMILIES) == CLASSIFICATIONS
+assert frozenset.union(*CLASSIFICATION_PROPERTY_FAMILIES.values()) == PROPERTY_FAMILIES
+assert sum(len(v) for v in CLASSIFICATION_PROPERTY_FAMILIES.values()) == len(PROPERTY_FAMILIES), (
+    "CLASSIFICATION_PROPERTY_FAMILIES must partition PROPERTY_FAMILIES -- a family "
+    "shared by two classifications would silently widen what property_family is "
+    "checked against for both"
 )
 
 # `classification` is the only authority for these two facts -- they are
@@ -230,10 +263,11 @@ def _validate_record(record: object, fixtures_root: Path) -> CorpusCase:
             )
 
     property_family = record["property_family"]
-    if not isinstance(property_family, str) or property_family not in PROPERTY_FAMILIES:
+    allowed_families = CLASSIFICATION_PROPERTY_FAMILIES[classification]
+    if not isinstance(property_family, str) or property_family not in allowed_families:
         raise CorpusMetadataError(
-            f"{case_id}: property_family must be a non-empty member of "
-            f"PROPERTY_FAMILIES, got {property_family!r}"
+            f"{case_id}: property_family must be one of {sorted(allowed_families)} "
+            f"for classification={classification!r}, got {property_family!r}"
         )
 
     origin = record["origin"]

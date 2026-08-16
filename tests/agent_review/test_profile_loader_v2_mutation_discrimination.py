@@ -59,6 +59,7 @@ import yaml
 import app.agent_review.profile_loader_v2 as module
 from tests.agent_review.target_profile_yaml_corpus import MUTATION_TARGETS
 from tests.agent_review.target_profile_yaml_corpus import case as corpus_case
+from tests.agent_review.target_profile_yaml_corpus import cases as corpus_cases
 from tests.agent_review.target_profile_yaml_corpus import mutation_case
 
 
@@ -208,3 +209,24 @@ def test_m3_counterexample_simple_merge_does_not_discriminate_at_this_entry_poin
         module._document_uses_merge_v2 = original
 
     assert mutated_reason == real_reason == "target_profile_invalid"
+
+
+def test_document_uses_merge_v2_detects_every_merge_form_in_the_corpus() -> None:
+    """Round-2 finding: M3 exercises `_document_uses_merge_v2` only through
+    one mutation that removes it entirely (`lambda _t: False`), on one
+    exemplar case. A regression that still recognizes `duplicate_merge_keys`'s
+    shape but misses a different merge form -- e.g. a single-source merge
+    with no residual collision, which would then be silently accepted as a
+    valid document rather than refused for using a language construct the
+    profile does not accept -- would not be caught by M3 alone, since
+    M3 measures the END-TO-END disposition, and a partial detection miss on
+    a DIFFERENT case is invisible from that one case's result.
+
+    This tests the detector seam directly, at every merge-shaped fixture in
+    the corpus (`property_family == "merge_key_unsupported"`), independent
+    of what `load_target_profile_text_v2` ultimately does with the result.
+    """
+    merge_cases = [c for c in corpus_cases("invalid") if c.property_family == "merge_key_unsupported"]
+    assert len(merge_cases) == 7, "expected all 7 merge-shaped corpus fixtures"
+    for merge_case in merge_cases:
+        assert module._document_uses_merge_v2(merge_case.text) is True, merge_case.case_id

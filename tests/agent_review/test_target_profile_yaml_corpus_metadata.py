@@ -254,6 +254,18 @@ def test_property_family_off_vocabulary_is_refused(tmp_path: Path) -> None:
         load_corpus(corpus_path=corpus_path)
 
 
+def test_property_family_valid_but_wrong_for_classification_is_refused(tmp_path: Path) -> None:
+    """Round-2 finding: `property_family` was validated against the full
+    vocabulary regardless of `classification`, so an `ambiguous` case could
+    declare `stock_parity` -- a family that only describes `legal` cases --
+    and load anyway. Vocabulary membership alone checks a value's
+    spelling, not its truth."""
+    record = dict(_VALID_RECORD, classification="ambiguous", property_family="stock_parity")
+    corpus_path = _write_corpus(tmp_path, [record])
+    with pytest.raises(CorpusMetadataError, match="property_family must be one of"):
+        load_corpus(corpus_path=corpus_path)
+
+
 def test_mutation_target_off_vocabulary_is_refused(tmp_path: Path) -> None:
     record = dict(_VALID_RECORD, mutation_target="not_a_real_target")
     corpus_path = _write_corpus(tmp_path, [record])
