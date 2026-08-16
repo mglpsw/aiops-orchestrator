@@ -117,9 +117,14 @@ issue_232:
 `#232` foi levantada durante o review adversarial da H1-B (arquivo sem hunk
 textual e fora de `must_review_files` ainda conta como coberto). A correção
 tentada mostrou blast radius além do escopo H1-B e foi revertida
-deliberadamente; ver a própria `#232` para o caminho proposto. Não
-revalidada além do estado `OPEN` neste corte — nenhum commit do delta acima
-toca essa superfície.
+deliberadamente; ver a própria `#232` para o caminho proposto. A própria
+`ffa3040` (H1-B) toca essa superfície — é onde a tentativa revertida vive,
+conforme sua mensagem de squash. Não revalidada além do estado `OPEN` neste
+corte; verificado que **nenhum commit após `ffa3040`** no delta acima toca
+`chunk_payload_builder.py`, `semantic_chunker.py`, `chunk_result_parser.py`
+ou `payload_cost_model.py` (`git log ffa3040..0cdb961 -- <esses arquivos>`
+vazio) — a ausência de revalidação é sobre o período pós-H1-B, não sobre o
+delta inteiro.
 
 ## Estado de referência
 
@@ -222,9 +227,11 @@ checkpoint anterior.
   exact-HEAD, 25 achados P2 confirmados e fechados; a issue foi
   auto-fechada pelo merge por um link de desenvolvimento independente do
   texto `Refs #238` do corpo da PR, e reaberta manualmente
-  (`stateReason: REOPENED`); fecha somente quando este documento de
-  reconciliação de checkpoint for mergeado, sob grant separado — não por
-  este commit, que permanece Draft até decisão de merge própria;
+  (`stateReason: REOPENED`); este documento de reconciliação de checkpoint
+  usa **somente** `Refs #238` (`closingIssuesReferences` vazio, verificado
+  via `gh pr view`) — mergeá-lo **não** fecha `#238` automaticamente. O
+  merge e o fechamento explícito de `#238` são duas ações distintas, cada
+  uma sob seu próprio grant; nem uma nem outra ocorreu neste corte;
 - `#199`/`#200`/`#201`/`#202`/`#203`/`#204`/`#205`: `open` — `#200`/`#201`/`#202`
   por adoção de target, `#203` por implementação genuinamente incompleta,
   `#204`/`#205` não iniciadas;
@@ -241,18 +248,23 @@ checkpoint anterior.
 
 ## Próxima ação mínima
 
-A ação mínima imediata é o fechamento de `#238` pelo merge deste próprio
-documento de reconciliação de checkpoint, sob grant nominal específico —
-não concedido pela criação deste PR.
+A ação mínima imediata tem duas etapas distintas, cada uma sob grant
+próprio: (1) mergear este documento de reconciliação de checkpoint — o que,
+por si só, **não** fecha `#238`, já que a PR usa apenas `Refs #238` e
+`closingIssuesReferences` está vazio; e (2) fechar `#238` explicitamente
+depois, com verificação pós-merge. Nenhuma das duas ocorreu neste corte.
 
-Após esse fechamento, retomar `#203` — completar o target pack instalável,
-começando por PR-B (`target validate`) sobre este `implementation_anchor`.
-Os pré-requisitos de core (`#200`/`#201`/`#202`) estão satisfeitos, a
-dívida C1-C10 está fechada, e a autoridade de leitura YAML que PR-B
-consome (`#237`) está institucionalizada (`#238`/PR #239); `#232`
-permanece aberta mas não bloqueia `#203`.
+Após esse fechamento explícito, retomar `#203` — completar o target pack
+instalável, começando por PR-B (`target validate`). `implementation_anchor`
+(`0cdb961`) permanece a identidade **histórica** desta implementação, mas
+PR-B deve ramificar da `master` viva revalidada no forge no momento em que
+começar, não deste anchor congelado — pelo mesmo motivo pelo qual este
+documento evita se autorreferenciar. Os pré-requisitos de core
+(`#200`/`#201`/`#202`) estão satisfeitos, a dívida C1-C10 está fechada, e a
+autoridade de leitura YAML que PR-B consome (`#237`) está institucionalizada
+(`#238`/PR #239); `#232` permanece aberta mas não bloqueia `#203`.
 
-Merge deste documento, tag, release, repin, canário, deploy, adoção de
-target e fechamento de `#221`/`#217`/`#199` permanecem retidos, cada um
-exigindo grant nominal. A disposição de `#232` é exigida antes do release
-candidate da `#205`.
+Merge deste documento, fechamento de `#238`, tag, release, repin, canário,
+deploy, adoção de target e fechamento de `#221`/`#217`/`#199` permanecem
+retidos, cada um exigindo grant nominal. A disposição de `#232` é exigida
+antes do release candidate da `#205`.
