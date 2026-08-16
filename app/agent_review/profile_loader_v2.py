@@ -101,25 +101,45 @@ _YAML_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (
 )
 
 
-class _FirstWinsSafeLoaderV2(yaml.SafeLoader):
-    """`yaml.SafeLoader`, differing ONLY in which of two colliding entries
-    wins.
+class _AlternateCollisionSafeLoaderV2(yaml.SafeLoader):
+    """`yaml.SafeLoader` with the collision-resolution policy inverted at
+    both points where PyYAML silently selects a winner.
 
-    This is the whole of the ambiguity authority. Everything that decides
-    what a document MEANS -- scanner, parser, composer, resolver, every
-    constructor, tags, anchors, aliases, contextual construction, error
-    semantics -- is stock PyYAML and is not re-derived here. The two
-    overrides below change nothing except the resolution POLICY at the two
-    points where PyYAML silently picks a winner among colliding entries.
+    Stock PyYAML is NOT uniformly last-wins. Its two policies point in
+    opposite directions:
 
-    Why this shape: an earlier design walked the composed node graph and
-    re-derived the parser's rules to decide what "the same key" means.
-    Seven adversarial rounds each found that re-derivation wrong at a
-    different layer -- textual identity, node shape, unconstructible keys,
-    ancestral consumption context -- in both directions, refusing legal
-    documents as well as accepting ambiguous ones. Deriving the answer
-    from the parser removes the whole class: there is nothing left to get
-    wrong about tags, flattening or context, because none of it is
+        stock       mapping duplicate         -> LAST wins
+                    scalar `!!value` selection -> FIRST wins
+
+        alternate   mapping duplicate         -> FIRST wins
+                    scalar `!!value` selection -> LAST wins
+
+    Calling this loader "first-wins" would therefore be wrong about half
+    of what it does. What it is, precisely, is the ALTERNATE of stock at
+    each observed collision point.
+
+    Everything that decides what a document MEANS -- scanner, parser,
+    composer, resolver, every constructor, tags, anchors, aliases,
+    contextual construction, error semantics -- is stock PyYAML and is not
+    re-derived here. The two overrides below change the resolution POLICY
+    and nothing else.
+
+    TWO injection points are observed and currently necessary. This is NOT
+    a claim that they are the only such points in PyYAML: it is what has
+    been demonstrated. Removing the `construct_scalar` override alone
+    stops three known adversarial cases from discriminating, which is how
+    its necessity was established rather than assumed. Whether a third
+    point exists is an open question and an explicit target of adversarial
+    review.
+
+    Why this shape: an earlier design (PR #236) walked the composed node
+    graph and re-derived the parser's rules to decide what "the same key"
+    means. Seven adversarial rounds each found that re-derivation wrong at
+    a different layer -- textual identity, node shape, unconstructible
+    keys, ancestral consumption context -- in both directions, refusing
+    legal documents as well as accepting ambiguous ones. Deriving the
+    answer from the parser removes the whole class: there is nothing left
+    to get wrong about tags, flattening or context, because none of it is
     restated.
     """
 
@@ -142,17 +162,24 @@ class _FirstWinsSafeLoaderV2(yaml.SafeLoader):
                     "found unhashable key", key_node.start_mark,
                 )
             value = self.construct_object(value_node, deep=deep)
-            if key not in mapping:  # <-- THE policy. Stock overwrites.
+            # INJECTION POINT 1 of 2 -- mapping assignment.
+            # Stock overwrites (last wins); this keeps the first.
+            if key not in mapping:
                 mapping[key] = value
         return mapping
 
     def construct_scalar(self, node):  # type: ignore[override]
-        # The SECOND place PyYAML resolves a collision: when a mapping node
-        # is consumed as a scalar (`!!str {...}`), `construct_scalar` scans
-        # for `tag:yaml.org,2002:value` entries and takes the FIRST. That
-        # is the same policy axis as the assignment above -- which of
-        # several colliding entries wins -- so the same flip applies. It is
-        # NOT a `!!value` rule: nothing here interprets what the tag means.
+        # INJECTION POINT 2 of 2 -- `!!value` selection.
+        #
+        # When a mapping node is consumed as a scalar (`!!str {...}`),
+        # `construct_scalar` scans for `tag:yaml.org,2002:value` entries
+        # and takes the FIRST. Same policy axis as assignment above --
+        # which of several colliding entries wins -- so the same inversion
+        # applies, here meaning "take the last".
+        #
+        # NOT a `!!value` rule: nothing here interprets what the tag means
+        # or what the profile should do with it. The only thing changed is
+        # which colliding entry is selected.
         if isinstance(node, yaml.MappingNode):
             selected = None
             for key_node, value_node in node.value:
@@ -218,15 +245,22 @@ def _canonical_reading_v2(value: object) -> str:
 
 
 def _read_unambiguously_v2(raw_text: str) -> object:
-    """Read the bytes under both duplicate-resolution policies and refuse
-    when they disagree.
+    """Read the bytes under two deterministic collision-resolution
+    policies over the same PyYAML parsing/construction semantics, and
+    refuse when the results differ.
 
-    Ambiguity is DEFINED as "two conforming readings of the same bytes
-    differ", which is the property the contract actually cares about, and
-    it is measured rather than predicted. Because this loader also backs
-    the install WRITER, an ambiguous profile would otherwise mint a receipt
-    and a `target_profile_hash` for one reading while the other stays
-    equally defensible.
+    Deliberately NOT phrased as "two conforming readers". Both readings use
+    identical scanning, parsing, composition, resolution and construction;
+    they differ only in which colliding entry is selected, at the two
+    observed injection points. That is a narrower and more defensible claim
+    than asserting each is independently spec-conforming.
+
+    Ambiguity is therefore MEASURED rather than predicted: a document whose
+    meaning survives an inversion of the collision policy is one whose
+    meaning does not depend on that policy. Because this loader also backs
+    the install WRITER, a document that fails this test would otherwise
+    mint a receipt and a `target_profile_hash` for one selection while the
+    other stays equally available.
     """
 
     if _document_uses_merge_v2(raw_text):
@@ -234,7 +268,7 @@ def _read_unambiguously_v2(raw_text: str) -> object:
 
     readings = []
     failures = 0
-    for loader_class in (yaml.SafeLoader, _FirstWinsSafeLoaderV2):
+    for loader_class in (yaml.SafeLoader, _AlternateCollisionSafeLoaderV2):
         try:
             readings.append(yaml.load(raw_text, Loader=loader_class))
         except _YAML_PARSE_FAILURES_V2:
@@ -242,8 +276,8 @@ def _read_unambiguously_v2(raw_text: str) -> object:
 
     if failures:
         # Either both readings refused the document, or exactly one did --
-        # which is itself a disagreement about whether the bytes are
-        # readable at all. Both are refusals.
+        # and one-sided failure is itself a policy-dependent outcome, so it
+        # is a refusal on the same grounds. Both are refusals.
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
 
     try:
