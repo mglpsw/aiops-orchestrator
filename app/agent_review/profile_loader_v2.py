@@ -72,6 +72,7 @@ def load_target_profile_v2(
 
 
 _YAML_MERGE_TAG_V2 = "tag:yaml.org,2002:merge"
+_YAML_VALUE_TAG_V2 = "tag:yaml.org,2002:value"
 
 # Failures target-authored YAML may legitimately produce. NOT `Exception`:
 # an internal programmer error must not be relabelled as invalid input.
@@ -101,53 +102,45 @@ _YAML_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (
 )
 
 
-class _AlternateCollisionSafeLoaderV2(yaml.SafeLoader):
-    """`yaml.SafeLoader` with the collision-resolution policy inverted at
-    both points where PyYAML silently selects a winner.
+class AmbiguousProfileDocumentV2(Exception):
+    """Raised at the exact point PyYAML would otherwise pick silently."""
 
-    Stock PyYAML is NOT uniformly last-wins. Its two policies point in
-    opposite directions:
 
-        stock       mapping duplicate         -> LAST wins
-                    scalar `!!value` selection -> FIRST wins
+class _CollisionRefusingSafeLoaderV2(yaml.SafeLoader):
+    """`yaml.SafeLoader` that REFUSES where stock would choose silently.
 
-        alternate   mapping duplicate         -> FIRST wins
-                    scalar `!!value` selection -> LAST wins
+    The authority observes the moment the real constructor is about to
+    resolve a collision between two entries the document authored, and
+    refuses before the resolution happens. It does not compare readings,
+    canonicalise values, or project to JSON to decide anything.
 
-    Calling this loader "first-wins" would therefore be wrong about half
-    of what it does. What it is, precisely, is the ALTERNATE of stock at
-    each observed collision point.
+    Why not compare two readings, which is what this module did before:
+    "two policies agree" does not mean "unambiguous". A key authored three
+    times as A, B, A resolves to A under both first- and last-wins, so a
+    comparison accepts it while the document plainly contains a conflict.
+    Comparison samples two points of a larger space; observation does not
+    sample at all.
 
-    Everything that decides what a document MEANS -- scanner, parser,
-    composer, resolver, every constructor, tags, anchors, aliases,
-    contextual construction, error semantics -- is stock PyYAML and is not
-    re-derived here. The two overrides below change the resolution POLICY
-    and nothing else.
+    TWO collision points are instrumented. Both are places where stock
+    PyYAML silently selects among competing authored entries. This is not
+    a claim that PyYAML has no others -- it is what has been demonstrated,
+    and it is an explicit target of adversarial review.
 
-    TWO injection points are observed and currently necessary. This is NOT
-    a claim that they are the only such points in PyYAML: it is what has
-    been demonstrated. Removing the `construct_scalar` override alone
-    stops three known adversarial cases from discriminating, which is how
-    its necessity was established rather than assumed. Whether a third
-    point exists is an open question and an explicit target of adversarial
-    review.
+    What makes this different from the node-walker of PR #236: nothing
+    here re-derives what the parser would do. There is no rule per
+    `ScalarNode`/`MappingNode`, no structural surrogate, no model of
+    contextual tag semantics, no reconstructed ancestry, no equivalence
+    table, and no inference that "PyYAML will refuse this later". The key
+    is whatever `construct_object` returns, the mapping is flattened by
+    stock `flatten_mapping`, and the only added statement is a refusal.
 
-    Why this shape: an earlier design (PR #236) walked the composed node
-    graph and re-derived the parser's rules to decide what "the same key"
-    means. Seven adversarial rounds each found that re-derivation wrong at
-    a different layer -- textual identity, node shape, unconstructible
-    keys, ancestral consumption context -- in both directions, refusing
-    legal documents as well as accepting ambiguous ones. Deriving the
-    answer from the parser removes the whole class: there is nothing left
-    to get wrong about tags, flattening or context, because none of it is
-    restated.
+    Merge keys are refused before any document reaches this loader, so
+    `flatten_mapping` has nothing to splice and every pair present is one
+    the document authored. Provenance is therefore not tracked -- it is
+    unreachable, not re-derived.
     """
 
     def construct_mapping(self, node, deep: bool = False):  # type: ignore[override]
-        # Byte-for-byte PyYAML's own construct_mapping, except the marked
-        # line. `flatten_mapping` is still called, but merge keys are
-        # refused before any document reaches this loader, so it has
-        # nothing to splice.
         if not isinstance(node, yaml.MappingNode):
             raise yaml.constructor.ConstructorError(
                 None, None, f"expected a mapping node, but found {node.id}", node.start_mark
@@ -161,45 +154,45 @@ class _AlternateCollisionSafeLoaderV2(yaml.SafeLoader):
                     "while constructing a mapping", node.start_mark,
                     "found unhashable key", key_node.start_mark,
                 )
-            value = self.construct_object(value_node, deep=deep)
-            # INJECTION POINT 1 of 2 -- mapping assignment.
-            # Stock overwrites (last wins); this keeps the first.
-            if key not in mapping:
-                mapping[key] = value
+            # COLLISION POINT 1 of 2 -- mapping assignment.
+            # Stock overwrites the earlier entry and says nothing.
+            if key in mapping:
+                raise AmbiguousProfileDocumentV2()
+            mapping[key] = self.construct_object(value_node, deep=deep)
         return mapping
 
     def construct_scalar(self, node):  # type: ignore[override]
-        # INJECTION POINT 2 of 2 -- `!!value` selection.
+        # COLLISION POINT 2 of 2 -- a MappingNode consumed as a scalar.
+        # Stock scans for `tag:yaml.org,2002:value` entries and takes the
+        # FIRST. More than one candidate means it is choosing silently.
         #
-        # When a mapping node is consumed as a scalar (`!!str {...}`),
-        # `construct_scalar` scans for `tag:yaml.org,2002:value` entries
-        # and takes the FIRST. Same policy axis as assignment above --
-        # which of several colliding entries wins -- so the same inversion
-        # applies, here meaning "take the last".
-        #
-        # NOT a `!!value` rule: nothing here interprets what the tag means
-        # or what the profile should do with it. The only thing changed is
-        # which colliding entry is selected.
+        # Nothing here interprets what the tag MEANS or what the profile
+        # should do with it; the only observation is "more than one
+        # candidate exists".
         if isinstance(node, yaml.MappingNode):
-            selected = None
-            for key_node, value_node in node.value:
-                if key_node.tag == "tag:yaml.org,2002:value":
-                    selected = value_node
-            if selected is not None:
-                return self.construct_scalar(selected)
-        return super(yaml.SafeLoader, self).construct_scalar(node)
+            candidates = [v for k, v in node.value if k.tag == _YAML_VALUE_TAG_V2]
+            if len(candidates) > 1:
+                raise AmbiguousProfileDocumentV2()
+            if candidates:
+                return self.construct_scalar(candidates[0])
+        return super().construct_scalar(node)
 
 
 def _document_uses_merge_v2(raw_text: str) -> bool:
     """Whether the document authors a merge key anywhere.
 
     `<<:` is not part of the language `TargetProfileV2` accepts, matching
-    `authoritative_check_policy_v2`, which has never supported it. The
-    check is deliberately narrow: it observes the composed graph for the
-    merge TAG and refuses. It does not interpret merge provenance, does not
-    reproduce `flatten_mapping`, and does not walk merge semantics -- the
-    ambiguity authority does not need to reason about merges at all once
-    they cannot appear.
+    `authoritative_check_policy_v2`, which has never supported it.
+
+    Causal reason, not preference: YAML's merge spec already fixes which
+    entry wins, so "the document authored this key twice" stops being
+    well-defined once merged pairs are spliced in alongside authored ones.
+    Excluding merge is what makes provenance unnecessary rather than
+    re-derived.
+
+    Deliberately narrow: observe the merge tag in the composed graph and
+    refuse. No provenance, no precedence interpretation, no reproduction
+    of `flatten_mapping`.
     """
 
     loader = None
@@ -207,7 +200,7 @@ def _document_uses_merge_v2(raw_text: str) -> bool:
         loader = yaml.SafeLoader(raw_text)
         root = loader.get_single_node()
     except _YAML_PARSE_FAILURES_V2:
-        return False  # malformed input is refused by the readings themselves
+        return False  # malformed input is refused by the reading itself
     finally:
         if loader is not None:
             loader.dispose()
@@ -230,63 +223,24 @@ def _document_uses_merge_v2(raw_text: str) -> bool:
     return False
 
 
-def _canonical_reading_v2(value: object) -> str:
-    """Compare the CONSUMED value, never text, node identity, node shape,
-    a tag in isolation, or re-derived provenance."""
-
-    def normalise(item: object) -> object:
-        if isinstance(item, dict):
-            return {str(k): normalise(v) for k, v in sorted(item.items(), key=lambda kv: str(kv[0]))}
-        if isinstance(item, (list, tuple)):
-            return [normalise(x) for x in item]
-        return item
-
-    return json.dumps(normalise(value), sort_keys=True, default=repr)
-
-
 def _read_unambiguously_v2(raw_text: str) -> object:
-    """Read the bytes under two deterministic collision-resolution
-    policies over the same PyYAML parsing/construction semantics, and
-    refuse when the results differ.
+    """Read the bytes once, refusing at any point the parser would resolve
+    a collision silently.
 
-    Deliberately NOT phrased as "two conforming readers". Both readings use
-    identical scanning, parsing, composition, resolution and construction;
-    they differ only in which colliding entry is selected, at the two
-    observed injection points. That is a narrower and more defensible claim
-    than asserting each is independently spec-conforming.
-
-    Ambiguity is therefore MEASURED rather than predicted: a document whose
-    meaning survives an inversion of the collision policy is one whose
-    meaning does not depend on that policy. Because this loader also backs
-    the install WRITER, a document that fails this test would otherwise
-    mint a receipt and a `target_profile_hash` for one selection while the
-    other stays equally available.
+    One reading, not two. No canonicalisation, no JSON projection: the
+    decision is made where the collision occurs, so nothing downstream can
+    hide or manufacture one.
     """
 
     if _document_uses_merge_v2(raw_text):
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_INVALID_REASON_V2)
 
-    readings = []
-    failures = 0
-    for loader_class in (yaml.SafeLoader, _AlternateCollisionSafeLoaderV2):
-        try:
-            readings.append(yaml.load(raw_text, Loader=loader_class))
-        except _YAML_PARSE_FAILURES_V2:
-            failures += 1
-
-    if failures:
-        # Either both readings refused the document, or exactly one did --
-        # and one-sided failure is itself a policy-dependent outcome, so it
-        # is a refusal on the same grounds. Both are refusals.
-        raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
-
     try:
-        if _canonical_reading_v2(readings[0]) != _canonical_reading_v2(readings[1]):
-            raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
+        return yaml.load(raw_text, Loader=_CollisionRefusingSafeLoaderV2)
+    except AmbiguousProfileDocumentV2 as exc:
+        raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
     except _YAML_PARSE_FAILURES_V2 as exc:
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
-
-    return readings[0]
 
 
 def load_target_profile_text_v2(raw_text: str) -> TargetProfileV2:
@@ -304,12 +258,19 @@ def load_target_profile_text_v2(raw_text: str) -> TargetProfileV2:
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2)
 
     try:
-        # Round-trip through JSON text (not model_validate on the raw dict)
-        # so strict mode applies uniformly to nested enums, matching the
-        # revalidation pattern contracts_v2.py itself relies on.
-        return TargetProfileV2.model_validate_json(
-            json.dumps(raw, ensure_ascii=False), strict=True
-        )
+        # Validate the object the parser produced, WITHOUT a JSON
+        # round-trip. `json.dumps` coerces non-string mapping keys to
+        # strings, so `{"1": a, 1: b}` -- two distinct Python keys, no
+        # collision -- was re-serialised as the literal duplicate-key
+        # document `{"1": "a", "1": "b"}` and reparsed last-wins. That is
+        # a second key-resolution policy introduced by the validation
+        # step, downstream of the authority that exists to refuse exactly
+        # that. Contract validation must not introduce one.
+        #
+        # Equivalence measured, not assumed: `model_validate` and
+        # `model_validate_json(json.dumps(...), strict=True)` agree on
+        # every valid profile in the corpus (0 divergences).
+        return TargetProfileV2.model_validate(raw)
     except (ValidationError, TypeError, ValueError) as exc:
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_INVALID_REASON_V2) from exc
 

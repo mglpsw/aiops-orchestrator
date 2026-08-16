@@ -269,6 +269,25 @@ def test_policy_hash_changes_independently_of_unrelated_profile_fields(tmp_path:
 
 _AMBIGUOUS_CORPUS = [
     ("plain_duplicate_divergent", "identity:\n  repo: a/b\n  repo: attacker/evil\n"),
+    # Refused even though both occurrences carry the SAME value.
+    #
+    # A deliberate strictness increase over the superseded design, which
+    # accepted this because "the two readings agree". That reasoning is
+    # exactly what round 7 falsified: a key authored as A, B, A also makes
+    # the readings agree, while plainly containing a conflict. Once the
+    # authority stops comparing results, "harmless duplicate" is no longer
+    # a distinction it can draw -- and drawing it would mean predicting
+    # what the values will be, which is the class of reasoning being
+    # removed. Matches `authoritative_check_policy_v2`, which refuses
+    # duplicates regardless of value.
+    ("plain_duplicate_same_value", "identity:\n  repo: a/b\n  repo: a/b\n"),
+    # The round-7 P2 reproducer: agreement at the ends, conflict in the
+    # middle.
+    ("repeated_value_masking_aba", "identity:\n  repo: A\n  repo: B\n  repo: A\n"),
+    # The round-7 P1 reproducer: distinct scalar TYPES whose textual
+    # representations coincide. No canonicalisation is involved any more,
+    # so the collapse it exploited cannot occur.
+    ("type_collision_binary_vs_str", 'identity:\n  repo: !!binary YXBwL3g=\n  repo: "b\'app/x\'"\n'),
     ("quoted_vs_plain", 'identity:\n  repo: a/b\n  "repo": attacker/evil\n'),
     ("collapse_yes_true", "identity:\n  yes: 1\n  true: 2\n"),
     ("collapse_int_float", "identity:\n  1: a\n  1.0: b\n"),
@@ -296,7 +315,6 @@ def test_family_ambiguous_documents_are_refused(label: str, text: str) -> None:
 
 _SAFE_CORPUS = [
     ("plain_profile_shape", "identity: {repo: owner/repo, default_branch: main}\n"),
-    ("duplicate_keys_same_result", "identity:\n  repo: a/b\n  repo: a/b\n"),
     ("nested_anchors", "a: &x {t: 1}\nb: {c: *x}\nd: *x\n"),
     ("aliases_repeated", "a: &x {t: 1}\nb: *x\nc: *x\n"),
     ("explicit_scalar_tags", "a: !!int 7\nb: !!float 1.5\nc: !!bool yes\n"),
@@ -407,3 +425,97 @@ def test_the_shipped_seed_template_still_loads() -> None:
 
     seed = Path(__file__).resolve().parents[2] / "templates" / "agentreview-v2-target-pack" / "target-profile.v2.yaml"
     assert load_target_profile_text_v2(seed.read_text(encoding="utf-8")).identity.repo
+
+
+def test_no_intermediate_step_manufactures_a_duplicate_key_interpretation() -> None:
+    """Self-discovered during the round-7 verdict, and fixed by removing
+    the step rather than by adding a rule.
+
+    `{"1": a, 1: b}` has two DISTINCT Python keys and no collision, so the
+    authority accepts it. The previous validation step then ran
+    `json.dumps`, which coerces non-string keys to strings, producing the
+    literal duplicate-key document `{"1": "a", "1": "b"}` and reparsing it
+    last-wins -- a second key-resolution policy introduced downstream of
+    the authority whose entire purpose is refusing one.
+
+    Contract validation is now direct, so no intermediate step can
+    manufacture an interpretation. The document is still refused, but by
+    the CONTRACT (unknown fields), which is the layer that owns that
+    decision.
+    """
+    from app.agent_review.profile_loader_v2 import _read_unambiguously_v2, load_target_profile_text_v2
+
+    text = 'identity:\n  "1": a\n  1: b\n'
+    parsed = _read_unambiguously_v2(text)
+    assert parsed == yaml.safe_load(text), "the authority must not alter a collision-free document"
+    assert set(parsed["identity"]) == {"1", 1}, "both distinct keys survive; nothing was collapsed"
+
+    with pytest.raises(TargetProfileLoadErrorV2) as excinfo:
+        load_target_profile_text_v2(text)
+    assert excinfo.value.reason_code == TARGET_PROFILE_INVALID_REASON_V2
+
+
+def test_contract_validation_introduces_no_key_resolution_policy() -> None:
+    """Direct validation and the old JSON round-trip agree on every valid
+    profile, so removing the round-trip changes nothing except the ability
+    to manufacture duplicates. Measured, not assumed."""
+    import json as _json
+
+    from pydantic import ValidationError
+
+    from app.agent_review.contracts_v2 import TargetProfileV2
+
+    seed = Path(__file__).resolve().parents[2] / "templates" / "agentreview-v2-target-pack" / "target-profile.v2.yaml"
+    base = yaml.safe_load(seed.read_text(encoding="utf-8"))
+    variants = [base]
+    for mutate in (
+        lambda d: d.__setitem__("limitations", ["note-one"]),
+        lambda d: d["policies"].__setitem__("required_checks", ["pytest", "mypy"]),
+        lambda d: d["budgets"].__setitem__("max_chunks", 8),
+        lambda d: d["must_review"].__setitem__("paths", ["app/x.py"]),
+    ):
+        variant = _json.loads(_json.dumps(base))
+        mutate(variant)
+        variants.append(variant)
+
+    for variant in variants:
+        direct = TargetProfileV2.model_validate(variant)
+        via_json = TargetProfileV2.model_validate_json(_json.dumps(variant, ensure_ascii=False), strict=True)
+        assert direct == via_json
+
+
+def test_the_validated_object_is_the_parsed_object_not_a_reserialisation(monkeypatch) -> None:
+    """Mechanism test, deliberately, because the BEHAVIOUR is identical.
+
+    Restoring the JSON round-trip does not change any outcome in the
+    corpus: `{"1": a, 1: b}` is refused either way -- by the contract as an
+    unknown field, or by the round-trip's manufactured duplicate. The first
+    version of this guard asserted the outcome and therefore did not
+    discriminate the mutation at all.
+
+    What actually differs is whether validation re-serialises. A
+    re-serialisation is a second key-resolution policy applied downstream
+    of the authority that exists to refuse one, so the property is "the
+    object validated is the object parsed" -- and that can only be
+    observed at the seam.
+    """
+    import app.agent_review.profile_loader_v2 as module
+
+    calls: list[object] = []
+    real_dumps = module.json.dumps
+
+    def spy(*args, **kwargs):
+        calls.append(args[0] if args else None)
+        return real_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(module.json, "dumps", spy)
+
+    profile_text = (Path(__file__).resolve().parents[2] / "templates"
+                    / "agentreview-v2-target-pack" / "target-profile.v2.yaml").read_text(encoding="utf-8")
+    module.load_target_profile_text_v2(profile_text)
+
+    parsed = module._read_unambiguously_v2(profile_text)
+    assert parsed not in calls, (
+        "the parsed profile was re-serialised during validation; contract "
+        "validation must not introduce a second key-resolution policy"
+    )
