@@ -80,3 +80,13 @@ Review textual do modelo é advisory. `review-readiness` determinístico é a de
 ## AIOps semanal
 
 A coleta pode marcar janelas críticas, agregar métricas/logs sanitizados e gerar review periódico de bugs, gargalos e hipóteses. Recomendações devem incluir evidência, confiança, contra-hipóteses e próxima investigação. Ação corretiva abre fluxo separado com task contract e grant.
+
+## Mudança estrutural
+
+Mudança estrutural responde [`STRUCTURAL_CHANGE_PREFLIGHT.md`](STRUCTURAL_CHANGE_PREFLIGHT.md) antes de implementar, e registra as respostas na PR.
+
+- derive a semântica da autoridade primária; não a duplique;
+- mudança estrutural exige corpus adversarial e safe counterexamples;
+- teste load-bearing precisa falhar sob mutação da propriedade que afirma proteger;
+- findings repetidos na mesma fronteira abstracional disparam redesign, não mais patches;
+- fuzz finito não prova completude universal.

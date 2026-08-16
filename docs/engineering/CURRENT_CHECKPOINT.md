@@ -12,9 +12,12 @@ concede autoridade e não substitui consulta viva ao forge.
 
 - Repositório canônico: [`mglpsw/aiops-orchestrator`](https://github.com/mglpsw/aiops-orchestrator)
 - Branch padrão: `master`
-- HEAD observado: `abe034ad24c89e6167c1f05797178e57d49fdd63`
-  (squash merge de PR #233 — H1-C, fecha C9 na fronteira de autoridade
-  runtime do executor de trusted checks v2).
+- HEAD observado: `6d613cf7398a89d659694e150b9b5483483ed997`
+  (squash merge de PR #237 — deriva a autoridade de ambiguidade YAML do
+  TargetProfile do parser, encerrando PR-A de `#203-S2`; supersede PR #236
+  e substitui PR #235 como registro forense). `#234` (refresh de checkpoint
+  pós-H1) mergeou entre `abe034a` e este HEAD; o delta abaixo permanece
+  ancorado em `abe034a` e não foi reexpandido por `#238`.
 - Última release publicada: `v0.22.0` → `2ce1f45768b8779cb48ef8a302d4ed796349f0e5`,
   final, imutável, publicada em 2026-08-12.
 - `master` está **11 commits à frente** da `v0.22.0`. Esse delta é **unreleased**.
@@ -168,7 +171,12 @@ Repin é ação protegida e não foi executado neste corte.
 
 ## Próxima ação mínima
 
-Retomar a `#203` — completar o target pack instalável — sobre este `master`.
+`#238` (institucionalização das lições de PR-A — ADR, postmortem, preflight,
+corpus executável) está **em qualificação** como Draft PR sobre este
+`master`. PR-B (`target validate`) permanece `BLOCKED_BY_238`: não é a
+próxima ação autorizada enquanto `#238` não atingir sua disposição final.
+
+Depois de `#238`, retomar a `#203` — completar o target pack instalável.
 Os pré-requisitos de core (`#200`/`#201`/`#202`) estão satisfeitos e a dívida
 C1-C10 está fechada; `#232` permanece aberta mas não bloqueia `#203`.
 

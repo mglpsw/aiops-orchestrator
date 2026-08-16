@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **AgentReview v2 target-profile YAML loading now derives ambiguity from
+  the parser (`#237`)**: `load_target_profile_v2`/`load_target_profile_text_v2`
+  now reject a duplicate authored key (even when every occurrence carries
+  the same value) and any YAML merge key (`<<:`), observing both collisions
+  at the exact point PyYAML's own constructors would otherwise choose
+  silently, instead of comparing readings or projecting to JSON. Contract
+  validation now runs directly against the parsed object
+  (`TargetProfileV2.model_validate`), with no intermediate
+  `json.dumps`/`model_validate_json` round-trip. See
+  `docs/adr/ADR_AGENT_REVIEW_V2_TARGET_PROFILE_YAML_AUTHORITY.md`.
 - **AgentReview v1 chunk planning by real hunk cost, not path length
   (`#225`)**: the semantic chunk planner sized a chunk from
   `max(256, len(path) * 12)` — a proxy for the file *path*, never the diff
