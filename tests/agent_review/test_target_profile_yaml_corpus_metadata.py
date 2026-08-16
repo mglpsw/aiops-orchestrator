@@ -30,6 +30,24 @@ against a temporary corpus before any fix was applied:
 Every test below marked "(round-1 finding N)" is the committed regression
 test for one of these; the corresponding fix in `target_profile_yaml_corpus.py`
 is described in that module's own docstring.
+
+Round-2 review found `property_family` was validated for classification
+membership but not truth (an `ambiguous` case could declare `stock_parity`).
+Round-3 review found that fix (`CLASSIFICATION_PROPERTY_FAMILIES`) was
+necessary but not sufficient: two members of the SAME classification's
+allowed family set could still be swapped on one case without detection,
+since nothing checked which family that specific case's own bytes actually
+demonstrate. Investigating this precisely -- generalizing the M1/M2
+mutation-discrimination technique to every corpus case, and reading the
+`__cause__` chain `_read_unambiguously_v2` produces -- found the finding
+was not hypothetical: `duplicate_inside_key_mapping` was genuinely
+mislabeled `ambiguous`/`mapping_assignment_collision`; its real failure is
+a raw stock `ConstructorError` (an untagged complex key with no scalar
+representation), never this authority's own collision guard. It is now
+filed under `malformed`/`constructor_failure`. The per-family assertions
+below (`test_*_family_is_true_for_the_case`) are the resulting committed,
+per-case regression tests; every other corpus case's declared family was
+verified true by the same investigation.
 """
 
 from __future__ import annotations
@@ -38,7 +56,9 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
+import app.agent_review.profile_loader_v2 as loader_module
 from tests.agent_review.target_profile_yaml_corpus import (
     CLASSIFICATIONS,
     CorpusMetadataError,
@@ -108,6 +128,149 @@ def test_the_four_classifications_partition_the_corpus() -> None:
     assert seen == {c.case_id for c in all_cases}
     # anti-loss tripwire, not a second classification authority:
     assert len(all_cases) == 49
+
+
+# -- round-3: each case's declared property_family must be TRUE, not merely --
+# -- a member of the set its classification allows -----------------------------
+#
+# Round 2 coupled `property_family` to `classification`
+# (`CLASSIFICATION_PROPERTY_FAMILIES`), which closed "any string" down to "a
+# family this classification can demonstrate" -- but round-3 review found
+# that within one classification's allowed set, a case could still be
+# mislabeled with a DIFFERENT member of that same set and still load, since
+# nothing checked which family THIS case's own bytes actually demonstrate.
+#
+# Investigating this precisely (patching each collision-point guard to stock
+# in isolation, and reading the `__cause__` chain `_read_unambiguously_v2`
+# itself produces) found the finding was not hypothetical: one shipped case,
+# `duplicate_inside_key_mapping`, was genuinely mislabeled `ambiguous`/
+# `mapping_assignment_collision` -- its real failure is a raw stock
+# `ConstructorError` (an untagged complex key with no scalar
+# representation), never `AmbiguousProfileDocumentV2`. It is now filed under
+# `malformed`/`constructor_failure`, where the same investigation confirms
+# it belongs. Every other corpus case's declared family was verified true.
+
+
+def _read_or_none(case) -> tuple[object | None, BaseException | None]:
+    """Returns (value, None) if `_read_unambiguously_v2` succeeds, or
+    (None, exception) if it raises."""
+    try:
+        return loader_module._read_unambiguously_v2(case.text), None
+    except loader_module.TargetProfileLoadErrorV2 as exc:
+        return None, exc
+
+
+def _collision_point_1_alone_accepts(text: str) -> bool:
+    original = loader_module._CollisionRefusingSafeLoaderV2.construct_mapping
+    loader_module._CollisionRefusingSafeLoaderV2.construct_mapping = yaml.SafeLoader.construct_mapping
+    try:
+        loader_module._read_unambiguously_v2(text)
+        return True
+    except loader_module.TargetProfileLoadErrorV2:
+        return False
+    finally:
+        loader_module._CollisionRefusingSafeLoaderV2.construct_mapping = original
+
+
+def _collision_point_2_alone_accepts(text: str) -> bool:
+    original = loader_module._CollisionRefusingSafeLoaderV2.construct_scalar
+    loader_module._CollisionRefusingSafeLoaderV2.construct_scalar = yaml.SafeLoader.construct_scalar
+    try:
+        loader_module._read_unambiguously_v2(text)
+        return True
+    except loader_module.TargetProfileLoadErrorV2:
+        return False
+    finally:
+        loader_module._CollisionRefusingSafeLoaderV2.construct_scalar = original
+
+
+def _by_family(classification: str, family: str) -> list:
+    return [c for c in cases(classification) if c.property_family == family]
+
+
+_MAPPING_COLLISION_CASES = _by_family("ambiguous", "mapping_assignment_collision")
+_VALUE_TAG_CASES = _by_family("ambiguous", "value_tag_multiple_candidates")
+_CONSTRUCTOR_FAILURE_CASES = _by_family("malformed", "constructor_failure")
+_NON_MAPPING_DOCUMENT_CASES = _by_family("malformed", "non_mapping_document")
+_MERGE_KEY_UNSUPPORTED_CASES = _by_family("invalid", "merge_key_unsupported")
+_CONTRACT_VALIDATION_CASES = _by_family("invalid", "contract_validation")
+
+
+@pytest.mark.parametrize("case", _MAPPING_COLLISION_CASES, ids=[c.case_id for c in _MAPPING_COLLISION_CASES])
+def test_mapping_assignment_collision_family_is_true_for_the_case(case) -> None:
+    assert _collision_point_1_alone_accepts(case.text), (
+        f"{case.case_id}: declared mapping_assignment_collision, but bypassing "
+        f"collision point 1 alone does not make the document acceptable"
+    )
+
+
+@pytest.mark.parametrize("case", _VALUE_TAG_CASES, ids=[c.case_id for c in _VALUE_TAG_CASES])
+def test_value_tag_multiple_candidates_family_is_true_for_the_case(case) -> None:
+    assert _collision_point_2_alone_accepts(case.text), (
+        f"{case.case_id}: declared value_tag_multiple_candidates, but bypassing "
+        f"collision point 2 alone does not make the document acceptable"
+    )
+
+
+@pytest.mark.parametrize("case", _CONSTRUCTOR_FAILURE_CASES, ids=[c.case_id for c in _CONSTRUCTOR_FAILURE_CASES])
+def test_constructor_failure_family_is_true_for_the_case(case) -> None:
+    _, exc = _read_or_none(case)
+    assert exc is not None, f"{case.case_id}: declared constructor_failure but did not raise"
+    assert not isinstance(exc.__cause__, loader_module.AmbiguousProfileDocumentV2), (
+        f"{case.case_id}: declared constructor_failure, but the failure is actually "
+        f"this authority's own collision guard (AmbiguousProfileDocumentV2), not a "
+        f"raw PyYAML constructor failure"
+    )
+
+
+@pytest.mark.parametrize("case", _NON_MAPPING_DOCUMENT_CASES, ids=[c.case_id for c in _NON_MAPPING_DOCUMENT_CASES])
+def test_non_mapping_document_family_is_true_for_the_case(case) -> None:
+    value, exc = _read_or_none(case)
+    assert exc is None, f"{case.case_id}: declared non_mapping_document but raised {exc!r}"
+    assert not isinstance(value, dict), (
+        f"{case.case_id}: declared non_mapping_document, but the read value is a dict"
+    )
+
+
+@pytest.mark.parametrize(
+    "case", _MERGE_KEY_UNSUPPORTED_CASES, ids=[c.case_id for c in _MERGE_KEY_UNSUPPORTED_CASES]
+)
+def test_merge_key_unsupported_family_is_true_for_the_case(case) -> None:
+    assert loader_module._document_uses_merge_v2(case.text) is True, (
+        f"{case.case_id}: declared merge_key_unsupported, but "
+        f"_document_uses_merge_v2 does not flag it"
+    )
+
+
+@pytest.mark.parametrize("case", _CONTRACT_VALIDATION_CASES, ids=[c.case_id for c in _CONTRACT_VALIDATION_CASES])
+def test_contract_validation_family_is_true_for_the_case(case) -> None:
+    assert loader_module._document_uses_merge_v2(case.text) is False, (
+        f"{case.case_id}: declared contract_validation, but a merge key is present"
+    )
+    value, exc = _read_or_none(case)
+    assert exc is None, (
+        f"{case.case_id}: declared contract_validation, but the reading itself "
+        f"raised {exc!r} -- refusal must come from contract validation, not the "
+        f"YAML-authority reading"
+    )
+
+
+def test_every_ambiguous_and_malformed_and_invalid_case_has_a_family_assertion() -> None:
+    """Fails closed on drift: if a new `PROPERTY_FAMILIES` member is ever
+    added without a corresponding family-truth test above, this test -- not
+    silent gap -- is what catches it."""
+    covered_families = {
+        "mapping_assignment_collision",
+        "value_tag_multiple_candidates",
+        "constructor_failure",
+        "non_mapping_document",
+        "merge_key_unsupported",
+        "contract_validation",
+        "stock_parity",  # covered by test_family_legal_documents_read_exactly_as_stock_safeloader
+    }
+    from tests.agent_review.target_profile_yaml_corpus import PROPERTY_FAMILIES
+
+    assert covered_families == PROPERTY_FAMILIES
 
 
 # -- JSON-level: duplicate object keys must never reach corpus validation ---

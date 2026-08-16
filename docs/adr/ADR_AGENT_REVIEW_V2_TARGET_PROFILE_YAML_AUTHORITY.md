@@ -110,7 +110,11 @@ that were never in collision (`{"1": a, 1: b}` → `{"1": "a", "1": "b"}`,
 reparsed last-wins) — a second, downstream key-resolution policy applied
 by the very validation step that exists to make sure only one such policy
 ever runs. Direct validation was measured, not assumed, to be equivalent
-to the removed round-trip on every valid profile in the corpus.
+to the removed round-trip on the shipped seed template
+(`templates/agentreview-v2-target-pack/target-profile.v2.yaml`) and four
+independent field-level variants of it -- not on the YAML-authority
+corpus's `legal/` fixtures, which are deliberately minimal reading-level
+YAML fragments, not generally valid `TargetProfileV2` documents.
 
 **Reason-code mapping.**
 

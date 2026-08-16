@@ -262,17 +262,17 @@
   },
   {
     "case_id": "duplicate_inside_key_mapping",
-    "classification": "ambiguous",
-    "fixture_path": "ambiguous/duplicate_inside_key_mapping.yamlcase",
+    "classification": "malformed",
+    "fixture_path": "malformed/duplicate_inside_key_mapping.yamlcase",
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "mapping_assignment_collision",
+    "property_family": "constructor_failure",
     "mutation_target": null,
     "origin": {
       "pr": 236
     },
-    "notes": null,
+    "notes": "Reclassified from ambiguous/mapping_assignment_collision under round-3 review (#239): the outer complex key is tagged !!str but is a MappingNode with no `!!value`-tagged entry, so construct_scalar falls through to stock's own scalar check and raises ConstructorError -- verified via the __cause__ chain to NOT be AmbiguousProfileDocumentV2, and via direct mutation probing that neither collision point's guard accounts for the refusal. The nested duplicate `d` key is never reached; this case's disposition was always correct (refused, target_profile_unreadable), only its declared family/classification were wrong.",
     "limitations": null
   },
   {
