@@ -50,6 +50,48 @@ assertions (`_FAMILY_ASSERTIONS`, consumed by
 `test_family_assertion_is_true_for_the_case`) are the resulting committed,
 per-case regression tests; every other corpus case's declared family was
 verified true by the same investigation.
+
+Round 4 found the `constructor_failure` assertion was a negative check
+("not our own ambiguity guard") broader than its name -- renamed
+`stock_parse_failure`, asserted positively against the production loader's
+own `_YAML_PARSE_FAILURES_V2` -- and found the closure test compared
+`PROPERTY_FAMILIES` against a second, hand-typed set rather than the
+registry actually consulted.
+
+SPIKE (round 5). Rounds 2, 3, and 4 had by this point landed on the same
+abstraction boundary -- `property_family` verification -- three times
+consecutively, which is `STRUCTURAL_CHANGE_PREFLIGHT.md`'s own
+unconditional STOP/REDESIGN trigger, with no convergence exception written
+into that document. Round 4 proceeded past this point on an ad-hoc
+convergence judgement recorded only in the PR body, not in the preflight
+itself -- round-5 review correctly named this as the preflight's own rule
+applied selectively rather than honoured or amended. This is the disposable
+spike the preflight requires, performed (late) once that was pointed out:
+
+  - question: is the round-3/4 mechanism (one registry mapping
+    property_family -> a per-case assertion, consumed by both a
+    parametrized per-case test and a closure-completeness test) the right
+    mechanism, or does a different one belong here?
+  - evaluated: deriving assertions from the production module's own
+    primitives (`_YAML_PARSE_FAILURES_V2`, `_document_uses_merge_v2`, the
+    two collision-point mutation techniques) instead of inventing new
+    discriminators, and consuming ONE structure for both per-case dispatch
+    and closure checking, are exactly the properties rounds 1-4 already
+    established as necessary -- no competing mechanism does better.
+  - found: the two round-5 findings were real gaps WITHIN this mechanism,
+    not evidence it is the wrong mechanism -- `stock_parity` had been
+    excluded from the registry via a literal `| {"stock_parity"}` in the
+    closure check (an escape hatch not itself derived from anything), and
+    `stock_parse_failure`'s assertion validated only that the AUTHORITY's
+    wrapped exception was self-consistent, never that STOCK `yaml.safe_load`
+    also fails on the same bytes -- so the family's own name (implying
+    parity with stock parsing) was not what was actually being checked.
+  - conclusion: keep the mechanism; close both gaps within it.
+    `_assert_stock_parity` is now a real `_FAMILY_ASSERTIONS` entry (the
+    closure check is a plain, exception-free equality), and
+    `_assert_stock_parse_failure` now also asserts stock `yaml.safe_load`
+    raises on the identical bytes -- verified empirically first (13/13
+    cases already satisfied this) rather than assumed.
 """
 
 from __future__ import annotations
@@ -231,6 +273,20 @@ def _assert_stock_parse_failure(case) -> None:
         f"own _YAML_PARSE_FAILURES_V2 -- this is not a failure mode the authority "
         f"itself recognizes as a target-authored-YAML parse failure"
     )
+    # Round-5 finding: this alone only proves the AUTHORITY's wrapped
+    # exception is one it recognizes -- it never touches stock PyYAML, so a
+    # custom-loader-only regression wrapping a spurious exception in that
+    # same tuple would still pass, even though the family's own name claims
+    # parity with stock parsing behaviour. Assert stock `yaml.safe_load`
+    # also fails on the identical bytes.
+    try:
+        yaml.safe_load(case.text)
+        raise AssertionError(
+            f"{case.case_id}: declared stock_parse_failure, but stock "
+            f"yaml.safe_load does not raise on the same bytes"
+        )
+    except loader_module._YAML_PARSE_FAILURES_V2:
+        pass
 
 
 def _assert_non_mapping_document(case) -> None:
@@ -260,12 +316,25 @@ def _assert_contract_validation(case) -> None:
     )
 
 
+def _assert_stock_parity(case) -> None:
+    """Same assertion as
+    `test_profile_loader_v2.py::test_family_legal_documents_read_exactly_as_stock_safeloader`
+    -- that test remains the primary, standalone home for this behaviour.
+    Registered here too (round-5 fix) so `stock_parity` is a real entry in
+    `_FAMILY_ASSERTIONS` rather than a literal closure-check carve-out: the
+    original `| {"stock_parity"}` exception meant deleting that dedicated
+    test left the closure check green regardless, which is the same
+    disconnect round 4 fixed for the other six families."""
+    assert loader_module._read_unambiguously_v2(case.text) == yaml.safe_load(case.text), (
+        f"{case.case_id}: declared stock_parity, but the authority's reading "
+        f"diverges from stock yaml.safe_load"
+    )
+
+
 # The single registry: property_family -> the function that proves it true
-# for a given case. `stock_parity` (legal cases) is deliberately absent --
-# it is covered by the dedicated equality assertion in
-# `test_profile_loader_v2.py::test_family_legal_documents_read_exactly_as_stock_safeloader`,
-# named explicitly in the closure test below rather than given a no-op entry
-# here.
+# for a given case. Every `PROPERTY_FAMILIES` member has an entry -- no
+# closure-check carve-out (round-5 fix; see the module docstring's SPIKE
+# note for why `stock_parity`'s original exclusion was itself a gap).
 _FAMILY_ASSERTIONS = {
     "mapping_assignment_collision": _assert_mapping_assignment_collision,
     "value_tag_multiple_candidates": _assert_value_tag_multiple_candidates,
@@ -273,26 +342,29 @@ _FAMILY_ASSERTIONS = {
     "non_mapping_document": _assert_non_mapping_document,
     "merge_key_unsupported": _assert_merge_key_unsupported,
     "contract_validation": _assert_contract_validation,
+    "stock_parity": _assert_stock_parity,
 }
 
-_NON_LEGAL_CASES = [c for c in cases() if c.classification != "legal"]
+_ALL_CASES = list(cases())
 
 
-@pytest.mark.parametrize("case", _NON_LEGAL_CASES, ids=[c.case_id for c in _NON_LEGAL_CASES])
+@pytest.mark.parametrize("case", _ALL_CASES, ids=[c.case_id for c in _ALL_CASES])
 def test_family_assertion_is_true_for_the_case(case) -> None:
     _FAMILY_ASSERTIONS[case.property_family](case)
 
 
 def test_every_property_family_has_a_registered_assertion() -> None:
     """Derived from the SAME registry `test_family_assertion_is_true_for_the_case`
-    calls -- not a second, hand-typed set. Deleting or renaming an entry in
+    calls -- not a second, hand-typed set, and (round-5 fix) no carve-out for
+    any single family either: every `PROPERTY_FAMILIES` member, including
+    `stock_parity`, must be a real key. Deleting or renaming ANY entry in
     `_FAMILY_ASSERTIONS` breaks this test AND makes the per-case test above
     raise `KeyError` for any case of that family, so a disconnect is caught
     structurally rather than by a maintained-in-parallel list staying
     (silently) accurate by luck."""
     from tests.agent_review.target_profile_yaml_corpus import PROPERTY_FAMILIES
 
-    assert set(_FAMILY_ASSERTIONS) | {"stock_parity"} == PROPERTY_FAMILIES
+    assert set(_FAMILY_ASSERTIONS) == PROPERTY_FAMILIES
 
 
 # -- JSON-level: duplicate object keys must never reach corpus validation ---
