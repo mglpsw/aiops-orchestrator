@@ -83,10 +83,6 @@ A coleta pode marcar janelas críticas, agregar métricas/logs sanitizados e ger
 
 ## Mudança estrutural
 
-Mudança estrutural responde [`STRUCTURAL_CHANGE_PREFLIGHT.md`](STRUCTURAL_CHANGE_PREFLIGHT.md) antes de implementar, e registra as respostas na PR.
+Mudanças estruturais devem responder [`STRUCTURAL_CHANGE_PREFLIGHT.md`](STRUCTURAL_CHANGE_PREFLIGHT.md) antes da implementação e registrar as respostas na PR.
 
-- derive a semântica da autoridade primária; não a duplique;
-- mudança estrutural exige corpus adversarial e safe counterexamples;
-- teste load-bearing precisa falhar sob mutação da propriedade que afirma proteger;
-- findings repetidos na mesma fronteira abstracional disparam redesign, não mais patches;
-- fuzz finito não prova completude universal.
+Os critérios, limiares e procedimento de `STOP/REDESIGN` são definidos exclusivamente nesse preflight e não são duplicados neste overlay.

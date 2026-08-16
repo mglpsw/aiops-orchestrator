@@ -54,9 +54,10 @@ resolver and constructors.** The decision is derived from that authority's
 own behaviour, not reimplemented against it.
 
 The authority (`_CollisionRefusingSafeLoaderV2`, a `yaml.SafeLoader`
-subclass) instruments exactly two points — the two places stock PyYAML
-silently *selects* among competing authored entries instead of refusing —
-and refuses at the moment the real constructor is about to make that
+subclass) instruments exactly two points — the two places **demonstrated
+and instrumented by the current corpus**, where stock PyYAML silently
+*selects* among competing authored entries instead of refusing — and
+refuses at the moment the real constructor is about to make that
 selection, before it happens:
 
 - **collision point 1 — mapping assignment.** `construct_mapping` refuses
@@ -194,10 +195,11 @@ documents outside `.aiops/target-profile.v2.yaml`.
 
 ## Empirical evidence class
 
-**`empirically_supported`**, over the enumerated families in the corpus:
-mapping-assignment collisions, `!!value`-candidate collisions, seven shapes
-of merge-key document, and the constructor-failure families enumerated in
-`profile_loader_v2._YAML_PARSE_FAILURES_V2`'s own docstring. This is
+**`empirically_supported`**, over the enumerated families in the corpus.
+Cases are classified into machine-validated property families defined by
+the executable corpus contract (`PROPERTY_FAMILIES` in
+`tests/agent_review/target_profile_yaml_corpus.py`) — that module is the
+one home for the family vocabulary; it is not re-enumerated here. This is
 systematic evidence over the families a human adversarial review process
 enumerated across `#236`'s seven rounds and `#237`'s own reproducers — it
 is **not** a universal completeness proof over PyYAML's behaviour, and no
