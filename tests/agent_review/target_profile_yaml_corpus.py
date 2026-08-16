@@ -10,20 +10,62 @@ already refuses duplicate JSON object keys and non-finite numbers -- reused,
 not re-derived.
 
 Every failure here is fail-closed: unknown/missing fields, unknown enum
-values, a `legal` case not read through the reading-level entry point, a
-fixture with no metadata record, or a metadata record with no fixture file
+values, a fixture with no metadata record, a metadata record with no
+fixture file, a duplicate fixture path, or a duplicate mutation exemplar
 all raise ``CorpusMetadataError`` instead of silently ignoring the problem.
+
+Round-1 adversarial review of `#238`/PR #239 (exact HEAD `ff308c9510`)
+found this module itself had not applied its own thesis -- ONE FACT, ONE
+HOME -- consistently:
+
+- ``entry_point``/``expected_disposition`` were stored in ``CORPUS.json``
+  ALONGSIDE ``classification``, three declarations of one fact with no
+  check forcing them to agree; a `legal` record could declare `refused`
+  plus a reason code and load anyway (the family test never consulted
+  either field). Fixed by DELETING the two fields -- ``classification`` is
+  now the only authority, and ``entry_point``/``expected_disposition`` are
+  derived ``@property`` views on ``CorpusCase``. A record still carrying
+  either key is now rejected as an unknown field, not merely a mismatched
+  one.
+- bijection was decided on ``{record.fixture_path for record in records}``,
+  a Python ``set`` -- a lossy projection that let two distinct ``case_id``s
+  declare the SAME ``fixture_path`` and pass, and that let a payload be
+  swapped out from under a record while the corpus's own record count held
+  steady. The exact bug class this authority's own ADR documents
+  (`json.dumps` manufacturing a duplicate via a lossy projection). Fixed by
+  checking ``fixture_path`` uniqueness explicitly, the same way ``case_id``
+  already was, BEFORE any set is formed.
+- disk discovery globbed only direct children of the four known
+  classification directories, so a `.yamlcase` nested one level deeper, in
+  a misspelled directory, or sitting at the fixtures root was invisible to
+  both directions of the bijection check and could carry unreviewed
+  content with zero test coverage. Fixed by discovering the whole tree
+  (``rglob``) and then failing closed on any path whose shape does not
+  match ``<classification>/<filename>.yamlcase``.
+- ``mutation_target`` coverage was checked by comparing SETS of declared
+  labels against a hard-coded set of labels the mutation tests claimed to
+  cover -- proving only that each label occurs somewhere, not that the
+  specific case declaring it is the one actually exercised. A second case
+  silently reusing an already-covered label left the set unchanged and the
+  coverage test green while exercising nothing new. Fixed by giving
+  ``mutation_target`` a precise semantic (the case is the SOLE exemplar of
+  that mutation) enforced exactly-once, with ``mutation_case(target)`` as
+  the single lookup the mutation tests consume -- no parallel table.
+- ``property_family`` shared a nullable-or-string loop with ``notes``/
+  ``limitations``, so ``None`` and ``""`` both loaded as "no family",
+  silently admitting a case that contributes no usable coverage evidence.
+  Fixed by validating it separately: non-empty AND a member of a closed,
+  test-only vocabulary.
+- a redundant ``sys.path.insert`` duplicated what pytest's own rootdir
+  insertion already provides; removed.
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from app.common.strict_json import strict_json_loads  # noqa: E402
+from app.common.strict_json import strict_json_loads
 
 FIXTURES_ROOT = Path(__file__).resolve().parent / "fixtures" / "target_profile_yaml"
 CORPUS_PATH = FIXTURES_ROOT / "CORPUS.json"
@@ -31,8 +73,34 @@ CORPUS_PATH = FIXTURES_ROOT / "CORPUS.json"
 CLASSIFICATIONS = frozenset({"legal", "ambiguous", "invalid", "malformed"})
 TEXT_ENCODINGS = frozenset({"utf-8"})
 DECODE_ERRORS = frozenset({"strict", "surrogatepass"})
-ENTRY_POINTS = frozenset({"load_target_profile_text_v2", "_read_unambiguously_v2"})
-DISPOSITIONS = frozenset({"refused", "accepted_parity_with_stock"})
+
+# The closed vocabulary of mutation-discrimination exemplars. Each member
+# must resolve to EXACTLY ONE corpus case (`mutation_case`, below) -- see
+# tests/agent_review/test_profile_loader_v2_mutation_discrimination.py.
+MUTATION_TARGETS = frozenset({"collision_point_1", "collision_point_2", "merge_bypass"})
+
+# The closed, test-only vocabulary of empirical property families the ADR
+# describes. Not re-enumerated in the ADR itself -- this module is the one
+# home for the list; the ADR points here instead of copying it.
+PROPERTY_FAMILIES = frozenset(
+    {
+        "mapping_assignment_collision",
+        "value_tag_multiple_candidates",
+        "merge_key_unsupported",
+        "constructor_failure",
+        "non_mapping_document",
+        "contract_validation",
+        "stock_parity",
+    }
+)
+
+# `classification` is the only authority for these two facts -- they are
+# never stored in CORPUS.json (a record carrying either key is rejected as
+# an unknown field by `_validate_record`, below).
+_LEGAL_ENTRY_POINT = "_read_unambiguously_v2"
+_NON_LEGAL_ENTRY_POINT = "load_target_profile_text_v2"
+_LEGAL_DISPOSITION = "accepted_parity_with_stock"
+_NON_LEGAL_DISPOSITION = "refused"
 
 _REQUIRED_FIELDS = frozenset(
     {
@@ -41,8 +109,6 @@ _REQUIRED_FIELDS = frozenset(
         "fixture_path",
         "text_encoding",
         "decode_errors",
-        "entry_point",
-        "expected_disposition",
         "expected_reason_code",
         "property_family",
         "mutation_target",
@@ -66,8 +132,6 @@ class CorpusCase:
     fixture_path: str
     text_encoding: str
     decode_errors: str
-    entry_point: str
-    expected_disposition: str
     expected_reason_code: str | None
     property_family: str
     mutation_target: str | None
@@ -75,6 +139,20 @@ class CorpusCase:
     notes: str | None
     limitations: str | None
     fixtures_root: Path = FIXTURES_ROOT
+
+    @property
+    def entry_point(self) -> str:
+        """Derived from `classification` -- never stored. `legal` is a
+        YAML-authority reading-level property, never a contract-level one,
+        so it is always read through `_read_unambiguously_v2`; every other
+        classification goes through the full `load_target_profile_text_v2`
+        pipeline."""
+        return _LEGAL_ENTRY_POINT if self.classification == "legal" else _NON_LEGAL_ENTRY_POINT
+
+    @property
+    def expected_disposition(self) -> str:
+        """Derived from `classification` -- never stored."""
+        return _LEGAL_DISPOSITION if self.classification == "legal" else _NON_LEGAL_DISPOSITION
 
     @property
     def payload_bytes(self) -> bytes:
@@ -114,39 +192,24 @@ def _validate_record(record: object, fixtures_root: Path) -> CorpusCase:
     if decode_errors not in DECODE_ERRORS:
         raise CorpusMetadataError(f"{case_id}: unknown decode_errors {decode_errors!r}")
 
-    entry_point = record["entry_point"]
-    if entry_point not in ENTRY_POINTS:
-        raise CorpusMetadataError(f"{case_id}: unknown entry_point {entry_point!r}")
-
-    # D14: `legal` is a YAML-authority reading-level property, never a
-    # contract-level one, so it must always be read through
-    # `_read_unambiguously_v2`, never through `load_target_profile_text_v2`.
-    if classification == "legal" and entry_point != "_read_unambiguously_v2":
-        raise CorpusMetadataError(
-            f"{case_id}: classification=legal must use entry_point="
-            f"_read_unambiguously_v2, got {entry_point!r}"
-        )
-    if classification != "legal" and entry_point != "load_target_profile_text_v2":
-        raise CorpusMetadataError(
-            f"{case_id}: classification={classification!r} must use entry_point="
-            f"load_target_profile_text_v2, got {entry_point!r}"
-        )
-
-    expected_disposition = record["expected_disposition"]
-    if expected_disposition not in DISPOSITIONS:
-        raise CorpusMetadataError(f"{case_id}: unknown expected_disposition {expected_disposition!r}")
-
+    # `expected_disposition` is DERIVED from `classification` (see
+    # CorpusCase.expected_disposition); the reason code is still an
+    # independently observed outcome, since it may legitimately evolve
+    # without changing the taxonomy -- exactly how `recursive_alias_value`
+    # moved from `malformed` to `invalid` under step-4 observation without
+    # touching this rule.
     expected_reason_code = record["expected_reason_code"]
-    if expected_disposition == "accepted_parity_with_stock":
+    if classification == "legal":
         if expected_reason_code is not None:
             raise CorpusMetadataError(
-                f"{case_id}: accepted_parity_with_stock must have a null "
+                f"{case_id}: classification=legal must have a null "
                 f"expected_reason_code, got {expected_reason_code!r}"
             )
     else:
         if not isinstance(expected_reason_code, str) or not expected_reason_code:
             raise CorpusMetadataError(
-                f"{case_id}: refused case must have a non-empty expected_reason_code"
+                f"{case_id}: classification={classification!r} must have a "
+                f"non-empty expected_reason_code"
             )
 
     fixture_path = record["fixture_path"]
@@ -159,14 +222,25 @@ def _validate_record(record: object, fixtures_root: Path) -> CorpusCase:
         )
 
     mutation_target = record["mutation_target"]
-    if mutation_target is not None and not isinstance(mutation_target, str):
-        raise CorpusMetadataError(f"{case_id}: mutation_target must be a string or null")
+    if mutation_target is not None:
+        if not isinstance(mutation_target, str) or mutation_target not in MUTATION_TARGETS:
+            raise CorpusMetadataError(
+                f"{case_id}: mutation_target must be null or a member of "
+                f"MUTATION_TARGETS, got {mutation_target!r}"
+            )
+
+    property_family = record["property_family"]
+    if not isinstance(property_family, str) or property_family not in PROPERTY_FAMILIES:
+        raise CorpusMetadataError(
+            f"{case_id}: property_family must be a non-empty member of "
+            f"PROPERTY_FAMILIES, got {property_family!r}"
+        )
 
     origin = record["origin"]
     if not isinstance(origin, dict):
         raise CorpusMetadataError(f"{case_id}: origin must be an object")
 
-    for field_name in ("property_family", "notes", "limitations"):
+    for field_name in ("notes", "limitations"):
         value = record[field_name]
         if value is not None and not isinstance(value, str):
             raise CorpusMetadataError(f"{case_id}: {field_name} must be a string or null")
@@ -177,10 +251,8 @@ def _validate_record(record: object, fixtures_root: Path) -> CorpusCase:
         fixture_path=fixture_path,
         text_encoding=text_encoding,
         decode_errors=decode_errors,
-        entry_point=entry_point,
-        expected_disposition=expected_disposition,
         expected_reason_code=expected_reason_code,
-        property_family=record["property_family"],
+        property_family=property_family,
         mutation_target=mutation_target,
         origin=origin,
         notes=record["notes"],
@@ -189,15 +261,33 @@ def _validate_record(record: object, fixtures_root: Path) -> CorpusCase:
     )
 
 
-def _discover_fixture_files(fixtures_root: Path) -> set[str]:
-    found = set()
-    for classification in sorted(CLASSIFICATIONS):
-        directory = fixtures_root / classification
-        if not directory.is_dir():
-            continue
-        for path in sorted(directory.glob("*.yamlcase")):
-            found.add(f"{classification}/{path.name}")
+def _discover_fixture_files(fixtures_root: Path) -> dict[str, Path]:
+    """Discover EVERY `.yamlcase` under `fixtures_root`, not just direct
+    children of the four known classification directories -- a file nested
+    deeper, in a misspelled directory, or sitting at the root is observed
+    here and then rejected explicitly by shape, rather than silently never
+    being looked at."""
+    found: dict[str, Path] = {}
+    for path in fixtures_root.rglob("*.yamlcase"):
+        rel = path.relative_to(fixtures_root)
+        found[rel.as_posix()] = path
     return found
+
+
+def _validate_fixture_layout(relative_paths: set[str]) -> None:
+    """Fail closed on any discovered `.yamlcase` whose relative path is not
+    exactly `<classification>/<filename>.yamlcase` under a recognized
+    classification -- nested directories, unknown/misspelled classification
+    names, and root-level files all raise by name instead of being
+    silently excluded from the bijection check."""
+    for rel in sorted(relative_paths):
+        parts = rel.split("/")
+        if len(parts) != 2 or parts[0] not in CLASSIFICATIONS:
+            raise CorpusMetadataError(
+                f"fixture file has an invalid layout (expected "
+                f"<classification>/<filename>.yamlcase under one of "
+                f"{sorted(CLASSIFICATIONS)}): {rel!r}"
+            )
 
 
 def load_corpus(corpus_path: Path = CORPUS_PATH) -> tuple[CorpusCase, ...]:
@@ -222,9 +312,43 @@ def load_corpus(corpus_path: Path = CORPUS_PATH) -> tuple[CorpusCase, ...]:
             raise CorpusMetadataError(f"duplicate case_id in CORPUS.json: {record.case_id!r}")
         seen_ids.add(record.case_id)
 
+    # `fixture_path` uniqueness is checked explicitly, BEFORE any set is
+    # formed -- the same treatment `case_id` gets above. A set comparison
+    # alone would let two distinct case_ids declare the same fixture_path
+    # and silently collapse the duplicate, the exact class of bug
+    # `json.dumps` manufactured in the loader this corpus documents.
+    seen_paths: set[str] = set()
+    for record in records:
+        if record.fixture_path in seen_paths:
+            raise CorpusMetadataError(
+                f"duplicate fixture_path in CORPUS.json: {record.fixture_path!r} "
+                f"(case_id={record.case_id!r})"
+            )
+        seen_paths.add(record.fixture_path)
+
+    # `mutation_target` exactly-once: each non-null value must have a
+    # single declaring case, so `mutation_case(target)` is unambiguous.
+    seen_mutation_targets: dict[str, str] = {}
+    for record in records:
+        if record.mutation_target is None:
+            continue
+        if record.mutation_target in seen_mutation_targets:
+            raise CorpusMetadataError(
+                f"mutation_target {record.mutation_target!r} declared by both "
+                f"{seen_mutation_targets[record.mutation_target]!r} and "
+                f"{record.case_id!r} -- each target must have exactly one exemplar"
+            )
+        seen_mutation_targets[record.mutation_target] = record.case_id
+
     # Bijection: every fixture file has exactly one record, and vice versa.
-    declared_paths = {record.fixture_path for record in records}
-    disk_paths = _discover_fixture_files(fixtures_root)
+    # Disk-side discovery walks the WHOLE tree (not just direct children of
+    # the four known directories) and fails closed on any unrecognized
+    # layout before the bijection comparison runs.
+    disk_paths_by_rel = _discover_fixture_files(fixtures_root)
+    _validate_fixture_layout(set(disk_paths_by_rel))
+
+    declared_paths = seen_paths
+    disk_paths = set(disk_paths_by_rel)
 
     orphan_records = declared_paths - disk_paths
     if orphan_records:
@@ -261,3 +385,16 @@ def case(case_id: str) -> CorpusCase:
         if c.case_id == case_id:
             return c
     raise KeyError(f"no corpus case with case_id={case_id!r}")
+
+
+def mutation_case(mutation_target: str) -> CorpusCase:
+    """The single corpus case declaring `mutation_target` as its
+    `mutation_target`. `CORPUS.json` is the only authority for which case
+    this is -- `load_corpus`'s exactly-once check guarantees the result is
+    unambiguous; no second table of exemplars exists anywhere else."""
+    if mutation_target not in MUTATION_TARGETS:
+        raise KeyError(f"unknown mutation_target: {mutation_target!r}")
+    for c in _all_cases():
+        if c.mutation_target == mutation_target:
+            return c
+    raise KeyError(f"no corpus case declares mutation_target={mutation_target!r}")

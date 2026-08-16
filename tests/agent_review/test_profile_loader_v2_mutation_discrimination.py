@@ -38,6 +38,17 @@ M4 -- that contract validation does not re-serialise the parsed object
 is preserved verbatim as
 ``test_the_validated_object_is_the_parsed_object_not_a_reserialisation``
 in ``test_profile_loader_v2.py``, not duplicated here.
+
+Round-1 review of `#238`/PR #239 found the original coverage test compared
+SETS of declared `mutation_target` labels -- proving only that each label
+occurs somewhere in the corpus, not that the case declaring it is actually
+exercised by a mutation test. A second case silently reusing an
+already-covered label left the set unchanged and the coverage test green
+while exercising nothing new. `CORPUS.json` is now the only authority for
+which case is which mutation's exemplar (`mutation_target != null` means
+"the sole exemplar of that target", enforced exactly-once by
+`load_corpus`); the fix is to consume `mutation_case(target)` directly
+instead of maintaining a second, parallel table of exemplars here.
 """
 
 from __future__ import annotations
@@ -46,17 +57,21 @@ import pytest
 import yaml
 
 import app.agent_review.profile_loader_v2 as module
+from tests.agent_review.target_profile_yaml_corpus import MUTATION_TARGETS
 from tests.agent_review.target_profile_yaml_corpus import case as corpus_case
-from tests.agent_review.target_profile_yaml_corpus import cases as corpus_cases
-
-# Every corpus case's `mutation_target`, cross-checked so a case cannot
-# silently stop being exercised by any mutation test.
-_COVERED_MUTATION_TARGETS = frozenset({"collision_point_1", "collision_point_2", "merge_bypass"})
+from tests.agent_review.target_profile_yaml_corpus import mutation_case
 
 
-def test_every_declared_mutation_target_is_covered_by_a_mutation_test() -> None:
-    declared = {c.mutation_target for c in corpus_cases() if c.mutation_target is not None}
-    assert declared == _COVERED_MUTATION_TARGETS
+def test_every_mutation_target_resolves_to_exactly_one_exemplar() -> None:
+    """`load_corpus`'s exactly-once check makes this structurally
+    guaranteed, not merely convention -- this test is the committed proof
+    that every vocabulary member is actually resolvable, so a target left
+    undeclared by any case (or declared by more than one, which
+    `load_corpus` would already refuse to load) is caught here rather than
+    silently skipped by whichever mutation test happens to run."""
+    for target in sorted(MUTATION_TARGETS):
+        resolved = mutation_case(target)
+        assert resolved.mutation_target == target
 
 
 def test_m1_collision_point_1_mapping_assignment_discriminates() -> None:
@@ -68,8 +83,8 @@ def test_m1_collision_point_1_mapping_assignment_discriminates() -> None:
     accepts the document, last-wins -- exactly the pre-#237 behaviour this
     authority exists to refuse.
     """
-    case = corpus_case("plain_duplicate_divergent")
-    assert case.mutation_target == "collision_point_1"
+    case = mutation_case("collision_point_1")
+    assert case.case_id == "plain_duplicate_divergent"
 
     with pytest.raises(module.TargetProfileLoadErrorV2) as excinfo:
         module._read_unambiguously_v2(case.text)
@@ -101,8 +116,8 @@ def test_m2_collision_point_2_value_tag_candidates_discriminates() -> None:
     candidate silently wins, exactly stock PyYAML's own documented
     behaviour for this construct.
     """
-    case = corpus_case("tagged_str_duplicate_value_key")
-    assert case.mutation_target == "collision_point_2"
+    case = mutation_case("collision_point_2")
+    assert case.case_id == "tagged_str_duplicate_value_key"
 
     with pytest.raises(module.TargetProfileLoadErrorV2) as excinfo:
         module._read_unambiguously_v2(case.text)
@@ -136,8 +151,8 @@ def test_m3_merge_bypass_changes_the_observed_reason_code() -> None:
     a genuine collision that collision point 1 (unmutated) now catches,
     changing the reason code to `target_profile_unreadable`.
     """
-    case = corpus_case("duplicate_merge_keys")
-    assert case.mutation_target == "merge_bypass"
+    case = mutation_case("merge_bypass")
+    assert case.case_id == "duplicate_merge_keys"
 
     with pytest.raises(module.TargetProfileLoadErrorV2) as excinfo:
         module.load_target_profile_text_v2(case.text)
