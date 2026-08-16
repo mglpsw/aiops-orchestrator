@@ -63,19 +63,7 @@ from tests.agent_review.target_profile_yaml_corpus import cases as corpus_cases
 from tests.agent_review.target_profile_yaml_corpus import mutation_case
 
 
-def test_every_mutation_target_resolves_to_exactly_one_exemplar() -> None:
-    """`load_corpus`'s exactly-once check makes this structurally
-    guaranteed, not merely convention -- this test is the committed proof
-    that every vocabulary member is actually resolvable, so a target left
-    undeclared by any case (or declared by more than one, which
-    `load_corpus` would already refuse to load) is caught here rather than
-    silently skipped by whichever mutation test happens to run."""
-    for target in sorted(MUTATION_TARGETS):
-        resolved = mutation_case(target)
-        assert resolved.mutation_target == target
-
-
-def test_m1_collision_point_1_mapping_assignment_discriminates() -> None:
+def _run_collision_point_1(case) -> None:
     """mutation_target: collision_point_1 -- plain_duplicate_divergent.
 
     Real: `construct_mapping` refuses the moment it would have to resolve
@@ -84,7 +72,6 @@ def test_m1_collision_point_1_mapping_assignment_discriminates() -> None:
     accepts the document, last-wins -- exactly the pre-#237 behaviour this
     authority exists to refuse.
     """
-    case = mutation_case("collision_point_1")
     assert case.case_id == "plain_duplicate_divergent"
 
     with pytest.raises(module.TargetProfileLoadErrorV2) as excinfo:
@@ -108,7 +95,7 @@ def test_m1_collision_point_1_mapping_assignment_discriminates() -> None:
         assert module._CollisionRefusingSafeLoaderV2.construct_mapping is original
 
 
-def test_m2_collision_point_2_value_tag_candidates_discriminates() -> None:
+def _run_collision_point_2(case) -> None:
     """mutation_target: collision_point_2 -- tagged_str_duplicate_value_key.
 
     Real: `construct_scalar` refuses when a mapping consumed as a scalar
@@ -117,7 +104,6 @@ def test_m2_collision_point_2_value_tag_candidates_discriminates() -> None:
     candidate silently wins, exactly stock PyYAML's own documented
     behaviour for this construct.
     """
-    case = mutation_case("collision_point_2")
     assert case.case_id == "tagged_str_duplicate_value_key"
 
     with pytest.raises(module.TargetProfileLoadErrorV2) as excinfo:
@@ -141,7 +127,7 @@ def test_m2_collision_point_2_value_tag_candidates_discriminates() -> None:
         assert module._CollisionRefusingSafeLoaderV2.construct_scalar is original
 
 
-def test_m3_merge_bypass_changes_the_observed_reason_code() -> None:
+def _run_merge_bypass(case) -> None:
     """mutation_target: merge_bypass -- duplicate_merge_keys.
 
     Real: `_document_uses_merge_v2` sees `<<:` anywhere in the document and
@@ -152,7 +138,6 @@ def test_m3_merge_bypass_changes_the_observed_reason_code() -> None:
     a genuine collision that collision point 1 (unmutated) now catches,
     changing the reason code to `target_profile_unreadable`.
     """
-    case = mutation_case("merge_bypass")
     assert case.case_id == "duplicate_merge_keys"
 
     with pytest.raises(module.TargetProfileLoadErrorV2) as excinfo:
@@ -182,6 +167,39 @@ def test_m3_merge_bypass_changes_the_observed_reason_code() -> None:
         "mutation did not discriminate: bypassing the merge guard produced "
         "the same reason code as the real, merge-exclusion refusal"
     )
+
+
+# mutation_target -> the mutation that actually EXECUTES for it. Round-6
+# redesign: this replaces a separate "every target resolves to an exemplar"
+# closure test, which asserted a property of DECLARATIONS (every vocabulary
+# member has a corpus exemplar) and was therefore satisfiable while no
+# mutation test consumed the target at all.
+_MUTATION_IMPLEMENTATIONS = {
+    "collision_point_1": _run_collision_point_1,
+    "collision_point_2": _run_collision_point_2,
+    "merge_bypass": _run_merge_bypass,
+}
+
+# Parametrized from the UNION of vocabulary and implementations, so both
+# directions of drift are collection-time failures rather than assertions
+# someone must remember to keep true:
+#   target in MUTATION_TARGETS, no implementation -> KeyError here
+#   target implemented, not in the vocabulary      -> mutation_case() raises
+#   target in MUTATION_TARGETS, no corpus exemplar -> mutation_case() raises
+_MUTATION_TARGETS_UNDER_TEST = sorted(MUTATION_TARGETS | set(_MUTATION_IMPLEMENTATIONS))
+
+
+@pytest.mark.parametrize("mutation_target", _MUTATION_TARGETS_UNDER_TEST)
+def test_mutation_target_discriminates_on_the_production_path(mutation_target: str) -> None:
+    """Every `MUTATION_TARGETS` member is EXECUTED, not merely declared.
+
+    There is no separate coverage assertion to keep in sync: a target with
+    no implementation, no corpus exemplar, or an implementation for a
+    target the vocabulary does not contain, each fail here by construction.
+    """
+    case = mutation_case(mutation_target)
+    assert case.mutation_target == mutation_target
+    _MUTATION_IMPLEMENTATIONS[mutation_target](case)
 
 
 def test_m3_counterexample_simple_merge_does_not_discriminate_at_this_entry_point() -> None:

@@ -51,11 +51,17 @@ carries the same value**: this authority never compares the values a
 document's readings would produce, so "this duplicate happens to be
 harmless" is not a distinction it draws.
 
-When a document has no such collision, the authority's reading is
-**value-identical** to stock `yaml.safe_load` on the same bytes -- anchors,
-aliases, explicit tags, and block scalars all behave exactly as PyYAML
-documents them; nothing in this authority re-derives PyYAML's own parsing
-rules.
+For a document that **reaches the reading** -- parseable, merge-free, and
+free of either collision -- the authority's reading is **value-identical**
+to stock `yaml.safe_load` on the same bytes: anchors, aliases, explicit
+tags, and block scalars all behave exactly as PyYAML documents them, and
+nothing in this authority re-derives PyYAML's own parsing rules. The
+qualifier is load-bearing, not hedging: a merge-carrying document is
+refused by the composition-level pre-pass (below) *before* any value is
+constructed, and malformed input produces no value at all, so for those
+two classes there is no reading for the equality to range over. Parity is
+also parity with **this** pinned PyYAML specifically -- see the ADR's
+known-limitations section on YAML 1.1/1.2 scalar resolution.
 
 **YAML merge keys (`<<:`) are not part of the accepted language.** A
 document containing `<<:` anywhere is refused with `target_profile_invalid`

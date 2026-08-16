@@ -92,6 +92,39 @@ spike the preflight requires, performed (late) once that was pointed out:
     `_assert_stock_parse_failure` now also asserts stock `yaml.safe_load`
     raises on the identical bytes -- verified empirically first (13/13
     cases already satisfied this) rather than assumed.
+
+SPIKE (round 6) -- round 5's conclusion was itself falsified. Round 6 found
+that the closure test, having survived three consecutive rewrites (round 4:
+stop comparing a hand-typed set; round 5: stop carving out `stock_parity`),
+was STILL satisfiable with zero empirical coverage: `set(_FAMILY_ASSERTIONS)
+== PROPERTY_FAMILIES` proves every family has an assertion FUNCTION, never
+that pytest collects any case that invokes it. Deleting every
+`contract_validation` case -- while preserving the 49-case count and the
+disk/metadata bijection -- leaves the closure green with that family's
+evidence gone (reproduced before fixing).
+
+Three preflight triggers fired simultaneously at this point, not one:
+3 consecutive rounds on the same boundary (4, 5, 6); successive fixes
+falsifying prior assumptions (round 4's fix falsified by round 5, round 5's
+by round 6); and a load-bearing test repeatedly failing to discriminate the
+defect it claims to guard. Round 5's spike conclusion ("keep the
+mechanism") is therefore retracted -- it was the right call on round 5's
+evidence and the wrong one on round 6's.
+
+  - root cause, correctly located: every one of these fixes asserted
+    coverage as a property of a DECLARED STRUCTURE (a label set, a
+    hand-typed set, a registry's keys). Each rewrite moved the assertion
+    one step closer to execution without ever reaching it. The recurring
+    defect was never any individual set comparison -- it was the decision
+    to express coverage as an assertion at all.
+  - redesign: coverage is no longer asserted; it is made a property of
+    TEST COLLECTION. Both this module and the mutation module now
+    parametrize FROM the vocabulary (union'd with the registry), so a
+    family/target with no assertion raises `KeyError`, one with no
+    collected corpus case fails its own named test, and one registered but
+    absent from the vocabulary fails too. There is no closure test left to
+    get wrong, because the category has been removed rather than patched a
+    fourth time.
 """
 
 from __future__ import annotations
@@ -105,6 +138,7 @@ import yaml
 import app.agent_review.profile_loader_v2 as loader_module
 from tests.agent_review.target_profile_yaml_corpus import (
     CLASSIFICATIONS,
+    PROPERTY_FAMILIES,
     CorpusMetadataError,
     cases,
     load_corpus,
@@ -347,24 +381,38 @@ _FAMILY_ASSERTIONS = {
 
 _ALL_CASES = list(cases())
 
+# Parametrized from the UNION of vocabulary and registry, so both directions
+# of drift are collection-time failures (round-6 redesign; see the module
+# docstring). This replaces a `set(_FAMILY_ASSERTIONS) == PROPERTY_FAMILIES`
+# closure test, which asserted a property of DECLARATIONS and was therefore
+# satisfiable while a family had zero collected cases proving it.
+_FAMILIES_UNDER_TEST = sorted(PROPERTY_FAMILIES | set(_FAMILY_ASSERTIONS))
+
 
 @pytest.mark.parametrize("case", _ALL_CASES, ids=[c.case_id for c in _ALL_CASES])
 def test_family_assertion_is_true_for_the_case(case) -> None:
     _FAMILY_ASSERTIONS[case.property_family](case)
 
 
-def test_every_property_family_has_a_registered_assertion() -> None:
-    """Derived from the SAME registry `test_family_assertion_is_true_for_the_case`
-    calls -- not a second, hand-typed set, and (round-5 fix) no carve-out for
-    any single family either: every `PROPERTY_FAMILIES` member, including
-    `stock_parity`, must be a real key. Deleting or renaming ANY entry in
-    `_FAMILY_ASSERTIONS` breaks this test AND makes the per-case test above
-    raise `KeyError` for any case of that family, so a disconnect is caught
-    structurally rather than by a maintained-in-parallel list staying
-    (silently) accurate by luck."""
-    from tests.agent_review.target_profile_yaml_corpus import PROPERTY_FAMILIES
+@pytest.mark.parametrize("family", _FAMILIES_UNDER_TEST)
+def test_every_property_family_has_collected_cases_that_prove_it(family: str) -> None:
+    """Every `PROPERTY_FAMILIES` member is EXECUTED against at least one
+    real corpus case, not merely present in a registry.
 
-    assert set(_FAMILY_ASSERTIONS) == PROPERTY_FAMILIES
+    There is no separate coverage assertion to keep in sync: a family with
+    no registered assertion, or an assertion registered for a family the
+    vocabulary does not contain, or a family whose corpus cases were all
+    removed, each fail here by construction.
+    """
+    assertion = _FAMILY_ASSERTIONS[family]
+    cases_for_family = [c for c in _ALL_CASES if c.property_family == family]
+    assert cases_for_family, (
+        f"property_family {family!r} has no corpus case proving it -- the "
+        f"vocabulary claims this family is empirically covered, but nothing "
+        f"in CORPUS.json exercises it"
+    )
+    for case in cases_for_family:
+        assertion(case)
 
 
 # -- JSON-level: duplicate object keys must never reach corpus validation ---

@@ -34,18 +34,30 @@ summarized in the postmortem; this ADR states only the final decision.
 
 ## Normative invariant
 
+The invariant is stated **relative to one named authority** — the stock
+`yaml.safe_load` of the pinned PyYAML — and not relative to conforming YAML
+implementations in general. That bound is deliberate and load-bearing; see
+the limitation on YAML 1.1/1.2 scalar resolution below for the concrete
+reason it cannot be widened by this mechanism.
+
 For any document accepted by this authority:
 
 1. the value returned is identical, field for field, to what stock
    `yaml.safe_load` returns for the same bytes;
-2. no document is accepted whose bytes required the authority to make a
-   choice a different conforming implementation could have made
-   differently.
+2. no document is accepted whose bytes would require **stock PyYAML** to
+   silently select between competing authored entries at either of the two
+   instrumented collision points.
 
 Conservative disposition when either property cannot be established: the
 document is refused with a typed reason code
 (`target_profile_unreadable` or `target_profile_invalid`) — never a raw
 exception, and never a silently-chosen value.
+
+Property 1 is scoped to documents that **reach the reading**: a document
+carrying a merge key is refused by the composition-level pre-pass before
+any value is constructed, and malformed input produces no value to compare,
+so for those two classes there is no reading for the equality to range over
+— they are refused, not read-and-compared.
 
 ## Implemented mechanism
 
@@ -221,6 +233,21 @@ documentation.
   adversarial review; a third silent-selection point discovered later
   would need a third instrumented refusal, not a reinterpretation of the
   first two.
+- **Cross-implementation agreement is NOT provided, and cannot be by this
+  mechanism.** The authority observes silent selection *inside stock
+  PyYAML*; it says nothing about documents where two conforming YAML
+  implementations legitimately resolve the same scalar differently without
+  either instrumented point firing. Concrete, verified reproducer: a
+  complete, otherwise-valid profile carrying `max_bytes: 012` is
+  **accepted**, resolved by PyYAML's YAML-1.1-style implicit typing to
+  `10` (octal), and hashed into `profile_hash` on that reading — while a
+  YAML 1.2 reader resolves the same bytes to `12`. No collision point
+  fires, because within PyYAML there is no competing entry to select
+  between: the divergence is between *resolver versions*, not between
+  authored entries. Consumers pinning a `profile_hash` are therefore
+  pinning it to the reading of the *pinned PyYAML*, which is why the
+  normative invariant above is stated relative to that named authority
+  rather than to conforming implementations in general.
 - `_YAML_PARSE_FAILURES_V2` (the non-`YAMLError` exception families a
   target-authored document's constructors can raise — `ValueError`,
   `KeyError`, `IndexError`, `AttributeError`, `TypeError`,
