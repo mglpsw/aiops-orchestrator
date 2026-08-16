@@ -267,7 +267,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 236
@@ -543,7 +543,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -558,7 +558,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -573,7 +573,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -603,7 +603,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -633,7 +633,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -648,7 +648,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -663,7 +663,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "surrogatepass",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -678,7 +678,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -693,7 +693,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -708,7 +708,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -723,7 +723,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237
@@ -738,7 +738,7 @@
     "text_encoding": "utf-8",
     "decode_errors": "strict",
     "expected_reason_code": "target_profile_unreadable",
-    "property_family": "constructor_failure",
+    "property_family": "stock_parse_failure",
     "mutation_target": null,
     "origin": {
       "pr": 237

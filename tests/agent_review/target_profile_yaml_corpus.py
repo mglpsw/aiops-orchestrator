@@ -99,7 +99,7 @@ PROPERTY_FAMILIES = frozenset(
         "mapping_assignment_collision",
         "value_tag_multiple_candidates",
         "merge_key_unsupported",
-        "constructor_failure",
+        "stock_parse_failure",
         "non_mapping_document",
         "contract_validation",
         "stock_parity",
@@ -117,7 +117,7 @@ CLASSIFICATION_PROPERTY_FAMILIES: dict[str, frozenset[str]] = {
     "legal": frozenset({"stock_parity"}),
     "ambiguous": frozenset({"mapping_assignment_collision", "value_tag_multiple_candidates"}),
     "invalid": frozenset({"merge_key_unsupported", "contract_validation"}),
-    "malformed": frozenset({"constructor_failure", "non_mapping_document"}),
+    "malformed": frozenset({"stock_parse_failure", "non_mapping_document"}),
 }
 assert set(CLASSIFICATION_PROPERTY_FAMILIES) == CLASSIFICATIONS
 assert frozenset.union(*CLASSIFICATION_PROPERTY_FAMILIES.values()) == PROPERTY_FAMILIES

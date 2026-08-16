@@ -44,8 +44,10 @@ was not hypothetical: `duplicate_inside_key_mapping` was genuinely
 mislabeled `ambiguous`/`mapping_assignment_collision`; its real failure is
 a raw stock `ConstructorError` (an untagged complex key with no scalar
 representation), never this authority's own collision guard. It is now
-filed under `malformed`/`constructor_failure`. The per-family assertions
-below (`test_*_family_is_true_for_the_case`) are the resulting committed,
+filed under `malformed`/`stock_parse_failure` (renamed from
+`constructor_failure` under round-4 review -- see below). The per-family
+assertions (`_FAMILY_ASSERTIONS`, consumed by
+`test_family_assertion_is_true_for_the_case`) are the resulting committed,
 per-case regression tests; every other corpus case's declared family was
 verified true by the same investigation.
 """
@@ -130,7 +132,7 @@ def test_the_four_classifications_partition_the_corpus() -> None:
     assert len(all_cases) == 49
 
 
-# -- round-3: each case's declared property_family must be TRUE, not merely --
+# -- round-3/4: each case's declared property_family must be TRUE, not merely -
 # -- a member of the set its classification allows -----------------------------
 #
 # Round 2 coupled `property_family` to `classification`
@@ -147,8 +149,30 @@ def test_the_four_classifications_partition_the_corpus() -> None:
 # `mapping_assignment_collision` -- its real failure is a raw stock
 # `ConstructorError` (an untagged complex key with no scalar
 # representation), never `AmbiguousProfileDocumentV2`. It is now filed under
-# `malformed`/`constructor_failure`, where the same investigation confirms
+# `malformed`/`stock_parse_failure`, where the same investigation confirms
 # it belongs. Every other corpus case's declared family was verified true.
+#
+# Round 4 found two problems in the round-3 fix itself:
+#
+# 1. the family originally named `constructor_failure` was checked only by
+#    asserting the cause is NOT `AmbiguousProfileDocumentV2` -- a negative
+#    that passes for ANY non-ambiguity failure, including cases like
+#    `not_yaml` (fails at the PARSER) and `bel_character`/`nul_character`
+#    (fail at the READER, before construction is ever reached). The family
+#    was renamed `stock_parse_failure` and its assertion now asserts the
+#    cause is a POSITIVE member of `_YAML_PARSE_FAILURES_V2` -- the
+#    production loader's OWN enumerated exception surface, reused (derived),
+#    not re-invented -- so the family and its test now both mean exactly
+#    "any of the specific failure modes the authority itself documents",
+#    which is what every case in it was already observed to satisfy.
+# 2. the closure check compared `PROPERTY_FAMILIES` against a second,
+#    hand-typed `covered_families` set -- the identical anti-pattern round 1
+#    fixed for mutation-target coverage (a set that can silently drift out
+#    of sync with what actually runs). `_FAMILY_ASSERTIONS` below is now the
+#    single registry: its keys ARE what's compared for closure, and its
+#    values are the SAME functions the per-case test actually calls, so
+#    deleting or renaming an assertion breaks both checks structurally,
+#    not by someone remembering to update a parallel list.
 
 
 def _read_or_none(case) -> tuple[object | None, BaseException | None]:
@@ -184,47 +208,32 @@ def _collision_point_2_alone_accepts(text: str) -> bool:
         loader_module._CollisionRefusingSafeLoaderV2.construct_scalar = original
 
 
-def _by_family(classification: str, family: str) -> list:
-    return [c for c in cases(classification) if c.property_family == family]
-
-
-_MAPPING_COLLISION_CASES = _by_family("ambiguous", "mapping_assignment_collision")
-_VALUE_TAG_CASES = _by_family("ambiguous", "value_tag_multiple_candidates")
-_CONSTRUCTOR_FAILURE_CASES = _by_family("malformed", "constructor_failure")
-_NON_MAPPING_DOCUMENT_CASES = _by_family("malformed", "non_mapping_document")
-_MERGE_KEY_UNSUPPORTED_CASES = _by_family("invalid", "merge_key_unsupported")
-_CONTRACT_VALIDATION_CASES = _by_family("invalid", "contract_validation")
-
-
-@pytest.mark.parametrize("case", _MAPPING_COLLISION_CASES, ids=[c.case_id for c in _MAPPING_COLLISION_CASES])
-def test_mapping_assignment_collision_family_is_true_for_the_case(case) -> None:
+def _assert_mapping_assignment_collision(case) -> None:
     assert _collision_point_1_alone_accepts(case.text), (
         f"{case.case_id}: declared mapping_assignment_collision, but bypassing "
         f"collision point 1 alone does not make the document acceptable"
     )
 
 
-@pytest.mark.parametrize("case", _VALUE_TAG_CASES, ids=[c.case_id for c in _VALUE_TAG_CASES])
-def test_value_tag_multiple_candidates_family_is_true_for_the_case(case) -> None:
+def _assert_value_tag_multiple_candidates(case) -> None:
     assert _collision_point_2_alone_accepts(case.text), (
         f"{case.case_id}: declared value_tag_multiple_candidates, but bypassing "
         f"collision point 2 alone does not make the document acceptable"
     )
 
 
-@pytest.mark.parametrize("case", _CONSTRUCTOR_FAILURE_CASES, ids=[c.case_id for c in _CONSTRUCTOR_FAILURE_CASES])
-def test_constructor_failure_family_is_true_for_the_case(case) -> None:
+def _assert_stock_parse_failure(case) -> None:
     _, exc = _read_or_none(case)
-    assert exc is not None, f"{case.case_id}: declared constructor_failure but did not raise"
-    assert not isinstance(exc.__cause__, loader_module.AmbiguousProfileDocumentV2), (
-        f"{case.case_id}: declared constructor_failure, but the failure is actually "
-        f"this authority's own collision guard (AmbiguousProfileDocumentV2), not a "
-        f"raw PyYAML constructor failure"
+    assert exc is not None, f"{case.case_id}: declared stock_parse_failure but did not raise"
+    assert isinstance(exc.__cause__, loader_module._YAML_PARSE_FAILURES_V2), (
+        f"{case.case_id}: declared stock_parse_failure, but the cause "
+        f"{type(exc.__cause__).__name__} is not a member of the production loader's "
+        f"own _YAML_PARSE_FAILURES_V2 -- this is not a failure mode the authority "
+        f"itself recognizes as a target-authored-YAML parse failure"
     )
 
 
-@pytest.mark.parametrize("case", _NON_MAPPING_DOCUMENT_CASES, ids=[c.case_id for c in _NON_MAPPING_DOCUMENT_CASES])
-def test_non_mapping_document_family_is_true_for_the_case(case) -> None:
+def _assert_non_mapping_document(case) -> None:
     value, exc = _read_or_none(case)
     assert exc is None, f"{case.case_id}: declared non_mapping_document but raised {exc!r}"
     assert not isinstance(value, dict), (
@@ -232,18 +241,14 @@ def test_non_mapping_document_family_is_true_for_the_case(case) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "case", _MERGE_KEY_UNSUPPORTED_CASES, ids=[c.case_id for c in _MERGE_KEY_UNSUPPORTED_CASES]
-)
-def test_merge_key_unsupported_family_is_true_for_the_case(case) -> None:
+def _assert_merge_key_unsupported(case) -> None:
     assert loader_module._document_uses_merge_v2(case.text) is True, (
         f"{case.case_id}: declared merge_key_unsupported, but "
         f"_document_uses_merge_v2 does not flag it"
     )
 
 
-@pytest.mark.parametrize("case", _CONTRACT_VALIDATION_CASES, ids=[c.case_id for c in _CONTRACT_VALIDATION_CASES])
-def test_contract_validation_family_is_true_for_the_case(case) -> None:
+def _assert_contract_validation(case) -> None:
     assert loader_module._document_uses_merge_v2(case.text) is False, (
         f"{case.case_id}: declared contract_validation, but a merge key is present"
     )
@@ -255,22 +260,39 @@ def test_contract_validation_family_is_true_for_the_case(case) -> None:
     )
 
 
-def test_every_ambiguous_and_malformed_and_invalid_case_has_a_family_assertion() -> None:
-    """Fails closed on drift: if a new `PROPERTY_FAMILIES` member is ever
-    added without a corresponding family-truth test above, this test -- not
-    silent gap -- is what catches it."""
-    covered_families = {
-        "mapping_assignment_collision",
-        "value_tag_multiple_candidates",
-        "constructor_failure",
-        "non_mapping_document",
-        "merge_key_unsupported",
-        "contract_validation",
-        "stock_parity",  # covered by test_family_legal_documents_read_exactly_as_stock_safeloader
-    }
+# The single registry: property_family -> the function that proves it true
+# for a given case. `stock_parity` (legal cases) is deliberately absent --
+# it is covered by the dedicated equality assertion in
+# `test_profile_loader_v2.py::test_family_legal_documents_read_exactly_as_stock_safeloader`,
+# named explicitly in the closure test below rather than given a no-op entry
+# here.
+_FAMILY_ASSERTIONS = {
+    "mapping_assignment_collision": _assert_mapping_assignment_collision,
+    "value_tag_multiple_candidates": _assert_value_tag_multiple_candidates,
+    "stock_parse_failure": _assert_stock_parse_failure,
+    "non_mapping_document": _assert_non_mapping_document,
+    "merge_key_unsupported": _assert_merge_key_unsupported,
+    "contract_validation": _assert_contract_validation,
+}
+
+_NON_LEGAL_CASES = [c for c in cases() if c.classification != "legal"]
+
+
+@pytest.mark.parametrize("case", _NON_LEGAL_CASES, ids=[c.case_id for c in _NON_LEGAL_CASES])
+def test_family_assertion_is_true_for_the_case(case) -> None:
+    _FAMILY_ASSERTIONS[case.property_family](case)
+
+
+def test_every_property_family_has_a_registered_assertion() -> None:
+    """Derived from the SAME registry `test_family_assertion_is_true_for_the_case`
+    calls -- not a second, hand-typed set. Deleting or renaming an entry in
+    `_FAMILY_ASSERTIONS` breaks this test AND makes the per-case test above
+    raise `KeyError` for any case of that family, so a disconnect is caught
+    structurally rather than by a maintained-in-parallel list staying
+    (silently) accurate by luck."""
     from tests.agent_review.target_profile_yaml_corpus import PROPERTY_FAMILIES
 
-    assert covered_families == PROPERTY_FAMILIES
+    assert set(_FAMILY_ASSERTIONS) | {"stock_parity"} == PROPERTY_FAMILIES
 
 
 # -- JSON-level: duplicate object keys must never reach corpus validation ---
