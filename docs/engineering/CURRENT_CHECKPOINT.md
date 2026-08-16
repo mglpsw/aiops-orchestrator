@@ -222,16 +222,31 @@ checkpoint anterior.
 - `#203-S2` PR-A (autoridade YAML de `TargetProfile`): `merged_unreleased`
   (`6d613cf`, PR #237); PR-B (`validate`) e PR-C (`conformance`) **não
   iniciados**;
-- `#238` (institucionalização das lições de PR-A): `OPEN` — implementação
-  entregue via PR #239 (squash `0cdb961`; escopo e histórico de review na
-  tabela de delta acima e na própria PR, não repetidos aqui); a issue foi
-  auto-fechada pelo merge por um link de desenvolvimento independente do
-  texto `Refs #238` do corpo da PR, e reaberta manualmente
-  (`stateReason: REOPENED`); este documento de reconciliação de checkpoint
-  usa **somente** `Refs #238` (`closingIssuesReferences` vazio, verificado
-  via `gh pr view`) — mergeá-lo **não** fecha `#238` automaticamente. O
-  merge e o fechamento explícito de `#238` são duas ações distintas, cada
-  uma sob seu próprio grant; nem uma nem outra ocorreu neste corte;
+- `#238` (institucionalização das lições de PR-A): estado é **forge-derived**,
+  não fixado neste documento — ver bloco `issue_238` abaixo. Implementação
+  entregue via PR #239 (squash `0cdb961`) e reconciliação de checkpoint via
+  PR #240 (squash `078f078`); escopo e histórico de review na tabela de
+  delta acima e nas próprias PRs, não repetidos aqui. Transições
+  automáticas de estado da issue foram observadas após o merge de #239 e,
+  de novo, após o merge de #240 — em ambos os casos, `closingIssuesReferences`
+  da PR estava vazio no momento do merge. A causa verificada é uma
+  referência de palavra-chave de fechamento de issue apontando para `#238`,
+  embutida na mensagem de squash gerada (que concatena o corpo de todos os
+  commits constituintes neste repositório), não um link de desenvolvimento
+  de sidebar — hipótese anterior deste documento, agora **retratada** por
+  falta de evidência de suporte. Cada transição automática foi detectada e
+  revertida manualmente.
+
+```yaml
+issue_238:
+  source_of_truth: GitHub
+  instruction: revalidar estado vivo antes de qualquer ação
+  durable_fact: >-
+    a entrega consiste em PR #239 mais a reconciliação de checkpoint PR
+    #240; a disposição final da issue é uma ação de forge separada e
+    controlada, não uma consequência automática de squash.
+```
+
 - `#199`/`#200`/`#201`/`#202`/`#203`/`#204`/`#205`: `open` — `#200`/`#201`/`#202`
   por adoção de target, `#203` por implementação genuinamente incompleta,
   `#204`/`#205` não iniciadas;
@@ -248,23 +263,33 @@ checkpoint anterior.
 
 ## Próxima ação mínima
 
-A ação mínima imediata tem duas etapas distintas, cada uma sob grant
-próprio: (1) mergear este documento de reconciliação de checkpoint — o que,
-por si só, **não** fecha `#238`, já que a PR usa apenas `Refs #238` e
-`closingIssuesReferences` está vazio; e (2) fechar `#238` explicitamente
-depois, com verificação pós-merge. Nenhuma das duas ocorreu neste corte.
+A entrega técnica de `#238` está completa (PR #239 e PR #240, ambas já
+mergeadas). A disposição final da issue continua sendo uma ação de forge
+separada e deliberada, ainda não executada como tal — as transições
+automáticas de estado observadas até aqui (ver `issue_238` acima) não
+contam como essa ação controlada. Revalidar o estado vivo da issue no
+forge antes de assumir qualquer disposição; não assumir `OPEN` nem
+qualquer outro estado a partir deste documento.
 
-Após esse fechamento explícito, retomar `#203` — completar o target pack
-instalável, começando por PR-B (`target validate`). `implementation_anchor`
-(`0cdb961`) permanece a identidade **histórica** desta implementação, mas
-PR-B deve ramificar da `master` viva revalidada no forge no momento em que
-começar, não deste anchor congelado — pelo mesmo motivo pelo qual este
-documento evita se autorreferenciar. Os pré-requisitos de core
-(`#200`/`#201`/`#202`) estão satisfeitos, a dívida C1-C10 está fechada, e a
-autoridade de leitura YAML que PR-B consome (`#237`) está institucionalizada
-(`#238`/PR #239); `#232` permanece aberta mas não bloqueia `#203`.
+Quando essa disposição deliberada ocorrer, retomar `#203` — completar o
+target pack instalável, começando por PR-B (`target validate`).
+`implementation_anchor` (`0cdb961`) permanece a identidade **histórica**
+desta implementação, mas PR-B deve ramificar da `master` viva revalidada
+no forge no momento em que começar, não deste anchor congelado — pelo
+mesmo motivo pelo qual este documento evita se autorreferenciar. Os
+pré-requisitos de core (`#200`/`#201`/`#202`) estão satisfeitos, a dívida
+C1-C10 está fechada, e a autoridade de leitura YAML que PR-B consome
+(`#237`) está institucionalizada via `#238`; `#232` permanece aberta mas
+não bloqueia `#203`.
 
-Merge deste documento, fechamento de `#238`, tag, release, repin, canário,
-deploy, adoção de target e fechamento de `#221`/`#217`/`#199` permanecem
-retidos, cada um exigindo grant nominal. A disposição de `#232` é exigida
-antes do release candidate da `#205`.
+Merges futuros de PRs que referenciam `#238` devem sanitizar título e
+corpo de squash contra referências de palavra-chave de fechamento de
+issue antes de mergear — não confiar apenas no corpo da PR, e não deixar
+o GitHub sintetizar a mensagem de squash a partir dos commits
+constituintes sem revisão prévia; esse foi exatamente o vetor das duas
+transições automáticas registradas acima.
+
+Fechamento deliberado da issue, tag, release, repin, canário, deploy,
+adoção de target e fechamento de `#221`/`#217`/`#199` permanecem retidos,
+cada um exigindo grant nominal. A disposição de `#232` é exigida antes do
+release candidate da `#205`.
