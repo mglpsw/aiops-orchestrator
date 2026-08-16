@@ -223,8 +223,8 @@ checkpoint anterior.
   (`6d613cf`, PR #237); PR-B (`validate`) e PR-C (`conformance`) **não
   iniciados**;
 - `#238` (institucionalização das lições de PR-A): `OPEN` — implementação
-  entregue via PR #239 (squash `0cdb961`), 8 rounds de review adversarial
-  exact-HEAD, 25 achados P2 confirmados e fechados; a issue foi
+  entregue via PR #239 (squash `0cdb961`; escopo e histórico de review na
+  tabela de delta acima e na própria PR, não repetidos aqui); a issue foi
   auto-fechada pelo merge por um link de desenvolvimento independente do
   texto `Refs #238` do corpo da PR, e reaberta manualmente
   (`stateReason: REOPENED`); este documento de reconciliação de checkpoint
