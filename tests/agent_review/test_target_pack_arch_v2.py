@@ -325,3 +325,80 @@ def test_seed_placeholder_has_exactly_one_authority() -> None:
         f"the shipped seed template no longer carries the placeholder value "
         f"{placeholder_value!r} that SEED_PROFILE_IDENTITY_PLACEHOLDER_V2 names"
     )
+
+
+# ---------------------------------------------------------------------
+# Codex Round 2, P2-B: the operative spec's CURRENT deferral list and the
+# CLI parser's exposed subcommands cannot contradict each other.
+# ---------------------------------------------------------------------
+
+_SPEC_PATH_V2 = REPO_ROOT / "docs" / "checkpoints" / "AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md"
+_SPEC_DEFERRED_HEADING_V2 = "## 14. Deferred (explicitly, not silently)"
+
+
+def _cli_exposed_subcommands_v2() -> set[str]:
+    """Structural, not textual: the names the argparse surface actually
+    registers via `sub.add_parser("<name>", ...)`."""
+
+    tree = _parse(_CLI_MODULE_PATH_V2)
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_parser"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            names.add(node.args[0].value)
+    return names
+
+
+def _spec_deferred_subcommand_bullet_v2() -> str:
+    """The one bullet in the operative spec's deferral section that
+    ENUMERATES deferred subcommands, identified semantically (it is the
+    bullet naming `rollback`, the last subcommand in the CLI surface),
+    never positionally.
+
+    Deliberately scoped to that single bullet: the section legitimately
+    keeps deferring non-subcommand work, and the rest of the document
+    legitimately contains historical mentions of `deferred` that must NOT
+    be read as current classification."""
+
+    text = _SPEC_PATH_V2.read_text(encoding="utf-8")
+    assert _SPEC_DEFERRED_HEADING_V2 in text, "the operative spec's deferral section heading moved; update this test deliberately"
+    section = text.split(_SPEC_DEFERRED_HEADING_V2, 1)[1]
+    bullets = [chunk for chunk in section.split("\n- ") if chunk.strip()]
+    enumerating = [chunk for chunk in bullets if "`rollback`" in chunk]
+    assert len(enumerating) == 1, (
+        f"expected exactly one bullet enumerating deferred subcommands (the one naming `rollback`), found {len(enumerating)}"
+    )
+    return enumerating[0]
+
+
+def test_operative_spec_does_not_defer_a_subcommand_the_cli_exposes() -> None:
+    """PR #244 exposed `validate` while the operative specification still
+    listed it as a deferred, unwritten subcommand. Because that document
+    declares itself the authority maintainers cite for deferred-subcommand
+    classification, the two states must not disagree."""
+
+    exposed = _cli_exposed_subcommands_v2()
+    assert "validate" in exposed, "the CLI no longer exposes validate; this test's premise changed"
+
+    deferred_bullet = _spec_deferred_subcommand_bullet_v2()
+    contradictions = sorted(name for name in exposed if f"`{name}`" in deferred_bullet)
+    assert not contradictions, (
+        f"the operative spec's deferral bullet still classifies {contradictions} as deferred "
+        f"while the CLI parser exposes them: {sorted(exposed)}"
+    )
+
+
+def test_operative_spec_still_defers_the_genuinely_unshipped_subcommands() -> None:
+    """The reconciliation must not have over-corrected into claiming the
+    whole `#203` surface ships."""
+
+    deferred_bullet = _spec_deferred_subcommand_bullet_v2()
+    for name in ("conformance", "install-workflows", "upgrade", "rollback"):
+        assert f"`{name}`" in deferred_bullet, f"{name} is not shipped but the spec stopped deferring it"
+        assert name not in _cli_exposed_subcommands_v2(), f"{name} is exposed by the CLI but still listed as deferred"

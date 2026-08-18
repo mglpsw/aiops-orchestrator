@@ -686,14 +686,22 @@ def test_validate_passes_on_a_real_freshly_initialised_target(tmp_path: Path) ->
     ):
         assert statuses[name] == "pass", name
     for name in (
+        "upstream_pack_identity",
         "target_owned_set", "generated_file_set", "rollout_capability",
         "previous_install_lineage", "trusted_check_inventory",
     ):
         assert statuses[name] == "unavailable", name
     assert set(report["unvalidated_capabilities"]) == {
+        "upstream_pack_identity",
         "target_owned_set", "generated_file_set", "rollout_capability",
         "previous_install_lineage", "trusted_check_inventory",
     }
+    # Even against a target this very test just installed from THIS
+    # toolrepo, validate does not claim to have established which
+    # upstream pack the receipt came from -- it holds no manifest to
+    # check against, and says so rather than letting `valid: true` imply
+    # provenance was verified.
+    assert report["valid"] is True
 
 
 def test_validate_fails_closed_on_drift_after_a_real_init(tmp_path: Path) -> None:

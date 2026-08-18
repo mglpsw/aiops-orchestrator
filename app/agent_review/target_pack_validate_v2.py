@@ -22,6 +22,15 @@ It does NOT answer "does this target correspond to the upstream pack"
 -- that is `doctor`'s charter. Absence of evidence is reported as
 `unavailable`, never silently filled with a locally-invented rule.
 
+That boundary is not merely documented in prose: it is a NAMED,
+machine-readable row (`upstream_pack_identity`). `valid: true` means
+only that no locally observable relation is violated, and a receipt can
+be locally self-coherent while its `pack_version`, `toolrepo_sha` and
+`manifest_digest` are stale or fabricated -- validate holds no manifest
+or toolrepo to check them against. Emitting the verdict without that
+row would let a consumer read `valid: true` as "provenance verified",
+so the disclosure travels in the report itself, never only in docs.
+
 ## Design invariants
 
 - READ-ONLY BY CONSTRUCTION, proven mechanically alongside `doctor` by
@@ -234,9 +243,21 @@ ROLLOUT_CAPABILITY_CHECK_V2 = "rollout_capability"
 PREVIOUS_INSTALL_LINEAGE_CHECK_V2 = "previous_install_lineage"
 TRUSTED_CHECK_INVENTORY_CHECK_V2 = "trusted_check_inventory"
 
+# ONE dimension for the whole installed-state-to-upstream-pack RELATION,
+# deliberately not three (`pack_version`, `toolrepo_sha`,
+# `manifest_digest` are the receipt's three CLAIMS about that single
+# relation, and no consumer can act on them separately when all three are
+# equally unestablished). It exists because `valid` answers only "of the
+# relations I can independently observe locally, is any violated?" -- a
+# stale or fabricated receipt whose local relations are all self-coherent
+# is locally valid AND says nothing true about which upstream pack it
+# came from. Without this row a consumer could read `valid: true` and
+# infer provenance was checked.
+UPSTREAM_PACK_IDENTITY_CHECK_V2 = "upstream_pack_identity"
+
 # The determinism contract: every return path emits a duplicate-free
-# SUBSEQUENCE of this tuple. 16 conceptual dimensions: 11 locally
-# evaluable when applicable, 5 always-disclosed unavailable.
+# SUBSEQUENCE of this tuple. 17 conceptual dimensions: 11 locally
+# evaluable when applicable, 6 always-disclosed unavailable.
 VALIDATE_CHECK_ORDER_V2: tuple[str, ...] = (
     TARGET_ROOT_CHECK_V2,
     AIOPS_SNAPSHOT_CHECK_V2,
@@ -249,6 +270,7 @@ VALIDATE_CHECK_ORDER_V2: tuple[str, ...] = (
     TARGET_OWNED_INTEGRITY_CHECK_V2,
     GENERATED_FILE_INTEGRITY_CHECK_V2,
     CROSS_LEDGER_ALIAS_CHECK_V2,
+    UPSTREAM_PACK_IDENTITY_CHECK_V2,
     TARGET_OWNED_SET_CHECK_V2,
     GENERATED_FILE_SET_CHECK_V2,
     ROLLOUT_CAPABILITY_CHECK_V2,
@@ -297,8 +319,17 @@ PREVIOUS_INSTALL_LINEAGE_REASON_V2 = (
     "target_pack_validate_previous_install_lineage_not_verifiable_from_current_target_state"
 )
 TRUSTED_CHECK_INVENTORY_REASON_V2 = "target_pack_validate_trusted_check_inventory_requires_an_unshipped_contract"
+# Names the two independent artifacts that would be needed to establish
+# the relation, so the code cannot be misread as "the receipt is
+# malformed", "the receipt is missing" or "the local bytes drifted" --
+# all three of which are separate, locally decidable failures with their
+# own codes above.
+UPSTREAM_PACK_IDENTITY_REASON_V2 = (
+    "target_pack_validate_upstream_pack_identity_requires_the_upstream_manifest_and_toolrepo"
+)
 
 UNVALIDATED_CAPABILITIES_V2: tuple[tuple[str, str], ...] = (
+    (UPSTREAM_PACK_IDENTITY_CHECK_V2, UPSTREAM_PACK_IDENTITY_REASON_V2),
     (TARGET_OWNED_SET_CHECK_V2, TARGET_OWNED_SET_REASON_V2),
     (GENERATED_FILE_SET_CHECK_V2, GENERATED_FILE_SET_REASON_V2),
     (ROLLOUT_CAPABILITY_CHECK_V2, ROLLOUT_CAPABILITY_REASON_V2),
@@ -411,18 +442,41 @@ def _path_reason_for_plan_error_v2(exc: PlanError) -> str:
 
 
 def _observe_root_v2(target_root: Path) -> tuple[Path | None, RootObservationV2]:
-    """Classify `target_root` itself, ONCE. The metadata probe
-    (`.exists()`/`.is_dir()`) sits inside the SAME typed boundary as the
-    resolution step -- closes a residual PR #242 left unfixed:
-    `target_root_real.is_dir()` used to run outside any `OSError`
-    boundary, so a `PermissionError` from an ancestor directory without
-    search permission could escape `run_validate_v2` uncaught instead of
-    becoming a diagnosed target state."""
+    """Classify `target_root` itself, ONCE. EVERY leaf filesystem
+    operation here -- the resolution step AND the metadata probe
+    (`.exists()`/`.is_dir()`) -- sits inside this one typed boundary.
+
+    Two distinct ways resolution can fail, deliberately NOT collapsed:
+
+    - `RuntimeError` is how `pathlib` reports a symlink loop: the path's
+      own link structure is malformed, and no filesystem access problem
+      is implied -> `..._target_root_unresolvable`.
+    - `OSError` means the resolution could not be carried out at all
+      because the filesystem would not answer (`EACCES` on an ancestor
+      without search permission, `EIO` on a failing or disconnected
+      mount, or `ENOENT` from `getcwd()` when a relative root is
+      resolved from a deleted working directory) -> the SAME
+      `..._target_root_unreadable` code the metadata probe below emits,
+      because it is the same operator-visible condition reached one
+      operation earlier.
+
+    Both are `PathResolutionFailure`: it is the only variant that can
+    honestly report "there is no resolved path", which is exactly the
+    state a failed `.resolve()` leaves behind. `MetadataUnreadable`
+    cannot express it -- that variant's contract is that a resolved path
+    exists and only its metadata was unreadable.
+
+    Closes two residuals in sequence: PR #242 left `is_dir()` outside any
+    `OSError` boundary, and this module's own first cut left `.resolve()`
+    inside a narrower `RuntimeError`-only closure than the probe that
+    follows it, despite claiming one shared boundary."""
 
     try:
         resolved = target_root.resolve(strict=False)
     except RuntimeError:
         return None, PathResolutionFailure(TARGET_ROOT_UNRESOLVABLE_REASON_V2)
+    except OSError:
+        return None, PathResolutionFailure(TARGET_ROOT_UNREADABLE_REASON_V2)
     try:
         exists = resolved.exists()
         is_dir = resolved.is_dir() if exists else False
@@ -848,7 +902,7 @@ def _ledger_checks_v2(
     finished and no counterexample was found in it -- ABSENT, mirroring
     exactly how `receipt`/`profile`/etc. are already omitted (never
     emitted `unavailable`) when `aiops_snapshot` fails. `unavailable`
-    status stays reserved for the 5 permanently upstream-owned
+    status stays reserved for the 6 permanently upstream-owned
     dimensions; a budget-limited ledger is a DIFFERENT, situational kind
     of "not decided", disclosed instead through `observation_budget`
     itself failing. `cross_ledger_alias_separation` follows the SAME
@@ -972,7 +1026,13 @@ _AIOPS_REASON_BY_OBSERVATION_V2 = {
 def _collect_checks_v2(target_root: Path) -> tuple[list[ValidateCheckV2], str | None]:
     root_resolved, root_observation = _observe_root_v2(target_root)
     if isinstance(root_observation, PathResolutionFailure):
-        return [ValidateCheckV2(TARGET_ROOT_CHECK_V2, STATUS_FAIL_V2, TARGET_ROOT_UNRESOLVABLE_REASON_V2)], None
+        # Honour the reason the variant CARRIES rather than re-deriving a
+        # constant here: the observer distinguishes a malformed link
+        # structure from an inaccessible filesystem, and substituting one
+        # code for both at the consumer would silently collapse them --
+        # the exact class of information loss the typed algebra exists to
+        # prevent.
+        return [ValidateCheckV2(TARGET_ROOT_CHECK_V2, STATUS_FAIL_V2, root_observation.reason)], None
     assert root_resolved is not None
     target_root_real_str = str(root_resolved)
     if not isinstance(root_observation, DirectoryReady):

@@ -64,6 +64,7 @@ from app.agent_review.target_pack_validate_v2 import (
     TARGET_OWNED_UNREADABLE_REASON_V2,
     TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2,
     TARGET_ROOT_UNREADABLE_REASON_V2,
+    UPSTREAM_PACK_IDENTITY_REASON_V2,
     TARGET_ROOT_UNRESOLVABLE_REASON_V2,
     UNVALIDATED_CAPABILITIES_V2,
     VALIDATE_CHECK_ORDER_V2,
@@ -320,6 +321,88 @@ def test_target_root_metadata_permission_error_is_unreadable_not_a_traceback(
     check = _check(report, "target_root")
     assert check.status == STATUS_FAIL_V2
     assert check.reason_code == TARGET_ROOT_UNREADABLE_REASON_V2
+
+
+# ---------------------------------------------------------------------
+# Codex Round 2, P2-A: root RESOLUTION (not merely the metadata probe
+# that follows it) must sit inside the observer's OSError closure.
+# ---------------------------------------------------------------------
+
+
+def test_target_root_resolution_permission_error_is_unreadable_not_a_traceback(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Path.resolve` is the production primitive `_observe_root_v2`
+    actually calls -- this is not a stand-in helper. Before the fix the
+    observer caught only `RuntimeError` there, so an `EACCES` from an
+    ancestor without search permission escaped `run_validate_v2` as a
+    traceback instead of becoming a reason-coded report."""
+
+    root = tmp_path_factory.mktemp("root_resolve_perm")
+    real_resolve = Path.resolve
+
+    def raising_resolve(self: Path, strict: bool = False) -> Path:
+        if self == root:
+            raise PermissionError(13, "denied")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", raising_resolve)
+    report = run_validate_v2(target_root=root)  # must not raise
+    check = _check(report, "target_root")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == TARGET_ROOT_UNREADABLE_REASON_V2
+    assert report.is_valid is False
+
+
+def test_target_root_resolution_oserror_from_a_deleted_working_directory(tmp_path: Path) -> None:
+    """A second witness that monkeypatches NOTHING: resolving a RELATIVE
+    root calls `os.getcwd()`, which raises `FileNotFoundError` (an
+    `OSError`) when the process's working directory has been removed."""
+
+    keep = os.getcwd()
+    doomed = tmp_path / "doomed-cwd"
+    doomed.mkdir()
+    try:
+        os.chdir(doomed)
+        doomed.rmdir()
+        report = run_validate_v2(target_root=Path("a-relative-root"))  # must not raise
+    finally:
+        os.chdir(keep)
+    check = _check(report, "target_root")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == TARGET_ROOT_UNREADABLE_REASON_V2
+    assert report.target_root_real is None
+
+
+def test_root_resolution_failure_reason_is_carried_not_re_derived(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The malformed-link-structure state and the inaccessible-filesystem
+    state must not collapse into one code at the consumer. Both reach
+    `_collect_checks_v2` as `PathResolutionFailure`; only the reason the
+    variant CARRIES tells them apart."""
+
+    root = tmp_path_factory.mktemp("root_carry")
+    real_resolve = Path.resolve
+
+    def loop_resolve(self: Path, strict: bool = False) -> Path:
+        if self == root:
+            raise RuntimeError("Symlink loop from 'x'")
+        return real_resolve(self, strict=strict)
+
+    def denied_resolve(self: Path, strict: bool = False) -> Path:
+        if self == root:
+            raise OSError(5, "I/O error")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", loop_resolve)
+    loop_reason = _check(run_validate_v2(target_root=root), "target_root").reason_code
+    monkeypatch.setattr(Path, "resolve", denied_resolve)
+    denied_reason = _check(run_validate_v2(target_root=root), "target_root").reason_code
+
+    assert loop_reason == TARGET_ROOT_UNRESOLVABLE_REASON_V2
+    assert denied_reason == TARGET_ROOT_UNREADABLE_REASON_V2
+    assert loop_reason != denied_reason
 
 
 def test_aiops_absent_is_reported_missing(tmp_path: Path) -> None:
@@ -1609,3 +1692,82 @@ def test_finite_model_direct_vs_symlink_alias_same_content_same_signature(tmp_pa
     sig_direct = _decision_signature(run_validate_v2(target_root=root_direct))
     sig_alias = _decision_signature(run_validate_v2(target_root=root_alias))
     assert sig_direct == sig_alias
+
+
+# ---------------------------------------------------------------------
+# Codex Round 2, P2-C: `valid: true` must never be readable as "the
+# upstream pack this receipt claims to come from was verified".
+# ---------------------------------------------------------------------
+
+
+def test_fabricated_upstream_identity_is_locally_valid_but_explicitly_undisclosed(tmp_path: Path) -> None:
+    """The core epistemic property. Every LOCAL relation is coherent, so
+    `valid` is correctly `True` -- validate holds no manifest or toolrepo
+    and must not invent a local rule to refuse. What it MUST do is say,
+    in the machine-readable report, that the upstream correspondence was
+    never established."""
+
+    fabricated = _receipt(
+        pack_version="99.99.99-fabricated",
+        toolrepo_sha="b" * 40,
+        manifest_digest="c" * 64,
+    )
+    _install(tmp_path, receipt=fabricated)
+    report = run_validate_v2(target_root=tmp_path)
+
+    # A: local validity is genuinely established, and is NOT downgraded.
+    assert report.is_valid is True
+    assert _check(report, "receipt").status == STATUS_PASS_V2
+    assert _check(report, "profile_hash").status == STATUS_PASS_V2
+    assert _check(report, "root_identity").status == STATUS_PASS_V2
+
+    # B: upstream correspondence is disclosed as NOT established.
+    upstream = _check(report, "upstream_pack_identity")
+    assert upstream.status == STATUS_UNAVAILABLE_V2
+    assert upstream.reason_code == UPSTREAM_PACK_IDENTITY_REASON_V2
+    assert "upstream_pack_identity" in report.unvalidated_capabilities
+
+
+def test_upstream_pack_identity_is_unavailable_even_for_a_real_untampered_install(tmp_path: Path) -> None:
+    """The dimension is PERMANENTLY unavailable, not a tamper detector:
+    validate cannot establish the relation for an honest receipt either,
+    and must not imply it did."""
+
+    _install(tmp_path, receipt=_receipt())
+    report = run_validate_v2(target_root=tmp_path)
+    assert _check(report, "upstream_pack_identity").status == STATUS_UNAVAILABLE_V2
+    assert report.is_valid is True
+
+
+def test_upstream_pack_identity_is_one_relation_not_three_field_checks() -> None:
+    """`pack_version`, `toolrepo_sha` and `manifest_digest` are three
+    claims about ONE relation; three separate unavailable rows would
+    suggest a consumer could act on them independently."""
+
+    names = {name for name, _ in UNVALIDATED_CAPABILITIES_V2}
+    assert "upstream_pack_identity" in names
+    for field_name in ("pack_version", "toolrepo_sha", "manifest_digest"):
+        assert field_name not in names
+
+
+def test_absent_upstream_evidence_is_never_a_local_integrity_failure(tmp_path: Path) -> None:
+    """Guards the inverse over-correction: making missing upstream
+    evidence FAIL would turn every honest offline install invalid."""
+
+    _install(tmp_path, receipt=_receipt())
+    report = run_validate_v2(target_root=tmp_path)
+    failing = [check.name for check in report.checks if check.status == STATUS_FAIL_V2]
+    assert failing == []
+    assert report.is_valid is True
+    assert len(report.unvalidated_capabilities) == len(UNVALIDATED_CAPABILITIES_V2)
+
+
+def test_check_inventory_counts_are_derived_not_asserted_from_a_stale_number() -> None:
+    """Pins the inventory shape so a future dimension cannot be added
+    while the module docstring keeps claiming an older count."""
+
+    unavailable = {name for name, _ in UNVALIDATED_CAPABILITIES_V2}
+    assert len(VALIDATE_CHECK_ORDER_V2) == 17
+    assert len(unavailable) == 6
+    assert len(set(VALIDATE_CHECK_ORDER_V2) - unavailable) == 11
+    assert unavailable <= set(VALIDATE_CHECK_ORDER_V2)
