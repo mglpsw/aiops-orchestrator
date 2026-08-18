@@ -47,6 +47,7 @@ from app.agent_review.contracts_v2 import (
     ContractV2Model,
     GitSha,
     RelativePath,
+    Repository,
     Rfc3339Timestamp,
     SafeIdentifier,
     SafeText,
@@ -65,6 +66,16 @@ RECEIPT_RELATIVE_PATH_V2 = ".aiops/install-receipt.v2.json"
 RECEIPT_SECRET_NAME_LOOKS_LIKE_VALUE_REASON_V2 = "target_install_receipt_secret_name_looks_like_value"
 RECEIPT_HASH_MISMATCH_REASON_V2 = "target_install_receipt_hash_mismatch"
 RECEIPT_TARGET_OWNED_PATHS_MISMATCH_REASON_V2 = "target_install_receipt_target_owned_paths_mismatch"
+# PR-C1: `target_owned_file_hashes` and `generated_file_hashes` are two
+# independent ownership ledgers over the SAME path space (`RelativePath`,
+# both fields, since this PR). `TargetPackManifestV2.generated_files`
+# permits each generated path exactly one ownership classification, so a
+# receipt claiming the same path in both ledgers cannot represent any
+# legitimate installation -- reproduced against PR #242 (Codex Round 3,
+# R3-4): the same path with the same digest in both ledgers passed both
+# independent integrity verifiers. The invariant belongs here, once, so
+# every reader (not just one command) inherits it.
+RECEIPT_OWNERSHIP_LEDGERS_OVERLAP_REASON_V2 = "target_install_receipt_ownership_ledgers_overlap"
 
 # ONE reason code, deliberately. Publishing a finer taxonomy would require
 # changing both readers, which is out of scope; a typed reason no caller
@@ -128,7 +139,18 @@ class TargetInstallReceiptV2(ContractV2Model):
     # A tree can legitimately contain more than one manifest builder, so the
     # receipt binds the exact install description consumed during planning.
     manifest_digest: Sha256
-    target_repo: SafeText
+    # PR-C1: was `SafeText` -- any non-empty, control-character-free,
+    # non-secret-shaped string, with no `owner/name` structure required at
+    # all. Reproduced against PR #242 (Codex Round 3, R3-3):
+    # `target_repo="not-a-repository"` paired with the shipped seed
+    # profile's `OWNER/REPO` placeholder validated end to end, because the
+    # placeholder short-circuits the only independent comparison
+    # (`profile_identity`) and every other identity-shaped check compares
+    # the receipt against itself. `Repository` is the same `owner/name`
+    # authority `doctor`'s `--target-repo` and this receipt's own
+    # `compute_portable_target_root_identity_v2` conceptually already
+    # assume; it was never actually enforced at the type level.
+    target_repo: Repository
     # Portable identity only: repository + relative install root, never an
     # absolute workstation path. Local inode/device identity is deliberately
     # kept out of this published contract and belongs to the apply boundary.
@@ -154,7 +176,19 @@ class TargetInstallReceiptV2(ContractV2Model):
     review_pack_hashes: Mapping[SafeIdentifier, Sha256] = Field(
         default_factory=dict, json_schema_extra={"additionalProperties": False}
     )
-    generated_file_hashes: Mapping[SafeText, Sha256] = Field(
+    # PR-C1: was `Mapping[SafeText, Sha256]` -- unlike `target_owned_file_
+    # hashes` below (already `RelativePath` since aiops-orchestrator#205,
+    # C1/C4), this ledger's keys were never lexically constrained to a
+    # normalized, contained relative path at all. Writer-produced values
+    # were always `RelativePath`-shaped already (`entry.path` from
+    # `GeneratedFileEntryV2.path: RelativePath`, `target_pack_manifest_v2`)
+    # -- tightening the FIELD refuses nothing any writer produces. It also
+    # makes the disjointness invariant below SOUND rather than merely
+    # convenient: both ledgers sharing one canonical path authority means a
+    # raw-string-set intersection cannot miss two different spellings of
+    # the same path (a noncanonical spelling is refused at the FIELD level
+    # before the invariant ever runs).
+    generated_file_hashes: Mapping[RelativePath, Sha256] = Field(
         default_factory=dict, json_schema_extra={"additionalProperties": False}
     )
     # Raw byte hashes are separate from the semantic profile/policy hashes
@@ -200,6 +234,23 @@ class TargetInstallReceiptV2(ContractV2Model):
     def validate_target_owned_hashes_match_declared_paths(self) -> TargetInstallReceiptV2:
         if set(self.target_owned_file_hashes) != set(self.target_owned_paths):
             raise ValueError(RECEIPT_TARGET_OWNED_PATHS_MISMATCH_REASON_V2)
+        return self
+
+    @model_validator(mode="after")
+    def validate_ownership_ledgers_are_disjoint(self) -> TargetInstallReceiptV2:
+        """PR-C1: `TargetPackManifestV2.generated_files` classifies each
+        generated path with exactly one `TargetPackFileOwnershipV2` value
+        -- a receipt claiming the same path in both `target_owned_file_
+        hashes` and `generated_file_hashes` cannot represent any
+        legitimate installation this pack could have produced, regardless
+        of whether the two declared digests happen to agree. Sound because
+        both fields are `RelativePath`-keyed: there is no pair of distinct
+        key spellings that denote the same path semantics past this
+        validator's own field-level normalization."""
+
+        overlap = set(self.target_owned_file_hashes) & set(self.generated_file_hashes)
+        if overlap:
+            raise ValueError(RECEIPT_OWNERSHIP_LEDGERS_OVERLAP_REASON_V2)
         return self
 
     @model_validator(mode="after")

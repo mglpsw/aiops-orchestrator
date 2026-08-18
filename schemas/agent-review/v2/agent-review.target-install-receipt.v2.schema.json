@@ -65,6 +65,12 @@
     },
     "generated_file_hashes": {
       "additionalProperties": false,
+      "patternProperties": {
+        "^[^*?\\[\\]]+$": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
       "propertyNames": {
         "maxLength": 512,
         "minLength": 1
@@ -198,8 +204,7 @@
       "type": "string"
     },
     "target_repo": {
-      "maxLength": 512,
-      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
       "title": "Target Repo",
       "type": "string"
     },

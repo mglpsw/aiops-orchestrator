@@ -21,6 +21,7 @@ import re
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from app.agent_review.schema_export_v2 import render_v2_json_schemas
 from app.agent_review.target_pack_manifest_v2 import (
@@ -111,6 +112,30 @@ def test_a_fresh_init_preview_produces_a_non_empty_after_hashes(tmp_path: Path) 
         ".aiops/target-profile.v2.yaml": hashlib.sha256(_VALID_PROFILE_YAML).hexdigest()
     }
     assert result.plan.before_hashes == {}
+
+
+def test_operation_plan_refuses_a_malformed_target_repo_before_any_mutation(tmp_path: Path) -> None:
+    """RED for PR-C1: `TargetPackInstallIdentityV2.target_repo` was
+    `SafeText` -- `compute_target_pack_operation_plan_v2` (the CLI
+    `init` preview's own entry point) passed a non-`owner/name` value
+    straight through with no refusal, before `--apply` even exists.
+    Codex Round 3 (PR #242, R3-3) confirmed the CLI's own `--target-repo`
+    argparse argument has no shape validator either. Tightening `Target
+    PackInstallIdentityV2.target_repo` to `Repository` closes this at
+    the SAME construction site every reader (`init` preview, `doctor`)
+    already goes through -- no new CLI-only regex."""
+
+    target_root = tmp_path / "fresh-target"
+    with pytest.raises(ValidationError):
+        compute_target_pack_operation_plan_v2(
+            manifest=_manifest(),
+            target_root=target_root,
+            target_repo="not-a-repository",
+            rollout="off",
+            seed_content_by_path={".aiops/target-profile.v2.yaml": _VALID_PROFILE_YAML},
+            previous_receipt=None,
+        )
+    assert not target_root.exists(), "a refused preview must never create the target root"
 
 
 def test_operation_plan_schema_can_represent_the_real_non_empty_after_hashes(tmp_path: Path) -> None:

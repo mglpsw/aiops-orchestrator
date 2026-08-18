@@ -55,6 +55,30 @@ def test_init_is_write_zero_without_apply(tmp_path: Path) -> None:
     assert preview["operation_plan_hash"]
 
 
+def test_init_preview_refuses_a_malformed_target_repo_before_any_mutation(tmp_path: Path) -> None:
+    """RED for PR-C1: the CLI's `--target-repo` argparse argument has no
+    shape validator of its own -- Codex Round 3 (PR #242, R3-3) confirmed
+    the value flows unchanged into the receipt. The shared-authority
+    fix (`TargetPackInstallIdentityV2.target_repo: Repository`) must
+    refuse this at PREVIEW time (before `--apply`, before any write),
+    through `main()`'s existing `ValidationError` -> clean CLI-boundary
+    catch -- no traceback, no new CLI-only regex."""
+
+    result = _run_raw(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "not-a-repository",
+            "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert "Traceback" not in result.stderr
+    assert not (tmp_path / ".aiops").exists()
+
+
 def test_init_refuses_an_unmatched_expected_plan_without_mutation(tmp_path: Path) -> None:
     args = [
         "init",
