@@ -42,14 +42,24 @@ from app.agent_review.target_pack_receipt_v2 import (
     load_target_install_receipt_bytes_v2,
 )
 from app.agent_review.target_pack_validate_v2 import (
+    AIOPS_MISSING_REASON_V2,
+    AIOPS_NOT_A_DIRECTORY_REASON_V2,
+    AIOPS_UNREADABLE_REASON_V2,
+    GENERATED_FILE_DRIFT_REASON_V2,
+    GENERATED_FILE_MISSING_REASON_V2,
+    GENERATED_FILE_NOT_A_REGULAR_FILE_REASON_V2,
+    GENERATED_FILE_UNREADABLE_REASON_V2,
     PATH_ESCAPES_TARGET_ROOT_REASON_V2,
     PATH_RESOLUTION_FAILED_REASON_V2,
     PREVIOUS_INSTALL_LINEAGE_REASON_V2,
     PROFILE_IDENTITY_MISMATCH_REASON_V2,
     PROFILE_MISSING_REASON_V2,
+    PROFILE_RESOURCE_LIMIT_EXCEEDED_REASON_V2,
     PROFILE_UNREADABLE_REASON_V2,
     RECEIPT_INVALID_REASON_V2,
     RECEIPT_MISSING_REASON_V2,
+    RECEIPT_RESOURCE_LIMIT_EXCEEDED_REASON_V2,
+    RECEIPT_UNREADABLE_REASON_V2,
     STATUS_FAIL_V2,
     STATUS_PASS_V2,
     STATUS_UNAVAILABLE_V2,
@@ -1076,20 +1086,23 @@ def test_profile_bytes_are_read_once_and_reused_for_the_ledger_check(
     _install(tmp_path, receipt=_receipt())
     profile_path_real = (tmp_path / ".aiops" / "target-profile.v2.yaml").resolve()
 
-    read_counts: dict[str, int] = {}
-    real_read_bytes = Path.read_bytes
+    # Round 2 (Codex P2-2): the profile artifact is now observed through
+    # a bounded `.open("rb")` + `stream.read(limit)` read, not whole-file
+    # `read_bytes()` -- count opens of the resolved profile path instead.
+    open_counts: dict[str, int] = {}
+    real_open = Path.open
 
-    def counting_read_bytes(self: Path, *args: object, **kwargs: object) -> bytes:
+    def counting_open(self: Path, *args: object, **kwargs: object):
         if self.resolve() == profile_path_real:
-            read_counts[str(self)] = read_counts.get(str(self), 0) + 1
-        return real_read_bytes(self, *args, **kwargs)  # type: ignore[arg-type]
+            open_counts[str(self)] = open_counts.get(str(self), 0) + 1
+        return real_open(self, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+    monkeypatch.setattr(Path, "open", counting_open)
     report = run_validate_v2(target_root=tmp_path)
 
     assert report.is_valid is True
-    total_reads = sum(read_counts.values())
-    assert total_reads == 1, f"profile path read {total_reads} times via read_bytes(), expected exactly 1"
+    total_opens = sum(open_counts.values())
+    assert total_opens == 1, f"profile path opened {total_opens} times, expected exactly 1"
 
 
 # --- Parser authority (strictness / ambiguity) ---------------------------------
@@ -1230,7 +1243,6 @@ _BLIND_TO_UPSTREAM_AUTHORITY_FIELDS_V2 = frozenset(
         "rollout_mode",
         "target_policy_hash",
         "review_pack_hashes",
-        "generated_file_hashes",
         "expected_runner_labels",
         "required_secret_names",
         "generated_at",
@@ -1246,6 +1258,12 @@ _REACTS_TO_LOCAL_EVIDENCE_FIELDS_V2 = frozenset(
         "target_profile_hash",
         "target_owned_file_hashes",
         "target_owned_paths",
+        # Codex Round 2 P2-1: `generated_file_hashes` DECLARED-ENTRY
+        # integrity is now locally verified (`generated_file_integrity`),
+        # symmetric with `target_owned_file_hashes` -- only SET
+        # completeness/ownership classification remain upstream-blind
+        # (`generated_file_set: unavailable`).
+        "generated_file_hashes",
     }
 )
 
@@ -1283,7 +1301,6 @@ def _blind_mutation_value_v2(field: str) -> object:
         "rollout_mode": "shadow_full",
         "target_policy_hash": "c" * 64,
         "review_pack_hashes": {"some-pack": "d" * 64},
-        "generated_file_hashes": {"some/generated.yml": "e" * 64},
         "expected_runner_labels": ("self-hosted",),
         "required_secret_names": ("SOME_TOKEN",),
         "generated_at": "2030-01-01T00:00:00Z",
@@ -1310,6 +1327,9 @@ def _reacts_mutation_value_v2(field: str) -> object:
         "portable_target_root_identity": "f" * 64,
         "target_profile_hash": "a" * 64,
         "target_owned_file_hashes": {".aiops/target-profile.v2.yaml": "b" * 64},
+        # Declares a generated file that is never written to disk --
+        # generated_file_integrity must react with "missing".
+        "generated_file_hashes": {"never-written-generated.yml": "c" * 64},
     }[field]
 
 
@@ -1659,3 +1679,590 @@ def test_profile_byte_integrity_is_independent_of_semantic_validity(tmp_path: Pa
 
     assert _check(report, "profile").status == STATUS_FAIL_V2
     assert _check(report, "target_owned_integrity").status == STATUS_PASS_V2
+
+
+# --- Codex round 2: four P2 findings closed ---------------------------------
+#
+# All four production behaviors below were independently reproduced as
+# defects against the exact pre-fix module (backed up before this round's
+# rewrite) before any production code changed. The fix replaced four
+# independent patches with a single typed observation carrier (`_observe_
+# artifact_bytes_v2` / `_observe_ledger_entry_hash_v2` / `_aiops_directory_
+# status_v2`) shared by both ledgers, per this round's disposable spike and
+# the module docstring's "A SINGLE OBSERVATION FUNCTION per artifact kind"
+# invariant. See the corresponding PR thread replies for the exact
+# reproduction transcripts against the pre-fix HEAD.
+
+
+# P2-A: `generated_file_hashes` were accepted into `receipt_hash` but never
+# locally verified -- a receipt could declare a byte claim about a
+# generated file, that file could be deleted or tampered, and `is_valid`
+# stayed `True`. ------------------------------------------------------------
+
+
+def test_generated_file_declared_and_deleted_fails_closed(tmp_path: Path) -> None:
+    content = b"generated content"
+    receipt = _receipt(generated_file_hashes={"generated-workflow.yml": _sha256(content)})
+    _install(tmp_path, receipt=receipt)
+    # generated-workflow.yml deliberately never written: declared, absent.
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "generated_file_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == GENERATED_FILE_MISSING_REASON_V2
+    assert report.is_valid is False
+
+
+def test_generated_file_declared_and_drifted_fails_closed(tmp_path: Path) -> None:
+    receipt = _receipt(generated_file_hashes={"generated-workflow.yml": "d" * 64})
+    _install(tmp_path, receipt=receipt)
+    (tmp_path / "generated-workflow.yml").write_bytes(b"actual different content")
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "generated_file_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == GENERATED_FILE_DRIFT_REASON_V2
+    assert report.is_valid is False
+
+
+def test_generated_file_empty_mapping_passes_while_generated_file_set_stays_unavailable(tmp_path: Path) -> None:
+    """An empty `generated_file_hashes` makes no byte-integrity claim at
+    all, so `generated_file_integrity` trivially passes -- it never means
+    "the manifest's generated-file set is complete", which stays
+    `unavailable` regardless of how many entries the receipt declares."""
+
+    _install(tmp_path, receipt=_receipt(generated_file_hashes={}))
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "generated_file_integrity")
+    assert check.status == STATUS_PASS_V2
+    assert check.reason_code is None
+    assert report.is_valid is True
+    assert "generated_file_set" in report.unvalidated_capabilities
+    assert _check(report, "generated_file_set").status == STATUS_UNAVAILABLE_V2
+
+
+def test_generated_file_disposition_is_independent_of_json_member_order(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Mirrors `test_target_owned_disposition_is_independent_of_json_
+    member_order` for `generated_file_hashes`: `receipt_hash`'s canonical
+    preimage sorts JSON object keys, so raw member order is not part of
+    the receipt's identity, and `_verify_declared_ledger_v2`'s own
+    traversal is `sorted(entries)` -- the same generic verifier both
+    ledgers share (see `test_target_owned_and_generated_file_integrity_
+    share_the_same_verifier` below)."""
+
+    root_a = tmp_path_factory.mktemp("gen_order_a")
+    root_b = tmp_path_factory.mktemp("gen_order_b")
+
+    ledger = {
+        "a-missing.yml": "a" * 64,
+        "b-drifted.yml": "b" * 64,
+        "c-intact.yml": _sha256(b"intact content"),
+    }
+    receipt = _receipt(generated_file_hashes=ledger)
+    raw_dump = receipt.model_dump(mode="json")
+
+    def raw_json_with_order(order: list[str]) -> str:
+        d = dict(raw_dump)
+        d["generated_file_hashes"] = {k: ledger[k] for k in order}
+        return json.dumps(d)
+
+    order_a = list(ledger)
+    order_b = list(reversed(order_a))
+    assert order_a != order_b
+
+    raw_a, raw_b = raw_json_with_order(order_a), raw_json_with_order(order_b)
+    assert raw_a != raw_b
+
+    receipt_a = load_target_install_receipt_bytes_v2(raw_a)
+    receipt_b = load_target_install_receipt_bytes_v2(raw_b)
+    assert receipt_a.receipt_hash == receipt_b.receipt_hash
+
+    for root, raw in ((root_a, raw_a), (root_b, raw_b)):
+        (root / ".aiops").mkdir()
+        (root / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+        (root / ".aiops" / "install-receipt.v2.json").write_text(raw, encoding="utf-8")
+        (root / "b-drifted.yml").write_bytes(b"WRONG content")
+        (root / "c-intact.yml").write_bytes(b"intact content")
+        # a-missing.yml deliberately never written.
+
+    report_a = run_validate_v2(target_root=root_a)
+    report_b = run_validate_v2(target_root=root_b)
+
+    assert _decision_surface(report_a) == _decision_surface(report_b)
+
+
+def test_generated_file_declared_path_escaping_via_symlink_is_refused(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (target_root / ".aiops").mkdir()
+    (target_root / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    outside_generated = outside / "generated.yml"
+    outside_generated.write_text("outside content", encoding="utf-8")
+    (target_root / "generated.yml").symlink_to(outside_generated)
+
+    receipt = _receipt(generated_file_hashes={"generated.yml": _sha256(b"outside content")})
+    (target_root / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    seen = _read_spy(monkeypatch)
+    report = run_validate_v2(target_root=target_root)
+
+    check = _check(report, "generated_file_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    _assert_no_read_escaped(seen, target_root)
+
+
+def test_generated_file_symlink_loop_is_resolution_failed_not_escape(tmp_path: Path) -> None:
+    (tmp_path / ".aiops").mkdir()
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (tmp_path / "loopy.yml").symlink_to("loopy.yml")
+    receipt = _receipt(generated_file_hashes={"loopy.yml": "c" * 64})
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "generated_file_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == PATH_RESOLUTION_FAILED_REASON_V2
+    assert check.reason_code != PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+def test_generated_file_not_a_regular_file_is_reported_distinctly(tmp_path: Path) -> None:
+    _install(tmp_path, receipt=None)
+    (tmp_path / "generated-dir").mkdir()
+    receipt = _receipt(generated_file_hashes={"generated-dir": "a" * 64})
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "generated_file_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == GENERATED_FILE_NOT_A_REGULAR_FILE_REASON_V2
+
+
+def test_generated_file_unreadable_is_reported_distinctly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _install(tmp_path, receipt=None)
+    generated_path = tmp_path / "generated-workflow.yml"
+    generated_path.write_bytes(b"generated content")
+    receipt = _receipt(generated_file_hashes={"generated-workflow.yml": _sha256(b"generated content")})
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    generated_real = generated_path.resolve()
+    real_open = Path.open
+
+    def selectively_raising_open(self: Path, *args: object, **kwargs: object):
+        mode = args[0] if args else kwargs.get("mode")
+        if self.resolve() == generated_real and mode == "rb":
+            raise OSError("simulated permission denied")
+        return real_open(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "open", selectively_raising_open)
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "generated_file_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == GENERATED_FILE_UNREADABLE_REASON_V2
+
+
+# P2-B: whole-file reads of the two `.aiops` artifacts were unbounded -- a
+# multi-hundred-megabyte receipt or profile was fully buffered before any
+# parse was attempted. --------------------------------------------------------
+
+
+def test_receipt_above_budget_is_resource_limit_exceeded(tmp_path: Path) -> None:
+    _install(tmp_path, receipt=None)
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    oversized = b"{" + b"x" * (validate_module._ARTIFACT_BYTE_LIMIT_V2 + 1)
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_bytes(oversized)
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "receipt")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == RECEIPT_RESOURCE_LIMIT_EXCEEDED_REASON_V2
+    assert report.is_valid is False
+
+
+def test_profile_above_budget_is_resource_limit_exceeded(tmp_path: Path) -> None:
+    _install(tmp_path, receipt=_receipt(), profile_text=None)
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    oversized = "schema_id: " + "x" * (validate_module._ARTIFACT_BYTE_LIMIT_V2 + 1)
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(oversized, encoding="utf-8")
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "profile")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == PROFILE_RESOURCE_LIMIT_EXCEEDED_REASON_V2
+    assert report.is_valid is False
+
+
+def test_artifact_byte_read_exact_limit_boundary_is_precise(tmp_path: Path) -> None:
+    """Exact-limit control: content of PRECISELY `_ARTIFACT_BYTE_LIMIT_V2`
+    bytes is within budget (`"ok"`); one byte more is `"resource_limit_
+    exceeded"`. Exercises `_observe_artifact_bytes_v2` directly -- the
+    private function IS the off-by-one boundary; testing only through a
+    full receipt/profile parse would conflate this boundary with the
+    parser's own separate pass/fail behaviour."""
+
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    limit = validate_module._ARTIFACT_BYTE_LIMIT_V2
+    at_limit = tmp_path / "at-limit"
+    at_limit.write_bytes(b"x" * limit)
+    status, content = validate_module._observe_artifact_bytes_v2(at_limit)
+    assert status == "ok"
+    assert content is not None
+    assert len(content) == limit
+
+    over_limit = tmp_path / "over-limit"
+    over_limit.write_bytes(b"x" * (limit + 1))
+    status2, content2 = validate_module._observe_artifact_bytes_v2(over_limit)
+    assert status2 == "resource_limit_exceeded"
+    assert content2 is None
+
+
+def test_receipt_parser_is_never_called_after_a_budget_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refused content must never reach the shared receipt-parsing
+    authority at all -- proves the budget refusal happens strictly before
+    parsing, not merely that the FINAL disposition is correct."""
+
+    _install(tmp_path, receipt=None)
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    oversized = b"{" + b"x" * (validate_module._ARTIFACT_BYTE_LIMIT_V2 + 1)
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_bytes(oversized)
+
+    parser_calls: list[bytes] = []
+    real_parser = validate_module.load_target_install_receipt_bytes_v2
+
+    def spying_parser(raw: bytes):
+        parser_calls.append(raw)
+        return real_parser(raw)
+
+    monkeypatch.setattr(validate_module, "load_target_install_receipt_bytes_v2", spying_parser)
+    report = run_validate_v2(target_root=tmp_path)
+
+    assert parser_calls == [], "the shared receipt parser was invoked on content already refused for exceeding budget"
+    check = _check(report, "receipt")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == RECEIPT_RESOURCE_LIMIT_EXCEEDED_REASON_V2
+
+
+def test_validate_never_calls_whole_file_read_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Architecture proof: neither the two bounded `.aiops` artifacts nor
+    any receipt-declared ledger entry is ever materialised via whole-file
+    `Path.read_bytes()` -- the fix replaced `_observe_artifact_bytes_v2`'s
+    prior `read_bytes()` call with bounded `path.open('rb')` +
+    `stream.read(limit + 1)`; ledger entries were already streaming via
+    `hashlib.file_digest`. A declared generated file is included so the
+    ledger side is exercised too, not only the two known-location
+    artifacts."""
+
+    generated_content = b"generated content" * 1000
+    receipt = _receipt(generated_file_hashes={"generated.yml": _sha256(generated_content)})
+    _install(tmp_path, receipt=receipt)
+    (tmp_path / "generated.yml").write_bytes(generated_content)
+
+    seen: list[tuple[str, str]] = []
+    real_read_bytes = Path.read_bytes
+
+    def spy_read_bytes(self: Path, *args: object, **kwargs: object) -> bytes:
+        seen.append(("read_bytes", str(self)))
+        return real_read_bytes(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_bytes", spy_read_bytes)
+    report = run_validate_v2(target_root=tmp_path)
+
+    assert report.is_valid is True
+    assert seen == [], f"validate called whole-file Path.read_bytes(): {seen}"
+
+
+# P2-C: `.exists()`/`.is_file()` metadata probes sat OUTSIDE the `try/
+# except OSError` boundary that wrapped only the read -- a `PermissionError`
+# raised by the metadata probe itself escaped `run_validate_v2` as an
+# uncaught exception rather than a diagnosed `"unreadable"` disposition. ----
+
+
+def test_receipt_permission_error_from_metadata_probe_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path, receipt=_receipt())
+    target_real = (tmp_path / ".aiops" / "install-receipt.v2.json").resolve()
+    real_exists = Path.exists
+
+    def raising_exists(self: Path) -> bool:
+        if self.resolve() == target_real:
+            raise PermissionError(13, "Permission denied")
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", raising_exists)
+    report = run_validate_v2(target_root=tmp_path)  # must not raise -- no traceback
+
+    check = _check(report, "receipt")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == RECEIPT_UNREADABLE_REASON_V2
+
+
+def test_profile_permission_error_from_metadata_probe_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path, receipt=_receipt())
+    target_real = (tmp_path / ".aiops" / "target-profile.v2.yaml").resolve()
+    real_exists = Path.exists
+
+    def raising_exists(self: Path) -> bool:
+        if self.resolve() == target_real:
+            raise PermissionError(13, "Permission denied")
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", raising_exists)
+    report = run_validate_v2(target_root=tmp_path)  # must not raise -- no traceback
+
+    check = _check(report, "profile")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == PROFILE_UNREADABLE_REASON_V2
+
+
+def test_target_owned_ledger_permission_error_from_metadata_probe_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Targets `.is_file()` rather than `.exists()` (unlike the receipt/
+    profile artifact tests above) so both metadata probes this module
+    relies on are exercised at least once across the suite."""
+
+    _install(tmp_path, receipt=None)
+    extra_path = tmp_path / ".aiops" / "extra-owned.txt"
+    extra_path.write_bytes(b"extra content")
+    receipt = _receipt(
+        target_owned_paths=(".aiops/target-profile.v2.yaml", ".aiops/extra-owned.txt"),
+        target_owned_file_hashes={
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8")),
+            ".aiops/extra-owned.txt": _sha256(b"extra content"),
+        },
+    )
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    extra_real = extra_path.resolve()
+    real_is_file = Path.is_file
+
+    def raising_is_file(self: Path) -> bool:
+        if self.resolve() == extra_real:
+            raise PermissionError(13, "Permission denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", raising_is_file)
+    report = run_validate_v2(target_root=tmp_path)  # must not raise -- no traceback
+
+    check = _check(report, "target_owned_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == TARGET_OWNED_UNREADABLE_REASON_V2
+
+
+def test_generated_file_ledger_permission_error_from_metadata_probe_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install(tmp_path, receipt=None)
+    generated_path = tmp_path / "generated-workflow.yml"
+    generated_path.write_bytes(b"generated content")
+    receipt = _receipt(generated_file_hashes={"generated-workflow.yml": _sha256(b"generated content")})
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    generated_real = generated_path.resolve()
+    real_is_file = Path.is_file
+
+    def raising_is_file(self: Path) -> bool:
+        if self.resolve() == generated_real:
+            raise PermissionError(13, "Permission denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", raising_is_file)
+    report = run_validate_v2(target_root=tmp_path)  # must not raise -- no traceback
+
+    check = _check(report, "generated_file_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == GENERATED_FILE_UNREADABLE_REASON_V2
+
+
+# P2-D: a `.aiops` candidate that resolved as CONTAINED but did not actually
+# exist (or was a plain file, or raised `OSError` on probe) was treated as
+# `aiops_snapshot: pass` -- containment was silently extended into a
+# directory-existence claim it never proved. -------------------------------
+
+
+def test_aiops_absent_is_reported_missing(tmp_path: Path) -> None:
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "aiops_snapshot")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == AIOPS_MISSING_REASON_V2
+    assert report.is_valid is False
+
+
+def test_aiops_regular_file_is_not_a_directory(tmp_path: Path) -> None:
+    (tmp_path / ".aiops").write_text("not a directory", encoding="utf-8")
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "aiops_snapshot")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == AIOPS_NOT_A_DIRECTORY_REASON_V2
+
+
+def test_aiops_directory_permission_error_from_metadata_probe_is_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".aiops").mkdir()
+    aiops_real = (tmp_path / ".aiops").resolve()
+    real_exists = Path.exists
+
+    def raising_exists(self: Path) -> bool:
+        if self.resolve() == aiops_real:
+            raise PermissionError(13, "Permission denied")
+        return real_exists(self)
+
+    monkeypatch.setattr(Path, "exists", raising_exists)
+    report = run_validate_v2(target_root=tmp_path)  # must not raise -- no traceback
+
+    check = _check(report, "aiops_snapshot")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == AIOPS_UNREADABLE_REASON_V2
+
+
+def test_aiops_directory_positive_control_passes(tmp_path: Path) -> None:
+    _install(tmp_path, receipt=_receipt())
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "aiops_snapshot")
+    assert check.status == STATUS_PASS_V2
+    assert check.reason_code is None
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param("missing", id="aiops_missing"),
+        pytest.param("not_a_directory", id="aiops_not_a_directory"),
+    ],
+)
+def test_artifact_checks_are_absent_when_aiops_snapshot_fails(tmp_path: Path, mode: str) -> None:
+    """Containment is not existence: receipt/profile (and everything
+    downstream of them) must never be looked up unless `.aiops` itself is
+    observed to actually be a readable directory -- an early refusal must
+    be an ABSENCE of these check names, not merely a `fail` status for
+    them."""
+
+    if mode == "not_a_directory":
+        (tmp_path / ".aiops").write_text("not a directory", encoding="utf-8")
+    # "missing": .aiops deliberately never created at all.
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    present_names = {c.name for c in report.checks}
+    for absent_name in (
+        "receipt",
+        "profile",
+        "profile_hash",
+        "profile_identity",
+        "root_identity",
+        "target_owned_integrity",
+        "generated_file_integrity",
+    ):
+        assert absent_name not in present_names, f"{absent_name!r} was emitted despite aiops_snapshot failing"
+
+
+# --- Round 2 structural completeness (spike properties, pinned in production) -
+
+
+def test_observe_artifact_bytes_status_vocabulary_is_closed_and_pairwise_reachable(tmp_path: Path) -> None:
+    """The disposable observation-algebra spike's completeness property
+    (`ker(alpha) subseteq intersection ker(d_i)`), pinned directly against
+    the production function: a collapse back to a `bytes | None` /
+    parallel-Optional-fields projection would make several of these
+    states indistinguishable from each other. Enumerates every
+    filesystem-observable state `_observe_artifact_bytes_v2` can report
+    (excluding `"unreadable"`, which needs a monkeypatch and is already
+    pinned distinctly by the P2-C tests above) and asserts all four are
+    pairwise distinct status tags."""
+
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    missing = tmp_path / "missing"
+    not_a_file = tmp_path / "a-directory"
+    not_a_file.mkdir()
+    ok = tmp_path / "ok"
+    ok.write_bytes(b"small content")
+    over_limit = tmp_path / "over-limit"
+    over_limit.write_bytes(b"x" * (validate_module._ARTIFACT_BYTE_LIMIT_V2 + 1))
+
+    observe = validate_module._observe_artifact_bytes_v2
+    statuses = {
+        "missing": observe(missing)[0],
+        "not_a_regular_file": observe(not_a_file)[0],
+        "resource_limit_exceeded": observe(over_limit)[0],
+        "ok": observe(ok)[0],
+    }
+    assert statuses == {
+        "missing": "missing",
+        "not_a_regular_file": "not_a_regular_file",
+        "resource_limit_exceeded": "resource_limit_exceeded",
+        "ok": "ok",
+    }
+    assert len(set(statuses.values())) == len(statuses), "two observably-different states collapsed to one status tag"
+
+
+def test_target_owned_and_generated_file_integrity_share_the_same_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a future change duplicated target-owned/generated-file
+    verification into two independently maintained loops, a taxonomy fix
+    applied to one could silently fail to apply to the other -- exactly
+    the class of drift this round's spike closed by giving both ledgers
+    ONE shared generic verifier. Proven mechanically: both `_target_
+    owned_integrity_check_v2` and `_generated_file_integrity_check_v2`
+    must route through the SAME `_verify_declared_ledger_v2` call, once
+    each, never two separately maintained implementations."""
+
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    call_names: list[str] = []
+    real_verify = validate_module._verify_declared_ledger_v2
+
+    def spying_verify(*, check_name: str, **kwargs: object):
+        call_names.append(check_name)
+        return real_verify(check_name=check_name, **kwargs)
+
+    monkeypatch.setattr(validate_module, "_verify_declared_ledger_v2", spying_verify)
+
+    receipt = _receipt(generated_file_hashes={})
+    _install(tmp_path, receipt=receipt)
+    run_validate_v2(target_root=tmp_path)
+
+    assert call_names == ["target_owned_integrity", "generated_file_integrity"], (
+        f"expected both ledgers to route through the shared verifier exactly once each, got: {call_names}"
+    )

@@ -668,12 +668,17 @@ def test_validate_passes_on_a_real_freshly_initialised_target(tmp_path: Path) ->
     for name in (
         "target_root", "aiops_snapshot", "receipt", "profile",
         "profile_hash", "profile_identity", "root_identity", "target_owned_integrity",
+        "generated_file_integrity",
     ):
         assert statuses[name] == "pass", name
-    for name in ("target_owned_set", "rollout_capability", "previous_install_lineage", "trusted_check_inventory"):
+    for name in (
+        "target_owned_set", "generated_file_set", "rollout_capability",
+        "previous_install_lineage", "trusted_check_inventory",
+    ):
         assert statuses[name] == "unavailable", name
     assert set(report["unvalidated_capabilities"]) == {
-        "target_owned_set", "rollout_capability", "previous_install_lineage", "trusted_check_inventory",
+        "target_owned_set", "generated_file_set", "rollout_capability",
+        "previous_install_lineage", "trusted_check_inventory",
     }
 
 
