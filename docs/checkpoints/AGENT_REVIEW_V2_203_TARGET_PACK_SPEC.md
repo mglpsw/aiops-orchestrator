@@ -242,13 +242,22 @@ upgrade     --target-root PATH [--dry-run] [--yes]
 rollback    --target-root PATH [--dry-run] [--yes]
 ```
 
-`init` and `doctor` are implemented (slice 1). The rest are specified here and
-deferred (§12).
+`init` and `doctor` are implemented (slice 1). `validate` is implemented
+(`#203-S2` PR-B), exactly at the signature specified above — target-only,
+no `--toolrepo-root`. `conformance`/`install-workflows`/`upgrade`/`rollback`
+remain specified here and deferred (§12/§14).
 
-`doctor` is **READ-ONLY by construction**: it accepts no mutating parameter and
-calls no write/mkdir/rename/remove primitive anywhere in its call graph, proven
-mechanically by AST/call-graph inspection — the same mechanical-proof discipline
-`#201-C` established, applied to a new invariant.
+`doctor` and `validate` are both **READ-ONLY by construction**: neither
+accepts a mutating parameter, and neither calls a write/mkdir/rename/remove
+primitive anywhere in its call graph, proven mechanically by AST/call-graph
+inspection over a registry of both modules — the same mechanical-proof
+discipline `#201-C` established, applied to a second invariant-holder.
+`validate` additionally hashes any target-owned ledger entry through a
+bounded-memory streaming read rather than a whole-file read: unlike
+`doctor`, it has no manifest to reject a forged ownership set before
+reading it, so a receipt may name any contained regular file, and
+whole-file materialisation of an arbitrarily large one would be a local
+memory-exhaustion vector.
 
 ### 4.1 `doctor` diagnoses identity, not just structure  *(rev.2)*
 
@@ -396,14 +405,22 @@ serializer, authority decision, publisher, policy or trusted inventory.
 
 The pack owns the **mechanism**; the target owns the **inventory**.
 
-- `TrustedCheckInventoryV2` (additive schema) defines the shape of a target's
-  `.aiops/trusted-checks.v2.yaml`: `check_name`, allowlisted `command` (argv
-  list, never a shell string), `working_directory`, `timeout_seconds`,
-  `resource_limits`. The pack ships it as a seed template the target edits.
-- `validate`/`doctor` load it with strict parsing and cross-check against
-  `TargetProfileV2.policies.required_checks` using the same bidirectional
-  equality `validate_policy_against_profile_v2` already enforces — reused, not
-  reimplemented.
+- `TrustedCheckInventoryV2` (additive schema, **not yet shipped** — see
+  `§14`) defines the shape of a target's `.aiops/trusted-checks.v2.yaml`:
+  `check_name`, allowlisted `command` (argv list, never a shell string),
+  `working_directory`, `timeout_seconds`, `resource_limits`. The pack ships
+  it as a seed template the target edits.
+- Once that contract exists, `validate`/`doctor` are specified to load it
+  with strict parsing and cross-check against `TargetProfileV2.policies.
+  required_checks` using the same bidirectional equality `validate_policy_
+  against_profile_v2` already enforces — reused, not reimplemented. **Until
+  then**, `validate` (`#203-S2` PR-B, implemented) reports this dimension
+  as `trusted_check_inventory: unavailable`, explicitly disclosed in every
+  report's `unvalidated_capabilities` rather than silently omitted or
+  reported `pass` — `absence of a delivered capability != successful
+  validation of that capability`. The slice that makes the capability
+  reachable must wire it through this same inventory authority; PR-B does
+  not invent an interim inventory of its own.
 - The pack NEVER invents a target-specific command (no hardcoded `pytest`, no
   hardcoded `mypy`) anywhere in `app/agent_review/*` or `templates/*`, enforced
   by an architecture test.
@@ -566,11 +583,14 @@ adoption, Class C execution, CT104 canaries, release/pinning — `#204`/`#205`.
 
 ## 14. Deferred (explicitly, not silently)
 
-- `validate` / `conformance` / `install-workflows` / `upgrade` / `rollback` and
-  the real workflow templates — later `#203` slices. Slice 1 ships `init` +
-  `doctor`.
+- `conformance` / `install-workflows` / `upgrade` / `rollback` and the real
+  workflow templates — later `#203` slices. Slice 1 shipped `init` +
+  `doctor`; `#203-S2` PR-B shipped `validate` (target-only, offline,
+  read-only; see `§4`/`§7`).
 - `TrustedCheckInventoryV2` and the `#201-C0` trusted-check wiring, and with it
-  any genuine `SHADOW_FULL` capability.
+  any genuine `SHADOW_FULL` capability. Until this contract ships, `validate`
+  reports `trusted_check_inventory: unavailable` rather than inventing an
+  interim inventory of its own (`§7`).
 - Multi-file crash-convergence metamorphic test (§5.5) — owed by the first slice
   that writes more than one file.
 - Class C / real dual-target adoption — `#204` (§10).

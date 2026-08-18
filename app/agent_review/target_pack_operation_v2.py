@@ -48,6 +48,15 @@ from app.agent_review.target_pack_receipt_v2 import (
 
 TARGET_PACK_OPERATION_PLAN_SCHEMA_ID_V2 = "agent-review.target-pack-operation-plan.v2"
 
+# The shipped first-init seed profile carries this visible, uncustomized
+# marker in `identity.repo` -- no target-specific material is baked into the
+# generic artifact (`templates/agentreview-v2-target-pack/target-profile.v2.yaml`).
+# Named here, once, so this module and any reader of a not-yet-customized
+# profile (e.g. `#203-S2`'s `target_pack_validate_v2`) share the identical
+# constant rather than each restating the literal -- the two could otherwise
+# silently drift apart the day the seed changes.
+SEED_PROFILE_IDENTITY_PLACEHOLDER_V2 = "OWNER/REPO"
+
 OPERATION_FOREIGN_IDENTITY_REASON_V2 = "target_pack_operation_foreign_identity"
 OPERATION_TARGET_OWNED_CHANGED_INVALID_REASON_V2 = "target_owned_changed_invalid"
 OPERATION_TARGET_OWNED_MISSING_INSTALLED_REASON_V2 = "target_owned_missing_installed"
@@ -200,7 +209,7 @@ def _profile_hash_for_bytes_v2(*, content: bytes, target_repo: str) -> str:
     # no target-specific material is baked into the generic artifact. Once a
     # target replaces it, its profile identity must bind to the CLI target
     # repository before it can be reconciled into a receipt.
-    if profile.identity.repo not in {target_repo, "OWNER/REPO"}:
+    if profile.identity.repo not in {target_repo, SEED_PROFILE_IDENTITY_PLACEHOLDER_V2}:
         raise PlanError(OPERATION_FOREIGN_IDENTITY_REASON_V2)
     return compute_profile_hash_v2(profile)
 

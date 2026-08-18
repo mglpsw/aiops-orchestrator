@@ -631,3 +631,175 @@ def test_init_refuses_cleanly_instead_of_fabricating_a_toolrepo_sha(tmp_path: Pa
     assert "Traceback" not in result.stderr
     assert "target_pack_cli_toolrepo_sha_unresolved" in result.stderr
     assert not (target_root / ".aiops" / "install-receipt.v2.json").exists()
+
+
+# --- `validate` (`#203-S2` PR-B) --------------------------------------------
+#
+# `validate` is target-only and offline by design: no `--toolrepo-root`,
+# no `--target-repo`, no `--pack-version`. These tests exercise the real
+# CLI entry point end-to-end, complementing the library-level tests in
+# `test_target_pack_validate_v2.py`.
+
+
+def test_validate_passes_on_a_real_freshly_initialised_target(tmp_path: Path) -> None:
+    """The strongest end-to-end statement this suite can make: if `init`
+    and `validate` ever disagreed about the shape of a fresh install,
+    this test -- driving both through the real CLI, not hand-built
+    fixtures -- is what would catch it."""
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    validate_result = _run_raw(["validate", "--target-root", str(tmp_path)])
+
+    assert validate_result.returncode == 0, validate_result.stderr
+    report = json.loads(validate_result.stdout)
+    assert report["valid"] is True
+    assert report["target_root_real"] == str(tmp_path.resolve())
+    statuses = {check["name"]: check["status"] for check in report["checks"]}
+    for name in (
+        "target_root", "aiops_snapshot", "receipt", "profile",
+        "profile_hash", "profile_identity", "root_identity", "target_owned_integrity",
+    ):
+        assert statuses[name] == "pass", name
+    for name in ("target_owned_set", "rollout_capability", "previous_install_lineage", "trusted_check_inventory"):
+        assert statuses[name] == "unavailable", name
+    assert set(report["unvalidated_capabilities"]) == {
+        "target_owned_set", "rollout_capability", "previous_install_lineage", "trusted_check_inventory",
+    }
+
+
+def test_validate_fails_closed_on_drift_after_a_real_init(tmp_path: Path) -> None:
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    profile_path = tmp_path / ".aiops" / "target-profile.v2.yaml"
+    profile_path.write_text(profile_path.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8")
+
+    validate_result = _run_raw(["validate", "--target-root", str(tmp_path)])
+
+    assert validate_result.returncode == 1
+    report = json.loads(validate_result.stdout)
+    assert report["valid"] is False
+    statuses = {check["name"]: check["status"] for check in report["checks"]}
+    assert statuses["profile_hash"] == "pass"  # semantic hash unchanged: comments don't survive parsing
+    assert statuses["target_owned_integrity"] == "fail"
+
+
+def test_validate_reports_a_never_initialised_target_as_invalid(tmp_path: Path) -> None:
+    result = _run_raw(["validate", "--target-root", str(tmp_path)])
+
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["valid"] is False
+    assert not (tmp_path / ".aiops").exists()
+
+
+def test_validate_needs_no_toolrepo_argument(tmp_path: Path) -> None:
+    """The absence of `--toolrepo-root` is a tested CONTRACT, not an
+    omission: passing it is rejected by argparse before `validate` ever
+    runs, distinguishing a malformed invocation from any target-state
+    outcome `run_validate_v2` could report."""
+
+    result = _run_raw(
+        ["validate", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT)]
+    )
+
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
+
+
+def test_validate_rejects_a_missing_target_root_argument(tmp_path: Path) -> None:
+    result = _run_raw(["validate"])
+
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "--target-root" in result.stderr
+
+
+def test_validate_never_claims_the_trusted_check_dimension_passed(tmp_path: Path) -> None:
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    validate_result = _run_raw(["validate", "--target-root", str(tmp_path)])
+    report = json.loads(validate_result.stdout)
+    statuses = {check["name"]: check["status"] for check in report["checks"]}
+
+    assert statuses["trusted_check_inventory"] == "unavailable"
+    assert statuses["trusted_check_inventory"] != "pass"
+    assert "trusted_check_inventory" in report["unvalidated_capabilities"]
+
+
+def test_validate_is_write_zero(tmp_path: Path) -> None:
+    """No CLI invocation of `validate` -- valid or invalid target,
+    existing or missing root -- ever creates, modifies, or removes
+    anything under `target_root`."""
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    def snapshot() -> list[str]:
+        return sorted(str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*"))
+
+    before = snapshot()
+    _run_raw(["validate", "--target-root", str(tmp_path)])
+    _run_raw(["validate", "--target-root", str(tmp_path)])
+    after = snapshot()
+
+    assert before == after
+
+
+def test_validate_exit_codes_are_0_valid_1_invalid_never_2_for_target_state(tmp_path: Path) -> None:
+    """`validate` never converts an OBSERVED target state into exit `2`
+    -- that code stays reserved for a malformed CLI invocation, which
+    `argparse` itself enforces before `_cmd_validate` ever runs."""
+
+    healthy_result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert healthy_result.returncode == 0, healthy_result.stderr
+
+    assert _run_raw(["validate", "--target-root", str(tmp_path)]).returncode == 0
+
+    never_installed = tmp_path.parent / "never-installed"
+    assert _run_raw(["validate", "--target-root", str(never_installed)]).returncode == 1
+
+    assert _run_raw(["validate"]).returncode == 2

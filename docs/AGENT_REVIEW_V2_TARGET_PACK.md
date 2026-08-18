@@ -9,20 +9,20 @@ merged).
 
 ## Subcommand status
 
-Merged to `master` across PR #223 (first slice) and PR #228 (operation-plan
-binding). Not yet in any published release.
+Merged to `master` across PR #223 (first slice), PR #228 (operation-plan
+binding), and `#203-S2` PR-B (`validate`). Not yet in any published release.
 
 | Subcommand | Status | Notes |
 |---|---|---|
 | `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile — repeating `init` after a target edits `.aiops/target-profile.v2.yaml` requires naming the path via `--accept-target-owned` on both the preview and the `--apply` call, or `apply` fails with `target_owned_identity_acceptance_required`; the profile bytes themselves are left untouched. **This pack version's `max_supported_rollout_mode` is `off`** — `--rollout off` is the only value this slice accepts; `shadow_minimal`/`shadow_full` are interface/future options and are refused before preview or apply |
 | `doctor` | `IMPLEMENTED` | read-only, proven by AST/call-graph inspection |
 | operation-plan binding | `IMPLEMENTED` | `target_pack_operation_v2.py` + its own schema (PR #228) |
-| `validate` | `DEFERRED` | spec `§12` |
+| `validate` | `IMPLEMENTED` | target-only, offline, read-only (`#203-S2` PR-B) — takes only `--target-root`, no toolrepo checkout. Verifies only what is locally derivable from the installed state against contracts this pack already owns; `target_owned_set`, `rollout_capability`, `previous_install_lineage`, and `trusted_check_inventory` are explicitly `unavailable` (upstream-manifest- or future-contract-owned), never silently passed. See `target_pack_validate_v2.py`'s own module docstring for the full boundary against `doctor` |
 | `conformance` | `DEFERRED` | spec `§12`; target adoption is `#204`'s charter |
 | `install-workflows` | `DEFERRED` | workflow templates not shipped |
 | `upgrade` | `DEFERRED` | only command that changes rollout mode |
 | `rollback` | `DEFERRED` | spec `§12` |
-| trusted-check inventory integration | `PLANNED` | into the `#201-C0` provenance chain |
+| trusted-check inventory integration | `PLANNED` | into the `#201-C0` provenance chain; until it ships, `validate`/`doctor` report the dimension `unavailable` rather than inventing an interim inventory |
 
 Deferred means specified and intentionally not shipped — never silently dropped,
 and never described as available.
@@ -49,7 +49,8 @@ and the full threat model.
 
 Two of the specification's seven CLI subcommands, as a coherent, tested
 slice — `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
-remain deferred (spec `§12`; see the status table above). PR #228
+remained deferred at that point (spec `§12`; see the status table above,
+current as of `#203-S2` PR-B, which implements `validate`). PR #228
 subsequently bound `init` to an explicit, schema-backed operation plan. Without
 `--apply`, `init` is write-zero: it prints the operation plan and exits.
 Writing the profile/receipt requires a second, explicit invocation with
@@ -156,7 +157,10 @@ Combined suite (full `tests/`): 2497 passed, 16 skipped, 2 failed
 `test_isolated_executor_v2.py`, unrelated to `#203`). Schema export
 byte-identical; CAEM F0 pin unchanged.
 
-## Deferred (spec `§12`, not silently dropped)
+## Deferred (spec `§12`, not silently dropped) — as of PR #223
+
+Historical, scoped to PR #223's own slice; superseded by the status table
+at the top of this document (`validate` shipped in `#203-S2` PR-B).
 
 - `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
   subcommands.

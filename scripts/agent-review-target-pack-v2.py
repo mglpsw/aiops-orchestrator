@@ -6,17 +6,22 @@ repository WITHOUT forking the engine -- `#203 MAY INSTALL/CONFIGURE
 INTEGRATION. #203 MUST NEVER CREATE AUTHORITY, FORK THE ENGINE, OR SILENTLY
 PROMOTE ROLLOUT.`
 
-This first slice ships two of the seven subcommands named in the
+This slice ships three of the seven subcommands named in the
 Execution-Ready Engineering Specification
 (`docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`) as a coherent,
 tested unit:
 
-    agent-review-target-pack-v2.py init    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME
-    agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME
+    agent-review-target-pack-v2.py init      --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME
+    agent-review-target-pack-v2.py doctor    --target-root PATH --toolrepo-root PATH --target-repo OWNER/NAME
+    agent-review-target-pack-v2.py validate  --target-root PATH
 
-`validate`/`conformance`/`install-workflows`/`upgrade`/`rollback` are
-deferred to a follow-up commit on this same branch/PR, per the spec's own
-`§12` (not silently dropped -- named there explicitly).
+`conformance`/`install-workflows`/`upgrade`/`rollback` remain deferred per
+the spec's own `§12`/`§14` (not silently dropped -- named there
+explicitly). `validate` (`#203-S2` PR-B) is target-only and offline by
+design -- unlike `doctor`, it takes no `--toolrepo-root`/`--target-repo`/
+`--pack-version` and needs no toolrepo checkout at all; see `target_pack_
+validate_v2.run_validate_v2`'s own module docstring for exactly what it
+does and does not check, and why.
 
 Every subcommand is a thin wrapper: it parses args, calls exactly one
 library function in `app.agent_review.target_pack_*`, and prints/writes
@@ -24,9 +29,9 @@ that function's result. No subcommand re-implements any decision the
 library layer already owns -- the same discipline `#201-C`'s own CLI
 (`aiops-review-quality-gate-v2.py`) already follows for readiness.
 
-`doctor` is READ-ONLY -- see `target_pack_doctor_v2.run_doctor_v2`'s own
-docstring and `tests/agent_review/test_target_pack_arch_v2.py` for the
-mechanical (AST) proof.
+`doctor` and `validate` are both READ-ONLY -- see their own modules'
+docstrings and `tests/agent_review/test_target_pack_arch_v2.py` for the
+mechanical (AST) proof, applied to both by the same test registry.
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ from app.agent_review.target_pack_build_v2 import (  # noqa: E402
     load_seed_content_by_path_v2,
 )
 from app.agent_review.target_pack_doctor_v2 import run_doctor_v2  # noqa: E402
+from app.agent_review.target_pack_validate_v2 import run_validate_v2  # noqa: E402
 from app.agent_review.target_pack_install_v2 import (  # noqa: E402
     RECEIPT_RELATIVE_PATH_V2,
     TargetPackInstallError,
@@ -232,6 +238,38 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return CLI_EXIT_SATISFIED_OR_NOOP_V2 if report.is_healthy else CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2
 
 
+def _cmd_validate(args: argparse.Namespace) -> int:
+    """Thin wrapper: parses args, calls exactly one library function,
+    prints its result. Read-only -- `run_validate_v2` is held to that
+    mechanically by `tests/agent_review/test_target_pack_arch_v2.py`.
+
+    Unlike `doctor`, `validate` needs only `--target-root`: it never
+    rebuilds the upstream manifest, so a consumer repository can run it
+    in its own CI with no toolrepo checkout at all. `run_validate_v2` is
+    total over the enumerated target-state failure domain, so this
+    handler never converts an OBSERVED target state into `CLI_EXIT_
+    INVALID_INPUT_OR_CONTRACT_V2` -- that exit code stays reserved for a
+    malformed CLI INVOCATION, which `argparse` itself already enforces
+    (e.g. a missing `--target-root` exits 2 before this function runs at
+    all). The distinction is `invalid invocation != invalid target
+    state`, not "validate never exits 2"."""
+
+    report = run_validate_v2(target_root=Path(args.target_root))
+    output = {
+        "target_root_real": report.target_root_real,
+        "valid": report.is_valid,
+        "unvalidated_capabilities": list(report.unvalidated_capabilities),
+        "checks": [
+            {"name": c.name, "status": c.status, "reason_code": c.reason_code} for c in report.checks
+        ],
+    }
+    # `sort_keys=True` sorts each object's OWN keys only -- the `checks`
+    # LIST itself keeps emission order, which is the determinism contract
+    # `VALIDATE_CHECK_ORDER_V2` establishes.
+    print(json.dumps(output, indent=2, sort_keys=True))
+    return CLI_EXIT_SATISFIED_OR_NOOP_V2 if report.is_valid else CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -253,6 +291,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     doctor_parser.add_argument("--target-repo", required=True, help="owner/name of the target repository")
     doctor_parser.add_argument("--pack-version", required=True)
     doctor_parser.set_defaults(handler=_cmd_doctor)
+
+    validate_parser = sub.add_parser(
+        "validate",
+        help="target-only, read-only validation; requires no toolrepo checkout",
+    )
+    validate_parser.add_argument("--target-root", required=True)
+    validate_parser.set_defaults(handler=_cmd_validate)
 
     return parser.parse_args(argv)
 

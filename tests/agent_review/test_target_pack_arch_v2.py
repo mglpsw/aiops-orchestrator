@@ -1,10 +1,10 @@
-"""AST/call-graph proof that `#203`'s `doctor` subcommand is read-only by
-construction, not merely by docstring convention -- the same "mechanical
-proof" discipline `#201-C`'s own `test_required_check_readiness_arch_v2.py`
-established for its choke-point invariants, applied here to a new one:
-`run_doctor_v2` and everything it transitively calls within `app.agent_
-review.target_pack_doctor_v2` must never call a filesystem-mutating
-primitive.
+"""AST/call-graph proof that `#203`'s read-only subcommands (`doctor`,
+`validate`) are read-only by construction, not merely by docstring
+convention -- the same "mechanical proof" discipline `#201-C`'s own
+`test_required_check_readiness_arch_v2.py` established for its choke-point
+invariants, applied here and generalised (`#203-S2` PR-B) into a REGISTRY:
+every module whose own docstring claims READ-ONLY BY CONSTRUCTION is held
+to the identical proof, not just `target_pack_doctor_v2`.
 """
 
 from __future__ import annotations
@@ -13,16 +13,33 @@ import ast
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = REPO_ROOT / "app" / "agent_review"
 TEMPLATES_DIR = REPO_ROOT / "templates" / "agentreview-v2-target-pack"
 DOCTOR_MODULE_PATH = APP_DIR / "target_pack_doctor_v2.py"
+VALIDATE_MODULE_PATH = APP_DIR / "target_pack_validate_v2.py"
 TARGET_PACK_MODULE_PATHS = sorted(APP_DIR.glob("target_pack_*.py"))
+
+# Every module whose own docstring claims READ-ONLY BY CONSTRUCTION. A
+# claim in prose is not a guarantee; each one below is held to the same
+# mechanical proof (`#203-S2` adds `validate` to what `doctor` established).
+_READ_ONLY_MODULE_PATHS_V2 = (DOCTOR_MODULE_PATH, VALIDATE_MODULE_PATH)
 
 # Attribute names that, called on ANY object, would indicate a write/mutate
 # operation. Deliberately broad (matches the method name regardless of
-# receiver) since `doctor` has no legitimate reason to call any of these on
-# anything.
+# receiver) since a read-only module has no legitimate reason to call any
+# of these on anything. `"open"` is handled separately below, not listed
+# here: a conservative blanket ban on every call named `open` is a
+# SURROGATE for read-only-ness, not a proof of it, and it would forbid the
+# one legitimate use a read-only module has for it -- a statically-provable
+# read-only-mode `Path.open("rb")` (`#203-S2`'s bounded-memory ledger
+# hashing, which must not use whole-file `read_bytes()` on a
+# receipt-declared path). The mode check below is strictly STRONGER
+# evidence than the blanket ban it replaces: it proves the read-only
+# property directly instead of using "did not call something named open"
+# as a stand-in for it.
 _FORBIDDEN_ATTR_CALLS_V2 = frozenset(
     {
         "write_text",
@@ -39,31 +56,64 @@ _FORBIDDEN_ATTR_CALLS_V2 = frozenset(
         "copytree",
         "move",
         "rmtree",
-        "open",  # os.open / Path.open in write modes -- flagged conservatively
     }
 )
 _FORBIDDEN_MODULE_CALLS_V2 = frozenset({"remove", "mkdir", "makedirs", "rename", "replace", "unlink"})
+
+# The only `.open(...)` modes a statically-provable read-only call may use:
+# `"rb"` (this module's own ledger-hashing use) and `"r"` (the default text
+# mode, included so a legitimate future text read is not forced through raw
+# bytes). Anything else -- write, append, any `"+"` update mode, an
+# `os.O_WRONLY`/`os.O_RDWR` flag, or a mode that is not a string literal at
+# all and so cannot be checked statically -- is forbidden.
+_ALLOWED_OPEN_READ_MODES_V2 = frozenset({"r", "rb"})
 
 
 def _parse(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
-def test_doctor_module_calls_no_filesystem_mutating_primitive() -> None:
-    tree = _parse(DOCTOR_MODULE_PATH)
+def _is_forbidden_open_call_v2(node: ast.Call) -> bool:
+    mode_arg: ast.expr | None = node.args[0] if node.args else None
+    for keyword in node.keywords:
+        if keyword.arg == "mode":
+            mode_arg = keyword.value
+    if mode_arg is None:
+        # No explicit mode: `Path.open()`'s own default is `"r"`, a
+        # statically read-only mode. Allowed.
+        return False
+    if not (isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str)):
+        # A non-literal mode expression cannot be proven read-only by this
+        # static scan. Forbidden, conservatively.
+        return True
+    return mode_arg.value not in _ALLOWED_OPEN_READ_MODES_V2
+
+
+def _find_mutating_offenders_v2(module_path: Path) -> list[str]:
+    tree = _parse(module_path)
     offenders: list[str] = []
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "open":
+            if _is_forbidden_open_call_v2(node):
+                offenders.append(f"{module_path.name}:open() at line {node.lineno} (non-read-only mode)")
+            continue
         if isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_ATTR_CALLS_V2:
-            offenders.append(f"{DOCTOR_MODULE_PATH.name}:{func.attr}() at line {node.lineno}")
+            offenders.append(f"{module_path.name}:{func.attr}() at line {node.lineno}")
         elif isinstance(func, ast.Name) and func.id in _FORBIDDEN_MODULE_CALLS_V2:
-            offenders.append(f"{DOCTOR_MODULE_PATH.name}:{func.id}() at line {node.lineno}")
+            offenders.append(f"{module_path.name}:{func.id}() at line {node.lineno}")
 
+    return offenders
+
+
+@pytest.mark.parametrize("module_path", _READ_ONLY_MODULE_PATHS_V2, ids=lambda p: p.name)
+def test_read_only_module_calls_no_filesystem_mutating_primitive(module_path: Path) -> None:
+    offenders = _find_mutating_offenders_v2(module_path)
     assert not offenders, (
-        f"target_pack_doctor_v2.py calls a filesystem-mutating primitive, "
+        f"{module_path.name} calls a filesystem-mutating primitive, "
         f"violating its own 'READ-ONLY BY CONSTRUCTION' docstring guarantee: {offenders}"
     )
 
@@ -84,6 +134,71 @@ def test_run_doctor_v2_has_no_mutating_parameter() -> None:
             assert not offending, f"run_doctor_v2 accepts a write-shaped parameter: {offending}"
             return
     raise AssertionError("run_doctor_v2 not found in target_pack_doctor_v2.py")
+
+
+def test_run_validate_v2_has_no_mutating_parameter() -> None:
+    """Same second, independent check for `#203-S2`'s `run_validate_v2`:
+    the AST scan above proves this module writes nothing ITSELF, but a
+    write-shaped parameter would let a caller push a write through it
+    without any literal write primitive appearing in this file."""
+
+    tree = _parse(VALIDATE_MODULE_PATH)
+    forbidden_param_names = {"plan", "force_overwrite_paths", "seed_content_by_path", "write", "apply"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "run_validate_v2":
+            all_args = [*node.args.args, *node.args.kwonlyargs, *node.args.posonlyargs]
+            offending = [arg.arg for arg in all_args if arg.arg in forbidden_param_names]
+            assert not offending, f"run_validate_v2 accepts a write-shaped parameter: {offending}"
+            return
+    raise AssertionError("run_validate_v2 not found in target_pack_validate_v2.py")
+
+
+def test_ledger_hashing_never_reads_a_declared_path_whole_into_memory() -> None:
+    """A distinct property from read-only-ness: `_observe_ledger_entry_
+    hash_v2` -- the function that hashes a receipt-DECLARED target-owned
+    path validate has no manifest authority to pre-screen -- must never
+    call whole-file `read_bytes()`/`read_text()`, only a bounded streaming
+    read. This is NOT covered by the read-only scan above: `read_bytes()`
+    is still perfectly read-only, so a regression back to it would pass
+    that scan silently while reintroducing the memory-exhaustion vector
+    the streaming read exists to close. Scoped to this ONE function --
+    the two `.aiops` artifacts (receipt, profile) are legitimately
+    whole-file read elsewhere in this module, since they are single
+    known-location files whose bytes are reused across several decisions."""
+
+    tree = _parse(VALIDATE_MODULE_PATH)
+    forbidden_whole_file_reads = {"read_bytes", "read_text"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_observe_ledger_entry_hash_v2":
+            offenders = [
+                f"line {inner.lineno}: {inner.func.attr}()"
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr in forbidden_whole_file_reads
+            ]
+            assert not offenders, f"_observe_ledger_entry_hash_v2 reads a declared path whole: {offenders}"
+            return
+    raise AssertionError("_observe_ledger_entry_hash_v2 not found in target_pack_validate_v2.py")
+
+
+def test_validate_report_has_exactly_one_construction_site() -> None:
+    """With FOUR always-present `unavailable` rows appended on every
+    return path, an append-per-return-path shape (rather than one single
+    construction site building the complete tuple once) would be a
+    near-certain place to accidentally drop the honesty block on an early
+    refusal. Proven by counting every `ValidateReportV2(` call in the
+    module, not merely asserted in prose."""
+
+    tree = _parse(VALIDATE_MODULE_PATH)
+    call_sites = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ValidateReportV2"
+    ]
+    assert len(call_sites) == 1, f"expected exactly one ValidateReportV2(...) construction site, found {len(call_sites)}"
 
 
 # Real target/consumer names and target-specific tool commands. If any of

@@ -94,6 +94,61 @@
 
 ### Added
 
+- **`agentreview-v2-target-pack` — `validate` subcommand, target-only and
+  offline (`#203-S2` PR-B)**: `agent-review-target-pack-v2.py validate
+  --target-root PATH` — the next slice after `#203`'s `init`/`doctor`.
+  Unlike `doctor`, `validate` takes no `--toolrepo-root`/`--target-repo`/
+  `--pack-version` and needs no toolrepo checkout at all: it answers only
+  "of the relations for which this command holds local, independent
+  evidence -- derived from the installed state and contracts this pack
+  already owns -- is any violated?", never "does this target correspond
+  to the upstream pack" (`doctor`'s charter). New `app/agent_review/
+  target_pack_validate_v2.py` (`run_validate_v2`), read-only by
+  construction (mechanically proven alongside `doctor` by the same
+  AST/call-graph test, now a registry over both modules). Twelve checks:
+  eight locally verifiable (`target_root`, `aiops_snapshot`, `receipt`,
+  `profile`, `profile_hash`, `profile_identity`, `root_identity`,
+  `target_owned_integrity`) and four always-disclosed `unavailable`
+  dimensions this command cannot establish alone (`target_owned_set`,
+  `rollout_capability`, `previous_install_lineage`,
+  `trusted_check_inventory` -- `doctor`'s or a future slice's charter).
+  One `.aiops` snapshot per decision (resolved once, both artifacts
+  derived from it, never re-resolved independently); target-owned ledger
+  entries are hashed through a bounded-memory streaming read, never
+  whole-file `read_bytes()`, since this command has no manifest authority
+  to reject a forged ownership set before reading it.
+  - **Re-derived, not ported, from a closed-unmerged prior attempt
+    (`#235`)**: that PR's `validate` hardcoded local constants answering
+    *upstream* questions from a target-only tool (`VALIDATED_MAX_
+    ROLLOUT_MODE_V2`, a delivered-target-owned-paths set, a hand-
+    transcribed table of "fields the writer pins to a constant") -- the
+    exact second-source-of-truth defect this rewrite exists to avoid.
+    None of that is carried forward; only its properties and adversarial
+    reproducers were re-verified against the live contracts.
+  - **`generated_at` is not identity.** `TargetInstallReceiptV2` already
+    excludes it from `receipt_hash`'s preimage so that repeated installs
+    of byte-identical state stay byte-identical (an idempotence property
+    `target_pack_plan_v2` depends on); `validate` does not add a second,
+    stricter definition of receipt identity that includes it.
+  - **`previous_install_identity` describes the PRIOR install, not the
+    current one.** `ReceiptIdentityRefV2` exists so `rollback` can verify
+    what it is moving away from; comparing it to the CURRENT receipt is
+    true only until `upgrade` exists and becomes wrong the moment it
+    does. `validate` has no independent history store to confirm the
+    reference is real, so `previous_install_lineage` is `unavailable`,
+    never fabricated as verified or refused as foreign.
+  - **`compatibility` and target-owned-ledger completeness are also
+    blind, for the same reason**: `TargetInstallReceiptV2.compatibility`
+    admits both `compatible`/`major_incompatible` as structurally valid
+    declarations with no independent authority to arbitrate between them;
+    and without the manifest's `TARGET_OWNED` ownership table, `validate`
+    can verify only the byte claims a receipt's ledger actually makes,
+    never that it declared every entry it should have.
+  - Extracted `SEED_PROFILE_IDENTITY_PLACEHOLDER_V2` (`"OWNER/REPO"`) as a
+    named, shared constant in `target_pack_operation_v2.py`, imported by
+    `validate` rather than restated as a second literal.
+  - Full spec: `docs/AGENT_REVIEW_V2_TARGET_PACK.md` and
+    `docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`.
 - **`agentreview-v2-target-pack` — installable target pack, first slice
   (`#203`)**: begins packaging AgentReview v2 as an installer for consumer
   repositories, without forking the engine. This commit ships `init` and
