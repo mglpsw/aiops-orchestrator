@@ -351,16 +351,34 @@ def _load_receipt_v2(receipt_path: Path) -> tuple[TargetInstallReceiptV2 | None,
     return receipt, ValidateCheckV2(RECEIPT_CHECK_V2, STATUS_PASS_V2, None)
 
 
-def _load_profile_v2(profile_path: Path) -> tuple[TargetProfileV2 | None, bytes | None, ValidateCheckV2]:
+def _load_profile_v2(
+    profile_path: Path,
+) -> tuple[TargetProfileV2 | None, bytes | None, str, ValidateCheckV2]:
+    """Returns `(profile, raw_bytes, artifact_status, profile_check)`.
+
+    `artifact_status` is the RAW, full-fidelity status from `_observe_
+    artifact_bytes_v2` (`"missing"`/`"not_a_regular_file"`/`"unreadable"`/
+    `"ok"`) -- preserved and returned even though `profile_check` itself
+    deliberately collapses `"missing"`/`"not_a_regular_file"` into one
+    disposition (`PROFILE_MISSING_REASON_V2`). Collapsing is the right
+    call for the `profile` check's OWN vocabulary; it must not also
+    destroy the distinction for a DIFFERENT downstream consumer
+    (`target_owned_integrity`'s profile-ledger-entry branch) that needs
+    the fuller picture. `artifact_status == "ok"` whenever bytes were
+    actually read, independent of whether they later decode/parse --
+    the filesystem observation and the semantic parse result are
+    different questions; this return value answers only the first one.
+    """
+
     status, raw = _observe_artifact_bytes_v2(profile_path)
     if status in ("missing", "not_a_regular_file"):
-        return None, None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, PROFILE_MISSING_REASON_V2)
+        return None, None, status, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, PROFILE_MISSING_REASON_V2)
     if status == "unreadable" or raw is None:
-        return None, None, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, PROFILE_UNREADABLE_REASON_V2)
+        return None, None, "unreadable", ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, PROFILE_UNREADABLE_REASON_V2)
     try:
         raw_text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        return None, raw, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, PROFILE_UNREADABLE_REASON_V2)
+        return None, raw, "ok", ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, PROFILE_UNREADABLE_REASON_V2)
     try:
         # Read the bytes ourselves under containment, then hand TEXT to
         # the `_text` loader -- never a root path to a loader that would
@@ -373,8 +391,30 @@ def _load_profile_v2(profile_path: Path) -> tuple[TargetProfileV2 | None, bytes 
             if exc.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2
             else PROFILE_INVALID_REASON_V2
         )
-        return None, raw, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, reason)
-    return profile, raw, ValidateCheckV2(PROFILE_CHECK_V2, STATUS_PASS_V2, None)
+        return None, raw, "ok", ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, reason)
+    return profile, raw, "ok", ValidateCheckV2(PROFILE_CHECK_V2, STATUS_PASS_V2, None)
+
+
+def _profile_ledger_unavailable_reason_v2(
+    *, profile_path_reason: str | None, artifact_status: str | None
+) -> str | None:
+    """Translate the ALREADY-CAPTURED profile artifact observation into
+    the reason `target_owned_integrity` reports for the canonical profile
+    ledger entry when its bytes are unavailable -- never re-derived from
+    `profile_bytes is None`, which collapses `not_a_regular_file`/
+    `unreadable`/`missing`/a path-resolution failure into one
+    indistinguishable state. Every value returned is already one of
+    `target_pack_validate_v2`'s own constants; no new vocabulary."""
+
+    if profile_path_reason is not None:
+        return profile_path_reason
+    if artifact_status == "missing":
+        return TARGET_OWNED_MISSING_REASON_V2
+    if artifact_status == "not_a_regular_file":
+        return TARGET_OWNED_NOT_A_REGULAR_FILE_REASON_V2
+    if artifact_status == "unreadable":
+        return TARGET_OWNED_UNREADABLE_REASON_V2
+    return None
 
 
 def _profile_hash_check_v2(*, receipt: TargetInstallReceiptV2, profile: TargetProfileV2) -> ValidateCheckV2:
@@ -414,6 +454,7 @@ def _target_owned_integrity_check_v2(
     target_root_real: Path,
     receipt: TargetInstallReceiptV2,
     profile_bytes: bytes | None,
+    profile_unavailable_reason: str | None,
 ) -> ValidateCheckV2:
     """Validates only the byte claims the receipt actually makes -- see
     the module docstring's "ledger claim != ownership proof". `pass` here
@@ -432,11 +473,30 @@ def _target_owned_integrity_check_v2(
     `.aiops` alias, independently of the snapshot already captured for
     the profile artifact, reintroducing exactly the per-artifact
     independent-resolution defect this module's snapshot design exists
-    to close."""
+    to close.
+
+    `profile_unavailable_reason` is the ALREADY-CAPTURED profile artifact
+    observation, threaded through rather than re-derived from `profile_
+    bytes is None` -- `bytes is None` alone cannot distinguish "the path
+    is a directory" from "the read raised OSError" from "the path itself
+    could not even be resolved", collapsing three distinguishable
+    ledger-integrity dispositions into one. See `_profile_ledger_
+    unavailable_reason_v2`.
+
+    Traversal order over `receipt.target_owned_file_hashes` is sorted,
+    not raw mapping-insertion order: `receipt_hash`'s canonical preimage
+    sorts JSON object keys, so raw member order is NOT part of the
+    receipt's identity -- two receipts with identical semantic ledger
+    claims and the same valid `receipt_hash` can differ only in JSON
+    member order, and the first-failure-wins rule below must not let that
+    non-identity-bearing difference change which reason code is reported
+    first (`app/agent_review/AGENTS.md`'s determinism section: every
+    emitted artifact byte must be independent of arrival order)."""
 
     profile_hash = hashlib.sha256(profile_bytes).hexdigest() if profile_bytes is not None else None
 
-    for relative_path, declared_hash in receipt.target_owned_file_hashes.items():
+    for relative_path in sorted(receipt.target_owned_file_hashes):
+        declared_hash = receipt.target_owned_file_hashes[relative_path]
         if relative_path == _PROFILE_RELATIVE_PATH_STR_V2:
             # Reuse the hash of the bytes already captured for the
             # `.aiops` snapshot's profile artifact -- never a second,
@@ -446,8 +506,12 @@ def _target_owned_integrity_check_v2(
             # hash of a DIFFERENT one here, each individually satisfied by
             # two reads timed to observe different bytes.
             if profile_hash is None:
+                # `profile_unavailable_reason` is guaranteed non-None here
+                # by construction: `profile_bytes is None` and `profile_
+                # unavailable_reason is None` never occur together (see
+                # `_collect_checks_v2`).
                 return ValidateCheckV2(
-                    TARGET_OWNED_INTEGRITY_CHECK_V2, STATUS_FAIL_V2, TARGET_OWNED_MISSING_REASON_V2
+                    TARGET_OWNED_INTEGRITY_CHECK_V2, STATUS_FAIL_V2, profile_unavailable_reason
                 )
             observed_hash = profile_hash
         else:
@@ -528,9 +592,9 @@ def _collect_checks_v2(target_root: Path) -> tuple[list[ValidateCheckV2], str | 
     checks.append(receipt_check)
 
     if profile_path is not None:
-        profile, profile_bytes, profile_check = _load_profile_v2(profile_path)
+        profile, profile_bytes, profile_artifact_status, profile_check = _load_profile_v2(profile_path)
     else:
-        profile, profile_bytes = None, None
+        profile, profile_bytes, profile_artifact_status = None, None, None
         profile_check = ValidateCheckV2(PROFILE_CHECK_V2, STATUS_FAIL_V2, profile_path_reason)
     checks.append(profile_check)
 
@@ -545,6 +609,9 @@ def _collect_checks_v2(target_root: Path) -> tuple[list[ValidateCheckV2], str | 
                 target_root_real=target_root_real,
                 receipt=receipt,
                 profile_bytes=profile_bytes,
+                profile_unavailable_reason=_profile_ledger_unavailable_reason_v2(
+                    profile_path_reason=profile_path_reason, artifact_status=profile_artifact_status
+                ),
             )
         )
 

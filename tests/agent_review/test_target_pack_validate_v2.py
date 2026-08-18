@@ -39,6 +39,7 @@ from app.agent_review.target_pack_receipt_v2 import (
     TargetInstallReceiptV2,
     compute_portable_target_root_identity_v2,
     compute_target_install_receipt_hash_v2,
+    load_target_install_receipt_bytes_v2,
 )
 from app.agent_review.target_pack_validate_v2 import (
     PATH_ESCAPES_TARGET_ROOT_REASON_V2,
@@ -1493,3 +1494,168 @@ def test_non_profile_ledger_entry_symlink_loop_is_resolution_failed_not_escape(
     assert check.status == STATUS_FAIL_V2
     assert check.reason_code == PATH_RESOLUTION_FAILED_REASON_V2
     assert check.reason_code != PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+# --- Codex round 1: two P2 findings closed ----------------------------------
+#
+# Both production behaviors below were independently reproduced as
+# defects (not merely Codex's claim taken on trust) before any production
+# code changed. See the corresponding PR thread replies for the exact
+# reproduction transcripts.
+
+
+def test_target_owned_disposition_is_independent_of_json_member_order(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Codex P2 finding 1. `receipt_hash`'s canonical preimage sorts JSON
+    object keys, so raw member order of `target_owned_file_hashes` is NOT
+    part of the receipt's identity: two receipt JSON documents with
+    identical semantic ledger claims and the SAME valid `receipt_hash`
+    must produce the SAME validate report regardless of which order
+    their JSON members were written in (`app/agent_review/AGENTS.md`'s
+    determinism section: every emitted artifact byte must be independent
+    of arrival order). Uses THREE non-profile entries, two of which fail
+    for DIFFERENT reasons, so the property is genuinely about ordering,
+    not a two-element coincidence."""
+
+    root_a = tmp_path_factory.mktemp("order_a")
+    root_b = tmp_path_factory.mktemp("order_b")
+
+    ledger = {
+        ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode("utf-8")),
+        ".aiops/a-missing.txt": "a" * 64,
+        ".aiops/b-drifted.txt": "b" * 64,
+        ".aiops/c-intact.txt": _sha256(b"intact content"),
+    }
+    receipt = _receipt(target_owned_paths=tuple(sorted(ledger)), target_owned_file_hashes=ledger)
+    raw_dump = receipt.model_dump(mode="json")
+
+    def raw_json_with_order(order: list[str]) -> str:
+        d = dict(raw_dump)
+        d["target_owned_file_hashes"] = {k: ledger[k] for k in order}
+        return json.dumps(d)
+
+    order_a = list(ledger)
+    order_b = list(reversed(order_a))
+    assert order_a != order_b
+
+    raw_a, raw_b = raw_json_with_order(order_a), raw_json_with_order(order_b)
+    assert raw_a != raw_b
+
+    receipt_a = load_target_install_receipt_bytes_v2(raw_a)
+    receipt_b = load_target_install_receipt_bytes_v2(raw_b)
+    assert receipt_a.receipt_hash == receipt_b.receipt_hash
+
+    for root, raw in ((root_a, raw_a), (root_b, raw_b)):
+        (root / ".aiops").mkdir()
+        (root / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+        (root / ".aiops" / "install-receipt.v2.json").write_text(raw, encoding="utf-8")
+        (root / ".aiops" / "b-drifted.txt").write_bytes(b"WRONG content")
+        (root / ".aiops" / "c-intact.txt").write_bytes(b"intact content")
+        # a-missing.txt deliberately never written.
+
+    report_a = run_validate_v2(target_root=root_a)
+    report_b = run_validate_v2(target_root=root_b)
+
+    assert _decision_surface(report_a) == _decision_surface(report_b)
+
+
+def test_profile_ledger_entry_directory_is_not_a_regular_file(tmp_path: Path) -> None:
+    """Codex P2 finding 2, scenario A. Before the fix, `profile_bytes is
+    None` alone could not distinguish this from `missing`; the already-
+    captured profile artifact observation is now threaded through
+    instead of re-derived from that lossy projection."""
+
+    _install(tmp_path, receipt=None, profile_text=None)
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").mkdir()
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(_receipt().model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "target_owned_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == TARGET_OWNED_NOT_A_REGULAR_FILE_REASON_V2
+
+
+def test_profile_ledger_entry_unreadable_is_distinguished_from_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scenario B."""
+
+    _install(tmp_path, receipt=_receipt())
+
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    real_observe = validate_module._observe_artifact_bytes_v2
+
+    def raising_observe(path: Path):
+        if path.name == "target-profile.v2.yaml":
+            return "unreadable", None
+        return real_observe(path)
+
+    monkeypatch.setattr(validate_module, "_observe_artifact_bytes_v2", raising_observe)
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "target_owned_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == TARGET_OWNED_UNREADABLE_REASON_V2
+
+
+def test_profile_ledger_entry_symlink_loop_is_resolution_failed(tmp_path: Path) -> None:
+    """Scenario D."""
+
+    _install(tmp_path, receipt=None, profile_text=None)
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").symlink_to("target-profile.v2.yaml")
+    (tmp_path / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(_receipt().model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    check = _check(report, "target_owned_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == PATH_RESOLUTION_FAILED_REASON_V2
+    assert check.reason_code != PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+def test_profile_ledger_entry_containment_escape_is_path_escapes(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Scenario E."""
+
+    target_root = tmp_path_factory.mktemp("target")
+    outside = tmp_path_factory.mktemp("outside")
+    (target_root / ".aiops").mkdir()
+    outside_profile = outside / "outside-profile.yaml"
+    outside_profile.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (target_root / ".aiops" / "target-profile.v2.yaml").symlink_to(outside_profile)
+    (target_root / ".aiops" / "install-receipt.v2.json").write_text(
+        json.dumps(_receipt().model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = run_validate_v2(target_root=target_root)
+
+    check = _check(report, "target_owned_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+def test_profile_byte_integrity_is_independent_of_semantic_validity(tmp_path: Path) -> None:
+    """Completes the required test matrix for finding 2: the profile's
+    SEMANTIC parse result and its filesystem/byte observation are
+    different questions. A receipt whose declared byte hash matches the
+    ACTUAL (semantically invalid) bytes on disk passes `target_owned_
+    integrity` even though the `profile` check itself fails parsing."""
+
+    malformed = "not: [a valid: profile"
+    receipt = _receipt(
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(malformed.encode("utf-8"))},
+    )
+    _install(tmp_path, receipt=receipt, profile_text=malformed)
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    assert _check(report, "profile").status == STATUS_FAIL_V2
+    assert _check(report, "target_owned_integrity").status == STATUS_PASS_V2

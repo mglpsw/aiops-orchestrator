@@ -9,8 +9,11 @@ merged).
 
 ## Subcommand status
 
-Merged to `master` across PR #223 (first slice), PR #228 (operation-plan
-binding), and `#203-S2` PR-B (`validate`). Not yet in any published release.
+The target-pack surface is delivered incrementally through PR #223 (first
+slice), PR #228 (operation-plan binding), and `#203-S2` PR-B (`validate`);
+the table below describes the surface represented by this commit, not a
+claim about which of those PRs has merged as of any later reading — check
+each PR's own state for that. No target-pack release has been published.
 
 | Subcommand | Status | Notes |
 |---|---|---|
@@ -22,7 +25,7 @@ binding), and `#203-S2` PR-B (`validate`). Not yet in any published release.
 | `install-workflows` | `DEFERRED` | workflow templates not shipped |
 | `upgrade` | `DEFERRED` | only command that changes rollout mode |
 | `rollback` | `DEFERRED` | spec `§12` |
-| trusted-check inventory integration | `PLANNED` | into the `#201-C0` provenance chain; until it ships, `validate`/`doctor` report the dimension `unavailable` rather than inventing an interim inventory |
+| trusted-check inventory integration | `PLANNED` | into the `#201-C0` provenance chain; until it ships, `validate` reports the dimension `unavailable` (`trusted_check_inventory` in `unvalidated_capabilities`). `doctor`'s current report (`DoctorReportV2`) does not expose this dimension at all — it is silently absent, not disclosed as `unavailable` — and is unchanged by `#203-S2` PR-B; a future slice must reconcile `doctor` when the capability becomes reachable |
 
 Deferred means specified and intentionally not shipped — never silently dropped,
 and never described as available.
