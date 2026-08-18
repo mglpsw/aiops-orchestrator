@@ -28,6 +28,7 @@ from app.agent_review.profile_loader_v2 import (
     compute_profile_hash_v2,
     load_target_profile_text_v2,
 )
+from app.agent_review.target_pack_build_v2 import SEED_PROFILE_IDENTITY_PLACEHOLDER_V2
 from app.agent_review.target_pack_manifest_v2 import (
     TargetPackFileOwnershipV2,
     TargetPackManifestV2,
@@ -203,11 +204,14 @@ def _profile_hash_for_bytes_v2(*, content: bytes, target_repo: str) -> str:
         profile = load_target_profile_text_v2(content.decode("utf-8"))
     except (UnicodeDecodeError, TargetProfileLoadErrorV2) as exc:
         raise PlanError(OPERATION_TARGET_OWNED_CHANGED_INVALID_REASON_V2) from exc
-    # The shipped first-init seed intentionally carries this visible marker:
-    # no target-specific material is baked into the generic artifact. Once a
-    # target replaces it, its profile identity must bind to the CLI target
-    # repository before it can be reconciled into a receipt.
-    if profile.identity.repo not in {target_repo, "OWNER/REPO"}:
+    # The shipped first-init seed intentionally carries this visible marker
+    # (`target_pack_build_v2.SEED_PROFILE_IDENTITY_PLACEHOLDER_V2` -- the
+    # single shared authority for the placeholder, imported here rather than
+    # restated as a second literal): no target-specific material is baked
+    # into the generic artifact. Once a target replaces it, its profile
+    # identity must bind to the CLI target repository before it can be
+    # reconciled into a receipt.
+    if profile.identity.repo not in {target_repo, SEED_PROFILE_IDENTITY_PLACEHOLDER_V2}:
         raise PlanError(OPERATION_FOREIGN_IDENTITY_REASON_V2)
     return compute_profile_hash_v2(profile)
 

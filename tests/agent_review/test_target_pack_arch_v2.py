@@ -17,12 +17,26 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = REPO_ROOT / "app" / "agent_review"
 TEMPLATES_DIR = REPO_ROOT / "templates" / "agentreview-v2-target-pack"
 DOCTOR_MODULE_PATH = APP_DIR / "target_pack_doctor_v2.py"
+VALIDATE_MODULE_PATH = APP_DIR / "target_pack_validate_v2.py"
 TARGET_PACK_MODULE_PATHS = sorted(APP_DIR.glob("target_pack_*.py"))
+
+# Registry of modules claiming read-only-by-construction in their own
+# docstring, each with its own entry-point function's name -- `doctor` and
+# `validate` (`#203-C2`) share this mechanical proof rather than each
+# hand-rolling a copy, so a future third read-only command extends the
+# registry instead of copy-pasting the scan.
+_READ_ONLY_MODULES_V2: tuple[tuple[Path, str], ...] = (
+    (DOCTOR_MODULE_PATH, "run_doctor_v2"),
+    (VALIDATE_MODULE_PATH, "run_validate_v2"),
+)
 
 # Attribute names that, called on ANY object, would indicate a write/mutate
 # operation. Deliberately broad (matches the method name regardless of
-# receiver) since `doctor` has no legitimate reason to call any of these on
-# anything.
+# receiver) since neither `doctor` nor `validate` has any legitimate reason
+# to call any of these on anything. `open` is handled separately below --
+# validate's own bounded/streamed reads legitimately call `Path.open`, so a
+# blanket ban would also forbid its read path; only a statically-provable
+# non-read-only mode is forbidden for `open`.
 _FORBIDDEN_ATTR_CALLS_V2 = frozenset(
     {
         "write_text",
@@ -39,51 +53,83 @@ _FORBIDDEN_ATTR_CALLS_V2 = frozenset(
         "copytree",
         "move",
         "rmtree",
-        "open",  # os.open / Path.open in write modes -- flagged conservatively
     }
 )
 _FORBIDDEN_MODULE_CALLS_V2 = frozenset({"remove", "mkdir", "makedirs", "rename", "replace", "unlink"})
+_ALLOWED_OPEN_MODES_V2 = frozenset({"r", "rb"})
 
 
 def _parse(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
-def test_doctor_module_calls_no_filesystem_mutating_primitive() -> None:
-    tree = _parse(DOCTOR_MODULE_PATH)
-    offenders: list[str] = []
+def _open_call_mode_offense(node: ast.Call) -> str | None:
+    """Returns a description of the offense if this `.open(...)` call's
+    mode is not statically provable as read-only, else `None`. Missing
+    mode argument is an offense too -- `Path.open()`'s default `"r"` IS
+    read-only, but requiring it explicit keeps the mode a single glance
+    away from this scan, matching the discipline already established
+    for `target_pack_validate_v2`'s own bounded-read call sites."""
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_ATTR_CALLS_V2:
-            offenders.append(f"{DOCTOR_MODULE_PATH.name}:{func.attr}() at line {node.lineno}")
-        elif isinstance(func, ast.Name) and func.id in _FORBIDDEN_MODULE_CALLS_V2:
-            offenders.append(f"{DOCTOR_MODULE_PATH.name}:{func.id}() at line {node.lineno}")
+    mode_arg: ast.expr | None = None
+    if node.args:
+        mode_arg = node.args[0]
+    for kw in node.keywords:
+        if kw.arg == "mode":
+            mode_arg = kw.value
+    if mode_arg is None:
+        return f"open() at line {node.lineno} has no explicit mode argument"
+    if not (isinstance(mode_arg, ast.Constant) and isinstance(mode_arg.value, str)):
+        return f"open() at line {node.lineno} has a non-literal mode argument"
+    if mode_arg.value not in _ALLOWED_OPEN_MODES_V2:
+        return f"open() at line {node.lineno} uses non-read-only mode {mode_arg.value!r}"
+    return None
 
-    assert not offenders, (
-        f"target_pack_doctor_v2.py calls a filesystem-mutating primitive, "
-        f"violating its own 'READ-ONLY BY CONSTRUCTION' docstring guarantee: {offenders}"
-    )
+
+def test_read_only_modules_call_no_filesystem_mutating_primitive() -> None:
+    for module_path, _entry_point in _READ_ONLY_MODULES_V2:
+        tree = _parse(module_path)
+        offenders: list[str] = []
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr == "open":
+                offense = _open_call_mode_offense(node)
+                if offense is not None:
+                    offenders.append(f"{module_path.name}:{offense}")
+            elif isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_ATTR_CALLS_V2:
+                offenders.append(f"{module_path.name}:{func.attr}() at line {node.lineno}")
+            elif isinstance(func, ast.Name) and func.id in _FORBIDDEN_MODULE_CALLS_V2:
+                offenders.append(f"{module_path.name}:{func.id}() at line {node.lineno}")
+
+        assert not offenders, (
+            f"{module_path.name} calls a filesystem-mutating primitive (or an open() with a "
+            f"non-statically-provable read-only mode), violating its own 'READ-ONLY BY "
+            f"CONSTRUCTION' docstring guarantee: {offenders}"
+        )
 
 
-def test_run_doctor_v2_has_no_mutating_parameter() -> None:
-    """A second, independent check: `run_doctor_v2` itself must never
-    accept a `plan`/`force_overwrite_paths`/anything shaped like a write
-    instruction -- if it ever did, the AST scan above could stop being
-    sufficient (a future caller-supplied write could reach the filesystem
-    without a literal `write_text`/`mkdir` call appearing in THIS file)."""
+def test_read_only_entry_points_have_no_mutating_parameter() -> None:
+    """A second, independent check per module: the entry point itself
+    must never accept a `plan`/`force_overwrite_paths`/anything shaped
+    like a write instruction -- if it ever did, the AST scan above could
+    stop being sufficient (a future caller-supplied write could reach
+    the filesystem without a literal `write_text`/`mkdir` call appearing
+    in the module at all)."""
 
-    tree = _parse(DOCTOR_MODULE_PATH)
     forbidden_param_names = {"plan", "force_overwrite_paths", "seed_content_by_path", "write", "apply"}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "run_doctor_v2":
-            all_args = [*node.args.args, *node.args.kwonlyargs, *node.args.posonlyargs]
-            offending = [arg.arg for arg in all_args if arg.arg in forbidden_param_names]
-            assert not offending, f"run_doctor_v2 accepts a write-shaped parameter: {offending}"
-            return
-    raise AssertionError("run_doctor_v2 not found in target_pack_doctor_v2.py")
+    for module_path, entry_point in _READ_ONLY_MODULES_V2:
+        tree = _parse(module_path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == entry_point:
+                all_args = [*node.args.args, *node.args.kwonlyargs, *node.args.posonlyargs]
+                offending = [arg.arg for arg in all_args if arg.arg in forbidden_param_names]
+                assert not offending, f"{entry_point} accepts a write-shaped parameter: {offending}"
+                break
+        else:
+            raise AssertionError(f"{entry_point} not found in {module_path.name}")
 
 
 # Real target/consumer names and target-specific tool commands. If any of
@@ -190,4 +236,92 @@ def test_no_duplicated_repository_shape_authority_outside_contracts_v2() -> None
     assert not offenders, (
         f"a second regex independently classifying owner/name repository shape was found "
         f"outside contracts_v2.Repository: {offenders}"
+    )
+
+
+def test_bounded_artifact_read_always_passes_an_explicit_size_argument() -> None:
+    """`#203-C2`: `_observe_bounded_artifact_v2` promises a BOUNDED read
+    of the two `.aiops` artifacts (never materialising an arbitrarily
+    large target-authored document before deciding it is over budget).
+    A `stream.read()` call with no argument reads the WHOLE remaining
+    file regardless of `_ARTIFACT_BYTE_LIMIT_V2` -- mechanically proves
+    every `.read(...)` call inside this function passes an explicit
+    argument, not merely that the CURRENT test fixtures happen to be
+    small enough for the difference to go unnoticed."""
+
+    tree = _parse(VALIDATE_MODULE_PATH)
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name == "_observe_bounded_artifact_v2"):
+            continue
+        for call in ast.walk(node):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "read"
+                and not call.args
+                and not call.keywords
+            ):
+                offenders.append(f"line {call.lineno}: stream.read() with no size argument")
+    assert not offenders, f"an unbounded whole-file read exists in _observe_bounded_artifact_v2: {offenders}"
+
+
+# `#203-C1.amend`: `target_pack_build_v2` is the ONE authority for the
+# shipped seed profile's placeholder identity (see its own docstring's
+# "single source of truth" claim for pack material). A private second
+# literal in the writer (`operation`) or the reader (`validate`) would
+# resurrect exactly the desynchronised-authorities class `#203-C1`
+# removed for `Repository`/`RelativePath` -- this proves neither module
+# independently spells the placeholder, both import the shared constant,
+# and the shipped template still carries the value the constant names.
+BUILD_MODULE_PATH_V2 = APP_DIR / "target_pack_build_v2.py"
+_SEED_PLACEHOLDER_CONSUMER_MODULES_V2 = (
+    APP_DIR / "target_pack_operation_v2.py",
+    VALIDATE_MODULE_PATH,
+)
+
+
+def test_seed_placeholder_has_exactly_one_authority() -> None:
+    import app.agent_review.target_pack_build_v2 as build_module
+
+    placeholder_value = build_module.SEED_PROFILE_IDENTITY_PLACEHOLDER_V2
+
+    # 1. No OTHER target-pack production module spells the placeholder as
+    # its own string literal -- only the owning module may.
+    offenders: list[str] = []
+    for module_path in TARGET_PACK_MODULE_PATHS:
+        if module_path == BUILD_MODULE_PATH_V2:
+            continue
+        tree = _parse(module_path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and node.value == placeholder_value:
+                offenders.append(f"{module_path.name}:{node.lineno}")
+    assert not offenders, (
+        f"a target-pack module other than {BUILD_MODULE_PATH_V2.name} spells the seed "
+        f"placeholder as its own literal instead of importing it: {offenders}"
+    )
+
+    # 2. Both known consumers actually IMPORT the shared name from the
+    # owning module (not merely avoid re-spelling it by coincidence).
+    for module_path in _SEED_PLACEHOLDER_CONSUMER_MODULES_V2:
+        tree = _parse(module_path)
+        imported = False
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module == "app.agent_review.target_pack_build_v2"
+                and any(alias.name == "SEED_PROFILE_IDENTITY_PLACEHOLDER_V2" for alias in node.names)
+            ):
+                imported = True
+                break
+        assert imported, f"{module_path.name} does not import SEED_PROFILE_IDENTITY_PLACEHOLDER_V2 from target_pack_build_v2"
+
+    # 3. The shipped seed template's identity still carries the SAME value
+    # the constant names -- the constant is not just internally consistent
+    # with itself, it matches the real shipped material.
+    template_path = TEMPLATES_DIR / "target-profile.v2.yaml"
+    template_text = template_path.read_text(encoding="utf-8")
+    assert f"repo: {placeholder_value}" in template_text, (
+        f"the shipped seed template no longer carries the placeholder value "
+        f"{placeholder_value!r} that SEED_PROFILE_IDENTITY_PLACEHOLDER_V2 names"
     )

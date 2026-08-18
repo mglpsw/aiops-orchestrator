@@ -52,6 +52,19 @@ BUILD_TEMPLATE_SOURCE_MISSING_REASON_V2 = "target_pack_build_template_source_mis
 BUILD_SCHEMA_TREE_UNREADABLE_REASON_V2 = "target_pack_build_schema_tree_unreadable"
 BUILD_TOOLREPO_SHA_INVALID_SHAPE_REASON_V2 = "target_pack_build_toolrepo_sha_invalid_shape"
 
+# `#203-C2`: the shipped first-init seed profile template intentionally
+# carries this visible marker -- no target-specific material is baked into
+# the generic artifact ships. This module already owns the ONE mapping
+# between pack material and its target install location (see the module
+# docstring); the placeholder identity is the same class of pack-material
+# fact, so it lives here too rather than as two independently-spelled
+# literals in the writer (`target_pack_operation_v2`, which accepts a
+# profile whose `identity.repo` is either the CLI's `--target-repo` or this
+# placeholder) and the reader (`target_pack_validate_v2`, which applies the
+# identical acceptance rule). Both import this constant; neither restates
+# it.
+SEED_PROFILE_IDENTITY_PLACEHOLDER_V2 = "OWNER/REPO"
+
 _TOOLREPO_SHA_HEX_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
