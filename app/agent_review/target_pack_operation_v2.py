@@ -21,7 +21,7 @@ from typing import Literal, Mapping
 
 from pydantic import Field, model_validator
 
-from app.agent_review.contracts_v2 import ContractV2Model, GitSha, RelativePath, SafeText, Sha256
+from app.agent_review.contracts_v2 import ContractV2Model, GitSha, RelativePath, Repository, SafeText, Sha256
 from app.agent_review.profile_loader_v2 import (
     DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
     TargetProfileLoadErrorV2,
@@ -69,7 +69,14 @@ class TargetPackInstallIdentityV2(ContractV2Model):
     pack_version: SafeText
     toolrepo_sha: GitSha
     manifest_digest: Sha256
-    target_repo: SafeText
+    # PR-C1: was `SafeText` -- see `TargetInstallReceiptV2.target_repo`'s
+    # own comment (`target_pack_receipt_v2.py`) for the reproduced defect
+    # this closes. This is the SAME construction site the CLI's `init`
+    # preview (`compute_target_pack_operation_plan_v2` -> `_identity_from_
+    # manifest_v2`) already goes through, so tightening here refuses a
+    # malformed `--target-repo` before `--apply` even exists, with no new
+    # CLI-only regex.
+    target_repo: Repository
     portable_target_root_identity: Sha256
 
 

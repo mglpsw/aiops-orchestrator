@@ -147,3 +147,47 @@ def test_no_branch_protection_or_required_check_promotion_capability_exists() ->
             if name and _FORBIDDEN_API_IDENTIFIER_RE.search(name):
                 offenders.append(f"{module_path.name}:{node.lineno}: {name!r}")
     assert not offenders, f"branch-protection/required-check-promotion shaped code found in: {offenders}"
+
+
+# PR-C1: `contracts_v2.Repository`'s own regex is the ONLY authority that
+# classifies an owner/name repository shape (`TargetInstallReceiptV2.
+# target_repo`, `TargetPackInstallIdentityV2.target_repo`). A private CLI
+# or per-module regex reimplementing the same classification would
+# silently reintroduce a second, independently-maintained definition that
+# can drift from `Repository`'s -- exactly the class of defect the
+# SafeText -> Repository tightening exists to close for good. BEHAVIORAL,
+# not string-content matching: any newly-added compiled regex, anywhere
+# in the scanned modules, that happens to accept "owner/repo" and reject
+# "not-a-repository" is flagged, regardless of its exact spelling.
+_CLI_MODULE_PATH_V2 = REPO_ROOT / "scripts" / "agent-review-target-pack-v2.py"
+
+
+def test_no_duplicated_repository_shape_authority_outside_contracts_v2() -> None:
+    offenders: list[str] = []
+    for module_path in (*TARGET_PACK_MODULE_PATHS, _CLI_MODULE_PATH_V2):
+        tree = ast.parse(module_path.read_text(encoding="utf-8"), filename=str(module_path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            is_re_compile = (
+                isinstance(func, ast.Attribute)
+                and func.attr == "compile"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "re"
+            )
+            if not is_re_compile or not node.args or not isinstance(node.args[0], ast.Constant):
+                continue
+            pattern = node.args[0].value
+            if not isinstance(pattern, str):
+                continue
+            try:
+                compiled = re.compile(pattern)
+            except re.error:
+                continue
+            if compiled.fullmatch("owner/repo") and not compiled.fullmatch("not-a-repository"):
+                offenders.append(f"{module_path.name}:{node.lineno}: {pattern!r}")
+    assert not offenders, (
+        f"a second regex independently classifying owner/name repository shape was found "
+        f"outside contracts_v2.Repository: {offenders}"
+    )
