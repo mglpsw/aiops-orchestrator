@@ -682,6 +682,7 @@ def test_validate_passes_on_a_real_freshly_initialised_target(tmp_path: Path) ->
         "target_root", "aiops_snapshot", "receipt", "profile",
         "profile_hash", "profile_identity", "root_identity",
         "observation_budget", "target_owned_integrity", "generated_file_integrity",
+        "cross_ledger_alias_separation",
     ):
         assert statuses[name] == "pass", name
     for name in (

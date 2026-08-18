@@ -984,6 +984,69 @@ def test_observation_budget_claims_exceeded_fails_before_any_content_read(
     assert not any("never-read.yml" in c for c in read_calls)
 
 
+def test_claim_ceiling_admission_precedes_plan_materialization(tmp_path: Path) -> None:
+    """`#203-C2` Codex Round 1, P2-B: reproduced against PR #244 exact
+    HEAD b76bb806 with a structural witness (not timing-based) --
+    `_LedgerClaimV2` objects were constructed and sorted for the WHOLE
+    combined claim set before `debit_claim()` ever ran, so a receipt
+    declaring far more than `max_claims` short claims (well within the
+    receipt artifact's own byte ceiling) did work proportional to every
+    declared claim before the budget could refuse any of it. Fixed by
+    admitting on `len(target_owned_file_hashes) + len(generated_file_
+    hashes)` BEFORE compiling the plan at all."""
+
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    n_over = validate_module._DEFAULT_MAX_LEDGER_CLAIMS_V2 + 500
+    generated_hashes = {f"f{i}.txt": "a" * 64 for i in range(n_over)}
+    receipt = _receipt(generated_file_hashes=generated_hashes)
+    _install(tmp_path, receipt=receipt)
+
+    construction_count = {"n": 0}
+    real_init = validate_module._LedgerClaimV2.__init__
+
+    def counting_init(self, *args, **kwargs):
+        construction_count["n"] += 1
+        return real_init(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(validate_module._LedgerClaimV2, "__init__", counting_init)
+        report = run_validate_v2(target_root=tmp_path)
+
+    assert construction_count["n"] == 0, (
+        f"{construction_count['n']} _LedgerClaimV2 objects were constructed before the "
+        "claim-count refusal -- admission must happen strictly before plan materialization"
+    )
+    ob = _check(report, "observation_budget")
+    assert ob.status == STATUS_FAIL_V2
+    assert ob.reason_code == OBSERVATION_BUDGET_EXCEEDED_REASON_V2
+    assert report.is_valid is False
+
+
+def test_claim_ceiling_boundary_is_exact(tmp_path_factory: pytest.TempPathFactory) -> None:
+    """Safe counterexamples: exactly `max_ledger_claims` is admitted;
+    `max_ledger_claims + 1` is refused before plan materialization; 0
+    claims preserves existing semantics."""
+
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    max_claims = validate_module._DEFAULT_MAX_LEDGER_CLAIMS_V2
+
+    root_at = tmp_path_factory.mktemp("at_ceiling")
+    # target_owned already declares 1 claim (the profile); (max_claims - 1)
+    # generated claims brings the COMBINED total to exactly max_claims.
+    receipt_at = _receipt(generated_file_hashes={f"f{i}.txt": "a" * 64 for i in range(max_claims - 1)})
+    _install(root_at, receipt=receipt_at)
+    report_at = run_validate_v2(target_root=root_at)
+    assert _check(report_at, "observation_budget").status == STATUS_PASS_V2
+
+    root_over = tmp_path_factory.mktemp("over_ceiling")
+    receipt_over = _receipt(generated_file_hashes={f"f{i}.txt": "a" * 64 for i in range(max_claims)})
+    _install(root_over, receipt=receipt_over)
+    report_over = run_validate_v2(target_root=root_over)
+    assert _check(report_over, "observation_budget").status == STATUS_FAIL_V2
+
+
 def test_observation_budget_unique_paths_exceeded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import app.agent_review.target_pack_validate_v2 as validate_module
 
@@ -1045,12 +1108,23 @@ def test_budget_exhaustion_preserves_an_already_observed_drift(tmp_path: Path, m
 
 
 def test_incomplete_ledger_without_a_counterexample_never_reports_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Uses the BYTE budget, not the claim-count budget: since the P2-B
+    fix, a claim-count shortfall is now refused BEFORE `_ledger_check`
+    ever runs (see `test_claim_ceiling_admission_precedes_plan_
+    materialization`), which would make this test pass for the wrong
+    reason regardless of whether the ABSENT-not-PASS fallback logic
+    this test actually targets still works. The byte budget still
+    exhausts a claim mid-evaluation, genuinely reaching that fallback."""
+
     import app.agent_review.target_pack_validate_v2 as validate_module
 
-    monkeypatch.setattr(validate_module, "_DEFAULT_MAX_LEDGER_CLAIMS_V2", 1)
-    receipt = _receipt(generated_file_hashes={"never-reached.yml": "d" * 64})
+    monkeypatch.setattr(validate_module, "_DEFAULT_MAX_TOTAL_LEDGER_BYTES_V2", 4 * 1024 * 1024)
+    huge = tmp_path / "never-reached.bin"
+    with huge.open("wb") as f:
+        f.seek(64 * 1024 * 1024 - 1)
+        f.write(b"\0")
+    receipt = _receipt(generated_file_hashes={"never-reached.bin": "d" * 64})
     _install(tmp_path, receipt=receipt)
-    (tmp_path / "never-reached.yml").write_bytes(b"content that would match if hashed")
     report = run_validate_v2(target_root=tmp_path)
     assert _check(report, "observation_budget").status == STATUS_FAIL_V2
     assert _check_or_none(report, "generated_file_integrity") is None
@@ -1059,19 +1133,156 @@ def test_incomplete_ledger_without_a_counterexample_never_reports_pass(tmp_path:
 def test_completed_ledger_result_is_retained_when_the_other_ledger_exhausts_the_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Uses the BYTE budget, not the claim-count budget: since the P2-B
+    fix, claim-count admission happens on the COMBINED total before any
+    ledger is touched, so a claim-count shortfall now refuses BOTH
+    ledgers upfront (see `test_claim_ceiling_admission_precedes_plan_
+    materialization`) rather than letting one complete first. The byte
+    budget is still exhausted DURING evaluation, mid-plan, which is what
+    this property is actually about: target_owned's only claim (the
+    profile, reused from the seed, zero extra bytes) completes and
+    PASSES before generated_file's one huge claim exhausts the shared
+    byte budget."""
+
     import app.agent_review.target_pack_validate_v2 as validate_module
 
-    monkeypatch.setattr(validate_module, "_DEFAULT_MAX_LEDGER_CLAIMS_V2", 1)
-    # Only the profile's own claim (target_owned) is within budget; it is
-    # empty-content-free (reused from the seeded registry, no extra debit
-    # beyond the claim itself) and PASSES; generated_file never gets its
-    # one claim evaluated.
-    receipt = _receipt(generated_file_hashes={"z-unreached.yml": "d" * 64})
+    monkeypatch.setattr(validate_module, "_DEFAULT_MAX_TOTAL_LEDGER_BYTES_V2", 4 * 1024 * 1024)
+    huge = tmp_path / "z-huge.bin"
+    with huge.open("wb") as f:
+        f.seek(64 * 1024 * 1024 - 1)
+        f.write(b"\0")
+    receipt = _receipt(generated_file_hashes={"z-huge.bin": "d" * 64})
     _install(tmp_path, receipt=receipt)
     report = run_validate_v2(target_root=tmp_path)
     toi = _check(report, "target_owned_integrity")
     assert toi.status == STATUS_PASS_V2
     assert _check_or_none(report, "generated_file_integrity") is None
+
+
+# --- Codex Round 1, P2-A: cross-ledger resolved-alias separation ------------
+#
+# `#203-C1` proves the two ledgers' DECLARED keys are disjoint; it says
+# nothing about whether two distinct declared keys resolve to the SAME
+# physical file (an in-root symlink). Reproduced against PR #244 exact
+# HEAD b76bb806: a target-owned entry and a generated-file entry naming
+# the same resolved file, same declared digest, both passed silently.
+
+
+def test_cross_ledger_resolved_alias_is_rejected(tmp_path: Path) -> None:
+    content = b"shared physical content"
+    (tmp_path / "generated.txt").write_bytes(content)
+    (tmp_path / "target-owned.txt").symlink_to(tmp_path / "generated.txt")
+    receipt = _receipt(
+        target_owned_file_hashes={
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode()),
+            "target-owned.txt": _sha256(content),
+        },
+        target_owned_paths=(".aiops/target-profile.v2.yaml", "target-owned.txt"),
+        generated_file_hashes={"generated.txt": _sha256(content)},
+    )
+    _install(tmp_path, receipt=receipt)
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    cross_ledger = _check(report, "cross_ledger_alias_separation")
+    assert cross_ledger.status == STATUS_FAIL_V2
+    assert report.is_valid is False
+    # The existing integrity checks are NOT redefined -- the declared
+    # bytes genuinely match, so they keep reporting pass; ownership-alias
+    # separation is a DIFFERENT, dedicated relation.
+    assert _check(report, "target_owned_integrity").status == STATUS_PASS_V2
+    assert _check(report, "generated_file_integrity").status == STATUS_PASS_V2
+
+
+def test_cross_ledger_resolved_alias_is_rejected_reverse_orientation(tmp_path: Path) -> None:
+    """Symmetric to the above -- the alias may sit on either ledger's
+    side; the relation is about the PAIR of ledgers, not about which one
+    happens to hold the symlink."""
+
+    content = b"shared physical content"
+    (tmp_path / "target-owned.txt").write_bytes(content)
+    (tmp_path / "generated.txt").symlink_to(tmp_path / "target-owned.txt")
+    receipt = _receipt(
+        target_owned_file_hashes={
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode()),
+            "target-owned.txt": _sha256(content),
+        },
+        target_owned_paths=(".aiops/target-profile.v2.yaml", "target-owned.txt"),
+        generated_file_hashes={"generated.txt": _sha256(content)},
+    )
+    _install(tmp_path, receipt=receipt)
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    assert _check(report, "cross_ledger_alias_separation").status == STATUS_FAIL_V2
+    assert report.is_valid is False
+
+
+def test_distinct_resolved_files_across_ledgers_remain_valid(tmp_path: Path) -> None:
+    """Safe counterexample A: two DIFFERENT resolved files, one per
+    ledger, with matching declared hashes -- no conflict."""
+
+    (tmp_path / "target-owned.txt").write_bytes(b"owned content")
+    (tmp_path / "generated.txt").write_bytes(b"generated content")
+    receipt = _receipt(
+        target_owned_file_hashes={
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode()),
+            "target-owned.txt": _sha256(b"owned content"),
+        },
+        target_owned_paths=(".aiops/target-profile.v2.yaml", "target-owned.txt"),
+        generated_file_hashes={"generated.txt": _sha256(b"generated content")},
+    )
+    _install(tmp_path, receipt=receipt)
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    assert _check(report, "cross_ledger_alias_separation").status == STATUS_PASS_V2
+    assert report.is_valid is True
+
+
+def test_same_ledger_aliases_remain_deduplicated_and_valid(tmp_path: Path) -> None:
+    """Safe counterexample B: two aliases in the SAME ledger resolving
+    to the same file -- must remain accepted/deduplicated; the new check
+    must not regress the alias-dedup property fixing this finding could
+    have accidentally broken."""
+
+    content = b"same-ledger shared content"
+    (tmp_path / "real.txt").write_bytes(content)
+    (tmp_path / "alias1.txt").symlink_to(tmp_path / "real.txt")
+    (tmp_path / "alias2.txt").symlink_to(tmp_path / "real.txt")
+    receipt = _receipt(
+        target_owned_file_hashes={
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode()),
+            "alias1.txt": _sha256(content),
+            "alias2.txt": _sha256(content),
+        },
+        target_owned_paths=(".aiops/target-profile.v2.yaml", "alias1.txt", "alias2.txt"),
+    )
+    _install(tmp_path, receipt=receipt)
+
+    report = run_validate_v2(target_root=tmp_path)
+
+    assert _check(report, "cross_ledger_alias_separation").status == STATUS_PASS_V2
+    assert _check(report, "target_owned_integrity").status == STATUS_PASS_V2
+    assert report.is_valid is True
+
+
+def test_cross_ledger_alias_separation_passes_trivially_for_empty_ledgers(tmp_path: Path) -> None:
+    _install(tmp_path, receipt=_receipt())
+    report = run_validate_v2(target_root=tmp_path)
+    assert _check(report, "cross_ledger_alias_separation").status == STATUS_PASS_V2
+
+
+def test_cross_ledger_alias_separation_absent_when_claim_budget_exhausted_before_any_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    monkeypatch.setattr(validate_module, "_DEFAULT_MAX_LEDGER_CLAIMS_V2", 0)
+    _install(tmp_path, receipt=_receipt())
+    report = run_validate_v2(target_root=tmp_path)
+    assert _check_or_none(report, "cross_ledger_alias_separation") is None
+    assert _check(report, "observation_budget").status == STATUS_FAIL_V2
 
 
 # --- Alias dedup + registry reuse --------------------------------------------

@@ -216,6 +216,18 @@ ROOT_IDENTITY_CHECK_V2 = "root_identity"
 OBSERVATION_BUDGET_CHECK_V2 = "observation_budget"
 TARGET_OWNED_INTEGRITY_CHECK_V2 = "target_owned_integrity"
 GENERATED_FILE_INTEGRITY_CHECK_V2 = "generated_file_integrity"
+# `#203-C2` Codex Round 1, P2-A: a relation `target_owned_integrity`/
+# `generated_file_integrity` do NOT own -- both are documented (see the
+# module docstring) as verifying only "the byte claims the receipt
+# actually makes", never ownership-class separation. `#203-C1` proves
+# textual/declared-key disjointness between the two ledgers; it says
+# nothing about RUNTIME RESOLVED-FILESYSTEM identity -- two distinct,
+# C1-legal `RelativePath` keys, one per ledger, can still resolve to the
+# SAME physical file (an in-root symlink). That is a genuinely different,
+# only-locally-observable relation, so it gets its own dedicated check
+# rather than silently redefining either integrity check's documented
+# scope.
+CROSS_LEDGER_ALIAS_CHECK_V2 = "cross_ledger_alias_separation"
 TARGET_OWNED_SET_CHECK_V2 = "target_owned_set"
 GENERATED_FILE_SET_CHECK_V2 = "generated_file_set"
 ROLLOUT_CAPABILITY_CHECK_V2 = "rollout_capability"
@@ -223,7 +235,7 @@ PREVIOUS_INSTALL_LINEAGE_CHECK_V2 = "previous_install_lineage"
 TRUSTED_CHECK_INVENTORY_CHECK_V2 = "trusted_check_inventory"
 
 # The determinism contract: every return path emits a duplicate-free
-# SUBSEQUENCE of this tuple. 15 conceptual dimensions: 10 locally
+# SUBSEQUENCE of this tuple. 16 conceptual dimensions: 11 locally
 # evaluable when applicable, 5 always-disclosed unavailable.
 VALIDATE_CHECK_ORDER_V2: tuple[str, ...] = (
     TARGET_ROOT_CHECK_V2,
@@ -236,6 +248,7 @@ VALIDATE_CHECK_ORDER_V2: tuple[str, ...] = (
     OBSERVATION_BUDGET_CHECK_V2,
     TARGET_OWNED_INTEGRITY_CHECK_V2,
     GENERATED_FILE_INTEGRITY_CHECK_V2,
+    CROSS_LEDGER_ALIAS_CHECK_V2,
     TARGET_OWNED_SET_CHECK_V2,
     GENERATED_FILE_SET_CHECK_V2,
     ROLLOUT_CAPABILITY_CHECK_V2,
@@ -274,6 +287,7 @@ GENERATED_FILE_MISSING_REASON_V2 = "target_pack_validate_generated_file_missing"
 GENERATED_FILE_NOT_A_REGULAR_FILE_REASON_V2 = "target_pack_validate_generated_file_not_a_regular_file"
 GENERATED_FILE_UNREADABLE_REASON_V2 = "target_pack_validate_generated_file_unreadable"
 GENERATED_FILE_DRIFT_REASON_V2 = "target_pack_validate_generated_file_drift"
+CROSS_LEDGER_ALIAS_CONFLICT_REASON_V2 = "target_pack_validate_cross_ledger_alias_conflict"
 
 # `unavailable` reason codes name the OWNER of the question.
 TARGET_OWNED_SET_REASON_V2 = "target_pack_validate_target_owned_set_requires_the_upstream_manifest"
@@ -573,11 +587,20 @@ class _ObservationRegistryV2:
     since validate does not assume the profile can only be `TARGET_
     OWNED` -- reuses it rather than rereading. Any other resolved path
     is observed once and cached, so N declared aliases to the same real
-    file cost one read."""
+    file cost one read.
+
+    Also retains, per resolved path, which ledger KINDS have claimed it
+    (`register_claim_ledger`) -- `#203-C1` proves the two ledgers'
+    DECLARED keys are disjoint; it says nothing about whether two
+    distinct declared keys resolve to the SAME physical file (an
+    in-root symlink). That is a runtime, only-locally-observable
+    relation this registry is the natural single owner of, since it
+    already owns "what resolved identity does this claim refer to"."""
 
     def __init__(self, budget: _LedgerObservationBudgetV2) -> None:
         self._budget = budget
         self._by_resolved_path: dict[str, StreamedLedgerEntryV2] = {}
+        self._ledger_kinds_by_resolved_path: dict[str, set[str]] = {}
 
     def seed(self, resolved: Path, observation: StreamedLedgerEntryV2) -> None:
         self._by_resolved_path[str(resolved)] = observation
@@ -595,6 +618,19 @@ class _ObservationRegistryV2:
         result = _observe_streamed_ledger_entry_v2(resolved, self._budget)
         self._by_resolved_path[key] = result
         return result
+
+    def register_claim_ledger(self, resolved: Path, ledger: str) -> bool:
+        """Associates `ledger` with this resolved path's claim set.
+        Returns `True` iff, after this association, the resolved path
+        has now been claimed by MORE THAN ONE distinct ledger kind --
+        the fail-closed signal for a cross-ledger resolved-identity
+        conflict. Independent of content observation/cache hits: the
+        association is about declared-claim provenance, not about
+        whether the underlying file was readable/matching."""
+
+        kinds = self._ledger_kinds_by_resolved_path.setdefault(str(resolved), set())
+        kinds.add(ledger)
+        return len(kinds) > 1
 
 
 # --- 2. Canonical observation plan ----------------------------------------
@@ -653,13 +689,19 @@ _CHECK_NAME_BY_LEDGER_V2 = {
 
 def _evaluate_observation_plan_v2(
     *, target_root_real: Path, claims: tuple[_LedgerClaimV2, ...], registry: _ObservationRegistryV2, budget: _LedgerObservationBudgetV2
-) -> tuple[bool, dict[str, _LedgerDispositionV2]]:
+) -> tuple[bool, dict[str, _LedgerDispositionV2], bool]:
     """Evaluate the compiled claims IN ORDER, debiting the aggregate
-    claim budget per claim. Returns `(budget_exhausted, dispositions)`.
-    Per-ledger completion/first-failure is tracked independently so a
-    ledger that finished before the other exhausts the budget keeps its
-    own verdict -- see the module docstring's "BUDGET EXHAUSTION LOSES
-    NO EVIDENCE"."""
+    claim budget per claim. Returns `(budget_exhausted, dispositions,
+    cross_ledger_conflict)`. Per-ledger completion/first-failure is
+    tracked independently so a ledger that finished before the other
+    exhausts the budget keeps its own verdict -- see the module
+    docstring's "BUDGET EXHAUSTION LOSES NO EVIDENCE".
+
+    `cross_ledger_conflict` is set as soon as ANY resolved path is found
+    claimed by more than one distinct ledger kind (`#203-C2` Codex Round
+    1, P2-A) -- registered for EVERY successfully-resolved claim,
+    independent of that claim's own content observation, so the
+    relation is detected purely from declared-claim provenance."""
 
     dispositions: dict[str, _LedgerDispositionV2] = {
         "target_owned": _LedgerDispositionV2(),
@@ -668,9 +710,11 @@ def _evaluate_observation_plan_v2(
     for claim in claims:
         dispositions[claim.ledger].total_claims += 1
 
+    cross_ledger_conflict = False
+
     for claim in claims:
         if not budget.debit_claim():
-            return True, dispositions
+            return True, dispositions, cross_ledger_conflict
 
         disposition = dispositions[claim.ledger]
         resolved, resolution_reason = _resolve_ledger_path_v2(target_root_real, claim.relative_path)
@@ -680,11 +724,14 @@ def _evaluate_observation_plan_v2(
             disposition.evaluated_claims += 1
             continue
 
+        if registry.register_claim_ledger(resolved, claim.ledger):
+            cross_ledger_conflict = True
+
         observation = registry.observe(resolved)
         if observation is None:
             # Unique-path budget exhausted on a genuinely new path --
             # this claim was never evaluated; stop the whole plan.
-            return True, dispositions
+            return True, dispositions, cross_ledger_conflict
 
         if isinstance(observation, (PathResolutionFailure, Missing, NonRegular, MetadataUnreadable, ReadUnreadable)):
             if disposition.failure_reason is None:
@@ -700,7 +747,7 @@ def _evaluate_observation_plan_v2(
         elif isinstance(observation, ResourceLimitExceeded):
             # Not a counterexample -- we simply do not know. Does not set
             # failure_reason; this claim (and the whole plan) stops here.
-            return True, dispositions
+            return True, dispositions, cross_ledger_conflict
         else:
             assert isinstance(observation, DigestFile)
             if observation.digest != claim.declared_sha256 and disposition.failure_reason is None:
@@ -708,9 +755,9 @@ def _evaluate_observation_plan_v2(
             disposition.evaluated_claims += 1
 
         if budget.exhausted:
-            return True, dispositions
+            return True, dispositions, cross_ledger_conflict
 
-    return False, dispositions
+    return False, dispositions, cross_ledger_conflict
 
 
 # --- 3. Artifact/parse layer ------------------------------------------------
@@ -789,12 +836,12 @@ def _root_identity_check_v2(*, receipt: TargetInstallReceiptV2) -> ValidateCheck
 def _ledger_checks_v2(
     *, target_root_real: Path, receipt: TargetInstallReceiptV2, receipt_path: Path, receipt_observation: BoundedArtifactV2,
     profile_path: Path | None, profile_observation: BoundedArtifactV2 | None,
-) -> tuple[ValidateCheckV2, ValidateCheckV2 | None, ValidateCheckV2 | None]:
+) -> tuple[ValidateCheckV2, ValidateCheckV2 | None, ValidateCheckV2 | None, ValidateCheckV2 | None]:
     """Returns `(observation_budget, target_owned_integrity, generated_
-    file_integrity)`. Seeds the registry with the receipt's own and (if
-    resolved) the profile's own artifact observation before compiling/
-    evaluating the plan, so a ledger claim naming either path never
-    rereads it.
+    file_integrity, cross_ledger_alias_separation)`. Seeds the registry
+    with the receipt's own and (if resolved) the profile's own artifact
+    observation before compiling/evaluating the plan, so a ledger claim
+    naming either path never rereads it.
 
     A ledger's check is OMITTED (`None`), not emitted with `unavailable`
     status, when the aggregate budget ran out before that ledger
@@ -804,20 +851,42 @@ def _ledger_checks_v2(
     status stays reserved for the 5 permanently upstream-owned
     dimensions; a budget-limited ledger is a DIFFERENT, situational kind
     of "not decided", disclosed instead through `observation_budget`
-    itself failing."""
+    itself failing. `cross_ledger_alias_separation` follows the SAME
+    ABSENT-under-incompleteness discipline, applied to the cross-ledger
+    relation rather than either individual ledger."""
 
     budget = _LedgerObservationBudgetV2(
         max_claims=_DEFAULT_MAX_LEDGER_CLAIMS_V2,
         max_unique_resolved_paths=_DEFAULT_MAX_UNIQUE_LEDGER_PATHS_V2,
         max_total_bytes=_DEFAULT_MAX_TOTAL_LEDGER_BYTES_V2,
     )
+
+    # `#203-C2` Codex Round 1, P2-B: the combined claim COUNT is already
+    # available from the parsed receipt's own maps -- admission against
+    # `max_claims` happens on that count BEFORE `_LedgerClaimV2` objects
+    # are constructed and sorted for the whole combined set. A receipt
+    # may legitimately declare far more than `max_claims` short claims
+    # while staying well under the receipt artifact's own byte ceiling;
+    # materializing/sorting the full claim set first would do work
+    # proportional to every declared claim before the budget ever gets a
+    # chance to refuse.
+    total_claim_count = len(receipt.target_owned_file_hashes) + len(receipt.generated_file_hashes)
+    if total_claim_count > budget.max_claims:
+        budget.exhausted = True
+        return (
+            ValidateCheckV2(OBSERVATION_BUDGET_CHECK_V2, STATUS_FAIL_V2, OBSERVATION_BUDGET_EXCEEDED_REASON_V2),
+            None,
+            None,
+            None,
+        )
+
     registry = _ObservationRegistryV2(budget)
     registry.seed(receipt_path.resolve(), _artifact_to_ledger_observation_v2(receipt_observation))
     if profile_path is not None and profile_observation is not None:
         registry.seed(profile_path.resolve(), _artifact_to_ledger_observation_v2(profile_observation))
 
     claims = _compile_observation_plan_v2(receipt)
-    exhausted, dispositions = _evaluate_observation_plan_v2(
+    exhausted, dispositions, cross_ledger_conflict = _evaluate_observation_plan_v2(
         target_root_real=target_root_real, claims=claims, registry=registry, budget=budget
     )
 
@@ -835,7 +904,17 @@ def _ledger_checks_v2(
         if exhausted
         else ValidateCheckV2(OBSERVATION_BUDGET_CHECK_V2, STATUS_PASS_V2, None)
     )
-    return budget_check, _ledger_check("target_owned"), _ledger_check("generated_file")
+
+    if cross_ledger_conflict:
+        cross_ledger_check = ValidateCheckV2(
+            CROSS_LEDGER_ALIAS_CHECK_V2, STATUS_FAIL_V2, CROSS_LEDGER_ALIAS_CONFLICT_REASON_V2
+        )
+    elif len(claims) == 0 or not exhausted:
+        cross_ledger_check = ValidateCheckV2(CROSS_LEDGER_ALIAS_CHECK_V2, STATUS_PASS_V2, None)
+    else:
+        cross_ledger_check = None
+
+    return budget_check, _ledger_check("target_owned"), _ledger_check("generated_file"), cross_ledger_check
 
 
 # --- 4. Report shape and top-level orchestration --------------------------
@@ -940,7 +1019,7 @@ def _collect_checks_v2(target_root: Path) -> tuple[list[ValidateCheckV2], str | 
     if receipt is not None:
         checks.append(_root_identity_check_v2(receipt=receipt))
         assert receipt_path is not None and receipt_observation is not None
-        budget_check, target_owned_check, generated_file_check = _ledger_checks_v2(
+        budget_check, target_owned_check, generated_file_check, cross_ledger_check = _ledger_checks_v2(
             target_root_real=target_root_real,
             receipt=receipt,
             receipt_path=receipt_path,
@@ -953,6 +1032,8 @@ def _collect_checks_v2(target_root: Path) -> tuple[list[ValidateCheckV2], str | 
             checks.append(target_owned_check)
         if generated_file_check is not None:
             checks.append(generated_file_check)
+        if cross_ledger_check is not None:
+            checks.append(cross_ledger_check)
 
     return checks, target_root_real_str
 
