@@ -243,16 +243,17 @@ rollback    --target-root PATH [--dry-run] [--yes]
 ```
 
 **Implementation status (dated checkpoint, subject to the Live-state rule
-above).** `init` and `doctor` are implemented and **canonical on `master`**
-(slice 1). `validate` is implemented in the **PR #244 candidate** (`#203-C2`,
-open and Draft at this writing) and is therefore **not canonical yet**: until
-that PR merges, `master` exposes only `init` and `doctor`. `conformance`,
-`install-workflows`, `upgrade` and `rollback` remain specified here and
-deferred (§14).
+above).** `init`, `doctor` and `validate` are implemented and **canonical
+on `master`** (slice 1 plus `#203-C2`, PR #244, merged as `d454e8f2`).
+`conformance`, `install-workflows`, `upgrade` and `rollback` remain
+specified here and deferred (§14).
 
 The distinction between *canonical on `master`* and *implemented in an open
-candidate* is load-bearing: a reader deciding what a freshly cloned target pack
-can do must use the former, never the latter.
+candidate* remains load-bearing for the subcommands still to come —
+`conformance` et al. will pass through the same candidate state `validate`
+itself passed through (PR #244) before merging. A reader deciding what a
+freshly cloned target pack can do today must use the canonical-on-`master`
+column, never a claim scoped to an open PR.
 
 `doctor` is **READ-ONLY by construction**: it accepts no mutating parameter and
 calls no write/mkdir/rename/remove primitive anywhere in its call graph, proven
@@ -584,15 +585,15 @@ adoption, Class C execution, CT104 canaries, release/pinning — `#204`/`#205`.
   workflow templates — later `#203` slices. (Which subcommands are already
   canonical, and which are only implemented in an open candidate, is stated
   once in §4; this bullet enumerates the still-unwritten ones only.)
-- `validate` is **no longer deferred as unwritten**: it is implemented in the
-  open PR #244 candidate (`#203-C2`) and stops being deferred in the canonical
-  sense the moment that PR merges. It is listed here only so this section stays
-  a complete map of the seven subcommands; see §4 for its exact status. What
-  `validate` deliberately does **not** do — upstream pack correspondence, the
-  target-owned completeness set, the rollout ceiling, historical lineage, and
-  the trusted-check inventory — is not deferred implementation but permanent
-  authority boundary: it holds no upstream manifest or toolrepo, and reports
-  each of those dimensions as `unavailable` rather than inventing a local rule.
+- `validate` is **shipped and canonical on `master`** (`#203-C2`, PR #244,
+  merged as `d454e8f2`) — no longer deferred in any sense. It is listed here
+  only so this section stays a complete map of the seven subcommands; see §4
+  for its exact status. What `validate` deliberately does **not** do —
+  upstream pack correspondence, the target-owned completeness set, the
+  rollout ceiling, historical lineage, and the trusted-check inventory — is
+  not deferred implementation but permanent authority boundary: it holds no
+  upstream manifest or toolrepo, and reports each of those dimensions as
+  `unavailable` rather than inventing a local rule.
 - `TrustedCheckInventoryV2` and the `#201-C0` trusted-check wiring, and with it
   any genuine `SHADOW_FULL` capability.
 - Multi-file crash-convergence metamorphic test (§5.5) — owed by the first slice

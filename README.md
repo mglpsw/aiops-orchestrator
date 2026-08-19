@@ -50,7 +50,7 @@ AIOps ecosystem
 | AIOps Runtime | **released** | última implantação registrada `0.20.0` (não é observação viva do CT102); versionado à parte da tag do toolrepo |
 | AgentReview v1 | **released / maintenance / freeze** | baseline `v0.22.0`; só correções críticas/segurança/regressão |
 | AgentReview v2 | **em desenvolvimento** | não é GA, não é default, não é required check |
-| Target Pack v2 | **em desenvolvimento** | `init`/`doctor` implementados; demais subcomandos deferidos |
+| Target Pack v2 | **em desenvolvimento** | `init`/`doctor`/`validate` implementados; `conformance`/`install-workflows`/`upgrade`/`rollback` deferidos |
 | CAEM | **F0 pinado** | `development_freeze`, `published=false`; a norma pertence a `mglpsw/caem` |
 | Agent Router | **integrado** | transporte de inferência; nunca autoridade sobre verdict |
 

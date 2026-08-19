@@ -9,19 +9,20 @@ merged).
 
 ## Subcommand status
 
-Merged to `master` across PR #223 (first slice) and PR #228 (operation-plan
-binding). Not yet in any published release.
+Merged to `master` across PR #223 (first slice), PR #228 (operation-plan
+binding), PR #243 (`#203-C1`, installed-pack identity contracts) and PR #244
+(`#203-C2`, bounded offline `validate`). Not yet in any published release.
 
 | Subcommand | Status | Notes |
 |---|---|---|
 | `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile — repeating `init` after a target edits `.aiops/target-profile.v2.yaml` requires naming the path via `--accept-target-owned` on both the preview and the `--apply` call, or `apply` fails with `target_owned_identity_acceptance_required`; the profile bytes themselves are left untouched. **This pack version's `max_supported_rollout_mode` is `off`** — `--rollout off` is the only value this slice accepts; `shadow_minimal`/`shadow_full` are interface/future options and are refused before preview or apply |
 | `doctor` | `IMPLEMENTED` | read-only, proven by AST/call-graph inspection |
 | operation-plan binding | `IMPLEMENTED` | `target_pack_operation_v2.py` + its own schema (PR #228) |
-| `validate` | `DEFERRED` | spec `§12` |
-| `conformance` | `DEFERRED` | spec `§12`; target adoption is `#204`'s charter |
+| `validate` | `IMPLEMENTED` | target-only, offline, read-only, local-coherence — not independent proof of upstream pack provenance; 17-dimension check inventory (11 locally evaluable, 6 permanently `unavailable`); see "What C2 added" below |
+| `conformance` | `DEFERRED` | spec `§14`; target adoption is `#204`'s charter |
 | `install-workflows` | `DEFERRED` | workflow templates not shipped |
 | `upgrade` | `DEFERRED` | only command that changes rollout mode |
-| `rollback` | `DEFERRED` | spec `§12` |
+| `rollback` | `DEFERRED` | spec `§14` |
 | trusted-check inventory integration | `PLANNED` | into the `#201-C0` provenance chain |
 
 Deferred means specified and intentionally not shipped — never silently dropped,
@@ -49,7 +50,8 @@ and the full threat model.
 
 Two of the specification's seven CLI subcommands, as a coherent, tested
 slice — `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
-remain deferred (spec `§12`; see the status table above). PR #228
+were not part of this slice (see the status table above for their current,
+now-later state). PR #228
 subsequently bound `init` to an explicit, schema-backed operation plan. Without
 `--apply`, `init` is write-zero: it prints the operation plan and exits.
 Writing the profile/receipt requires a second, explicit invocation with
@@ -106,6 +108,39 @@ agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH -
   choke-point invariants. Checks secret NAME presence
   (`name in os.environ`) — never reads or reports a VALUE.
 
+## What C2 added (`#203-C1`/PR #243 + `#203-C2`/PR #244)
+
+`agent-review target validate` — a new CLI capability, structural successor
+to a forensic prior attempt at this command (PR #242, closed via Structural
+Change Preflight STOP/REDESIGN after three review rounds converged on the
+same ad-hoc `tuple[str, X | None]` projection boundary). This is a rewrite
+from canonical `master`, never a port of #242's production code.
+
+`#203-C1` (PR #243) canonicalized `TargetInstallReceiptV2.target_repo` and
+every `RelativePath`-typed field as `Repository`/`RelativePath` at
+construction time (previously `SafeText`), plus ownership-ledger
+disjointness — the contract predecessor `#203-C2` consumes without
+re-deriving.
+
+`#203-C2` (PR #244) delivers `validate` itself: target-only, offline,
+read-only. It answers a narrower question than `doctor`: *of the relations
+for which this command holds local, independent evidence, is any violated?*
+It does **not** independently establish that an installed target
+corresponds to its claimed upstream pack — `pack_version`/`toolrepo_sha`/
+`manifest_digest` remain `unavailable` (disclosed, never fabricated as
+pass or fail) without an upstream manifest/toolrepo. Mechanically derived
+check inventory: 17 total dimensions, 11 locally evaluable when applicable
+(`target_root`, `aiops_snapshot`, `receipt`, `profile`, `profile_hash`,
+`profile_identity`, `root_identity`, `observation_budget`,
+`target_owned_integrity`, `generated_file_integrity`,
+`cross_ledger_alias_separation`), 6 permanently `unavailable`
+(`upstream_pack_identity`, `target_owned_set`, `generated_file_set`,
+`rollout_capability`, `previous_install_lineage`, `trusted_check_
+inventory`). Qualified across three adversarial Codex review rounds on the
+branch, each closed with `STOP_REDESIGN: false`; no shared contract
+(`TargetInstallReceiptV2`, `Repository`, `RelativePath`) touched by either
+PR.
+
 ## Templates shipped
 
 `templates/agentreview-v2-target-pack/target-profile.v2.yaml` — a
@@ -156,9 +191,9 @@ Combined suite (full `tests/`): 2497 passed, 16 skipped, 2 failed
 `test_isolated_executor_v2.py`, unrelated to `#203`). Schema export
 byte-identical; CAEM F0 pin unchanged.
 
-## Deferred (spec `§12`, not silently dropped)
+## Deferred (spec `§14`, not silently dropped)
 
-- `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
+- `conformance`/`install-workflows`/`upgrade`/`rollback`
   subcommands.
 - Workflow templates (`evidence.yml`/`analysis.yml`/`publish.yml`).
 - Trusted-check inventory schema + integration into the `#201-C0`

@@ -505,3 +505,215 @@ def test_raw_path_resolve_is_confined_to_the_root_observer() -> None:
         f"raw .resolve() called outside {_ROOT_OBSERVER_V2}/{_CONTAINED_RESOLUTION_ADAPTER_V2}: {offenders}. "
         f"Use the Path the containment authority already returned, or route through the adapter."
     )
+
+
+# ---------------------------------------------------------------------
+# PR-D0: after #203-C2 (PR #244) merged to master, every CURRENT/OPERATIVE
+# target-pack status source must describe `validate` as canonical/
+# implemented and must NOT still call it deferred, unwritten, or "an open
+# PR #244 candidate". This is a documentation-truth property, proven
+# per-document with a bounded, anchored region extraction -- never a
+# whole-document scan or a blanket "validate.*deferred" regex, because
+# every one of these documents legitimately contains HISTORICAL prose
+# ("validate was not delivered in the first slice") that must keep
+# passing.
+# ---------------------------------------------------------------------
+
+README_PATH_V2 = REPO_ROOT / "README.md"
+PROJECT_STATUS_PATH_V2 = REPO_ROOT / "docs" / "PROJECT_STATUS.md"
+ARCHITECTURE_PATH_V2 = REPO_ROOT / "docs" / "ARCHITECTURE.md"
+CURRENT_CHECKPOINT_PATH_V2 = REPO_ROOT / "docs" / "engineering" / "CURRENT_CHECKPOINT.md"
+TARGET_PACK_DOC_PATH_V2 = REPO_ROOT / "docs" / "AGENT_REVIEW_V2_TARGET_PACK.md"
+
+_CANDIDATE_ONLY_MARKERS_V2 = (
+    "PR #244 candidate",
+    "not canonical yet",
+    "open and Draft at this writing",
+)
+
+
+def _bounded_region_v2(text: str, start_anchor: str, end_anchor: str | None) -> str:
+    """Extracts the text strictly between two stable anchor strings,
+    failing loudly (not silently scanning the whole document) if either
+    anchor has moved -- the same discipline `_spec_deferred_subcommand_
+    bullet_v2` already established for the operative spec."""
+
+    assert start_anchor in text, f"anchor moved: {start_anchor!r} not found; update this test deliberately"
+    after = text.split(start_anchor, 1)[1]
+    if end_anchor is None:
+        return start_anchor + after
+    assert end_anchor in after, f"end anchor moved: {end_anchor!r} not found after {start_anchor!r}"
+    return start_anchor + after.split(end_anchor, 1)[0]
+
+
+def _check_readme_v2(text: str) -> None:
+    region = _bounded_region_v2(text, "| Target Pack v2 |", "\n")
+    # The implemented cell must name validate; the deferred cell must NOT.
+    cells = region.split("|")
+    assert len(cells) >= 4, f"README target-pack row lost its expected column shape: {region!r}"
+    notes_cell = cells[3]
+    assert "`validate`" in notes_cell, f"README notes cell does not list validate as implemented: {notes_cell!r}"
+    assert "demais subcomandos deferidos" not in notes_cell or "`validate`" not in notes_cell.split("deferidos")[0], (
+        "README still groups validate into the deferred subcommands"
+    )
+    for name in ("conformance", "install-workflows", "upgrade", "rollback"):
+        assert name in notes_cell, f"README notes cell no longer names deferred subcommand {name!r}"
+    for forbidden in _CANDIDATE_ONLY_MARKERS_V2:
+        assert forbidden not in region, f"README target-pack row still contains candidate-only language {forbidden!r}"
+
+
+def _check_project_status_v2(text: str) -> None:
+    region = _bounded_region_v2(text, "### Target Pack v2", "See [target pack]")
+    assert "`validate`" in region, "PROJECT_STATUS Target Pack v2 section no longer mentions validate"
+    implemented_line = region.split("`IMPLEMENTED`", 1)
+    assert len(implemented_line) == 2, "PROJECT_STATUS lost its IMPLEMENTED/NOT YET IMPLEMENTED split"
+    implemented_cell, rest = implemented_line
+    assert "`validate`" in rest.split("\n", 2)[0] or "`validate`" in rest.split(".", 1)[0], (
+        "PROJECT_STATUS: validate not listed in the IMPLEMENTED line"
+    )
+    not_yet = region.split("`NOT YET IMPLEMENTED`", 1)
+    assert len(not_yet) == 2, "PROJECT_STATUS lost its NOT YET IMPLEMENTED marker"
+    not_yet_cell = not_yet[1]
+    assert "`validate`" not in not_yet_cell.split(".", 1)[0], "PROJECT_STATUS still lists validate as NOT YET IMPLEMENTED"
+    for name in ("conformance", "install-workflows", "upgrade", "rollback"):
+        assert name in not_yet_cell, f"PROJECT_STATUS NOT YET IMPLEMENTED line no longer names {name!r}"
+    for forbidden in _CANDIDATE_ONLY_MARKERS_V2:
+        assert forbidden not in region, f"PROJECT_STATUS target-pack section still contains {forbidden!r}"
+
+
+def _check_architecture_v2(text: str) -> None:
+    region = _bounded_region_v2(text, "- **Implementado:**", "- **Garantia:**")
+    implementado, deferido = region.split("- **Deferido:**", 1)
+    assert "`validate`" in implementado, "ARCHITECTURE Implementado bullet does not list validate"
+    assert "`validate`" not in deferido, "ARCHITECTURE Deferido bullet still lists validate"
+    for name in ("conformance", "install-workflows", "upgrade", "rollback"):
+        assert name in deferido, f"ARCHITECTURE Deferido bullet no longer names {name!r}"
+    for forbidden in _CANDIDATE_ONLY_MARKERS_V2:
+        assert forbidden not in region, f"ARCHITECTURE target-pack bullets still contain {forbidden!r}"
+
+
+def _check_current_checkpoint_v2(text: str) -> None:
+    region = _bounded_region_v2(text, "- **Target pack (`#203`):**", "- **ProjectOps v1:**")
+    assert "permanecem" not in region or "`validate`" not in region.split("permanecem")[0].split(".")[-1], (
+        "CURRENT_CHECKPOINT still groups validate into the not-implemented list"
+    )
+    assert "não implementados" in region, "CURRENT_CHECKPOINT lost its not-implemented marker for the remaining subcommands"
+    not_implemented_clause = region.rsplit("não implementados", 1)[0]
+    # The clause is the sentence ending in "...permanecem **não implementados**";
+    # validate must not appear inside the backtick-list that immediately precedes it.
+    clause_tail = not_implemented_clause.rsplit(".", 2)[-1]
+    assert "`validate`" not in clause_tail, "CURRENT_CHECKPOINT still lists validate among the not-implemented subcommands"
+    for name in ("conformance", "install-workflows", "upgrade", "rollback"):
+        assert name in clause_tail, f"CURRENT_CHECKPOINT not-implemented clause no longer names {name!r}"
+    for forbidden in _CANDIDATE_ONLY_MARKERS_V2:
+        assert forbidden not in region, f"CURRENT_CHECKPOINT target-pack bullet still contains {forbidden!r}"
+
+
+def _check_target_pack_doc_status_table_v2(text: str) -> None:
+    region = _bounded_region_v2(text, "## Subcommand status", "## What this is")
+    validate_row = [line for line in region.splitlines() if line.strip().startswith("| `validate`")]
+    assert len(validate_row) == 1, f"expected exactly one validate row in the status table, found {len(validate_row)}"
+    assert "`IMPLEMENTED`" in validate_row[0], f"validate row is not marked IMPLEMENTED: {validate_row[0]!r}"
+    assert "`DEFERRED`" not in validate_row[0], f"validate row still marked DEFERRED: {validate_row[0]!r}"
+    for name in ("conformance", "install-workflows", "upgrade", "rollback"):
+        rows = [line for line in region.splitlines() if line.strip().startswith(f"| `{name}`")]
+        assert len(rows) == 1, f"expected exactly one {name} row, found {len(rows)}"
+        assert "`DEFERRED`" in rows[0], f"{name} row is no longer marked DEFERRED: {rows[0]!r}"
+    for forbidden in _CANDIDATE_ONLY_MARKERS_V2:
+        assert forbidden not in region, f"target-pack status table still contains {forbidden!r}"
+
+
+def _check_target_pack_doc_deferred_section_v2(text: str) -> None:
+    region = _bounded_region_v2(text, "## Deferred", None)
+    first_bullet = region.split("\n- ", 2)[1]
+    assert "`validate`" not in first_bullet, f"target-pack Deferred section's subcommand bullet still lists validate: {first_bullet!r}"
+    for name in ("conformance", "install-workflows", "upgrade", "rollback"):
+        assert name in first_bullet, f"target-pack Deferred section no longer names {name!r}"
+
+
+def _check_operative_spec_status_paragraph_v2(text: str) -> None:
+    region = _bounded_region_v2(text, "**Implementation status", "`doctor` is **READ-ONLY")
+    assert "canonical on `master`" in region, "operative spec §4 lost its canonical-on-master language"
+    validate_sentence = region.split("`validate`", 1)[1].split(".", 1)[0]
+    assert "canonical" in region.split("`validate`", 1)[1][:400], (
+        "operative spec §4 does not describe validate as canonical"
+    )
+    for forbidden in _CANDIDATE_ONLY_MARKERS_V2:
+        assert forbidden not in region, f"operative spec §4 still contains candidate-only language {forbidden!r}: {validate_sentence!r}"
+
+
+def _check_operative_spec_deferred_bullet_v2(text: str) -> None:
+    region = _bounded_region_v2(text, "- `validate` is", "- `TrustedCheckInventoryV2`")
+    for forbidden in _CANDIDATE_ONLY_MARKERS_V2:
+        assert forbidden not in region, f"operative spec §14 validate bullet still contains {forbidden!r}"
+    assert "canonical" in region or "shipped" in region, "operative spec §14 validate bullet does not state validate shipped/canonical"
+
+
+_CURRENT_STATUS_SURFACE_CHECKS_V2: tuple[tuple[str, Path, object], ...] = (
+    ("README.md target-pack row", README_PATH_V2, _check_readme_v2),
+    ("PROJECT_STATUS.md Target Pack v2 section", PROJECT_STATUS_PATH_V2, _check_project_status_v2),
+    ("ARCHITECTURE.md target-pack bullets", ARCHITECTURE_PATH_V2, _check_architecture_v2),
+    ("CURRENT_CHECKPOINT.md target-pack bullet", CURRENT_CHECKPOINT_PATH_V2, _check_current_checkpoint_v2),
+    ("AGENT_REVIEW_V2_TARGET_PACK.md status table", TARGET_PACK_DOC_PATH_V2, _check_target_pack_doc_status_table_v2),
+    ("AGENT_REVIEW_V2_TARGET_PACK.md Deferred section", TARGET_PACK_DOC_PATH_V2, _check_target_pack_doc_deferred_section_v2),
+    ("operative spec §4 status paragraph", _SPEC_PATH_V2, _check_operative_spec_status_paragraph_v2),
+    ("operative spec §14 validate bullet", _SPEC_PATH_V2, _check_operative_spec_deferred_bullet_v2),
+)
+
+
+def test_every_current_target_pack_status_surface_represents_validate_as_canonical() -> None:
+    """Table-driven: one row per CURRENT/OPERATIVE document, each with its
+    own stable anchor and its own vocabulary. A historical sentence like
+    "validate was not delivered in the first slice" is untouched by any
+    of these checks -- they only bound the CURRENT status region of each
+    document, never scan the whole file."""
+
+    failures = []
+    for doc_name, path, check in _CURRENT_STATUS_SURFACE_CHECKS_V2:
+        text = path.read_text(encoding="utf-8")
+        try:
+            check(text)
+        except AssertionError as exc:
+            failures.append(f"{doc_name} ({path.name}): {exc}")
+    assert not failures, "stale CURRENT target-pack status claim(s):\n" + "\n".join(failures)
+
+
+def test_changelog_first_slice_entry_does_not_predict_a_same_branch_delivery() -> None:
+    """The `#223` entry may truthfully say validate was absent from the
+    first slice -- it must not predict WHEN or WHERE it would ship, since
+    that prediction was falsified (validate shipped via #243 then #244,
+    two separate later PRs, not the same branch/PR)."""
+
+    changelog_path = REPO_ROOT / "CHANGELOG.md"
+    text = changelog_path.read_text(encoding="utf-8")
+    region = _bounded_region_v2(
+        text, "installable target pack, first slice", "- **AgentReview v2 required-check readiness wiring"
+    )
+    assert "same branch/PR" not in region, "CHANGELOG #223 entry still predicts a same-branch/PR delivery for validate"
+    assert "first slice" in region, "CHANGELOG #223 entry lost its historical first-slice framing"
+
+
+def test_changelog_c2_entry_states_the_production_derived_check_inventory() -> None:
+    """Binds the CHANGELOG's advertised inventory to the values actually
+    derived from `target_pack_validate_v2.py` (see `test_target_pack_
+    validate_v2.py`'s own inventory test), rather than letting a
+    hand-typed number drift the way PR #242's `12`-check line did."""
+
+    import app.agent_review.target_pack_validate_v2 as validate_module
+
+    total = len(validate_module.VALIDATE_CHECK_ORDER_V2)
+    unavailable = {name for name, _ in validate_module.UNVALIDATED_CAPABILITIES_V2}
+    locally_evaluable = total - len(unavailable)
+
+    changelog_path = REPO_ROOT / "CHANGELOG.md"
+    text = changelog_path.read_text(encoding="utf-8")
+    assert "agent-review target validate" in text or "`agent-review target validate`" in text, (
+        "CHANGELOG has no entry for the C2 validate capability"
+    )
+    region = _bounded_region_v2(
+        text, "bounded offline target-pack validation", "- **`agentreview-v2-target-pack` — installable target pack, first slice"
+    )
+    for name, count in ((str(total), "total"), (str(locally_evaluable), "locally evaluable"), (str(len(unavailable)), "permanently unavailable")):
+        assert name in region, f"CHANGELOG C2 entry does not state the production-derived {count} count ({name})"
+    for dimension in sorted(unavailable):
+        assert dimension in region, f"CHANGELOG C2 entry does not name the unavailable dimension {dimension!r}"

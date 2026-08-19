@@ -19,8 +19,33 @@ It is final and immutable. The previous final release and rollback ref is
 
 ### `master` is ahead of the published release
 
-`master` carries work that is **not in any published release**. As observed at
-`abe034ad24c89e6167c1f05797178e57d49fdd63`, the delta is 11 commits:
+`master` carries work that is **not in any published release**. This document
+does not pin that fact to a "live master" SHA — doing so goes stale the
+instant any further commit lands, which is exactly the defect this section
+previously had (it named `abe034ad`, itself since superseded). Instead, three
+identities are kept separate, mirroring
+[`docs/engineering/CURRENT_CHECKPOINT.md`](engineering/CURRENT_CHECKPOINT.md)'s
+own model:
+
+```yaml
+release_baseline:
+  version: v0.22.0
+  sha: 2ce1f45768b8779cb48ef8a302d4ed796349f0e5
+implementation_anchor:
+  sha: d454e8f2d272b9edb011513b4a8f5d4e89ece4c2
+  meaning: >-
+    last implementation state this reconciliation describes; the
+    documentation-only commit that introduces this revision is itself
+    NOT part of the count below.
+live_master:
+  source_of_truth: GitHub
+  hardcoded_sha: false
+```
+
+The interval `v0.22.0..<implementation_anchor>` contains **18 commits**
+(`git rev-list --count v0.22.0..d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`).
+Material evolution through that anchor, summarized (not a second changelog —
+see `CHANGELOG.md` for the full record):
 
 - **AgentReview v2 core and hardening** — trusted-check hardening, the CI
   provenance bridge (which also extracted shared JSON/digest primitives into
@@ -28,11 +53,17 @@ It is final and immutable. The previous final release and rollback ref is
   required-check readiness wiring, verified-check ordering, plus `#230`'s
   post-merge identity-hardening (H1-A) and `#233`'s trusted-authority runtime
   boundary fix (H1-C);
-- **the first target-pack slice** with its init-plan binding;
+- **target-pack `#203`** — the first slice (`init`/`doctor`) with its
+  init-plan binding, `#243`'s installed-pack identity contracts (`#203-C1`,
+  the contract predecessor), and `#244`'s bounded offline `validate`
+  (`#203-C2`, now canonical — see the Target Pack v2 section below);
+- **`#237`/`#239`** — target-profile YAML ambiguity derived from the parser
+  itself, then institutionalized into a reusable Structural Change Preflight
+  and executable regression corpus;
 - **AgentReview v1 stabilization** — `#225` (chunk planning by real hunk cost)
   and `#231`/H1-B (planner soundness: canonical path identity, brief-budget
   projection, dedupe parity, binary-vs-textual hunks, fallback completeness);
-- **documentation reconciliation** (`#229`), `.md`-only.
+- **documentation reconciliation** (`#229`, `#234`), `.md`-only.
 
 A consumer pinned at `v0.22.0` does **not** have the `#225` or H1-B v1 fixes.
 Publishing a new release, repinning any consumer, and running a fresh canary are
@@ -263,10 +294,11 @@ comment is the source of truth.
 
 ### Target Pack v2
 
-`IMPLEMENTED`: `init`, `doctor`, operation-plan binding, and the H1-A identity
-hardening.
-`NOT YET IMPLEMENTED`: `validate`, `conformance`, `install-workflows`,
-`upgrade`, `rollback`.
+`IMPLEMENTED`: `init`, `doctor`, `validate` (target-only, offline,
+read-only, local-coherence — not independent proof of upstream pack
+provenance), operation-plan binding, and the H1-A identity hardening.
+`NOT YET IMPLEMENTED`: `conformance`, `install-workflows`, `upgrade`,
+`rollback`.
 
 This pack version's `max_supported_rollout_mode` is `off` — `shadow_minimal`
 and `shadow_full` are interface-level options that are refused before preview

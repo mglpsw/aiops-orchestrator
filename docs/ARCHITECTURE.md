@@ -241,8 +241,10 @@ profile/integration metadata (`TARGET_OWNED`, hoje um único arquivo:
 (`install-workflows`, abaixo).
 
 - **Implementado:** `init` (seed de profile, não do engine), `doctor`
-  (read-only), binding de operation plan
-- **Deferido:** `validate`, `conformance`, `install-workflows` (é aqui que o
+  (read-only), `validate` (leitura-apenas, target-only, coerência local —
+  não é prova independente de proveniência upstream), binding de operation
+  plan
+- **Deferido:** `conformance`, `install-workflows` (é aqui que o
   engine propriamente seria instalado), `upgrade`, `rollback`
 - **Garantia:** pode instalar/configurar integração; nunca cria autoridade, nunca
   forka o engine e nunca promove rollout silenciosamente
