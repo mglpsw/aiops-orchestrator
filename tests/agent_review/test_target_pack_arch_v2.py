@@ -402,3 +402,106 @@ def test_operative_spec_still_defers_the_genuinely_unshipped_subcommands() -> No
     for name in ("conformance", "install-workflows", "upgrade", "rollback"):
         assert f"`{name}`" in deferred_bullet, f"{name} is not shipped but the spec stopped deferring it"
         assert name not in _cli_exposed_subcommands_v2(), f"{name} is exposed by the CLI but still listed as deferred"
+
+
+# ---------------------------------------------------------------------
+# Codex Round 3: EVERY filesystem resolution reachable from
+# `run_validate_v2` must sit inside a typed observation boundary.
+#
+# Load-bearing. Round 2 closed the root observer's `.resolve()`; Round 3
+# proved leaf-by-leaf coverage was insufficient, because `.aiops`, the
+# two `.aiops` artifacts and every ledger claim resolve through the
+# SHARED containment authority, which translates RuntimeError/ValueError
+# into PlanError but lets OSError propagate untyped. These tests make
+# the abstraction -- not the individual catch sites -- the thing that is
+# enforced, so a future consumer cannot reintroduce a private path.
+# ---------------------------------------------------------------------
+
+_CONTAINED_RESOLUTION_ADAPTER_V2 = "_resolve_contained_path_v2"
+_ROOT_OBSERVER_V2 = "_observe_root_v2"
+
+
+def _enclosing_function_by_lineno_v2(tree: ast.Module) -> dict[int, str]:
+    """Maps every line inside a top-level function body to that
+    function's name, so a call node can be attributed to its owner."""
+
+    owners: dict[int, str] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            end = node.end_lineno or node.lineno
+            for line in range(node.lineno, end + 1):
+                owners[line] = node.name
+    return owners
+
+
+def test_containment_authority_is_called_only_from_the_single_adapter() -> None:
+    """`resolve_within_target_root_v2` is the pack's ONE definition of
+    containment and is deliberately not re-implemented here -- but every
+    validate consumer must reach it through this module's single typed
+    adapter, never directly, or each new consumer becomes another place
+    an untyped OSError can escape."""
+
+    tree = _parse(VALIDATE_MODULE_PATH)
+    owners = _enclosing_function_by_lineno_v2(tree)
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "resolve_within_target_root_v2":
+                owner = owners.get(node.lineno, "<module level>")
+                if owner != _CONTAINED_RESOLUTION_ADAPTER_V2:
+                    offenders.append(f"{owner}:{node.lineno}")
+    assert not offenders, (
+        f"resolve_within_target_root_v2 is called outside {_CONTAINED_RESOLUTION_ADAPTER_V2}: {offenders}. "
+        f"Route the new consumer through the adapter instead of catching PlanError/OSError locally."
+    )
+
+
+def test_the_contained_resolution_adapter_exists_and_types_both_failure_families() -> None:
+    """Guards the adapter's own totality: catching only PlanError there
+    would recreate the exact Round-3 defect at the one place every
+    consumer now depends on."""
+
+    tree = _parse(VALIDATE_MODULE_PATH)
+    adapter = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == _CONTAINED_RESOLUTION_ADAPTER_V2
+        ),
+        None,
+    )
+    assert adapter is not None, f"{_CONTAINED_RESOLUTION_ADAPTER_V2} is missing"
+
+    handled: set[str] = set()
+    for node in ast.walk(adapter):
+        if isinstance(node, ast.ExceptHandler) and isinstance(node.type, ast.Name):
+            handled.add(node.type.id)
+    assert {"PlanError", "OSError"} <= handled, (
+        f"{_CONTAINED_RESOLUTION_ADAPTER_V2} must type BOTH failure families; it handles {sorted(handled)}"
+    )
+
+
+def test_raw_path_resolve_is_confined_to_the_root_observer() -> None:
+    """The root observer legitimately calls `Path.resolve` directly: it
+    observes the root ITSELF, which has no enclosing root to be contained
+    in. Every other resolution is of a descendant and belongs to the
+    containment adapter. This is what caught the redundant second
+    `.resolve()` at the registry-seeding site, which re-resolved a path
+    the authority had already returned."""
+
+    tree = _parse(VALIDATE_MODULE_PATH)
+    owners = _enclosing_function_by_lineno_v2(tree)
+    offenders = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "resolve"
+        ):
+            owner = owners.get(node.lineno, "<module level>")
+            if owner not in {_ROOT_OBSERVER_V2, _CONTAINED_RESOLUTION_ADAPTER_V2}:
+                offenders.append(f"{owner}:{node.lineno}")
+    assert not offenders, (
+        f"raw .resolve() called outside {_ROOT_OBSERVER_V2}/{_CONTAINED_RESOLUTION_ADAPTER_V2}: {offenders}. "
+        f"Use the Path the containment authority already returned, or route through the adapter."
+    )

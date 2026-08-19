@@ -286,6 +286,14 @@ TARGET_ROOT_UNREADABLE_REASON_V2 = "target_pack_validate_target_root_unreadable"
 TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 = "target_pack_validate_target_root_not_a_directory"
 PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_validate_path_escapes_target_root"
 PATH_RESOLUTION_FAILED_REASON_V2 = "target_pack_validate_path_resolution_failed"
+# A THIRD, distinct contained-path resolution outcome. Deliberately not
+# folded into either neighbour above: an escape is a containment verdict,
+# a resolution failure is a malformed link structure, and this one is
+# neither -- the filesystem refused to answer, so no verdict about
+# containment or structure was ever reached. The existing
+# `..._target_root_unreadable` cannot be reused: its subject is the root
+# itself, not a descendant under it.
+PATH_RESOLUTION_UNREADABLE_REASON_V2 = "target_pack_validate_path_resolution_unreadable"
 AIOPS_MISSING_REASON_V2 = "target_pack_validate_aiops_missing"
 AIOPS_NOT_A_DIRECTORY_REASON_V2 = "target_pack_validate_aiops_not_a_directory"
 AIOPS_UNREADABLE_REASON_V2 = "target_pack_validate_aiops_unreadable"
@@ -489,15 +497,69 @@ def _observe_root_v2(target_root: Path) -> tuple[Path | None, RootObservationV2]
     return resolved, DirectoryReady()
 
 
-def _observe_aiops_v2(target_root_real: Path) -> tuple[Path | None, AiopsObservationV2]:
-    """Resolve and classify the ONE `.aiops` candidate. Containment
-    (`resolve_within_target_root_v2`) proves only that the candidate does
-    not escape `target_root_real` -- nothing about existence or type."""
+def _resolve_contained_path_v2(target_root_real: Path, candidate: Path) -> tuple[Path | None, str | None]:
+    """THE single site in this module where a contained-path resolution
+    attempt becomes a typed outcome. Every downstream consumer (`.aiops`,
+    the two `.aiops` artifacts, and every ledger claim) goes through here;
+    an architecture test in `test_target_pack_arch_v2.py` enforces that
+    mechanically, so a future consumer cannot reintroduce a private
+    resolution path.
+
+    Containment itself is NOT re-derived here. `resolve_within_target_
+    root_v2` remains the pack's single authority for what "contained in
+    `target_root`" means, exactly as `doctor`/`init` use it. This function
+    only decides how THIS module OBSERVES the ways that attempt can fail
+    -- which is the observation plane's own charter.
+
+    Three genuinely distinct outcomes, deliberately not collapsed:
+
+    - `PlanError` carrying the escape code -> the candidate resolved, and
+      resolved outside the root: a containment verdict.
+    - `PlanError` carrying the resolution-failed code -> a symlink loop:
+      the path's link structure is malformed and resolves nowhere.
+    - `OSError` -> the filesystem refused to perform the resolution at all
+      (`EACCES` on an ancestor without search permission, `EIO` on a
+      failing or disconnected mount). No containment or structural verdict
+      was ever reached, so reporting either of the above would assert
+      something never observed.
+
+    The third case is why this adapter exists. `resolve_within_target_
+    root_v2` translates `RuntimeError` and `ValueError` into `PlanError`
+    but lets `OSError` from its internal `Path.resolve(strict=False)`
+    propagate untyped -- so before this round, `.aiops`, artifact and
+    ledger resolution each caught only `PlanError` and an `EACCES`
+    escaped `run_validate_v2` as a traceback instead of a reason-coded
+    report. Round 2 closed exactly this class for the ROOT observer; that
+    fix could not cover these sites because they resolve through the
+    shared containment authority rather than calling `Path.resolve`
+    directly.
+
+    NOTE, deliberately not silently repaired here: the same `OSError` gap
+    remains open in `resolve_within_target_root_v2` itself, and therefore
+    for `doctor`/`init`/the operation planner, which this PR holds no
+    authority to change. Closing it there is a separate predecessor
+    change against a shared module."""
 
     try:
-        candidate = resolve_within_target_root_v2(target_root_real, target_root_real / _AIOPS_DIR_RELATIVE_V2)
+        return resolve_within_target_root_v2(target_root_real, candidate), None
     except PlanError as exc:
-        return None, PathResolutionFailure(_path_reason_for_plan_error_v2(exc))
+        return None, _path_reason_for_plan_error_v2(exc)
+    except OSError:
+        return None, PATH_RESOLUTION_UNREADABLE_REASON_V2
+
+
+def _observe_aiops_v2(target_root_real: Path) -> tuple[Path | None, AiopsObservationV2]:
+    """Resolve and classify the ONE `.aiops` candidate. Containment
+    (`resolve_within_target_root_v2`, reached through the module's single
+    contained-resolution adapter) proves only that the candidate does not
+    escape `target_root_real` -- nothing about existence or type."""
+
+    candidate, resolution_reason = _resolve_contained_path_v2(
+        target_root_real, target_root_real / _AIOPS_DIR_RELATIVE_V2
+    )
+    if resolution_reason is not None:
+        return None, PathResolutionFailure(resolution_reason)
+    assert candidate is not None
     try:
         exists = candidate.exists()
         is_dir = candidate.is_dir() if exists else False
@@ -511,10 +573,7 @@ def _observe_aiops_v2(target_root_real: Path) -> tuple[Path | None, AiopsObserva
 
 
 def _resolve_ledger_path_v2(target_root_real: Path, relative_path: str) -> tuple[Path | None, str | None]:
-    try:
-        return resolve_within_target_root_v2(target_root_real, target_root_real / relative_path), None
-    except PlanError as exc:
-        return None, _path_reason_for_plan_error_v2(exc)
+    return _resolve_contained_path_v2(target_root_real, target_root_real / relative_path)
 
 
 def _observe_bounded_artifact_v2(path: Path) -> BoundedArtifactV2:
@@ -935,9 +994,18 @@ def _ledger_checks_v2(
         )
 
     registry = _ObservationRegistryV2(budget)
-    registry.seed(receipt_path.resolve(), _artifact_to_ledger_observation_v2(receipt_observation))
+    # Seed with the paths the containment authority ALREADY returned.
+    # These used to call `.resolve()` again here, which was both a second
+    # filesystem operation on an already-resolved path and -- because it
+    # sat outside every typed boundary -- a third way an `OSError` could
+    # escape `run_validate_v2` as a traceback. Re-deriving a path the
+    # authority already resolved is the precise anti-pattern
+    # `resolve_within_target_root_v2`'s own contract warns about: read
+    # through the exact `Path` it returned, never a separately re-derived
+    # one, or the check and the use are bound only by timing coincidence.
+    registry.seed(receipt_path, _artifact_to_ledger_observation_v2(receipt_observation))
     if profile_path is not None and profile_observation is not None:
-        registry.seed(profile_path.resolve(), _artifact_to_ledger_observation_v2(profile_observation))
+        registry.seed(profile_path, _artifact_to_ledger_observation_v2(profile_observation))
 
     claims = _compile_observation_plan_v2(receipt)
     exhausted, dispositions, cross_ledger_conflict = _evaluate_observation_plan_v2(
@@ -1005,10 +1073,7 @@ def _unavailable_checks_v2() -> tuple[ValidateCheckV2, ...]:
 
 
 def _resolve_artifact_path_v2(aiops_dir: Path, target_root_real: Path, filename: str) -> tuple[Path | None, str | None]:
-    try:
-        return resolve_within_target_root_v2(target_root_real, aiops_dir / filename), None
-    except PlanError as exc:
-        return None, _path_reason_for_plan_error_v2(exc)
+    return _resolve_contained_path_v2(target_root_real, aiops_dir / filename)
 
 
 _ROOT_REASON_BY_OBSERVATION_V2 = {

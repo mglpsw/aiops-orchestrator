@@ -46,6 +46,7 @@ from app.agent_review.target_pack_validate_v2 import (
     OBSERVATION_BUDGET_EXCEEDED_REASON_V2,
     PATH_ESCAPES_TARGET_ROOT_REASON_V2,
     PATH_RESOLUTION_FAILED_REASON_V2,
+    PATH_RESOLUTION_UNREADABLE_REASON_V2,
     PREVIOUS_INSTALL_LINEAGE_REASON_V2,
     PROFILE_IDENTITY_MISMATCH_REASON_V2,
     PROFILE_MISSING_REASON_V2,
@@ -1771,3 +1772,140 @@ def test_check_inventory_counts_are_derived_not_asserted_from_a_stale_number() -
     assert len(unavailable) == 6
     assert len(set(VALIDATE_CHECK_ORDER_V2) - unavailable) == 11
     assert unavailable <= set(VALIDATE_CHECK_ORDER_V2)
+
+
+# ---------------------------------------------------------------------
+# Codex Round 3: OSError raised INSIDE contained-path resolution.
+#
+# Round 2 closed this class for the ROOT (`_observe_root_v2` calls
+# `Path.resolve` directly). These sites are different: they resolve
+# through the SHARED containment authority, which types RuntimeError and
+# ValueError into PlanError but lets OSError propagate untyped -- so the
+# root fix could not and did not cover them.
+# ---------------------------------------------------------------------
+
+
+def _failing_resolve_for(suffix: str, exc: BaseException) -> object:
+    """Patches the REAL primitive the containment authority calls, and
+    only for the one path under test, so every other resolution in the
+    same run behaves normally."""
+
+    real_resolve = Path.resolve
+
+    def patched(self: Path, strict: bool = False) -> Path:
+        if str(self).endswith(suffix):
+            raise exc
+        return real_resolve(self, strict=strict)
+
+    return patched
+
+
+def test_aiops_contained_resolution_oserror_is_reason_coded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(Path, "resolve", _failing_resolve_for("/.aiops", PermissionError(13, "denied")))
+    report = run_validate_v2(target_root=tmp_path)  # must not raise
+    check = _check(report, "aiops_snapshot")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == PATH_RESOLUTION_UNREADABLE_REASON_V2
+    assert report.is_valid is False
+
+
+def test_aiops_contained_resolution_eio_is_reason_coded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-permission OSError family, to prove the boundary is the
+    exception TYPE and not one errno."""
+
+    monkeypatch.setattr(Path, "resolve", _failing_resolve_for("/.aiops", OSError(5, "I/O error")))
+    report = run_validate_v2(target_root=tmp_path)
+    assert _check(report, "aiops_snapshot").reason_code == PATH_RESOLUTION_UNREADABLE_REASON_V2
+
+
+def test_receipt_artifact_contained_resolution_oserror_is_reason_coded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".aiops").mkdir()
+    monkeypatch.setattr(
+        Path, "resolve", _failing_resolve_for("install-receipt.v2.json", PermissionError(13, "denied"))
+    )
+    report = run_validate_v2(target_root=tmp_path)
+    check = _check(report, "receipt")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == PATH_RESOLUTION_UNREADABLE_REASON_V2
+
+
+def test_profile_artifact_contained_resolution_oserror_is_reason_coded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".aiops").mkdir()
+    monkeypatch.setattr(
+        Path, "resolve", _failing_resolve_for("target-profile.v2.yaml", PermissionError(13, "denied"))
+    )
+    report = run_validate_v2(target_root=tmp_path)
+    check = _check(report, "profile")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == PATH_RESOLUTION_UNREADABLE_REASON_V2
+
+
+def test_ledger_claim_contained_resolution_oserror_is_reason_coded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    receipt = _receipt(generated_file_hashes={"ledger-victim.bin": "d" * 64})
+    _install(tmp_path, receipt=receipt)
+    (tmp_path / "ledger-victim.bin").write_bytes(b"x")
+    monkeypatch.setattr(
+        Path, "resolve", _failing_resolve_for("ledger-victim.bin", PermissionError(13, "denied"))
+    )
+    report = run_validate_v2(target_root=tmp_path)
+    check = _check(report, "generated_file_integrity")
+    assert check.status == STATUS_FAIL_V2
+    assert check.reason_code == PATH_RESOLUTION_UNREADABLE_REASON_V2
+
+
+def test_registry_seeding_does_not_re_resolve_an_already_resolved_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A third escape route Codex did not name: the registry used to call
+    `.resolve()` AGAIN on the receipt/profile paths the containment
+    authority had already returned -- a redundant filesystem operation
+    sitting outside every typed boundary. Counting the real primitive's
+    invocations proves the second call is gone, which is stronger than
+    asserting the OSError is now caught somewhere."""
+
+    _install(tmp_path, receipt=_receipt())
+    real_resolve = Path.resolve
+    receipt_resolves = {"n": 0}
+
+    def counting(self: Path, strict: bool = False) -> Path:
+        if str(self).endswith("install-receipt.v2.json"):
+            receipt_resolves["n"] += 1
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", counting)
+    report = run_validate_v2(target_root=tmp_path)
+
+    assert report.is_valid is True
+    assert receipt_resolves["n"] == 1, "the receipt path is resolved more than once"
+
+
+# --- Safe counterexamples: the other two outcomes must not shift -------
+
+
+def test_containment_escape_still_maps_to_the_escape_reason(tmp_path_factory: pytest.TempPathFactory) -> None:
+    outside = tmp_path_factory.mktemp("outside")
+    root = tmp_path_factory.mktemp("escape_root")
+    (root / ".aiops").symlink_to(outside, target_is_directory=True)
+    check = _check(run_validate_v2(target_root=root), "aiops_snapshot")
+    assert check.reason_code == PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+def test_symlink_loop_still_maps_to_the_resolution_failed_reason(tmp_path_factory: pytest.TempPathFactory) -> None:
+    root = tmp_path_factory.mktemp("loop_root")
+    (root / ".aiops").symlink_to(root / ".aiops")
+    check = _check(run_validate_v2(target_root=root), "aiops_snapshot")
+    assert check.reason_code == PATH_RESOLUTION_FAILED_REASON_V2
+
+
+def test_the_three_contained_resolution_outcomes_are_all_distinct() -> None:
+    assert len({
+        PATH_ESCAPES_TARGET_ROOT_REASON_V2,
+        PATH_RESOLUTION_FAILED_REASON_V2,
+        PATH_RESOLUTION_UNREADABLE_REASON_V2,
+    }) == 3
