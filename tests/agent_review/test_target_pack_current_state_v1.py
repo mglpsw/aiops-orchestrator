@@ -59,11 +59,11 @@ def _valid_inputs_doc(**overrides: object) -> dict:
         "historical_evidence": [
             {
                 "pr": 244,
-                "tested_sha": _TESTED,
+                "recorded_tested_sha": _TESTED,
                 "canonical_sha": _CANONICAL,
                 "suite": {"passed": 2801, "skipped": 4},
                 "evidence_class": "recorded_qualification",
-                "evidence_ref": {"kind": "git_commit_message", "sha": _TESTED},
+                "evidence_ref": {"kind": "git_commit_message", "sha": _CANONICAL},
             }
         ],
     }
@@ -135,12 +135,58 @@ def test_commit_existence_checked(tmp_path: Path) -> None:
         load_current_inputs(p, commit_exists=lambda sha: False)
 
 
-def test_evidence_ref_sha_must_equal_tested_sha_for_commit_message_kind(tmp_path: Path) -> None:
+def test_evidence_ref_sha_must_equal_canonical_sha_for_commit_message_kind(tmp_path: Path) -> None:
     doc = _valid_inputs_doc()
-    doc["historical_evidence"][0]["evidence_ref"]["sha"] = _CANONICAL  # wrong: should equal tested_sha
+    doc["historical_evidence"][0]["evidence_ref"]["sha"] = _TESTED  # wrong: should equal canonical_sha
     p = _write(tmp_path / "inputs.json", json.dumps(doc))
-    with pytest.raises(TargetPackCurrentStateError, match="evidence_ref.sha must equal tested_sha"):
+    with pytest.raises(TargetPackCurrentStateError, match="evidence_ref.sha must equal canonical_sha"):
         load_current_inputs(p, commit_exists=_always_exists)
+
+
+def test_recorded_tested_sha_absent_from_git_does_not_block_load(tmp_path: Path) -> None:
+    """M-CURRENT-17 (historical subject retention independence): a merged
+    PR's own source branch is routinely deleted post-merge -- discovered via
+    real CI, not simulation, when PR #244's tested_sha (a792b23c...) proved
+    unreachable in a fresh checkout. `recorded_tested_sha` must therefore
+    load cleanly even when the git object database has never heard of it,
+    as long as every REACHABLE identity (anchor, canonical_sha,
+    evidence_ref.sha) still exists."""
+
+    doc = _valid_inputs_doc()
+
+    def commit_exists(sha: str) -> bool:
+        return sha != _TESTED  # every real identity exists; the recorded one does not
+
+    inputs = load_current_inputs(_write(tmp_path / "inputs.json", json.dumps(doc)), commit_exists=commit_exists)
+    assert inputs.historical_evidence[0].recorded_tested_sha == _TESTED
+
+
+def test_canonical_sha_absent_from_git_blocks_load(tmp_path: Path) -> None:
+    doc = _valid_inputs_doc()
+
+    def commit_exists(sha: str) -> bool:
+        return sha != _CANONICAL
+
+    p = _write(tmp_path / "inputs.json", json.dumps(doc))
+    with pytest.raises(TargetPackCurrentStateError, match="canonical_sha .* does not exist"):
+        load_current_inputs(p, commit_exists=commit_exists)
+
+
+def test_evidence_ref_sha_absent_from_git_blocks_load(tmp_path: Path) -> None:
+    """Independent of canonical_sha's own check: uses a non-`git_commit_message`
+    kind (which carries no equality constraint) so evidence_ref.sha can be a
+    THIRD sha and its own existence check can be isolated."""
+
+    other_sha = "d" * 40
+    doc = _valid_inputs_doc()
+    doc["historical_evidence"][0]["evidence_ref"] = {"kind": "external_reference", "sha": other_sha}
+
+    def commit_exists(sha: str) -> bool:
+        return sha != other_sha
+
+    p = _write(tmp_path / "inputs.json", json.dumps(doc))
+    with pytest.raises(TargetPackCurrentStateError, match="evidence_ref.sha .* does not exist"):
+        load_current_inputs(p, commit_exists=commit_exists)
 
 
 def test_evidence_ref_required(tmp_path: Path) -> None:
@@ -177,6 +223,7 @@ def test_valid_inputs_load_cleanly(tmp_path: Path) -> None:
     assert inputs.implementation_anchor == _ANCHOR
     assert len(inputs.historical_evidence) == 1
     assert inputs.historical_evidence[0].evidence_ref.kind == "git_commit_message"
+    assert inputs.historical_evidence[0].recorded_tested_sha == _TESTED
 
 
 # --- Normative declared surface -----------------------------------------
@@ -345,16 +392,8 @@ def _fixture_compile(
     anchor_cli_source: str,
     anchor_validate_source: str,
     inputs_overrides: dict | None = None,
-    tree_shas: dict[str, str] | None = None,
 ):
     tmp_inputs = _valid_inputs_doc(**(inputs_overrides or {}))
-    tested = tmp_inputs["historical_evidence"][0]["tested_sha"] if tmp_inputs["historical_evidence"] else None
-    canonical = tmp_inputs["historical_evidence"][0]["canonical_sha"] if tmp_inputs["historical_evidence"] else None
-    default_trees = {tested: "tree1", canonical: "tree1"} if tested else {}
-    trees = {**default_trees, **(tree_shas or {})}
-
-    class _Inputs:
-        pass
 
     from app.agent_review.target_pack_current_state_v1 import (
         CurrentInputsV1, HistoricalEvidenceRecordV1, EvidenceRefV1,
@@ -362,7 +401,7 @@ def _fixture_compile(
 
     records = tuple(
         HistoricalEvidenceRecordV1(
-            pr=e["pr"], tested_sha=e["tested_sha"], canonical_sha=e["canonical_sha"],
+            pr=e["pr"], recorded_tested_sha=e["recorded_tested_sha"], canonical_sha=e["canonical_sha"],
             suite_passed=e["suite"]["passed"], suite_skipped=e["suite"]["skipped"],
             evidence_class=e["evidence_class"],
             evidence_ref=EvidenceRefV1(kind=e["evidence_ref"]["kind"], sha=e["evidence_ref"]["sha"]),
@@ -385,7 +424,6 @@ def _fixture_compile(
         declared_surface=declared_surface,
         read_blob=lambda _anchor, path: blobs[path],
         committed_at=lambda _anchor: datetime(2026, 8, 18, 21, 56, 15, tzinfo=timezone.utc),
-        tree_sha=lambda sha: trees.get(sha, sha),
     )
 
 
@@ -463,16 +501,6 @@ def test_compile_validate_inventory_matches_authority_exactly() -> None:
     assert state.validate_permanently_unavailable == frozenset({"b_check"})
 
 
-def test_compile_canonicalization_relation_is_derived_tree_identical() -> None:
-    state = _fixture_compile(
-        declared_surface=frozenset({"init", "doctor", "validate"}),
-        anchor_cli_source=_SIMPLE_CLI,
-        anchor_validate_source=_SIMPLE_VALIDATE,
-        tree_shas={_TESTED: "same-tree", _CANONICAL: "same-tree"},
-    )
-    assert state.historical_evidence[0].canonicalization_relation == "tree_identical"
-
-
 def test_compile_fails_closed_when_reconciled_at_precedes_anchor_committed_at() -> None:
     """Direct unit proof of the temporal invariant: this must fail on the
     PURE compile step itself, not merely be inferable from a `--check`
@@ -491,14 +519,20 @@ def test_compile_fails_closed_when_reconciled_at_precedes_anchor_committed_at() 
         )
 
 
-def test_compile_canonicalization_relation_is_derived_not_tree_identical() -> None:
+def test_compile_preserves_recorded_tested_sha_without_requiring_its_reachability() -> None:
+    """`compile_current_state` never calls a reachability check on
+    `recorded_tested_sha` -- it is carried through as opaque historical
+    metadata, proven here by never wiring a commit-existence callable for it
+    at all (only `read_blob`/`committed_at`, neither of which touches
+    per-evidence SHAs)."""
+
     state = _fixture_compile(
         declared_surface=frozenset({"init", "doctor", "validate"}),
         anchor_cli_source=_SIMPLE_CLI,
         anchor_validate_source=_SIMPLE_VALIDATE,
-        tree_shas={_TESTED: "tree-a", _CANONICAL: "tree-b"},
     )
-    assert state.historical_evidence[0].canonicalization_relation == "not_tree_identical"
+    assert state.historical_evidence[0].recorded_tested_sha == _TESTED
+    assert state.historical_evidence[0].canonical_sha == _CANONICAL
 
 
 # --- Deterministic serialization -----------------------------------------

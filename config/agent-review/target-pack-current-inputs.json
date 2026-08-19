@@ -7,7 +7,7 @@
   "historical_evidence": [
     {
       "pr": 244,
-      "tested_sha": "a792b23c3ed18eb4e87cd7adf0930b6c60214ae2",
+      "recorded_tested_sha": "a792b23c3ed18eb4e87cd7adf0930b6c60214ae2",
       "canonical_sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
       "suite": {
         "passed": 2801,
@@ -16,7 +16,7 @@
       "evidence_class": "recorded_qualification",
       "evidence_ref": {
         "kind": "git_commit_message",
-        "sha": "a792b23c3ed18eb4e87cd7adf0930b6c60214ae2"
+        "sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2"
       }
     }
   ]

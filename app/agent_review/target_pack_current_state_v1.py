@@ -34,11 +34,10 @@ anchor-derived      -- read via `git show <anchor>:<path>` + `ast.parse`,
 
 declared once       -- config/agent-review/target-pack-current-inputs.json:
                        implementation_anchor, reconciliation.reconciled_at,
-                       historical_evidence records (tested_sha, canonical_sha,
-                       suite counts, evidence_ref)
+                       historical_evidence records (recorded_tested_sha,
+                       canonical_sha, suite counts, evidence_ref)
 
-git-derived         -- anchor.committed_at, tested/canonical tree SHAs,
-                       canonicalization_relation (never hand-declared)
+git-derived         -- anchor.committed_at (never hand-declared)
 
 generated           -- the compiled JSON this module produces, and every
                        Markdown CURRENT block rendered from it
@@ -51,14 +50,48 @@ are read from **the anchor's git blobs**, never the working tree, so a
 candidate branch can never republish its own facts as canonical (the defect
 this whole workstream exists to remove).
 
+## Two distinct kinds of SHA in `historical_evidence`
+
+`recorded_tested_sha` and `canonical_sha` are NOT interchangeable identities,
+discovered the hard way when CI could not fetch a merged PR's own deleted
+source branch tip:
+
+```
+recorded_tested_sha  -- historical provenance metadata. A real commit that
+                         WAS tested, at the time. Format-checked (40-hex)
+                         only -- NEVER required to exist in the local git
+                         object database, because a merged PR's source
+                         branch is routinely deleted, and Git gives no
+                         guarantee that an unreachable object survives in
+                         any future clone.
+
+canonical_sha         -- the durable repository identity this record binds
+                         to. MUST exist locally (git cat-file -e). Always
+                         reachable in any clone descended from master,
+                         because it IS a commit on master.
+
+evidence_ref.sha       -- MUST exist locally, and for kind="git_commit_message"
+                          MUST equal canonical_sha (never recorded_tested_sha):
+                          durable provenance can only be bound to an identity
+                          the compiler can actually prove is reachable.
+```
+
+The governing invariant is one-directional: `HistoricalRecordedIdentity` does
+NOT imply `ReachableCommit`, but `CanonicalEvidenceIdentity` (`canonical_sha`,
+`evidence_ref.sha`) DOES imply it. This module never derives the reachable
+identity from the unreachable one, or the reverse.
+
 ## Epistemic ceiling
 
 This module proves: the normative surface parses; `canonical` is a subset of
 `declared`; the compiled counts match the anchor's own static authorities;
-historical evidence SHAs exist and are internally consistent. It does **not**
-prove that `implementation_anchor` equals live GitHub `master` -- that is a
-forge fact, checked once by the generator script before publication, never by
-this module.
+`implementation_anchor`/`canonical_sha`/`evidence_ref.sha` exist as real,
+locally reachable commits. It does **not** prove that `implementation_anchor`
+equals live GitHub `master` -- that is a forge fact, checked once by the
+generator script before publication, never by this module. It also does
+**not** prove `recorded_tested_sha` is reachable, reproducible, or was ever
+fetchable from this clone -- that field is preserved as historical identity
+metadata, not a dependency.
 """
 
 from __future__ import annotations
@@ -111,17 +144,6 @@ def git_commit_committed_at(repo_root: Path, sha: str) -> datetime:
     return datetime.fromisoformat(stamp)
 
 
-def git_tree_sha(repo_root: Path, sha: str) -> str:
-    proc = subprocess.run(
-        ["git", "rev-parse", f"{sha}^{{tree}}"],
-        cwd=repo_root, capture_output=True, text=True, check=True,
-    )
-    tree = proc.stdout.strip()
-    if not tree:
-        raise TargetPackCurrentStateError(f"git produced no tree sha for {sha!r}")
-    return tree
-
-
 def read_anchor_blob(repo_root: Path, anchor_sha: str, relative_path: str) -> str:
     """`git show <anchor>:<path>` -- static blob content only. Never
     `importlib`, never `exec`, never adds the anchor's tree to `sys.path`.
@@ -142,7 +164,6 @@ def read_anchor_blob(repo_root: Path, anchor_sha: str, relative_path: str) -> st
 
 BlobReader = Callable[[str, str], str]
 CommittedAtReader = Callable[[str], datetime]
-TreeShaReader = Callable[[str], str]
 CommitExistsChecker = Callable[[str], bool]
 
 
@@ -354,8 +375,8 @@ class EvidenceRefV1:
 @dataclass(frozen=True)
 class HistoricalEvidenceRecordV1:
     pr: int
-    tested_sha: str
-    canonical_sha: str
+    recorded_tested_sha: str  # historical metadata only -- never required to be locally reachable
+    canonical_sha: str  # durable identity -- must exist locally
     suite_passed: int
     suite_skipped: int
     evidence_class: str
@@ -413,20 +434,27 @@ def load_current_inputs(
             raise TargetPackCurrentStateError(f"{owner}: must be a JSON object")
         _require_keys(
             raw,
-            {"pr", "tested_sha", "canonical_sha", "suite", "evidence_class", "evidence_ref"},
+            {"pr", "recorded_tested_sha", "canonical_sha", "suite", "evidence_class", "evidence_ref"},
             owner=owner,
         )
         pr = raw.get("pr")
         if not isinstance(pr, int) or isinstance(pr, bool) or pr <= 0:
             raise TargetPackCurrentStateError(f"{owner}.pr must be a positive integer, not a bool: {pr!r}")
 
-        tested_sha = raw.get("tested_sha")
+        recorded_tested_sha = raw.get("recorded_tested_sha")
+        if not is_full_sha(recorded_tested_sha):
+            raise TargetPackCurrentStateError(
+                f"{owner}.recorded_tested_sha is not a 40-hex lowercase sha: {recorded_tested_sha!r}"
+            )
+        # Deliberately NOT existence-checked: a merged PR's own source branch
+        # is routinely deleted, and this field records what was historically
+        # tested, not a dependency this compiler needs reachable.
+
         canonical_sha = raw.get("canonical_sha")
-        for label, sha in (("tested_sha", tested_sha), ("canonical_sha", canonical_sha)):
-            if not is_full_sha(sha):
-                raise TargetPackCurrentStateError(f"{owner}.{label} is not a 40-hex lowercase sha: {sha!r}")
-            if not commit_exists(sha):
-                raise TargetPackCurrentStateError(f"{owner}.{label} {sha!r} does not exist as a commit")
+        if not is_full_sha(canonical_sha):
+            raise TargetPackCurrentStateError(f"{owner}.canonical_sha is not a 40-hex lowercase sha: {canonical_sha!r}")
+        if not commit_exists(canonical_sha):
+            raise TargetPackCurrentStateError(f"{owner}.canonical_sha {canonical_sha!r} does not exist as a commit")
 
         suite = raw.get("suite")
         if not isinstance(suite, dict):
@@ -450,14 +478,14 @@ def load_current_inputs(
             raise TargetPackCurrentStateError(f"{owner}.evidence_ref.kind must be a non-empty string")
         if not is_full_sha(ref_sha):
             raise TargetPackCurrentStateError(f"{owner}.evidence_ref.sha is not a 40-hex lowercase sha: {ref_sha!r}")
-        if ref_kind == "git_commit_message" and ref_sha != tested_sha:
-            raise TargetPackCurrentStateError(f"{owner}.evidence_ref.sha must equal tested_sha for kind=git_commit_message")
+        if ref_kind == "git_commit_message" and ref_sha != canonical_sha:
+            raise TargetPackCurrentStateError(f"{owner}.evidence_ref.sha must equal canonical_sha for kind=git_commit_message")
         if not commit_exists(ref_sha):
             raise TargetPackCurrentStateError(f"{owner}.evidence_ref.sha {ref_sha!r} does not exist as a commit")
 
         records.append(
             HistoricalEvidenceRecordV1(
-                pr=pr, tested_sha=tested_sha, canonical_sha=canonical_sha,
+                pr=pr, recorded_tested_sha=recorded_tested_sha, canonical_sha=canonical_sha,
                 suite_passed=passed, suite_skipped=skipped,
                 evidence_class=evidence_class,
                 evidence_ref=EvidenceRefV1(kind=ref_kind, sha=ref_sha),
@@ -477,14 +505,13 @@ def load_current_inputs(
 @dataclass(frozen=True)
 class HistoricalEvidenceStateV1:
     pr: int
-    tested_sha: str
+    recorded_tested_sha: str
     canonical_sha: str
     suite_passed: int
     suite_skipped: int
     evidence_class: str
     evidence_ref_kind: str
     evidence_ref_sha: str
-    canonicalization_relation: str  # derived, never declared
 
 
 @dataclass(frozen=True)
@@ -511,7 +538,6 @@ def compile_current_state(
     declared_surface: frozenset[str],
     read_blob: BlobReader,
     committed_at: CommittedAtReader,
-    tree_sha: TreeShaReader,
 ) -> TargetPackCurrentStateV1:
     """Pure given its callables: no filesystem/subprocess access happens
     inside this function itself, so unit tests can inject fixture readers
@@ -542,16 +568,12 @@ def compile_current_state(
 
     evidence_states: list[HistoricalEvidenceStateV1] = []
     for record in inputs.historical_evidence:
-        tested_tree = tree_sha(record.tested_sha)
-        canonical_tree = tree_sha(record.canonical_sha)
-        relation = "tree_identical" if tested_tree == canonical_tree else "not_tree_identical"
         evidence_states.append(
             HistoricalEvidenceStateV1(
-                pr=record.pr, tested_sha=record.tested_sha, canonical_sha=record.canonical_sha,
+                pr=record.pr, recorded_tested_sha=record.recorded_tested_sha, canonical_sha=record.canonical_sha,
                 suite_passed=record.suite_passed, suite_skipped=record.suite_skipped,
                 evidence_class=record.evidence_class,
                 evidence_ref_kind=record.evidence_ref.kind, evidence_ref_sha=record.evidence_ref.sha,
-                canonicalization_relation=relation,
             )
         )
 
@@ -601,12 +623,11 @@ def compiled_state_to_json_dict(state: TargetPackCurrentStateV1, *, source_input
             "historical_evidence": [
                 {
                     "pr": e.pr,
-                    "tested_sha": e.tested_sha,
+                    "recorded_tested_sha": e.recorded_tested_sha,
                     "canonical_sha": e.canonical_sha,
                     "suite": {"passed": e.suite_passed, "skipped": e.suite_skipped},
                     "evidence_class": e.evidence_class,
                     "evidence_ref": {"kind": e.evidence_ref_kind, "sha": e.evidence_ref_sha},
-                    "canonicalization_relation": e.canonicalization_relation,
                 }
                 for e in state.historical_evidence
             ],

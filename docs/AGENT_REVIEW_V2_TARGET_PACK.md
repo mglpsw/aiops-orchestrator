@@ -142,7 +142,7 @@ Qualified across three adversarial Codex review rounds on the branch, each
 closed with `STOP_REDESIGN: false`.
 
 <!-- BEGIN GENERATED: target-pack-current.target-pack-doc.evidence -->
-**PR #244 qualification** — tested at `a792b23c3ed18eb4e87cd7adf0930b6c60214ae2`, canonicalized as `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2` (tree_identical). Full suite: 2801 passed, 4 skipped (recorded_qualification; evidence: git_commit_message@`a792b23c3ed18eb4e87cd7adf0930b6c60214ae2`).
+**PR #244 qualification** — recorded as tested at `a792b23c3ed18eb4e87cd7adf0930b6c60214ae2` (historical metadata, not required to remain fetchable); durable canonical identity `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`. Full suite: 2801 passed, 4 skipped (recorded_qualification; evidence: git_commit_message@`d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`).
 <!-- END GENERATED: target-pack-current.target-pack-doc.evidence -->
 
 ## Templates shipped

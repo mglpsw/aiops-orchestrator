@@ -27,7 +27,6 @@ from app.agent_review.target_pack_current_state_v1 import (  # noqa: E402
     extract_declared_surface,
     git_commit_committed_at,
     git_commit_exists,
-    git_tree_sha,
     load_current_inputs,
     read_anchor_blob,
     render_compiled_json,
@@ -88,9 +87,10 @@ def _render_evidence(state: TargetPackCurrentStateV1) -> str:
     lines = []
     for e in state.historical_evidence:
         lines.append(
-            f"**PR #{e.pr} qualification** — tested at `{e.tested_sha}`, canonicalized as "
-            f"`{e.canonical_sha}` ({e.canonicalization_relation}). Full suite: {e.suite_passed} passed, "
-            f"{e.suite_skipped} skipped ({e.evidence_class}; evidence: {e.evidence_ref_kind}@`{e.evidence_ref_sha}`)."
+            f"**PR #{e.pr} qualification** — recorded as tested at `{e.recorded_tested_sha}` (historical "
+            f"metadata, not required to remain fetchable); durable canonical identity `{e.canonical_sha}`. "
+            f"Full suite: {e.suite_passed} passed, {e.suite_skipped} skipped ({e.evidence_class}; "
+            f"evidence: {e.evidence_ref_kind}@`{e.evidence_ref_sha}`)."
         )
     return "\n".join(lines)
 
@@ -184,7 +184,6 @@ def _load_state() -> TargetPackCurrentStateV1:
         declared_surface=declared_surface,
         read_blob=lambda anchor, path: read_anchor_blob(REPO_ROOT, anchor, path),
         committed_at=lambda anchor: git_commit_committed_at(REPO_ROOT, anchor),
-        tree_sha=lambda sha: git_tree_sha(REPO_ROOT, sha),
     )
 
 
