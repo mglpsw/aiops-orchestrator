@@ -5,12 +5,14 @@
 Two test classes:
 
 - unit tests of the compiler module, using INJECTED fixture readers (no real
-  git commits needed) to exercise the mutation classes that killed both
-  prior designs -- subject, role, polarity, set-identity, evidence binding;
+  git commits needed) to exercise the mutation classes that killed prior
+  designs and Round 1 of this one -- subject, role, polarity, set-identity,
+  evidence binding, canonical-subject provenance, active-subject extraction,
+  evidence-claim derivability, static-authority totality;
 - integration tests of the generator script against the real repository,
-  proving the closed slot registry, byte-identical `--check`, and that a
-  hand edit to either the compiled JSON or a generated Markdown block is
-  detected.
+  proving the closed slot registry (including its GLOBAL, repo-wide scope),
+  byte-identical `--check`, and that a hand edit to either the compiled JSON
+  or a generated Markdown block is detected.
 """
 
 from __future__ import annotations
@@ -29,21 +31,33 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 from app.agent_review.target_pack_current_state_v1 import (  # noqa: E402
     CURRENT_INPUTS_FORMAT_ID_V1,
+    EVIDENCE_REF_KIND_GIT_COMMIT_MESSAGE_C2_QUALIFICATION_V1,
+    HISTORICAL_EVIDENCE_KIND_C2_CANONICAL_COMMIT_QUALIFICATION_V1,
     NORMATIVE_SURFACE_FORMAT_ID_V1,
+    CurrentInputsV1,
+    EvidenceRefV1,
+    HistoricalEvidenceRecordV1,
     TargetPackCurrentStateError,
     compile_current_state,
     compiled_state_to_json_dict,
+    extract_c2_qualification,
     extract_cli_subcommands,
     extract_declared_surface,
     extract_validate_authority,
+    git_is_ancestor,
+    git_ref_exists,
     is_full_sha,
     load_current_inputs,
+    read_anchor_blob,
     render_compiled_json,
+    verify_anchor_freshness,
 )
 
 _ANCHOR = "a" * 40
-_TESTED = "b" * 40
 _CANONICAL = "c" * 40
+_OTHER_SHA = "d" * 40
+
+_VALID_QUALIFICATION_MESSAGE = "some commit summary\n\nFull suite: 2801 passed, 4 skipped.\n"
 
 
 def _write(path: Path, text: str) -> Path:
@@ -58,12 +72,12 @@ def _valid_inputs_doc(**overrides: object) -> dict:
         "reconciliation": {"reconciled_at": "2026-08-19T09:00:00-03:00"},
         "historical_evidence": [
             {
-                "pr": 244,
-                "recorded_tested_sha": _TESTED,
+                "kind": HISTORICAL_EVIDENCE_KIND_C2_CANONICAL_COMMIT_QUALIFICATION_V1,
                 "canonical_sha": _CANONICAL,
-                "suite": {"passed": 2801, "skipped": 4},
-                "evidence_class": "recorded_qualification",
-                "evidence_ref": {"kind": "git_commit_message", "sha": _CANONICAL},
+                "evidence_ref": {
+                    "kind": EVIDENCE_REF_KIND_GIT_COMMIT_MESSAGE_C2_QUALIFICATION_V1,
+                    "sha": _CANONICAL,
+                },
             }
         ],
     }
@@ -101,22 +115,6 @@ def test_extra_top_level_key_rejected(tmp_path: Path) -> None:
         load_current_inputs(p, commit_exists=_always_exists)
 
 
-def test_bool_rejected_where_int_expected(tmp_path: Path) -> None:
-    doc = _valid_inputs_doc()
-    doc["historical_evidence"][0]["suite"]["passed"] = True
-    p = _write(tmp_path / "inputs.json", json.dumps(doc))
-    with pytest.raises(TargetPackCurrentStateError, match="not a bool"):
-        load_current_inputs(p, commit_exists=_always_exists)
-
-
-def test_bool_rejected_for_pr_field(tmp_path: Path) -> None:
-    doc = _valid_inputs_doc()
-    doc["historical_evidence"][0]["pr"] = True
-    p = _write(tmp_path / "inputs.json", json.dumps(doc))
-    with pytest.raises(TargetPackCurrentStateError, match="not a bool"):
-        load_current_inputs(p, commit_exists=_always_exists)
-
-
 @pytest.mark.parametrize(
     "bad_sha",
     ["short", "g" * 40, "A" * 40, "a" * 39, "a" * 41, ""],
@@ -135,33 +133,56 @@ def test_commit_existence_checked(tmp_path: Path) -> None:
         load_current_inputs(p, commit_exists=lambda sha: False)
 
 
-def test_evidence_ref_sha_must_equal_canonical_sha_for_commit_message_kind(tmp_path: Path) -> None:
+def test_evidence_kind_rejected_if_unsupported(tmp_path: Path) -> None:
     doc = _valid_inputs_doc()
-    doc["historical_evidence"][0]["evidence_ref"]["sha"] = _TESTED  # wrong: should equal canonical_sha
+    doc["historical_evidence"][0]["kind"] = "bogus_kind"
+    p = _write(tmp_path / "inputs.json", json.dumps(doc))
+    with pytest.raises(TargetPackCurrentStateError, match="not a supported historical evidence kind"):
+        load_current_inputs(p, commit_exists=_always_exists)
+
+
+def test_evidence_ref_kind_rejected_if_unsupported(tmp_path: Path) -> None:
+    doc = _valid_inputs_doc()
+    doc["historical_evidence"][0]["evidence_ref"]["kind"] = "bogus_ref_kind"
+    p = _write(tmp_path / "inputs.json", json.dumps(doc))
+    with pytest.raises(TargetPackCurrentStateError, match="not a supported evidence_ref kind"):
+        load_current_inputs(p, commit_exists=_always_exists)
+
+
+def test_evidence_extra_key_suite_rejected(tmp_path: Path) -> None:
+    """Mutation: hand-declaring suite counts in the input must be rejected
+    outright -- the closed schema no longer has room for a claim the
+    compiler doesn't itself derive from the canonical commit message."""
+
+    doc = _valid_inputs_doc()
+    doc["historical_evidence"][0]["suite"] = {"passed": 9999, "skipped": 0}
+    p = _write(tmp_path / "inputs.json", json.dumps(doc))
+    with pytest.raises(TargetPackCurrentStateError, match="unexpected"):
+        load_current_inputs(p, commit_exists=_always_exists)
+
+
+def test_evidence_extra_key_pr_rejected(tmp_path: Path) -> None:
+    doc = _valid_inputs_doc()
+    doc["historical_evidence"][0]["pr"] = 244
+    p = _write(tmp_path / "inputs.json", json.dumps(doc))
+    with pytest.raises(TargetPackCurrentStateError, match="unexpected"):
+        load_current_inputs(p, commit_exists=_always_exists)
+
+
+def test_evidence_ref_sha_must_equal_canonical_sha(tmp_path: Path) -> None:
+    doc = _valid_inputs_doc()
+    doc["historical_evidence"][0]["evidence_ref"]["sha"] = _OTHER_SHA
     p = _write(tmp_path / "inputs.json", json.dumps(doc))
     with pytest.raises(TargetPackCurrentStateError, match="evidence_ref.sha must equal canonical_sha"):
         load_current_inputs(p, commit_exists=_always_exists)
 
 
-def test_recorded_tested_sha_absent_from_git_does_not_block_load(tmp_path: Path) -> None:
-    """M-CURRENT-17 (historical subject retention independence): a merged
-    PR's own source branch is routinely deleted post-merge -- discovered via
-    real CI, not simulation, when PR #244's tested_sha (a792b23c...) proved
-    unreachable in a fresh checkout. `recorded_tested_sha` must therefore
-    load cleanly even when the git object database has never heard of it,
-    as long as every REACHABLE identity (anchor, canonical_sha,
-    evidence_ref.sha) still exists."""
-
-    doc = _valid_inputs_doc()
-
-    def commit_exists(sha: str) -> bool:
-        return sha != _TESTED  # every real identity exists; the recorded one does not
-
-    inputs = load_current_inputs(_write(tmp_path / "inputs.json", json.dumps(doc)), commit_exists=commit_exists)
-    assert inputs.historical_evidence[0].recorded_tested_sha == _TESTED
-
-
 def test_canonical_sha_absent_from_git_blocks_load(tmp_path: Path) -> None:
+    """Also covers evidence_ref.sha's own reachability: the closed schema
+    forces evidence_ref.sha == canonical_sha, so there is no longer a
+    distinguishable "evidence_ref absent but canonical present" case --
+    both checks fire on the same identity."""
+
     doc = _valid_inputs_doc()
 
     def commit_exists(sha: str) -> bool:
@@ -169,23 +190,6 @@ def test_canonical_sha_absent_from_git_blocks_load(tmp_path: Path) -> None:
 
     p = _write(tmp_path / "inputs.json", json.dumps(doc))
     with pytest.raises(TargetPackCurrentStateError, match="canonical_sha .* does not exist"):
-        load_current_inputs(p, commit_exists=commit_exists)
-
-
-def test_evidence_ref_sha_absent_from_git_blocks_load(tmp_path: Path) -> None:
-    """Independent of canonical_sha's own check: uses a non-`git_commit_message`
-    kind (which carries no equality constraint) so evidence_ref.sha can be a
-    THIRD sha and its own existence check can be isolated."""
-
-    other_sha = "d" * 40
-    doc = _valid_inputs_doc()
-    doc["historical_evidence"][0]["evidence_ref"] = {"kind": "external_reference", "sha": other_sha}
-
-    def commit_exists(sha: str) -> bool:
-        return sha != other_sha
-
-    p = _write(tmp_path / "inputs.json", json.dumps(doc))
-    with pytest.raises(TargetPackCurrentStateError, match="evidence_ref.sha .* does not exist"):
         load_current_inputs(p, commit_exists=commit_exists)
 
 
@@ -222,8 +226,11 @@ def test_valid_inputs_load_cleanly(tmp_path: Path) -> None:
     inputs = load_current_inputs(p, commit_exists=_always_exists)
     assert inputs.implementation_anchor == _ANCHOR
     assert len(inputs.historical_evidence) == 1
-    assert inputs.historical_evidence[0].evidence_ref.kind == "git_commit_message"
-    assert inputs.historical_evidence[0].recorded_tested_sha == _TESTED
+    record = inputs.historical_evidence[0]
+    assert record.kind == HISTORICAL_EVIDENCE_KIND_C2_CANONICAL_COMMIT_QUALIFICATION_V1
+    assert record.canonical_sha == _CANONICAL
+    assert record.evidence_ref.kind == EVIDENCE_REF_KIND_GIT_COMMIT_MESSAGE_C2_QUALIFICATION_V1
+    assert record.evidence_ref.sha == _CANONICAL
 
 
 # --- Normative declared surface -----------------------------------------
@@ -251,6 +258,23 @@ def test_normative_block_start_marker_must_be_unique() -> None:
 def test_normative_block_missing_markers_rejected() -> None:
     with pytest.raises(TargetPackCurrentStateError, match="not found"):
         extract_declared_surface("no markers here")
+
+
+def test_normative_block_end_marker_preceding_begin_marker_rejected() -> None:
+    """Both markers unique and present, but END precedes BEGIN. A naive
+    `split(BEGIN)[1].split(END)[0]` never finds END in the tail (it's
+    earlier in the document) and silently returns everything to EOF --
+    happily accepting the later, unrelated fenced JSON block below as the
+    normative surface. Must fail closed instead."""
+
+    text = (
+        "<!-- END NORMATIVE: target-pack-surface-v1 -->\n"
+        "some unrelated text\n"
+        "<!-- BEGIN NORMATIVE: target-pack-surface-v1 -->\n"
+        f'```json\n{{"format_id": "{NORMATIVE_SURFACE_FORMAT_ID_V1}", "declared": ["init"]}}\n```\n'
+    )
+    with pytest.raises(TargetPackCurrentStateError, match="precedes"):
+        extract_declared_surface(text)
 
 
 def test_normative_block_duplicate_json_key_rejected() -> None:
@@ -286,27 +310,113 @@ def test_normative_block_extracts_declared_surface() -> None:
     assert extract_declared_surface(text) == frozenset({"init", "doctor", "validate"})
 
 
-# --- AST extraction: CLI subcommands + validate authority ---------------
+# --- AST extraction: active top-level CLI subcommands + validate authority
+
+
+def _wrap_parse_args(body: str) -> str:
+    return (
+        "def _parse_args(argv):\n"
+        "    parser = argparse.ArgumentParser()\n"
+        "    sub = parser.add_subparsers(dest='command', required=True)\n"
+        f"{body}"
+        "    return parser.parse_args(argv)\n"
+    )
 
 
 def test_ast_parser_sees_multiline_add_parser_calls() -> None:
     """A line-based scan would under-report this -- proven by this project's
     own anchor, where `validate`'s registration wraps across lines."""
 
-    source = (
-        "def build():\n"
-        "    sub.add_parser(\n"
+    source = _wrap_parse_args(
+        "    validate_parser = sub.add_parser(\n"
         '        "validate",\n'
         '        help="...",\n'
         "    )\n"
-        '    sub.add_parser("init", help="x")\n'
+        '    init_parser = sub.add_parser("init", help="x")\n'
     )
     assert extract_cli_subcommands(source) == frozenset({"validate", "init"})
 
 
-def test_ast_parser_ignores_non_add_parser_calls() -> None:
-    source = 'sub.add_parser("init")\nother.other_call("not-a-command")\n'
+def test_ast_parser_recognizes_bare_add_parser_call_without_assignment() -> None:
+    source = _wrap_parse_args('    sub.add_parser("init")\n')
     assert extract_cli_subcommands(source) == frozenset({"init"})
+
+
+def test_ast_parser_ignores_add_parser_call_in_unused_helper_function() -> None:
+    """A call sitting in a DIFFERENT function entirely (never invoked from
+    `_parse_args`) must have no effect on canonical -- it isn't part of
+    `_parse_args`'s own construction, so it is neither classified nor
+    flagged as a totality violation."""
+
+    source = (
+        "def _unused_helper():\n"
+        '    return sub.add_parser("destroy")\n'
+        "\n"
+        + _wrap_parse_args('    init_parser = sub.add_parser("init")\n')
+    )
+    assert extract_cli_subcommands(source) == frozenset({"init"})
+
+
+def test_ast_parser_ignores_call_on_different_subparsers_variable() -> None:
+    source = _wrap_parse_args(
+        '    init_parser = sub.add_parser("init")\n'
+        '    other_parser = other.add_parser("not-a-command")\n'
+    )
+    assert extract_cli_subcommands(source) == frozenset({"init"})
+
+
+def test_ast_parser_fails_closed_on_nested_conditional_construction() -> None:
+    """A registration on the RECOGNIZED subparsers variable, but not as a
+    direct top-level statement of `_parse_args`, must fail closed rather
+    than be silently skipped or silently included -- guessing execution
+    semantics for `if False:` (or any other control flow) is out of scope
+    for a static compiler."""
+
+    source = _wrap_parse_args(
+        '    init_parser = sub.add_parser("init")\n'
+        "    if False:\n"
+        '        sub.add_parser("destroy")\n'
+    )
+    with pytest.raises(TargetPackCurrentStateError, match="nested/conditional/helper"):
+        extract_cli_subcommands(source)
+
+
+def test_ast_parser_fails_closed_on_duplicate_top_level_name() -> None:
+    source = _wrap_parse_args(
+        '    init_parser = sub.add_parser("init")\n'
+        '    sub.add_parser("init")\n'
+    )
+    with pytest.raises(TargetPackCurrentStateError, match="duplicate top-level subcommand"):
+        extract_cli_subcommands(source)
+
+
+def test_ast_parser_fails_closed_when_top_level_name_not_string_literal() -> None:
+    source = _wrap_parse_args("    sub.add_parser(NAME_VAR)\n")
+    with pytest.raises(TargetPackCurrentStateError, match="not a string literal"):
+        extract_cli_subcommands(source)
+
+
+def test_ast_parser_fails_closed_when_no_parse_args_function() -> None:
+    source = 'sub.add_parser("init")\n'
+    with pytest.raises(TargetPackCurrentStateError, match="exactly one top-level _parse_args"):
+        extract_cli_subcommands(source)
+
+
+def test_ast_parser_fails_closed_when_parse_args_not_unique() -> None:
+    source = _wrap_parse_args('    sub.add_parser("init")\n') + "\n\n" + _wrap_parse_args('    sub.add_parser("doctor")\n')
+    with pytest.raises(TargetPackCurrentStateError, match="exactly one top-level _parse_args"):
+        extract_cli_subcommands(source)
+
+
+def test_ast_parser_fails_closed_when_no_add_subparsers_assignment() -> None:
+    source = (
+        "def _parse_args(argv):\n"
+        "    parser = argparse.ArgumentParser()\n"
+        '    parser.add_argument("--foo")\n'
+        "    return parser.parse_args(argv)\n"
+    )
+    with pytest.raises(TargetPackCurrentStateError, match="add_subparsers"):
+        extract_cli_subcommands(source)
 
 
 _VALID_VALIDATE_SOURCE = """
@@ -361,11 +471,36 @@ def test_validate_authority_fails_closed_on_unavailable_naming_absent_check() ->
         extract_validate_authority(source)
 
 
+def test_validate_authority_fails_closed_on_duplicate_check_name() -> None:
+    source = _VALID_VALIDATE_SOURCE.replace(
+        "VALIDATE_CHECK_ORDER_V2: tuple[str, ...] = (\n    A_CHECK,\n    B_CHECK,\n)",
+        "VALIDATE_CHECK_ORDER_V2: tuple[str, ...] = (\n    A_CHECK,\n    A_CHECK,\n)",
+    )
+    with pytest.raises(TargetPackCurrentStateError, match="duplicate check name"):
+        extract_validate_authority(source)
+
+
+def test_validate_authority_fails_closed_on_duplicate_module_assignment_of_check_order() -> None:
+    source = _VALID_VALIDATE_SOURCE + "\nVALIDATE_CHECK_ORDER_V2 = (A_CHECK,)\n"
+    with pytest.raises(TargetPackCurrentStateError, match="module-level assignments"):
+        extract_validate_authority(source)
+
+
+def test_validate_authority_fails_closed_on_duplicate_referenced_constant_symbol() -> None:
+    source = _VALID_VALIDATE_SOURCE.replace(
+        'A_CHECK = "a_check"\n', 'A_CHECK = "a_check"\nA_CHECK = "a_check_v2"\n',
+    )
+    with pytest.raises(TargetPackCurrentStateError, match="assigned more than once"):
+        extract_validate_authority(source)
+
+
 def test_matches_real_anchor_exactly() -> None:
     """The decisive real-data check: this project's own anchor must
-    reproduce 17/11/6 and the exact six-name unavailable set."""
+    reproduce 17/11/6 and the exact six-name unavailable set, and the
+    active-top-level-only extractor must still yield exactly the three
+    real shipped subcommands."""
 
-    from app.agent_review.target_pack_current_state_v1 import git_commit_exists, read_anchor_blob
+    from app.agent_review.target_pack_current_state_v1 import git_commit_exists
 
     anchor = "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2"
     assert git_commit_exists(REPO_ROOT, anchor)
@@ -383,6 +518,91 @@ def test_matches_real_anchor_exactly() -> None:
     })
 
 
+# --- Anchor freshness (a gate, checked separately from compile_current_state)
+
+
+def test_freshness_fails_closed_when_canonical_ref_missing() -> None:
+    with pytest.raises(TargetPackCurrentStateError, match="CURRENT_STATE_STALE"):
+        verify_anchor_freshness(
+            anchor=_ANCHOR, canonical_ref="refs/remotes/origin/master",
+            canonical_ref_exists=lambda ref: False,
+            is_ancestor=lambda a, r: True,
+            read_blob_at_ref=lambda ref, path: "same",
+        )
+
+
+def test_freshness_fails_closed_when_anchor_not_ancestor_of_canonical_ref() -> None:
+    """The P1 case: an off-branch or fetched PR-head commit passes
+    `commit_exists` (it's a real object) but is not on the canonical
+    branch at all -- freshness must reject it explicitly rather than
+    trusting mere object existence."""
+
+    with pytest.raises(TargetPackCurrentStateError, match="CURRENT_STATE_STALE"):
+        verify_anchor_freshness(
+            anchor=_ANCHOR, canonical_ref="refs/remotes/origin/master",
+            canonical_ref_exists=lambda ref: True,
+            is_ancestor=lambda a, r: False,
+            read_blob_at_ref=lambda ref, path: "same",
+        )
+
+
+def test_freshness_fails_closed_when_an_authority_blob_differs() -> None:
+    def read_blob(ref: str, path: str) -> str:
+        return "anchor-version" if ref == _ANCHOR else "canonical-version"
+
+    with pytest.raises(TargetPackCurrentStateError, match="CURRENT_STATE_STALE"):
+        verify_anchor_freshness(
+            anchor=_ANCHOR, canonical_ref="refs/remotes/origin/master",
+            canonical_ref_exists=lambda ref: True,
+            is_ancestor=lambda a, r: True,
+            read_blob_at_ref=read_blob,
+        )
+
+
+def test_freshness_passes_when_ancestor_and_authority_blobs_identical() -> None:
+    """A later docs/tooling-only descendant commit on the canonical ref must
+    NOT invalidate freshness -- only the two named authority paths are
+    compared, so an unrelated file changing between anchor and canonical
+    ref is invisible here, by design."""
+
+    verify_anchor_freshness(  # must not raise
+        anchor=_ANCHOR, canonical_ref="refs/remotes/origin/master",
+        canonical_ref_exists=lambda ref: True,
+        is_ancestor=lambda a, r: True,
+        read_blob_at_ref=lambda ref, path: "identical-content",
+    )
+
+
+def test_freshness_passes_against_real_repo_for_current_anchor() -> None:
+    from app.agent_review.target_pack_current_state_v1 import AUTHORITY_BEARING_PATHS_V1, CANONICAL_REF_V1
+
+    anchor = "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2"
+    verify_anchor_freshness(  # must not raise against the real repo
+        anchor=anchor, canonical_ref=CANONICAL_REF_V1,
+        canonical_ref_exists=lambda ref: git_ref_exists(REPO_ROOT, ref),
+        is_ancestor=lambda a, r: git_is_ancestor(REPO_ROOT, a, r),
+        read_blob_at_ref=lambda ref, path: read_anchor_blob(REPO_ROOT, ref, path),
+        authority_paths=AUTHORITY_BEARING_PATHS_V1,
+    )
+
+
+# --- Evidence provenance: derived, not hand-declared ---------------------
+
+
+def test_extract_c2_qualification_derives_counts() -> None:
+    assert extract_c2_qualification("prefix\nFull suite: 2801 passed, 4 skipped.\nsuffix") == (2801, 4)
+
+
+def test_extract_c2_qualification_fails_closed_when_absent() -> None:
+    with pytest.raises(TargetPackCurrentStateError, match="expected exactly one"):
+        extract_c2_qualification("nothing relevant in this message")
+
+
+def test_extract_c2_qualification_fails_closed_when_ambiguous() -> None:
+    with pytest.raises(TargetPackCurrentStateError, match="expected exactly one"):
+        extract_c2_qualification("Full suite: 1 passed, 0 skipped.\nFull suite: 2 passed, 1 skipped.\n")
+
+
 # --- compile_current_state: the full pipeline, with injected readers ----
 
 
@@ -392,18 +612,13 @@ def _fixture_compile(
     anchor_cli_source: str,
     anchor_validate_source: str,
     inputs_overrides: dict | None = None,
+    commit_messages: dict[str, str] | None = None,
 ):
     tmp_inputs = _valid_inputs_doc(**(inputs_overrides or {}))
 
-    from app.agent_review.target_pack_current_state_v1 import (
-        CurrentInputsV1, HistoricalEvidenceRecordV1, EvidenceRefV1,
-    )
-
     records = tuple(
         HistoricalEvidenceRecordV1(
-            pr=e["pr"], recorded_tested_sha=e["recorded_tested_sha"], canonical_sha=e["canonical_sha"],
-            suite_passed=e["suite"]["passed"], suite_skipped=e["suite"]["skipped"],
-            evidence_class=e["evidence_class"],
+            kind=e["kind"], canonical_sha=e["canonical_sha"],
             evidence_ref=EvidenceRefV1(kind=e["evidence_ref"]["kind"], sha=e["evidence_ref"]["sha"]),
         )
         for e in tmp_inputs["historical_evidence"]
@@ -418,16 +633,28 @@ def _fixture_compile(
         "scripts/agent-review-target-pack-v2.py": anchor_cli_source,
         "app/agent_review/target_pack_validate_v2.py": anchor_validate_source,
     }
+    messages = {_CANONICAL: _VALID_QUALIFICATION_MESSAGE, **(commit_messages or {})}
 
     return compile_current_state(
         inputs=inputs,
         declared_surface=declared_surface,
         read_blob=lambda _anchor, path: blobs[path],
         committed_at=lambda _anchor: datetime(2026, 8, 18, 21, 56, 15, tzinfo=timezone.utc),
+        commit_message=lambda sha: messages[sha],
     )
 
 
-_SIMPLE_CLI = 'sub.add_parser("init")\nsub.add_parser("doctor")\nsub.add_parser("validate")\n'
+_SIMPLE_CLI = _wrap_parse_args(
+    '    init_parser = sub.add_parser("init")\n'
+    '    doctor_parser = sub.add_parser("doctor")\n'
+    '    validate_parser = sub.add_parser("validate")\n'
+)
+_SIMPLE_CLI_WITH_CONFORMANCE = _wrap_parse_args(
+    '    init_parser = sub.add_parser("init")\n'
+    '    doctor_parser = sub.add_parser("doctor")\n'
+    '    validate_parser = sub.add_parser("validate")\n'
+    '    conformance_parser = sub.add_parser("conformance")\n'
+)
 _SIMPLE_VALIDATE = _VALID_VALIDATE_SOURCE
 
 
@@ -472,9 +699,6 @@ def test_compile_working_tree_candidate_mutation_does_not_affect_anchor_output()
         anchor_cli_source=_SIMPLE_CLI,
         anchor_validate_source=_SIMPLE_VALIDATE,
     )
-    # A "candidate" CLI source that exposes conformance too -- irrelevant
-    # unless the anchor's OWN blob is what changes.
-    candidate_cli = _SIMPLE_CLI + 'sub.add_parser("conformance")\n'
     state_still_at_old_anchor = _fixture_compile(
         declared_surface=frozenset({"init", "doctor", "validate", "conformance"}),
         anchor_cli_source=_SIMPLE_CLI,  # anchor blob unchanged
@@ -484,7 +708,7 @@ def test_compile_working_tree_candidate_mutation_does_not_affect_anchor_output()
     # Only reading a DIFFERENT anchor blob changes canonical:
     state_new_anchor = _fixture_compile(
         declared_surface=frozenset({"init", "doctor", "validate", "conformance"}),
-        anchor_cli_source=candidate_cli,
+        anchor_cli_source=_SIMPLE_CLI_WITH_CONFORMANCE,
         anchor_validate_source=_SIMPLE_VALIDATE,
     )
     assert state_new_anchor.canonical == frozenset({"init", "doctor", "validate", "conformance"})
@@ -504,11 +728,7 @@ def test_compile_validate_inventory_matches_authority_exactly() -> None:
 def test_compile_fails_closed_when_reconciled_at_precedes_anchor_committed_at() -> None:
     """Direct unit proof of the temporal invariant: this must fail on the
     PURE compile step itself, not merely be inferable from a `--check`
-    drift that a differently-dated regeneration would silently satisfy.
-    Caught during this round: an earlier version of this compiler accepted
-    a backdated `reconciled_at` with exit 0 on regeneration -- `--check`
-    only looked RED because it was comparing against stale committed
-    docs, not because the constraint was enforced."""
+    drift that a differently-dated regeneration would silently satisfy."""
 
     with pytest.raises(TargetPackCurrentStateError, match="precedes the implementation anchor"):
         _fixture_compile(
@@ -519,20 +739,44 @@ def test_compile_fails_closed_when_reconciled_at_precedes_anchor_committed_at() 
         )
 
 
-def test_compile_preserves_recorded_tested_sha_without_requiring_its_reachability() -> None:
-    """`compile_current_state` never calls a reachability check on
-    `recorded_tested_sha` -- it is carried through as opaque historical
-    metadata, proven here by never wiring a commit-existence callable for it
-    at all (only `read_blob`/`committed_at`, neither of which touches
-    per-evidence SHAs)."""
+def test_compile_derives_suite_counts_from_canonical_commit_message() -> None:
+    """The counts are never read from the input JSON -- only from the
+    canonical commit's own message, mechanically."""
 
     state = _fixture_compile(
         declared_surface=frozenset({"init", "doctor", "validate"}),
         anchor_cli_source=_SIMPLE_CLI,
         anchor_validate_source=_SIMPLE_VALIDATE,
+        commit_messages={_CANONICAL: "prefix\nFull suite: 2801 passed, 4 skipped.\nsuffix\n"},
     )
-    assert state.historical_evidence[0].recorded_tested_sha == _TESTED
-    assert state.historical_evidence[0].canonical_sha == _CANONICAL
+    assert state.historical_evidence[0].suite_passed == 2801
+    assert state.historical_evidence[0].suite_skipped == 4
+
+
+def test_compile_fails_closed_when_canonical_message_lacks_qualification_statement() -> None:
+    """Mutation: point evidence_ref at a reachable commit whose message
+    lacks the C2 qualification grammar entirely -- must fail closed, not
+    silently publish zero/absent counts."""
+
+    with pytest.raises(TargetPackCurrentStateError, match="expected exactly one"):
+        _fixture_compile(
+            declared_surface=frozenset({"init", "doctor", "validate"}),
+            anchor_cli_source=_SIMPLE_CLI,
+            anchor_validate_source=_SIMPLE_VALIDATE,
+            commit_messages={_CANONICAL: "no qualification statement in this message\n"},
+        )
+
+
+def test_compile_fails_closed_on_ambiguous_duplicate_qualification_statements() -> None:
+    with pytest.raises(TargetPackCurrentStateError, match="expected exactly one"):
+        _fixture_compile(
+            declared_surface=frozenset({"init", "doctor", "validate"}),
+            anchor_cli_source=_SIMPLE_CLI,
+            anchor_validate_source=_SIMPLE_VALIDATE,
+            commit_messages={
+                _CANONICAL: "Full suite: 2801 passed, 4 skipped.\nFull suite: 2802 passed, 5 skipped.\n"
+            },
+        )
 
 
 # --- Deterministic serialization -----------------------------------------
@@ -584,8 +828,6 @@ def test_bootstrap_migration_proof_legacy_synopsis_equals_new_declared_surface()
     to what this successor's structured block now declares. NOT a
     permanent pin: after this successor merges, the structured block is
     the authority and this test's only job is a one-time equality proof."""
-
-    from app.agent_review.target_pack_current_state_v1 import read_anchor_blob
 
     anchor = "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2"
     legacy_spec = read_anchor_blob(REPO_ROOT, anchor, "docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md")
@@ -658,8 +900,8 @@ def test_generator_inline_slot_rejects_newline_content() -> None:
         module._replace_slot(text, slot_id, "line1\nline2", inline=True)
 
 
-def test_generator_hand_edit_of_compiled_json_detected(monkeypatch: pytest.MonkeyPatch) -> None:
-    original = module_path = REPO_ROOT / "docs" / "generated" / "target-pack-current-state.json"
+def test_generator_hand_edit_of_compiled_json_detected() -> None:
+    original = REPO_ROOT / "docs" / "generated" / "target-pack-current-state.json"
     original_text = original.read_text(encoding="utf-8")
     try:
         original.write_text(original_text.rstrip("\n") + '\n// hand edit is not valid json anyway\n', encoding="utf-8")
@@ -684,3 +926,49 @@ def test_generator_hand_edit_of_markdown_block_detected() -> None:
     finally:
         readme.write_text(original_text, encoding="utf-8")
 
+
+def test_generator_rejects_unregistered_marker_in_untracked_registered_file() -> None:
+    """Part D / Grant F: an unknown `target-pack-current.*` marker placed in
+    a tracked Markdown file that VIEW_SLOTS never opens (only the 5
+    registered paths are read by the per-slot loop) must still be caught --
+    proving the registry is closed GLOBALLY across every tracked Markdown
+    file, not merely within the files it already renders."""
+
+    changelog = REPO_ROOT / "CHANGELOG.md"
+    original = changelog.read_text(encoding="utf-8")
+    try:
+        mutated = (
+            original
+            + "\n<!-- BEGIN GENERATED: target-pack-current.bogus.unregistered -->\n"
+            + "<!-- END GENERATED: target-pack-current.bogus.unregistered -->\n"
+        )
+        changelog.write_text(mutated, encoding="utf-8")
+        result = _run_generator("--check")
+        assert result.returncode != 0
+        assert "unregistered marker" in result.stderr
+        assert "CHANGELOG.md" in result.stderr
+    finally:
+        changelog.write_text(original, encoding="utf-8")
+
+
+def test_generator_rejects_known_slot_marker_copied_into_wrong_file() -> None:
+    """A KNOWN slot_id's markers copied into a file other than its one
+    registered path is an unowned duplicate that a per-registered-path-only
+    scan would never notice (that path's own marker count stays exactly
+    one)."""
+
+    changelog = REPO_ROOT / "CHANGELOG.md"
+    original = changelog.read_text(encoding="utf-8")
+    try:
+        mutated = (
+            original
+            + "\n<!-- BEGIN GENERATED: target-pack-current.readme.status -->\n"
+            + "copied content\n"
+            + "<!-- END GENERATED: target-pack-current.readme.status -->\n"
+        )
+        changelog.write_text(mutated, encoding="utf-8")
+        result = _run_generator("--check")
+        assert result.returncode != 0
+        assert "registered to" in result.stderr
+    finally:
+        changelog.write_text(original, encoding="utf-8")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,15 +22,21 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.agent_review.target_pack_current_state_v1 import (  # noqa: E402
+    AUTHORITY_BEARING_PATHS_V1,
+    CANONICAL_REF_V1,
     TargetPackCurrentStateV1,
     TargetPackCurrentStateError,
     compile_current_state,
     extract_declared_surface,
     git_commit_committed_at,
     git_commit_exists,
+    git_commit_message,
+    git_is_ancestor,
+    git_ref_exists,
     load_current_inputs,
     read_anchor_blob,
     render_compiled_json,
+    verify_anchor_freshness,
 )
 
 INPUTS_PATH = REPO_ROOT / "config" / "agent-review" / "target-pack-current-inputs.json"
@@ -87,10 +94,9 @@ def _render_evidence(state: TargetPackCurrentStateV1) -> str:
     lines = []
     for e in state.historical_evidence:
         lines.append(
-            f"**PR #{e.pr} qualification** — recorded as tested at `{e.recorded_tested_sha}` (historical "
-            f"metadata, not required to remain fetchable); durable canonical identity `{e.canonical_sha}`. "
-            f"Full suite: {e.suite_passed} passed, {e.suite_skipped} skipped ({e.evidence_class}; "
-            f"evidence: {e.evidence_ref_kind}@`{e.evidence_ref_sha}`)."
+            f"C2 canonical qualification at `{e.canonical_sha}`: full suite {e.suite_passed} passed, "
+            f"{e.suite_skipped} skipped; source: canonical commit message "
+            f"({e.evidence_ref_kind}@`{e.evidence_ref_sha}`)."
         )
     return "\n".join(lines)
 
@@ -176,14 +182,70 @@ def _find_unregistered_markers(text: str, path: Path, registered_ids: set[str]) 
     return offenders
 
 
+def _tracked_markdown_files() -> list[Path]:
+    """Every `*.md` file Git tracks in this repository -- NOT merely the
+    paths already named in `VIEW_SLOTS`. A file that gained an unregistered
+    `target-pack-current.*` marker (or a copy of a REGISTERED one) but was
+    never opened by the per-slot rendering loop would otherwise be invisible
+    to `--check` entirely, defeating the closed-registry claim."""
+
+    proc = subprocess.run(
+        ["git", "ls-files", "--", "*.md"], cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    )
+    return [REPO_ROOT / line for line in proc.stdout.splitlines() if line]
+
+
+def _verify_global_slot_registry(rendered_by_path: dict[Path, str]) -> list[str]:
+    """Scans EVERY tracked Markdown file in the repository, not only the
+    ones `VIEW_SLOTS` already names, and cross-checks the namespace against
+    the registry: an unknown `target-pack-current.*` marker anywhere is a
+    violation, and so is a KNOWN slot_id appearing in a file other than its
+    one registered path (an unowned duplicate that `--check` on the
+    registered path alone would never see, since that path's own marker
+    count stays exactly one)."""
+
+    registered_ids = {s.slot_id for s in VIEW_SLOTS}
+    slot_by_id = {s.slot_id: s for s in VIEW_SLOTS}
+    marker_re = re.compile(r"<!-- (?:BEGIN|END) GENERATED: (\S+) -->")
+    problems: list[str] = []
+
+    for md_path in _tracked_markdown_files():
+        text = rendered_by_path.get(md_path)
+        if text is None:
+            if not md_path.exists():
+                continue
+            text = md_path.read_text(encoding="utf-8")
+        for slot_id in set(marker_re.findall(text)):
+            if not slot_id.startswith(SLOT_NAMESPACE_PREFIX):
+                continue
+            if slot_id not in registered_ids:
+                problems.append(f"{md_path}: unregistered marker {slot_id!r}")
+            elif slot_by_id[slot_id].path != md_path:
+                problems.append(
+                    f"{md_path}: marker {slot_id!r} is registered to {slot_by_id[slot_id].path}, not here"
+                )
+    return problems
+
+
 def _load_state() -> TargetPackCurrentStateV1:
     inputs = load_current_inputs(INPUTS_PATH, commit_exists=lambda sha: git_commit_exists(REPO_ROOT, sha))
     declared_surface = extract_declared_surface(SPEC_PATH.read_text(encoding="utf-8"))
+
+    verify_anchor_freshness(
+        anchor=inputs.implementation_anchor,
+        canonical_ref=CANONICAL_REF_V1,
+        canonical_ref_exists=lambda ref: git_ref_exists(REPO_ROOT, ref),
+        is_ancestor=lambda ancestor, ref: git_is_ancestor(REPO_ROOT, ancestor, ref),
+        read_blob_at_ref=lambda ref, path: read_anchor_blob(REPO_ROOT, ref, path),
+        authority_paths=AUTHORITY_BEARING_PATHS_V1,
+    )
+
     return compile_current_state(
         inputs=inputs,
         declared_surface=declared_surface,
         read_blob=lambda anchor, path: read_anchor_blob(REPO_ROOT, anchor, path),
         committed_at=lambda anchor: git_commit_committed_at(REPO_ROOT, anchor),
+        commit_message=lambda sha: git_commit_message(REPO_ROOT, sha),
     )
 
 
@@ -203,6 +265,10 @@ def _render_all(state: TargetPackCurrentStateV1) -> tuple[str, dict[Path, str]]:
         offenders = _find_unregistered_markers(text, path, registered_ids)
         if offenders:
             raise GeneratorError("unregistered marker(s) found:\n" + "\n".join(offenders))
+
+    global_problems = _verify_global_slot_registry(by_path)
+    if global_problems:
+        raise GeneratorError("global slot registry violation(s):\n" + "\n".join(global_problems))
 
     return compiled_json, by_path
 

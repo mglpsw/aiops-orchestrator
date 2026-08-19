@@ -9,13 +9,11 @@
     "historical_evidence": [
       {
         "canonical_sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
-        "evidence_class": "recorded_qualification",
         "evidence_ref": {
-          "kind": "git_commit_message",
+          "kind": "git_commit_message_c2_qualification_v1",
           "sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2"
         },
-        "pr": 244,
-        "recorded_tested_sha": "a792b23c3ed18eb4e87cd7adf0930b6c60214ae2",
+        "kind": "c2_canonical_commit_qualification_v1",
         "suite": {
           "passed": 2801,
           "skipped": 4
