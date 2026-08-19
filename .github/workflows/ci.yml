@@ -92,6 +92,9 @@ jobs:
       - name: RI-B0a.2 reuse view in sync
         run: python scripts/generate-ri-b0a-2-reuse-view.py --check
 
+      - name: Target-pack CURRENT view in sync
+        run: python scripts/generate-target-pack-current-state.py --check
+
       - name: Benchmark corpus materializer byte-identical
         run: python scripts/materialize-benchmark-case.py --check
 

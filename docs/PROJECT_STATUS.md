@@ -19,24 +19,26 @@ It is final and immutable. The previous final release and rollback ref is
 
 ### `master` is ahead of the published release
 
-`master` carries work that is **not in any published release**. As observed at
-`abe034ad24c89e6167c1f05797178e57d49fdd63`, the delta is 11 commits:
+`master` carries work that is **not in any published release**. This section
+does not pin that fact to a "live master" SHA — doing so goes stale the
+instant any further commit lands, which is exactly the failure mode
+`#203-D0` exists to remove. Instead, the target-pack implementation anchor
+and the reconciliation instant this document reflects are declared once and
+compiled, not hand-typed per document:
 
-- **AgentReview v2 core and hardening** — trusted-check hardening, the CI
-  provenance bridge (which also extracted shared JSON/digest primitives into
-  `app/common/strict_json.py`, a CAEM/shared surface touch, not only v2),
-  required-check readiness wiring, verified-check ordering, plus `#230`'s
-  post-merge identity-hardening (H1-A) and `#233`'s trusted-authority runtime
-  boundary fix (H1-C);
-- **the first target-pack slice** with its init-plan binding;
-- **AgentReview v1 stabilization** — `#225` (chunk planning by real hunk cost)
-  and `#231`/H1-B (planner soundness: canonical path identity, brief-budget
-  projection, dedupe parity, binary-vs-textual hunks, fallback completeness);
-- **documentation reconciliation** (`#229`), `.md`-only.
+<!-- BEGIN GENERATED: target-pack-current.project-status.temporal -->
+Implementation anchor: `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2` (committed 2026-08-18T21:56:15-03:00). Reconciled at: 2026-08-19T09:03:29-03:00.
+<!-- END GENERATED: target-pack-current.project-status.temporal -->
 
-A consumer pinned at `v0.22.0` does **not** have the `#225` or H1-B v1 fixes.
-Publishing a new release, repinning any consumer, and running a fresh canary are
-separate, still pending actions, each under its own authorization.
+For material unreleased since `v0.22.0`, independent of this document's own
+reconciliation cadence: `git log v0.22.0..master`. Notable work already on
+`master` includes AgentReview v2 core/trusted-check hardening (`#218`–`#233`
+range), the target-pack first slice and its init-plan binding, `#237`/`#239`'s
+YAML-authority institutionalization, the `#203-C1`/`#203-C2` target-pack
+identity contracts and `validate` command, and AgentReview v1 stabilization
+(`#225`, `#231`/H1-B). A consumer pinned at `v0.22.0` does **not** have any of
+this. Publishing a new release, repinning any consumer, and running a fresh
+canary are separate, still pending actions, each under its own authorization.
 
 The post-merge review debt tracked in `#205` (C1-C10) is now **entirely
 `fixed_and_verified`** across H1-A, H1-B and H1-C. That does **not** make the
@@ -263,10 +265,13 @@ comment is the source of truth.
 
 ### Target Pack v2
 
-`IMPLEMENTED`: `init`, `doctor`, operation-plan binding, and the H1-A identity
-hardening.
-`NOT YET IMPLEMENTED`: `validate`, `conformance`, `install-workflows`,
-`upgrade`, `rollback`.
+<!-- BEGIN GENERATED: target-pack-current.project-status.status -->
+Canonical on `master`: `doctor`, `init`, `validate`. Deferred: `conformance`, `install-workflows`, `rollback`, `upgrade`.
+<!-- END GENERATED: target-pack-current.project-status.status -->
+
+Operation-plan binding and the H1-A identity hardening are also implemented;
+they are pack-engine capabilities, not CLI subcommands, so they are not part
+of the canonical/deferred split above.
 
 This pack version's `max_supported_rollout_mode` is `off` — `shadow_minimal`
 and `shadow_full` are interface-level options that are refused before preview

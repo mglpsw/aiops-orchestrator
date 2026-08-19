@@ -242,17 +242,58 @@ upgrade     --target-root PATH [--dry-run] [--yes]
 rollback    --target-root PATH [--dry-run] [--yes]
 ```
 
-**Implementation status (dated checkpoint, subject to the Live-state rule
-above).** `init` and `doctor` are implemented and **canonical on `master`**
-(slice 1). `validate` is implemented in the **PR #244 candidate** (`#203-C2`,
-open and Draft at this writing) and is therefore **not canonical yet**: until
-that PR merges, `master` exposes only `init` and `doctor`. `conformance`,
-`install-workflows`, `upgrade` and `rollback` remain specified here and
-deferred (§14).
+This synopsis is a human argument-shape reference. It is mechanically
+coverage-checked against the normative surface below (every name here must
+appear there, and vice versa) but it is not itself an authority: which
+subcommands the product declares comes from the structured block that
+follows, not from this prose list.
 
-The distinction between *canonical on `master`* and *implemented in an open
-candidate* is load-bearing: a reader deciding what a freshly cloned target pack
-can do must use the former, never the latter.
+### Normative declared surface (machine-authoritative)
+
+This is the **only hand-maintained product datum** in the whole `#203-D0`
+CURRENT-truth pipeline (`app/agent_review/target_pack_current_state_v1.py`).
+It declares the *intended total* CLI surface — nothing about which names are
+canonical on `master` today, which is derived, never declared here (see
+below).
+
+<!-- BEGIN NORMATIVE: target-pack-surface-v1 -->
+```json
+{
+  "format_id": "aiops.agent-review.target-pack-surface.v1",
+  "declared": [
+    "init",
+    "doctor",
+    "validate",
+    "conformance",
+    "install-workflows",
+    "upgrade",
+    "rollback"
+  ]
+}
+```
+<!-- END NORMATIVE: target-pack-surface-v1 -->
+
+**Implementation status (compiled, not hand-maintained — subject to the
+Live-state rule above).** `canonical` is derived by reading, via a static
+`git show <implementation_anchor>:scripts/agent-review-target-pack-v2.py` +
+`ast.parse` (never by importing or executing that code), exactly which
+subcommands the anchor's own `argparse` registers; `deferred` is the
+remainder of the declared surface above. This paragraph's own wording is
+generated from that compiled result — see
+`docs/generated/target-pack-current-state.json` for the exact anchor SHA and
+compiled sets currently in force; do not hand-edit the sentence below.
+
+<!-- BEGIN GENERATED: target-pack-current.spec.lifecycle-prose -->
+`doctor`, `init`, `validate` are implemented and **canonical on `master`**.
+`conformance`, `install-workflows`, `rollback`, `upgrade` remain specified here and deferred (§14).
+<!-- END GENERATED: target-pack-current.spec.lifecycle-prose -->
+
+The distinction between *canonical on `master`* and *exposed only in an open
+candidate's working tree* is load-bearing and is why `canonical` is read from
+the **anchor's git blob**, never from whatever tree happens to be checked
+out: a candidate branch that adds a new subcommand to its own `argparse`
+must not cause this document, compiled against `master`'s anchor, to call
+that subcommand canonical before the candidate merges.
 
 `doctor` is **READ-ONLY by construction**: it accepts no mutating parameter and
 calls no write/mkdir/rename/remove primitive anywhere in its call graph, proven
@@ -580,19 +621,20 @@ adoption, Class C execution, CT104 canaries, release/pinning — `#204`/`#205`.
 
 ## 14. Deferred (explicitly, not silently)
 
-- `conformance` / `install-workflows` / `upgrade` / `rollback` and the real
-  workflow templates — later `#203` slices. (Which subcommands are already
-  canonical, and which are only implemented in an open candidate, is stated
-  once in §4; this bullet enumerates the still-unwritten ones only.)
-- `validate` is **no longer deferred as unwritten**: it is implemented in the
-  open PR #244 candidate (`#203-C2`) and stops being deferred in the canonical
-  sense the moment that PR merges. It is listed here only so this section stays
-  a complete map of the seven subcommands; see §4 for its exact status. What
-  `validate` deliberately does **not** do — upstream pack correspondence, the
-  target-owned completeness set, the rollout ceiling, historical lineage, and
-  the trusted-check inventory — is not deferred implementation but permanent
-  authority boundary: it holds no upstream manifest or toolrepo, and reports
-  each of those dimensions as `unavailable` rather than inventing a local rule.
+- **Subcommand lifecycle is normative in §4**, not here: which subcommands
+  are canonical on `master` and which remain deferred is the compiled
+  `canonical`/`deferred` split derived from §4's structured `declared[]`
+  block and the implementation anchor's own `argparse`. This section does
+  not re-enumerate that split as a second, independently maintained list —
+  see §4 for the current compiled state.
+- What `validate` deliberately does **not** do — upstream pack
+  correspondence, the target-owned completeness set, the rollout ceiling,
+  historical lineage, and the trusted-check inventory — is not deferred
+  implementation but permanent authority boundary: it holds no upstream
+  manifest or toolrepo, and reports each of those dimensions as
+  `unavailable` rather than inventing a local rule.
+- The real workflow templates for `install-workflows` are not shipped yet
+  (separate from the subcommand-lifecycle question above).
 - `TrustedCheckInventoryV2` and the `#201-C0` trusted-check wiring, and with it
   any genuine `SHADOW_FULL` capability.
 - Multi-file crash-convergence metamorphic test (§5.5) — owed by the first slice

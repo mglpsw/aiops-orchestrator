@@ -1,0 +1,66 @@
+{
+  "format_id": "aiops.agent-review.target-pack-current-state.v1",
+  "generated": {
+    "generator": "target-pack-current-state-v1",
+    "implementation_anchor": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
+    "source_inputs": "config/agent-review/target-pack-current-inputs.json"
+  },
+  "state": {
+    "historical_evidence": [
+      {
+        "canonical_sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
+        "canonicalization_relation": "tree_identical",
+        "evidence_class": "recorded_qualification",
+        "evidence_ref": {
+          "kind": "git_commit_message",
+          "sha": "a792b23c3ed18eb4e87cd7adf0930b6c60214ae2"
+        },
+        "pr": 244,
+        "suite": {
+          "passed": 2801,
+          "skipped": 4
+        },
+        "tested_sha": "a792b23c3ed18eb4e87cd7adf0930b6c60214ae2"
+      }
+    ],
+    "surface": {
+      "canonical": [
+        "doctor",
+        "init",
+        "validate"
+      ],
+      "declared": [
+        "conformance",
+        "doctor",
+        "init",
+        "install-workflows",
+        "rollback",
+        "upgrade",
+        "validate"
+      ],
+      "deferred": [
+        "conformance",
+        "install-workflows",
+        "rollback",
+        "upgrade"
+      ]
+    },
+    "temporal": {
+      "anchor_committed_at": "2026-08-18T21:56:15-03:00",
+      "implementation_anchor": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
+      "reconciled_at": "2026-08-19T09:03:29-03:00"
+    },
+    "validate_inventory": {
+      "locally_evaluable": 11,
+      "permanently_unavailable": [
+        "generated_file_set",
+        "previous_install_lineage",
+        "rollout_capability",
+        "target_owned_set",
+        "trusted_check_inventory",
+        "upstream_pack_identity"
+      ],
+      "total": 17
+    }
+  }
+}

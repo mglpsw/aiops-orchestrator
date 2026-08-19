@@ -105,8 +105,16 @@ else
     fail "docs/generated/RI_B0A_2_REUSE_REFERENCE.md desatualizado — regenere sem --check"
 fi
 
-# ── 7. Testes Python (unit, offline) ─────────────────────────────────────────
-header "7. Testes Python"
+# ── 7. Target-pack CURRENT view (anchor-bound, #203-D0) ──────────────────────
+header "7. Target-pack CURRENT view"
+if python3 scripts/generate-target-pack-current-state.py --check; then
+    ok "docs/generated/target-pack-current-state.json e blocos Markdown em sincronia com o anchor"
+else
+    fail "target-pack CURRENT view desatualizada — regenere com scripts/generate-target-pack-current-state.py"
+fi
+
+# ── 8. Testes Python (unit, offline) ─────────────────────────────────────────
+header "8. Testes Python"
 if ! command -v python3 &>/dev/null; then
     fail "python3 não encontrado"
 elif ! python3 -m pytest --version &>/dev/null; then
@@ -133,7 +141,7 @@ fi
 # tocar o escopo do filtro padrão da seção 7 (nenhuma dependência de
 # docker/prometheus/runtime existe neste runner) -- roda somente os testes
 # desse marker, isolados da execução padrão acima.
-header "8. Testes de subprocess git real (requires_network)"
+header "9. Testes de subprocess git real (requires_network)"
 if ! command -v python3 &>/dev/null; then
     fail "python3 não encontrado"
 else

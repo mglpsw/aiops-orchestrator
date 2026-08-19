@@ -355,53 +355,84 @@ def _cli_exposed_subcommands_v2() -> set[str]:
     return names
 
 
-def _spec_deferred_subcommand_bullet_v2() -> str:
-    """The one bullet in the operative spec's deferral section that
-    ENUMERATES deferred subcommands, identified semantically (it is the
-    bullet naming `rollback`, the last subcommand in the CLI surface),
-    never positionally.
-
-    Deliberately scoped to that single bullet: the section legitimately
-    keeps deferring non-subcommand work, and the rest of the document
-    legitimately contains historical mentions of `deferred` that must NOT
-    be read as current classification."""
-
-    text = _SPEC_PATH_V2.read_text(encoding="utf-8")
-    assert _SPEC_DEFERRED_HEADING_V2 in text, "the operative spec's deferral section heading moved; update this test deliberately"
-    section = text.split(_SPEC_DEFERRED_HEADING_V2, 1)[1]
-    bullets = [chunk for chunk in section.split("\n- ") if chunk.strip()]
-    enumerating = [chunk for chunk in bullets if "`rollback`" in chunk]
-    assert len(enumerating) == 1, (
-        f"expected exactly one bullet enumerating deferred subcommands (the one naming `rollback`), found {len(enumerating)}"
-    )
-    return enumerating[0]
+# ---------------------------------------------------------------------
+# `#203-D0` successor: the old §14 manual-bullet enumeration this section
+# used to compare against no longer exists -- §14 now references §4's
+# structured `declared[]` block instead of re-enumerating subcommand
+# lifecycle by hand (see `docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_
+# PACK_SPEC.md`). The property the old two tests proved (spec deferral
+# state does not contradict argparse) is now proven more strongly by the
+# compiler's own invariants in `target_pack_current_state_v1.py` plus the
+# `--check` gate over the compiled/generated views. These two tests
+# supersede the old pair: they check the NORMATIVE surface (membership),
+# not a hand-maintained lifecycle list, against argparse.
+# ---------------------------------------------------------------------
 
 
-def test_operative_spec_does_not_defer_a_subcommand_the_cli_exposes() -> None:
-    """PR #244 exposed `validate` while the operative specification still
-    listed it as a deferred, unwritten subcommand. Because that document
-    declares itself the authority maintainers cite for deferred-subcommand
-    classification, the two states must not disagree."""
+def test_normative_declared_surface_contains_every_cli_exposed_subcommand() -> None:
+    """The §4 structured `declared[]` block is the product's intended total
+    surface; nothing argparse exposes may fall outside it, or the compiler's
+    own `canonical <= declared_surface` invariant would fail closed at
+    generation time. This test proves the same property directly against
+    the working tree, independent of any particular anchor."""
 
+    from app.agent_review.target_pack_current_state_v1 import extract_declared_surface
+
+    declared = extract_declared_surface(_SPEC_PATH_V2.read_text(encoding="utf-8"))
     exposed = _cli_exposed_subcommands_v2()
     assert "validate" in exposed, "the CLI no longer exposes validate; this test's premise changed"
-
-    deferred_bullet = _spec_deferred_subcommand_bullet_v2()
-    contradictions = sorted(name for name in exposed if f"`{name}`" in deferred_bullet)
-    assert not contradictions, (
-        f"the operative spec's deferral bullet still classifies {contradictions} as deferred "
-        f"while the CLI parser exposes them: {sorted(exposed)}"
-    )
+    missing = sorted(exposed - declared)
+    assert not missing, f"CLI exposes {missing}, absent from the §4 normative declared[] surface"
 
 
-def test_operative_spec_still_defers_the_genuinely_unshipped_subcommands() -> None:
-    """The reconciliation must not have over-corrected into claiming the
-    whole `#203` surface ships."""
+def test_normative_declared_surface_still_names_the_unshipped_subcommands() -> None:
+    """The reconciliation must not have over-corrected into silently
+    dropping a subcommand from the product's intended surface."""
 
-    deferred_bullet = _spec_deferred_subcommand_bullet_v2()
+    from app.agent_review.target_pack_current_state_v1 import extract_declared_surface
+
+    declared = extract_declared_surface(_SPEC_PATH_V2.read_text(encoding="utf-8"))
+    exposed = _cli_exposed_subcommands_v2()
     for name in ("conformance", "install-workflows", "upgrade", "rollback"):
-        assert f"`{name}`" in deferred_bullet, f"{name} is not shipped but the spec stopped deferring it"
-        assert name not in _cli_exposed_subcommands_v2(), f"{name} is exposed by the CLI but still listed as deferred"
+        assert name in declared, f"{name} is not shipped but disappeared from the declared surface"
+        assert name not in exposed, f"{name} is exposed by the CLI but the successor's premise (still deferred) changed"
+
+
+def _spec_cli_synopsis_names_v2() -> set[str]:
+    """§4's human argument-shape reference block -- the FIRST fenced ```text
+    block after the §4 heading, subcommand name at column 0, indented
+    continuation lines are arguments not commands. §4's own prose commits
+    this block to being "mechanically coverage-checked against the
+    normative surface"; this is that check."""
+
+    text = _SPEC_PATH_V2.read_text(encoding="utf-8")
+    assert "## 4. CLI surface" in text, "the §4 heading moved; update this test deliberately"
+    section = text.split("## 4. CLI surface", 1)[1].split("## 5.", 1)[0]
+    blocks = re.findall(r"```text\n(.*?)```", section, flags=re.DOTALL)
+    assert blocks, "the §4 CLI-synopsis fenced text block moved; update this test deliberately"
+    names = {
+        line.split()[0]
+        for line in blocks[0].splitlines()
+        if line.strip() and not line[:1].isspace()
+    }
+    assert names, "no subcommand names extracted from the §4 CLI synopsis block"
+    return names
+
+
+def test_spec_cli_synopsis_names_match_the_normative_declared_surface() -> None:
+    """§4's own prose promises the human argument-shape synopsis is
+    mechanically coverage-checked against the normative `declared[]`
+    block -- every name in one must appear in the other, in both
+    directions, or that promise is false."""
+
+    from app.agent_review.target_pack_current_state_v1 import extract_declared_surface
+
+    declared = extract_declared_surface(_SPEC_PATH_V2.read_text(encoding="utf-8"))
+    synopsis = _spec_cli_synopsis_names_v2()
+    missing_from_synopsis = sorted(declared - synopsis)
+    extra_in_synopsis = sorted(synopsis - declared)
+    assert not missing_from_synopsis, f"declared but absent from the §4 CLI synopsis: {missing_from_synopsis}"
+    assert not extra_in_synopsis, f"in the §4 CLI synopsis but absent from declared[]: {extra_in_synopsis}"
 
 
 # ---------------------------------------------------------------------

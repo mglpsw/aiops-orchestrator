@@ -240,10 +240,11 @@ profile/integration metadata (`TARGET_OWNED`, hoje um único arquivo:
 `off` quando aplicável — instalação de workflow/engine permanece deferida
 (`install-workflows`, abaixo).
 
-- **Implementado:** `init` (seed de profile, não do engine), `doctor`
-  (read-only), binding de operation plan
-- **Deferido:** `validate`, `conformance`, `install-workflows` (é aqui que o
-  engine propriamente seria instalado), `upgrade`, `rollback`
+- **CURRENT (compilado do anchor):** <!-- BEGIN GENERATED: target-pack-current.architecture.status -->Canonical on `master`: `doctor`, `init`, `validate`. Deferred: `conformance`, `install-workflows`, `rollback`, `upgrade`.<!-- END GENERATED: target-pack-current.architecture.status -->
+  `init` faz seed de profile, não do engine; `doctor` é read-only; binding de
+  operation plan também já está implementado (não é subcomando de CLI, por
+  isso fora do par canonical/deferred acima). `install-workflows` é onde o
+  engine propriamente seria instalado.
 - **Garantia:** pode instalar/configurar integração; nunca cria autoridade, nunca
   forka o engine e nunca promove rollout silenciosamente
 

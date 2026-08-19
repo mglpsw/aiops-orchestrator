@@ -1,7 +1,7 @@
 # CURRENT CHECKPOINT — AIOps/AgentReview
 
 **Status:** `CANONICAL | CURRENT`
-**Corte temporal:** 2026-08-16 (America/Sao_Paulo)
+**Corte temporal (target pack, compilado):** <!-- BEGIN GENERATED: target-pack-current.checkpoint.temporal -->Implementation anchor: `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2` (committed 2026-08-18T21:56:15-03:00). Reconciled at: 2026-08-19T09:03:29-03:00.<!-- END GENERATED: target-pack-current.checkpoint.temporal -->
 **Classe:** estado observado; revalidar HEAD, runs e issues antes de qualquer ação.
 
 Este documento é importado pelo `CLAUDE.md` do repositório, portanto entra no
@@ -19,12 +19,16 @@ desatualizado. Três identidades são mantidas deliberadamente separadas:
 ```yaml
 state_anchor:
   implementation_anchor:
-    sha: 0cdb9615637e3e0563d5caa9ef58b25c01c68fdb
-    source: "PR #239 squash merge"
+    sha: d454e8f2d272b9edb011513b4a8f5d4e89ece4c2
+    source: "PR #244 squash merge (#203-C2)"
     meaning: >-
       estado congelado do repositório contendo a implementação já descrita
-      abaixo (institucionalização de #238: ADR, postmortem, preflight,
-      corpus executável) — não uma alegação de HEAD vivo atual.
+      abaixo — não uma alegação de HEAD vivo atual. É também o
+      implementation_anchor consumido por
+      config/agent-review/target-pack-current-inputs.json; o par
+      declared_surface (spec §4) + este anchor é a única entrada manual do
+      compilador de estado CURRENT do target pack
+      (app/agent_review/target_pack_current_state_v1.py).
 
   release_baseline:
     version: v0.22.0
@@ -34,12 +38,18 @@ state_anchor:
 
   checkpoint_document:
     identity: containing_commit
-    role: documentation_only
+    role: test_and_documentation_only
+    production_implementation_change: false
     excluded_from_implementation_anchor: true
     note: >-
-      o commit que introduz esta revisão do documento é doc-only e
-      deliberadamente não é adicionado à tabela de delta como se fosse parte
-      da implementação que a tabela descreve.
+      o commit que introduz esta revisão não altera implementação de
+      produção (zero mudança em app/agent_review/target_pack_*.py,
+      schemas/** ou templates/**), e por isso não é adicionado à tabela de
+      delta como se fosse parte da implementação que a tabela descreve. Ele
+      NÃO é doc-only: introduz o compilador/gerador CURRENT e seus testes.
+      O critério de exclusão é ausência de mudança de implementação de
+      produção do target pack, não ausência de código — a mesma distinção
+      que este documento espera de qualquer revisão futura.
 
   live_master:
     source_of_truth: GitHub
@@ -53,42 +63,46 @@ state_anchor:
 - Branch padrão: `master`
 - AgentReview é subsistema deste repositório, não repositório separado.
 
-### Delta unreleased observado até o `implementation_anchor` (`v0.22.0@2ce1f457..0cdb961`)
+### Delta unreleased observado até o `implementation_anchor` (`v0.22.0@2ce1f457..d454e8f2`)
 
 No estado-âncora acima, o intervalo `v0.22.0..<implementation_anchor>` contém
-**14 commits**. Esse delta é **unreleased**.
+**18 commits** (`git rev-list --count v0.22.0..d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`,
+reconfirmado nesta reconciliação). Esse delta é **unreleased**.
 
 | Commit | Escopo | Issue/PR |
 |---|---|---|
-| `8654272` | v2 — adversarial hardening de trusted checks | `#201-B3` / PR #218 |
-| `8b20ae3` | v2 — authoritative CI provenance bridge; **também** extrai primitives de JSON estrito/digest de `app/caem_consumer/f0.py` para `app/common/strict_json.py` (superfície CAEM/shared, não só v2) | `#201-C0` / PR #219 |
-| `7500966` | v2 — required-check readiness wiring | `#201-C` / PR #220 |
-| `5a1677f` | v2 — canonicalize verified check order | PR #224 |
-| `79c7b2f` | v2 — `agentreview-v2-target-pack`, `init`/`doctor` | `#203` / PR #223 |
-| `7284528` | v2 — bind target pack init plans | PR #228 |
-| `da5a03b` | **v1** — chunk planning por custo real de hunk, fail closed | `#225` / PR #227 |
-| `7a6c659` | v2 — target-pack: fecha C1-C4 (schema, identidade `--target-repo`, reconciliação de set target-owned, symlink/path containment) + achados do Codex shadow review | `#205`/H1-A / PR #230 |
-| `fdf89f7` | **docs** — reconciliação de verdade documental do repositório (estado canônico, navegação, separação v1/v2); diff exclusivamente `.md` | `#229` |
-| `ffa3040` | **v1** — H1-B: fecha C5 (canonical path identity nos joins de contexto), C6 (projeção do brief minimum-budget), C7 (dedupe parity, P3), C8 (bloco binário não é hunk textual) e C10 (fallback não declara cobertura completa) | `#205`/H1-B / PR #231 |
-| `abe034a` | v2 — H1-C: fecha C9 (fronteira runtime de `authority`; annotation Pydantic é inerte em parâmetro de função comum) | `#205`/H1-C / PR #233 |
-| `70ba4e3` | **docs** — refresh do checkpoint após fechamento H1 (`README.md`, `docs/PROJECT_STATUS.md`, `docs/engineering/CURRENT_CHECKPOINT.md`); diff exclusivamente `.md`; âncora deixada em `abe034a`, tornando-se stale — o defeito que este próprio documento agora corrige | `#234` |
-| `6d613cf` | v2 — deriva ambiguidade YAML de `TargetProfile` do próprio parser stock, substituindo a autoridade anterior (`#235`→`#236` superseded); introduz `_CollisionRefusingSafeLoaderV2` | `#203-S2` PR-A / PR #237 |
+| `d454e8f2` | v2 — `agent-review target validate`: plano de observação tipado, orçamento agregado, inventário de checks derivado (compilado por este documento, não hand-typed); três rounds de review adversarial fechados (`STOP_REDESIGN: false` em todos) | `#203-C2` / PR #244 |
+| `2f512d2` | v2 — target-pack: canonicaliza `Repository`/`RelativePath` como invariantes de construção em `TargetInstallReceiptV2`, disjunção de ledgers de ownership; toca dois schemas (`agent-review.target-install-receipt.v2`, `agent-review.target-pack-operation-plan.v2`) | `#203-C1` / PR #243 |
+| `f07ff03` | **docs** — corrige atribuição de transição de issue no checkpoint; diff exclusivamente `.md` | `#238` / PR #241 |
+| `078f078` | **docs** — reconcilia checkpoint após `#239`; diff exclusivamente `.md` | `#238` / PR #240 |
 | `0cdb961` | **v2, superfície de teste/docs apenas** — institucionaliza as lições de `#237` em ADR normativo, postmortem, Structural Change Preflight reutilizável e corpus de regressão executável (49 casos, 8 rounds de review adversarial exact-HEAD, 25 achados P2 fechados); zero mudança em `app/**` ou `schemas/**`, verificado por identidade de byte | `#238` / PR #239 |
+| `6d613cf` | v2 — deriva ambiguidade YAML de `TargetProfile` do próprio parser stock, substituindo a autoridade anterior (`#235`→`#236` superseded); introduz `_CollisionRefusingSafeLoaderV2` | `#203-S2` PR-A / PR #237 |
+| `70ba4e3` | **docs** — refresh do checkpoint após fechamento H1; diff exclusivamente `.md`; âncora deixada em `abe034a`, tornando-se stale — o mesmo defeito que a compilação anchor-bound deste documento agora elimina estruturalmente | `#234` |
+| `abe034a` | v2 — H1-C: fecha C9 (fronteira runtime de `authority`; annotation Pydantic é inerte em parâmetro de função comum) | `#205`/H1-C / PR #233 |
+| `ffa3040` | **v1** — H1-B: fecha C5 (canonical path identity nos joins de contexto), C6 (projeção do brief minimum-budget), C7 (dedupe parity, P3), C8 (bloco binário não é hunk textual) e C10 (fallback não declara cobertura completa) | `#205`/H1-B / PR #231 |
+| `fdf89f7` | **docs** — reconciliação de verdade documental do repositório (estado canônico, navegação, separação v1/v2); diff exclusivamente `.md` | `#229` |
+| `7a6c659` | v2 — target-pack: fecha C1-C4 (schema, identidade `--target-repo`, reconciliação de set target-owned, symlink/path containment) + achados do Codex shadow review | `#205`/H1-A / PR #230 |
+| `da5a03b` | **v1** — chunk planning por custo real de hunk, fail closed | `#225` / PR #227 |
+| `7284528` | v2 — bind target pack init plans | PR #228 |
+| `79c7b2f` | v2 — `agentreview-v2-target-pack`, `init`/`doctor` | `#203` / PR #223 |
+| `5a1677f` | v2 — canonicalize verified check order | PR #224 |
+| `7500966` | v2 — required-check readiness wiring | `#201-C` / PR #220 |
+| `8b20ae3` | v2 — authoritative CI provenance bridge; **também** extrai primitives de JSON estrito/digest de `app/caem_consumer/f0.py` para `app/common/strict_json.py` (superfície CAEM/shared, não só v2) | `#201-C0` / PR #219 |
+| `8654272` | v2 — adversarial hardening de trusted checks | `#201-B3` / PR #218 |
 
-Classificação de superfície dos 14 commits: **oito** tocam superfície de
+Classificação de superfície dos 18 commits: **nove** tocam superfície de
 código de produção v2 exclusivamente (`8654272`, `7500966`, `5a1677f`,
-`79c7b2f`, `7284528`, `7a6c659`, `abe034a`, `6d613cf`); `8b20ae3` toca v2
+`79c7b2f`, `7284528`, `7a6c659`, `abe034a`, `6d613cf`, `d454e8f2` — este
+último também toca um único arquivo `.md`, o spec operativo do `#203`, como
+parte da própria qualificação do comando que introduz); `8b20ae3` toca v2
 **e** um módulo CAEM/shared compartilhado (`app/common/strict_json.py`,
-`app/caem_consumer/f0.py`) — os testes de equivalência visam preservar
-comportamento, mas isso permanece uma superfície não-v2 tocada, não apenas
-v2; **dois** tocam exclusivamente superfície v1 sem tocar nenhum arquivo v2
-(`da5a03b`, `ffa3040` — este último também atualiza
-`docs/AGENT_REVIEW_ENGINE.md` para acompanhar a mudança de comportamento de
-C10); **dois** são `.md`-only (`fdf89f7`, `70ba4e3`); **um** (`0cdb961`) é
-v2 de teste/documentação apenas — fixtures (`CORPUS.json`, `.yamlcase`),
-módulos pytest sob `tests/agent_review/`, ADR/postmortem/preflight e
-`CHANGELOG.md` — sem tocar `app/**` ou `schemas/**`; não é agrupado com os
-dois `.md`-only porque inclui fixtures e código de teste, não apenas prosa.
+`app/caem_consumer/f0.py`); **um** (`2f512d2`) toca v2 **e** dois schemas
+(mudança aditiva; nenhum schema pré-`#203` foi tocado); **dois** tocam
+exclusivamente superfície v1 (`da5a03b`, `ffa3040`); **quatro** são
+`.md`-only (`fdf89f7`, `70ba4e3`, `f07ff03`, `078f078`); **um** (`0cdb961`)
+é v2 de teste/documentação apenas — fixtures, módulos pytest, ADR/postmortem/
+preflight e `CHANGELOG.md` — sem tocar `app/**` ou `schemas/**`. Soma:
+9 + 1 + 1 + 2 + 4 + 1 = 18.
 
 ### Dívida pós-merge do checkpoint `#205` (C1-C10)
 
@@ -177,16 +191,15 @@ issues **não** são tratadas como máquina de estado do produto — a
 classificação por critério nos comentários de reconciliação é a fonte de
 verdade.
 
-- **Target pack (`#203`):** primeira slice mergeada (`init`, `doctor`) mais o binding de
-  operation plans (PR #228) e o hardening de identidade H1-A (PR #230). `init` hoje faz
-  seed apenas de profile/integration metadata — não instala o engine;
-  `install-workflows` (não implementado) é onde a instalação do engine propriamente
+- **Target pack (`#203`):** <!-- BEGIN GENERATED: target-pack-current.checkpoint.status -->Canonical on `master`: `doctor`, `init`, `validate`. Deferred: `conformance`, `install-workflows`, `rollback`, `upgrade`.<!-- END GENERATED: target-pack-current.checkpoint.status -->
+  Também implementados, fora do par canonical/deferred acima por não serem
+  subcomandos de CLI: o binding de operation plans (PR #228), o hardening de
+  identidade H1-A (PR #230), e os contratos de identidade `#203-C1` (PR #243).
+  `init` hoje faz seed apenas de profile/integration metadata — não instala o
+  engine; `install-workflows` é onde a instalação do engine propriamente
   aconteceria. O `max_supported_rollout_mode` desta versão do pack é `off`:
-  `shadow_minimal`/`shadow_full` são opções de interface recusadas antes de preview ou
-  apply. `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback` permanecem
-  **não implementados**. `#203` é a próxima fronteira de implementação ativa; o
-  trabalho de `#237`/`#239` fechou a autoridade de leitura YAML que `#203-S2` PR-A
-  precisava, mas `validate`/`conformance` (PR-B/PR-C) em si não avançaram neste corte.
+  `shadow_minimal`/`shadow_full` são opções de interface recusadas antes de
+  preview ou apply. `conformance` (PR-C) ainda não avançou.
 - **ProjectOps v1:** trilha separada de inteligência de CI, advisory e fail-safe; não
   revalidada neste corte.
 - análise por LLM é advisory; `review-quality-gate.json` / `ReviewReadinessV2` e a CI
@@ -220,8 +233,10 @@ checkpoint anterior.
 - implementação v2/target-pack: `in_progress`; core `#200`/`#201`/`#202`
   `CORE_COMPLETE` e suficiente para `#203`;
 - `#203-S2` PR-A (autoridade YAML de `TargetProfile`): `merged_unreleased`
-  (`6d613cf`, PR #237); PR-B (`validate`) e PR-C (`conformance`) **não
-  iniciados**;
+  (`6d613cf`, PR #237); PR-B (`validate`) foi entregue como `#203-C1`
+  (contratos de identidade, `2f512d2`, PR #243) seguido de `#203-C2`
+  (`agent-review target validate`, `d454e8f2`, PR #244) — **mergeada e
+  canônica em `master`**; PR-C (`conformance`) **não iniciada**;
 - `#238` (institucionalização das lições de PR-A): estado é **forge-derived**,
   não fixado neste documento — ver bloco `issue_238` abaixo. Implementação
   entregue via PR #239 (squash `0cdb961`) e reconciliação de checkpoint via
@@ -261,7 +276,16 @@ issue_238:
 - validação: `partial`;
 - observation: métricas/false-positive loop a ampliar.
 
-## Próxima ação mínima
+## Próxima ação mínima (histórico — escopado à âncora `0cdb961`/`#238`)
+
+**Nota de reconciliação:** esta seção descreve o estado de planejamento
+observado na âncora anterior deste documento (`0cdb961`, checkpoint de
+`#238`), antes de `implementation_anchor` avançar para `d454e8f2`. A
+condicional sobre "PR-B/`target validate`" abaixo já foi resolvida por
+entrega real — ver `#203-C1`/PR #243 e `#203-C2`/PR #244 na tabela de
+delta acima — independentemente de qual disposição `#238` tinha no
+momento em que esta seção foi escrita. Preservada como histórico, não
+como estado atual de PR-B.
 
 A entrega técnica de `#238` está completa (PR #239, PR #240 e esta própria
 reconciliação, todas já mergeadas ou em qualificação). O estado de `#238` é
@@ -280,14 +304,17 @@ envelhece no exato momento em que a outra passa a valer:
   validate`) só pode começar sob **novo grant**, ramificando da `master`
   viva revalidada no momento em que começar.
 
-Em ambos os casos, `implementation_anchor` (`0cdb961`) permanece apenas a
-identidade **histórica** desta institucionalização — nunca uma base
-operacional para PR-B, pelo mesmo motivo pelo qual este documento evita se
-autorreferenciar. Os pré-requisitos de core (`#200`/`#201`/`#202`) estão
-satisfeitos, a dívida C1-C10 está fechada, e a autoridade de leitura YAML
-que PR-B consome (`#237`) está institucionalizada via `#238`; `#232`
-permanece aberta mas não bloqueia `#203` — fatos duráveis, independentes
-do estado de `#238`.
+Em ambos os casos, o `implementation_anchor` vigente **no momento em que
+este texto foi escrito** (`0cdb961`) permanecia apenas a identidade
+**histórica** daquela institucionalização — nunca uma base operacional
+para PR-B, pelo mesmo motivo pelo qual este documento evita se
+autorreferenciar. `implementation_anchor` já avançou desde então para
+`d454e8f2` (ver bloco `state_anchor` no topo deste documento), justamente
+porque PR-B foi entregue. Os pré-requisitos de core (`#200`/`#201`/`#202`)
+estavam satisfeitos, a dívida C1-C10 estava fechada, e a autoridade de
+leitura YAML que PR-B consumiu (`#237`) estava institucionalizada via
+`#238`; `#232` permanece aberta mas não bloqueia `#203` — fatos duráveis,
+independentes do estado de `#238`.
 
 Merges futuros de PRs que referenciam `#238` devem sanitizar título e
 corpo de squash contra referências de palavra-chave de fechamento de

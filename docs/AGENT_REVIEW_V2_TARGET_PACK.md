@@ -9,20 +9,22 @@ merged).
 
 ## Subcommand status
 
-Merged to `master` across PR #223 (first slice) and PR #228 (operation-plan
-binding). Not yet in any published release.
+Merged to `master` across PR #223 (first slice), PR #228 (operation-plan
+binding), PR #243 (`#203-C1`, installed-pack identity contracts) and PR #244
+(`#203-C2`, bounded offline `validate`). Not yet in any published release.
 
-| Subcommand | Status | Notes |
-|---|---|---|
-| `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile — repeating `init` after a target edits `.aiops/target-profile.v2.yaml` requires naming the path via `--accept-target-owned` on both the preview and the `--apply` call, or `apply` fails with `target_owned_identity_acceptance_required`; the profile bytes themselves are left untouched. **This pack version's `max_supported_rollout_mode` is `off`** — `--rollout off` is the only value this slice accepts; `shadow_minimal`/`shadow_full` are interface/future options and are refused before preview or apply |
-| `doctor` | `IMPLEMENTED` | read-only, proven by AST/call-graph inspection |
-| operation-plan binding | `IMPLEMENTED` | `target_pack_operation_v2.py` + its own schema (PR #228) |
-| `validate` | `DEFERRED` | spec `§12` |
-| `conformance` | `DEFERRED` | spec `§12`; target adoption is `#204`'s charter |
-| `install-workflows` | `DEFERRED` | workflow templates not shipped |
-| `upgrade` | `DEFERRED` | only command that changes rollout mode |
-| `rollback` | `DEFERRED` | spec `§12` |
-| trusted-check inventory integration | `PLANNED` | into the `#201-C0` provenance chain |
+**Compiled CURRENT state** (`app/agent_review/target_pack_current_state_v1.py`,
+anchored at the SHA named in `docs/generated/target-pack-current-state.json`):
+
+<!-- BEGIN GENERATED: target-pack-current.target-pack-doc.status -->Canonical on `master`: `doctor`, `init`, `validate`. Deferred: `conformance`, `install-workflows`, `rollback`, `upgrade`.<!-- END GENERATED: target-pack-current.target-pack-doc.status -->
+
+Two capabilities are implemented but are not CLI subcommands, so they fall
+outside the canonical/deferred split above and are not derivable from the
+anchor's `argparse`: operation-plan binding (`target_pack_operation_v2.py` +
+its own schema, PR #228) and the installed-pack identity contracts
+(`Repository`/`RelativePath`, `#203-C1`, PR #243). Trusted-check inventory
+integration into the `#201-C0` provenance chain is `PLANNED`, not yet
+implemented.
 
 Deferred means specified and intentionally not shipped — never silently dropped,
 and never described as available.
@@ -49,7 +51,8 @@ and the full threat model.
 
 Two of the specification's seven CLI subcommands, as a coherent, tested
 slice — `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
-remain deferred (spec `§12`; see the status table above). PR #228
+were not part of this slice (see the compiled status above for their
+current, now-later state). PR #228
 subsequently bound `init` to an explicit, schema-backed operation plan. Without
 `--apply`, `init` is write-zero: it prints the operation plan and exits.
 Writing the profile/receipt requires a second, explicit invocation with
@@ -106,6 +109,42 @@ agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH -
   choke-point invariants. Checks secret NAME presence
   (`name in os.environ`) — never reads or reports a VALUE.
 
+## What C2 added (`#203-C1`/PR #243 + `#203-C2`/PR #244)
+
+`agent-review target validate` — a new CLI capability, structural successor
+to a forensic prior attempt at this command (PR #242, closed via Structural
+Change Preflight STOP/REDESIGN after three review rounds converged on the
+same ad-hoc `tuple[str, X | None]` projection boundary). This is a rewrite
+from canonical `master`, never a port of #242's production code.
+
+**Contract surface, stated per PR rather than collapsed into one claim:**
+
+- **PR #243 (C1)** changed `TargetInstallReceiptV2`'s field types and its
+  validator, and regenerated the affected receipt and operation-plan
+  schemas. It did **not** redefine `contracts_v2.Repository` and did
+  **not** redefine `contracts_v2.RelativePath` — it bound the receipt's
+  fields to those already-existing definitions.
+- **PR #244 (C2)** changed no shared or public contract.
+
+`#203-C2` delivers `validate` itself: target-only, offline, read-only. It
+answers a narrower question than `doctor`: *of the relations for which this
+command holds local, independent evidence, is any violated?* It does
+**not** independently establish that an installed target corresponds to its
+claimed upstream pack — `pack_version`/`toolrepo_sha`/`manifest_digest`
+remain `unavailable` (disclosed, never fabricated as pass or fail) without
+an upstream manifest/toolrepo.
+
+<!-- BEGIN GENERATED: target-pack-current.target-pack-doc.inventory -->
+**Check inventory (derived from the anchor, `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`):** 17 total dimensions, 11 locally evaluable when applicable, 6 permanently disclosed `unavailable`: `generated_file_set`, `previous_install_lineage`, `rollout_capability`, `target_owned_set`, `trusted_check_inventory`, `upstream_pack_identity`.
+<!-- END GENERATED: target-pack-current.target-pack-doc.inventory -->
+
+Qualified across three adversarial Codex review rounds on the branch, each
+closed with `STOP_REDESIGN: false`.
+
+<!-- BEGIN GENERATED: target-pack-current.target-pack-doc.evidence -->
+**PR #244 qualification** — tested at `a792b23c3ed18eb4e87cd7adf0930b6c60214ae2`, canonicalized as `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2` (tree_identical). Full suite: 2801 passed, 4 skipped (recorded_qualification; evidence: git_commit_message@`a792b23c3ed18eb4e87cd7adf0930b6c60214ae2`).
+<!-- END GENERATED: target-pack-current.target-pack-doc.evidence -->
+
 ## Templates shipped
 
 `templates/agentreview-v2-target-pack/target-profile.v2.yaml` — a
@@ -128,9 +167,18 @@ in the target, `TARGET_OWNED` (written once at `init`, never touched again).
    called anywhere in the pack engine — the capability is structurally
    absent, not merely unused.
 
-## Tests
+## Test evidence
 
-83 tests across 8 files: contract validation (manifest/receipt,
+Every figure below names the PR whose qualification recorded it. None is
+re-derived at read time, and none describes the current tree as a whole —
+they are dated evidence bound to a subject, not a running total.
+
+### First slice — PR #223 (historical)
+
+Coverage areas, as historical narrative without a suite total pinned here
+(a prior revision of this document stated `2497 passed`; the live PR #223
+record itself carries a different final figure, so no count is restated as
+if immutably bound to this document): contract validation (manifest/receipt,
 including path-traversal rejection reused from `contracts_v2.RelativePath`
 and secret-name-shape rejection with two independent layers), pure plan
 computation (all five `PlannedActionV2` cases, rollout-ceiling refusal),
@@ -145,21 +193,25 @@ implementation), and CLI E2E subprocess tests (`init` idempotence never
 overwriting a target-customized profile, ownership-derived receipt fields
 stable across reinstalls, rollout-capability refusal, `doctor`
 unhealthy-before/healthy-after `init`, no traceback on bad input). Grown
-from an initial 62 to 83 across two adversarial-review passes (pre-PR
-self-review: symlink escape, fabricated `toolrepo_sha`/
-`target_profile_hash`; post-PR external exact-HEAD review: doctor identity
-binding, fabricated `target_policy_hash`, ownership-derivation bug,
-missing rollout-capability enforcement).
+across two adversarial-review passes (pre-PR self-review: symlink escape,
+fabricated `toolrepo_sha`/`target_profile_hash`; post-PR external
+exact-HEAD review: doctor identity binding, fabricated
+`target_policy_hash`, ownership-derivation bug, missing
+rollout-capability enforcement). For the exact suite figure PR #223 itself
+recorded, see that PR's own body on the forge — not restated here.
 
-Combined suite (full `tests/`): 2497 passed, 16 skipped, 2 failed
-(pre-existing environment class, `sudo` absent in sandbox,
-`test_isolated_executor_v2.py`, unrelated to `#203`). Schema export
-byte-identical; CAEM F0 pin unchanged.
+### C2 qualification — PR #244 / compiled evidence
 
-## Deferred (spec `§12`, not silently dropped)
+See the generated evidence block above (`## What C2 added`), which states
+the figures `#244`'s own qualification recorded, bound to its exact tested
+and canonical SHAs.
 
-- `validate`/`conformance`/`install-workflows`/`upgrade`/`rollback`
-  subcommands.
+## Deferred (spec `§14`, not silently dropped)
+
+- Subcommand lifecycle (which are canonical, which remain deferred) is
+  normative in spec §4's compiled state, not re-enumerated here — see the
+  compiled status above.
+- `conformance`/`install-workflows`/`upgrade`/`rollback`.
 - Workflow templates (`evidence.yml`/`analysis.yml`/`publish.yml`).
 - Trusted-check inventory schema + integration into the `#201-C0`
   provenance chain.

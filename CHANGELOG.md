@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- **AgentReview v2 target-pack installed identity contracts hardened
+  (`#203-C1`, PR #243)**: `TargetInstallReceiptV2.target_repo` and every
+  `RelativePath`-typed field are now `Repository`/`RelativePath` at
+  construction time instead of `SafeText` — a malformed repository
+  identity or an unnormalized/traversal-shaped path can no longer parse
+  into a receipt at all. Ownership-ledger disjointness
+  (`target_owned_file_hashes` vs. `generated_file_hashes`) is likewise a
+  construction-time invariant now, not a downstream check. This is the
+  contract predecessor `#203-C2` (below) consumes without re-deriving.
+
 - **AgentReview v2 target-profile YAML loading now derives ambiguity from
   the parser (`#237`)**: `load_target_profile_v2`/`load_target_profile_text_v2`
   now reject a duplicate authored key (even when every occurrence carries
@@ -94,6 +104,28 @@
 
 ### Added
 
+- **`agent-review target validate` — bounded offline target-pack validation
+  (`#203-C2`, PR #244)**: a new CLI capability, structural successor to the
+  forensic prior attempt at this command (PR #242, closed via Structural
+  Change Preflight STOP/REDESIGN after three review rounds). Target-only,
+  offline and read-only — validates the local coherence of an installed
+  target pack against the receipt/profile it carries, and is explicitly
+  **not** independent proof that the installed state corresponds to its
+  claimed upstream pack (`pack_version`/`toolrepo_sha`/`manifest_digest`
+  remain unestablished without an upstream manifest/toolrepo, and are
+  disclosed as such rather than silently assumed). Historically recorded
+  check inventory at this PR's own qualification: 17 total dimensions, 11
+  locally evaluable when applicable, 6 permanently disclosed
+  `unavailable` — `upstream_pack_identity`, `target_owned_set`,
+  `generated_file_set`, `rollout_capability`, `previous_install_lineage`,
+  `trusted_check_inventory`. Qualified across three adversarial Codex
+  review rounds on the branch (cross-ledger resolved-alias separation and
+  early claim-budget admission; root/contained-path `OSError` resolution
+  totality via a single typed adapter; upstream-identity disclosure), each
+  closed with `STOP_REDESIGN: false`. No shared contract
+  (`TargetInstallReceiptV2`, `Repository`, `RelativePath`) touched.
+  `conformance`/`install-workflows`/`upgrade`/`rollback` remain deferred.
+
 - **`agentreview-v2-target-pack` — installable target pack, first slice
   (`#203`)**: begins packaging AgentReview v2 as an installer for consumer
   repositories, without forking the engine. This commit ships `init` and
@@ -101,8 +133,8 @@
   two new additive contracts (`TargetPackManifestV2`,
   `TargetInstallReceiptV2`), a pure drift/idempotence plan computer, and
   the sole atomic-write installer. `validate`/`conformance`/
-  `install-workflows`/`upgrade`/`rollback` are deferred to a follow-up
-  commit on the same branch/PR. Full spec:
+  `install-workflows`/`upgrade`/`rollback` are not part of this slice.
+  Full spec:
   `docs/AGENT_REVIEW_V2_TARGET_PACK.md` and
   `docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md`. Post-adversarial-
   review hardening on the same PR closed four in-scope defects found by an
