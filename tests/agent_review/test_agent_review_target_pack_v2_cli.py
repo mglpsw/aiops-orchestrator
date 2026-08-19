@@ -655,3 +655,151 @@ def test_init_refuses_cleanly_instead_of_fabricating_a_toolrepo_sha(tmp_path: Pa
     assert "Traceback" not in result.stderr
     assert "target_pack_cli_toolrepo_sha_unresolved" in result.stderr
     assert not (target_root / ".aiops" / "install-receipt.v2.json").exists()
+
+
+# --- `validate` (`#203-C2`) --------------------------------------------------
+
+
+def test_validate_passes_on_a_real_freshly_initialised_target(tmp_path: Path) -> None:
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    validate_result = _run_raw(["validate", "--target-root", str(tmp_path)])
+    assert validate_result.returncode == 0, validate_result.stderr
+    report = json.loads(validate_result.stdout)
+    assert report["valid"] is True
+    assert report["target_root_real"] == str(tmp_path.resolve())
+    statuses = {check["name"]: check["status"] for check in report["checks"]}
+    for name in (
+        "target_root", "aiops_snapshot", "receipt", "profile",
+        "profile_hash", "profile_identity", "root_identity",
+        "observation_budget", "target_owned_integrity", "generated_file_integrity",
+        "cross_ledger_alias_separation",
+    ):
+        assert statuses[name] == "pass", name
+    for name in (
+        "upstream_pack_identity",
+        "target_owned_set", "generated_file_set", "rollout_capability",
+        "previous_install_lineage", "trusted_check_inventory",
+    ):
+        assert statuses[name] == "unavailable", name
+    assert set(report["unvalidated_capabilities"]) == {
+        "upstream_pack_identity",
+        "target_owned_set", "generated_file_set", "rollout_capability",
+        "previous_install_lineage", "trusted_check_inventory",
+    }
+    # Even against a target this very test just installed from THIS
+    # toolrepo, validate does not claim to have established which
+    # upstream pack the receipt came from -- it holds no manifest to
+    # check against, and says so rather than letting `valid: true` imply
+    # provenance was verified.
+    assert report["valid"] is True
+
+
+def test_validate_fails_closed_on_drift_after_a_real_init(tmp_path: Path) -> None:
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    profile_path = tmp_path / ".aiops" / "target-profile.v2.yaml"
+    profile_path.write_text(profile_path.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
+
+    validate_result = _run_raw(["validate", "--target-root", str(tmp_path)])
+    assert validate_result.returncode == 1
+    report = json.loads(validate_result.stdout)
+    assert report["valid"] is False
+    statuses = {check["name"]: check["status"] for check in report["checks"]}
+    assert statuses["target_owned_integrity"] == "fail"
+    assert statuses["profile_hash"] == "pass"  # semantic content unchanged -- byte drift only
+
+
+def test_validate_never_claims_the_trusted_check_dimension_passed(tmp_path: Path) -> None:
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    validate_result = _run_raw(["validate", "--target-root", str(tmp_path)])
+    report = json.loads(validate_result.stdout)
+    statuses = {check["name"]: check["status"] for check in report["checks"]}
+    assert statuses["trusted_check_inventory"] == "unavailable"
+    assert statuses["trusted_check_inventory"] != "pass"
+    assert "trusted_check_inventory" in report["unvalidated_capabilities"]
+
+
+def test_validate_rejects_toolrepo_root_argument(tmp_path: Path) -> None:
+    """The absence IS the charter: `validate` needs no toolrepo checkout
+    at all."""
+
+    result = _run_raw(["validate", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT)])
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
+
+
+def test_validate_exits_2_on_missing_target_root_argument() -> None:
+    result = _run_raw(["validate"])
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert "--target-root" in result.stderr
+
+
+def test_validate_never_prints_a_traceback_on_a_missing_target(tmp_path: Path) -> None:
+    never_created = tmp_path / "never-created"
+    result = _run_raw(["validate", "--target-root", str(never_created)])
+    assert "Traceback" not in result.stderr
+    assert result.returncode == 1
+    report = json.loads(result.stdout)
+    assert report["valid"] is False
+
+
+def test_validate_is_write_zero(tmp_path: Path) -> None:
+    """No `validate` invocation -- valid or invalid target, existing or
+    missing root -- ever creates, modifies, or removes anything."""
+
+    result = _run(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+
+    def _snapshot(root: Path) -> dict[str, float]:
+        return {str(p.relative_to(root)): p.stat().st_mtime_ns for p in sorted(root.rglob("*")) if p.is_file()}
+
+    before = _snapshot(tmp_path)
+    _run_raw(["validate", "--target-root", str(tmp_path)])
+    (tmp_path / ".aiops" / "target-profile.v2.yaml").write_text(
+        (tmp_path / ".aiops" / "target-profile.v2.yaml").read_text(encoding="utf-8") + "\n# x\n", encoding="utf-8"
+    )
+    _run_raw(["validate", "--target-root", str(tmp_path)])  # now failing -- still write-zero
+    after_content = (tmp_path / ".aiops" / "target-profile.v2.yaml").read_text(encoding="utf-8")
+    assert after_content.endswith("# x\n")
+
+    missing = tmp_path / "definitely-not-here"
+    _run_raw(["validate", "--target-root", str(missing)])
+    assert not missing.exists()

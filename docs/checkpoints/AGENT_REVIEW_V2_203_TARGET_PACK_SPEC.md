@@ -242,8 +242,17 @@ upgrade     --target-root PATH [--dry-run] [--yes]
 rollback    --target-root PATH [--dry-run] [--yes]
 ```
 
-`init` and `doctor` are implemented (slice 1). The rest are specified here and
-deferred (§12).
+**Implementation status (dated checkpoint, subject to the Live-state rule
+above).** `init` and `doctor` are implemented and **canonical on `master`**
+(slice 1). `validate` is implemented in the **PR #244 candidate** (`#203-C2`,
+open and Draft at this writing) and is therefore **not canonical yet**: until
+that PR merges, `master` exposes only `init` and `doctor`. `conformance`,
+`install-workflows`, `upgrade` and `rollback` remain specified here and
+deferred (§14).
+
+The distinction between *canonical on `master`* and *implemented in an open
+candidate* is load-bearing: a reader deciding what a freshly cloned target pack
+can do must use the former, never the latter.
 
 `doctor` is **READ-ONLY by construction**: it accepts no mutating parameter and
 calls no write/mkdir/rename/remove primitive anywhere in its call graph, proven
@@ -403,7 +412,12 @@ The pack owns the **mechanism**; the target owns the **inventory**.
 - `validate`/`doctor` load it with strict parsing and cross-check against
   `TargetProfileV2.policies.required_checks` using the same bidirectional
   equality `validate_policy_against_profile_v2` already enforces — reused, not
-  reimplemented.
+  reimplemented. **This describes the end state, not current behaviour:**
+  `TrustedCheckInventoryV2` is still deferred (§14), so until it ships
+  `validate` reports the `trusted_check_inventory` dimension as `unavailable`
+  and performs no such cross-check. The slice that makes the capability
+  reachable wires it through that inventory authority; no interim inventory is
+  invented locally in the meantime.
 - The pack NEVER invents a target-specific command (no hardcoded `pytest`, no
   hardcoded `mypy`) anywhere in `app/agent_review/*` or `templates/*`, enforced
   by an architecture test.
@@ -566,9 +580,19 @@ adoption, Class C execution, CT104 canaries, release/pinning — `#204`/`#205`.
 
 ## 14. Deferred (explicitly, not silently)
 
-- `validate` / `conformance` / `install-workflows` / `upgrade` / `rollback` and
-  the real workflow templates — later `#203` slices. Slice 1 ships `init` +
-  `doctor`.
+- `conformance` / `install-workflows` / `upgrade` / `rollback` and the real
+  workflow templates — later `#203` slices. (Which subcommands are already
+  canonical, and which are only implemented in an open candidate, is stated
+  once in §4; this bullet enumerates the still-unwritten ones only.)
+- `validate` is **no longer deferred as unwritten**: it is implemented in the
+  open PR #244 candidate (`#203-C2`) and stops being deferred in the canonical
+  sense the moment that PR merges. It is listed here only so this section stays
+  a complete map of the seven subcommands; see §4 for its exact status. What
+  `validate` deliberately does **not** do — upstream pack correspondence, the
+  target-owned completeness set, the rollout ceiling, historical lineage, and
+  the trusted-check inventory — is not deferred implementation but permanent
+  authority boundary: it holds no upstream manifest or toolrepo, and reports
+  each of those dimensions as `unavailable` rather than inventing a local rule.
 - `TrustedCheckInventoryV2` and the `#201-C0` trusted-check wiring, and with it
   any genuine `SHADOW_FULL` capability.
 - Multi-file crash-convergence metamorphic test (§5.5) — owed by the first slice
