@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # target-pack CURRENT view reads git blobs at an implementation_anchor SHA, which a shallow clone would not contain
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -64,6 +66,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # target-pack CURRENT view reads git blobs at an implementation_anchor SHA, which a shallow clone would not contain
 
       - name: Set up Python
         uses: actions/setup-python@v5
