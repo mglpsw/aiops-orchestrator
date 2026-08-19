@@ -36,12 +36,17 @@ state_anchor:
 
   checkpoint_document:
     identity: containing_commit
-    role: documentation_only
+    role: test_and_documentation_only
+    production_implementation_change: false
     excluded_from_implementation_anchor: true
     note: >-
-      o commit que introduz esta revisão do documento é doc-only e
-      deliberadamente não é adicionado à tabela de delta como se fosse parte
-      da implementação que a tabela descreve.
+      o commit que introduz esta revisão não altera implementação de
+      produção (zero mudança em app/**, schemas/** ou templates/**), e por
+      isso não é adicionado à tabela de delta como se fosse parte da
+      implementação que a tabela descreve. Ele NÃO é doc-only: inclui código
+      pytest executável que prova mecanicamente a própria reconciliação
+      documental. O critério de exclusão é ausência de mudança de
+      implementação de produção, não ausência de código.
 
   live_master:
     source_of_truth: GitHub

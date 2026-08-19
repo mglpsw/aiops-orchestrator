@@ -137,9 +137,16 @@ check inventory: 17 total dimensions, 11 locally evaluable when applicable
 (`upstream_pack_identity`, `target_owned_set`, `generated_file_set`,
 `rollout_capability`, `previous_install_lineage`, `trusted_check_
 inventory`). Qualified across three adversarial Codex review rounds on the
-branch, each closed with `STOP_REDESIGN: false`; no shared contract
-(`TargetInstallReceiptV2`, `Repository`, `RelativePath`) touched by either
-PR.
+branch, each closed with `STOP_REDESIGN: false`.
+
+Contract surface, stated per PR rather than collapsed into one claim:
+
+- **PR #243 (`#203-C1`)** changed `TargetInstallReceiptV2`'s field types and
+  its validator, and regenerated the affected receipt and operation-plan
+  schemas. It did **not** redefine `contracts_v2.Repository` and did **not**
+  redefine `contracts_v2.RelativePath` — it bound the receipt's fields to
+  those already-existing definitions.
+- **PR #244 (`#203-C2`)** changed no shared or public contract.
 
 ## Templates shipped
 
@@ -163,9 +170,16 @@ in the target, `TARGET_OWNED` (written once at `init`, never touched again).
    called anywhere in the pack engine — the capability is structurally
    absent, not merely unused.
 
-## Tests
+## Test evidence
 
-83 tests across 8 files: contract validation (manifest/receipt,
+Every figure below names the PR whose qualification recorded it. None is
+re-derived at read time, and none describes the current tree as a whole —
+they are dated evidence bound to a subject, not a running total.
+
+### First slice — PR #223
+
+Figures recorded during PR #223 qualification: 83 tests across 8 files:
+contract validation (manifest/receipt,
 including path-traversal rejection reused from `contracts_v2.RelativePath`
 and secret-name-shape rejection with two independent layers), pure plan
 computation (all five `PlannedActionV2` cases, rollout-ceiling refusal),
@@ -186,10 +200,23 @@ self-review: symlink escape, fabricated `toolrepo_sha`/
 binding, fabricated `target_policy_hash`, ownership-derivation bug,
 missing rollout-capability enforcement).
 
-Combined suite (full `tests/`): 2497 passed, 16 skipped, 2 failed
-(pre-existing environment class, `sudo` absent in sandbox,
-`test_isolated_executor_v2.py`, unrelated to `#203`). Schema export
-byte-identical; CAEM F0 pin unchanged.
+Combined suite recorded at that time (full `tests/`): 2497 passed, 16
+skipped, 2 failed (pre-existing environment class, `sudo` absent in
+sandbox, `test_isolated_executor_v2.py`, unrelated to `#203`). Schema
+export byte-identical; CAEM F0 pin unchanged.
+
+### C2 qualification — PR #244 / `d454e8f2`
+
+Evidence recorded by the C2 canonical merge, not recomputed here:
+
+- full suite: 2801 passed, 4 skipped;
+- schemas and evals byte-identical — no shared or public contract widened;
+- 22 mutations applied across the qualification history, each observed
+  discriminating on its intended property and reverted byte-identical.
+
+No target-pack-only test count is stated for C2: none was mechanically
+recorded at that merge, and inventing one now would be exactly the
+unbound-evidence defect this section exists to remove.
 
 ## Deferred (spec `§14`, not silently dropped)
 
