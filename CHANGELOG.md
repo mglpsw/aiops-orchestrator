@@ -9,39 +9,34 @@
   `#242`/`#245`/`#246`/`#247` lineage — relation carrier `Π = <S,A,R,T,E>`
   and the non-coercion rule, authority-first topology, earliest-lossy-boundary
   repair, finding validation and the minimal corrective cut, causal mutation
-  discrimination, exact-subject evidence, a two-axis epistemic model, best
+  discrimination, exact-subject evidence, epistemic classification, best
   supportable claim with `UNAVAILABLE` as a real outcome, named convergence
   boundaries, and authority non-escalation. Extends the existing preflight
   rather than adding a parallel document: `PROJECT_OVERLAY.md` already names
-  that file the exclusive owner of the `STOP / REDESIGN` criteria. The
-  machine-checkable half is declared once in a normative registry block and
-  verified by `tests/test_structural_change_preflight.py`, which enforces
-  closure of the forbidden-promotion rules (notably that nothing reaches
-  `PROVED`), referential integrity of every cited discriminant, and single
-  ownership of the registry. Process/methodology only — no runtime, schema or
-  public-contract change. Refs #203.
+  that file the exclusive owner of the `STOP / REDESIGN` criteria.
 
-- **Target-pack CLI surface and validate check-domain now have single
-  internal runtime authorities, consumed by the runtime itself (`#203`)**:
-  `app/agent_review/target_pack_runtime_authority_v2.py` declares two
-  deliberately distinct subjects — which commands the CLI exposes, and the
-  domain of validate check identities. The CLI parser is built by iterating
-  the command authority and verifies `C = K = P` (authority domain =
-  configurator domain = exposed parser choices), and every validate report is
-  constructed through one finalizer that canonicalizes against the declared
-  domain and refuses an unknown identity, a duplicate, a caller-fabricated
-  `unvalidated` row, or a locally evaluable check marked `unavailable`.
-  `VALIDATE_CHECK_ORDER_V2` and `UNVALIDATED_CAPABILITIES_V2` survive only as
-  derived projections. A deterministic internal view,
-  `docs/generated/target-pack-runtime-authority.v1.json`, is emitted and
-  gated byte-identical in CI so tooling can consume both relations without
-  parsing Python. Observable behaviour is intended unchanged — verified by a
-  baseline-vs-candidate differential over 9 validate scenarios (109 check
-  rows, early-return paths included) and 10 CLI invocations. Public
-  target-facing contracts are untouched: `TargetPackManifestV2` and
-  `TargetInstallReceiptV2` have no diff, exported schemas are byte-identical,
-  and the same real manifest builds to identical canonical bytes and digest
-  on both sides. Refs #203.
+  Method authority and method evidence are separate. The normative registry
+  carries reusable method semantics only — no PR number, commit SHA, review
+  outcome or other historical fact — so the method stays semantically complete
+  if every historical locator becomes unavailable. The
+  `#242`/`#245`/`#246`/`#247` corpus is explanatory prose evidence.
+
+  Epistemic classifications are typed predicates that may hold simultaneously,
+  not states of one lifecycle: `#247` legitimately carries four at once. There
+  is no transition relation, and `PROVED` is admitted positively from explicit
+  proof evidence rather than reached by promotion. The general algebra of these
+  categories is left open as a formal question.
+
+  `tests/test_structural_change_preflight.py` mechanically checks registry
+  shape and closure, duplicate-key refusal, marker uniqueness and ordering,
+  single ownership of the evidence-class vocabulary with no prose restatement,
+  epistemic-predicate uniqueness and absence of ordering structure, the
+  positive proof-admission invariant, discriminant shape, absence of
+  historical forge facts in the normative registry, and exactly one registry
+  owner across tracked Markdown enumerated by `git ls-files`. Historical forge
+  observations are explanatory evidence and are **not** revalidated by that
+  offline test. Process/methodology only — no runtime, schema or
+  public-contract change. Refs #203.
 
 ### Fixed
 

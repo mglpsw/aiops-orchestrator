@@ -70,9 +70,11 @@ one — it means the design is not ready to implement yet.
   been run and observed to make the test fail? (A mutation test that has
   never been observed failing proves nothing — it may be non-discriminating
   by construction.)
-- Which evidence class is justified: `deterministic_complete`,
-  `finite_exhaustive`, `empirically_supported`, or `advisory_observation`?
-  Do not claim a stronger class than the evidence supports.
+- Which evidence class is justified? Select it from `evidence_classes` in the
+  [normative registry](#normative-registry), which owns that vocabulary. Do
+  not claim a stronger class than the evidence supports, and do not restate
+  the list here — a second copy in prose is a second authority, and it drifts
+  in exactly the direction nobody is watching.
 
 ## 6. Cross-layer assumptions
 
@@ -285,20 +287,48 @@ proves nothing about commit identity or lineage, and `git compare` will
 correctly report the two commits as diverged. Cite tree equality for what it
 establishes and stop there.
 
-## Epistemic status — two axes, not one ranking
+## Epistemic classification — typed predicates, not a lifecycle
 
-Evidence class answers *how the evidence was obtained*; claim status answers
-*what may now be asserted*. They are separate axes, and neither is a scalar
-ranking of the other. The vocabulary is declared once in the registry:
-`evidence_class` reuses the four terms §5 already established — no second
-vocabulary is introduced here — and `claim_status` names what a reader may
-rely on.
+The registry's `epistemic_predicates` are **not states of one lifecycle**, and
+there is deliberately no transition relation between them. Each is a typed
+predicate over a proposition, admitted by its own `basis`; several may hold at
+once whenever they are logically compatible.
 
-The registry's `forbidden_promotions` are the transitions this repository has
-seen attempted or nearly attempted. In particular a clean external review is
-`NON_REFUTED`: it is the absence of a found defect, not the presence of a
-proof, and no number of clean reviews composes into one. `UNAVAILABLE` is a
-real, reportable outcome — not a failure to try.
+That is not a stylistic preference — a single-valued status field was tried
+here and falsified by this repository's own evidence. `#247` is simultaneously
+mechanically verified, mutation discriminated, empirically supported and
+non-refuted. One field can carry one of those, so three were silently dropped
+the moment the record was written.
+
+The general algebra of these categories — whether they form an order, a
+partial order, a product, or simply independent predicates — is **an open
+formal question and is intentionally not settled here**. What this document
+fixes is narrower and sufficient for process use: the predicates are typed,
+they may co-hold, and none of them is a step toward another.
+
+A clean external review is `NON_REFUTED`: the absence of a found defect, not
+the presence of a proof, and no number of clean reviews composes into one.
+`UNAVAILABLE` is a real, reportable outcome — not a failure to try, and not a
+state waiting to be upgraded.
+
+### Proof is admitted, never reached
+
+`PROVED` is not the top of a ladder. It has its own admission rule, stated
+positively in the registry's `proof_admission`: it may be asserted only from
+explicit proof evidence carrying, at minimum, the proposition, its declared
+domain, the assumptions, and the derivation basis.
+
+Positive admission replaces the deny-list an earlier revision used, and the
+reason is structural rather than aesthetic. A deny-list over eight categories
+has 56 ordered pairs; that revision enumerated 8, leaving 48 implicitly
+permitted, and review immediately found two of the gaps. "What makes `PROVED`
+admissible" has one answer; "which transitions are forbidden" has as many
+holes as nobody happens to be looking at.
+
+Every other basis — bounded mechanical verification, causal mutation
+discrimination, a declared empirical corpus, bounded adversarial search — is
+declared insufficient for proof, individually and by accumulation. Adding a
+new predicate therefore cannot silently open a new route to `PROVED`.
 
 ## Best supportable claim
 
@@ -351,23 +381,46 @@ validate and classify. Recurrence inside a frozen boundary → `STOP / REDESIGN`
 **Before a protected action.** Live TOCTOU revalidation; the exact evidence
 subject still valid; issue-transition safety checked; an explicit grant held.
 
-## Evidence corpus
+## Method evidence — explanatory, and deliberately non-normative
 
-The registry's `corpus` records the lineage this method was extracted from.
-The negative entries are counterexamples: each converged on `STOP / REDESIGN`
-after reconstructing a stronger semantic claim downstream of the authority
-that could establish it. The positive entry, `#247`, established its
-authority first and was the first in the sequence to pass adversarial review
-clean on its first qualified head, with zero corrective commits after review.
+```text
+MethodAuthority  !=  MethodEvidence
+```
+
+Everything in this section is **evidence, not method**. It records why the
+rules above were adopted; it does not define them. The registry carries no PR
+number, commit SHA, review outcome or other historical fact, so the method
+stays semantically complete if every locator below becomes unavailable. An
+earlier revision put these facts inside the normative registry, where a
+`first_fresh_review_findings: 0` field sat with nothing able to contradict it.
+
+**Negative corpus.** `#242`, `#245` and `#246` each converged on
+`STOP / REDESIGN` after reconstructing a stronger semantic claim downstream of
+the authority that could establish it — `#242`/`#245` on representation
+fidelity, `#246` on deriving runtime behaviour from static source.
+
+**Positive control.** `#247` established its authority first and was the first
+in the sequence to pass adversarial review clean on its first qualified head,
+with no corrective commits after review. Source `75c80ab999`, squashed as
+`99e8bb838e`, trees equal at `f35a46d971`.
+
+Of those identities, only the **tree equality is locally checkable** — both
+commit objects are present, and `git` can compare their trees. The review
+outcome is a **forge observation**: it is not derivable from anything in this
+repository, and the offline process test deliberately does not revalidate it.
+Asserting `findings == 0` locally would be two copies of a number agreeing:
+
+```text
+ManualValue(0)  ∧  TestExpects(0)   ⇏   ForgeReviewFindings(0)
+```
 
 That contrast is **positive empirical evidence consistent with the
-authority-first hypothesis**. It is not a proof of it, and this document must
-never be read as claiming otherwise: one favourable case against three
-unfavourable ones is a strong prior for a method, not a theorem about
-software. The scoped invariants in `#247` are `MECHANICALLY_VERIFIED`, its
-selected mutants are `MUTATION_DISCRIMINATED`, its behaviour differential is
-`EMPIRICALLY_SUPPORTED` over a declared finite corpus, and its clean review is
-`NON_REFUTED`. None of those promote to `PROVED`.
+authority-first hypothesis** — one favourable case against three unfavourable
+ones is a strong prior for a method, not a theorem about software. `#247`
+carries `MECHANICALLY_VERIFIED`, `MUTATION_DISCRIMINATED`,
+`EMPIRICALLY_SUPPORTED` and `NON_REFUTED` **simultaneously**, which is
+precisely the observation that retired the single-status model. None of them
+is a step toward `PROVED`.
 
 ## Normative registry
 
@@ -386,7 +439,10 @@ own rules forbid.
     "lifecycle_derivation",
     "representation_fidelity",
     "runtime_behavior_derivation",
-    "evidence_qualification"
+    "evidence_qualification",
+    "method_authority_vs_method_evidence",
+    "epistemic_representation",
+    "claimed_vs_observed_verification_domain"
   ],
   "non_coercions": [
     {"from": "GitObjectExists(c)", "to": "CanonicalOnForge(c)"},
@@ -395,82 +451,58 @@ own rules forbid.
     {"from": "SourceOccurrenceIdentity(x)", "to": "RuntimeRoleIdentity(x)"},
     {"from": "StaticBindingIdentity(x)", "to": "EffectiveBindingIdentity(x)"},
     {"from": "EvidenceIdentityMatch(e)", "to": "EvidenceQualification(e)"},
+    {"from": "LocalVerification(f)", "to": "ForgeVerification(f)"},
     {"from": "Representation(x)", "to": "Role(x)"}
   ],
-  "evidence_class": [
+  "evidence_classes": [
     "deterministic_complete",
     "finite_exhaustive",
     "empirically_supported",
     "advisory_observation"
   ],
-  "claim_status": [
-    "DEFINED",
-    "MECHANICALLY_VERIFIED",
-    "MUTATION_DISCRIMINATED",
-    "EMPIRICALLY_SUPPORTED",
-    "NON_REFUTED",
-    "REFUTED",
-    "UNAVAILABLE",
-    "PROVED"
+  "epistemic_predicates": [
+    {"id": "DEFINED", "basis": "definition"},
+    {"id": "MECHANICALLY_VERIFIED", "basis": "bounded_mechanical_verification"},
+    {"id": "MUTATION_DISCRIMINATED", "basis": "causal_mutation_discrimination"},
+    {"id": "EMPIRICALLY_SUPPORTED", "basis": "declared_empirical_corpus"},
+    {"id": "NON_REFUTED", "basis": "bounded_adversarial_search"},
+    {"id": "REFUTED", "basis": "validated_counterexample"},
+    {"id": "UNAVAILABLE", "basis": "no_objective_satisfying_supportable_claim"},
+    {"id": "PROVED", "basis": "explicit_proof"}
   ],
-  "forbidden_promotions": [
-    {"from": "DEFINED", "to": "PROVED"},
-    {"from": "NON_REFUTED", "to": "PROVED"},
-    {"from": "EMPIRICALLY_SUPPORTED", "to": "PROVED"},
-    {"from": "MECHANICALLY_VERIFIED", "to": "PROVED"},
-    {"from": "MUTATION_DISCRIMINATED", "to": "PROVED"},
-    {"from": "DEFINED", "to": "MECHANICALLY_VERIFIED"},
-    {"from": "NON_REFUTED", "to": "MECHANICALLY_VERIFIED"},
-    {"from": "EMPIRICALLY_SUPPORTED", "to": "MECHANICALLY_VERIFIED"}
-  ],
-  "discriminants": [
-    {"id": "source_occurrence_vs_runtime_role",
-     "a": "SourceOccurrenceIdentity", "b": "RuntimeRoleIdentity",
-     "evidence": {"kind": "repository_path", "value": "tests/agent_review/test_target_pack_runtime_authority_v2.py"}},
-    {"id": "object_existence_vs_forge_role",
-     "a": "GitObjectExists", "b": "CanonicalOnForge",
-     "evidence": {"kind": "repository_path", "value": "app/agent_review/target_pack_runtime_authority_v2.py"}},
-    {"id": "subject_identity_vs_relation_identity",
-     "a": "SubjectIdentityEquality", "b": "RelationIdentityEquality",
-     "evidence": {"kind": "repository_path", "value": "docs/engineering/AGENT_REVIEW_V2_YAML_AUTHORITY_POSTMORTEM.md"}},
-    {"id": "reviewed_head_vs_corrective_head",
-     "a": "ReviewedHead", "b": "LaterCorrectiveHead",
-     "evidence": {"kind": "forge_record", "value": "PR 247 review names its reviewed commit explicitly"}},
-    {"id": "squash_inequality_with_tree_equality",
-     "a": "CommitIdentity", "b": "TreeIdentity",
-     "evidence": {"kind": "forge_record", "value": "PR 247 source 75c80ab9997a40a4e770e9ec16df59527f618ad6 squash 99e8bb838e997dfd69cdc575b05ec235d5f8942d tree f35a46d97135ef4473907abd4edbeac9bad512b4"}},
-    {"id": "intended_kill_vs_incidental_kill",
-     "a": "KilledByIntendedDiscriminator", "b": "KilledByUnrelatedShortCircuit",
-     "evidence": {"kind": "repository_path", "value": "tests/agent_review/test_profile_loader_v2_mutation_discrimination.py"}},
-    {"id": "first_finding_vs_recurrence_in_boundary",
-     "a": "FirstFindingInBoundary", "b": "RecurrenceAfterCorrection",
-     "evidence": {"kind": "repository_path", "value": "docs/engineering/AGENT_REVIEW_V2_YAML_AUTHORITY_POSTMORTEM.md"}},
-    {"id": "best_claim_vs_no_supportable_claim",
-     "a": "BestSupportableClaim", "b": "Unavailable",
-     "evidence": {"kind": "repository_path", "value": "docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md"}},
-    {"id": "clean_review_vs_proof",
-     "a": "NonRefuted", "b": "Proved",
-     "evidence": {"kind": "repository_path", "value": "docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md"}},
-    {"id": "qualification_vs_operational_grant",
-     "a": "SemanticAuthority", "b": "OperationalAuthority",
-     "evidence": {"kind": "repository_path", "value": "docs/engineering/CAEM_CORE.md"}}
-  ],
-  "corpus": {
-    "negative": [
-      {"pr": 242, "converged_on": "representation_fidelity"},
-      {"pr": 245, "converged_on": "representation_fidelity"},
-      {"pr": 246, "converged_on": "runtime_behavior_derivation"}
+  "proof_admission": {
+    "predicate": "PROVED",
+    "basis": "explicit_proof",
+    "required_evidence_fields": [
+      "proposition",
+      "declared_domain",
+      "assumptions",
+      "derivation_basis"
     ],
-    "positive": [
-      {"pr": 247,
-       "source_commit": "75c80ab9997a40a4e770e9ec16df59527f618ad6",
-       "squash_commit": "99e8bb838e997dfd69cdc575b05ec235d5f8942d",
-       "tree": "f35a46d97135ef4473907abd4edbeac9bad512b4",
-       "first_fresh_review_findings": 0,
-       "corrective_commits_after_review": 0,
-       "claim_status": "NON_REFUTED"}
+    "insufficient_bases": [
+      "definition",
+      "bounded_mechanical_verification",
+      "causal_mutation_discrimination",
+      "declared_empirical_corpus",
+      "bounded_adversarial_search",
+      "validated_counterexample",
+      "no_objective_satisfying_supportable_claim"
     ]
-  }
+  },
+  "discriminants": [
+    {"id": "source_occurrence_vs_runtime_role", "a": "SourceOccurrenceIdentity", "b": "RuntimeRoleIdentity"},
+    {"id": "object_existence_vs_forge_role", "a": "GitObjectExists", "b": "CanonicalOnForge"},
+    {"id": "subject_identity_vs_relation_identity", "a": "SubjectIdentityEquality", "b": "RelationIdentityEquality"},
+    {"id": "reviewed_head_vs_corrective_head", "a": "ReviewedHead", "b": "LaterCorrectiveHead"},
+    {"id": "commit_identity_vs_tree_identity", "a": "CommitIdentity", "b": "TreeIdentity"},
+    {"id": "intended_kill_vs_incidental_kill", "a": "KilledByIntendedDiscriminator", "b": "KilledByUnrelatedShortCircuit"},
+    {"id": "first_finding_vs_recurrence_in_boundary", "a": "FirstFindingInBoundary", "b": "RecurrenceAfterCorrection"},
+    {"id": "best_claim_vs_no_supportable_claim", "a": "BestSupportableClaim", "b": "Unavailable"},
+    {"id": "non_refuted_vs_proved", "a": "NonRefuted", "b": "Proved"},
+    {"id": "semantic_vs_operational_authority", "a": "SemanticAuthority", "b": "OperationalAuthority"},
+    {"id": "local_vs_forge_verification", "a": "LocalVerification", "b": "ForgeVerification"},
+    {"id": "method_authority_vs_method_evidence", "a": "MethodAuthority", "b": "MethodEvidence"}
+  ]
 }
 ```
 <!-- END NORMATIVE: convergence-review-registry-v1 -->
