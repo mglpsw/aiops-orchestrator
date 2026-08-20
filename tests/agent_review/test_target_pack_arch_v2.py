@@ -13,6 +13,8 @@ import ast
 import re
 from pathlib import Path
 
+from app.agent_review.target_pack_runtime_authority_v2 import TARGET_PACK_CLI_COMMANDS_V2
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 APP_DIR = REPO_ROOT / "app" / "agent_review"
 TEMPLATES_DIR = REPO_ROOT / "templates" / "agentreview-v2-target-pack"
@@ -336,23 +338,25 @@ _SPEC_PATH_V2 = REPO_ROOT / "docs" / "checkpoints" / "AGENT_REVIEW_V2_203_TARGET
 _SPEC_DEFERRED_HEADING_V2 = "## 14. Deferred (explicitly, not silently)"
 
 
-def _cli_exposed_subcommands_v2() -> set[str]:
-    """Structural, not textual: the names the argparse surface actually
-    registers via `sub.add_parser("<name>", ...)`."""
+def _runtime_authority_cli_commands_v2() -> frozenset[str]:
+    """`C` -- the command identities the runtime authority declares.
 
-    tree = _parse(_CLI_MODULE_PATH_V2)
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "add_parser"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and isinstance(node.args[0].value, str)
-        ):
-            names.add(node.args[0].value)
-    return names
+    This replaces a scan for literal `sub.add_parser("<name>", ...)` calls.
+    That scan observed `SourceOccurrenceIdentity` and promoted it to
+    `RuntimeRoleIdentity`, which are different propositions -- and once the
+    parser began iterating the authority (`add_parser(spec.name, ...)`) the
+    scan lost its subject entirely and returned the empty set, silently
+    vacating the non-exposure half of these invariants.
+
+    This is a narrow projection of the authority, not a second definition of
+    it. `C = K = P` (authority domain = configurator domain = real parser
+    choices) is proved in `test_target_pack_runtime_authority_v2.py`; this
+    module composes that proved relation with the operative spec, so it does
+    not reconstruct `P` here. It also does not read the generated JSON view:
+    that is `Projection(Authority)`, a build artifact, and must never mediate
+    a semantic decision."""
+
+    return frozenset(spec.name for spec in TARGET_PACK_CLI_COMMANDS_V2)
 
 
 def _spec_deferred_subcommand_bullet_v2() -> str:
@@ -377,31 +381,43 @@ def _spec_deferred_subcommand_bullet_v2() -> str:
     return enumerating[0]
 
 
-def test_operative_spec_does_not_defer_a_subcommand_the_cli_exposes() -> None:
+def test_operative_spec_does_not_defer_a_runtime_authority_command() -> None:
     """PR #244 exposed `validate` while the operative specification still
     listed it as a deferred, unwritten subcommand. Because that document
     declares itself the authority maintainers cite for deferred-subcommand
-    classification, the two states must not disagree."""
+    classification, the two states must not disagree.
 
-    exposed = _cli_exposed_subcommands_v2()
-    assert "validate" in exposed, "the CLI no longer exposes validate; this test's premise changed"
+    Proves `C intersect S_D = empty`. Composed with the separately proved
+    `C = P`, this establishes `P intersect S_D = empty` without this test
+    ever re-deriving `P`."""
+
+    commands = _runtime_authority_cli_commands_v2()
+    assert "validate" in commands, (
+        "the runtime command authority no longer includes validate; this test's premise changed"
+    )
 
     deferred_bullet = _spec_deferred_subcommand_bullet_v2()
-    contradictions = sorted(name for name in exposed if f"`{name}`" in deferred_bullet)
+    contradictions = sorted(name for name in commands if f"`{name}`" in deferred_bullet)
     assert not contradictions, (
         f"the operative spec's deferral bullet still classifies {contradictions} as deferred "
-        f"while the CLI parser exposes them: {sorted(exposed)}"
+        f"while the runtime command authority declares them: {sorted(commands)}"
     )
 
 
 def test_operative_spec_still_defers_the_genuinely_unshipped_subcommands() -> None:
     """The reconciliation must not have over-corrected into claiming the
-    whole `#203` surface ships."""
+    whole `#203` surface ships.
 
+    These four names pin a lifecycle decision of the CURRENT operative spec;
+    they do not attempt to define the runtime CLI. Restructuring that
+    documentary authority belongs to the later documentation successor, not
+    to this runtime predecessor."""
+
+    commands = _runtime_authority_cli_commands_v2()
     deferred_bullet = _spec_deferred_subcommand_bullet_v2()
     for name in ("conformance", "install-workflows", "upgrade", "rollback"):
         assert f"`{name}`" in deferred_bullet, f"{name} is not shipped but the spec stopped deferring it"
-        assert name not in _cli_exposed_subcommands_v2(), f"{name} is exposed by the CLI but still listed as deferred"
+        assert name not in commands, f"{name} is declared by the runtime command authority but still listed as deferred"
 
 
 # ---------------------------------------------------------------------

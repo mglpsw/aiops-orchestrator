@@ -1,0 +1,102 @@
+{
+  "cli_surface": {
+    "commands": [
+      "doctor",
+      "init",
+      "validate"
+    ]
+  },
+  "format_id": "aiops.agent-review.internal.target-pack-runtime-authority-view.v1",
+  "generated": {
+    "generator": "target-pack-runtime-authority-view-v1"
+  },
+  "validate_check_domain": {
+    "checks": [
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "target_root",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "aiops_snapshot",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "receipt",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "profile",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "profile_hash",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "profile_identity",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "root_identity",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "observation_budget",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "target_owned_integrity",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "generated_file_integrity",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "locally_evaluable",
+        "name": "cross_ledger_alias_separation",
+        "unvalidated_reason_code": null
+      },
+      {
+        "evaluation_class": "unvalidated",
+        "name": "upstream_pack_identity",
+        "unvalidated_reason_code": "target_pack_validate_upstream_pack_identity_requires_the_upstream_manifest_and_toolrepo"
+      },
+      {
+        "evaluation_class": "unvalidated",
+        "name": "target_owned_set",
+        "unvalidated_reason_code": "target_pack_validate_target_owned_set_requires_the_upstream_manifest"
+      },
+      {
+        "evaluation_class": "unvalidated",
+        "name": "generated_file_set",
+        "unvalidated_reason_code": "target_pack_validate_generated_file_set_requires_the_upstream_manifest"
+      },
+      {
+        "evaluation_class": "unvalidated",
+        "name": "rollout_capability",
+        "unvalidated_reason_code": "target_pack_validate_rollout_capability_requires_the_upstream_manifest"
+      },
+      {
+        "evaluation_class": "unvalidated",
+        "name": "previous_install_lineage",
+        "unvalidated_reason_code": "target_pack_validate_previous_install_lineage_not_verifiable_from_current_target_state"
+      },
+      {
+        "evaluation_class": "unvalidated",
+        "name": "trusted_check_inventory",
+        "unvalidated_reason_code": "target_pack_validate_trusted_check_inventory_requires_an_unshipped_contract"
+      }
+    ]
+  }
+}

@@ -70,6 +70,10 @@ from app.agent_review.target_pack_receipt_v2 import (  # noqa: E402
     TargetInstallReceiptV2,
     load_target_install_receipt_bytes_v2,
 )
+from app.agent_review.target_pack_runtime_authority_v2 import (  # noqa: E402
+    TARGET_PACK_CLI_COMMANDS_V2,
+    cli_command_names_v2,
+)
 from app.agent_review.target_pack_validate_v2 import run_validate_v2  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
@@ -258,11 +262,13 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     return CLI_EXIT_SATISFIED_OR_NOOP_V2 if report.is_valid else CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2
 
 
-def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+class TargetPackCliSurfaceErrorV2(Exception):
+    """The exposed CLI surface disagrees with the declared command authority.
+    An internal programmer error, raised (never asserted -- `python -O` strips
+    asserts) so a divergent surface can never be exposed to a caller."""
 
-    init_parser = sub.add_parser("init", help="seed a target repository (TARGET_OWNED files only, once)")
+
+def _configure_init_v2(init_parser: argparse.ArgumentParser) -> None:
     init_parser.add_argument("--target-root", required=True)
     init_parser.add_argument("--toolrepo-root", required=True)
     init_parser.add_argument("--target-repo", required=True, help="owner/name of the target repository")
@@ -273,19 +279,65 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     init_parser.add_argument("--accept-target-owned", action="append", default=[])
     init_parser.set_defaults(handler=_cmd_init)
 
-    doctor_parser = sub.add_parser("doctor", help="read-only diagnostics; never mutates the target")
+
+def _configure_doctor_v2(doctor_parser: argparse.ArgumentParser) -> None:
     doctor_parser.add_argument("--target-root", required=True)
     doctor_parser.add_argument("--toolrepo-root", required=True)
     doctor_parser.add_argument("--target-repo", required=True, help="owner/name of the target repository")
     doctor_parser.add_argument("--pack-version", required=True)
     doctor_parser.set_defaults(handler=_cmd_doctor)
 
-    validate_parser = sub.add_parser(
-        "validate", help="target-only, read-only validation; requires no toolrepo checkout"
-    )
+
+def _configure_validate_v2(validate_parser: argparse.ArgumentParser) -> None:
     validate_parser.add_argument("--target-root", required=True)
     validate_parser.set_defaults(handler=_cmd_validate)
 
+
+# `K` -- the configurator domain. Argument wiring stays ordinary Python; what
+# the authority owns is which command identities exist.
+_CONFIGURATORS_V2 = {
+    "init": _configure_init_v2,
+    "doctor": _configure_doctor_v2,
+    "validate": _configure_validate_v2,
+}
+
+
+def _build_subcommands_v2(sub: argparse._SubParsersAction) -> None:
+    """The ONE authorized subcommand builder, enforcing `C = K = P`.
+
+        C = authority command domain
+        K = configurator domain
+        P = choices the constructed parser actually exposes
+
+    Iterating the authority is necessary but NOT sufficient on its own: it
+    does not stop someone later adding a stray `add_parser()` or a second
+    `add_subparsers()` elsewhere in this file. So `P` is read back from the
+    parser that was actually built, and an architecture test forbids any
+    `add_parser`/`add_subparsers` call site outside this function."""
+
+    commands = cli_command_names_v2()
+    if set(commands) != set(_CONFIGURATORS_V2):
+        raise TargetPackCliSurfaceErrorV2(
+            "CLI command authority and configurator domain disagree: "
+            f"authority-only={sorted(set(commands) - set(_CONFIGURATORS_V2))} "
+            f"configurator-only={sorted(set(_CONFIGURATORS_V2) - set(commands))}"
+        )
+
+    for spec in TARGET_PACK_CLI_COMMANDS_V2:
+        _CONFIGURATORS_V2[spec.name](sub.add_parser(spec.name, help=spec.help))
+
+    exposed = set(sub.choices)
+    if exposed != set(commands):
+        raise TargetPackCliSurfaceErrorV2(
+            "exposed parser choices disagree with the CLI command authority: "
+            f"exposed-only={sorted(exposed - set(commands))} authority-only={sorted(set(commands) - exposed)}"
+        )
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    _build_subcommands_v2(sub)
     return parser.parse_args(argv)
 
 

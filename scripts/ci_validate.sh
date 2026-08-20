@@ -105,8 +105,16 @@ else
     fail "docs/generated/RI_B0A_2_REUSE_REFERENCE.md desatualizado — regenere sem --check"
 fi
 
-# ── 7. Testes Python (unit, offline) ─────────────────────────────────────────
-header "7. Testes Python"
+# ── 7. Target-pack runtime authority view ────────────────────────────────────
+header "7. Target-pack runtime authority view"
+if python3 scripts/generate-target-pack-runtime-authority-view.py --check; then
+    ok "docs/generated/target-pack-runtime-authority.v1.json em sincronia com as autoridades declaradas"
+else
+    fail "runtime authority view desatualizada — regenere com scripts/generate-target-pack-runtime-authority-view.py"
+fi
+
+# ── 8. Testes Python (unit, offline) ─────────────────────────────────────────
+header "8. Testes Python"
 if ! command -v python3 &>/dev/null; then
     fail "python3 não encontrado"
 elif ! python3 -m pytest --version &>/dev/null; then
@@ -121,7 +129,7 @@ else
     fi
 fi
 
-# ── 8. Testes de subprocess git real (requires_network) ─────────────────────
+# ── 9. Testes de subprocess git real (requires_network) ─────────────────────
 # `requires_network` é a convenção já estabelecida deste repositório para
 # "spawna um subprocess git real" (não acesso literal à rede -- ver o
 # docstring do próprio test_diff_acquisition_v2.py), e a secção 7 acima a
@@ -133,7 +141,7 @@ fi
 # tocar o escopo do filtro padrão da seção 7 (nenhuma dependência de
 # docker/prometheus/runtime existe neste runner) -- roda somente os testes
 # desse marker, isolados da execução padrão acima.
-header "8. Testes de subprocess git real (requires_network)"
+header "9. Testes de subprocess git real (requires_network)"
 if ! command -v python3 &>/dev/null; then
     fail "python3 não encontrado"
 else
