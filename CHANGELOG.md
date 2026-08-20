@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Changed
+
+- **Target-pack CLI surface and validate check-domain now have single
+  internal runtime authorities, consumed by the runtime itself (`#203`)**:
+  `app/agent_review/target_pack_runtime_authority_v2.py` declares two
+  deliberately distinct subjects — which commands the CLI exposes, and the
+  domain of validate check identities. The CLI parser is built by iterating
+  the command authority and verifies `C = K = P` (authority domain =
+  configurator domain = exposed parser choices), and every validate report is
+  constructed through one finalizer that canonicalizes against the declared
+  domain and refuses an unknown identity, a duplicate, a caller-fabricated
+  `unvalidated` row, or a locally evaluable check marked `unavailable`.
+  `VALIDATE_CHECK_ORDER_V2` and `UNVALIDATED_CAPABILITIES_V2` survive only as
+  derived projections. A deterministic internal view,
+  `docs/generated/target-pack-runtime-authority.v1.json`, is emitted and
+  gated byte-identical in CI so tooling can consume both relations without
+  parsing Python. Observable behaviour is intended unchanged — verified by a
+  baseline-vs-candidate differential over 9 validate scenarios (109 check
+  rows, early-return paths included) and 10 CLI invocations. Public
+  target-facing contracts are untouched: `TargetPackManifestV2` and
+  `TargetInstallReceiptV2` have no diff, exported schemas are byte-identical,
+  and the same real manifest builds to identical canonical bytes and digest
+  on both sides. Refs #203.
+
 ### Fixed
 
 - **AgentReview v2 target-profile YAML loading now derives ambiguity from

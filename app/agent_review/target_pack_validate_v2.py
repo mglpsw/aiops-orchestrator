@@ -208,75 +208,56 @@ from app.agent_review.target_pack_receipt_v2 import (
     compute_portable_target_root_identity_v2,
     load_target_install_receipt_bytes_v2,
 )
+from app.agent_review.target_pack_runtime_authority_v2 import (
+    AIOPS_SNAPSHOT_CHECK_V2,
+    CROSS_LEDGER_ALIAS_CHECK_V2,
+    GENERATED_FILE_INTEGRITY_CHECK_V2,
+    GENERATED_FILE_SET_CHECK_V2,
+    GENERATED_FILE_SET_REASON_V2,
+    OBSERVATION_BUDGET_CHECK_V2,
+    PREVIOUS_INSTALL_LINEAGE_CHECK_V2,
+    PREVIOUS_INSTALL_LINEAGE_REASON_V2,
+    PROFILE_CHECK_V2,
+    PROFILE_HASH_CHECK_V2,
+    PROFILE_IDENTITY_CHECK_V2,
+    RECEIPT_CHECK_V2,
+    ROLLOUT_CAPABILITY_CHECK_V2,
+    ROLLOUT_CAPABILITY_REASON_V2,
+    ROOT_IDENTITY_CHECK_V2,
+    TARGET_OWNED_INTEGRITY_CHECK_V2,
+    TARGET_OWNED_SET_CHECK_V2,
+    TARGET_OWNED_SET_REASON_V2,
+    TARGET_ROOT_CHECK_V2,
+    TRUSTED_CHECK_INVENTORY_CHECK_V2,
+    TRUSTED_CHECK_INVENTORY_REASON_V2,
+    UPSTREAM_PACK_IDENTITY_CHECK_V2,
+    UPSTREAM_PACK_IDENTITY_REASON_V2,
+    ValidateEvaluationClassV2,
+    validate_check_domain_names_v2,
+    validate_check_index_v2,
+    validate_locally_evaluable_names_v2,
+    validate_spec_by_name_v2,
+    validate_unvalidated_specs_v2,
+)
 
 # --- Status vocabulary -------------------------------------------------
 STATUS_PASS_V2 = "pass"
 STATUS_FAIL_V2 = "fail"
 STATUS_UNAVAILABLE_V2 = "unavailable"
 
-# --- Check-name constants ------------------------------------------------
-TARGET_ROOT_CHECK_V2 = "target_root"
-AIOPS_SNAPSHOT_CHECK_V2 = "aiops_snapshot"
-RECEIPT_CHECK_V2 = "receipt"
-PROFILE_CHECK_V2 = "profile"
-PROFILE_HASH_CHECK_V2 = "profile_hash"
-PROFILE_IDENTITY_CHECK_V2 = "profile_identity"
-ROOT_IDENTITY_CHECK_V2 = "root_identity"
-OBSERVATION_BUDGET_CHECK_V2 = "observation_budget"
-TARGET_OWNED_INTEGRITY_CHECK_V2 = "target_owned_integrity"
-GENERATED_FILE_INTEGRITY_CHECK_V2 = "generated_file_integrity"
-# `#203-C2` Codex Round 1, P2-A: a relation `target_owned_integrity`/
-# `generated_file_integrity` do NOT own -- both are documented (see the
-# module docstring) as verifying only "the byte claims the receipt
-# actually makes", never ownership-class separation. `#203-C1` proves
-# textual/declared-key disjointness between the two ledgers; it says
-# nothing about RUNTIME RESOLVED-FILESYSTEM identity -- two distinct,
-# C1-legal `RelativePath` keys, one per ledger, can still resolve to the
-# SAME physical file (an in-root symlink). That is a genuinely different,
-# only-locally-observable relation, so it gets its own dedicated check
-# rather than silently redefining either integrity check's documented
-# scope.
-CROSS_LEDGER_ALIAS_CHECK_V2 = "cross_ledger_alias_separation"
-TARGET_OWNED_SET_CHECK_V2 = "target_owned_set"
-GENERATED_FILE_SET_CHECK_V2 = "generated_file_set"
-ROLLOUT_CAPABILITY_CHECK_V2 = "rollout_capability"
-PREVIOUS_INSTALL_LINEAGE_CHECK_V2 = "previous_install_lineage"
-TRUSTED_CHECK_INVENTORY_CHECK_V2 = "trusted_check_inventory"
-
-# ONE dimension for the whole installed-state-to-upstream-pack RELATION,
-# deliberately not three (`pack_version`, `toolrepo_sha`,
-# `manifest_digest` are the receipt's three CLAIMS about that single
-# relation, and no consumer can act on them separately when all three are
-# equally unestablished). It exists because `valid` answers only "of the
-# relations I can independently observe locally, is any violated?" -- a
-# stale or fabricated receipt whose local relations are all self-coherent
-# is locally valid AND says nothing true about which upstream pack it
-# came from. Without this row a consumer could read `valid: true` and
-# infer provenance was checked.
-UPSTREAM_PACK_IDENTITY_CHECK_V2 = "upstream_pack_identity"
+# --- Check-name identities (re-exported, not owned here) -----------------
+# The 17 check identities and the 6 structural `unavailable` reasons are
+# declared by `target_pack_runtime_authority_v2`. They are imported above and
+# re-exported here only so existing `from ...target_pack_validate_v2 import
+# TARGET_ROOT_CHECK_V2` call sites keep working. There is deliberately no
+# second complete enumeration in this module: a narrow partial binding such as
+# `_CHECK_NAME_BY_LEDGER_V2` below is a different typed relation (ledger kind
+# -> identity), not a rival domain authority.
 
 # The determinism contract: every return path emits a duplicate-free
-# SUBSEQUENCE of this tuple. 17 conceptual dimensions: 11 locally
-# evaluable when applicable, 6 always-disclosed unavailable.
-VALIDATE_CHECK_ORDER_V2: tuple[str, ...] = (
-    TARGET_ROOT_CHECK_V2,
-    AIOPS_SNAPSHOT_CHECK_V2,
-    RECEIPT_CHECK_V2,
-    PROFILE_CHECK_V2,
-    PROFILE_HASH_CHECK_V2,
-    PROFILE_IDENTITY_CHECK_V2,
-    ROOT_IDENTITY_CHECK_V2,
-    OBSERVATION_BUDGET_CHECK_V2,
-    TARGET_OWNED_INTEGRITY_CHECK_V2,
-    GENERATED_FILE_INTEGRITY_CHECK_V2,
-    CROSS_LEDGER_ALIAS_CHECK_V2,
-    UPSTREAM_PACK_IDENTITY_CHECK_V2,
-    TARGET_OWNED_SET_CHECK_V2,
-    GENERATED_FILE_SET_CHECK_V2,
-    ROLLOUT_CAPABILITY_CHECK_V2,
-    PREVIOUS_INSTALL_LINEAGE_CHECK_V2,
-    TRUSTED_CHECK_INVENTORY_CHECK_V2,
-)
+# SUBSEQUENCE of the authority's declared order. Both tuples below are DERIVED
+# PROJECTIONS of that domain -- never independently maintained lists.
+VALIDATE_CHECK_ORDER_V2: tuple[str, ...] = validate_check_domain_names_v2()
 
 # --- Reason codes ----------------------------------------------------------
 # Every reason code this module emits is defined here and begins
@@ -319,30 +300,8 @@ GENERATED_FILE_UNREADABLE_REASON_V2 = "target_pack_validate_generated_file_unrea
 GENERATED_FILE_DRIFT_REASON_V2 = "target_pack_validate_generated_file_drift"
 CROSS_LEDGER_ALIAS_CONFLICT_REASON_V2 = "target_pack_validate_cross_ledger_alias_conflict"
 
-# `unavailable` reason codes name the OWNER of the question.
-TARGET_OWNED_SET_REASON_V2 = "target_pack_validate_target_owned_set_requires_the_upstream_manifest"
-GENERATED_FILE_SET_REASON_V2 = "target_pack_validate_generated_file_set_requires_the_upstream_manifest"
-ROLLOUT_CAPABILITY_REASON_V2 = "target_pack_validate_rollout_capability_requires_the_upstream_manifest"
-PREVIOUS_INSTALL_LINEAGE_REASON_V2 = (
-    "target_pack_validate_previous_install_lineage_not_verifiable_from_current_target_state"
-)
-TRUSTED_CHECK_INVENTORY_REASON_V2 = "target_pack_validate_trusted_check_inventory_requires_an_unshipped_contract"
-# Names the two independent artifacts that would be needed to establish
-# the relation, so the code cannot be misread as "the receipt is
-# malformed", "the receipt is missing" or "the local bytes drifted" --
-# all three of which are separate, locally decidable failures with their
-# own codes above.
-UPSTREAM_PACK_IDENTITY_REASON_V2 = (
-    "target_pack_validate_upstream_pack_identity_requires_the_upstream_manifest_and_toolrepo"
-)
-
-UNVALIDATED_CAPABILITIES_V2: tuple[tuple[str, str], ...] = (
-    (UPSTREAM_PACK_IDENTITY_CHECK_V2, UPSTREAM_PACK_IDENTITY_REASON_V2),
-    (TARGET_OWNED_SET_CHECK_V2, TARGET_OWNED_SET_REASON_V2),
-    (GENERATED_FILE_SET_CHECK_V2, GENERATED_FILE_SET_REASON_V2),
-    (ROLLOUT_CAPABILITY_CHECK_V2, ROLLOUT_CAPABILITY_REASON_V2),
-    (PREVIOUS_INSTALL_LINEAGE_CHECK_V2, PREVIOUS_INSTALL_LINEAGE_REASON_V2),
-    (TRUSTED_CHECK_INVENTORY_CHECK_V2, TRUSTED_CHECK_INVENTORY_REASON_V2),
+UNVALIDATED_CAPABILITIES_V2: tuple[tuple[str, str], ...] = tuple(
+    (spec.name, spec.unvalidated_reason_code or "") for spec in validate_unvalidated_specs_v2()
 )
 
 _AIOPS_DIR_RELATIVE_V2 = DEFAULT_TARGET_PROFILE_RELATIVE_PATH.parent
@@ -1068,8 +1027,59 @@ class ValidateReportV2:
         return tuple(check.name for check in self.checks if check.status == STATUS_UNAVAILABLE_V2)
 
 
-def _unavailable_checks_v2() -> tuple[ValidateCheckV2, ...]:
-    return tuple(ValidateCheckV2(name, STATUS_UNAVAILABLE_V2, reason) for name, reason in UNVALIDATED_CAPABILITIES_V2)
+class ValidateReportConstructionErrorV2(Exception):
+    """The finalizer was handed observed checks that the declared check domain
+    does not sanction. An internal programmer error in THIS module, never a
+    diagnosable target state -- so it is an exception, not a reason-coded
+    check, exactly like every other bug-class failure here."""
+
+
+def _finalize_validate_checks_v2(observed: tuple[ValidateCheckV2, ...]) -> tuple[ValidateCheckV2, ...]:
+    """The ONLY sanctioned construction of a report's final checks tuple.
+
+    Every report must pass through here, so the declared domain is a causal
+    authority over the runtime rather than a description of it:
+
+        O(x) subset of L
+        R(x) = Canonicalize(O(x) union U)
+        U subset of R(x)     and     R(x) subset of D
+
+    `Canonicalize` orders by the authority's own declaration order, which is
+    why check ordering is decided in exactly one place. Fails closed rather
+    than emitting a report the domain does not sanction -- an unknown or
+    duplicated identity, a caller fabricating an `unvalidated` row the
+    authority alone may emit, or a locally evaluable check smuggling
+    `unavailable` status (which would silently widen the disclosed
+    authority boundary)."""
+
+    spec_by_name = validate_spec_by_name_v2()
+    locally_evaluable = set(validate_locally_evaluable_names_v2())
+
+    seen: set[str] = set()
+    for check in observed:
+        spec = spec_by_name.get(check.name)
+        if spec is None:
+            raise ValidateReportConstructionErrorV2(
+                f"observed check {check.name!r} is not in the declared validate check domain"
+            )
+        if check.name in seen:
+            raise ValidateReportConstructionErrorV2(f"observed check {check.name!r} emitted more than once")
+        seen.add(check.name)
+        if spec.evaluation_class is ValidateEvaluationClassV2.UNVALIDATED:
+            raise ValidateReportConstructionErrorV2(
+                f"observed check {check.name!r} is structurally UNVALIDATED; only the authority may emit it"
+            )
+        if check.name in locally_evaluable and check.status == STATUS_UNAVAILABLE_V2:
+            raise ValidateReportConstructionErrorV2(
+                f"locally evaluable check {check.name!r} was emitted with status {STATUS_UNAVAILABLE_V2!r}"
+            )
+
+    unvalidated = tuple(
+        ValidateCheckV2(spec.name, STATUS_UNAVAILABLE_V2, spec.unvalidated_reason_code)
+        for spec in validate_unvalidated_specs_v2()
+    )
+    index = validate_check_index_v2()
+    return tuple(sorted((*observed, *unvalidated), key=lambda check: index[check.name]))
 
 
 def _resolve_artifact_path_v2(aiops_dir: Path, target_root_real: Path, filename: str) -> tuple[Path | None, str | None]:
@@ -1172,5 +1182,8 @@ def run_validate_v2(*, target_root: Path) -> ValidateReportV2:
     errors (a bug in this module itself) remain exceptions.
     """
 
-    checks, target_root_real = _collect_checks_v2(target_root)
-    return ValidateReportV2(target_root_real=target_root_real, checks=(*checks, *_unavailable_checks_v2()))
+    observed, target_root_real = _collect_checks_v2(target_root)
+    return ValidateReportV2(
+        target_root_real=target_root_real,
+        checks=_finalize_validate_checks_v2(tuple(observed)),
+    )

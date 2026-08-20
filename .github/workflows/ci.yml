@@ -92,6 +92,9 @@ jobs:
       - name: RI-B0a.2 reuse view in sync
         run: python scripts/generate-ri-b0a-2-reuse-view.py --check
 
+      - name: Target-pack runtime authority view in sync
+        run: python scripts/generate-target-pack-runtime-authority-view.py --check
+
       - name: Benchmark corpus materializer byte-identical
         run: python scripts/materialize-benchmark-case.py --check
 
