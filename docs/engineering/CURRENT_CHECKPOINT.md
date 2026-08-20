@@ -1,7 +1,7 @@
 # CURRENT CHECKPOINT — AIOps/AgentReview
 
 **Status:** `CANONICAL | CURRENT`
-**Corte temporal (target pack, compilado):** <!-- BEGIN GENERATED: target-pack-current.checkpoint.temporal -->Implementation anchor: `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2` (committed 2026-08-18T21:56:15-03:00). Reconciled at: 2026-08-19T09:03:29-03:00.<!-- END GENERATED: target-pack-current.checkpoint.temporal -->
+**Corte temporal (target pack, compilado):** <!-- BEGIN GENERATED: target-pack-anchor.checkpoint.temporal -->Implementation anchor: `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2` (committed 2026-08-18T21:56:15-03:00). Anchor-state reconciled at: 2026-08-19T21:51:27-03:00.<!-- END GENERATED: target-pack-anchor.checkpoint.temporal -->
 **Classe:** estado observado; revalidar HEAD, runs e issues antes de qualquer ação.
 
 Este documento é importado pelo `CLAUDE.md` do repositório, portanto entra no
@@ -191,7 +191,7 @@ issues **não** são tratadas como máquina de estado do produto — a
 classificação por critério nos comentários de reconciliação é a fonte de
 verdade.
 
-- **Target pack (`#203`):** <!-- BEGIN GENERATED: target-pack-current.checkpoint.status -->Canonical on `master`: `doctor`, `init`, `validate`. Deferred: `conformance`, `install-workflows`, `rollback`, `upgrade`.<!-- END GENERATED: target-pack-current.checkpoint.status -->
+- **Target pack (`#203`):** <!-- BEGIN GENERATED: target-pack-anchor.checkpoint.status -->Exposed by the target-pack CLI at implementation anchor `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`: `doctor`, `init`, `validate`. Declared in the normative surface but not exposed at that anchor: `conformance`, `install-workflows`, `rollback`, `upgrade`.<!-- END GENERATED: target-pack-anchor.checkpoint.status -->
   Também implementados, fora do par canonical/deferred acima por não serem
   subcomandos de CLI: o binding de operation plans (PR #228), o hardening de
   identidade H1-A (PR #230), e os contratos de identidade `#203-C1` (PR #243).

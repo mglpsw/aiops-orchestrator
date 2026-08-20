@@ -251,10 +251,10 @@ follows, not from this prose list.
 ### Normative declared surface (machine-authoritative)
 
 This is the **only hand-maintained product datum** in the whole `#203-D0`
-CURRENT-truth pipeline (`app/agent_review/target_pack_current_state_v1.py`).
-It declares the *intended total* CLI surface — nothing about which names are
-canonical on `master` today, which is derived, never declared here (see
-below).
+anchor-state pipeline (`app/agent_review/target_pack_current_state_v1.py`).
+It declares the *intended total* CLI surface — nothing about which of those
+names any given implementation actually exposes, which is derived from an
+implementation anchor, never declared here (see below).
 
 <!-- BEGIN NORMATIVE: target-pack-surface-v1 -->
 ```json
@@ -273,27 +273,33 @@ below).
 ```
 <!-- END NORMATIVE: target-pack-surface-v1 -->
 
-**Implementation status (compiled, not hand-maintained — subject to the
-Live-state rule above).** `canonical` is derived by reading, via a static
+**Exposure at the implementation anchor (compiled, not hand-maintained).**
+`exposed_at_anchor` is derived by reading, via a static
 `git show <implementation_anchor>:scripts/agent-review-target-pack-v2.py` +
 `ast.parse` (never by importing or executing that code), exactly which
-subcommands the anchor's own `argparse` registers; `deferred` is the
-remainder of the declared surface above. This paragraph's own wording is
-generated from that compiled result — see
-`docs/generated/target-pack-current-state.json` for the exact anchor SHA and
-compiled sets currently in force; do not hand-edit the sentence below.
+subcommands the anchor's own `argparse` actively registers at top level;
+`declared_not_exposed_at_anchor` is the remainder of the declared surface
+above. Both are **relations between this block and one named commit** — the
+compiler establishes no relation to any branch, remote, or forge, and makes
+no claim about what is current. This paragraph's own wording is generated
+from that compiled projection — see
+`docs/generated/target-pack-current-state.json` for the exact anchor SHA, the
+digest identifying the normative block it was projected against, and the
+compiled sets in force; do not hand-edit the sentence below.
 
-<!-- BEGIN GENERATED: target-pack-current.spec.lifecycle-prose -->
-`doctor`, `init`, `validate` are implemented and **canonical on `master`**.
-`conformance`, `install-workflows`, `rollback`, `upgrade` remain specified here and deferred (§14).
-<!-- END GENERATED: target-pack-current.spec.lifecycle-prose -->
+<!-- BEGIN GENERATED: target-pack-anchor.spec.lifecycle-prose -->
+`doctor`, `init`, `validate` are exposed by the target-pack CLI at implementation anchor `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`.
+The remaining declared subcommands are not exposed at that anchor.
+<!-- END GENERATED: target-pack-anchor.spec.lifecycle-prose -->
 
-The distinction between *canonical on `master`* and *exposed only in an open
-candidate's working tree* is load-bearing and is why `canonical` is read from
-the **anchor's git blob**, never from whatever tree happens to be checked
-out: a candidate branch that adds a new subcommand to its own `argparse`
-must not cause this document, compiled against `master`'s anchor, to call
-that subcommand canonical before the candidate merges.
+The distinction between *exposed at the implementation anchor* and *exposed
+only in an open candidate's working tree* is load-bearing, and is why
+`exposed_at_anchor` is read from the **anchor's git blob**, never from
+whatever tree happens to be checked out: a candidate branch that adds a new
+subcommand to its own `argparse` must not cause this document, projected
+against a named anchor, to report that subcommand as exposed there. The two
+are different propositions about different subjects, and the compiler is
+structurally incapable of observing the second.
 
 `doctor` is **READ-ONLY by construction**: it accepts no mutating parameter and
 calls no write/mkdir/rename/remove primitive anywhere in its call graph, proven
@@ -621,12 +627,17 @@ adoption, Class C execution, CT104 canaries, release/pinning — `#204`/`#205`.
 
 ## 14. Deferred (explicitly, not silently)
 
-- **Subcommand lifecycle is normative in §4**, not here: which subcommands
-  are canonical on `master` and which remain deferred is the compiled
-  `canonical`/`deferred` split derived from §4's structured `declared[]`
-  block and the implementation anchor's own `argparse`. This section does
-  not re-enumerate that split as a second, independently maintained list —
-  see §4 for the current compiled state.
+- **Lifecycle is not inferred from exposure.** The anchor-state compiler
+  reports only which declared subcommands are and are not exposed at the
+  implementation anchor (§4). It does **not** derive lifecycle from that
+  observation, and this section must not either: a declared name that is not
+  exposed may be deferred, removed, reserved, unsupported, planned,
+  abandoned — or missing through an accidental regression, which converting
+  the observation into a lifecycle verdict would silently relabel as valid
+  planning. Scheduling and disposition are an independent roadmap/spec
+  authority. This section therefore does not re-enumerate the not-exposed
+  subcommand names as a second maintained list; §4 carries the exposure
+  relation, and only this section's remaining entries are lifecycle claims.
 - What `validate` deliberately does **not** do — upstream pack
   correspondence, the target-owned completeness set, the rollout ceiling,
   historical lineage, and the trusted-check inventory — is not deferred

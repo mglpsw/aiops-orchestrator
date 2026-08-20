@@ -1,31 +1,31 @@
 {
-  "format_id": "aiops.agent-review.target-pack-current-state.v1",
+  "format_id": "aiops.agent-review.target-pack-anchor-state.v1",
   "generated": {
-    "generator": "target-pack-current-state-v1",
+    "generator": "target-pack-anchor-state-v1",
     "implementation_anchor": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
     "source_inputs": "config/agent-review/target-pack-current-inputs.json"
   },
   "state": {
-    "historical_evidence": [
+    "commit_message_evidence": [
       {
-        "canonical_sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
+        "commit_sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
         "evidence_ref": {
-          "kind": "git_commit_message_c2_qualification_v1",
+          "kind": "git_commit_message_v1",
           "sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2"
         },
-        "kind": "c2_canonical_commit_qualification_v1",
+        "kind": "commit_message_evidence_v1",
         "suite": {
           "passed": 2801,
           "skipped": 4
         }
       }
     ],
+    "normative_surface": {
+      "content_sha256": "sha256:ec57b6cc1f8ae15d1bea231cc755a8e6b515422648a2e7c80f61df72d0861500",
+      "format_id": "aiops.agent-review.target-pack-surface.v1",
+      "source_path": "docs/checkpoints/AGENT_REVIEW_V2_203_TARGET_PACK_SPEC.md"
+    },
     "surface": {
-      "canonical": [
-        "doctor",
-        "init",
-        "validate"
-      ],
       "declared": [
         "conformance",
         "doctor",
@@ -35,29 +35,34 @@
         "upgrade",
         "validate"
       ],
-      "deferred": [
+      "declared_not_exposed_at_anchor": [
         "conformance",
         "install-workflows",
         "rollback",
         "upgrade"
+      ],
+      "exposed_at_anchor": [
+        "doctor",
+        "init",
+        "validate"
       ]
     },
     "temporal": {
       "anchor_committed_at": "2026-08-18T21:56:15-03:00",
       "implementation_anchor": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
-      "reconciled_at": "2026-08-19T09:03:29-03:00"
+      "reconciled_at": "2026-08-19T21:51:27-03:00"
     },
-    "validate_inventory": {
+    "validate_inventory_at_anchor": {
       "locally_evaluable": 11,
-      "permanently_unavailable": [
+      "total": 17,
+      "unvalidated_capabilities": [
         "generated_file_set",
         "previous_install_lineage",
         "rollout_capability",
         "target_owned_set",
         "trusted_check_inventory",
         "upstream_pack_identity"
-      ],
-      "total": 17
+      ]
     }
   }
 }

@@ -1,15 +1,15 @@
 {
-  "format_id": "aiops.agent-review.target-pack-current-inputs.v1",
+  "format_id": "aiops.agent-review.target-pack-anchor-inputs.v1",
   "implementation_anchor": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
   "reconciliation": {
-    "reconciled_at": "2026-08-19T09:03:29-03:00"
+    "reconciled_at": "2026-08-19T21:51:27-03:00"
   },
-  "historical_evidence": [
+  "commit_message_evidence": [
     {
-      "kind": "c2_canonical_commit_qualification_v1",
-      "canonical_sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
+      "kind": "commit_message_evidence_v1",
+      "commit_sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2",
       "evidence_ref": {
-        "kind": "git_commit_message_c2_qualification_v1",
+        "kind": "git_commit_message_v1",
         "sha": "d454e8f2d272b9edb011513b4a8f5d4e89ece4c2"
       }
     }

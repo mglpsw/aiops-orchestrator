@@ -13,10 +13,13 @@ Merged to `master` across PR #223 (first slice), PR #228 (operation-plan
 binding), PR #243 (`#203-C1`, installed-pack identity contracts) and PR #244
 (`#203-C2`, bounded offline `validate`). Not yet in any published release.
 
-**Compiled CURRENT state** (`app/agent_review/target_pack_current_state_v1.py`,
-anchored at the SHA named in `docs/generated/target-pack-current-state.json`):
+**Compiled anchor-state projection**
+(`app/agent_review/target_pack_current_state_v1.py`, projected against the
+implementation anchor named in
+`docs/generated/target-pack-current-state.json`). It reports exposure at that
+one commit and asserts nothing about live branch state:
 
-<!-- BEGIN GENERATED: target-pack-current.target-pack-doc.status -->Canonical on `master`: `doctor`, `init`, `validate`. Deferred: `conformance`, `install-workflows`, `rollback`, `upgrade`.<!-- END GENERATED: target-pack-current.target-pack-doc.status -->
+<!-- BEGIN GENERATED: target-pack-anchor.target-pack-doc.status -->Exposed by the target-pack CLI at implementation anchor `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`: `doctor`, `init`, `validate`. Declared in the normative surface but not exposed at that anchor: `conformance`, `install-workflows`, `rollback`, `upgrade`.<!-- END GENERATED: target-pack-anchor.target-pack-doc.status -->
 
 Two capabilities are implemented but are not CLI subcommands, so they fall
 outside the canonical/deferred split above and are not derivable from the
@@ -134,16 +137,16 @@ claimed upstream pack — `pack_version`/`toolrepo_sha`/`manifest_digest`
 remain `unavailable` (disclosed, never fabricated as pass or fail) without
 an upstream manifest/toolrepo.
 
-<!-- BEGIN GENERATED: target-pack-current.target-pack-doc.inventory -->
-**Check inventory (derived from the anchor, `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`):** 17 total dimensions, 11 locally evaluable when applicable, 6 permanently disclosed `unavailable`: `generated_file_set`, `previous_install_lineage`, `rollout_capability`, `target_owned_set`, `trusted_check_inventory`, `upstream_pack_identity`.
-<!-- END GENERATED: target-pack-current.target-pack-doc.inventory -->
+<!-- BEGIN GENERATED: target-pack-anchor.target-pack-doc.inventory -->
+**Check inventory at implementation anchor `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`:** 17 total dimensions, 11 locally evaluable when applicable, 6 reported `unavailable` because this validate implementation cannot establish them from the target alone: `generated_file_set`, `previous_install_lineage`, `rollout_capability`, `target_owned_set`, `trusted_check_inventory`, `upstream_pack_identity`.
+<!-- END GENERATED: target-pack-anchor.target-pack-doc.inventory -->
 
 Qualified across three adversarial Codex review rounds on the branch, each
 closed with `STOP_REDESIGN: false`.
 
-<!-- BEGIN GENERATED: target-pack-current.target-pack-doc.evidence -->
-C2 canonical qualification at `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`: full suite 2801 passed, 4 skipped; source: canonical commit message (git_commit_message_c2_qualification_v1@`d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`).
-<!-- END GENERATED: target-pack-current.target-pack-doc.evidence -->
+<!-- BEGIN GENERATED: target-pack-anchor.target-pack-doc.evidence -->
+Commit-message evidence at `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2` records: full suite 2801 passed, 4 skipped.
+<!-- END GENERATED: target-pack-anchor.target-pack-doc.evidence -->
 
 ## Templates shipped
 

@@ -26,9 +26,9 @@ instant any further commit lands, which is exactly the failure mode
 and the reconciliation instant this document reflects are declared once and
 compiled, not hand-typed per document:
 
-<!-- BEGIN GENERATED: target-pack-current.project-status.temporal -->
-Implementation anchor: `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2` (committed 2026-08-18T21:56:15-03:00). Reconciled at: 2026-08-19T09:03:29-03:00.
-<!-- END GENERATED: target-pack-current.project-status.temporal -->
+<!-- BEGIN GENERATED: target-pack-anchor.project-status.temporal -->
+Implementation anchor: `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2` (committed 2026-08-18T21:56:15-03:00). Anchor-state reconciled at: 2026-08-19T21:51:27-03:00.
+<!-- END GENERATED: target-pack-anchor.project-status.temporal -->
 
 For material unreleased since `v0.22.0`, independent of this document's own
 reconciliation cadence: `git log v0.22.0..master`. Notable work already on
@@ -265,9 +265,9 @@ comment is the source of truth.
 
 ### Target Pack v2
 
-<!-- BEGIN GENERATED: target-pack-current.project-status.status -->
-Canonical on `master`: `doctor`, `init`, `validate`. Deferred: `conformance`, `install-workflows`, `rollback`, `upgrade`.
-<!-- END GENERATED: target-pack-current.project-status.status -->
+<!-- BEGIN GENERATED: target-pack-anchor.project-status.status -->
+Exposed by the target-pack CLI at implementation anchor `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`: `doctor`, `init`, `validate`. Declared in the normative surface but not exposed at that anchor: `conformance`, `install-workflows`, `rollback`, `upgrade`.
+<!-- END GENERATED: target-pack-anchor.project-status.status -->
 
 Operation-plan binding and the H1-A identity hardening are also implemented;
 they are pack-engine capabilities, not CLI subcommands, so they are not part

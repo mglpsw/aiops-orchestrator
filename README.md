@@ -50,7 +50,7 @@ AIOps ecosystem
 | AIOps Runtime | **released** | última implantação registrada `0.20.0` (não é observação viva do CT102); versionado à parte da tag do toolrepo |
 | AgentReview v1 | **released / maintenance / freeze** | baseline `v0.22.0`; só correções críticas/segurança/regressão |
 | AgentReview v2 | **em desenvolvimento** | não é GA, não é default, não é required check |
-| Target Pack v2 | **em desenvolvimento** | <!-- BEGIN GENERATED: target-pack-current.readme.status -->Canonical on `master`: `doctor`, `init`, `validate`. Deferred: `conformance`, `install-workflows`, `rollback`, `upgrade`.<!-- END GENERATED: target-pack-current.readme.status --> |
+| Target Pack v2 | **em desenvolvimento** | <!-- BEGIN GENERATED: target-pack-anchor.readme.status -->Exposed by the target-pack CLI at implementation anchor `d454e8f2d272b9edb011513b4a8f5d4e89ece4c2`: `doctor`, `init`, `validate`. Declared in the normative surface but not exposed at that anchor: `conformance`, `install-workflows`, `rollback`, `upgrade`.<!-- END GENERATED: target-pack-anchor.readme.status --> |
 | CAEM | **F0 pinado** | `development_freeze`, `published=false`; a norma pertence a `mglpsw/caem` |
 | Agent Router | **integrado** | transporte de inferência; nunca autoridade sobre verdict |
 
