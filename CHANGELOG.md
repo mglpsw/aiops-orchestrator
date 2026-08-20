@@ -4,6 +4,23 @@
 
 ### Changed
 
+- **Structural Change Preflight now owns *Authority-First Convergence
+  Review* (`#203`)**: the reusable method extracted from the
+  `#242`/`#245`/`#246`/`#247` lineage — relation carrier `Π = <S,A,R,T,E>`
+  and the non-coercion rule, authority-first topology, earliest-lossy-boundary
+  repair, finding validation and the minimal corrective cut, causal mutation
+  discrimination, exact-subject evidence, a two-axis epistemic model, best
+  supportable claim with `UNAVAILABLE` as a real outcome, named convergence
+  boundaries, and authority non-escalation. Extends the existing preflight
+  rather than adding a parallel document: `PROJECT_OVERLAY.md` already names
+  that file the exclusive owner of the `STOP / REDESIGN` criteria. The
+  machine-checkable half is declared once in a normative registry block and
+  verified by `tests/test_structural_change_preflight.py`, which enforces
+  closure of the forbidden-promotion rules (notably that nothing reaches
+  `PROVED`), referential integrity of every cited discriminant, and single
+  ownership of the registry. Process/methodology only — no runtime, schema or
+  public-contract change. Refs #203.
+
 - **Target-pack CLI surface and validate check-domain now have single
   internal runtime authorities, consumed by the runtime itself (`#203`)**:
   `app/agent_review/target_pack_runtime_authority_v2.py` declares two
