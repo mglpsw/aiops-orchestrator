@@ -241,6 +241,53 @@ def test_no_duplicated_repository_shape_authority_outside_contracts_v2() -> None
     )
 
 
+def test_target_pack_writer_has_one_k_ex_orchestration_boundary() -> None:
+    """R38: target mutations cannot silently bypass the live K capability.
+
+    This intentionally proves the current sanctioned writer graph, rather
+    than claiming every future Python file in the repository is incapable of
+    writing a target.  ``install`` consumes a lease/binding; only ``apply``
+    invokes it, and the CLI invokes only that canonical apply boundary.
+    """
+
+    install = _parse(APP_DIR / "target_pack_install_v2.py")
+    apply = _parse(APP_DIR / "target_pack_apply_v2.py")
+    cli = _parse(_CLI_MODULE_PATH_V2)
+
+    for function_name in ("apply_install_plan_v2", "write_receipt_v2"):
+        function = next(
+            node for node in ast.walk(install) if isinstance(node, ast.FunctionDef) and node.name == function_name
+        )
+        keyword_names = {argument.arg for argument in function.args.kwonlyargs}
+        assert {"lease", "target_binding"}.issubset(keyword_names), function_name
+
+    def called_names(tree: ast.Module) -> set[str]:
+        return {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+
+    assert "apply_install_plan_v2" in called_names(apply)
+    assert "write_receipt_v2" in called_names(apply)
+    assert "apply_install_plan_v2" not in called_names(cli)
+    assert "write_receipt_v2" not in called_names(cli)
+    assert "apply_authorized_target_pack_init_v2" in called_names(cli)
+
+
+def test_doctor_and_validate_do_not_consume_the_private_epoch_implementation() -> None:
+    """R39/R40: this predecessor changes writers only, not read semantics."""
+
+    for path in (DOCTOR_MODULE_PATH, VALIDATE_MODULE_PATH):
+        tree = _parse(path)
+        epoch_imports = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "app.agent_review.target_pack_epoch_v2"
+        ]
+        assert not epoch_imports, path.name
+
+
 def test_bounded_artifact_read_always_passes_an_explicit_size_argument() -> None:
     """`#203-C2`: `_observe_bounded_artifact_v2` promises a BOUNDED read
     of the two `.aiops` artifacts (never materialising an arbitrarily

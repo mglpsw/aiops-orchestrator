@@ -90,7 +90,10 @@ def test_init_refuses_an_unmatched_expected_plan_without_mutation(tmp_path: Path
     ]
     result = _run_raw(args)
     assert result.returncode == 2
-    assert "target_pack_cli_expected_plan_mismatch" in result.stderr
+    # Apply no longer compares against a pre-lock preview.  The one
+    # recomputation happens under K EX, so every unequal authorization is a
+    # stale plan and has left no target prefix behind.
+    assert "target_pack_plan_stale" in result.stderr
     assert not (tmp_path / ".aiops").exists()
 
 
