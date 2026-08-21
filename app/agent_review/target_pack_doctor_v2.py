@@ -53,7 +53,7 @@ from __future__ import annotations
 import os
 import hashlib
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from app.agent_review.profile_loader_v2 import (
     DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
@@ -151,7 +151,59 @@ def _doctor_reason_for_plan_error_v2(exc: PlanError) -> str:
     return DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
 
 
-def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
+# Derived from the existing artifact constants, never re-spelled: a second
+# ".aiops" literal here would be a second definition of the same location.
+_AIOPS_DIR_RELATIVE_V2 = DEFAULT_TARGET_PROFILE_RELATIVE_PATH.parent
+_PROFILE_FILENAME_V2 = DEFAULT_TARGET_PROFILE_RELATIVE_PATH.name
+_RECEIPT_FILENAME_V2 = PurePosixPath(RECEIPT_RELATIVE_PATH_V2).name
+
+
+class DoctorArtifactLocationContractError(RuntimeError):
+    """The two `.aiops` artifact constants no longer share a parent directory."""
+
+
+# Fail-closed, at import, on a REAL exception -- `python -O` strips `assert`.
+#
+# The capture below derives its directory from the PROFILE constant
+# (`profile_loader_v2`) and then reads the RECEIPT through it, but the receipt
+# constant lives in a DIFFERENT module (`target_pack_receipt_v2`). Nothing
+# else couples them. Before this change each check composed its own FULL
+# relative path, so moving the receipt would have been followed automatically;
+# reading both through one captured directory silently depends on them sharing
+# a parent, so that dependency is now checked rather than assumed.
+if PurePosixPath(RECEIPT_RELATIVE_PATH_V2).parent != PurePosixPath(_AIOPS_DIR_RELATIVE_V2):
+    raise DoctorArtifactLocationContractError(
+        "target profile and install receipt no longer share one `.aiops` parent: "
+        f"{DEFAULT_TARGET_PROFILE_RELATIVE_PATH!s} vs {RECEIPT_RELATIVE_PATH_V2!s}. "
+        "One captured directory can no longer stand for both artifacts."
+    )
+
+
+def _resolve_aiops_dir_for_decision_v2(target_root_real: Path) -> Path:
+    """THE single `.aiops` capture for one doctor decision.
+
+    Scope, stated exactly: the two `.aiops` ARTIFACTS a decision reads -- the
+    target profile and the install receipt -- are composed from the directory
+    this returns, so they cannot be observed through two different traversals
+    of a retargeted `.aiops`.
+
+    NOT covered, deliberately: the target-owned ledger loop in
+    `_check_receipt_v2`. Its paths come from `receipt.target_owned_file_hashes`
+    and are root-relative BY CONTRACT (they must equal the manifest's
+    TARGET_OWNED `generated_files` paths), so it composes them from
+    `target_root_real`. Some of those paths do live under `.aiops/`, which
+    means the alias is traversed again there; a `.aiops` retargeted mid-decision
+    makes that loop hash a file from a state the receipt did not come from.
+    Observed direction is fail-closed -- it reports
+    `target_owned_identity_unreconciled`, never a false healthy. Composing
+    those paths through this captured directory would require rewriting a
+    `.aiops/` prefix by lexical path analysis, i.e. a SECOND definition of the
+    location, so it is recorded as follow-up rather than widened into here."""
+
+    return resolve_within_target_root_v2(target_root_real, target_root_real / _AIOPS_DIR_RELATIVE_V2)
+
+
+def _check_profile_v2(target_root_real: Path, aiops_dir_real: Path) -> ProfileCheckV2:
     # Containment BOUND to the read, not merely checked before it
     # (aiops-orchestrator#205, H1A-R1, round 2). The first cut of this fix
     # verified containment and then discarded the result, letting
@@ -186,7 +238,7 @@ def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
     # is no longer a parameter of this function because nothing in it needs
     # the mutable alias once the read is bound to the resolved root.
     try:
-        resolved = resolve_within_target_root_v2(target_root_real, target_root_real / DEFAULT_TARGET_PROFILE_RELATIVE_PATH)
+        resolved = resolve_within_target_root_v2(target_root_real, aiops_dir_real / _PROFILE_FILENAME_V2)
     except PlanError as exc:
         return ProfileCheckV2(
             status="invalid", profile_hash=None, reason_code=_doctor_reason_for_plan_error_v2(exc)
@@ -213,6 +265,7 @@ def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
 def _check_receipt_v2(
     *,
     target_root_real: Path,
+    aiops_dir_real: Path,
     manifest: TargetPackManifestV2,
     profile_check: ProfileCheckV2,
     target_repo: str,
@@ -291,7 +344,7 @@ def _check_receipt_v2(
     would reject anyway stops being read at all."""
 
     try:
-        receipt_path = resolve_within_target_root_v2(target_root_real, target_root_real / RECEIPT_RELATIVE_PATH_V2)
+        receipt_path = resolve_within_target_root_v2(target_root_real, aiops_dir_real / _RECEIPT_FILENAME_V2)
     except PlanError as exc:
         return ReceiptCheckV2(status="invalid", receipt=None, reason_code=_doctor_reason_for_plan_error_v2(exc))
     if not receipt_path.is_file():
@@ -383,9 +436,35 @@ def run_doctor_v2(*, target_root: Path, manifest: TargetPackManifestV2, target_r
     # containment check below -- not re-resolved per file (round 2, see
     # `resolve_within_target_root_v2`'s own docstring).
     target_root_real = target_root.resolve(strict=False)
-    profile_check = _check_profile_v2(target_root_real)
+    # `.aiops` is captured ONCE per decision, exactly like `target_root_real`
+    # above (#203). Before this, `_check_profile_v2` and `_check_receipt_v2`
+    # each composed and resolved `target_root_real / ".aiops/<file>"`
+    # independently, so a `.aiops` symlink retargeted between the two
+    # observations let ONE doctor decision report a profile from one installed
+    # state and a receipt from another -- a pair that never coexisted. Same
+    # defect class `validate` closed by observing `.aiops` once and resolving
+    # both artifacts through the captured directory.
+    #
+    # Containment is still proved against `target_root_real` for every read;
+    # what changes is the BASE the artifact paths are composed from, which is
+    # now the captured directory rather than a fresh traversal of the alias.
+    try:
+        aiops_dir_real = _resolve_aiops_dir_for_decision_v2(target_root_real)
+    except PlanError as exc:
+        # Pre-capture, each check raised and caught this independently and
+        # both reported the same reason; short-circuiting preserves that.
+        reason = _doctor_reason_for_plan_error_v2(exc)
+        return DoctorReportV2(
+            target_root=str(target_root),
+            profile=ProfileCheckV2(status="invalid", profile_hash=None, reason_code=reason),
+            receipt=ReceiptCheckV2(status="invalid", receipt=None, reason_code=reason),
+            secret_names=_check_secret_names_v2(()),
+            required_capabilities_declared=tuple(manifest.required_capabilities),
+        )
+    profile_check = _check_profile_v2(target_root_real, aiops_dir_real)
     receipt_check = _check_receipt_v2(
         target_root_real=target_root_real,
+        aiops_dir_real=aiops_dir_real,
         manifest=manifest,
         profile_check=profile_check,
         target_repo=target_repo,

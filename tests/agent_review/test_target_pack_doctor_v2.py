@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -107,10 +107,15 @@ def _real_profile_hash() -> str:
     receipt's `target_profile_hash` against). Computed here, not
     hardcoded, so it can never silently drift from what `profile_loader_
     v2` actually computes."""
+    return _profile_hash_of(_VALID_PROFILE_YAML)
+
+
+def _profile_hash_of(profile_yaml: str) -> str:
+    """The model-level `compute_profile_hash_v2` of an arbitrary profile text."""
     with tempfile.TemporaryDirectory() as raw_dir:
         root = Path(raw_dir)
         (root / ".aiops").mkdir()
-        (root / ".aiops" / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+        (root / ".aiops" / "target-profile.v2.yaml").write_text(profile_yaml, encoding="utf-8")
         return compute_profile_hash_v2(load_target_profile_v2(str(root)))
 
 
@@ -749,9 +754,15 @@ def test_check_profile_reads_the_content_it_actually_verified_not_a_later_swap(
         symlink_path.symlink_to(outside_profile)
         return result
 
+    # Capture the decision's `.aiops` with the REAL resolver first: the
+    # attacker below is simulating the gap between the PROFILE's containment
+    # check and the profile read, not the gap during the `.aiops` capture.
+    root_real = target_root.resolve(strict=False)
+    aiops_dir_real = doctor_module._resolve_aiops_dir_for_decision_v2(root_real)
+
     doctor_module.resolve_within_target_root_v2 = racing_resolve
     try:
-        check = doctor_module._check_profile_v2(target_root.resolve(strict=False))
+        check = doctor_module._check_profile_v2(root_real, aiops_dir_real)
     finally:
         doctor_module.resolve_within_target_root_v2 = real_resolve
 
@@ -889,7 +900,9 @@ def test_doctor_reads_are_bound_to_the_captured_root_not_a_mutable_alias(
     live.unlink()
     live.symlink_to(sub, target_is_directory=True)
     try:
-        check = doctor_module._check_profile_v2(target_root_real)
+        check = doctor_module._check_profile_v2(
+            target_root_real, doctor_module._resolve_aiops_dir_for_decision_v2(target_root_real)
+        )
     finally:
         live.unlink()
         live.symlink_to(root, target_is_directory=True)
@@ -903,3 +916,192 @@ def test_doctor_reads_are_bound_to_the_captured_root_not_a_mutable_alias(
     assert check.status == "present"
     assert check.profile_hash == root_hash
     assert check.profile_hash != sub_hash
+
+
+# --- #203: ONE `.aiops` SNAPSHOT PER DOCTOR DECISION ---------------------
+#
+# `run_doctor_v2` resolved `target_root_real` once, but `.aiops` was never
+# snapshotted: `_check_profile_v2` and `_check_receipt_v2` each composed and
+# resolved `target_root_real / ".aiops/<file>"` independently. With `.aiops`
+# a symlink, the two observations traverse it separately, so one doctor
+# decision could compose a profile from one installed state and a receipt
+# from another -- a pair that never coexisted in any real installation.
+#
+# Same defect class closed in `validate` (PR #235 round 6), where `.aiops` is
+# observed ONCE and both artifacts are resolved through that captured
+# directory.
+#
+# Deterministic, not a timing race: the retarget is driven from the seam
+# between the two observations (`compute_profile_hash_v2` is the last call in
+# the profile check), so the interleaving is forced rather than hoped for.
+
+
+def _install_aiops_state(
+    root: Path, secret_name: str, profile_yaml: str = _VALID_PROFILE_YAML
+) -> Path:
+    """One complete, self-consistent `.aiops` payload directory.
+
+    `profile_yaml` is threaded through the receipt's own `target_profile_hash`
+    as well, so a state carrying a variant profile is still a VALID install
+    rather than an already-incoherent one -- otherwise a mutant could die of
+    fixture incoherence instead of the property under test."""
+    state = root
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "target-profile.v2.yaml").write_text(profile_yaml, encoding="utf-8")
+    receipt = _receipt(
+        required_secret_names=(secret_name,),
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={".aiops/target-profile.v2.yaml": _sha256(profile_yaml.encode("utf-8"))},
+        target_profile_hash=_profile_hash_of(profile_yaml),
+    )
+    (state / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+    return state
+
+
+def test_doctor_reads_profile_and_receipt_through_one_aiops_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `.aiops` retargeted between the profile and receipt observations must
+    not let one doctor decision mix two installed states."""
+
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    state_a = _install_aiops_state(target_root / "states" / "state_a", "SECRET_FROM_A")
+    state_b = _install_aiops_state(target_root / "states" / "state_b", "SECRET_FROM_B")
+    aiops = target_root / ".aiops"
+    aiops.symlink_to(state_a, target_is_directory=True)
+
+    import app.agent_review.target_pack_doctor_v2 as doctor_module
+
+    real_compute = doctor_module.compute_profile_hash_v2
+
+    def _retarget_after_profile_observation(profile: object) -> str:
+        digest = real_compute(profile)
+        aiops.unlink()
+        aiops.symlink_to(state_b, target_is_directory=True)
+        return digest
+
+    monkeypatch.setattr(doctor_module, "compute_profile_hash_v2", _retarget_after_profile_observation)
+
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "present"
+    assert report.receipt.status == "present"
+    assert report.receipt.receipt is not None
+    # The receipt must come from the SAME `.aiops` the profile came from.
+    # Pre-fix this is ("SECRET_FROM_B",): profile from state_a, receipt from
+    # state_b, an installed-state pair that never existed.
+    assert report.receipt.receipt.required_secret_names == ("SECRET_FROM_A",)
+
+
+_VARIANT_PROFILE_YAML = _VALID_PROFILE_YAML.replace(
+    "max_chars_per_chunk: 24000", "max_chars_per_chunk: 20000"
+)
+
+
+def test_doctor_reads_the_profile_through_the_captured_aiops_not_a_re_derived_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The seam between the `.aiops` capture and the profile read.
+
+    The receipt-side discriminator above cannot see this one: it retargets
+    after `compute_profile_hash_v2`, which is already downstream of the
+    profile read. A profile check that re-derives `.aiops` instead of using
+    the captured directory reads a state the decision never snapshotted, and
+    the load-bearing assertion here is the PROFILE HASH -- not a status that
+    a containment rejection could satisfy by short-circuit."""
+
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    state_a = _install_aiops_state(target_root / "states" / "state_a", "SECRET_FROM_A")
+    state_b = _install_aiops_state(
+        target_root / "states" / "state_b", "SECRET_FROM_B", profile_yaml=_VARIANT_PROFILE_YAML
+    )
+    assert _profile_hash_of(_VARIANT_PROFILE_YAML) != _profile_hash_of(_VALID_PROFILE_YAML)
+
+    aiops = target_root / ".aiops"
+    aiops.symlink_to(state_a, target_is_directory=True)
+
+    import app.agent_review.target_pack_doctor_v2 as doctor_module
+
+    real_capture = doctor_module._resolve_aiops_dir_for_decision_v2
+
+    def _retarget_after_capture(target_root_real: Path) -> Path:
+        captured = real_capture(target_root_real)
+        aiops.unlink()
+        aiops.symlink_to(state_b, target_is_directory=True)
+        return captured
+
+    monkeypatch.setattr(
+        doctor_module, "_resolve_aiops_dir_for_decision_v2", _retarget_after_capture
+    )
+
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "present"
+    assert report.profile.profile_hash == _profile_hash_of(_VALID_PROFILE_YAML)
+    # `report.receipt.status` is deliberately NOT asserted here. The receipt
+    # MODEL is read through the captured `.aiops` (that is the test above),
+    # but the target-owned ledger loop re-composes its paths from
+    # `target_root_real` by contract, so under this retarget it hashes
+    # state_b's file and fails closed. Documented in
+    # `_resolve_aiops_dir_for_decision_v2`; asserting "present" here would be
+    # asserting a fix this change does not make.
+
+
+def test_one_captured_aiops_may_only_stand_for_artifacts_that_share_its_parent() -> None:
+    """The capture derives `.aiops` from the PROFILE constant and then reads the
+    RECEIPT through it, but those constants live in two different modules. If
+    the receipt ever moves, one captured directory silently stops standing for
+    both artifacts -- so the coupling is enforced, not assumed."""
+
+    import app.agent_review.target_pack_doctor_v2 as doctor_module
+
+    assert (
+        PurePosixPath(doctor_module.RECEIPT_RELATIVE_PATH_V2).parent
+        == PurePosixPath(doctor_module._AIOPS_DIR_RELATIVE_V2)
+    )
+
+    # And the guard is live: a receipt relocated out of `.aiops/` must fail
+    # closed on the REAL import path, not a simulated one.
+    import importlib
+    import app.agent_review.target_pack_receipt_v2 as receipt_module
+
+    original = receipt_module.RECEIPT_RELATIVE_PATH_V2
+    try:
+        receipt_module.RECEIPT_RELATIVE_PATH_V2 = ".aiops/state/install-receipt.v2.json"
+        # Caught on the STABLE base class: reloading the module rebinds
+        # `DoctorArtifactLocationContractError` to a new class object, so a
+        # reference captured before the reload would no longer match the type
+        # actually raised.
+        with pytest.raises(RuntimeError, match="no longer share one") as raised:
+            importlib.reload(doctor_module)
+        assert type(raised.value).__name__ == "DoctorArtifactLocationContractError"
+    finally:
+        receipt_module.RECEIPT_RELATIVE_PATH_V2 = original
+        importlib.reload(doctor_module)
+
+    # Restored: the reloaded module is usable and coherent again.
+    assert (
+        PurePosixPath(doctor_module.RECEIPT_RELATIVE_PATH_V2).parent
+        == PurePosixPath(doctor_module._AIOPS_DIR_RELATIVE_V2)
+    )
+
+
+def test_doctor_unretargeted_coherent_install_is_unaffected(tmp_path: Path) -> None:
+    """Negative control: without a retarget, a coherent install through a
+    `.aiops` symlink still produces the same legitimate result as before."""
+
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    state_a = _install_aiops_state(target_root / "states" / "state_a", "SECRET_FROM_A")
+    (target_root / ".aiops").symlink_to(state_a, target_is_directory=True)
+
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+
+    assert report.profile.status == "present"
+    assert report.receipt.status == "present"
+    assert report.receipt.receipt is not None
+    assert report.receipt.receipt.required_secret_names == ("SECRET_FROM_A",)
