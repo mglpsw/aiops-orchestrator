@@ -51,16 +51,17 @@ from app.agent_review.target_pack_build_v2 import (  # noqa: E402
     build_target_pack_manifest_v2,
     load_seed_content_by_path_v2,
 )
+from app.agent_review.target_pack_apply_v2 import (  # noqa: E402
+    TargetPackAuthorizedApplyErrorV2,
+    apply_authorized_target_pack_init_v2,
+)
 from app.agent_review.target_pack_doctor_v2 import run_doctor_v2  # noqa: E402
 from app.agent_review.target_pack_install_v2 import (  # noqa: E402
     RECEIPT_RELATIVE_PATH_V2,
     TargetPackInstallError,
-    apply_install_plan_v2,
-    write_receipt_v2,
 )
 from app.agent_review.target_pack_operation_v2 import (  # noqa: E402
     compute_target_pack_operation_plan_v2,
-    require_target_owned_reconciliation_acceptance_v2,
 )
 from app.agent_review.target_pack_plan_v2 import (  # noqa: E402
     PlanError,
@@ -74,12 +75,12 @@ from app.agent_review.target_pack_runtime_authority_v2 import (  # noqa: E402
     TARGET_PACK_CLI_COMMANDS_V2,
     cli_command_names_v2,
 )
+from app.agent_review.target_pack_epoch_v2 import TargetPackEpochError  # noqa: E402
 from app.agent_review.target_pack_validate_v2 import run_validate_v2  # noqa: E402
 from pydantic import ValidationError  # noqa: E402
 
 CLI_INPUT_INVALID_REASON_V2 = "target_pack_cli_input_invalid"
 CLI_EXPECTED_PLAN_REQUIRED_REASON_V2 = "target_pack_cli_expected_plan_required"
-CLI_EXPECTED_PLAN_MISMATCH_REASON_V2 = "target_pack_cli_expected_plan_mismatch"
 CLI_PREVIOUS_RECEIPT_INVALID_REASON_V2 = "target_pack_cli_previous_receipt_invalid"
 CLI_EXIT_SATISFIED_OR_NOOP_V2 = 0
 CLI_EXIT_VALID_REPORT_WITH_FAILURE_V2 = 1
@@ -161,56 +162,49 @@ def _cmd_init(args: argparse.Namespace) -> int:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
 
-    receipt_path = target_root / RECEIPT_RELATIVE_PATH_V2
-    previous_receipt = None
-    if receipt_path.is_file():
-        try:
-            # THE shared authority -- see target_pack_receipt_v2.
-            previous_receipt = load_target_install_receipt_bytes_v2(receipt_path.read_bytes())
-        except (OSError, ValidationError, ValueError):
-            print(f"error: {CLI_PREVIOUS_RECEIPT_INVALID_REASON_V2}", file=sys.stderr)
-            return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
-
     seed_content = load_seed_content_by_path_v2(toolrepo_root=toolrepo_root, toolrepo_sha=manifest.toolrepo_sha)
-    operation = compute_target_pack_operation_plan_v2(
-        manifest=manifest,
-        target_root=target_root,
-        target_repo=args.target_repo,
-        rollout=args.rollout,
-        seed_content_by_path=seed_content,
-        previous_receipt=previous_receipt,
-        accepted_target_owned_paths=tuple(args.accept_target_owned),
-    )
     if not args.apply:
+        receipt_path = target_root / RECEIPT_RELATIVE_PATH_V2
+        previous_receipt = None
+        if receipt_path.is_file():
+            try:
+                # Preview is write-zero and has no K claim; apply reloads this
+                # declaration under its exclusive epoch instead.
+                previous_receipt = load_target_install_receipt_bytes_v2(receipt_path.read_bytes())
+            except (OSError, ValidationError, ValueError):
+                print(f"error: {CLI_PREVIOUS_RECEIPT_INVALID_REASON_V2}", file=sys.stderr)
+                return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
+        operation = compute_target_pack_operation_plan_v2(
+            manifest=manifest,
+            target_root=target_root,
+            target_repo=args.target_repo,
+            rollout=args.rollout,
+            seed_content_by_path=seed_content,
+            previous_receipt=previous_receipt,
+            accepted_target_owned_paths=tuple(args.accept_target_owned),
+        )
         print(json.dumps(operation.plan.model_dump(mode="json"), indent=2, sort_keys=True))
         return CLI_EXIT_SATISFIED_OR_NOOP_V2
     if not args.expected_plan_sha256:
         print(f"error: {CLI_EXPECTED_PLAN_REQUIRED_REASON_V2}", file=sys.stderr)
         return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
-    if args.expected_plan_sha256 != operation.plan.operation_plan_hash:
-        print(f"error: {CLI_EXPECTED_PLAN_MISMATCH_REASON_V2}", file=sys.stderr)
-        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
-    require_target_owned_reconciliation_acceptance_v2(operation.plan)
     try:
-        written = apply_install_plan_v2(
-            plan=operation.install_plan,
+        result = apply_authorized_target_pack_init_v2(
             manifest=manifest,
             target_root=target_root,
+            target_repo=args.target_repo,
+            rollout=args.rollout,
             seed_content_by_path=seed_content,
+            expected_plan_sha256=args.expected_plan_sha256,
+            accepted_target_owned_paths=tuple(args.accept_target_owned),
         )
-        if operation.should_write_receipt:
-            write_receipt_v2(
-                target_root=target_root,
-                receipt=operation.expected_receipt,
-                expected_target_root_real=operation.install_plan.target_root_real,
-            )
-    except TargetPackInstallError as exc:
+    except (TargetPackInstallError, TargetPackAuthorizedApplyErrorV2) as exc:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
-    written_paths = list(written)
-    if operation.should_write_receipt:
-        written_paths.append(RECEIPT_RELATIVE_PATH_V2)
-    print(json.dumps({"operation_plan_hash": operation.plan.operation_plan_hash, "written": written_paths}, indent=2))
+    except TargetPackEpochError as exc:
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return CLI_EXIT_ENVIRONMENT_OR_GATE_UNAVAILABLE_V2
+    print(json.dumps({"operation_plan_hash": result.operation_plan_hash, "written": list(result.written_paths)}, indent=2))
     return CLI_EXIT_SATISFIED_OR_NOOP_V2
 
 

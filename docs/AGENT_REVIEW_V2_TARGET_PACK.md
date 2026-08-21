@@ -93,10 +93,36 @@ agent-review-target-pack-v2.py doctor  --target-root PATH --toolrepo-root PATH -
 
 ### The only writer
 
-- `target_pack_install_v2.py::apply_install_plan_v2` — atomic
-  (temp-file-then-`os.replace`) writes; refuses **everything**, writing
-  nothing at all, if any drifted path isn't explicitly named in
-  `force_overwrite_paths`.
+- `target_pack_apply_v2.py::apply_authorized_target_pack_init_v2` is the
+  only orchestration entry point for `init --apply`.  It acquires the
+  private K exclusive lease, rereads current target state, computes one
+  locked operation plan and requires its existing `operation_plan_hash` to
+  equal `--expected-plan-sha256` before it creates a target directory,
+  writes a pack file, or writes a receipt.  Equality applies that same
+  locked representation; mismatch is `target_pack_plan_stale` and is
+  write-zero.
+- `target_pack_epoch_v2.py` implements K as a private runtime carrier at
+  `/tmp/agentreview-target-locks-v1-<euid>/`.  It is a length-framed SHA-256
+  address over protocol version, effective UID, mount-namespace device/inode
+  and the canonical target locator.  The protocol directory is held SH for
+  namespace lifecycle integrity and `<K>.lock` is held SH/EX for the full
+  reader/writer epoch.  Carriers are regular, empty, reusable files; neither
+  a carrier nor the directory is automatically deleted.
+- `target_pack_install_v2.py::{apply_install_plan_v2,write_receipt_v2}`
+  consume the already-live exclusive capability and an `O_PATH` bound target
+  directory.  They use FD-relative target operations while retaining
+  `resolve_within_target_root_v2` as the sole semantic containment authority.
+  This preserves legal mode-0300 targets and missing ancestor materialization.
+
+The concrete claim is deliberately narrow: cooperative exclusion among
+same-host, same-effective-UID, same-mount-namespace AgentReview participants
+using this exact K protocol and a supported local Linux runtime filesystem.
+It is not single-writer proof, a filesystem snapshot, cross-host/distributed
+locking, crash recovery, a durable install generation, or protection from
+uncooperative/external writers.  K is neither receipt/plan identity nor
+authorization; `receipt_hash` remains a declaration identity only.  Journal,
+recovery, application-record, and mutation-strength vocabulary remain outside
+this implementation.
 
 ### Read-only diagnostics
 

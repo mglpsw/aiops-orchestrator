@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -10,9 +11,10 @@ from app.agent_review.target_pack_install_v2 import (
     INSTALL_PATH_ESCAPES_TARGET_ROOT_REASON_V2,
     INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2,
     TargetPackInstallError,
-    apply_install_plan_v2,
-    write_receipt_v2,
+    apply_install_plan_v2 as _apply_install_plan_v2,
+    write_receipt_v2 as _write_receipt_v2,
 )
+from app.agent_review.target_pack_epoch_v2 import acquire_target_pack_epoch_v2
 from app.agent_review.target_pack_manifest_v2 import (
     GeneratedFileEntryV2,
     TargetPackFileOwnershipV2,
@@ -24,6 +26,37 @@ from app.agent_review.target_pack_plan_v2 import (
     compute_install_plan_v2,
 )
 from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2, compute_target_install_receipt_hash_v2
+
+
+@contextmanager
+def _bound_exclusive_target_v2(target_root: Path):
+    """Exercise the low-level writer only through its required capability."""
+
+    with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True) as lease:
+        with lease.bind_target_root_v2(target_root=target_root) as binding:
+            yield lease, binding
+
+
+def apply_install_plan_v2(*, plan, manifest, target_root: Path, seed_content_by_path, force_overwrite_paths=frozenset()):
+    with _bound_exclusive_target_v2(target_root) as (lease, binding):
+        return _apply_install_plan_v2(
+            plan=plan,
+            manifest=manifest,
+            seed_content_by_path=seed_content_by_path,
+            lease=lease,
+            target_binding=binding,
+            force_overwrite_paths=force_overwrite_paths,
+        )
+
+
+def write_receipt_v2(*, target_root: Path, receipt, expected_target_root_real: str) -> None:
+    with _bound_exclusive_target_v2(target_root) as (lease, binding):
+        _write_receipt_v2(
+            receipt=receipt,
+            expected_target_root_real=expected_target_root_real,
+            lease=lease,
+            target_binding=binding,
+        )
 
 
 def _sha256(data: bytes) -> str:
@@ -301,6 +334,34 @@ def test_apply_refuses_when_target_root_itself_was_swapped_for_a_symlink_after_p
 
     assert exc_info.value.reason_code == INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2
     assert list(outside.iterdir()) == []
+
+
+def test_bound_fd_relative_write_stays_with_the_original_directory_after_path_replacement(tmp_path: Path) -> None:
+    """R36/R37/M_PATH_REDERIVATION: pathname replacement cannot redirect a held writer."""
+
+    target = tmp_path / "target"
+    target.mkdir()
+    content = b"seed"
+    entry = GeneratedFileEntryV2(
+        path="a.yaml", ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED, content_sha256=_sha256(content)
+    )
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=target, previous_receipt=None)
+    with acquire_target_pack_epoch_v2(target_root=target, exclusive=True) as lease:
+        with lease.bind_target_root_v2(target_root=target) as binding:
+            original = tmp_path / "target-original"
+            target.rename(original)
+            target.mkdir()
+            written = _apply_install_plan_v2(
+                plan=plan,
+                manifest=manifest,
+                seed_content_by_path={"a.yaml": content},
+                lease=lease,
+                target_binding=binding,
+            )
+    assert written == ("a.yaml",)
+    assert (original / "a.yaml").read_bytes() == content
+    assert not (target / "a.yaml").exists()
 
 
 def test_merged_declarative_only_replaces_the_fenced_block(tmp_path: Path) -> None:

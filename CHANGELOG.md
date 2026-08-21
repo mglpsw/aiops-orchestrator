@@ -4,6 +4,18 @@
 
 ### Changed
 
+- **Target-pack `init --apply` now uses one private cooperative K epoch
+  (`#203`)**: the canonical writer acquires a same-host/same-EUID/same-mount-
+  namespace K EX carrier before recomputing the operation plan.  It applies
+  only when that locked plan's existing semantic hash equals the explicitly
+  authorized hash; otherwise it returns `target_pack_plan_stale` before any
+  target-prefix creation, pack write, or receipt.  Target mutation and the
+  success receipt consume the same live capability and a held `O_PATH`
+  directory binding.  This adds no receipt/manifest/schema field, durable
+  generation identity, journal, recovery behavior, or public mutation-
+  exclusion vocabulary.  The guarantee is cooperative only; external,
+  distributed, crash, and provenance claims are intentionally not made.
+
 - **Target-pack CLI surface and validate check-domain now have single
   internal runtime authorities, consumed by the runtime itself (`#203`)**:
   `app/agent_review/target_pack_runtime_authority_v2.py` declares two
