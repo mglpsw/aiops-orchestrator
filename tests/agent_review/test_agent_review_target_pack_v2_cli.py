@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from app.agent_review.target_pack_epoch_v2 import acquire_target_pack_epoch_v2
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CLI_PATH = REPO_ROOT / "scripts" / "agent-review-target-pack-v2.py"
 
@@ -308,6 +310,36 @@ def test_doctor_never_prints_a_traceback_for_a_healthy_or_unhealthy_target(tmp_p
         ]
     )
     assert "Traceback" not in result.stderr
+
+
+def test_doctor_missing_target_is_typed_input_error_without_a_report_or_traceback(tmp_path: Path) -> None:
+    target = tmp_path / "missing-target"
+
+    result = _run(
+        [
+            "doctor", "--target-root", str(target), "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo", "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "error: target_pack_doctor_target_root_not_a_directory\n"
+    assert "Traceback" not in result.stderr
+
+
+def test_doctor_busy_epoch_is_report_zero_unknown_exit_3(tmp_path: Path) -> None:
+    with acquire_target_pack_epoch_v2(target_root=tmp_path, exclusive=True):
+        result = _run(
+            [
+                "doctor", "--target-root", str(tmp_path), "--toolrepo-root", str(REPO_ROOT),
+                "--target-repo", "owner/repo", "--pack-version", "0.1.0",
+            ]
+        )
+
+    assert result.returncode == 3
+    assert result.stdout == ""
+    assert result.stderr == "error: target_pack_epoch_busy\n"
 
 
 def test_missing_required_flag_is_refused_by_argparse_not_a_traceback(tmp_path: Path) -> None:

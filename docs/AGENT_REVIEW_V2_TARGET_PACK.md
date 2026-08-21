@@ -15,7 +15,7 @@ binding). Not yet in any published release.
 | Subcommand | Status | Notes |
 |---|---|---|
 | `init` | `IMPLEMENTED` | idempotent; never overwrites a target-customized profile — repeating `init` after a target edits `.aiops/target-profile.v2.yaml` requires naming the path via `--accept-target-owned` on both the preview and the `--apply` call, or `apply` fails with `target_owned_identity_acceptance_required`; the profile bytes themselves are left untouched. **This pack version's `max_supported_rollout_mode` is `off`** — `--rollout off` is the only value this slice accepts; `shadow_minimal`/`shadow_full` are interface/future options and are refused before preview or apply |
-| `doctor` | `IMPLEMENTED` | read-only, proven by AST/call-graph inspection |
+| `doctor` | `IMPLEMENTED` | target-read-only; one coherent K-SH observation epoch; typed completed/unknown runtime outcome |
 | operation-plan binding | `IMPLEMENTED` | `target_pack_operation_v2.py` + its own schema (PR #228) |
 | `validate` | `DEFERRED` | spec `§12` |
 | `conformance` | `DEFERRED` | spec `§12`; target adoption is `#204`'s charter |
@@ -126,11 +126,46 @@ this implementation.
 
 ### Read-only diagnostics
 
-- `target_pack_doctor_v2.py::run_doctor_v2` — proven read-only by AST/
-  call-graph inspection (`tests/agent_review/test_target_pack_arch_v2.py`),
-  the same mechanical-proof discipline `#201-C` established for its own
-  choke-point invariants. Checks secret NAME presence
-  (`name in os.environ`) — never reads or reports a VALUE.
+- `target_pack_doctor_v2.py::run_doctor_v2` is **target-read-only** and
+  consumes exactly one shared K epoch. K may create/reuse only its inert,
+  external runtime carrier under `/tmp`; the doctor never creates, modifies,
+  or removes the target root or a target artifact. This intentionally replaces
+  #258 R39's predecessor assertion that neither doctor nor validate consumes K:
+  doctor now consumes one K-SH epoch, while validate still consumes none.
+- After K acquisition the doctor binds the target root with the additive,
+  observation-only `O_PATH` API, retains `.aiops` as a role/object identity,
+  and performs every material traversal root-FD-relative after the existing
+  `resolve_within_target_root_v2` authority sanctions the logical path. The
+  final lookup uses that same containment authority; failure to repeat it can
+  only make the observation stale/unknown, never retroactively turn it into a
+  completed-negative containment finding.
+- One private registry keeps logical relation, sanctioned resolved path, and
+  retained physical object distinct. A physical regular object is read once;
+  profile bytes feed parsing, semantic hashing, and ledger hashing, while
+  hardlink aliases retain independent path-specific conformance relations.
+  Missing, non-regular, and unreadable observations are cached too. Every FD
+  remains non-inheritable and retained through final revalidation.
+- `DoctorReportV2` still represents only a completed diagnosis. The internal
+  `DoctorRunOutcomeV2` is either a `DoctorDecisionV2` (`healthy`/`unhealthy`)
+  carrying that unchanged report or a report-zero `DoctorUnknownV2` with
+  reason/stage/relation. Stable invalid invocation subjects remain outside the
+  union as `DoctorInputErrorV2`.
+- CLI outcomes are: completed healthy = existing JSON/exit 0; completed
+  unhealthy = existing JSON/exit 1; unknown = empty stdout, stable error on
+  stderr, exit 3; absent/non-directory target = empty stdout, stable input
+  error, exit 2. There is no `healthy: null` or synthetic failed report.
+- The environment key set is captured once and secret checks use membership in
+  that snapshot. No environment value is read or reported.
+
+The completed-observation claim is cooperative only: same host, effective UID,
+mount namespace, K object, and participating AgentReview readers/writers.
+External writers and undetectable ABA are not excluded. Equal bytes do not
+prove provenance or an install generation. The doctor evaluates one validated
+receipt declaration identity against observed target state; the receipt is not
+authority over that state. Manifest `TARGET_OWNED` entries define the read
+domain, and `generated_file_hashes` are deliberately not a conformance relation
+in this slice. Journal/recovery/application-record and mutation-strength
+vocabulary remain owned by #253; validate's coherent-read successor is deferred.
 
 ## Templates shipped
 
@@ -144,13 +179,20 @@ in the target, `TARGET_OWNED` (written once at `init`, never touched again).
 
 `tests/agent_review/test_target_pack_arch_v2.py`:
 
-1. `run_doctor_v2`'s call graph contains no filesystem-mutating primitive
-   (mutation-verified: reintroducing a stray `.mkdir()` call is caught).
+1. `run_doctor_v2`'s registered transitive call graph contains no target
+   filesystem-mutating primitive; the epoch module's external carrier writes
+   are separately allowlisted by exact function/callsite (mutation-verified).
 2. `run_doctor_v2` accepts no write-shaped parameter.
-3. No target-specific literal (`AgentEscala`, `InterLeitos`, `pytest`,
+3. Doctor acquires exactly one literal shared epoch, never materializes a
+   target, and validate still imports no epoch primitive.
+4. Initial and final semantic lookup both call the single existing containment
+   authority; content reads and environment capture each have one choke point.
+5. Every doctor/epoch FD is explicitly non-inheritable, and the reachable
+   helper registry fails closed when the observation graph changes.
+6. No target-specific literal (`AgentEscala`, `InterLeitos`, `pytest`,
    `mypy`, ...) appears anywhere in the generic pack engine or shipped
    templates.
-4. No branch-protection/required-check-promotion-shaped identifier is
+7. No branch-protection/required-check-promotion-shaped identifier is
    called anywhere in the pack engine — the capability is structurally
    absent, not merely unused.
 

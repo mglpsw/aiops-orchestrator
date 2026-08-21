@@ -4,6 +4,37 @@
 
 ### Changed
 
+- **Target-pack `doctor` now compiles each completed diagnosis inside one
+  coherent K-SH observation epoch (`#203`)**: `run_doctor_v2` acquires the
+  merged external-K reader capability before classifying the target subject,
+  holds one `O_PATH` root binding and all material descendant bindings through
+  final revalidation, and acquires each physical file's content at most once.
+  Profile parsing/semantic hashing and its TARGET_OWNED ledger relation reuse
+  the same captured bytes; hardlinks may share one content observation without
+  collapsing their path-specific conformance relations. The manifest remains
+  the authority for the TARGET_OWNED read domain, so a receipt mismatch is
+  rejected before any receipt-only extra path is read. This intentionally
+  succeeds #258's R39 assertion: `doctor` now consumes exactly one shared
+  epoch, while `validate` still consumes none.
+  `DoctorReportV2` remains a completed diagnosis only. The internal runtime
+  result distinguishes completed `healthy`/`unhealthy` decisions from
+  report-zero `unknown` observation failures; the CLI returns exit 3 for the
+  latter. A stably absent/non-directory target, classified only after K is
+  held, is an input error with exit 2 and no traceback. Consequently,
+  transient `EIO`/`ESTALE`/descriptor exhaustion that previously collapsed
+  into an ordinary unhealthy report is now intentionally `unknown`, while
+  stable missing, malformed, non-regular, containment, permission, and hash
+  failures preserve completed-negative semantics and existing reason codes.
+  Completed CLI JSON is byte-shape compatible. `intended_behavior_change:
+  true`.
+  The claim is target-read-only and cooperative within the same host/EUID/
+  mount namespace and K object. External writers, undetectable ABA,
+  provenance/generation identity, `generated_file_hashes` conformance,
+  filesystem snapshots, crash recovery, journal/application records, and
+  distributed locking remain explicit non-claims. No receipt, manifest,
+  schema, runtime-authority, or #253 semantic vocabulary changed; `validate`
+  coherent observation remains a follow-up.
+
 - **Target-pack `init --apply` now uses one private cooperative K epoch
   (`#203`)**: the canonical writer acquires a same-host/same-EUID/same-mount-
   namespace K EX carrier before recomputing the operation plan.  It applies

@@ -65,6 +65,22 @@ class TargetPackEpochError(ValueError):
         self.reason_code = reason_code
 
 
+class TargetPackObservationBindingErrorV2(TargetPackEpochError):
+    """Causal failure from the additive doctor-only root binding.
+
+    The writer-facing ``bind_target_root_v2`` deliberately keeps its merged
+    exception contract.  Doctor needs the original errno to distinguish a
+    stable invalid subject from unavailable observation capacity, so the
+    observation entry point carries that information without changing the
+    predecessor API.
+    """
+
+    def __init__(self, reason_code: str, *, operation_errno: int | None, stage: str) -> None:
+        super().__init__(reason_code)
+        self.operation_errno = operation_errno
+        self.stage = stage
+
+
 def _frame_v2(value: bytes) -> bytes:
     """Return a length-framed binary field; never concatenate ambiguously."""
 
@@ -288,6 +304,39 @@ class TargetPackTargetBindingV2:
         self._require_active_v2()
         return os.fsdecode(self._lease.canonical_target_subject)
 
+    @property
+    def object_identity(self) -> tuple[int, int]:
+        self._require_active_v2()
+        return self._identity
+
+    def retain_observation_fd_v2(self, fd: int) -> int:
+        """Attach one non-inheritable descendant FD to this live lease.
+
+        Observation sessions normally close descendants explicitly before
+        releasing the root binding.  Lease ownership is also recorded as an
+        exception-safety backstop and for the existing post-fork tracker.
+        """
+
+        self._require_active_v2()
+        try:
+            os.set_inheritable(fd, False)
+        except OSError as exc:
+            raise TargetPackObservationBindingErrorV2(
+                TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                operation_errno=exc.errno,
+                stage="retain_observation_fd",
+            ) from exc
+        self._lease._observation_fds.append(fd)
+        return _track_epoch_fd_v2(fd)
+
+    def release_observation_fd_v2(self, fd: int) -> None:
+        if fd in self._lease._observation_fds:
+            self._lease._observation_fds.remove(fd)
+            try:
+                os.close(fd)
+            finally:
+                _LIVE_EPOCH_FDS_V2.discard(fd)
+
     def _require_active_v2(self) -> None:
         self._lease._require_active_v2()
         if not self._active:
@@ -325,6 +374,7 @@ class TargetPackEpochLeaseV2:
     mode: Literal["shared", "exclusive"]
     _active: bool = True
     _bindings: list[TargetPackTargetBindingV2] = field(default_factory=list, repr=False)
+    _observation_fds: list[int] = field(default_factory=list, repr=False)
 
     def _require_active_v2(self) -> None:
         if not self._active:
@@ -393,10 +443,84 @@ class TargetPackEpochLeaseV2:
             os.close(fd)
             raise
 
+    def bind_target_root_for_observation_v2(self, *, target_root: Path) -> TargetPackTargetBindingV2:
+        """Bind the target for doctor while preserving the causal errno.
+
+        This is intentionally additive.  ``bind_target_root_v2`` remains the
+        exact writer primitive merged in #258 and continues collapsing open
+        failures to its historical epoch-unavailable reason.
+        """
+
+        self._require_active_v2()
+        try:
+            canonical_subject = _canonical_target_subject_v2(target_root)
+        except TargetPackEpochError as exc:
+            raise TargetPackObservationBindingErrorV2(
+                exc.reason_code, operation_errno=None, stage="canonical_subject"
+            ) from exc
+        if canonical_subject != self.canonical_target_subject:
+            raise TargetPackObservationBindingErrorV2(
+                TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2,
+                operation_errno=None,
+                stage="canonical_subject",
+            )
+        if not hasattr(os, "O_PATH"):
+            raise TargetPackObservationBindingErrorV2(
+                TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                operation_errno=None,
+                stage="open",
+            )
+        flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(os.fsdecode(self.canonical_target_subject), flags)
+        except OSError as exc:
+            raise TargetPackObservationBindingErrorV2(
+                TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                operation_errno=exc.errno,
+                stage="open",
+            ) from exc
+        try:
+            try:
+                os.set_inheritable(fd, False)
+            except OSError as exc:
+                raise TargetPackObservationBindingErrorV2(
+                    TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                    operation_errno=exc.errno,
+                    stage="set_inheritable",
+                ) from exc
+            try:
+                observed = os.fstat(fd)
+            except OSError as exc:
+                raise TargetPackObservationBindingErrorV2(
+                    TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                    operation_errno=exc.errno,
+                    stage="fstat",
+                ) from exc
+            if not stat.S_ISDIR(observed.st_mode):
+                raise TargetPackObservationBindingErrorV2(
+                    TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                    operation_errno=errno.ENOTDIR,
+                    stage="fstat",
+                )
+            binding = TargetPackTargetBindingV2(self, fd, (observed.st_dev, observed.st_ino))
+            self._bindings.append(binding)
+            _track_epoch_fd_v2(fd)
+            return binding
+        except BaseException:
+            os.close(fd)
+            raise
+
     def release(self) -> None:
         if not self._active:
             return
         self._active = False
+        for fd in tuple(reversed(self._observation_fds)):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            _LIVE_EPOCH_FDS_V2.discard(fd)
+        self._observation_fds.clear()
         for binding in tuple(self._bindings):
             binding.close()
         self._bindings.clear()

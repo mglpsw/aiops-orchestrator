@@ -1,59 +1,25 @@
-"""`#203` -- read-only target diagnostics (issue #203).
+"""Coherent, target-read-only diagnostics for the AgentReview v2 target pack.
 
-`run_doctor_v2` is READ-ONLY BY CONSTRUCTION: it accepts no manifest/plan to
-apply, calls no write/mkdir/rename/remove primitive anywhere in its own call
-graph, and returns a structured report instead of mutating anything.
-`tests/agent_review/test_target_pack_arch_v2.py::test_doctor_call_graph_never_writes`
-proves this mechanically by AST/call-graph inspection -- the same
-"mechanical proof, not just docstring convention" discipline `#201-C`
-established for its own single-construction-site/no-except invariants.
+One completed doctor decision consumes every material target-filesystem
+observation inside one cooperative K-SH epoch.  The epoch excludes
+participating writers; retained directory/file descriptors bind the decision
+to the objects it actually observed.  The receipt remains a declaration to
+evaluate, never authority over the current filesystem.
 
-Every check reports PRESENT/MISSING/INVALID; `run_doctor_v2` itself never
-raises for a diagnosable target state -- it only raises for a genuinely
-unusable `target_root` (e.g. not a directory at all), which is an input
-error, not a diagnosis.
-
-## Path containment on every read
-
-Every filesystem read this module performs -- the profile, the receipt, and
-each target-owned file -- goes through `target_pack_plan_v2.resolve_within_
-target_root_v2` FIRST, and reads only the resolved `Path` it returned, never
-a separately re-derived one. That is the same containment primitive
-(`resolve(strict=False)` on the candidate, then `relative_to` a
-once-resolved root) `target_pack_install_v2` has applied to the WRITE path
-since the round-4 review, so the pack has one definition of "inside
-`target_root`", not two. `run_doctor_v2` resolves `target_root` exactly
-once per invocation and threads that single value through every check
-below it -- never re-resolved per file -- matching `apply_install_plan_v2`'s
-own `target_root_real` threading. A symlink resolving back inside
-`target_root` is allowed; only escape is refused, reported as
-`target_pack_doctor_path_escapes_target_root`.
-
-## Target identity
-
-`target_repo` is a REQUIRED caller-supplied parameter, mirroring `init
---target-repo`. It is the independent ground truth doctor checks a
-receipt's own `target_repo` claim against -- never derived from anything
-already on disk, which a receipt (or a whole `.aiops/` directory) copied
-from a different install could otherwise assert about itself uncontested.
-
-## Secret handling
-
-`_check_secret_names_v2` checks whether an expected secret NAME exists as
-an environment-variable KEY. It never reads, logs, returns, or otherwise
-touches the VALUE bound to that key -- `SecretNameCheckV2.declared_present`
-is a plain boolean, and no code path in this module ever calls
-`os.environ[name]` for its value, only `name in os.environ` for its
-presence. This mirrors `TargetInstallReceiptV2`'s own "names only, never
-values" discipline from the receipt contract.
+The strong claim is deliberately narrow: same host, EUID and mount namespace,
+with every AgentReview writer participating in the merged external-K protocol.
+External writers and undetectable ABA remain explicit non-claims.
 """
 
 from __future__ import annotations
 
-import os
+import errno
 import hashlib
+import os
+import stat
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Literal, NoReturn
 
 from app.agent_review.profile_loader_v2 import (
     DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
@@ -62,6 +28,15 @@ from app.agent_review.profile_loader_v2 import (
     TargetProfileLoadErrorV2,
     compute_profile_hash_v2,
     load_target_profile_text_v2,
+)
+from app.agent_review.target_pack_epoch_v2 import (
+    TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2,
+    TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2,
+    TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+    TargetPackEpochError,
+    TargetPackObservationBindingErrorV2,
+    TargetPackTargetBindingV2,
+    acquire_target_pack_epoch_v2,
 )
 from app.agent_review.target_pack_manifest_v2 import (
     TargetPackFileOwnershipV2,
@@ -82,6 +57,7 @@ from app.agent_review.target_pack_receipt_v2 import (
 )
 from pydantic import ValidationError
 
+
 DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 = "target_pack_doctor_target_root_not_a_directory"
 DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_doctor_path_escapes_target_root"
 DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2 = "target_pack_doctor_path_resolution_failed"
@@ -94,6 +70,22 @@ DOCTOR_RECEIPT_TARGET_ROOT_IDENTITY_MISMATCH_REASON_V2 = "target_pack_doctor_rec
 DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_profile_hash_mismatch"
 DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2 = "target_owned_identity_unreconciled"
 DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2 = "target_pack_doctor_receipt_rollout_exceeds_pack_capability"
+DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2 = "target_pack_doctor_observation_unavailable"
+DOCTOR_OBSERVATION_STALE_REASON_V2 = "target_pack_doctor_observation_stale"
+
+_PROFILE_RELATION_V2 = "profile"
+_RECEIPT_RELATION_V2 = "receipt"
+_AIOPS_RELATION_V2 = "aiops"
+_ROOT_RELATION_V2 = "target_root"
+_AIOPS_DIR_RELATIVE_V2 = DEFAULT_TARGET_PROFILE_RELATIVE_PATH.parent
+
+
+class DoctorArtifactLocationContractError(RuntimeError):
+    """Profile and receipt stopped sharing the one retained parent role."""
+
+
+if PurePosixPath(RECEIPT_RELATIVE_PATH_V2).parent != PurePosixPath(_AIOPS_DIR_RELATIVE_V2):
+    raise DoctorArtifactLocationContractError("profile and receipt no longer share one .aiops parent")
 
 
 @dataclass(frozen=True)
@@ -118,6 +110,8 @@ class SecretNameCheckV2:
 
 @dataclass(frozen=True)
 class DoctorReportV2:
+    """A completed diagnosis only; observational failure has no report."""
+
     target_root: str
     profile: ProfileCheckV2
     receipt: ReceiptCheckV2
@@ -133,74 +127,965 @@ class DoctorReportV2:
         )
 
 
-def _doctor_reason_for_plan_error_v2(exc: PlanError) -> str:
-    """Round 5, second pass (Codex shadow review of #230 at 90999f2),
-    confirmed and fixed: every `except PlanError` in this module collapsed
-    BOTH of `resolve_within_target_root_v2`'s distinct reasons -- genuine
-    containment escape and unresolvable symlink loop -- into the single
-    escape reason code, discarding the very distinction the loop fix
-    introduced its own reason code to preserve. Reproduced: a symlink loop
-    at the profile path reported `target_pack_doctor_path_escapes_target_
-    root`, indistinguishable from an actual escape, even though the
-    underlying `PlanError.reason_code` already said otherwise. This is the
-    single translation site so all three call sites below stay consistent
-    with each other and with `target_pack_plan_v2`'s own reason codes."""
+@dataclass(frozen=True)
+class DoctorDecisionV2:
+    report: DoctorReportV2
 
+    @property
+    def decision_status(self) -> Literal["healthy", "unhealthy"]:
+        return "healthy" if self.report.is_healthy else "unhealthy"
+
+
+@dataclass(frozen=True)
+class DoctorUnknownV2:
+    reason_code: str
+    stage: str
+    relation: str
+
+    @property
+    def decision_status(self) -> Literal["unknown"]:
+        return "unknown"
+
+
+DoctorRunOutcomeV2 = DoctorDecisionV2 | DoctorUnknownV2
+
+
+class DoctorInputErrorV2(ValueError):
+    """The invocation does not designate a diagnosable target subject."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+class _DoctorUnknownAbortV2(Exception):
+    def __init__(self, reason_code: str, *, stage: str, relation: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+        self.stage = stage
+        self.relation = relation
+
+
+class _DoctorCompletedNegativeV2(Exception):
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+_RESOURCE_UNAVAILABLE_ERRNOS_V2 = frozenset(
+    value
+    for value in (
+        errno.EMFILE,
+        errno.ENFILE,
+        errno.ENOMEM,
+        errno.EIO,
+        getattr(errno, "ESTALE", None),
+        errno.EINTR,
+    )
+    if value is not None
+)
+_PROGRAMMER_ERRNOS_V2 = frozenset({errno.EBADF, errno.EINVAL})
+_STABLE_MISSING_ERRNOS_V2 = frozenset({errno.ENOENT, errno.ENOTDIR})
+_STABLE_UNREADABLE_ERRNOS_V2 = frozenset({errno.EACCES, errno.EPERM})
+
+
+def _raise_classified_observation_oserror_v2(
+    *,
+    stage: str,
+    relation: str,
+    exc: OSError,
+    missing_reason: str,
+    unreadable_reason: str,
+) -> NoReturn:
+    """The single stage/relation/errno classification authority.
+
+    No caller is allowed to turn an ``OSError`` into a decision by
+    superclass alone.  Final revalidation is intentionally asymmetric with
+    initial diagnosis: it may only confirm stability or make the whole
+    decision UNKNOWN.
+    """
+
+    operation_errno = exc.errno
+    if operation_errno in _PROGRAMMER_ERRNOS_V2 or operation_errno is None:
+        raise exc
+    if stage == "final_revalidation":
+        raise _DoctorUnknownAbortV2(
+            DOCTOR_OBSERVATION_STALE_REASON_V2, stage=stage, relation=relation
+        ) from exc
+    if operation_errno in _RESOURCE_UNAVAILABLE_ERRNOS_V2:
+        raise _DoctorUnknownAbortV2(
+            DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2, stage=stage, relation=relation
+        ) from exc
+    if operation_errno == errno.ELOOP:
+        raise _DoctorUnknownAbortV2(
+            DOCTOR_OBSERVATION_STALE_REASON_V2, stage=stage, relation=relation
+        ) from exc
+    if operation_errno in _STABLE_MISSING_ERRNOS_V2:
+        raise _DoctorCompletedNegativeV2(missing_reason) from exc
+    if operation_errno in _STABLE_UNREADABLE_ERRNOS_V2:
+        raise _DoctorCompletedNegativeV2(unreadable_reason) from exc
+    if operation_errno in {errno.ENAMETOOLONG, errno.EISDIR}:
+        raise _DoctorCompletedNegativeV2(missing_reason) from exc
+    raise exc
+
+
+def _raise_binding_primitive_oserror_v2(
+    *, stage: str, relation: str, exc: OSError
+) -> NoReturn:
+    """Classify failure of the observation capability, not artifact content.
+
+    Once an FD is open, failure to make it non-inheritable or to obtain its
+    metadata cannot demonstrate an installed-state conformance negative.
+    It means the observation capability could not be established safely.
+    """
+
+    if exc.errno in _PROGRAMMER_ERRNOS_V2 or exc.errno is None:
+        raise exc
+    raise _DoctorUnknownAbortV2(
+        DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+        stage=stage,
+        relation=relation,
+    ) from exc
+
+
+def _doctor_reason_for_plan_error_v2(exc: PlanError) -> str:
     if exc.reason_code == PLAN_PATH_RESOLUTION_FAILED_REASON_V2:
         return DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2
     return DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
 
 
-def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
-    # Containment BOUND to the read, not merely checked before it
-    # (aiops-orchestrator#205, H1A-R1, round 2). The first cut of this fix
-    # verified containment and then discarded the result, letting
-    # `load_target_profile_v2` independently re-derive `target_root /
-    # relative_path` and re-traverse it -- the check and the read observed
-    # the same symlink only by coincidence of timing, not by construction.
-    # Confirmed exploitable deterministically (no real race needed):
-    # swapping the symlink to point outside `target_root` immediately after
-    # the passing containment check, but before the read, made this
-    # function report `status="present"` with a hash computed from content
-    # OUTSIDE `target_root`. Reading through `resolved` directly, and
-    # parsing via `load_target_profile_text_v2` (the same "I already have
-    # the bytes, do not re-derive a path" entry point `target_pack_
-    # operation_v2._profile_hash_for_bytes_v2` already uses) closes that:
-    # there is no second path composition left to race. `TargetProfile
-    # LoadErrorV2`'s three reason codes (MISSING/UNREADABLE/INVALID) are
-    # reproduced here explicitly since the loader that used to distinguish
-    # them from a bare `Path` is bypassed.
-    #
-    # Round 5 (Codex shadow review of #230 at fbc67db), confirmed and fixed:
-    # composed from `target_root / DEFAULT_TARGET_PROFILE_RELATIVE_PATH` --
-    # the CALLER's mutable alias -- rather than from `target_root_real`, the
-    # already-resolved root every other part of round 3/4's fix is bound to.
-    # If `target_root` were retargeted to a DESCENDANT of the resolved root
-    # between `run_doctor_v2` capturing `target_root_real` and this call,
-    # `relative_to(target_root_real)` still passes (the new destination is
-    # still contained), but the bytes read come from the descendant, not the
-    # location the operation is bound to -- the identical class of defect
-    # round 3 closed in `compute_target_pack_operation_plan_v2`, reachable
-    # here through a different alias. Composing from `target_root_real`
-    # itself removes the second, divergeable base entirely; `target_root`
-    # is no longer a parameter of this function because nothing in it needs
-    # the mutable alias once the read is bound to the resolved root.
-    try:
-        resolved = resolve_within_target_root_v2(target_root_real, target_root_real / DEFAULT_TARGET_PROFILE_RELATIVE_PATH)
-    except PlanError as exc:
-        return ProfileCheckV2(
-            status="invalid", profile_hash=None, reason_code=_doctor_reason_for_plan_error_v2(exc)
+def _file_type_v2(mode: int) -> int:
+    return stat.S_IFMT(mode)
+
+
+def _object_identity_v2(observed: os.stat_result) -> tuple[int, int, int]:
+    return (observed.st_dev, observed.st_ino, _file_type_v2(observed.st_mode))
+
+
+def _metadata_identity_v2(observed: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        observed.st_dev,
+        observed.st_ino,
+        _file_type_v2(observed.st_mode),
+        observed.st_size,
+        observed.st_mtime_ns,
+        observed.st_ctime_ns,
+        observed.st_nlink,
+    )
+
+
+@dataclass
+class _RetainedObjectV2:
+    fd: int
+    identity: tuple[int, int, int]
+    metadata: tuple[int, int, int, int, int, int, int]
+    content_bytes: bytes | None = None
+    sha256: str | None = None
+    content_acquisitions: int = 0
+
+
+@dataclass(frozen=True)
+class _LogicalObservationV2:
+    logical_path: Path
+    relation: str
+    kind: Literal["missing", "directory", "regular", "unreadable", "non_regular"]
+    resolved_path: Path
+    object_identity: tuple[int, int, int] | None
+
+
+@dataclass(frozen=True)
+class _ResolvedObservationV2:
+    kind: Literal["missing", "directory", "regular", "unreadable", "non_regular"]
+    object_identity: tuple[int, int, int] | None
+
+
+class _DoctorObservationSessionV2:
+    """One K-bound registry of logical relations and retained objects."""
+
+    def __init__(
+        self,
+        *,
+        target_root: Path,
+        root_binding: TargetPackTargetBindingV2,
+    ) -> None:
+        self._target_root = target_root
+        self._root_binding = root_binding
+        try:
+            self.target_root_real = Path(root_binding.target_root_real)
+            self._root_object_identity = root_binding.object_identity
+        except TargetPackEpochError as exc:
+            raise _DoctorUnknownAbortV2(
+                DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage="observation_session_start",
+                relation=_ROOT_RELATION_V2,
+            ) from exc
+        except OSError as exc:
+            _raise_binding_primitive_oserror_v2(
+                stage="observation_session_start",
+                relation=_ROOT_RELATION_V2,
+                exc=exc,
+            )
+        self._directories: dict[Path, _RetainedObjectV2] = {}
+        self._physical_objects: dict[tuple[int, int, int], _RetainedObjectV2] = {}
+        self._resolved_observations: dict[Path, _ResolvedObservationV2] = {}
+        self._logical_observations: list[_LogicalObservationV2] = []
+        self._closed = False
+
+    def __enter__(self) -> "_DoctorObservationSessionV2":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        retained_fds = {
+            retained.fd
+            for retained in (*self._directories.values(), *self._physical_objects.values())
+        }
+        for fd in sorted(retained_fds, reverse=True):
+            self._root_binding.release_observation_fd_v2(fd)
+        self._directories.clear()
+        self._physical_objects.clear()
+        self._resolved_observations.clear()
+
+    def _resolve_initial_v2(
+        self,
+        *,
+        logical_path: Path,
+        relation: str,
+        missing_reason: str,
+        unreadable_reason: str,
+    ) -> Path:
+        try:
+            return resolve_within_target_root_v2(
+                self.target_root_real, self.target_root_real / logical_path
+            )
+        except PlanError as exc:
+            raise _DoctorCompletedNegativeV2(_doctor_reason_for_plan_error_v2(exc)) from exc
+        except OSError as exc:
+            _raise_classified_observation_oserror_v2(
+                stage="initial_resolution",
+                relation=relation,
+                exc=exc,
+                missing_reason=missing_reason,
+                unreadable_reason=unreadable_reason,
+            )
+
+    def _prepare_fd_v2(
+        self,
+        *,
+        fd: int,
+        relation: str,
+    ) -> os.stat_result:
+        try:
+            os.set_inheritable(fd, False)
+        except OSError as exc:
+            _raise_binding_primitive_oserror_v2(
+                stage="fd_noninheritability", relation=relation, exc=exc
+            )
+        try:
+            return os.fstat(fd)
+        except OSError as exc:
+            _raise_binding_primitive_oserror_v2(
+                stage="fd_metadata", relation=relation, exc=exc
+            )
+
+    def _retain_fd_v2(
+        self,
+        *,
+        fd: int,
+        relation: str,
+    ) -> None:
+        try:
+            self._root_binding.retain_observation_fd_v2(fd)
+        except TargetPackObservationBindingErrorV2 as exc:
+            if exc.operation_errno is None:
+                raise
+            _raise_binding_primitive_oserror_v2(
+                stage=exc.stage,
+                relation=relation,
+                exc=OSError(exc.operation_errno, os.strerror(exc.operation_errno)),
+            )
+        except TargetPackEpochError as exc:
+            raise _DoctorUnknownAbortV2(
+                DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage="object_binding",
+                relation=relation,
+            ) from exc
+        except OSError as exc:
+            _raise_binding_primitive_oserror_v2(
+                stage="retain_observation_fd",
+                relation=relation,
+                exc=exc,
+            )
+
+    def _root_fd_v2(self, *, stage: str, relation: str) -> int:
+        try:
+            return self._root_binding.fd
+        except TargetPackEpochError as exc:
+            raise _DoctorUnknownAbortV2(
+                DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage=stage,
+                relation=relation,
+            ) from exc
+        except OSError as exc:
+            if stage == "final_revalidation":
+                _raise_classified_observation_oserror_v2(
+                    stage=stage,
+                    relation=relation,
+                    exc=exc,
+                    missing_reason=DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    unreadable_reason=DOCTOR_OBSERVATION_STALE_REASON_V2,
+                )
+            _raise_binding_primitive_oserror_v2(
+                stage=stage,
+                relation=relation,
+                exc=exc,
+            )
+
+    def _diagnose_component_open_error_v2(
+        self,
+        *,
+        parent_fd: int,
+        name: str,
+        relation: str,
+        exc: OSError,
+        missing_reason: str,
+        unreadable_reason: str,
+    ) -> NoReturn:
+        if exc.errno == errno.ENOTDIR:
+            try:
+                component = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError as stat_exc:
+                _raise_classified_observation_oserror_v2(
+                    stage="object_binding",
+                    relation=relation,
+                    exc=stat_exc,
+                    missing_reason=missing_reason,
+                    unreadable_reason=unreadable_reason,
+                )
+            if stat.S_ISLNK(component.st_mode):
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="object_binding",
+                    relation=relation,
+                ) from exc
+        _raise_classified_observation_oserror_v2(
+            stage="object_binding",
+            relation=relation,
+            exc=exc,
+            missing_reason=missing_reason,
+            unreadable_reason=unreadable_reason,
         )
-    if not resolved.is_file():
-        return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_MISSING_REASON_V2)
+
+    def _open_parent_directory_v2(
+        self,
+        *,
+        resolved_path: Path,
+        relation: str,
+        missing_reason: str,
+        unreadable_reason: str,
+    ) -> int:
+        try:
+            relative_parent = resolved_path.parent.relative_to(self.target_root_real)
+        except ValueError as exc:
+            raise RuntimeError("resolved path escaped the containment authority") from exc
+
+        parent_fd = self._root_fd_v2(stage="object_binding", relation=relation)
+        prefix = self.target_root_real
+        for component in relative_parent.parts:
+            try:
+                candidate_fd = os.open(
+                    component,
+                    os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=parent_fd,
+                )
+            except OSError as exc:
+                self._diagnose_component_open_error_v2(
+                    parent_fd=parent_fd,
+                    name=component,
+                    relation=relation,
+                    exc=exc,
+                    missing_reason=missing_reason,
+                    unreadable_reason=unreadable_reason,
+                )
+            try:
+                observed = self._prepare_fd_v2(
+                    fd=candidate_fd,
+                    relation=relation,
+                )
+                if not stat.S_ISDIR(observed.st_mode):
+                    raise _DoctorCompletedNegativeV2(missing_reason)
+                prefix = prefix / component
+                retained = self._directories.get(prefix)
+                if retained is None:
+                    self._retain_fd_v2(
+                        fd=candidate_fd,
+                        relation=relation,
+                    )
+                    retained = _RetainedObjectV2(
+                        fd=candidate_fd,
+                        identity=_object_identity_v2(observed),
+                        metadata=_metadata_identity_v2(observed),
+                    )
+                    self._directories[prefix] = retained
+                    candidate_fd = -1
+                elif retained.identity != _object_identity_v2(observed):
+                    raise _DoctorUnknownAbortV2(
+                        DOCTOR_OBSERVATION_STALE_REASON_V2,
+                        stage="object_binding",
+                        relation=relation,
+                    )
+                parent_fd = retained.fd
+            finally:
+                if candidate_fd >= 0:
+                    os.close(candidate_fd)
+        return parent_fd
+
+    def _open_leaf_path_fd_v2(
+        self,
+        *,
+        parent_fd: int,
+        resolved_path: Path,
+        relation: str,
+        missing_reason: str,
+        unreadable_reason: str,
+    ) -> tuple[int, os.stat_result]:
+        try:
+            fd = os.open(
+                resolved_path.name,
+                os.O_PATH | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            _raise_classified_observation_oserror_v2(
+                stage="object_binding",
+                relation=relation,
+                exc=exc,
+                missing_reason=missing_reason,
+                unreadable_reason=unreadable_reason,
+            )
+        try:
+            observed = self._prepare_fd_v2(
+                fd=fd,
+                relation=relation,
+            )
+            if stat.S_ISLNK(observed.st_mode):
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="object_binding",
+                    relation=relation,
+                )
+            return fd, observed
+        except BaseException:
+            os.close(fd)
+            raise
+
+    def observe_directory_v2(self, *, logical_path: Path, relation: str) -> None:
+        resolved = self._resolve_initial_v2(
+            logical_path=logical_path,
+            relation=relation,
+            missing_reason=TARGET_PROFILE_MISSING_REASON_V2,
+            unreadable_reason=TARGET_PROFILE_UNREADABLE_REASON_V2,
+        )
+        parent_fd = self._open_parent_directory_v2(
+            resolved_path=resolved,
+            relation=relation,
+            missing_reason=TARGET_PROFILE_MISSING_REASON_V2,
+            unreadable_reason=TARGET_PROFILE_UNREADABLE_REASON_V2,
+        )
+        try:
+            leaf_fd, observed = self._open_leaf_path_fd_v2(
+                parent_fd=parent_fd,
+                resolved_path=resolved,
+                relation=relation,
+                missing_reason=TARGET_PROFILE_MISSING_REASON_V2,
+                unreadable_reason=TARGET_PROFILE_UNREADABLE_REASON_V2,
+            )
+        except _DoctorCompletedNegativeV2:
+            self._resolved_observations[resolved] = _ResolvedObservationV2("missing", None)
+            self._logical_observations.append(
+                _LogicalObservationV2(logical_path, relation, "missing", resolved, None)
+            )
+            raise
+        if not stat.S_ISDIR(observed.st_mode):
+            try:
+                self._retain_fd_v2(
+                    fd=leaf_fd,
+                    relation=relation,
+                )
+            except BaseException:
+                os.close(leaf_fd)
+                raise
+            retained = _RetainedObjectV2(
+                fd=leaf_fd,
+                identity=_object_identity_v2(observed),
+                metadata=_metadata_identity_v2(observed),
+            )
+            self._physical_objects.setdefault(retained.identity, retained)
+            if self._physical_objects[retained.identity] is not retained:
+                self._root_binding.release_observation_fd_v2(leaf_fd)
+            self._logical_observations.append(
+                _LogicalObservationV2(logical_path, relation, "non_regular", resolved, retained.identity)
+            )
+            self._resolved_observations[resolved] = _ResolvedObservationV2(
+                "non_regular", retained.identity
+            )
+            raise _DoctorCompletedNegativeV2(TARGET_PROFILE_MISSING_REASON_V2)
+        existing = self._directories.get(resolved)
+        if existing is None:
+            try:
+                self._retain_fd_v2(
+                    fd=leaf_fd,
+                    relation=relation,
+                )
+            except BaseException:
+                os.close(leaf_fd)
+                raise
+            existing = _RetainedObjectV2(
+                fd=leaf_fd,
+                identity=_object_identity_v2(observed),
+                metadata=_metadata_identity_v2(observed),
+            )
+            self._directories[resolved] = existing
+        else:
+            os.close(leaf_fd)
+            if existing.identity != _object_identity_v2(observed):
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="object_binding",
+                    relation=relation,
+                )
+        self._logical_observations.append(
+            _LogicalObservationV2(logical_path, relation, "directory", resolved, existing.identity)
+        )
+        self._resolved_observations[resolved] = _ResolvedObservationV2(
+            "directory", existing.identity
+        )
+
+    def _observe_regular_v2(
+        self,
+        *,
+        logical_path: Path,
+        relation: str,
+        missing_reason: str,
+        unreadable_reason: str,
+        require_bytes: bool,
+    ) -> _RetainedObjectV2:
+        resolved = self._resolve_initial_v2(
+            logical_path=logical_path,
+            relation=relation,
+            missing_reason=missing_reason,
+            unreadable_reason=unreadable_reason,
+        )
+        cached = self._resolved_observations.get(resolved)
+        if cached is not None:
+            self._logical_observations.append(
+                _LogicalObservationV2(
+                    logical_path,
+                    relation,
+                    cached.kind,
+                    resolved,
+                    cached.object_identity,
+                )
+            )
+            if cached.kind == "regular":
+                if cached.object_identity is None:
+                    raise RuntimeError("regular resolved observation has no object identity")
+                retained = self._physical_objects.get(cached.object_identity)
+                if retained is None:
+                    raise RuntimeError("resolved observation lost its retained object")
+                if require_bytes and retained.content_bytes is None:
+                    raise RuntimeError("one-read registry would need to reread retained content")
+                return retained
+            if cached.kind == "unreadable":
+                raise _DoctorCompletedNegativeV2(unreadable_reason)
+            raise _DoctorCompletedNegativeV2(missing_reason)
+        try:
+            parent_fd = self._open_parent_directory_v2(
+                resolved_path=resolved,
+                relation=relation,
+                missing_reason=missing_reason,
+                unreadable_reason=unreadable_reason,
+            )
+            path_fd, path_stat = self._open_leaf_path_fd_v2(
+                parent_fd=parent_fd,
+                resolved_path=resolved,
+                relation=relation,
+                missing_reason=missing_reason,
+                unreadable_reason=unreadable_reason,
+            )
+        except _DoctorCompletedNegativeV2:
+            self._resolved_observations[resolved] = _ResolvedObservationV2("missing", None)
+            self._logical_observations.append(
+                _LogicalObservationV2(logical_path, relation, "missing", resolved, None)
+            )
+            raise
+
+        if not stat.S_ISREG(path_stat.st_mode):
+            try:
+                self._retain_fd_v2(
+                    fd=path_fd,
+                    relation=relation,
+                )
+            except BaseException:
+                os.close(path_fd)
+                raise
+            retained = _RetainedObjectV2(
+                fd=path_fd,
+                identity=_object_identity_v2(path_stat),
+                metadata=_metadata_identity_v2(path_stat),
+            )
+            existing = self._physical_objects.setdefault(retained.identity, retained)
+            if existing is not retained:
+                self._root_binding.release_observation_fd_v2(path_fd)
+            self._logical_observations.append(
+                _LogicalObservationV2(logical_path, relation, "non_regular", resolved, retained.identity)
+            )
+            self._resolved_observations[resolved] = _ResolvedObservationV2(
+                "non_regular", retained.identity
+            )
+            raise _DoctorCompletedNegativeV2(missing_reason)
+
+        try:
+            data_fd = os.open(
+                resolved.name,
+                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            if exc.errno in _STABLE_UNREADABLE_ERRNOS_V2:
+                try:
+                    self._retain_fd_v2(
+                        fd=path_fd,
+                        relation=relation,
+                    )
+                except BaseException:
+                    os.close(path_fd)
+                    raise
+                retained_unreadable = _RetainedObjectV2(
+                    fd=path_fd,
+                    identity=_object_identity_v2(path_stat),
+                    metadata=_metadata_identity_v2(path_stat),
+                )
+                existing_unreadable = self._physical_objects.setdefault(
+                    retained_unreadable.identity, retained_unreadable
+                )
+                if existing_unreadable is not retained_unreadable:
+                    self._root_binding.release_observation_fd_v2(path_fd)
+                self._resolved_observations[resolved] = _ResolvedObservationV2(
+                    "unreadable", retained_unreadable.identity
+                )
+                self._logical_observations.append(
+                    _LogicalObservationV2(
+                        logical_path,
+                        relation,
+                        "unreadable",
+                        resolved,
+                        retained_unreadable.identity,
+                    )
+                )
+                raise _DoctorCompletedNegativeV2(unreadable_reason) from exc
+            os.close(path_fd)
+            if exc.errno in _PROGRAMMER_ERRNOS_V2 or exc.errno is None:
+                raise
+            if exc.errno in _RESOURCE_UNAVAILABLE_ERRNOS_V2:
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+                    stage="content_open",
+                    relation=relation,
+                ) from exc
+            raise _DoctorUnknownAbortV2(
+                DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage="content_open",
+                relation=relation,
+            ) from exc
+        try:
+            data_stat = self._prepare_fd_v2(
+                fd=data_fd,
+                relation=relation,
+            )
+            if _object_identity_v2(data_stat) != _object_identity_v2(path_stat):
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="object_binding",
+                    relation=relation,
+                )
+        except BaseException:
+            os.close(path_fd)
+            os.close(data_fd)
+            raise
+        os.close(path_fd)
+
+        physical_identity = _object_identity_v2(data_stat)
+        retained = self._physical_objects.get(physical_identity)
+        if retained is None:
+            try:
+                self._retain_fd_v2(
+                    fd=data_fd,
+                    relation=relation,
+                )
+            except BaseException:
+                os.close(data_fd)
+                raise
+            retained = _RetainedObjectV2(
+                fd=data_fd,
+                identity=physical_identity,
+                metadata=_metadata_identity_v2(data_stat),
+            )
+            self._physical_objects[physical_identity] = retained
+        else:
+            os.close(data_fd)
+            if retained.metadata != _metadata_identity_v2(data_stat):
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="object_binding",
+                    relation=relation,
+                )
+
+        self._logical_observations.append(
+            _LogicalObservationV2(logical_path, relation, "regular", resolved, physical_identity)
+        )
+        self._resolved_observations[resolved] = _ResolvedObservationV2(
+            "regular", physical_identity
+        )
+        if retained.content_acquisitions == 0:
+            chunks: list[bytes] = []
+            digest = hashlib.sha256()
+            try:
+                while True:
+                    chunk = os.read(retained.fd, 1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                    if require_bytes:
+                        chunks.append(chunk)
+                after_read = os.fstat(retained.fd)
+            except OSError as exc:
+                _raise_classified_observation_oserror_v2(
+                    stage="content_read",
+                    relation=relation,
+                    exc=exc,
+                    missing_reason=missing_reason,
+                    unreadable_reason=unreadable_reason,
+                )
+            if retained.metadata != _metadata_identity_v2(after_read):
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="content_read",
+                    relation=relation,
+                )
+            retained.sha256 = digest.hexdigest()
+            retained.content_bytes = b"".join(chunks) if require_bytes else None
+            retained.content_acquisitions = 1
+        elif require_bytes and retained.content_bytes is None:
+            raise RuntimeError("one-read registry would need to reread retained content")
+        return retained
+
+    def observe_bytes_v2(
+        self,
+        *,
+        logical_path: Path,
+        relation: str,
+        missing_reason: str,
+        unreadable_reason: str,
+    ) -> bytes:
+        retained = self._observe_regular_v2(
+            logical_path=logical_path,
+            relation=relation,
+            missing_reason=missing_reason,
+            unreadable_reason=unreadable_reason,
+            require_bytes=True,
+        )
+        if retained.content_bytes is None:
+            raise RuntimeError("bytes observation missing from retained content")
+        return retained.content_bytes
+
+    def observe_sha256_v2(
+        self,
+        *,
+        logical_path: Path,
+        relation: str,
+        missing_reason: str,
+        unreadable_reason: str,
+    ) -> str:
+        retained = self._observe_regular_v2(
+            logical_path=logical_path,
+            relation=relation,
+            missing_reason=missing_reason,
+            unreadable_reason=unreadable_reason,
+            require_bytes=False,
+        )
+        if retained.sha256 is None:
+            raise RuntimeError("digest observation missing from retained content")
+        return retained.sha256
+
+    def _transient_current_lookup_v2(self, resolved_path: Path) -> tuple[str, os.stat_result | None]:
+        relative = resolved_path.relative_to(self.target_root_real)
+        parent_fd = self._root_fd_v2(
+            stage="final_revalidation", relation="transient_current_lookup"
+        )
+        opened: list[int] = []
+        try:
+            for component in relative.parts[:-1]:
+                fd = os.open(
+                    component,
+                    os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=parent_fd,
+                )
+                os.set_inheritable(fd, False)
+                opened.append(fd)
+                parent_fd = fd
+            leaf_fd = os.open(
+                relative.parts[-1],
+                os.O_PATH | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_fd,
+            )
+            os.set_inheritable(leaf_fd, False)
+            opened.append(leaf_fd)
+            observed = os.fstat(leaf_fd)
+            if stat.S_ISLNK(observed.st_mode):
+                raise OSError(errno.ELOOP, os.strerror(errno.ELOOP))
+            return ("present", observed)
+        except OSError as exc:
+            if exc.errno in _STABLE_MISSING_ERRNOS_V2:
+                return ("missing", None)
+            raise
+        finally:
+            for fd in reversed(opened):
+                os.close(fd)
+
+    def _revalidate_root_v2(self) -> None:
+        try:
+            self._root_binding._require_active_v2()
+            if self._target_root.resolve(strict=False) != self.target_root_real:
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="final_revalidation",
+                    relation=_ROOT_RELATION_V2,
+                )
+            current_fd = os.open(
+                self.target_root_real,
+                os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            )
+            try:
+                os.set_inheritable(current_fd, False)
+                current = os.fstat(current_fd)
+            finally:
+                os.close(current_fd)
+            held_identity = self._root_binding.object_identity
+        except _DoctorUnknownAbortV2:
+            raise
+        except TargetPackEpochError as exc:
+            raise _DoctorUnknownAbortV2(
+                DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage="final_revalidation",
+                relation=_ROOT_RELATION_V2,
+            ) from exc
+        except (OSError, RuntimeError) as exc:
+            if isinstance(exc, OSError) and exc.errno in _PROGRAMMER_ERRNOS_V2:
+                raise
+            raise _DoctorUnknownAbortV2(
+                DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage="final_revalidation",
+                relation=_ROOT_RELATION_V2,
+            ) from exc
+        current_identity = (current.st_dev, current.st_ino)
+        if held_identity != self._root_object_identity or current_identity != held_identity:
+            raise _DoctorUnknownAbortV2(
+                DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage="final_revalidation",
+                relation=_ROOT_RELATION_V2,
+            )
+
+    def revalidate_v2(self) -> None:
+        self._revalidate_root_v2()
+        for logical in self._logical_observations:
+            try:
+                resolved = resolve_within_target_root_v2(
+                    self.target_root_real, self.target_root_real / logical.logical_path
+                )
+                current_kind, current = self._transient_current_lookup_v2(resolved)
+            except (PlanError, OSError, RuntimeError, ValueError) as exc:
+                if isinstance(exc, OSError) and exc.errno in _PROGRAMMER_ERRNOS_V2:
+                    raise
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="final_revalidation",
+                    relation=logical.relation,
+                ) from exc
+            if logical.kind == "missing":
+                if current_kind == "missing" and resolved == logical.resolved_path:
+                    continue
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="final_revalidation",
+                    relation=logical.relation,
+                )
+            if current_kind != "present" or current is None:
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="final_revalidation",
+                    relation=logical.relation,
+                )
+            if _object_identity_v2(current) != logical.object_identity:
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="final_revalidation",
+                    relation=logical.relation,
+                )
+            expected_kind = {
+                "directory": stat.S_IFDIR,
+                "regular": stat.S_IFREG,
+                "unreadable": stat.S_IFREG,
+                "non_regular": _file_type_v2(current.st_mode),
+            }[logical.kind]
+            if _file_type_v2(current.st_mode) != expected_kind:
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="final_revalidation",
+                    relation=logical.relation,
+                )
+
+        for retained in (*self._directories.values(), *self._physical_objects.values()):
+            try:
+                current = os.fstat(retained.fd)
+            except OSError as exc:
+                _raise_classified_observation_oserror_v2(
+                    stage="final_revalidation",
+                    relation="retained_object",
+                    exc=exc,
+                    missing_reason=DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    unreadable_reason=DOCTOR_OBSERVATION_STALE_REASON_V2,
+                )
+            if _metadata_identity_v2(current) != retained.metadata:
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="final_revalidation",
+                    relation="retained_object",
+                )
+
+
+def _check_profile_v2(session: _DoctorObservationSessionV2) -> ProfileCheckV2:
     try:
-        # `UnicodeDecodeError` as well as `OSError`: `doctor` reads the
-        # profile itself, so the loader's own boundary does not protect it,
-        # and a target-authored file holding invalid UTF-8 fails in
-        # read_text's DECODE step -- a `ValueError`, not an `OSError`.
-        raw_text = resolved.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_UNREADABLE_REASON_V2)
+        raw = session.observe_bytes_v2(
+            logical_path=DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
+            relation=_PROFILE_RELATION_V2,
+            missing_reason=TARGET_PROFILE_MISSING_REASON_V2,
+            unreadable_reason=TARGET_PROFILE_UNREADABLE_REASON_V2,
+        )
+    except _DoctorCompletedNegativeV2 as exc:
+        status = "invalid" if exc.reason_code.startswith("target_pack_doctor_path_") else "missing"
+        return ProfileCheckV2(status=status, profile_hash=None, reason_code=exc.reason_code)
+    try:
+        raw_text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ProfileCheckV2(
+            status="missing", profile_hash=None, reason_code=TARGET_PROFILE_UNREADABLE_REASON_V2
+        )
     try:
         profile = load_target_profile_text_v2(raw_text)
     except TargetProfileLoadErrorV2 as exc:
@@ -212,190 +1097,186 @@ def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
 
 def _check_receipt_v2(
     *,
-    target_root_real: Path,
+    session: _DoctorObservationSessionV2,
     manifest: TargetPackManifestV2,
     profile_check: ProfileCheckV2,
     target_repo: str,
 ) -> ReceiptCheckV2:
-    """A receipt that parses successfully is not yet a receipt that
-    describes THIS install. Adversarial review finding, confirmed and
-    fixed: the previous version only ever checked structural validity
-    (does this JSON parse into a `TargetInstallReceiptV2`?), never whether
-    the receipt's own claimed identity (`pack_version`, `toolrepo_sha`,
-    `target_profile_hash`) actually matches the manifest being diagnosed
-    against or the profile actually on disk. Reproduced: a receipt with a
-    self-consistent `receipt_hash` but a completely unrelated
-    `pack_version`/`toolrepo_sha`/`target_profile_hash` (as if copied from
-    a different install, or stale from a previous pack version) reported
-    `status="present"` and `is_healthy=True` -- doctor asserted an install
-    was healthy while unable to say it was looking at the RIGHT install at
-    all. Checked in this order (first mismatch wins, deterministic):
-    target_repo, then pack_version, then toolrepo_sha, then manifest_digest,
-    then portable_target_root_identity, then the target-owned SET
-    reconciliation described below, then per-file target-owned
-    reconciliation, then target_profile_hash (only when the profile itself
-    loaded -- if it did not, `profile.status` already makes `is_healthy`
-    false on its own, so there is nothing meaningful to compare the
-    receipt's claim against), then rollout_mode against the CURRENT
-    manifest's `max_supported_rollout_mode` -- a follow-on finding from the
-    same review pass: a receipt can be internally consistent on the first
-    three axes while still claiming an operational rollout state (e.g.
-    `shadow_full`) the pack version being diagnosed against cannot deliver
-    at all (e.g. stale from a since-downgraded or reverted pack version).
-
-    Post-merge review debt (aiops-orchestrator#205, C2/C3), confirmed and
-    fixed: two further axes were checked against nothing but the receipt's
-    own self-reported fields. (1) `portable_target_root_identity` was
-    compared against `compute_portable_target_root_identity_v2(target_repo
-    =receipt.target_repo)` -- a hash of the receipt's OWN claimed
-    `target_repo`, so a receipt copied wholesale from a different target
-    (e.g. `.aiops/` copied between two checkouts) passed every check, since
-    every field it claims is internally self-consistent by construction.
-    Reproduced: copying an install's `.aiops/` directory into an unrelated
-    target root reported `healthy: true`. `target_repo` is now REQUIRED
-    from the caller (mirroring `init --target-repo`, the same CLI-supplied
-    ground truth `init` already uses to establish what target it is
-    writing to) and checked FIRST -- an independent source, not the
-    receipt asserting its own identity to itself. (2) the per-file
-    reconciliation loop below only ever iterated
-    `receipt.target_owned_file_hashes`, so a receipt whose TARGET_OWNED set
-    had been shrunk to `{}` (or to any subset smaller than the manifest's
-    real TARGET_OWNED set) skipped reconciliation for every omitted path
-    entirely -- a tampered TARGET_OWNED file with no corresponding receipt
-    entry was never read, never hashed, never flagged. Reproduced: shrinking
-    a receipt's target-owned set to empty while separately tampering the
-    on-disk profile (and realigning `target_profile_hash` to the tampered
-    bytes) reported `healthy: true`. The receipt's claimed set is now
-    reconciled against the manifest's own TARGET_OWNED classification --
-    the authority for what SHOULD be tracked, independent of anything the
-    (possibly emptied) receipt claims -- so an emptied or narrowed claim
-    fails closed.
-
-    Round 5 (Codex shadow review of #230 at fbc67db), confirmed and fixed:
-    the SET check used to run LAST, after the per-file loop -- deliberately,
-    so a receipt already wrong on an earlier axis kept reporting that axis's
-    reason code. But the per-file loop reads and hashes every path the
-    receipt claims BEFORE the set check ever runs, including a path the set
-    check will go on to reject as not `TARGET_OWNED` at all. A self-hash-
-    consistent receipt could therefore make this loop `read_bytes()` an
-    arbitrary regular file inside `target_root` -- and pay the cost of
-    hashing it, unbounded by size -- for a path already knowable as invalid
-    by a single O(1) set comparison. Moved the SET check to run BEFORE the
-    per-file loop instead: it still follows every check above it (target_
-    repo, pack_version, toolrepo_sha, manifest_digest, portable_target_root
-    _identity), so a receipt wrong on one of THOSE axes still reports that
-    axis first, and every existing test that reaches deeper into this
-    function already uses a receipt whose target-owned set matches the
-    manifest -- moving the check earlier changes nothing about what those
-    tests observe, only how early a receipt-declared file the set check
-    would reject anyway stops being read at all."""
-
     try:
-        receipt_path = resolve_within_target_root_v2(target_root_real, target_root_real / RECEIPT_RELATIVE_PATH_V2)
-    except PlanError as exc:
-        return ReceiptCheckV2(status="invalid", receipt=None, reason_code=_doctor_reason_for_plan_error_v2(exc))
-    if not receipt_path.is_file():
-        return ReceiptCheckV2(status="missing", receipt=None, reason_code="target_pack_receipt_missing")
+        raw = session.observe_bytes_v2(
+            logical_path=Path(RECEIPT_RELATIVE_PATH_V2),
+            relation=_RECEIPT_RELATION_V2,
+            missing_reason="target_pack_receipt_missing",
+            unreadable_reason="target_pack_receipt_invalid",
+        )
+    except _DoctorCompletedNegativeV2 as exc:
+        status = "missing" if exc.reason_code == "target_pack_receipt_missing" else "invalid"
+        return ReceiptCheckV2(status=status, receipt=None, reason_code=exc.reason_code)
     try:
-        # THE shared authority -- never `model_validate_json` directly.
-        receipt = load_target_install_receipt_bytes_v2(receipt_path.read_bytes())
-    except (OSError, ValidationError, ValueError):
+        receipt = load_target_install_receipt_bytes_v2(raw)
+    except (ValidationError, ValueError):
         return ReceiptCheckV2(status="invalid", receipt=None, reason_code="target_pack_receipt_invalid")
 
     if receipt.target_repo != target_repo:
-        return ReceiptCheckV2(
-            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TARGET_REPO_MISMATCH_REASON_V2
-        )
+        return ReceiptCheckV2("invalid", receipt, DOCTOR_RECEIPT_TARGET_REPO_MISMATCH_REASON_V2)
     if receipt.pack_version != manifest.pack_version:
-        return ReceiptCheckV2(
-            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2
-        )
+        return ReceiptCheckV2("invalid", receipt, DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2)
     if receipt.toolrepo_sha != manifest.toolrepo_sha:
-        return ReceiptCheckV2(
-            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2
-        )
+        return ReceiptCheckV2("invalid", receipt, DOCTOR_RECEIPT_TOOLREPO_SHA_MISMATCH_REASON_V2)
     if receipt.manifest_digest != compute_target_pack_manifest_digest_v2(manifest):
-        return ReceiptCheckV2(
-            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_MANIFEST_DIGEST_MISMATCH_REASON_V2
-        )
-    if receipt.portable_target_root_identity != compute_portable_target_root_identity_v2(target_repo=receipt.target_repo):
-        return ReceiptCheckV2(
-            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TARGET_ROOT_IDENTITY_MISMATCH_REASON_V2
-        )
-    # Checked BEFORE the per-file loop below, not after (round 5, see this
-    # function's own docstring): the loop reads and hashes every path the
-    # receipt claims, so a set mismatch caught only afterward means an
-    # already-known-invalid, receipt-declared path was read regardless.
+        return ReceiptCheckV2("invalid", receipt, DOCTOR_RECEIPT_MANIFEST_DIGEST_MISMATCH_REASON_V2)
+    if receipt.portable_target_root_identity != compute_portable_target_root_identity_v2(
+        target_repo=receipt.target_repo
+    ):
+        return ReceiptCheckV2("invalid", receipt, DOCTOR_RECEIPT_TARGET_ROOT_IDENTITY_MISMATCH_REASON_V2)
+
     expected_target_owned_paths = frozenset(
-        entry.path for entry in manifest.generated_files if entry.ownership is TargetPackFileOwnershipV2.TARGET_OWNED
+        entry.path
+        for entry in manifest.generated_files
+        if entry.ownership is TargetPackFileOwnershipV2.TARGET_OWNED
     )
     if set(receipt.target_owned_paths) != expected_target_owned_paths:
-        return ReceiptCheckV2(
-            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2
-        )
-    for relative_path, recorded_hash in receipt.target_owned_file_hashes.items():
-        # Containment before the read (aiops-orchestrator#205, H1A-R1). The
-        # `RelativePath` retype earlier in this PR closed the LEXICAL escape
-        # (`../`, absolute, drive-absolute); this closes the SYMLINK escape,
-        # which no string-level validation can reach. Composed from
-        # `target_root_real`, not the caller's mutable `target_root` alias
-        # (round 5) -- see `_check_profile_v2`'s docstring for why the
-        # distinction matters.
+        return ReceiptCheckV2("invalid", receipt, DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2)
+
+    for relative_path in sorted(expected_target_owned_paths):
         try:
-            observed_path = resolve_within_target_root_v2(target_root_real, target_root_real / relative_path)
-        except PlanError as exc:
-            return ReceiptCheckV2(
-                status="invalid", receipt=receipt, reason_code=_doctor_reason_for_plan_error_v2(exc)
+            observed_hash = session.observe_sha256_v2(
+                logical_path=Path(relative_path),
+                relation=f"target_owned:{relative_path}",
+                missing_reason=DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2,
+                unreadable_reason=DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2,
             )
-        try:
-            observed_hash = hashlib.sha256(observed_path.read_bytes()).hexdigest() if observed_path.is_file() else None
-        except OSError:
-            observed_hash = None
-        if observed_hash != recorded_hash:
+        except _DoctorCompletedNegativeV2 as exc:
+            return ReceiptCheckV2("invalid", receipt, exc.reason_code)
+        if observed_hash != receipt.target_owned_file_hashes[relative_path]:
             return ReceiptCheckV2(
-                status="invalid", receipt=receipt, reason_code=DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2
+                "invalid", receipt, DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2
             )
     if profile_check.status == "present" and receipt.target_profile_hash != profile_check.profile_hash:
-        return ReceiptCheckV2(
-            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2
-        )
+        return ReceiptCheckV2("invalid", receipt, DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2)
     if rollout_mode_exceeds_pack_capability_v2(
         mode=receipt.rollout_mode, max_supported=manifest.max_supported_rollout_mode
     ):
         return ReceiptCheckV2(
-            status="invalid", receipt=receipt, reason_code=DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2
+            "invalid", receipt, DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2
         )
-
-    return ReceiptCheckV2(status="present", receipt=receipt, reason_code=None)
-
-
-def _check_secret_names_v2(names: tuple[str, ...]) -> tuple[SecretNameCheckV2, ...]:
-    # `name in os.environ` only -- never `os.environ[name]`. See module
-    # docstring.
-    return tuple(SecretNameCheckV2(name=name, declared_present=name in os.environ) for name in names)
+    return ReceiptCheckV2("present", receipt, None)
 
 
-def run_doctor_v2(*, target_root: Path, manifest: TargetPackManifestV2, target_repo: str) -> DoctorReportV2:
-    if not target_root.is_dir():
-        raise NotADirectoryError(DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2)
-
-    # Resolved exactly once per invocation and threaded through every
-    # containment check below -- not re-resolved per file (round 2, see
-    # `resolve_within_target_root_v2`'s own docstring).
-    target_root_real = target_root.resolve(strict=False)
-    profile_check = _check_profile_v2(target_root_real)
-    receipt_check = _check_receipt_v2(
-        target_root_real=target_root_real,
-        manifest=manifest,
-        profile_check=profile_check,
-        target_repo=target_repo,
+def _check_secret_names_v2(
+    names: tuple[str, ...], *, environment_keys: frozenset[str]
+) -> tuple[SecretNameCheckV2, ...]:
+    return tuple(
+        SecretNameCheckV2(name=name, declared_present=name in environment_keys) for name in names
     )
-    expected_secret_names = receipt_check.receipt.required_secret_names if receipt_check.receipt else ()
 
-    return DoctorReportV2(
-        target_root=str(target_root),
-        profile=profile_check,
-        receipt=receipt_check,
-        secret_names=_check_secret_names_v2(expected_secret_names),
-        required_capabilities_declared=tuple(manifest.required_capabilities),
+
+def _unknown_for_epoch_error_v2(exc: TargetPackEpochError) -> DoctorUnknownV2:
+    return DoctorUnknownV2(reason_code=exc.reason_code, stage="epoch_acquire", relation=_ROOT_RELATION_V2)
+
+
+def _unknown_for_epoch_oserror_v2(exc: OSError) -> DoctorUnknownV2:
+    if exc.errno in _PROGRAMMER_ERRNOS_V2 or exc.errno is None:
+        raise exc
+    return DoctorUnknownV2(
+        reason_code=TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+        stage="epoch_acquire",
+        relation=_ROOT_RELATION_V2,
     )
+
+
+def _classify_root_binding_failure_v2(
+    exc: TargetPackObservationBindingErrorV2,
+) -> DoctorUnknownV2:
+    if exc.operation_errno in _STABLE_MISSING_ERRNOS_V2:
+        raise DoctorInputErrorV2(DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2) from exc
+    if exc.operation_errno in _PROGRAMMER_ERRNOS_V2:
+        raise exc
+    reason = (
+        DOCTOR_OBSERVATION_STALE_REASON_V2
+        if exc.reason_code
+        in {TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2, TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2}
+        else DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2
+    )
+    return DoctorUnknownV2(reason_code=reason, stage="target_root_binding", relation=_ROOT_RELATION_V2)
+
+
+def run_doctor_v2(
+    *, target_root: Path, manifest: TargetPackManifestV2, target_repo: str
+) -> DoctorRunOutcomeV2:
+    """Compile one completed decision or a report-zero observational failure.
+
+    Root existence/type is intentionally classified only after K-SH is held:
+    a writer holding K-EX before first materialization yields UNKNOWN/BUSY,
+    never a premature input-error diagnosis.
+    """
+
+    target_display = str(target_root)
+    caller_target = Path(target_root)
+    caller_target_repo = str(target_repo)
+    environment_keys = frozenset(os.environ.keys())
+
+    try:
+        lease = acquire_target_pack_epoch_v2(target_root=caller_target, exclusive=False)
+    except TargetPackEpochError as exc:
+        return _unknown_for_epoch_error_v2(exc)
+    except OSError as exc:
+        return _unknown_for_epoch_oserror_v2(exc)
+
+    with lease:
+        try:
+            root_binding = lease.bind_target_root_for_observation_v2(target_root=caller_target)
+        except TargetPackObservationBindingErrorV2 as exc:
+            return _classify_root_binding_failure_v2(exc)
+        except TargetPackEpochError as exc:
+            return DoctorUnknownV2(
+                reason_code=DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage="target_root_binding",
+                relation=_ROOT_RELATION_V2,
+            )
+        except OSError as exc:
+            if exc.errno in _PROGRAMMER_ERRNOS_V2 or exc.errno is None:
+                raise
+            return DoctorUnknownV2(
+                reason_code=DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+                stage="target_root_binding",
+                relation=_ROOT_RELATION_V2,
+            )
+
+        with root_binding:
+            try:
+                with _DoctorObservationSessionV2(
+                    target_root=caller_target, root_binding=root_binding
+                ) as session:
+                    try:
+                        session.observe_directory_v2(
+                            logical_path=_AIOPS_DIR_RELATIVE_V2, relation=_AIOPS_RELATION_V2
+                        )
+                    except _DoctorCompletedNegativeV2:
+                        pass
+
+                    profile_check = _check_profile_v2(session)
+                    receipt_check = _check_receipt_v2(
+                        session=session,
+                        manifest=manifest,
+                        profile_check=profile_check,
+                        target_repo=caller_target_repo,
+                    )
+                    expected_secret_names = (
+                        receipt_check.receipt.required_secret_names if receipt_check.receipt else ()
+                    )
+                    report = DoctorReportV2(
+                        target_root=target_display,
+                        profile=profile_check,
+                        receipt=receipt_check,
+                        secret_names=_check_secret_names_v2(
+                            expected_secret_names, environment_keys=environment_keys
+                        ),
+                        required_capabilities_declared=tuple(manifest.required_capabilities),
+                    )
+                    session.revalidate_v2()
+                    return DoctorDecisionV2(report=report)
+            except _DoctorUnknownAbortV2 as exc:
+                return DoctorUnknownV2(
+                    reason_code=exc.reason_code, stage=exc.stage, relation=exc.relation
+                )

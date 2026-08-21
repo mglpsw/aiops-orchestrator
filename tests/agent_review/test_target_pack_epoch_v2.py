@@ -7,6 +7,7 @@ tree; target mutation is exercised by the authorized-apply tests.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import stat
@@ -24,6 +25,7 @@ from app.agent_review.target_pack_epoch_v2 import (
     TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
     TARGET_PACK_EPOCH_PROTOCOL_VERSION_V2,
     TargetPackEpochError,
+    TargetPackObservationBindingErrorV2,
     acquire_target_pack_epoch_v2,
     compute_target_pack_epoch_key_from_components_v2,
     runtime_carrier_root_v2,
@@ -415,6 +417,41 @@ def test_materialization_and_o_path_binding_preserve_missing_ancestors_and_mode_
                 assert stat.S_ISDIR(os.fstat(binding.fd).st_mode)
     finally:
         existing.chmod(0o700)
+
+
+def test_additive_observation_binding_preserves_writer_binding_failures(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F16/M_BIND_EXTENSION_BREAKS_WRITER: old writer API is byte-semantic stable."""
+
+    missing = tmp_path / "missing"
+    with acquire_target_pack_epoch_v2(target_root=missing, exclusive=True) as lease:
+        with pytest.raises(TargetPackEpochError) as missing_error:
+            lease.bind_target_root_v2(target_root=missing)
+        assert type(missing_error.value) is TargetPackEpochError
+        assert missing_error.value.reason_code == TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2
+
+    target = tmp_path / "existing"
+    target.mkdir()
+    target_real = os.fspath(target.resolve())
+    real_open = epoch_module.os.open
+
+    def emfile_on_target(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        if os.fspath(path) == target_real and flags & os.O_PATH:
+            raise OSError(errno.EMFILE, "injected")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(epoch_module.os, "open", emfile_on_target)
+    with acquire_target_pack_epoch_v2(target_root=target, exclusive=True) as lease:
+        with pytest.raises(TargetPackEpochError) as writer_error:
+            lease.bind_target_root_v2(target_root=target)
+        assert type(writer_error.value) is TargetPackEpochError
+        assert writer_error.value.reason_code == TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2
+
+        with pytest.raises(TargetPackObservationBindingErrorV2) as observation_error:
+            lease.bind_target_root_for_observation_v2(target_root=target)
+        assert observation_error.value.operation_errno == errno.EMFILE
+        assert observation_error.value.stage == "open"
 
 
 def test_binding_keeps_the_original_directory_object_after_path_replacement(runtime_parent: Path, tmp_path: Path) -> None:
