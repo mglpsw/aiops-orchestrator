@@ -25,8 +25,13 @@
   into an ordinary unhealthy report is now intentionally `unknown`, while
   stable missing, malformed, non-regular, containment, permission, and hash
   failures preserve completed-negative semantics and existing reason codes.
-  Completed CLI JSON is byte-shape compatible. `intended_behavior_change:
-  true`.
+  A sanctioned path that resolves exactly to the held target root is treated
+  as a first-class object relation: directory roles reuse the root binding,
+  while profile, receipt, and ledger file roles preserve their existing
+  completed non-regular reasons. Profile status projection is explicit over
+  named reasons rather than reason-code spelling, and object identity remains
+  the single type-stability discriminator. Completed CLI JSON is byte-shape
+  compatible. `intended_behavior_change: true`.
   The claim is target-read-only and cooperative within the same host/EUID/
   mount namespace and K object. External writers, undetectable ABA,
   provenance/generation identity, `generated_file_hashes` conformance,

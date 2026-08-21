@@ -46,6 +46,10 @@ from app.agent_review.target_pack_manifest_v2 import (
 from tests.agent_review import test_target_pack_arch_v2 as arch
 from tests.agent_review.test_target_pack_doctor_v2 import (
     _VALID_PROFILE_YAML,
+    _assert_aiops_retarget_outside_root_is_unknown_not_unhealthy,
+    _assert_aiops_root_self_completed,
+    _assert_path_object_type_drift_is_unknown,
+    _assert_profile_completed_negative_status_is_explicit,
     _manifest,
     _receipt,
     _sha256,
@@ -557,32 +561,60 @@ def _m_fd_inheritable(_root: Path, _monkeypatch: pytest.MonkeyPatch) -> None:
     assert arch._fd_inheritable_offenders_v2(_tree(source))
 
 
-def _plan_reason_call_owners(tree: ast.Module) -> list[str]:
-    owners: dict[int, str] = {}
-    for function in ast.walk(tree):
-        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for line in range(function.lineno, (function.end_lineno or function.lineno) + 1):
-                owners[line] = function.name
-    return [
-        owners.get(node.lineno, "<module>")
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_doctor_reason_for_plan_error_v2"
-    ]
-
-
-def _m_relookup_escape_as_unhealthy(_root: Path, _monkeypatch: pytest.MonkeyPatch) -> None:
-    source = _replace_once(
-        _doctor_source(),
-        "            except (PlanError, OSError, RuntimeError, ValueError) as exc:\n",
-        "            except (PlanError, OSError, RuntimeError, ValueError) as exc:\n"
-        "                if isinstance(exc, PlanError):\n"
-        "                    raise _DoctorCompletedNegativeV2(\n"
-        "                        _doctor_reason_for_plan_error_v2(exc)\n"
-        "                    ) from exc\n",
+def _m_root_self_resolution_unhandled(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        doctor._DoctorObservationSessionV2,
+        "_is_root_self_v2",
+        lambda _self, _resolved_path: False,
     )
-    assert "revalidate_v2" in _plan_reason_call_owners(_tree(source))
+    with pytest.raises(RuntimeError, match="resolved path escaped the containment authority"):
+        _assert_aiops_root_self_completed(root)
+
+
+def _m_reason_prefix_classification(_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        doctor,
+        "_profile_status_for_completed_negative_v2",
+        lambda reason_code: (
+            "invalid" if reason_code.startswith("target_pack_doctor_path_") else "missing"
+        ),
+    )
+    with pytest.raises(AssertionError):
+        _assert_profile_completed_negative_status_is_explicit()
+
+
+def _m_object_identity_omits_type(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        doctor,
+        "_object_identity_v2",
+        lambda observed: (observed.st_dev, observed.st_ino),
+    )
+    with pytest.raises(AssertionError):
+        _assert_path_object_type_drift_is_unknown(root, monkeypatch)
+
+
+def _m_relookup_escape_as_unhealthy(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real_revalidate = doctor._DoctorObservationSessionV2.revalidate_v2
+
+    def escape_as_completed(self: doctor._DoctorObservationSessionV2) -> None:
+        try:
+            real_revalidate(self)
+        except doctor._DoctorUnknownAbortV2 as exc:
+            if exc.stage == "final_revalidation" and exc.relation == "aiops":
+                return
+            raise
+
+    monkeypatch.setattr(
+        doctor._DoctorObservationSessionV2,
+        "revalidate_v2",
+        escape_as_completed,
+    )
+    outside = root.parent / f"{root.name}-outside"
+    outside.mkdir()
+    with pytest.raises(AssertionError):
+        _assert_aiops_retarget_outside_root_is_unknown_not_unhealthy(
+            root, outside, monkeypatch
+        )
 
 
 def _m_relookup_bespoke_resolver(_root: Path, _monkeypatch: pytest.MonkeyPatch) -> None:
@@ -668,6 +700,9 @@ _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     "M_TARGET_MUTATION_IN_DOCTOR": _m_target_mutation_in_doctor,
     "M_K_EXCLUSIVE_READER": _m_k_exclusive_reader,
     "M_FD_INHERITABLE": _m_fd_inheritable,
+    "M_ROOT_SELF_RESOLUTION_UNHANDLED": _m_root_self_resolution_unhandled,
+    "M_REASON_PREFIX_CLASSIFICATION": _m_reason_prefix_classification,
+    "M_OBJECT_IDENTITY_OMITS_TYPE": _m_object_identity_omits_type,
     "M_RELOOKUP_ESCAPE_AS_UNHEALTHY": _m_relookup_escape_as_unhealthy,
     "M_RELOOKUP_BESPOKE_RESOLVER": _m_relookup_bespoke_resolver,
     "M_REVALIDATE_VIA_FSTAT_ONLY": _m_revalidate_via_fstat_only,

@@ -145,6 +145,12 @@ this implementation.
   hardlink aliases retain independent path-specific conformance relations.
   Missing, non-regular, and unreadable observations are cached too. Every FD
   remains non-inheritable and retained through final revalidation.
+- A sanctioned resolved object may be the target root itself. Directory roles
+  reuse the already-held root object; regular-file roles observe that the root
+  is non-regular and preserve the relation's existing completed-negative
+  reason. Final relookup supports the same case without weakening containment.
+  Profile status is projected from exact named reasons, never from reason-code
+  prefixes, and the retained object identity owns file-type stability.
 - `DoctorReportV2` still represents only a completed diagnosis. The internal
   `DoctorRunOutcomeV2` is either a `DoctorDecisionV2` (`healthy`/`unhealthy`)
   carrying that unchanged report or a report-zero `DoctorUnknownV2` with

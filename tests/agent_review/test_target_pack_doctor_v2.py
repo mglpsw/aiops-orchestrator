@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import app.agent_review.target_pack_doctor_v2 as doctor_module
 from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_v2
 from app.agent_review.target_pack_doctor_v2 import (
     DoctorDecisionV2,
@@ -163,6 +164,29 @@ def _receipt(required_secret_names: tuple[str, ...] = (), **overrides: object) -
 def _completed_report(outcome: object):
     assert isinstance(outcome, DoctorDecisionV2), outcome
     return outcome.report
+
+
+def _profile_check_from_completed_reason(reason_code: str):
+    class RefusingSession:
+        def observe_bytes_v2(self, **_kwargs: object) -> bytes:
+            raise doctor_module._DoctorCompletedNegativeV2(reason_code)
+
+    try:
+        return doctor_module._check_profile_v2(RefusingSession())
+    except RuntimeError:
+        return None
+
+
+def _assert_profile_completed_negative_status_is_explicit() -> None:
+    assert _profile_check_from_completed_reason(DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2).status == "invalid"
+    assert _profile_check_from_completed_reason(DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2).status == "invalid"
+    assert _profile_check_from_completed_reason("target_profile_missing").status == "missing"
+    assert _profile_check_from_completed_reason("target_profile_unreadable").status == "missing"
+    assert _profile_check_from_completed_reason("target_pack_doctor_path_unrelated_fabrication") is None
+
+
+def test_profile_completed_negative_status_is_explicit_not_reason_spelling() -> None:
+    _assert_profile_completed_negative_status_is_explicit()
 
 
 def test_doctor_reports_missing_profile_and_receipt_without_creating_anything(tmp_path: Path) -> None:
@@ -784,6 +808,157 @@ def test_doctor_allows_a_symlink_that_resolves_back_inside_target_root(
     assert report.is_healthy
 
 
+def _assert_aiops_root_self_completed(target_root: Path) -> DoctorDecisionV2:
+    (target_root / ".aiops").symlink_to(".", target_is_directory=True)
+    outcome = run_doctor_v2(
+        target_root=target_root, manifest=_manifest(), target_repo="owner/repo"
+    )
+    assert isinstance(outcome, DoctorDecisionV2)
+    assert outcome.report.profile.status == "missing"
+    assert outcome.report.profile.reason_code == "target_profile_missing"
+    assert outcome.report.receipt.status == "missing"
+    assert outcome.report.receipt.reason_code == "target_pack_receipt_missing"
+    return outcome
+
+
+def test_aiops_resolving_exactly_to_target_root_is_a_completed_directory_relation(
+    tmp_path: Path,
+) -> None:
+    _assert_aiops_root_self_completed(tmp_path)
+
+
+def test_aiops_internal_symlink_chain_resolving_to_target_root_is_legal(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "back-to-root").symlink_to("..", target_is_directory=True)
+    (tmp_path / ".aiops").symlink_to("state/back-to-root", target_is_directory=True)
+
+    outcome = run_doctor_v2(
+        target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo"
+    )
+
+    assert isinstance(outcome, DoctorDecisionV2)
+    assert outcome.report.profile.reason_code == "target_profile_missing"
+    assert outcome.report.receipt.reason_code == "target_pack_receipt_missing"
+
+
+def test_profile_resolving_exactly_to_target_root_is_completed_non_regular(
+    tmp_path: Path,
+) -> None:
+    aiops = tmp_path / ".aiops"
+    aiops.mkdir()
+    (aiops / "target-profile.v2.yaml").symlink_to("..", target_is_directory=True)
+
+    report = _completed_report(
+        run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+    )
+
+    assert report.profile.status == "missing"
+    assert report.profile.reason_code == "target_profile_missing"
+
+
+def test_receipt_resolving_exactly_to_target_root_is_completed_non_regular(
+    tmp_path: Path,
+) -> None:
+    aiops = tmp_path / ".aiops"
+    aiops.mkdir()
+    (aiops / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    (aiops / "install-receipt.v2.json").symlink_to("..", target_is_directory=True)
+
+    report = _completed_report(
+        run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+    )
+
+    assert report.receipt.status == "missing"
+    assert report.receipt.reason_code == "target_pack_receipt_missing"
+
+
+def test_target_owned_member_resolving_to_target_root_is_completed_unreconciled(
+    tmp_path: Path,
+) -> None:
+    aiops = tmp_path / ".aiops"
+    aiops.mkdir()
+    profile = aiops / "target-profile.v2.yaml"
+    profile.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    root_member = aiops / "root-member"
+    root_member.symlink_to("..", target_is_directory=True)
+    manifest = TargetPackManifestV2(
+        schema_id="agent-review.target-pack-manifest.v2",
+        schema_version=2,
+        pack_version="0.1.0",
+        toolrepo_sha="1" * 40,
+        generated_files=(
+            GeneratedFileEntryV2(
+                path=".aiops/root-member",
+                ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+                content_sha256="b" * 64,
+            ),
+            GeneratedFileEntryV2(
+                path=".aiops/target-profile.v2.yaml",
+                ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+                content_sha256="a" * 64,
+            ),
+        ),
+        schema_digests={"x.json": "a" * 64},
+        required_capabilities=("router_transport",),
+        min_engine_contract_version=2,
+        max_supported_rollout_mode="shadow_minimal",
+    )
+    receipt = _receipt(
+        manifest_digest=compute_target_pack_manifest_digest_v2(manifest),
+        target_owned_paths=(".aiops/root-member", ".aiops/target-profile.v2.yaml"),
+        target_owned_file_hashes={
+            ".aiops/root-member": "f" * 64,
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode()),
+        },
+    )
+    (aiops / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+    report = _completed_report(
+        run_doctor_v2(target_root=tmp_path, manifest=manifest, target_repo="owner/repo")
+    )
+
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2
+
+
+def test_aiops_actual_escape_is_not_confused_with_root_self_resolution(tmp_path: Path) -> None:
+    (tmp_path / ".aiops").symlink_to("..", target_is_directory=True)
+
+    report = _completed_report(
+        run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+    )
+
+    assert report.profile.status == "invalid"
+    assert report.profile.reason_code == DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+def test_root_self_relation_survives_final_relookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_lookup = doctor_module._DoctorObservationSessionV2._transient_current_lookup_v2
+    root_relookups = 0
+
+    def counted_lookup(self: object, resolved_path: Path, *, relation: str):
+        nonlocal root_relookups
+        if resolved_path == tmp_path.resolve():
+            root_relookups += 1
+        return real_lookup(self, resolved_path, relation=relation)
+
+    monkeypatch.setattr(
+        doctor_module._DoctorObservationSessionV2,
+        "_transient_current_lookup_v2",
+        counted_lookup,
+    )
+    _assert_aiops_root_self_completed(tmp_path)
+
+    assert root_relookups >= 1
+
+
 # --- H1A-R1, round 2: the check must be BOUND to the read, not merely --
 # --- run before it (second independent review of #230's first fix) -----
 
@@ -1377,6 +1552,54 @@ def test_doctor_non_regular_profile_is_a_completed_negative(tmp_path: Path) -> N
     assert report.profile.reason_code == "target_profile_missing"
 
 
+def _assert_path_object_type_drift_is_unknown(
+    target_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    aiops = target_root / ".aiops"
+    aiops.mkdir()
+    aiops_real = aiops.resolve()
+    real_lookup = doctor_module._DoctorObservationSessionV2._transient_current_lookup_v2
+
+    def type_drift_lookup(self: object, resolved_path: Path, *, relation: str):
+        current_kind, current = real_lookup(self, resolved_path, relation=relation)
+        if resolved_path == aiops_real and current is not None:
+            current = os.stat_result(
+                (
+                    stat.S_IFREG | 0o600,
+                    current.st_ino,
+                    current.st_dev,
+                    current.st_nlink,
+                    current.st_uid,
+                    current.st_gid,
+                    current.st_size,
+                    current.st_atime,
+                    current.st_mtime,
+                    current.st_ctime,
+                )
+            )
+        return current_kind, current
+
+    monkeypatch.setattr(
+        doctor_module._DoctorObservationSessionV2,
+        "_transient_current_lookup_v2",
+        type_drift_lookup,
+    )
+    outcome = run_doctor_v2(
+        target_root=target_root, manifest=_manifest(), target_repo="owner/repo"
+    )
+
+    assert isinstance(outcome, DoctorUnknownV2)
+    assert outcome.reason_code == "target_pack_doctor_observation_stale"
+    assert outcome.stage == "final_revalidation"
+    assert outcome.relation == "aiops"
+
+
+def test_object_identity_is_the_discriminating_type_stability_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_path_object_type_drift_is_unknown(tmp_path, monkeypatch)
+
+
 def test_two_shared_doctors_can_coexist(tmp_path: Path) -> None:
     with acquire_target_pack_epoch_v2(target_root=tmp_path, exclusive=False):
         outcome = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
@@ -1565,6 +1788,49 @@ def test_profile_content_is_acquired_once_for_parse_semantic_hash_and_ledger(
     assert nonempty_reads == 1
 
 
+def test_canonical_observation_plan_places_all_byte_relations_before_ledger_digests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    aiops = tmp_path / ".aiops"
+    aiops.mkdir()
+    (aiops / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    receipt = _receipt(
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={
+            ".aiops/target-profile.v2.yaml": _sha256(_VALID_PROFILE_YAML.encode())
+        },
+    )
+    (aiops / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+    real_bytes = doctor_module._DoctorObservationSessionV2.observe_bytes_v2
+    real_digest = doctor_module._DoctorObservationSessionV2.observe_sha256_v2
+    events: list[tuple[str, str]] = []
+
+    def observe_bytes(self: object, **kwargs: object) -> bytes:
+        events.append(("bytes", str(kwargs["relation"])))
+        return real_bytes(self, **kwargs)
+
+    def observe_digest(self: object, **kwargs: object) -> str:
+        events.append(("digest", str(kwargs["relation"])))
+        return real_digest(self, **kwargs)
+
+    monkeypatch.setattr(
+        doctor_module._DoctorObservationSessionV2, "observe_bytes_v2", observe_bytes
+    )
+    monkeypatch.setattr(
+        doctor_module._DoctorObservationSessionV2, "observe_sha256_v2", observe_digest
+    )
+    report = _completed_report(
+        run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+    )
+
+    assert report.is_healthy
+    assert events[:2] == [("bytes", "profile"), ("bytes", "receipt")]
+    first_digest = next(index for index, event in enumerate(events) if event[0] == "digest")
+    assert all(event[0] == "bytes" for event in events[:first_digest])
+
+
 def test_profile_path_binding_is_reused_for_its_ledger_relation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1723,10 +1989,10 @@ def test_final_relookup_permission_failure_is_unknown_stale(
     assert outcome.relation == "aiops"
 
 
-def test_aiops_retarget_outside_root_during_final_relookup_is_unknown_not_unhealthy(
-    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+def _assert_aiops_retarget_outside_root_is_unknown_not_unhealthy(
+    target_root: Path, outside: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    state = tmp_path / "state"
+    state = target_root / "state"
     state.mkdir()
     (state / "target-profile.v2.yaml").write_text(_VALID_PROFILE_YAML, encoding="utf-8")
     receipt = _receipt(
@@ -1736,10 +2002,8 @@ def test_aiops_retarget_outside_root_during_final_relookup_is_unknown_not_unheal
     (state / "install-receipt.v2.json").write_text(
         json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
     )
-    aiops = tmp_path / ".aiops"
+    aiops = target_root / ".aiops"
     aiops.symlink_to(state, target_is_directory=True)
-    outside = tmp_path_factory.mktemp("outside-aiops")
-    import app.agent_review.target_pack_doctor_v2 as doctor_module
 
     real_revalidate = doctor_module._DoctorObservationSessionV2.revalidate_v2
 
@@ -1749,12 +2013,22 @@ def test_aiops_retarget_outside_root_during_final_relookup_is_unknown_not_unheal
         real_revalidate(self)
 
     monkeypatch.setattr(doctor_module._DoctorObservationSessionV2, "revalidate_v2", retarget_then_revalidate)
-    outcome = run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
+    outcome = run_doctor_v2(
+        target_root=target_root, manifest=_manifest(), target_repo="owner/repo"
+    )
 
     assert isinstance(outcome, DoctorUnknownV2)
     assert outcome.reason_code == "target_pack_doctor_observation_stale"
     assert outcome.stage == "final_revalidation"
     assert outcome.relation == "aiops"
+
+
+def test_aiops_retarget_outside_root_during_final_relookup_is_unknown_not_unhealthy(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_aiops_retarget_outside_root_is_unknown_not_unhealthy(
+        tmp_path, tmp_path_factory.mktemp("outside-aiops"), monkeypatch
+    )
 
 
 def test_detected_external_in_place_change_is_unknown(

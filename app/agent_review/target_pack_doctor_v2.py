@@ -187,6 +187,12 @@ _RESOURCE_UNAVAILABLE_ERRNOS_V2 = frozenset(
 _PROGRAMMER_ERRNOS_V2 = frozenset({errno.EBADF, errno.EINVAL})
 _STABLE_MISSING_ERRNOS_V2 = frozenset({errno.ENOENT, errno.ENOTDIR})
 _STABLE_UNREADABLE_ERRNOS_V2 = frozenset({errno.EACCES, errno.EPERM})
+_PROFILE_STATUS_BY_COMPLETED_NEGATIVE_REASON_V2: dict[str, Literal["missing", "invalid"]] = {
+    TARGET_PROFILE_MISSING_REASON_V2: "missing",
+    TARGET_PROFILE_UNREADABLE_REASON_V2: "missing",
+    DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2: "invalid",
+    DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2: "invalid",
+}
 
 
 def _raise_classified_observation_oserror_v2(
@@ -252,6 +258,15 @@ def _doctor_reason_for_plan_error_v2(exc: PlanError) -> str:
     if exc.reason_code == PLAN_PATH_RESOLUTION_FAILED_REASON_V2:
         return DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2
     return DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+
+
+def _profile_status_for_completed_negative_v2(
+    reason_code: str,
+) -> Literal["missing", "invalid"]:
+    try:
+        return _PROFILE_STATUS_BY_COMPLETED_NEGATIVE_REASON_V2[reason_code]
+    except KeyError as exc:
+        raise RuntimeError("unclassified completed-negative profile reason") from exc
 
 
 def _file_type_v2(mode: int) -> int:
@@ -446,6 +461,31 @@ class _DoctorObservationSessionV2:
                 exc=exc,
             )
 
+    def _is_root_self_v2(self, resolved_path: Path) -> bool:
+        return resolved_path == self.target_root_real
+
+    def _root_self_stat_v2(self, *, stage: str, relation: str) -> os.stat_result:
+        root_fd = self._root_fd_v2(stage=stage, relation=relation)
+        try:
+            observed = os.fstat(root_fd)
+        except OSError as exc:
+            if stage == "final_revalidation":
+                _raise_classified_observation_oserror_v2(
+                    stage=stage,
+                    relation=relation,
+                    exc=exc,
+                    missing_reason=DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    unreadable_reason=DOCTOR_OBSERVATION_STALE_REASON_V2,
+                )
+            _raise_binding_primitive_oserror_v2(stage=stage, relation=relation, exc=exc)
+        if (observed.st_dev, observed.st_ino) != self._root_object_identity:
+            raise _DoctorUnknownAbortV2(
+                DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage=stage,
+                relation=relation,
+            )
+        return observed
+
     def _diagnose_component_open_error_v2(
         self,
         *,
@@ -591,6 +631,22 @@ class _DoctorObservationSessionV2:
             missing_reason=TARGET_PROFILE_MISSING_REASON_V2,
             unreadable_reason=TARGET_PROFILE_UNREADABLE_REASON_V2,
         )
+        if self._is_root_self_v2(resolved):
+            observed = self._root_self_stat_v2(stage="object_binding", relation=relation)
+            if not stat.S_ISDIR(observed.st_mode):
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="object_binding",
+                    relation=relation,
+                )
+            identity = _object_identity_v2(observed)
+            self._logical_observations.append(
+                _LogicalObservationV2(logical_path, relation, "directory", resolved, identity)
+            )
+            self._resolved_observations[resolved] = _ResolvedObservationV2(
+                "directory", identity
+            )
+            return
         parent_fd = self._open_parent_directory_v2(
             resolved_path=resolved,
             relation=relation,
@@ -681,6 +737,18 @@ class _DoctorObservationSessionV2:
             missing_reason=missing_reason,
             unreadable_reason=unreadable_reason,
         )
+        if self._is_root_self_v2(resolved):
+            observed = self._root_self_stat_v2(stage="object_binding", relation=relation)
+            identity = _object_identity_v2(observed)
+            self._resolved_observations.setdefault(
+                resolved, _ResolvedObservationV2("directory", identity)
+            )
+            self._logical_observations.append(
+                _LogicalObservationV2(
+                    logical_path, relation, "non_regular", resolved, identity
+                )
+            )
+            raise _DoctorCompletedNegativeV2(missing_reason)
         cached = self._resolved_observations.get(resolved)
         if cached is not None:
             self._logical_observations.append(
@@ -923,10 +991,19 @@ class _DoctorObservationSessionV2:
             raise RuntimeError("digest observation missing from retained content")
         return retained.sha256
 
-    def _transient_current_lookup_v2(self, resolved_path: Path) -> tuple[str, os.stat_result | None]:
+    def _transient_current_lookup_v2(
+        self, resolved_path: Path, *, relation: str
+    ) -> tuple[str, os.stat_result | None]:
+        if self._is_root_self_v2(resolved_path):
+            return (
+                "present",
+                self._root_self_stat_v2(
+                    stage="final_revalidation", relation=relation
+                ),
+            )
         relative = resolved_path.relative_to(self.target_root_real)
         parent_fd = self._root_fd_v2(
-            stage="final_revalidation", relation="transient_current_lookup"
+            stage="final_revalidation", relation=relation
         )
         opened: list[int] = []
         try:
@@ -1008,7 +1085,9 @@ class _DoctorObservationSessionV2:
                 resolved = resolve_within_target_root_v2(
                     self.target_root_real, self.target_root_real / logical.logical_path
                 )
-                current_kind, current = self._transient_current_lookup_v2(resolved)
+                current_kind, current = self._transient_current_lookup_v2(
+                    resolved, relation=logical.relation
+                )
             except (PlanError, OSError, RuntimeError, ValueError) as exc:
                 if isinstance(exc, OSError) and exc.errno in _PROGRAMMER_ERRNOS_V2:
                     raise
@@ -1032,18 +1111,6 @@ class _DoctorObservationSessionV2:
                     relation=logical.relation,
                 )
             if _object_identity_v2(current) != logical.object_identity:
-                raise _DoctorUnknownAbortV2(
-                    DOCTOR_OBSERVATION_STALE_REASON_V2,
-                    stage="final_revalidation",
-                    relation=logical.relation,
-                )
-            expected_kind = {
-                "directory": stat.S_IFDIR,
-                "regular": stat.S_IFREG,
-                "unreadable": stat.S_IFREG,
-                "non_regular": _file_type_v2(current.st_mode),
-            }[logical.kind]
-            if _file_type_v2(current.st_mode) != expected_kind:
                 raise _DoctorUnknownAbortV2(
                     DOCTOR_OBSERVATION_STALE_REASON_V2,
                     stage="final_revalidation",
@@ -1078,7 +1145,7 @@ def _check_profile_v2(session: _DoctorObservationSessionV2) -> ProfileCheckV2:
             unreadable_reason=TARGET_PROFILE_UNREADABLE_REASON_V2,
         )
     except _DoctorCompletedNegativeV2 as exc:
-        status = "invalid" if exc.reason_code.startswith("target_pack_doctor_path_") else "missing"
+        status = _profile_status_for_completed_negative_v2(exc.reason_code)
         return ProfileCheckV2(status=status, profile_hash=None, reason_code=exc.reason_code)
     try:
         raw_text = raw.decode("utf-8")
