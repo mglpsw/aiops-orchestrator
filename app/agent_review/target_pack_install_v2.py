@@ -151,9 +151,9 @@ def apply_install_plan_v2(
     if unresolved_drift:
         raise TargetPackInstallError(INSTALL_DRIFT_UNRESOLVED_REASON_V2)
 
-    lease.require_exclusive_v2(target_root=Path(target_binding.target_root_real))
-    if target_binding.target_root_real != plan.target_root_real:
+    if os.fsdecode(lease.canonical_target_subject) != plan.target_root_real:
         raise TargetPackInstallError(INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2)
+    lease.require_exclusive_binding_v2(binding=target_binding, expected_target_root_real=plan.target_root_real)
 
     written: list[str] = []
     for file_action in plan.file_actions:
@@ -190,9 +190,9 @@ def write_receipt_v2(
 
     import json
 
-    lease.require_exclusive_v2(target_root=Path(target_binding.target_root_real))
-    if target_binding.target_root_real != expected_target_root_real:
+    if os.fsdecode(lease.canonical_target_subject) != expected_target_root_real:
         raise TargetPackInstallError(INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2)
+    lease.require_exclusive_binding_v2(binding=target_binding, expected_target_root_real=expected_target_root_real)
     content = (json.dumps(receipt.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode(
         "utf-8"
     )

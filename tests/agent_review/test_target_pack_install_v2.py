@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -14,7 +15,12 @@ from app.agent_review.target_pack_install_v2 import (
     apply_install_plan_v2 as _apply_install_plan_v2,
     write_receipt_v2 as _write_receipt_v2,
 )
-from app.agent_review.target_pack_epoch_v2 import acquire_target_pack_epoch_v2
+from app.agent_review.target_pack_epoch_v2 import (
+    TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2,
+    TargetPackEpochError,
+    TargetPackTargetBindingV2,
+    acquire_target_pack_epoch_v2,
+)
 from app.agent_review.target_pack_manifest_v2 import (
     GeneratedFileEntryV2,
     TargetPackFileOwnershipV2,
@@ -362,6 +368,35 @@ def test_bound_fd_relative_write_stays_with_the_original_directory_after_path_re
     assert written == ("a.yaml",)
     assert (original / "a.yaml").read_bytes() == content
     assert not (target / "a.yaml").exists()
+
+
+def test_writer_rejects_a_forged_binding_for_another_root(tmp_path: Path) -> None:
+    """Review RED: an arbitrary O_PATH FD is not an EX K capability."""
+
+    target = tmp_path / "target-a"
+    other = tmp_path / "target-b"
+    target.mkdir()
+    other.mkdir()
+    content = b"seed"
+    entry = GeneratedFileEntryV2(
+        path="a.yaml", ownership=TargetPackFileOwnershipV2.UPSTREAM_GENERATED, content_sha256=_sha256(content)
+    )
+    manifest = _manifest(entry)
+    plan = compute_install_plan_v2(manifest=manifest, target_root=target, previous_receipt=None)
+    with acquire_target_pack_epoch_v2(target_root=target, exclusive=True) as lease:
+        fd = os.open(other, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW)
+        forged = TargetPackTargetBindingV2(lease, fd, (os.fstat(fd).st_dev, os.fstat(fd).st_ino))
+        with pytest.raises(TargetPackEpochError) as exc_info:
+            _apply_install_plan_v2(
+                plan=plan,
+                manifest=manifest,
+                seed_content_by_path={"a.yaml": content},
+                lease=lease,
+                target_binding=forged,
+            )
+        assert exc_info.value.reason_code == TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2
+        forged.close()
+    assert not (other / "a.yaml").exists()
 
 
 def test_merged_declarative_only_replaces_the_fenced_block(tmp_path: Path) -> None:

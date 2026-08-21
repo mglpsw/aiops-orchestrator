@@ -31,6 +31,31 @@ TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2 = "target_pack_epoch_unavailable"
 TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2 = "target_pack_epoch_target_subject_changed"
 TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2 = "target_pack_epoch_capability_invalid"
 
+# `O_CLOEXEC` closes an FD at exec, but a raw Python `fork()` first duplicates
+# the open file description.  Track live protocol FDs so the child closes its
+# copies immediately after fork without issuing LOCK_UN (which would also
+# unlock the parent's shared OFD).  This is process-lifetime hygiene, not a
+# durable recovery protocol.
+_LIVE_EPOCH_FDS_V2: set[int] = set()
+
+
+def _track_epoch_fd_v2(fd: int) -> int:
+    _LIVE_EPOCH_FDS_V2.add(fd)
+    return fd
+
+
+def _close_inherited_epoch_fds_after_fork_v2() -> None:
+    for fd in tuple(_LIVE_EPOCH_FDS_V2):
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    _LIVE_EPOCH_FDS_V2.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_close_inherited_epoch_fds_after_fork_v2)
+
 
 class TargetPackEpochError(ValueError):
     """A typed refusal while establishing or consuming a private epoch."""
@@ -275,6 +300,7 @@ class TargetPackTargetBindingV2:
         if self._active:
             self._active = False
             os.close(self._fd)
+            _LIVE_EPOCH_FDS_V2.discard(self._fd)
 
     def __enter__(self) -> "TargetPackTargetBindingV2":
         self._require_active_v2()
@@ -316,6 +342,19 @@ class TargetPackEpochLeaseV2:
         if self.mode != "exclusive" or _canonical_target_subject_v2(target_root) != self.canonical_target_subject:
             raise TargetPackEpochError(TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2)
 
+    def require_exclusive_binding_v2(self, *, binding: TargetPackTargetBindingV2, expected_target_root_real: str) -> None:
+        """Require an active EX lease and a binding minted by this lease.
+
+        A directory FD alone is never a capability.  In particular, a caller
+        must not be able to construct a lookalike binding for another root and
+        pair it with this lease's canonical subject.
+        """
+
+        self.require_exclusive_v2(target_root=Path(expected_target_root_real))
+        if not any(binding is registered for registered in self._bindings):
+            raise TargetPackEpochError(TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2)
+        binding._require_active_v2()
+
     def materialize_and_bind_target_root_v2(self, *, target_root: Path) -> TargetPackTargetBindingV2:
         """Create allowed missing prefixes only after the caller's plan gate."""
 
@@ -348,6 +387,7 @@ class TargetPackEpochLeaseV2:
                 raise TargetPackEpochError(TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2)
             binding = TargetPackTargetBindingV2(self, fd, (observed.st_dev, observed.st_ino))
             self._bindings.append(binding)
+            _track_epoch_fd_v2(fd)
             return binding
         except BaseException:
             os.close(fd)
@@ -361,7 +401,9 @@ class TargetPackEpochLeaseV2:
             binding.close()
         self._bindings.clear()
         _unlock_and_close_v2(self._carrier_fd)
+        _LIVE_EPOCH_FDS_V2.discard(self._carrier_fd)
         _unlock_and_close_v2(self._namespace_fd)
+        _LIVE_EPOCH_FDS_V2.discard(self._namespace_fd)
 
     def __enter__(self) -> "TargetPackEpochLeaseV2":
         self._require_active_v2()
@@ -408,7 +450,7 @@ def acquire_target_pack_epoch_v2(*, target_root: Path, exclusive: bool) -> Targe
         _validate_carrier_v2(namespace_fd=namespace_fd, carrier_fd=carrier_fd, name=carrier_name, euid=euid)
         if _canonical_target_subject_v2(target_root) != canonical_subject:
             raise TargetPackEpochError(TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2)
-        return TargetPackEpochLeaseV2(
+        lease = TargetPackEpochLeaseV2(
             _namespace_fd=namespace_fd,
             _carrier_fd=carrier_fd,
             _namespace_identity=namespace_identity,
@@ -419,6 +461,9 @@ def acquire_target_pack_epoch_v2(*, target_root: Path, exclusive: bool) -> Targe
             mount_namespace_identity=mount_identity,
             mode="exclusive" if exclusive else "shared",
         )
+        _track_epoch_fd_v2(namespace_fd)
+        _track_epoch_fd_v2(carrier_fd)
+        return lease
     except BaseException:
         if carrier_fd is not None:
             _unlock_and_close_v2(carrier_fd)

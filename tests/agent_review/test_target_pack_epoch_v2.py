@@ -278,6 +278,31 @@ print(child.pid, flush=True)
     assert _subprocess_acquire(parent=runtime_parent, target=target, exclusive=True) == "acquired"
 
 
+def test_fork_without_exec_cannot_retain_the_parent_epoch(runtime_parent: Path, tmp_path: Path) -> None:
+    """Review RED: close child FD copies without LOCK_UN on the shared OFD."""
+
+    target = tmp_path / "target"
+    code = r'''
+import os, sys, time
+from pathlib import Path
+import app.agent_review.target_pack_epoch_v2 as epoch
+epoch._RUNTIME_PARENT_PATH_V2 = Path(sys.argv[1])
+epoch._RUNTIME_PARENT_EXPECTED_OWNER_V2 = os.geteuid()
+lease = epoch.acquire_target_pack_epoch_v2(target_root=Path(sys.argv[2]), exclusive=True)
+pid = os.fork()
+if pid == 0:
+    time.sleep(2)
+    os._exit(0)
+os.write(1, b"forked\n")
+os._exit(0)
+'''
+    holder = subprocess.Popen([sys.executable, "-c", code, str(runtime_parent), str(target)], stdout=subprocess.PIPE, text=True)
+    assert holder.stdout is not None
+    assert holder.stdout.readline().strip() == "forked"
+    holder.wait(timeout=5)
+    assert _subprocess_acquire(parent=runtime_parent, target=target, exclusive=True) == "acquired"
+
+
 def test_release_never_unlinks_the_inert_carrier_or_protocol_directory(runtime_parent: Path, tmp_path: Path) -> None:
     """R20/M_UNLINK_K: lifecycle is kernel-lock lifetime, not unlinking."""
 
