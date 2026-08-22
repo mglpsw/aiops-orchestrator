@@ -424,7 +424,9 @@ _DOCTOR_REACHABLE_LOCAL_FUNCTIONS_V2 = frozenset(
         "run_doctor_v2",
         "_unknown_for_epoch_error_v2",
         "_unknown_for_epoch_oserror_v2",
+        "_classify_root_subject_before_epoch_v2",
         "_classify_root_binding_failure_v2",
+        "_snapshot_environment_keys_v2",
         "_check_profile_v2",
         "_check_receipt_v2",
         "_check_secret_names_v2",
@@ -656,7 +658,7 @@ def test_doctor_content_and_environment_observation_choke_points_are_single() ->
         and node.func.value.value.id == "os"
         and node.func.value.attr == "environ"
     ]
-    assert environment_keys == ["run_doctor_v2"]
+    assert environment_keys == ["_snapshot_environment_keys_v2"]
     assert not [
         node
         for node in ast.walk(tree)
@@ -675,7 +677,7 @@ def test_doctor_content_and_environment_observation_choke_points_are_single() ->
         and node.value.id == "os"
         and node.attr == "environ"
     ]
-    assert environment_references == ["run_doctor_v2"]
+    assert environment_references == ["_snapshot_environment_keys_v2"]
 
 
 def _fd_inheritable_offenders_v2(tree: ast.Module) -> list[int]:

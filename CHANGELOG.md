@@ -20,7 +20,9 @@
   result distinguishes completed `healthy`/`unhealthy` decisions from
   report-zero `unknown` observation failures; the CLI returns exit 3 for the
   latter. A stably absent/non-directory target, classified only after K is
-  held, is an input error with exit 2 and no traceback. Consequently,
+  held, is an input error with exit 2 and no traceback; a target observed as a
+  directory before acquisition and then absent under K is stale/unknown, not
+  an invocation error. Consequently,
   transient `EIO`/`ESTALE`/descriptor exhaustion that previously collapsed
   into an ordinary unhealthy report is now intentionally `unknown`, while
   stable missing, malformed, non-regular, containment, permission, and hash
@@ -38,13 +40,20 @@
   tracked descriptors. The later Ready-review hardening makes observation
   cleanup total: every retained release is attempted and every registry is
   cleared before an operational close failure becomes report-zero `unknown`
-  or a programmer errno is re-raised. All doctor-local target-object FDs,
+  or a programmer errno is re-raised. On Linux, even a late close error has
+  already consumed the descriptor number; cleanup therefore drops numeric
+  ownership and fork-tracker membership after every close attempt and never
+  retries a number that an unrelated open may have reused. All doctor-local
+  target-object FDs,
   including initial and final transient lookups, join the one raw-fork tracker
   before fallible configuration and leave it on local release. The sole
   provisional content open is nonblocking and validates the returned object's
   type and identity before any read, so a raced FIFO/device/non-regular swap
-  becomes stale/unknown instead of retaining K-SH indefinitely. Completed CLI
-  JSON is byte-shape compatible.
+  becomes stale/unknown instead of retaining K-SH indefinitely. Containment
+  negatives are themselves registered observations and must remain negative
+  at final revalidation; a repaired escape/loop is stale/unknown. Environment
+  key-snapshot iteration failure is likewise report-zero `unknown`. Completed
+  CLI JSON is byte-shape compatible.
   `intended_behavior_change: true`.
   The claim is target-read-only and cooperative within the same host/EUID/
   mount namespace and K object. External writers, undetectable ABA,

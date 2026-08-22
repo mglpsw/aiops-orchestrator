@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -21,6 +22,8 @@ from app.agent_review.target_pack_doctor_v2 import (
     DoctorInputErrorV2,
     DoctorUnknownV2,
     SecretNameCheckV2,
+    DOCTOR_OBSERVATION_STALE_REASON_V2,
+    DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
     DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2,
     DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2,
     DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2,
@@ -229,6 +232,7 @@ def _assert_session_cleanup_totality_v2(
                 "attempts": [],
                 "ordered": (),
                 "injected": False,
+                "replacement_fd": None,
             }
         )
 
@@ -243,7 +247,22 @@ def _assert_session_cleanup_totality_v2(
         selected = active_failure[0]
         if selected is not None and selected[0] == fd and not bool(selected[1]["injected"]):
             selected[1]["injected"] = True
-            raise OSError(close_errno, f"injected cleanup failure at {position}")
+            # Linux consumes the descriptor number before reporting a late
+            # close error.  Model that real ordering, including immediate
+            # numeric reuse by an unrelated open.  EBADF is different: make
+            # the descriptor genuinely invalid before the real second close.
+            real_close(fd)
+            if close_errno == errno.EBADF:
+                real_close(fd)
+            replacement_source_fd = os.open(
+                "/dev/null", os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            )
+            if replacement_source_fd != fd:
+                os.dup2(replacement_source_fd, fd, inheritable=False)
+                real_close(replacement_source_fd)
+            replacement_fd = fd
+            selected[1]["replacement_fd"] = replacement_fd
+            raise OSError(close_errno, f"injected late cleanup failure at {position}")
         real_close(fd)
 
     def counted_release(self: object, fd: int) -> None:
@@ -376,7 +395,23 @@ def _assert_session_cleanup_totality_v2(
                 f"{type(escaped).__name__}"
             )
 
+        replacement_fd = record["replacement_fd"]
+        if replacement_fd is not None:
+            try:
+                os.fstat(int(replacement_fd))
+            except OSError as exc:
+                if exc.errno == errno.EBADF:
+                    violations.append(
+                        f"unrelated-descriptor-reclosed[{iteration}]={replacement_fd}"
+                    )
+                else:
+                    raise
+            else:
+                real_close(int(replacement_fd))
+
         for fd in ordered:
+            if replacement_fd == fd:
+                continue
             try:
                 os.fstat(fd)
             except OSError as exc:
@@ -397,6 +432,154 @@ def _assert_session_cleanup_totality_v2(
             violations.append(f"writer-not-admitted[{iteration}]={exc.reason_code}")
 
     assert not violations, " | ".join(violations)
+
+
+def _assert_containment_negative_revalidation_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    negative_kind: str,
+    repair_before_revalidation: bool,
+) -> None:
+    """Keep target metadata stable while an external indirection changes."""
+
+    aiops = target_root / ".aiops"
+    aiops.mkdir(parents=True)
+    inside = aiops / "inside-profile.yaml"
+    inside.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    external = target_root.parent / f"{target_root.name}-external-control"
+    external.mkdir()
+    outside = external / "outside-profile.yaml"
+    outside.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    current = external / "current"
+    if negative_kind == "escape":
+        current.symlink_to(outside)
+        expected_reason = DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
+    elif negative_kind == "loop":
+        current.symlink_to(current)
+        expected_reason = DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2
+    else:  # pragma: no cover - test helper contract
+        raise AssertionError(negative_kind)
+    (aiops / "target-profile.v2.yaml").symlink_to(current)
+
+    real_profile = doctor_module._check_profile_v2
+    observed: list[tuple[str, str, str | None]] = []
+
+    def profile_then_optionally_repair(
+        session: doctor_module._DoctorObservationSessionV2,
+    ) -> ProfileCheckV2:
+        result = real_profile(session)
+        observed.extend(
+            (
+                item.relation,
+                item.kind,
+                getattr(item, "containment_reason", None),
+            )
+            for item in session._logical_observations
+        )
+        if repair_before_revalidation:
+            current.unlink()
+            current.symlink_to(inside)
+        return result
+
+    monkeypatch.setattr(doctor_module, "_check_profile_v2", profile_then_optionally_repair)
+    outcome = run_doctor_v2(
+        target_root=target_root,
+        manifest=_manifest(),
+        target_repo="owner/repo",
+    )
+
+    assert ("profile", "containment_negative", expected_reason) in observed
+    if repair_before_revalidation:
+        assert isinstance(outcome, DoctorUnknownV2)
+        assert outcome.reason_code == DOCTOR_OBSERVATION_STALE_REASON_V2
+        assert outcome.stage == "final_revalidation"
+        assert outcome.relation == "profile"
+    else:
+        report = _completed_report(outcome)
+        assert report.profile.status == "invalid"
+        assert report.profile.reason_code == expected_reason
+        assert not report.is_healthy
+
+
+def _assert_raced_root_absence_is_unknown_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _materialize_healthy_target_v2(target_root)
+    real_acquire = doctor_module.acquire_target_pack_epoch_v2
+    injected = False
+
+    def acquire_then_remove(**kwargs: object):
+        nonlocal injected
+        lease = real_acquire(**kwargs)
+        shutil.rmtree(target_root)
+        injected = True
+        return lease
+
+    monkeypatch.setattr(
+        doctor_module, "acquire_target_pack_epoch_v2", acquire_then_remove
+    )
+    outcome = run_doctor_v2(
+        target_root=target_root,
+        manifest=_manifest(),
+        target_repo="owner/repo",
+    )
+
+    assert injected
+    assert isinstance(outcome, DoctorUnknownV2)
+    assert outcome.reason_code == DOCTOR_OBSERVATION_STALE_REASON_V2
+    assert outcome.stage == "target_root_binding"
+    assert outcome.relation == "target_root"
+    with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
+        pass
+
+
+def _assert_environment_snapshot_failure_is_unknown_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _materialize_healthy_target_v2(target_root)
+    real_os = doctor_module.os
+
+    class FailingEnvironment:
+        keys_calls = 0
+
+        def keys(self) -> object:
+            self.keys_calls += 1
+
+            class ChangedDuringIteration:
+                def __iter__(self) -> object:
+                    raise RuntimeError("dictionary changed size during iteration")
+
+            return ChangedDuringIteration()
+
+        def __getitem__(self, _name: str) -> str:
+            raise AssertionError("environment value read")
+
+    environment = FailingEnvironment()
+
+    class OsProxy:
+        environ = environment
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(real_os, name)
+
+    monkeypatch.setattr(doctor_module, "os", OsProxy())
+    outcome = run_doctor_v2(
+        target_root=target_root,
+        manifest=_manifest(),
+        target_repo="owner/repo",
+    )
+
+    assert environment.keys_calls == 1
+    assert isinstance(outcome, DoctorUnknownV2)
+    assert outcome.reason_code == DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2
+    assert outcome.stage == "environment_snapshot"
+    assert outcome.relation == "environment"
+    assert not hasattr(outcome, "report")
+    with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
+        pass
 
 
 def _assert_transient_relookup_raw_fork_tracking_v2(
@@ -595,6 +778,14 @@ except BaseException as exc:
             assert exc.reason_code == TARGET_PACK_EPOCH_BUSY_REASON_V2
             time.sleep(0.02)
 
+    # K release precedes the child's diagnostic print.  Once the writer is
+    # admitted, give the child a bounded chance to emit the already-computed
+    # outcome instead of racing an immediate terminate against that print.
+    if admitted and process.poll() is None:
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
     if process.poll() is None:
         process.terminate()
         try:
@@ -3023,6 +3214,34 @@ def test_session_cleanup_programmer_errno_raises_only_after_total_cleanup(
         position="middle",
         close_errno=errno.EBADF,
     )
+
+
+@pytest.mark.parametrize("negative_kind", ["escape", "loop"])
+@pytest.mark.parametrize("repair_before_revalidation", [False, True])
+def test_containment_negative_is_revalidated_without_a_second_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    negative_kind: str,
+    repair_before_revalidation: bool,
+) -> None:
+    _assert_containment_negative_revalidation_v2(
+        tmp_path,
+        monkeypatch,
+        negative_kind=negative_kind,
+        repair_before_revalidation=repair_before_revalidation,
+    )
+
+
+def test_target_removed_after_shared_epoch_acquisition_is_unknown_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_raced_root_absence_is_unknown_v2(tmp_path, monkeypatch)
+
+
+def test_environment_snapshot_iteration_failure_is_report_zero_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_environment_snapshot_failure_is_unknown_v2(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("seam", ["intermediate", "leaf"])

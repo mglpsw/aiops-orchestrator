@@ -341,13 +341,13 @@ class TargetPackTargetBindingV2:
         if fd in self._lease._observation_fds:
             try:
                 os.close(fd)
-            except OSError:
-                # Keep the descriptor under the lease backstop when the close
-                # did not complete.  Session cleanup will continue with its
-                # other resources; lease.release gets the final best-effort
-                # attempt before K is dropped.
-                raise
-            else:
+            finally:
+                # On Linux, close(2) releases the descriptor number even when
+                # it later reports an I/O error: the original FD cannot leak,
+                # but retrying that number can close an unrelated descriptor
+                # which reused it.
+                # Consume ownership after every close attempt and propagate
+                # the original failure without ever retrying the number.
                 self._lease._observation_fds.remove(fd)
                 _LIVE_EPOCH_FDS_V2.discard(fd)
 
@@ -362,8 +362,13 @@ class TargetPackTargetBindingV2:
     def close(self) -> None:
         if self._active:
             self._active = False
-            os.close(self._fd)
-            _LIVE_EPOCH_FDS_V2.discard(self._fd)
+            try:
+                os.close(self._fd)
+            finally:
+                # A late Linux close error has already consumed this numeric
+                # descriptor.  The fork tracker must not retry a number which
+                # may now identify an unrelated resource.
+                _LIVE_EPOCH_FDS_V2.discard(self._fd)
 
     def __enter__(self) -> "TargetPackTargetBindingV2":
         self._require_active_v2()
@@ -541,10 +546,14 @@ class TargetPackEpochLeaseV2:
         for binding in tuple(self._bindings):
             binding.close()
         self._bindings.clear()
-        _unlock_and_close_v2(self._carrier_fd)
-        _LIVE_EPOCH_FDS_V2.discard(self._carrier_fd)
-        _unlock_and_close_v2(self._namespace_fd)
-        _LIVE_EPOCH_FDS_V2.discard(self._namespace_fd)
+        try:
+            _unlock_and_close_v2(self._carrier_fd)
+        finally:
+            _LIVE_EPOCH_FDS_V2.discard(self._carrier_fd)
+        try:
+            _unlock_and_close_v2(self._namespace_fd)
+        finally:
+            _LIVE_EPOCH_FDS_V2.discard(self._namespace_fd)
 
     def __enter__(self) -> "TargetPackEpochLeaseV2":
         self._require_active_v2()

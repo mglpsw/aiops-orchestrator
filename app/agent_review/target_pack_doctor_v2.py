@@ -78,6 +78,7 @@ _PROFILE_RELATION_V2 = "profile"
 _RECEIPT_RELATION_V2 = "receipt"
 _AIOPS_RELATION_V2 = "aiops"
 _ROOT_RELATION_V2 = "target_root"
+_ENVIRONMENT_RELATION_V2 = "environment"
 _AIOPS_DIR_RELATIVE_V2 = DEFAULT_TARGET_PROFILE_RELATIVE_PATH.parent
 
 
@@ -304,9 +305,17 @@ class _RetainedObjectV2:
 class _LogicalObservationV2:
     logical_path: Path
     relation: str
-    kind: Literal["missing", "directory", "regular", "unreadable", "non_regular"]
-    resolved_path: Path
+    kind: Literal[
+        "missing",
+        "directory",
+        "regular",
+        "unreadable",
+        "non_regular",
+        "containment_negative",
+    ]
+    resolved_path: Path | None
     object_identity: tuple[int, int, int] | None
+    containment_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -390,7 +399,18 @@ class _DoctorObservationSessionV2:
                 self.target_root_real, self.target_root_real / logical_path
             )
         except PlanError as exc:
-            raise _DoctorCompletedNegativeV2(_doctor_reason_for_plan_error_v2(exc)) from exc
+            reason = _doctor_reason_for_plan_error_v2(exc)
+            self._logical_observations.append(
+                _LogicalObservationV2(
+                    logical_path,
+                    relation,
+                    "containment_negative",
+                    None,
+                    None,
+                    reason,
+                )
+            )
+            raise _DoctorCompletedNegativeV2(reason) from exc
         except OSError as exc:
             _raise_classified_observation_oserror_v2(
                 stage="initial_resolution",
@@ -1224,10 +1244,37 @@ class _DoctorObservationSessionV2:
                 resolved = resolve_within_target_root_v2(
                     self.target_root_real, self.target_root_real / logical.logical_path
                 )
+            except PlanError as exc:
+                if (
+                    logical.kind == "containment_negative"
+                    and _doctor_reason_for_plan_error_v2(exc)
+                    == logical.containment_reason
+                ):
+                    continue
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="final_revalidation",
+                    relation=logical.relation,
+                ) from exc
+            except (OSError, RuntimeError, ValueError) as exc:
+                if isinstance(exc, OSError) and exc.errno in _PROGRAMMER_ERRNOS_V2:
+                    raise
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="final_revalidation",
+                    relation=logical.relation,
+                ) from exc
+            if logical.kind == "containment_negative":
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_STALE_REASON_V2,
+                    stage="final_revalidation",
+                    relation=logical.relation,
+                )
+            try:
                 current_kind, current = self._transient_current_lookup_v2(
                     resolved, relation=logical.relation
                 )
-            except (PlanError, OSError, RuntimeError, ValueError) as exc:
+            except (OSError, RuntimeError, ValueError) as exc:
                 if isinstance(exc, OSError) and exc.errno in _PROGRAMMER_ERRNOS_V2:
                     raise
                 raise _DoctorUnknownAbortV2(
@@ -1377,6 +1424,19 @@ def _check_secret_names_v2(
     )
 
 
+def _snapshot_environment_keys_v2() -> frozenset[str]:
+    """Capture the environment evidence once without observing any value."""
+
+    try:
+        return frozenset(os.environ.keys())
+    except RuntimeError as exc:
+        raise _DoctorUnknownAbortV2(
+            DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+            stage="environment_snapshot",
+            relation=_ENVIRONMENT_RELATION_V2,
+        ) from exc
+
+
 def _unknown_for_epoch_error_v2(exc: TargetPackEpochError) -> DoctorUnknownV2:
     return DoctorUnknownV2(reason_code=exc.reason_code, stage="epoch_acquire", relation=_ROOT_RELATION_V2)
 
@@ -1391,11 +1451,38 @@ def _unknown_for_epoch_oserror_v2(exc: OSError) -> DoctorUnknownV2:
     )
 
 
+def _classify_root_subject_before_epoch_v2(target_root: Path) -> Literal[
+    "directory", "invalid", "indeterminate"
+]:
+    """Record pre-epoch input validity without becoming an epoch authority."""
+
+    try:
+        observed = os.stat(target_root)
+    except OSError as exc:
+        if exc.errno in _STABLE_MISSING_ERRNOS_V2 or exc.errno in {
+            errno.ELOOP,
+            errno.ENAMETOOLONG,
+        }:
+            return "invalid"
+        return "indeterminate"
+    return "directory" if stat.S_ISDIR(observed.st_mode) else "invalid"
+
+
 def _classify_root_binding_failure_v2(
     exc: TargetPackObservationBindingErrorV2,
+    *,
+    initial_subject: Literal["directory", "invalid", "indeterminate"],
 ) -> DoctorUnknownV2:
     if exc.operation_errno in _STABLE_MISSING_ERRNOS_V2:
-        raise DoctorInputErrorV2(DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2) from exc
+        if initial_subject == "invalid":
+            raise DoctorInputErrorV2(
+                DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2
+            ) from exc
+        return DoctorUnknownV2(
+            reason_code=DOCTOR_OBSERVATION_STALE_REASON_V2,
+            stage="target_root_binding",
+            relation=_ROOT_RELATION_V2,
+        )
     if exc.operation_errno in _PROGRAMMER_ERRNOS_V2:
         raise exc
     reason = (
@@ -1420,7 +1507,7 @@ def run_doctor_v2(
     target_display = str(target_root)
     caller_target = Path(target_root)
     caller_target_repo = str(target_repo)
-    environment_keys = frozenset(os.environ.keys())
+    initial_root_subject = _classify_root_subject_before_epoch_v2(caller_target)
 
     try:
         lease = acquire_target_pack_epoch_v2(target_root=caller_target, exclusive=False)
@@ -1445,7 +1532,9 @@ def run_doctor_v2(
                 target_root=caller_target
             )
         except TargetPackObservationBindingErrorV2 as exc:
-            return _classify_root_binding_failure_v2(exc)
+            return _classify_root_binding_failure_v2(
+                exc, initial_subject=initial_root_subject
+            )
         except TargetPackEpochError as exc:
             return DoctorUnknownV2(
                 reason_code=DOCTOR_OBSERVATION_STALE_REASON_V2,
@@ -1482,6 +1571,7 @@ def run_doctor_v2(
             )
 
         try:
+            environment_keys = _snapshot_environment_keys_v2()
             with _DoctorObservationSessionV2(
                 target_root=caller_target, root_binding=root_binding
             ) as session:

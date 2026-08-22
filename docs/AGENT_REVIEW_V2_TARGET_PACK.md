@@ -150,8 +150,10 @@ this implementation.
 - Cleanup is total across the session's owned observations: failure closing
   one FD does not skip later release attempts or registry clearing. An
   operational cleanup failure yields report-zero `unknown`; a programmer
-  errno is re-raised only after every release attempt. The lease remains the
-  exception-safety backstop until K is released.
+  errno is re-raised only after every release attempt. Linux consumes the
+  descriptor number even when `close` later reports an error, so ownership and
+  fork-tracker membership are dropped after every attempt and that numeric
+  descriptor is never retried by the lease or fork cleanup.
 - The single provisional content open uses `O_NONBLOCK` and compares the
   returned descriptor's file type and identity with the prior `O_PATH`
   observation before reading. `O_NONBLOCK` is behavior-neutral for regular
@@ -171,9 +173,12 @@ this implementation.
 - CLI outcomes are: completed healthy = existing JSON/exit 0; completed
   unhealthy = existing JSON/exit 1; unknown = empty stdout, stable error on
   stderr, exit 3; absent/non-directory target = empty stdout, stable input
-  error, exit 2. There is no `healthy: null` or synthetic failed report.
+  error, exit 2. A target witnessed as a directory before epoch acquisition
+  but absent at the under-K binding step is instead stale/unknown. There is no
+  `healthy: null` or synthetic failed report.
 - The environment key set is captured once and secret checks use membership in
-  that snapshot. No environment value is read or reported.
+  that snapshot. Snapshot iteration failure is report-zero `unknown`; no
+  environment value is read or reported.
 
 The completed-observation claim is cooperative only: same host, effective UID,
 mount namespace, K object, and participating AgentReview readers/writers.

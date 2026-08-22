@@ -48,10 +48,13 @@ from tests.agent_review.test_target_pack_doctor_v2 import (
     _VALID_PROFILE_YAML,
     _assert_aiops_retarget_outside_root_is_unknown_not_unhealthy,
     _assert_aiops_root_self_completed,
+    _assert_containment_negative_revalidation_v2,
+    _assert_environment_snapshot_failure_is_unknown_v2,
     _assert_operational_lease_entry_failure_is_released_v2,
     _assert_path_object_type_drift_is_unknown,
     _assert_profile_completed_negative_status_is_explicit,
     _assert_provisional_content_open_is_bounded_v2,
+    _assert_raced_root_absence_is_unknown_v2,
     _assert_session_cleanup_totality_v2,
     _assert_transient_relookup_raw_fork_tracking_v2,
     _assert_transient_relookup_setup_failure_has_no_fd_leak_v2,
@@ -157,7 +160,9 @@ def _m_invalid_root_as_unknown(root: Path, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(
         doctor,
         "_classify_root_binding_failure_v2",
-        lambda _exc: DoctorUnknownV2("mutant", "target_root_binding", "target_root"),
+        lambda _exc, **_kwargs: DoctorUnknownV2(
+            "mutant", "target_root_binding", "target_root"
+        ),
     )
     mutated = run_doctor_v2(target_root=missing, manifest=_manifest(), target_repo="owner/repo")
     assert isinstance(mutated, DoctorUnknownV2)
@@ -891,6 +896,102 @@ def _m_provisional_content_open_can_block_on_type_swap(
         )
 
 
+def _m_retry_descriptor_after_failed_close(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def vulnerable_release(self: object, fd: int) -> None:
+        if fd in self._lease._observation_fds:
+            try:
+                os.close(fd)
+            except OSError:
+                # Mutant: retain the numeric descriptor for lease.release,
+                # which can now refer to an unrelated resource.
+                raise
+            else:
+                self._lease._observation_fds.remove(fd)
+                epoch._LIVE_EPOCH_FDS_V2.discard(fd)
+
+    monkeypatch.setattr(
+        epoch.TargetPackTargetBindingV2,
+        "release_observation_fd_v2",
+        vulnerable_release,
+    )
+    with pytest.raises(AssertionError, match="unrelated-descriptor-reclosed"):
+        _assert_session_cleanup_totality_v2(
+            root,
+            monkeypatch,
+            position="first",
+            iterations=1,
+        )
+
+
+def _m_containment_negative_not_revalidated(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_resolve = doctor._DoctorObservationSessionV2._resolve_initial_v2
+
+    def omit_negative(self: object, **kwargs: object) -> Path:
+        before = len(self._logical_observations)
+        try:
+            return real_resolve(self, **kwargs)
+        except doctor._DoctorCompletedNegativeV2:
+            del self._logical_observations[before:]
+            raise
+
+    monkeypatch.setattr(
+        doctor._DoctorObservationSessionV2,
+        "_resolve_initial_v2",
+        omit_negative,
+    )
+    with pytest.raises(AssertionError, match="containment_negative"):
+        _assert_containment_negative_revalidation_v2(
+            root,
+            monkeypatch,
+            negative_kind="escape",
+            repair_before_revalidation=True,
+        )
+
+
+def _m_raced_root_absence_as_input_error(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def old_classification(
+        exc: TargetPackObservationBindingErrorV2,
+        *,
+        initial_subject: str,
+    ) -> DoctorUnknownV2:
+        del initial_subject
+        if exc.operation_errno in doctor._STABLE_MISSING_ERRNOS_V2:
+            raise doctor.DoctorInputErrorV2(
+                doctor.DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2
+            ) from exc
+        return DoctorUnknownV2(
+            doctor.DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+            "target_root_binding",
+            "target_root",
+        )
+
+    monkeypatch.setattr(
+        doctor,
+        "_classify_root_binding_failure_v2",
+        old_classification,
+    )
+    with pytest.raises(doctor.DoctorInputErrorV2):
+        _assert_raced_root_absence_is_unknown_v2(root, monkeypatch)
+
+
+def _m_env_snapshot_outside_typed_boundary(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        doctor,
+        "_snapshot_environment_keys_v2",
+        lambda: frozenset(doctor.os.environ.keys()),
+    )
+    with pytest.raises(RuntimeError, match="dictionary changed size"):
+        _assert_environment_snapshot_failure_is_unknown_v2(root, monkeypatch)
+
+
 _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     "M_UNKNOWN_AS_FALSE_REPORT": _m_unknown_as_false_report,
     "M_INVALID_ROOT_AS_UNKNOWN": _m_invalid_root_as_unknown,
@@ -933,6 +1034,18 @@ _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     ),
     "M_PROVISIONAL_CONTENT_OPEN_CAN_BLOCK_ON_TYPE_SWAP": (
         _m_provisional_content_open_can_block_on_type_swap
+    ),
+    "M_RETRY_DESCRIPTOR_AFTER_FAILED_CLOSE": (
+        _m_retry_descriptor_after_failed_close
+    ),
+    "M_CONTAINMENT_NEGATIVE_NOT_REVALIDATED": (
+        _m_containment_negative_not_revalidated
+    ),
+    "M_RACED_ROOT_ABSENCE_AS_INPUT_ERROR": (
+        _m_raced_root_absence_as_input_error
+    ),
+    "M_ENV_SNAPSHOT_OUTSIDE_TYPED_BOUNDARY": (
+        _m_env_snapshot_outside_typed_boundary
     ),
 }
 

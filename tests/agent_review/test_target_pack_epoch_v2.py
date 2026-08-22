@@ -466,3 +466,49 @@ def test_binding_keeps_the_original_directory_object_after_path_replacement(runt
         assert (os.fstat(binding.fd).st_dev, os.fstat(binding.fd).st_ino) == (original.st_dev, original.st_ino)
         assert (os.stat(moved).st_dev, os.stat(moved).st_ino) == (original.st_dev, original.st_ino)
         binding.close()
+
+
+def test_failed_binding_close_drops_numeric_tracker_ownership_without_retry(
+    runtime_parent: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A consumed FD number may be reused even though close reports EIO."""
+
+    target = tmp_path / "target-close-failure"
+    target.mkdir()
+    baseline_tracker = set(epoch_module._LIVE_EPOCH_FDS_V2)
+    lease = acquire_target_pack_epoch_v2(target_root=target, exclusive=False)
+    lease.__enter__()
+    binding = lease.bind_target_root_for_observation_v2(target_root=target)
+    failed_fd = binding.fd
+    real_close = os.close
+    injected = False
+
+    def late_error_with_reuse(fd: int) -> None:
+        nonlocal injected
+        if fd == failed_fd and not injected:
+            injected = True
+            real_close(fd)
+            replacement_source = os.open(
+                "/dev/null", os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            )
+            if replacement_source != fd:
+                os.dup2(replacement_source, fd, inheritable=False)
+                real_close(replacement_source)
+            raise OSError(errno.EIO, "injected late binding close failure")
+        real_close(fd)
+
+    monkeypatch.setattr(os, "close", late_error_with_reuse)
+    with pytest.raises(OSError) as raised:
+        binding.close()
+    assert raised.value.errno == errno.EIO
+    assert injected
+    assert failed_fd not in epoch_module._LIVE_EPOCH_FDS_V2
+
+    lease.release()
+    os.fstat(failed_fd)  # the unrelated replacement was not retried
+    real_close(failed_fd)
+    assert set(epoch_module._LIVE_EPOCH_FDS_V2) == baseline_tracker
+    with acquire_target_pack_epoch_v2(target_root=target, exclusive=True):
+        pass
