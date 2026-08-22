@@ -154,7 +154,8 @@ ReviewerObservation   what someone reports — advisory, whatever its source
       ↓
 ValidatedFinding      reproduced, material, violated proposition identified
       ↓
-RecurrenceCandidate   two validated findings on one predeclared boundary
+RecurrenceCandidate   two validated findings in one boundary, with a
+                      declared correction attempt between them
       ↓
 RecurrenceAdmission   the candidate qualified under the rule below
       ↓
@@ -183,8 +184,9 @@ afterwards.
 admitted when, and only when, all of the following hold:
 
 ```text
-ValidatedFinding(f1, B)                  f1 met the predicates, on a boundary
-                                         declared before its review
+ValidatedFinding(f1)                     f1 met the finding-level predicates
+BoundaryAssignment(f1, B)                the reviewer who raised f1 assigned it
+                                         to B, which is predeclared or emergent
 CorrectionAttempt(c, B)                  declared before the next review, naming
                                          its before/after subjects, the boundary,
                                          the proposition it means to restore, the
@@ -192,8 +194,8 @@ CorrectionAttempt(c, B)                  declared before the next review, naming
                                          discriminants
 ReviewEpoch(f1) < epoch(c) < ReviewEpoch(f2)
 FreshReview(r2) on the after-subject
-ValidatedFinding(f2, B)                  f2 met them too, on the same boundary
-f2 is not another observation of f1      a distinct defect, not the same one twice
+ValidatedFinding(f2)                     f2 met them too
+BoundaryAssignment(f2, B)                and landed in the same boundary
 ```
 
 The temporal shape is the point. **Concurrence is not recurrence.** Two reviewers
@@ -236,6 +238,29 @@ Note that `f2` need not violate the same proposition as `f1`. Requiring that wou
 be too narrow: working by boundary exists precisely to catch a *different*
 material defect thrown off by the same abstraction.
 
+**Nor need `f2` be a different defect from `f1`.** An earlier draft required that
+`f2` "is not another observation of `f1`", and that condition is removed. It
+asked for a judgement about causal identity — whether two symptoms are one
+defect — for which no authority exists here: a reproducer establishes how a
+defect manifests, not what it is, and letting a reviewer settle it by assertion
+would hand a single reviewer the power to manufacture a mandatory stop. Worse,
+it excluded the most informative case there is. A defect that survives a
+declared, precommitted attempt to correct it is the clearest evidence the
+abstraction is wrong, and a rule whose purpose is to notice that must not
+discard it.
+
+What separates corroboration from recurrence is therefore temporal shape alone,
+and it needs no causal judgement:
+
+```text
+same subject, several reviewers   →  corroboration; one finding, better evidenced
+same subject, several defects     →  distinct findings in one round; no barrier
+                                     crossed, so no recurrence yet
+later subject, no attempt between →  no barrier; the episode is still open
+later subject, attempt between    →  recurrence candidate, whether or not the
+                                     second finding is "the same defect"
+```
+
 A second reviewer agreeing that two findings look like the same recurrence is
 **supporting evidence for the candidate**, and worth more when the reviewers are
 independent — but agreement is not admission, and no quantity of it substitutes
@@ -245,20 +270,57 @@ produce a mandatory transition, because the transition runs off admitted
 recurrence rather than off anyone's opinion that a recurrence occurred.
 
 **Validation is predicate-based, not label-based, and each predicate names the
-authority that can establish it.**
+authority that can establish it. The predicates sit at two levels, and the
+levels must not be mixed.**
+
+Finding-level predicates are everything a finding needs to stand on its own.
+Each is knowable at the epoch of that finding, using nothing that happens after
+it:
 
 ```text
 exact subject / head        the version-control record
 reproducer result           executable evidence
 violated proposition        the normative contract the change is measured against
-boundary predeclaration     the record made before the review
-correction barrier          the change history between the two subjects
 materiality                 the change's acceptance conditions, against evidence
-same-boundary relation      evidence read against the declared boundary
-correction barrier          the attempt record, precommitted, plus the delta
+boundary assignment         the reviewer who raised the finding
 ```
 
-A finding is validated by meeting those predicates, not by being labelled
+Candidate-level predicates relate two findings and only exist once both do.
+They belong to a `RecurrenceCandidate`, never to the validation of a single
+finding:
+
+```text
+correction delta            the version-control record: the before/after
+                            subjects, their ordering, and what changed
+correction attempt          the precommitted record: that this delta was
+                            intended to correct B, with which discriminants
+epoch ordering              the version-control and review records together
+same-boundary relation      the two boundary assignments, compared
+```
+
+That split is load-bearing. An earlier draft scoped one undivided table over
+"a finding is validated by meeting those predicates", which pulled the
+correction barrier and the same-boundary relation into the validation of `f1` —
+neither of which exists yet when `f1` is raised. Validating `f1` then required
+knowing about a correction made in response to `f1` and about a later `f2`, so
+no first finding could be validated and no first recurrence could ever be
+admitted. A finding is validated by information available when it is found;
+anything else is a fact about a pair.
+
+The two rows that were both called `correction barrier` are the same repair
+seen from the other side. They were never rival authorities for one relation:
+version control establishes the delta and the order of the subjects, and the
+precommitted record establishes that the delta was *meant* to correct `B`.
+Naming both the same thing made the falsified reading — history alone
+establishes the barrier — look like a live alternative to the correct one. The
+barrier is the two together:
+
+```text
+correction barrier  =  correction delta  ∧  correction attempt
+ChangeTouches(B)    ⇏  CorrectionAttempt(B)
+```
+
+A finding is validated by meeting the finding-level predicates, not by being labelled
 `VALID`; an `INVALID` is a claim that contradicting evidence exists and is open to
 challenge on that evidence. Where a predicate cannot be established from its
 declared authority its value is `UNKNOWN` — not a value the author selects, and
@@ -297,6 +359,36 @@ boundary is not an exception. One named late covers ground no existing boundary
 claimed; where it would take ground from one that does, that is a split wearing a
 new name, and the finding belongs to the boundary that already existed.
 
+**A boundary is predeclared or emergent, and both participate.** The difference
+is only when it became knowable:
+
+```text
+predeclared   known_since = the start of the loop
+emergent      known_since = the review epoch of the finding that revealed it,
+              which is that boundary's first occurrence
+```
+
+Requiring every boundary to have been declared before the review that finds a
+defect in it asks for knowledge nobody had. A review that discovers a boundary
+the predeclaration missed is doing the job; the finding that revealed it is its
+first occurrence, not a finding that cannot count. An earlier draft required
+`f1`'s boundary to be declared before `f1`'s review, which meant a genuinely
+emergent boundary could never hold an admitted recurrence at all, and the stop
+condition failed open exactly where discovery was real.
+
+Predeclaration is still preferred, because a boundary named in advance was named
+without knowing which findings would land in it. What it buys is evidential
+weight, not admissibility.
+
+From `known_since` onward the boundary's identity is in the history and is
+frozen: it is not split, merged, renamed into a different subject, or
+reclassified in any way that changes a recurrence already established or
+prevents one already implied. A rename that preserves identity is a rename; one
+that moves the ground it covers is a reclassification and is not available
+mid-loop. This is the same rule as before, now stated for emergent boundaries
+too — they freeze at their first occurrence rather than at the start of the
+loop.
+
 The boundaries named before the loop are a starting proposal, and the author
 makes it. That is harmless only because it does not bind assignment: a reviewer
 assigns a finding to the boundary it belongs in, joining two of the proposed
@@ -304,27 +396,56 @@ boundaries or ignoring the vocabulary entirely if that is what the finding calls
 for. A partition drawn finely enough to scatter recurrences is defeated by
 assignment, not by a rule against drawing it.
 
-**At the end of each round, these are answered on the record**, over admitted
-findings:
+**`Admitted` means one thing here.** A finding that meets the finding-level
+predicates is a **validated finding**; the word `admitted` is reserved for a
+recurrence candidate that met the rule above. There is no second kind of
+admission, and the questions below run over validated findings in the record.
 
-1. Did an admitted finding this round land in a boundary that already holds an
-   admitted finding from an earlier round of this loop? Name the boundary and
-   both findings.
-2. Does an admitted finding this round hold that an approach is wrong which an
-   earlier admitted finding also held was wrong — as opposed to objecting to how
-   that approach was tuned? Name both.
-3. From round three onward: does one boundary hold an admitted finding from this
+**At the end of each round, these are answered on the record**, over validated
+findings. The first two carry a transition; the third does not, and the
+difference is stated rather than left to the reader:
+
+**Load-bearing.** A "yes" here, once the candidate qualifies under the admission
+rule, is an admitted recurrence and fires the trigger.
+
+1. Did a validated finding this round land in a boundary that already holds a
+   validated finding from an earlier round of this loop, with a declared
+   correction attempt for that boundary between them? Name the boundary, both
+   findings and the attempt.
+2. From round three onward: does one boundary hold a validated finding from this
    round and from both preceding ones? Before round three the answer is "no" —
    there is no window to look at.
 
-Question 1 reaches the second landing and question 3 the third; both are kept
+Question 1 reaches the second landing and question 2 the third; both are kept
 because a recurrence across two rounds and a boundary that never stops taking
-findings are different signals. An unanswered question is not a "no": a round
-whose questions were not put has not been reviewed for convergence, and the
-change may not be declared ready on the strength of it.
+findings are different signals.
 
-A "yes" is an admitted recurrence, so the trigger fires on it and the author does
-not get to dispose of it — the admission already happened, and disposition does
+**Supporting only — no transition of its own.**
+
+3. Does a validated finding this round hold that an approach is wrong which an
+   earlier validated finding also held was wrong — as opposed to objecting to
+   how that approach was tuned? Name both, or answer `UNKNOWN` where the two
+   cannot responsibly be compared.
+
+This question was load-bearing in an earlier draft and is deliberately demoted.
+Deciding that two findings condemn "the same approach" is a judgement with no
+named authority: there is no record that fixes what an approach is, and no
+evidence that settles when two objections are to one approach rather than two.
+Left as a trigger it was the cheapest way for a single reviewer to produce a
+mandatory stop — the mirror of the defect the whole section exists to prevent,
+since the party who found the defect would decide that the process must halt.
+A "yes" is recorded, may motivate a spike, and may inform how a boundary is
+read. It is not an admission and does not fire anything by itself. `UNKNOWN` is
+an available and often correct answer.
+
+An unanswered question is not a "no": a round whose questions were not put has
+not been reviewed for convergence, and the change may not be declared ready on
+the strength of it. That applies to the supporting question too — it must be
+asked and answered, including `UNKNOWN`; what it may not do is transition.
+
+A "yes" to a load-bearing question, once the candidate qualifies under the
+admission rule, is an admitted recurrence, so the trigger fires on it and the
+author does not get to dispose of it — the admission already happened, and disposition does
 not reach backwards. What the trigger buys is bounded, which is why it can be
 unconditional: the freeze-preserve-spike sequence below, where "does the
 abstraction need replacing?" gets answered. A spike concluding the abstraction is
@@ -339,7 +460,7 @@ is by rule, and only admitted recurrence moves the process.
 Stop patching and escalate to a redesign the moment **any** of the following
 occurs:
 
-- a reviewer answers yes to any of the three questions in §"The recurrence
+- a recurrence is admitted under the rule in §"The recurrence
   conditions are answered, not computed";
 - a fix falsifies an assumption an earlier fix in the same change relied on.
   Unlike the recurrence questions this one is noticed while it happens, by
