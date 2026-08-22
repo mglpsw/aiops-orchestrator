@@ -192,6 +192,15 @@ this implementation.
   merged K primitive can fail before the doctor plane is reached. That is
   pre-existing `#258` behaviour this pack does not own; it is reported as
   such rather than absorbed here.
+- A target root that OVERLAPS the fixed runtime carrier root, in either
+  containment direction, is refused as an input error before the epoch is
+  acquired. Acquisition materializes that carrier, so diagnosing such a target
+  would make a read-only command write inside it; and when the target IS the
+  carrier root, acquisition would create the very directory whose absence owes
+  an input error.
+- Operational failure while releasing the lease is report-zero `unknown`, not a
+  traceback. The residual abort-before-unlock inside the merged release
+  primitive remains pre-existing `#258` behaviour tracked in #260.
 
 The completed-observation claim is cooperative only: same host, effective UID,
 mount namespace, K object, and participating AgentReview readers/writers.

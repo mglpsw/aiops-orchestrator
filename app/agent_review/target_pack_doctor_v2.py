@@ -16,6 +16,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import os
+import sys
 import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -38,6 +39,7 @@ from app.agent_review.target_pack_epoch_v2 import (
     TargetPackObservationBindingErrorV2,
     TargetPackTargetBindingV2,
     acquire_target_pack_epoch_v2,
+    runtime_carrier_root_v2,
 )
 from app.agent_review.target_pack_manifest_v2 import (
     TargetPackFileOwnershipV2,
@@ -73,6 +75,9 @@ DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2 = "target_owned_identity_unr
 DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2 = "target_pack_doctor_receipt_rollout_exceeds_pack_capability"
 DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2 = "target_pack_doctor_observation_unavailable"
 DOCTOR_OBSERVATION_STALE_REASON_V2 = "target_pack_doctor_observation_stale"
+DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2 = (
+    "target_pack_doctor_target_root_overlaps_runtime_carrier"
+)
 
 _PROFILE_RELATION_V2 = "profile"
 _RECEIPT_RELATION_V2 = "receipt"
@@ -1470,6 +1475,48 @@ def _check_secret_names_v2(
     )
 
 
+def _refuse_target_root_overlapping_runtime_carrier_v2(target_root: Path) -> None:
+    """Refuse, BEFORE acquisition, a target that overlaps the K carrier root.
+
+    Codex round 6 (D1): ``acquire_target_pack_epoch_v2`` materializes
+    ``/tmp/agentreview-target-locks-v1-<euid>`` and its carrier file. When that
+    path lies inside the supplied target -- ``--target-root /tmp``, or ``/`` --
+    a command whose entire contract is TARGET-READ-ONLY writes inside the
+    target. Worse, when the target IS the carrier root and does not exist yet,
+    acquisition CREATES it, so the subsequent bind succeeds and doctor returns
+    a completed unhealthy decision about a directory it just materialized
+    itself, instead of the input error a missing target must produce. Both were
+    reproduced.
+
+    This is an INVOCATION property, not a target-state one: the carrier root is
+    fixed, so the refusal is stable across retries and belongs with the other
+    input errors (exit 2), not with report-zero UNKNOWN. It is decided purely
+    from path containment -- no filesystem write, no metadata probe -- so the
+    check itself cannot be what mutates the target.
+
+    Containment is refused in BOTH directions: the carrier inside the target
+    (doctor would write into the target) and the target inside the carrier
+    (acquisition would materialize an ancestor of the target).
+    """
+
+    carrier_root = runtime_carrier_root_v2()
+    try:
+        resolved_target = target_root.resolve(strict=False)
+        resolved_carrier = carrier_root.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise DoctorInputErrorV2(
+            DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2
+        ) from exc
+    if resolved_target == resolved_carrier:
+        raise DoctorInputErrorV2(DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2)
+    for outer, inner in ((resolved_target, resolved_carrier), (resolved_carrier, resolved_target)):
+        try:
+            inner.relative_to(outer)
+        except ValueError:
+            continue
+        raise DoctorInputErrorV2(DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2)
+
+
 def _snapshot_environment_keys_v2() -> frozenset[str]:
     """Capture the environment evidence once without observing any value.
 
@@ -1571,6 +1618,8 @@ def run_doctor_v2(
     caller_target = Path(target_root)
     caller_target_repo = str(target_repo)
     initial_root_subject = _classify_root_subject_before_epoch_v2(caller_target)
+
+    _refuse_target_root_overlapping_runtime_carrier_v2(caller_target)
 
     try:
         lease = acquire_target_pack_epoch_v2(target_root=caller_target, exclusive=False)
@@ -1678,4 +1727,32 @@ def run_doctor_v2(
                 relation=exc.relation,
             )
     finally:
-        lease.release()
+        # Codex round 6 (D2): a bare release here let an operational close
+        # error from the doctor-owned root binding REPLACE the pending typed
+        # decision with a raw OSError, which `_cmd_doctor` does not catch --
+        # a CLI traceback instead of exit 3. Reproduced.
+        #
+        # `sys.exc_info()` guards the classic `return`-inside-`finally`
+        # hazard: returning here overrides whatever was pending, so it is done
+        # ONLY when nothing is already propagating. A programmer errno still
+        # raises, and an in-flight exception is never masked by cleanup.
+        #
+        # NOT fixed here, and deliberately so: `TargetPackEpochLeaseV2.release`
+        # marks the lease inactive before closing bindings and aborts on the
+        # first failure, so the carrier/namespace descriptors and the shared K
+        # lock can stay live. That is F23, owned by #260, in already-merged
+        # `#258` code this PR does not touch. What this closes is the doctor's
+        # own contract: an operational cleanup failure is report-zero UNKNOWN,
+        # never a traceback.
+        pending_exception = sys.exc_info()[1]
+        try:
+            lease.release()
+        except OSError as exc:
+            if exc.errno in _PROGRAMMER_ERRNOS_V2 or exc.errno is None:
+                raise
+            if pending_exception is None:
+                return DoctorUnknownV2(
+                    reason_code=DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+                    stage="lease_release",
+                    relation=_ROOT_RELATION_V2,
+                )

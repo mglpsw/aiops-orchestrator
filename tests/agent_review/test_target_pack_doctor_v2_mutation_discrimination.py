@@ -49,7 +49,9 @@ from tests.agent_review.test_target_pack_doctor_v2 import (
     _assert_aiops_retarget_outside_root_is_unknown_not_unhealthy,
     _assert_aiops_root_self_completed,
     _assert_containment_negative_revalidation_v2,
+    _assert_carrier_overlapping_target_root_is_input_error_v2,
     _assert_content_read_memory_exhaustion_is_unknown_v2,
+    _assert_lease_release_failure_is_report_zero_unknown_v2,
     _assert_duplicate_object_release_failure_is_unknown_v2,
     _assert_observation_fd_registration_failure_does_not_leak_v2,
     _assert_environment_snapshot_failure_is_unknown_v2,
@@ -1089,6 +1091,47 @@ def _m_duplicate_release_bypasses_typed_wrapper(
     assert raised.value.errno == errno.EIO
 
 
+def _m_target_root_carrier_overlap_not_refused(
+    _root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Remove the pre-acquisition overlap refusal Codex round 6 (D1) found.
+
+    Killed by the shape whose target lies INSIDE the carrier root: without the
+    refusal, acquisition materializes the carrier and therefore an ancestor of
+    the supplied target, so a TARGET-READ-ONLY command writes into the target.
+    """
+
+    monkeypatch.setattr(
+        doctor,
+        "_refuse_target_root_overlapping_runtime_carrier_v2",
+        lambda _target_root: None,
+    )
+    with pytest.raises(Exception) as raised:
+        _assert_carrier_overlapping_target_root_is_input_error_v2(
+            shape="target_inside_carrier"
+        )
+    assert not isinstance(raised.value, doctor.DoctorInputErrorV2)
+
+
+def _m_lease_release_failure_escapes_typed_boundary(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un-translate operational cleanup failures in the doctor's `finally`.
+
+    Codex round 6 (D2). The defect is NOT in the lease -- it is the doctor
+    declining to translate the class -- so the faithful model widens the
+    programmer-errno set to swallow `EIO`, which makes the `finally` re-raise
+    exactly as the pre-fix bare `lease.release()` did. Mutating the lease
+    itself would prove nothing, because the corrected handler would still
+    convert it.
+    """
+
+    monkeypatch.setattr(doctor, "_PROGRAMMER_ERRNOS_V2", frozenset({errno.EIO}))
+    with pytest.raises(OSError) as raised:
+        _assert_lease_release_failure_is_report_zero_unknown_v2(root, monkeypatch)
+    assert raised.value.errno == errno.EIO
+
+
 _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     "M_UNKNOWN_AS_FALSE_REPORT": _m_unknown_as_false_report,
     "M_INVALID_ROOT_AS_UNKNOWN": _m_invalid_root_as_unknown,
@@ -1155,6 +1198,12 @@ _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     ),
     "M_DUPLICATE_RELEASE_BYPASSES_TYPED_WRAPPER": (
         _m_duplicate_release_bypasses_typed_wrapper
+    ),
+    "M_TARGET_ROOT_CARRIER_OVERLAP_NOT_REFUSED": (
+        _m_target_root_carrier_overlap_not_refused
+    ),
+    "M_LEASE_RELEASE_FAILURE_ESCAPES_TYPED_BOUNDARY": (
+        _m_lease_release_failure_escapes_typed_boundary
     ),
 }
 

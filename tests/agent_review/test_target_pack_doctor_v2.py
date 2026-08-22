@@ -644,6 +644,100 @@ def _assert_content_read_memory_exhaustion_is_unknown_v2(
         pass
 
 
+def _assert_carrier_overlapping_target_root_is_input_error_v2(
+    *,
+    shape: str,
+) -> None:
+    """Codex round 6 (D1): a TARGET-READ-ONLY command must never write inside
+    the target it was asked to diagnose.
+
+    `acquire_target_pack_epoch_v2` materializes the fixed runtime carrier root
+    and its lock file. When that path overlaps the supplied target the doctor
+    writes into the target; and when the target IS the carrier root and does
+    not exist yet, acquisition CREATES it, so the bind then succeeds and doctor
+    returns a completed decision about a directory it materialized itself
+    instead of the input error a missing target owes. Both were reproduced.
+
+    Deliberately does not delete the shared carrier root: the refusal is
+    decided from path containment alone, so the assertions never depend on
+    filesystem state a concurrent test could be using.
+    """
+
+    import app.agent_review.target_pack_epoch_v2 as epoch_module
+
+    carrier_root = epoch_module.runtime_carrier_root_v2()
+    probe: Path | None = None
+    if shape == "target_is_carrier":
+        target = carrier_root
+    elif shape == "carrier_inside_target":
+        target = carrier_root.parent
+    elif shape == "target_inside_carrier":
+        probe = carrier_root / "agentreview-r4-overlap-probe"
+        target = probe
+    else:  # pragma: no cover - guarded by the parametrization
+        raise AssertionError(f"unknown overlap shape {shape!r}")
+
+    with pytest.raises(DoctorInputErrorV2) as raised:
+        run_doctor_v2(
+            target_root=target, manifest=_manifest(), target_repo="owner/repo"
+        )
+    assert raised.value.reason_code == (
+        "target_pack_doctor_target_root_overlaps_runtime_carrier"
+    )
+    if probe is not None:
+        assert not probe.exists(), (
+            "the refusal itself materialized part of the target path"
+        )
+
+
+def _assert_lease_release_failure_is_report_zero_unknown_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    errno_value: int = errno.EIO,
+) -> None:
+    """Codex round 6 (D2): cleanup failure must not become a CLI traceback.
+
+    A bare `lease.release()` in the doctor's `finally` let an operational close
+    error from the doctor-owned root binding REPLACE the pending typed decision
+    with a raw `OSError`, which `_cmd_doctor` does not catch.
+
+    Scope, stated rather than implied: the underlying abort-before-unlock
+    inside `TargetPackEpochLeaseV2.release` is `F23`, owned by #260, in
+    already-merged `#258` code. This asserts only the doctor's own contract --
+    the outcome stays typed.
+    """
+
+    _materialize_healthy_target_v2(target_root)
+    run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+
+    real_close = doctor_module.os.close
+    injected = 0
+
+    def fail_binding_close_during_release(fd: int) -> None:
+        nonlocal injected
+        frame = sys._getframe(1)
+        if frame.f_code.co_name == "close" and injected == 0:
+            if sys._getframe(2).f_code.co_name == "release":
+                injected += 1
+                raise OSError(errno_value, "injected binding close failure during release")
+        return real_close(fd)
+
+    monkeypatch.setattr(doctor_module.os, "close", fail_binding_close_during_release)
+    try:
+        outcome = run_doctor_v2(
+            target_root=target_root, manifest=_manifest(), target_repo="owner/repo"
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert injected == 1
+    assert isinstance(outcome, DoctorUnknownV2)
+    assert outcome.reason_code == DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2
+    assert outcome.stage == "lease_release"
+    assert not hasattr(outcome, "report")
+
+
 def _assert_observation_fd_registration_failure_does_not_leak_v2(
     target_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3627,6 +3721,31 @@ print(
         )
     assert tail.startswith("OUTCOME:DoctorUnknownV2"), tail
     assert "target_pack_doctor_observation_unavailable" in tail, tail
+
+
+@pytest.mark.parametrize(
+    "shape", ["target_is_carrier", "carrier_inside_target", "target_inside_carrier"]
+)
+def test_target_root_overlapping_the_runtime_carrier_is_input_error(shape: str) -> None:
+    _assert_carrier_overlapping_target_root_is_input_error_v2(shape=shape)
+
+
+def test_lease_release_failure_is_report_zero_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_lease_release_failure_is_report_zero_unknown_v2(tmp_path, monkeypatch)
+
+
+def test_lease_release_programmer_errno_still_raises_after_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A programmer errno during cleanup must NOT be relabelled as UNKNOWN."""
+
+    with pytest.raises(OSError) as raised:
+        _assert_lease_release_failure_is_report_zero_unknown_v2(
+            tmp_path, monkeypatch, errno_value=errno.EBADF
+        )
+    assert raised.value.errno == errno.EBADF
 
 
 def test_observation_fd_registration_failure_does_not_leak_descriptors(

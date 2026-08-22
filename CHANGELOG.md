@@ -63,7 +63,16 @@
   installed before the capability validation that can fail, and every release
   goes through the session's typed wrapper -- including the duplicate-object
   branches -- so an operational close error is report-zero `unknown` rather
-  than a raw traceback, and a failed registration leaves nothing unowned.
+  than a raw traceback, and a failed registration leaves nothing unowned. A
+  target root that overlaps the fixed runtime carrier root -- in either
+  containment direction -- is refused as an input error BEFORE acquisition,
+  because acquisition materializes that carrier and a TARGET-READ-ONLY command
+  must never write inside the target it was asked to diagnose (nor, when the
+  target IS the carrier root, materialize the very directory whose absence it
+  owes an input error for). An operational failure while releasing the lease is
+  report-zero `unknown` instead of replacing the pending decision with a raw
+  traceback; programmer errno still raises, and an in-flight exception is never
+  masked by cleanup.
   Completed
   CLI JSON is byte-shape compatible.
   `intended_behavior_change: true`.

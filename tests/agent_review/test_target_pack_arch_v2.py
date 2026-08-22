@@ -427,6 +427,7 @@ _DOCTOR_REACHABLE_LOCAL_FUNCTIONS_V2 = frozenset(
         "_classify_root_subject_before_epoch_v2",
         "_classify_root_binding_failure_v2",
         "_snapshot_environment_keys_v2",
+        "_refuse_target_root_overlapping_runtime_carrier_v2",
         "_check_profile_v2",
         "_check_receipt_v2",
         "_check_secret_names_v2",
