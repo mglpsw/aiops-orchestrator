@@ -695,69 +695,6 @@ strengthened one. Weakening has a floor: a claim weakened until it no longer
 satisfies the objective is not weaker, it is vacuous, and `UNAVAILABLE` is the
 honest report.
 
-## Normative machine-readable projection
-
-Everything above is the authority. This block **projects the finite, decidable
-part of it** so a test can check that part without re-stating the method. It is
-a projection, never a second authority: where this block and the prose above
-disagree, the prose governs and the block is wrong.
-
-What it deliberately does **not** encode: materiality, finding validity,
-earliest-lossy-boundary selection, whether two findings share a boundary or an
-owner, convergence judgement, `STOP_CORRECTIVE` versus `STOP_REDESIGN`, and
-best-supportable-claim selection. Those are judgements. A parser that appeared
-to decide them would be inventing an authority, and a test that scanned this
-document's prose for vocabulary would be doing the same thing less visibly.
-
-```yaml
-authority_document: docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md
-projection_of_prose: true
-is_authority: false
-
-epistemic_predicates:
-  # Typed predicates over a proposition, each with its own admission basis.
-  # NOT states of one lifecycle: several may hold at once, and a record that
-  # can carry only one of them drops information at the moment it is written.
-  members:
-    - DEFINED
-    - MECHANICALLY_VERIFIED
-    - MUTATION_DISCRIMINATED
-    - EMPIRICALLY_SUPPORTED
-    - NON_REFUTED
-    - REFUTED
-    - PROVED
-  precondition: DEFINED
-  may_co_hold: true
-  ordered: false
-  excluded:
-    UNAVAILABLE: >-
-      an outcome for an objective, not a predicate over a proposition;
-      defined solely by the best-supportable-claim section
-
-proved_admission:
-  required_basis: [proposition, domain, assumptions, proof_or_derivation_basis]
-  externality_required: true
-  admitted_by_accumulation: false
-
-authority_kinds: [semantic, operational]
-non_composition:
-  semantic_evidence_to_operational_authority: false
-
-non_coercions:
-  rule: >-
-    P implies Q only where an explicit composition rule from P to Q exists and
-    is named
-  list_is_illustrative_and_open: true
-```
-
-The `ordered: false` and `may_co_hold: true` keys are load-bearing, not
-description. They are what a checker uses to refuse a record that reintroduces a
-promotion ladder or collapses the predicates into one scalar field — the two
-shapes this document argues against at length. `list_is_illustrative_and_open`
-exists for the same reason in the other direction: it forbids a checker from
-demanding a non-empty non-coercion list, because the universal rule is the
-normative part and an empty list would not weaken it.
-
 ## Authority non-escalation
 
 Two different meanings of "authority" must never merge:
