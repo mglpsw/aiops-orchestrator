@@ -132,14 +132,15 @@ represented, instead, as a documented mutation-discrimination requirement
 
 ## Where the architectural stop should have occurred
 
-By the criteria now codified in
-[`STRUCTURAL_CHANGE_PREFLIGHT.md`](STRUCTURAL_CHANGE_PREFLIGHT.md), the stop
-signal was present after round 3 of `#236`'s seven adversarial rounds: three
-consecutive findings landing on the same abstraction boundary (re-derived
-parser semantics), with no material convergence in finding count round over
-round. The work continued for four more rounds before the mechanism itself
+The stop signal was present after round 3 of `#236`'s seven adversarial rounds:
+three consecutive rounds of findings on one boundary — re-derived parser
+semantics. What counts as a stop signal is defined by
+[`STRUCTURAL_CHANGE_PREFLIGHT.md`](STRUCTURAL_CHANGE_PREFLIGHT.md), which owns
+those criteria; read them there rather than from this account, which describes
+what was observed at the time. The work continued for four more rounds before
+the mechanism itself
 was replaced, each round finding a *different* way the same re-derivation
-was wrong — a repetition of finding class the preflight's STOP/REDESIGN
+was wrong — a repetition the preflight's STOP/REDESIGN
 condition now names explicitly.
 
 ## Why a disposable spike was necessary
