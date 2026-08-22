@@ -45,51 +45,32 @@
   owned the `STOP / REDESIGN` criteria; this change amends them.
 
   The rules themselves are not restated here — that is the preflight's job, and
-  a summary that restates them drifts from them. Read them there.
+  a summary that restates them becomes a second copy that drifts from the one
+  that is normative. Read them there. What follows records the *shape* of the
+  change and its known limitations, and is not a definition of any rule.
 
-  What is worth recording is the shape of the change. The method is stated
-  without the cases that produced it: no past change, commit, review outcome or
-  claim about another artifact appears in it, and removing every illustration
-  leaves the rules intact. It carries no second artifact that is normative for
-  its rules — the preflight states why, and this entry does not repeat the
-  reasoning. Two mechanisms were retired rather than reformulated after repeated
-  failure: a general rule for inferring tree equality from the shape of a squash
-  merge, and the apparatus of computing convergence from the author's own
-  records. Recurrence now runs through four distinct stages rather than two: an
-  observation is advisory whatever its source; a validated finding meets stated
-  evidentiary conditions rather than carrying a label; a recurrence candidate is
-  two validated findings on a boundary declared before the reviews that produced
-  them; and admission is by rule over those conditions. Only admitted recurrence
-  moves the process, so no reviewer's raw output — human or model — is itself a
-  mandatory transition, and concurrence between reviewers is supporting evidence
-  rather than admission.
+  The method is stated without the cases that produced it: no past change,
+  commit, review outcome or claim about another artifact appears in it, and
+  removing every illustration leaves the rules intact. It carries no second
+  artifact that is normative for its rules — the preflight states why, and this
+  entry does not repeat the reasoning. Two mechanisms were retired rather than
+  reformulated after repeated failure: a general rule for inferring tree equality
+  from the shape of a squash merge, and the apparatus of computing convergence
+  from the author's own records.
 
-  Recurrence is temporal, not cardinal. Admission requires a correction to the
-  boundary between the two findings and a later review on a later subject, so two
-  reviewers finding the same defect on one head is corroboration and two findings
-  with nothing corrected between them are one episode still open. Otherwise
-  adding reviewers would make a change likelier to be redesigned.
+  Recurrence semantics were then reconciled over several rounds of adversarial
+  review, each recorded on `#263`. Forming a recurrence candidate and qualifying
+  one were separated; a candidate's second finding was bound to the subject that
+  was actually reviewed; boundary identity was tied to participation rather than
+  to predeclaration; and the vocabulary of admission was reserved for recurrence.
 
-  The barrier is a *correction attempt*, not a correction. Version control
-  establishes the two subjects, their order and the delta; it cannot establish
-  that a delta was corrective, so a cosmetic touch must not be able to
-  manufacture the barrier. The attempt is declared before the review that follows
-  it, naming the boundary, the proposition it means to restore and its intended
-  discriminants. Nothing has to prove it worked — a later finding is evidence it
-  did not, which is the signal. What precommitment prevents is deciding, once
-  that finding lands, that the earlier patch was not a correction after all.
-
-  Validation is predicate-based rather than label-based, and each predicate names
-  the authority that can establish it. Where one cannot be established its value
-  is `UNKNOWN`, which is not a "no" and not a "yes" — an unresolvable predicate
-  material to whether patching continues holds the question open for adjudication
-  rather than resolving it the way whoever holds it prefers. An unestablished
-  correction barrier neither admits a recurrence nor clears one. So the rule
-  cannot be defeated by manufacturing ambiguity instead of writing `INVALID`, and
-  ambiguity cannot manufacture a recurrence either. Disposition sits on a separate axis and
-  does not reach backwards: a finding later marked fixed or superseded stays
-  admitted. That is what stops the party a rule binds from deciding whether it
-  binds them.
+  **Known limitation.** The method has no route by which "no correction was
+  attempted" becomes an established fact — that would need either a complete
+  attempt ledger or a declaration by the party the rule constrains, and neither
+  is introduced. An unestablished correction barrier therefore holds for
+  adjudication rather than clearing, which can hold conservatively over histories
+  in which nothing was in fact attempted. The limitation is tracked separately;
+  the preflight states the rule and the reasoning.
 
   Process/methodology only: no runtime, schema or public-contract change, and no
   test over the method's normative content, which has no oracle outside the
