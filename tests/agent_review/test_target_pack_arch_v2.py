@@ -614,6 +614,40 @@ def _containment_resolver_owners_v2(tree: ast.Module) -> list[str]:
     ]
 
 
+def test_doctor_never_releases_an_observation_fd_outside_the_typed_wrapper() -> None:
+    """Codex round 5 (C3): every release must carry stage/relation taxonomy.
+
+    Three duplicate-object branches called
+    `root_binding.release_observation_fd_v2` directly, so an operational close
+    error escaped `run_doctor_v2` as a raw traceback instead of report-zero
+    UNKNOWN -- the class `R4`/`F24` closed, at call sites that fix missed.
+    Behavioural REDs cover the reproduced instances; this makes the ABSTRACTION
+    the enforced thing, so a fourth direct call site cannot reintroduce it.
+    """
+
+    tree = _parse(DOCTOR_MODULE_PATH)
+    owners: dict[int, str] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for line in range(function.lineno, (function.end_lineno or function.lineno) + 1):
+                owners[line] = function.name
+
+    offenders = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "release_observation_fd_v2"
+        ):
+            owner = owners.get(node.lineno, "<module>")
+            if owner != "_release_observation_fds_v2":
+                offenders.append(f"{owner}:{node.lineno}")
+    assert not offenders, (
+        "the epoch primitive's release was called outside the session's typed "
+        f"wrapper, so an operational close error would escape untyped: {offenders}"
+    )
+
+
 def test_doctor_uses_the_same_containment_authority_for_initial_and_final_lookup() -> None:
     tree = _parse(DOCTOR_MODULE_PATH)
     assert sorted(_containment_resolver_owners_v2(tree)) == ["_resolve_initial_v2", "revalidate_v2"]

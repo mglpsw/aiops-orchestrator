@@ -793,7 +793,16 @@ class _DoctorObservationSessionV2:
             )
             self._physical_objects.setdefault(retained.identity, retained)
             if self._physical_objects[retained.identity] is not retained:
-                self._root_binding.release_observation_fd_v2(leaf_fd)
+                # Codex round 5 (C3): duplicate-object releases must go
+                # through the session's typed wrapper. Calling the primitive
+                # directly let an operational close error escape run_doctor_v2
+                # as a raw traceback instead of report-zero UNKNOWN -- the
+                # same class R4/F24 closed, at a call site that fix missed.
+                self._release_observation_fd_v2(
+                    leaf_fd,
+                    stage="object_binding",
+                    relation=relation,
+                )
             self._logical_observations.append(
                 _LogicalObservationV2(logical_path, relation, "non_regular", resolved, retained.identity)
             )
@@ -931,7 +940,11 @@ class _DoctorObservationSessionV2:
             )
             existing = self._physical_objects.setdefault(retained.identity, retained)
             if existing is not retained:
-                self._root_binding.release_observation_fd_v2(path_fd)
+                self._release_observation_fd_v2(
+                    path_fd,
+                    stage="object_binding",
+                    relation=relation,
+                )
             self._logical_observations.append(
                 _LogicalObservationV2(logical_path, relation, "non_regular", resolved, retained.identity)
             )
@@ -973,7 +986,11 @@ class _DoctorObservationSessionV2:
                     retained_unreadable.identity, retained_unreadable
                 )
                 if existing_unreadable is not retained_unreadable:
-                    self._root_binding.release_observation_fd_v2(path_fd)
+                    self._release_observation_fd_v2(
+                        path_fd,
+                        stage="object_binding",
+                        relation=relation,
+                    )
                 self._resolved_observations[resolved] = _ResolvedObservationV2(
                     "unreadable", retained_unreadable.identity
                 )

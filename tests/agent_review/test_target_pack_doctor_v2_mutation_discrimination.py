@@ -50,6 +50,8 @@ from tests.agent_review.test_target_pack_doctor_v2 import (
     _assert_aiops_root_self_completed,
     _assert_containment_negative_revalidation_v2,
     _assert_content_read_memory_exhaustion_is_unknown_v2,
+    _assert_duplicate_object_release_failure_is_unknown_v2,
+    _assert_observation_fd_registration_failure_does_not_leak_v2,
     _assert_environment_snapshot_failure_is_unknown_v2,
     _assert_operational_lease_entry_failure_is_released_v2,
     _assert_path_object_type_drift_is_unknown,
@@ -1042,6 +1044,51 @@ def _m_content_read_memoryerror_escapes_typed_boundary(
         _assert_content_read_memory_exhaustion_is_unknown_v2(root, monkeypatch)
 
 
+def _m_observation_fd_registered_after_validation(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore the validate-then-register ordering Codex round 5 (C1) found."""
+
+    # The RED injects by CALLER FRAME NAME, so the vulnerable replacement must
+    # keep the real function's name or the mutant would silently stop being
+    # discriminating -- it would pass by never triggering the injection at all.
+    def register_observation_fd_v2(self: object, fd: int) -> int:
+        self._require_active_v2()
+        if fd not in self._lease._observation_fds:
+            self._lease._observation_fds.append(fd)
+            epoch._track_epoch_fd_v2(fd)
+        return fd
+
+    monkeypatch.setattr(
+        epoch.TargetPackTargetBindingV2,
+        "register_observation_fd_v2",
+        register_observation_fd_v2,
+    )
+    with pytest.raises(AssertionError, match="leaked descriptors"):
+        _assert_observation_fd_registration_failure_does_not_leak_v2(root, monkeypatch)
+
+
+def _m_duplicate_release_bypasses_typed_wrapper(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore the direct primitive release Codex round 5 (C3) found.
+
+    Rebinding the session's typed wrapper to the raw primitive is a faithful
+    model of the three call sites that bypassed it: an operational close error
+    then escapes untyped instead of becoming report-zero UNKNOWN.
+    """
+
+    def bypass(self: object, fd: int, *, stage: str, relation: str) -> None:
+        self._root_binding.release_observation_fd_v2(int(fd))
+
+    monkeypatch.setattr(
+        doctor._DoctorObservationSessionV2, "_release_observation_fd_v2", bypass
+    )
+    with pytest.raises(OSError) as raised:
+        _assert_duplicate_object_release_failure_is_unknown_v2(root, monkeypatch)
+    assert raised.value.errno == errno.EIO
+
+
 _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     "M_UNKNOWN_AS_FALSE_REPORT": _m_unknown_as_false_report,
     "M_INVALID_ROOT_AS_UNKNOWN": _m_invalid_root_as_unknown,
@@ -1102,6 +1149,12 @@ _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     ),
     "M_CONTENT_READ_MEMORYERROR_ESCAPES_TYPED_BOUNDARY": (
         _m_content_read_memoryerror_escapes_typed_boundary
+    ),
+    "M_OBSERVATION_FD_REGISTERED_AFTER_VALIDATION": (
+        _m_observation_fd_registered_after_validation
+    ),
+    "M_DUPLICATE_RELEASE_BYPASSES_TYPED_WRAPPER": (
+        _m_duplicate_release_bypasses_typed_wrapper
     ),
 }
 

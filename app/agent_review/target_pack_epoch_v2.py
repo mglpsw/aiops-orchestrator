@@ -310,12 +310,28 @@ class TargetPackTargetBindingV2:
         return self._identity
 
     def register_observation_fd_v2(self, fd: int) -> int:
-        """Install lease/fork cleanup ownership before fallible FD setup."""
+        """Install lease/fork cleanup ownership BEFORE any fallible step.
 
-        self._require_active_v2()
-        if fd not in self._lease._observation_fds:
+        Codex round 5 (C1): the docstring already promised this ordering, but
+        the body validated the capability first, so an operational failure
+        inside ``_require_active_v2`` (an ``EIO`` from one of its ``fstat``
+        calls) returned before ``fd`` reached either registry. The decision
+        still became UNKNOWN, but nothing owned the descriptor any more and it
+        leaked once per occurrence.
+
+        Ownership is installed and then deliberately LEFT installed on
+        failure. It is not closed here: every caller either holds the
+        descriptor in its own local cleanup list or relies on ``lease.release``
+        as the backstop, and closing here as well would close one descriptor
+        NUMBER twice -- the precise hazard `P2-A` established, since Linux
+        frees the number even when ``close`` reports an error.
+        """
+
+        newly_owned = fd not in self._lease._observation_fds
+        if newly_owned:
             self._lease._observation_fds.append(fd)
             _track_epoch_fd_v2(fd)
+        self._require_active_v2()
         return fd
 
     def retain_observation_fd_v2(self, fd: int) -> int:

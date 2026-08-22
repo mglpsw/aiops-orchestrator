@@ -644,6 +644,112 @@ def _assert_content_read_memory_exhaustion_is_unknown_v2(
         pass
 
 
+def _assert_observation_fd_registration_failure_does_not_leak_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    iterations: int = 4,
+) -> None:
+    """Codex round 5 (C1): ownership must precede the fallible validation.
+
+    `register_observation_fd_v2` validated the capability BEFORE adding the
+    descriptor to either registry, so an operational failure inside
+    `_require_active_v2` returned with nothing owning the descriptor. The
+    decision still became UNKNOWN, which is why the outcome assertions alone
+    could not see it -- the discriminator has to be real descriptor identity.
+    """
+
+    import app.agent_review.target_pack_epoch_v2 as epoch_module
+
+    _materialize_healthy_target_v2(target_root)
+    real_fstat = doctor_module.os.fstat
+    injected = 0
+
+    def fail_inside_registration(fd: int) -> os.stat_result:
+        nonlocal injected
+        frame = sys._getframe(1)
+        if frame.f_code.co_name == "_require_active_v2":
+            caller = sys._getframe(2)
+            if caller.f_code.co_name == "register_observation_fd_v2":
+                injected += 1
+                raise OSError(errno.EIO, "injected registration-time validation failure")
+        return real_fstat(fd)
+
+    run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+    baseline_fds = _live_process_fds_v2()
+    baseline_tracker = set(epoch_module._LIVE_EPOCH_FDS_V2)
+
+    monkeypatch.setattr(doctor_module.os, "fstat", fail_inside_registration)
+    try:
+        for _ in range(iterations):
+            outcome = run_doctor_v2(
+                target_root=target_root, manifest=_manifest(), target_repo="owner/repo"
+            )
+            assert isinstance(outcome, DoctorUnknownV2)
+    finally:
+        monkeypatch.undo()
+
+    assert injected >= iterations
+    leaked = _live_process_fds_v2() - baseline_fds
+    try:
+        assert not leaked, f"registration-time failure leaked descriptors: {sorted(leaked)}"
+    finally:
+        for fd in leaked:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    assert set(epoch_module._LIVE_EPOCH_FDS_V2) == baseline_tracker
+    with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
+        pass
+
+
+def _assert_duplicate_object_release_failure_is_unknown_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex round 5 (C3): duplicate-object releases keep the taxonomy.
+
+    Two distinct logical relations resolving to ONE non-regular object is
+    reachable through a hardlinked FIFO: the profile and the receipt are
+    separate declared paths with separate resolved paths and one inode, so the
+    second observation takes the duplicate branch. Releasing there through the
+    primitive instead of the session wrapper let an operational close error
+    escape as a raw traceback.
+    """
+
+    aiops = target_root / ".aiops"
+    aiops.mkdir()
+    profile = aiops / "target-profile.v2.yaml"
+    os.mkfifo(profile)
+    os.link(profile, aiops / "install-receipt.v2.json")
+
+    real_close = doctor_module.os.close
+    injected = 0
+
+    def fail_first_duplicate_release(fd: int) -> None:
+        nonlocal injected
+        if sys._getframe(1).f_code.co_name == "release_observation_fd_v2" and injected == 0:
+            injected += 1
+            raise OSError(errno.EIO, "injected duplicate-release close failure")
+        return real_close(fd)
+
+    monkeypatch.setattr(doctor_module.os, "close", fail_first_duplicate_release)
+    try:
+        outcome = run_doctor_v2(
+            target_root=target_root, manifest=_manifest(), target_repo="owner/repo"
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert injected == 1
+    assert isinstance(outcome, DoctorUnknownV2)
+    assert outcome.reason_code == DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2
+    assert not hasattr(outcome, "report")
+    with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
+        pass
+
+
 def _assert_transient_relookup_raw_fork_tracking_v2(
     target_root: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3521,6 +3627,18 @@ print(
         )
     assert tail.startswith("OUTCOME:DoctorUnknownV2"), tail
     assert "target_pack_doctor_observation_unavailable" in tail, tail
+
+
+def test_observation_fd_registration_failure_does_not_leak_descriptors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_observation_fd_registration_failure_does_not_leak_v2(tmp_path, monkeypatch)
+
+
+def test_duplicate_object_release_failure_is_report_zero_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_duplicate_object_release_failure_is_unknown_v2(tmp_path, monkeypatch)
 
 
 def test_content_read_memory_exhaustion_is_report_zero_unknown(

@@ -59,7 +59,12 @@
   first. Only classes reproduced as real production failures are enumerated;
   neither `except Exception` nor `except BaseException` is used, so
   `KeyboardInterrupt`/`SystemExit` keep propagating and no partial snapshot or
-  partial content is ever returned. Completed
+  partial content is ever returned. Observation-FD cleanup ownership is
+  installed before the capability validation that can fail, and every release
+  goes through the session's typed wrapper -- including the duplicate-object
+  branches -- so an operational close error is report-zero `unknown` rather
+  than a raw traceback, and a failed registration leaves nothing unowned.
+  Completed
   CLI JSON is byte-shape compatible.
   `intended_behavior_change: true`.
   The claim is target-read-only and cooperative within the same host/EUID/
