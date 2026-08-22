@@ -65,6 +65,22 @@ class TargetPackEpochError(ValueError):
         self.reason_code = reason_code
 
 
+class TargetPackObservationBindingErrorV2(TargetPackEpochError):
+    """Causal failure from the additive doctor-only root binding.
+
+    The writer-facing ``bind_target_root_v2`` deliberately keeps its merged
+    exception contract.  Doctor needs the original errno to distinguish a
+    stable invalid subject from unavailable observation capacity, so the
+    observation entry point carries that information without changing the
+    predecessor API.
+    """
+
+    def __init__(self, reason_code: str, *, operation_errno: int | None, stage: str) -> None:
+        super().__init__(reason_code)
+        self.operation_errno = operation_errno
+        self.stage = stage
+
+
 def _frame_v2(value: bytes) -> bytes:
     """Return a length-framed binary field; never concatenate ambiguously."""
 
@@ -288,6 +304,69 @@ class TargetPackTargetBindingV2:
         self._require_active_v2()
         return os.fsdecode(self._lease.canonical_target_subject)
 
+    @property
+    def object_identity(self) -> tuple[int, int]:
+        self._require_active_v2()
+        return self._identity
+
+    def register_observation_fd_v2(self, fd: int) -> int:
+        """Install lease/fork cleanup ownership BEFORE any fallible step.
+
+        Codex round 5 (C1): the docstring already promised this ordering, but
+        the body validated the capability first, so an operational failure
+        inside ``_require_active_v2`` (an ``EIO`` from one of its ``fstat``
+        calls) returned before ``fd`` reached either registry. The decision
+        still became UNKNOWN, but nothing owned the descriptor any more and it
+        leaked once per occurrence.
+
+        Ownership is installed and then deliberately LEFT installed on
+        failure. It is not closed here: every caller either holds the
+        descriptor in its own local cleanup list or relies on ``lease.release``
+        as the backstop, and closing here as well would close one descriptor
+        NUMBER twice -- the precise hazard `P2-A` established, since Linux
+        frees the number even when ``close`` reports an error.
+        """
+
+        newly_owned = fd not in self._lease._observation_fds
+        if newly_owned:
+            self._lease._observation_fds.append(fd)
+            _track_epoch_fd_v2(fd)
+        self._require_active_v2()
+        return fd
+
+    def retain_observation_fd_v2(self, fd: int) -> int:
+        """Attach one non-inheritable descendant FD to this live lease.
+
+        Observation sessions normally close descendants explicitly before
+        releasing the root binding.  Lease ownership is also recorded as an
+        exception-safety backstop and for the existing post-fork tracker.
+        """
+
+        self.register_observation_fd_v2(fd)
+        try:
+            os.set_inheritable(fd, False)
+        except OSError as exc:
+            raise TargetPackObservationBindingErrorV2(
+                TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                operation_errno=exc.errno,
+                stage="retain_observation_fd",
+            ) from exc
+        return fd
+
+    def release_observation_fd_v2(self, fd: int) -> None:
+        if fd in self._lease._observation_fds:
+            try:
+                os.close(fd)
+            finally:
+                # On Linux, close(2) releases the descriptor number even when
+                # it later reports an I/O error: the original FD cannot leak,
+                # but retrying that number can close an unrelated descriptor
+                # which reused it.
+                # Consume ownership after every close attempt and propagate
+                # the original failure without ever retrying the number.
+                self._lease._observation_fds.remove(fd)
+                _LIVE_EPOCH_FDS_V2.discard(fd)
+
     def _require_active_v2(self) -> None:
         self._lease._require_active_v2()
         if not self._active:
@@ -299,8 +378,13 @@ class TargetPackTargetBindingV2:
     def close(self) -> None:
         if self._active:
             self._active = False
-            os.close(self._fd)
-            _LIVE_EPOCH_FDS_V2.discard(self._fd)
+            try:
+                os.close(self._fd)
+            finally:
+                # A late Linux close error has already consumed this numeric
+                # descriptor.  The fork tracker must not retry a number which
+                # may now identify an unrelated resource.
+                _LIVE_EPOCH_FDS_V2.discard(self._fd)
 
     def __enter__(self) -> "TargetPackTargetBindingV2":
         self._require_active_v2()
@@ -325,6 +409,7 @@ class TargetPackEpochLeaseV2:
     mode: Literal["shared", "exclusive"]
     _active: bool = True
     _bindings: list[TargetPackTargetBindingV2] = field(default_factory=list, repr=False)
+    _observation_fds: list[int] = field(default_factory=list, repr=False)
 
     def _require_active_v2(self) -> None:
         if not self._active:
@@ -393,17 +478,98 @@ class TargetPackEpochLeaseV2:
             os.close(fd)
             raise
 
+    def bind_target_root_for_observation_v2(self, *, target_root: Path) -> TargetPackTargetBindingV2:
+        """Bind the target for doctor while preserving the causal errno.
+
+        This is intentionally additive.  ``bind_target_root_v2`` remains the
+        exact writer primitive merged in #258 and continues collapsing open
+        failures to its historical epoch-unavailable reason.
+        """
+
+        self._require_active_v2()
+        try:
+            canonical_subject = _canonical_target_subject_v2(target_root)
+        except TargetPackEpochError as exc:
+            raise TargetPackObservationBindingErrorV2(
+                exc.reason_code, operation_errno=None, stage="canonical_subject"
+            ) from exc
+        if canonical_subject != self.canonical_target_subject:
+            raise TargetPackObservationBindingErrorV2(
+                TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2,
+                operation_errno=None,
+                stage="canonical_subject",
+            )
+        if not hasattr(os, "O_PATH"):
+            raise TargetPackObservationBindingErrorV2(
+                TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                operation_errno=None,
+                stage="open",
+            )
+        flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(os.fsdecode(self.canonical_target_subject), flags)
+        except OSError as exc:
+            raise TargetPackObservationBindingErrorV2(
+                TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                operation_errno=exc.errno,
+                stage="open",
+            ) from exc
+        try:
+            _track_epoch_fd_v2(fd)
+            try:
+                os.set_inheritable(fd, False)
+            except OSError as exc:
+                raise TargetPackObservationBindingErrorV2(
+                    TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                    operation_errno=exc.errno,
+                    stage="set_inheritable",
+                ) from exc
+            try:
+                observed = os.fstat(fd)
+            except OSError as exc:
+                raise TargetPackObservationBindingErrorV2(
+                    TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                    operation_errno=exc.errno,
+                    stage="fstat",
+                ) from exc
+            if not stat.S_ISDIR(observed.st_mode):
+                raise TargetPackObservationBindingErrorV2(
+                    TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+                    operation_errno=errno.ENOTDIR,
+                    stage="fstat",
+                )
+            binding = TargetPackTargetBindingV2(self, fd, (observed.st_dev, observed.st_ino))
+            self._bindings.append(binding)
+            return binding
+        except BaseException:
+            try:
+                os.close(fd)
+            finally:
+                _LIVE_EPOCH_FDS_V2.discard(fd)
+            raise
+
     def release(self) -> None:
         if not self._active:
             return
         self._active = False
+        for fd in tuple(reversed(self._observation_fds)):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            _LIVE_EPOCH_FDS_V2.discard(fd)
+        self._observation_fds.clear()
         for binding in tuple(self._bindings):
             binding.close()
         self._bindings.clear()
-        _unlock_and_close_v2(self._carrier_fd)
-        _LIVE_EPOCH_FDS_V2.discard(self._carrier_fd)
-        _unlock_and_close_v2(self._namespace_fd)
-        _LIVE_EPOCH_FDS_V2.discard(self._namespace_fd)
+        try:
+            _unlock_and_close_v2(self._carrier_fd)
+        finally:
+            _LIVE_EPOCH_FDS_V2.discard(self._carrier_fd)
+        try:
+            _unlock_and_close_v2(self._namespace_fd)
+        finally:
+            _LIVE_EPOCH_FDS_V2.discard(self._namespace_fd)
 
     def __enter__(self) -> "TargetPackEpochLeaseV2":
         self._require_active_v2()

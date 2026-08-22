@@ -59,6 +59,16 @@ _FORBIDDEN_ATTR_CALLS_V2 = frozenset(
 )
 _FORBIDDEN_MODULE_CALLS_V2 = frozenset({"remove", "mkdir", "makedirs", "rename", "replace", "unlink"})
 _ALLOWED_OPEN_MODES_V2 = frozenset({"r", "rb"})
+_ALLOWED_OBSERVATION_OS_OPEN_FLAGS_V2 = frozenset(
+    {
+        "O_RDONLY",
+        "O_PATH",
+        "O_DIRECTORY",
+        "O_NOFOLLOW",
+        "O_CLOEXEC",
+        "O_NONBLOCK",
+    }
+)
 
 
 def _parse(path: Path) -> ast.Module:
@@ -72,6 +82,54 @@ def _open_call_mode_offense(node: ast.Call) -> str | None:
     read-only, but requiring it explicit keeps the mode a single glance
     away from this scan, matching the discipline already established
     for `target_pack_validate_v2`'s own bounded-read call sites."""
+
+    if (
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+    ):
+        if len(node.args) < 2:
+            return f"os.open() at line {node.lineno} has no explicit flags argument"
+
+        names: set[str] = set()
+
+        def collect_flags(expr: ast.expr) -> bool:
+            if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.BitOr):
+                return collect_flags(expr.left) and collect_flags(expr.right)
+            if (
+                isinstance(expr, ast.Attribute)
+                and isinstance(expr.value, ast.Name)
+                and expr.value.id == "os"
+                and expr.attr.startswith("O_")
+            ):
+                names.add(expr.attr)
+                return True
+            if isinstance(expr, ast.Constant) and expr.value == 0:
+                return True
+            if (
+                isinstance(expr, ast.Call)
+                and isinstance(expr.func, ast.Name)
+                and expr.func.id == "getattr"
+                and len(expr.args) == 3
+                and isinstance(expr.args[0], ast.Name)
+                and expr.args[0].id == "os"
+                and isinstance(expr.args[1], ast.Constant)
+                and expr.args[1].value == "O_CLOEXEC"
+                and isinstance(expr.args[2], ast.Constant)
+                and expr.args[2].value == 0
+            ):
+                names.add("O_CLOEXEC")
+                return True
+            return False
+
+        if not collect_flags(node.args[1]):
+            return f"os.open() at line {node.lineno} has non-provable flags"
+        forbidden = sorted(names - _ALLOWED_OBSERVATION_OS_OPEN_FLAGS_V2)
+        if forbidden:
+            return f"os.open() at line {node.lineno} uses write-shaped flags {forbidden}"
+        if not ({"O_RDONLY", "O_PATH"} & names):
+            return f"os.open() at line {node.lineno} has no read/object-binding flag"
+        return None
 
     mode_arg: ast.expr | None = None
     if node.args:
@@ -88,29 +146,73 @@ def _open_call_mode_offense(node: ast.Call) -> str | None:
     return None
 
 
+def _read_only_offenders_v2(tree: ast.Module, *, module_name: str) -> list[str]:
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "open":
+            offense = _open_call_mode_offense(node)
+            if offense is not None:
+                offenders.append(f"{module_name}:{offense}")
+        elif isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_ATTR_CALLS_V2:
+            offenders.append(f"{module_name}:{func.attr}() at line {node.lineno}")
+        elif isinstance(func, ast.Name) and func.id in _FORBIDDEN_MODULE_CALLS_V2:
+            offenders.append(f"{module_name}:{func.id}() at line {node.lineno}")
+    return offenders
+
+
 def test_read_only_modules_call_no_filesystem_mutating_primitive() -> None:
     for module_path, _entry_point in _READ_ONLY_MODULES_V2:
         tree = _parse(module_path)
-        offenders: list[str] = []
-
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if isinstance(func, ast.Attribute) and func.attr == "open":
-                offense = _open_call_mode_offense(node)
-                if offense is not None:
-                    offenders.append(f"{module_path.name}:{offense}")
-            elif isinstance(func, ast.Attribute) and func.attr in _FORBIDDEN_ATTR_CALLS_V2:
-                offenders.append(f"{module_path.name}:{func.attr}() at line {node.lineno}")
-            elif isinstance(func, ast.Name) and func.id in _FORBIDDEN_MODULE_CALLS_V2:
-                offenders.append(f"{module_path.name}:{func.id}() at line {node.lineno}")
+        offenders = _read_only_offenders_v2(tree, module_name=module_path.name)
 
         assert not offenders, (
             f"{module_path.name} calls a filesystem-mutating primitive (or an open() with a "
             f"non-statically-provable read-only mode), violating its own 'READ-ONLY BY "
             f"CONSTRUCTION' docstring guarantee: {offenders}"
         )
+
+
+def test_doctor_has_one_non_path_content_open_and_it_is_provisionally_nonblocking() -> None:
+    """A raced leaf type is discriminated before any potentially blocking read."""
+
+    tree = _parse(DOCTOR_MODULE_PATH)
+    owners: dict[int, str] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for line in range(function.lineno, (function.end_lineno or function.lineno) + 1):
+                owners[line] = function.name
+
+    content_opens: list[tuple[str, set[str]]] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "os"
+            and node.func.attr == "open"
+            and len(node.args) >= 2
+        ):
+            continue
+        names = {
+            part.attr
+            for part in ast.walk(node.args[1])
+            if isinstance(part, ast.Attribute)
+            and isinstance(part.value, ast.Name)
+            and part.value.id == "os"
+            and part.attr.startswith("O_")
+        }
+        if "O_PATH" not in names:
+            content_opens.append((owners.get(node.lineno, "<module>"), names))
+
+    assert content_opens == [
+        (
+            "_observe_regular_v2",
+            {"O_RDONLY", "O_NOFOLLOW", "O_NONBLOCK"},
+        )
+    ]
 
 
 def test_read_only_entry_points_have_no_mutating_parameter() -> None:
@@ -275,17 +377,366 @@ def test_target_pack_writer_has_one_k_ex_orchestration_boundary() -> None:
     assert "apply_authorized_target_pack_init_v2" in called_names(cli)
 
 
-def test_doctor_and_validate_do_not_consume_the_private_epoch_implementation() -> None:
-    """R39/R40: this predecessor changes writers only, not read semantics."""
+def _doctor_epoch_acquisitions_v2(tree: ast.Module) -> list[ast.Call]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "acquire_target_pack_epoch_v2"
+    ]
 
-    for path in (DOCTOR_MODULE_PATH, VALIDATE_MODULE_PATH):
-        tree = _parse(path)
-        epoch_imports = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom) and node.module == "app.agent_review.target_pack_epoch_v2"
-        ]
-        assert not epoch_imports, path.name
+
+def _one_literal_shared_epoch_v2(tree: ast.Module) -> bool:
+    acquisitions = _doctor_epoch_acquisitions_v2(tree)
+    if len(acquisitions) != 1:
+        return False
+    exclusive = next((kw.value for kw in acquisitions[0].keywords if kw.arg == "exclusive"), None)
+    return isinstance(exclusive, ast.Constant) and exclusive.value is False
+
+
+def test_r39_successor_doctor_consumes_one_shared_epoch_while_validate_still_does_not() -> None:
+    """Intentional successor to #258 R39; R40 remains unchanged."""
+
+    doctor = _parse(DOCTOR_MODULE_PATH)
+    validate = _parse(VALIDATE_MODULE_PATH)
+    assert _one_literal_shared_epoch_v2(doctor)
+
+    doctor_calls = {
+        node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+        for node in ast.walk(doctor)
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Attribute, ast.Name))
+    }
+    assert "bind_target_root_for_observation_v2" in doctor_calls
+    assert "materialize_and_bind_target_root_v2" not in doctor_calls
+    assert "bind_target_root_v2" not in doctor_calls
+
+    validate_epoch_imports = [
+        node
+        for node in ast.walk(validate)
+        if isinstance(node, ast.ImportFrom) and node.module == "app.agent_review.target_pack_epoch_v2"
+    ]
+    assert not validate_epoch_imports
+
+
+_DOCTOR_REACHABLE_LOCAL_FUNCTIONS_V2 = frozenset(
+    {
+        "run_doctor_v2",
+        "_unknown_for_epoch_error_v2",
+        "_unknown_for_epoch_oserror_v2",
+        "_classify_root_subject_before_epoch_v2",
+        "_classify_root_binding_failure_v2",
+        "_snapshot_environment_keys_v2",
+        "_refuse_target_root_overlapping_runtime_carrier_v2",
+        "_object_identity_or_none_v2",
+        "_self_and_ancestor_identities_v2",
+        "_is_contained_path_v2",
+        "_check_profile_v2",
+        "_check_receipt_v2",
+        "_check_secret_names_v2",
+        "__init__",
+        "__enter__",
+        "__exit__",
+        "close",
+        "_resolve_initial_v2",
+        "_prepare_fd_v2",
+        "_retain_fd_v2",
+        "_register_fd_v2",
+        "_release_observation_fds_v2",
+        "_release_observation_fd_v2",
+        "_root_fd_v2",
+        "_is_root_self_v2",
+        "_root_self_stat_v2",
+        "_diagnose_component_open_error_v2",
+        "_open_parent_directory_v2",
+        "_open_leaf_path_fd_v2",
+        "observe_directory_v2",
+        "_observe_regular_v2",
+        "observe_bytes_v2",
+        "observe_sha256_v2",
+        "_transient_current_lookup_v2",
+        "_revalidate_root_v2",
+        "revalidate_v2",
+        "_raise_classified_observation_oserror_v2",
+        "_raise_binding_primitive_oserror_v2",
+        "_doctor_reason_for_plan_error_v2",
+        "_profile_status_for_completed_negative_v2",
+        "_file_type_v2",
+        "_object_identity_v2",
+        "_metadata_identity_v2",
+    }
+)
+
+
+def test_doctor_observation_call_graph_registry_is_complete() -> None:
+    """Moving or adding a reachable local helper requires deliberate review."""
+
+    tree = _parse(DOCTOR_MODULE_PATH)
+    definitions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    # Python invokes the session's constructor/context protocol implicitly;
+    # seed those protocol methods alongside the explicit entry point.
+    reachable = {"run_doctor_v2", "__init__", "__enter__", "__exit__"}
+    pending = ["run_doctor_v2", "__init__", "__enter__", "__exit__"]
+    while pending:
+        owner = pending.pop()
+        for call in ast.walk(definitions[owner]):
+            if not isinstance(call, ast.Call):
+                continue
+            called = None
+            if isinstance(call.func, ast.Name):
+                called = call.func.id
+            elif isinstance(call.func, ast.Attribute):
+                called = call.func.attr
+            if called in definitions and called not in reachable:
+                reachable.add(called)
+                pending.append(called)
+    assert reachable == _DOCTOR_REACHABLE_LOCAL_FUNCTIONS_V2
+
+
+def _epoch_write_effects_v2(tree: ast.Module) -> set[tuple[str, str]]:
+    owners: dict[int, str] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for line in range(function.lineno, (function.end_lineno or function.lineno) + 1):
+                owners[line] = function.name
+
+    observed: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = None
+        if isinstance(node.func, ast.Attribute):
+            call_name = node.func.attr
+        elif isinstance(node.func, ast.Name):
+            call_name = node.func.id
+        if call_name == "mkdir":
+            observed.add((owners.get(node.lineno, "<module>"), call_name))
+        if call_name == "open" and (
+            any(
+                isinstance(part, ast.Attribute)
+                and part.attr in {"O_CREAT", "O_WRONLY", "O_RDWR", "O_TRUNC", "O_APPEND"}
+                for part in ast.walk(node)
+            )
+            or (
+                len(node.args) >= 2
+                and isinstance(node.args[1], ast.Name)
+                and node.args[1].id == "carrier_flags"
+            )
+        ):
+            observed.add((owners.get(node.lineno, "<module>"), call_name))
+    return observed
+
+
+def test_epoch_effect_domains_are_function_scoped_not_module_exempted() -> None:
+    """Carrier writes and the pre-existing writer materializer are explicit."""
+
+    epoch_path = APP_DIR / "target_pack_epoch_v2.py"
+    tree = _parse(epoch_path)
+    approved = {
+        ("_open_protocol_directory_v2", "mkdir"),
+        ("acquire_target_pack_epoch_v2", "open"),
+        ("materialize_and_bind_target_root_v2", "mkdir"),
+    }
+    assert _epoch_write_effects_v2(tree) == approved
+
+    acquire = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "acquire_target_pack_epoch_v2")
+    carrier_open = next(
+        node
+        for node in ast.walk(acquire)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "open"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Name)
+        and node.args[1].id == "carrier_flags"
+    )
+    carrier_assignment = next(
+        node
+        for node in ast.walk(acquire)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "carrier_flags" for target in node.targets)
+    )
+    carrier_names = {
+        part.attr
+        for part in ast.walk(carrier_assignment.value)
+        if isinstance(part, ast.Attribute) and isinstance(part.value, ast.Name) and part.value.id == "os"
+    }
+    assert {"O_RDWR", "O_CREAT", "O_NOFOLLOW"} <= carrier_names
+    dir_fd = next(kw.value for kw in carrier_open.keywords if kw.arg == "dir_fd")
+    assert isinstance(dir_fd, ast.Name) and dir_fd.id == "namespace_fd"
+
+    protocol_open = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_open_protocol_directory_v2"
+    )
+    protocol_mkdir = next(
+        node
+        for node in ast.walk(protocol_open)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "mkdir"
+    )
+    protocol_dir_fd = next(kw.value for kw in protocol_mkdir.keywords if kw.arg == "dir_fd")
+    assert isinstance(protocol_dir_fd, ast.Name) and protocol_dir_fd.id == "parent_fd"
+
+    materializer = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "materialize_and_bind_target_root_v2"
+    )
+    materialize_mkdir = next(
+        node
+        for node in ast.walk(materializer)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "mkdir"
+    )
+    assert isinstance(materialize_mkdir.func.value, ast.Name)
+    assert materialize_mkdir.func.value.id == "target_root"
+    assert all(keyword.arg != "dir_fd" for keyword in materialize_mkdir.keywords)
+
+
+def _containment_resolver_owners_v2(tree: ast.Module) -> list[str]:
+    owners: dict[int, str] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for line in range(function.lineno, (function.end_lineno or function.lineno) + 1):
+                owners[line] = function.name
+
+    return [
+        owners.get(node.lineno, "<module>")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "resolve_within_target_root_v2"
+    ]
+
+
+def test_doctor_never_releases_an_observation_fd_outside_the_typed_wrapper() -> None:
+    """Codex round 5 (C3): every release must carry stage/relation taxonomy.
+
+    Three duplicate-object branches called
+    `root_binding.release_observation_fd_v2` directly, so an operational close
+    error escaped `run_doctor_v2` as a raw traceback instead of report-zero
+    UNKNOWN -- the class `R4`/`F24` closed, at call sites that fix missed.
+    Behavioural REDs cover the reproduced instances; this makes the ABSTRACTION
+    the enforced thing, so a fourth direct call site cannot reintroduce it.
+    """
+
+    tree = _parse(DOCTOR_MODULE_PATH)
+    owners: dict[int, str] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for line in range(function.lineno, (function.end_lineno or function.lineno) + 1):
+                owners[line] = function.name
+
+    offenders = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "release_observation_fd_v2"
+        ):
+            owner = owners.get(node.lineno, "<module>")
+            if owner != "_release_observation_fds_v2":
+                offenders.append(f"{owner}:{node.lineno}")
+    assert not offenders, (
+        "the epoch primitive's release was called outside the session's typed "
+        f"wrapper, so an operational close error would escape untyped: {offenders}"
+    )
+
+
+def test_doctor_uses_the_same_containment_authority_for_initial_and_final_lookup() -> None:
+    tree = _parse(DOCTOR_MODULE_PATH)
+    assert sorted(_containment_resolver_owners_v2(tree)) == ["_resolve_initial_v2", "revalidate_v2"]
+
+
+def test_doctor_content_and_environment_observation_choke_points_are_single() -> None:
+    tree = _parse(DOCTOR_MODULE_PATH)
+    owners: dict[int, str] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for line in range(function.lineno, (function.end_lineno or function.lineno) + 1):
+                owners[line] = function.name
+
+    content_reads = [
+        owners.get(node.lineno, "<module>")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+        and node.func.attr == "read"
+    ]
+    assert content_reads == ["_observe_regular_v2"]
+
+    path_content_reads = [
+        f"{node.func.attr}:{node.lineno}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"read_bytes", "read_text"}
+    ]
+    assert not path_content_reads
+
+    environment_keys = [
+        owners.get(node.lineno, "<module>")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "keys"
+        and isinstance(node.func.value, ast.Attribute)
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "os"
+        and node.func.value.attr == "environ"
+    ]
+    assert environment_keys == ["_snapshot_environment_keys_v2"]
+    assert not [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "os"
+        and node.value.attr == "environ"
+    ]
+
+    environment_references = [
+        owners.get(node.lineno, "<module>")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "os"
+        and node.attr == "environ"
+    ]
+    assert environment_references == ["_snapshot_environment_keys_v2"]
+
+
+def _fd_inheritable_offenders_v2(tree: ast.Module) -> list[int]:
+    offenders: list[int] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "os"
+            and node.func.attr == "set_inheritable"
+        ):
+            continue
+        if len(node.args) != 2 or not isinstance(node.args[1], ast.Constant) or node.args[1].value is not False:
+            offenders.append(node.lineno)
+    return offenders
+
+
+def test_every_doctor_and_epoch_fd_is_explicitly_non_inheritable() -> None:
+    for path in (DOCTOR_MODULE_PATH, APP_DIR / "target_pack_epoch_v2.py"):
+        assert not _fd_inheritable_offenders_v2(_parse(path)), path.name
 
 
 def test_bounded_artifact_read_always_passes_an_explicit_size_argument() -> None:

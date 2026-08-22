@@ -55,7 +55,12 @@ from app.agent_review.target_pack_apply_v2 import (  # noqa: E402
     TargetPackAuthorizedApplyErrorV2,
     apply_authorized_target_pack_init_v2,
 )
-from app.agent_review.target_pack_doctor_v2 import run_doctor_v2  # noqa: E402
+from app.agent_review.target_pack_doctor_v2 import (  # noqa: E402
+    DoctorDecisionV2,
+    DoctorInputErrorV2,
+    DoctorUnknownV2,
+    run_doctor_v2,
+)
 from app.agent_review.target_pack_install_v2 import (  # noqa: E402
     RECEIPT_RELATIVE_PATH_V2,
     TargetPackInstallError,
@@ -221,7 +226,17 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
 
-    report = run_doctor_v2(target_root=target_root, manifest=manifest, target_repo=args.target_repo)
+    try:
+        outcome = run_doctor_v2(target_root=target_root, manifest=manifest, target_repo=args.target_repo)
+    except DoctorInputErrorV2 as exc:
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
+    if isinstance(outcome, DoctorUnknownV2):
+        print(f"error: {outcome.reason_code}", file=sys.stderr)
+        return CLI_EXIT_ENVIRONMENT_OR_GATE_UNAVAILABLE_V2
+    if not isinstance(outcome, DoctorDecisionV2):
+        raise RuntimeError("target_pack_doctor_outcome_not_enumerated")
+    report = outcome.report
     output = {
         "target_root": report.target_root,
         "healthy": report.is_healthy,

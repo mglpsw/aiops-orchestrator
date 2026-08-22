@@ -4,6 +4,93 @@
 
 ### Changed
 
+- **Target-pack `doctor` now compiles each completed diagnosis inside one
+  coherent K-SH observation epoch (`#203`)**: `run_doctor_v2` acquires the
+  merged external-K reader capability before classifying the target subject,
+  holds one `O_PATH` root binding and all material descendant bindings through
+  final revalidation, and acquires each physical file's content at most once.
+  Profile parsing/semantic hashing and its TARGET_OWNED ledger relation reuse
+  the same captured bytes; hardlinks may share one content observation without
+  collapsing their path-specific conformance relations. The manifest remains
+  the authority for the TARGET_OWNED read domain, so a receipt mismatch is
+  rejected before any receipt-only extra path is read. This intentionally
+  succeeds #258's R39 assertion: `doctor` now consumes exactly one shared
+  epoch, while `validate` still consumes none.
+  `DoctorReportV2` remains a completed diagnosis only. The internal runtime
+  result distinguishes completed `healthy`/`unhealthy` decisions from
+  report-zero `unknown` observation failures; the CLI returns exit 3 for the
+  latter. A stably absent/non-directory target, classified only after K is
+  held, is an input error with exit 2 and no traceback; a target observed as a
+  directory before acquisition and then absent under K is stale/unknown, not
+  an invocation error. Consequently,
+  transient `EIO`/`ESTALE`/descriptor exhaustion that previously collapsed
+  into an ordinary unhealthy report is now intentionally `unknown`, while
+  stable missing, malformed, non-regular, containment, permission, and hash
+  failures preserve completed-negative semantics and existing reason codes.
+  A sanctioned path that resolves exactly to the held target root is treated
+  as a first-class object relation: directory roles reuse the root binding,
+  while profile, receipt, and ledger file roles preserve their existing
+  completed non-regular reasons. Profile status projection is explicit over
+  named reasons rather than reason-code spelling, and object identity remains
+  the single type-stability discriminator. Post-ready resource-lifetime
+  hardening registers every transient relookup FD for cleanup immediately
+  after `open`, and makes the doctor caller own lease cleanup before fallible
+  capability entry validation; operational entry failures remain report-zero
+  `unknown`, while programmer failures still raise after releasing K and all
+  tracked descriptors. The later Ready-review hardening makes observation
+  cleanup total: every retained release is attempted and every registry is
+  cleared before an operational close failure becomes report-zero `unknown`
+  or a programmer errno is re-raised. On Linux, even a late close error has
+  already consumed the descriptor number; cleanup therefore drops numeric
+  ownership and fork-tracker membership after every close attempt and never
+  retries a number that an unrelated open may have reused. All doctor-local
+  target-object FDs,
+  including initial and final transient lookups, join the one raw-fork tracker
+  before fallible configuration and leave it on local release. The sole
+  provisional content open is nonblocking and validates the returned object's
+  type and identity before any read, so a raced FIFO/device/non-regular swap
+  becomes stale/unknown instead of retaining K-SH indefinitely. Containment
+  negatives are themselves registered observations and must remain negative
+  at final revalidation; a repaired escape/loop is stale/unknown. Inability to
+  materialize an observation is report-zero `unknown` at both seams where it
+  was reproduced: the one environment key snapshot (concurrent `os.environ`
+  mutation, and genuine `MemoryError`) and the content read, whose per-chunk
+  megabyte-scale buffers are what a genuinely exhausted process fails on
+  first. Only classes reproduced as real production failures are enumerated;
+  neither `except Exception` nor `except BaseException` is used, so
+  `KeyboardInterrupt`/`SystemExit` keep propagating and no partial snapshot or
+  partial content is ever returned. Observation-FD cleanup ownership is
+  installed before the capability validation that can fail, and every release
+  goes through the session's typed wrapper -- including the duplicate-object
+  branches -- so an operational close error is report-zero `unknown` rather
+  than a raw traceback, and a failed registration leaves nothing unowned. A
+  target root that overlaps the fixed runtime carrier root -- in either
+  containment direction -- is refused as an input error BEFORE acquisition,
+  because acquisition materializes that carrier and a TARGET-READ-ONLY command
+  must never write inside the target it was asked to diagnose (nor, when the
+  target IS the carrier root, materialize the very directory whose absence it
+  owes an input error for). An operational failure while releasing the lease is
+  report-zero `unknown` instead of replacing the pending decision with a raw
+  traceback; programmer errno still raises, and an in-flight exception is never
+  masked by cleanup. Overlap is decided from OBJECT IDENTITY as well as paths,
+  because `Path.resolve()` does not collapse bind mounts and a bind alias of
+  the carrier's parent otherwise passes every textual check while acquisition
+  still writes inside the target; target-side and carrier-side resolution
+  failures are classified separately so a target that merely fails to resolve
+  is never reported as an overlap that was not established. A stable search
+  denial is recorded as the denial it is, so a documented completed negative is
+  no longer flipped into stale/unknown by final revalidation.
+  Completed
+  CLI JSON is byte-shape compatible.
+  `intended_behavior_change: true`.
+  The claim is target-read-only and cooperative within the same host/EUID/
+  mount namespace and K object. External writers, undetectable ABA,
+  provenance/generation identity, `generated_file_hashes` conformance,
+  filesystem snapshots, crash recovery, journal/application records, and
+  distributed locking remain explicit non-claims. No receipt, manifest,
+  schema, runtime-authority, or #253 semantic vocabulary changed; `validate`
+  coherent observation remains a follow-up.
+
 - **Target-pack `init --apply` now uses one private cooperative K epoch
   (`#203`)**: the canonical writer acquires a same-host/same-EUID/same-mount-
   namespace K EX carrier before recomputing the operation plan.  It applies
