@@ -201,6 +201,13 @@ this implementation.
 - Operational failure while releasing the lease is report-zero `unknown`, not a
   traceback. The residual abort-before-unlock inside the merged release
   primitive remains pre-existing `#258` behaviour tracked in #260.
+- The overlap refusal compares OBJECT IDENTITY (`st_dev`/`st_ino`) as well as
+  paths: `Path.resolve()` does not collapse bind mounts, and a bind alias
+  shares the source inode, which is precisely what a pathname cannot express.
+  DECLARED NON-CLAIM: a bind alias of the carrier location mounted deep inside
+  the target subtree is not detected. Complete closure requires the carrier
+  location to be guaranteed disjoint from the target -- a decision belonging to
+  the shared K primitive, not to this command. Tracked in #261.
 
 The completed-observation claim is cooperative only: same host, effective UID,
 mount namespace, K object, and participating AgentReview readers/writers.

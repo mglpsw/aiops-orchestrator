@@ -644,6 +644,119 @@ def _assert_content_read_memory_exhaustion_is_unknown_v2(
         pass
 
 
+def _bind_mount_alias_or_skip_v2(source: Path, alias: Path) -> None:
+    """Create a real bind mount, or skip. Never simulated."""
+
+    completed = subprocess.run(
+        ["mount", "--bind", str(source), str(alias)], capture_output=True, text=True
+    )
+    if completed.returncode != 0:
+        pytest.skip(f"bind mount unavailable here: {completed.stderr.strip()[:200]}")
+
+
+def _assert_bind_mount_alias_of_carrier_is_refused_v2(tmp_path: Path) -> None:
+    """Codex round 7 (E1): path containment cannot see a bind-mount alias.
+
+    `Path.resolve()` does not collapse bind mounts, so an alias of the carrier's
+    parent passes every textual check while acquisition still creates the
+    carrier VISIBLY INSIDE the target -- reproduced with a real `mount --bind`,
+    which produced `agentreview-target-locks-v1-<euid>` inside the supplied
+    target. Object identity is what exposes it: a bind mount shares both
+    `st_dev` and `st_ino` with its source, which is exactly what a pathname
+    cannot express.
+    """
+
+    import app.agent_review.target_pack_epoch_v2 as epoch_module
+
+    carrier_parent = epoch_module.runtime_carrier_root_v2().parent
+    alias = tmp_path / "alias"
+    alias.mkdir()
+    _bind_mount_alias_or_skip_v2(carrier_parent, alias)
+    try:
+        before = {entry.name for entry in alias.iterdir()}
+        with pytest.raises(DoctorInputErrorV2) as raised:
+            run_doctor_v2(
+                target_root=alias, manifest=_manifest(), target_repo="owner/repo"
+            )
+        assert raised.value.reason_code == (
+            "target_pack_doctor_target_root_overlaps_runtime_carrier"
+        )
+        created = {entry.name for entry in alias.iterdir()} - before
+        assert not created, f"a read-only command wrote inside the target: {sorted(created)}"
+    finally:
+        subprocess.run(["umount", str(alias)], capture_output=True, text=True)
+
+
+def _assert_unresolvable_target_root_is_not_reported_as_overlap_v2(
+    tmp_path: Path,
+) -> None:
+    """Codex round 7 (E3): never assert an overlap that was not established.
+
+    The first cut of the overlap refusal collapsed ANY resolution failure into
+    the overlap reason. A symlink-loop target root therefore reported
+    `target_pack_doctor_target_root_overlaps_runtime_carrier` although no
+    overlap had been observed at all. The two subjects are resolved and
+    classified separately now: a target-side failure is left to acquisition,
+    which owns that vocabulary and classified it before the refusal existed.
+    """
+
+    loop = tmp_path / "loop"
+    other = tmp_path / "loop2"
+    loop.symlink_to(other)
+    other.symlink_to(loop)
+
+    outcome = run_doctor_v2(
+        target_root=loop, manifest=_manifest(), target_repo="owner/repo"
+    )
+    assert isinstance(outcome, DoctorUnknownV2)
+    assert outcome.reason_code != (
+        "target_pack_doctor_target_root_overlaps_runtime_carrier"
+    )
+    assert outcome.reason_code == TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2
+
+
+def _assert_stable_search_denial_is_completed_negative_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex round 7 (E2): a stable denial is a completed negative, not stale.
+
+    A persistent `EACCES` traversing to an artifact produced the relation's
+    UNREADABLE reason, but the observation was recorded as `missing`. Final
+    revalidation then demanded the path still be MISSING, the traversal denied
+    again instead, and a correctly diagnosed permission failure was flipped to
+    stale/unknown (exit 3) despite being documented as a completed negative.
+
+    Injected rather than chmod-ed: these suites run as a principal that bypasses
+    DAC, so a real mode change would not deny anything and the RED would pass
+    vacuously.
+    """
+
+    _materialize_healthy_target_v2(target_root)
+    real_open = doctor_module.os.open
+    denials = 0
+
+    def deny_aiops_traversal(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        nonlocal denials
+        if isinstance(path, str) and path == ".aiops" and kwargs.get("dir_fd") is not None:
+            denials += 1
+            raise OSError(errno.EACCES, "injected persistent search denial")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(doctor_module.os, "open", deny_aiops_traversal)
+    try:
+        outcome = run_doctor_v2(
+            target_root=target_root, manifest=_manifest(), target_repo="owner/repo"
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert denials >= 2, "the denial must persist through final revalidation too"
+    assert isinstance(outcome, DoctorDecisionV2)
+    assert outcome.decision_status == "unhealthy"
+    assert outcome.report.profile.reason_code == "target_profile_unreadable"
+
+
 def _assert_carrier_overlapping_target_root_is_input_error_v2(
     *,
     shape: str,
@@ -3721,6 +3834,22 @@ print(
         )
     assert tail.startswith("OUTCOME:DoctorUnknownV2"), tail
     assert "target_pack_doctor_observation_unavailable" in tail, tail
+
+
+def test_bind_mount_alias_of_the_carrier_parent_is_refused(tmp_path: Path) -> None:
+    _assert_bind_mount_alias_of_carrier_is_refused_v2(tmp_path)
+
+
+def test_unresolvable_target_root_is_not_reported_as_carrier_overlap(
+    tmp_path: Path,
+) -> None:
+    _assert_unresolvable_target_root_is_not_reported_as_overlap_v2(tmp_path)
+
+
+def test_stable_search_denial_is_a_completed_negative(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_stable_search_denial_is_completed_negative_v2(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize(

@@ -317,6 +317,7 @@ class _LogicalObservationV2:
         "unreadable",
         "non_regular",
         "containment_negative",
+        "denied",
     ]
     resolved_path: Path | None
     object_identity: tuple[int, int, int] | None
@@ -325,7 +326,7 @@ class _LogicalObservationV2:
 
 @dataclass(frozen=True)
 class _ResolvedObservationV2:
-    kind: Literal["missing", "directory", "regular", "unreadable", "non_regular"]
+    kind: Literal["missing", "directory", "regular", "unreadable", "non_regular", "denied"]
     object_identity: tuple[int, int, int] | None
 
 
@@ -772,10 +773,20 @@ class _DoctorObservationSessionV2:
                 missing_reason=TARGET_PROFILE_MISSING_REASON_V2,
                 unreadable_reason=TARGET_PROFILE_UNREADABLE_REASON_V2,
             )
-        except _DoctorCompletedNegativeV2:
-            self._resolved_observations[resolved] = _ResolvedObservationV2("missing", None)
+        except _DoctorCompletedNegativeV2 as exc:
+            # Codex round 7 (E2): a persistent search denial reaches here with
+            # the relation's UNREADABLE reason, but the observation was being
+            # recorded as `missing`. Final revalidation then required the path
+            # to still be MISSING, the traversal denied again instead, and a
+            # documented completed negative was flipped into stale/unknown --
+            # CLI exit 3 for a stable, correctly diagnosed permission failure.
+            # Record the negative that was actually observed.
+            observed_kind = "denied" if exc.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2 else "missing"
+            self._resolved_observations[resolved] = _ResolvedObservationV2(
+                observed_kind, None
+            )
             self._logical_observations.append(
-                _LogicalObservationV2(logical_path, relation, "missing", resolved, None)
+                _LogicalObservationV2(logical_path, relation, observed_kind, resolved, None)
             )
             raise
         if not stat.S_ISDIR(observed.st_mode):
@@ -918,10 +929,20 @@ class _DoctorObservationSessionV2:
                 missing_reason=missing_reason,
                 unreadable_reason=unreadable_reason,
             )
-        except _DoctorCompletedNegativeV2:
-            self._resolved_observations[resolved] = _ResolvedObservationV2("missing", None)
+        except _DoctorCompletedNegativeV2 as exc:
+            # Codex round 7 (E2): a persistent search denial reaches here with
+            # the relation's UNREADABLE reason, but the observation was being
+            # recorded as `missing`. Final revalidation then required the path
+            # to still be MISSING, the traversal denied again instead, and a
+            # documented completed negative was flipped into stale/unknown --
+            # CLI exit 3 for a stable, correctly diagnosed permission failure.
+            # Record the negative that was actually observed.
+            observed_kind = "denied" if exc.reason_code == unreadable_reason else "missing"
+            self._resolved_observations[resolved] = _ResolvedObservationV2(
+                observed_kind, None
+            )
             self._logical_observations.append(
-                _LogicalObservationV2(logical_path, relation, "missing", resolved, None)
+                _LogicalObservationV2(logical_path, relation, observed_kind, resolved, None)
             )
             raise
 
@@ -1232,6 +1253,11 @@ class _DoctorObservationSessionV2:
         except OSError as exc:
             if exc.errno in _STABLE_MISSING_ERRNOS_V2:
                 return ("missing", None)
+            if exc.errno in _STABLE_UNREADABLE_ERRNOS_V2:
+                # A stable denial is a REPORTABLE outcome, not a failure to
+                # revalidate: the relation still denies traversal exactly as it
+                # did during observation (Codex round 7, E2).
+                return ("denied", None)
             raise
         finally:
             self._release_observation_fds_v2(
@@ -1333,8 +1359,11 @@ class _DoctorObservationSessionV2:
                     stage="final_revalidation",
                     relation=logical.relation,
                 ) from exc
-            if logical.kind == "missing":
-                if current_kind == "missing" and resolved == logical.resolved_path:
+            if logical.kind in {"missing", "denied"}:
+                # Both are negatives with no object to identify, so the
+                # revalidation obligation is the same: the SAME relation must
+                # still yield the SAME negative at the SAME resolved path.
+                if current_kind == logical.kind and resolved == logical.resolved_path:
                     continue
                 raise _DoctorUnknownAbortV2(
                     DOCTOR_OBSERVATION_STALE_REASON_V2,
@@ -1475,7 +1504,30 @@ def _check_secret_names_v2(
     )
 
 
-def _refuse_target_root_overlapping_runtime_carrier_v2(target_root: Path) -> None:
+def _object_identity_or_none_v2(path: Path) -> tuple[int, int] | None:
+    """`(st_dev, st_ino)` for an existing path, or `None`. Read-only."""
+
+    try:
+        observed = os.stat(path)
+    except (OSError, ValueError):
+        return None
+    return (observed.st_dev, observed.st_ino)
+
+
+def _self_and_ancestor_identities_v2(path: Path) -> set[tuple[int, int]]:
+    """Object identities of `path` and each of its existing ancestors."""
+
+    identities: set[tuple[int, int]] = set()
+    for candidate in (path, *path.parents):
+        identity = _object_identity_or_none_v2(candidate)
+        if identity is not None:
+            identities.add(identity)
+    return identities
+
+
+def _refuse_target_root_overlapping_runtime_carrier_v2(
+    target_root: Path,
+) -> DoctorUnknownV2 | None:
     """Refuse, BEFORE acquisition, a target that overlaps the K carrier root.
 
     Codex round 6 (D1): ``acquire_target_pack_epoch_v2`` materializes
@@ -1483,38 +1535,84 @@ def _refuse_target_root_overlapping_runtime_carrier_v2(target_root: Path) -> Non
     path lies inside the supplied target -- ``--target-root /tmp``, or ``/`` --
     a command whose entire contract is TARGET-READ-ONLY writes inside the
     target. Worse, when the target IS the carrier root and does not exist yet,
-    acquisition CREATES it, so the subsequent bind succeeds and doctor returns
-    a completed unhealthy decision about a directory it just materialized
-    itself, instead of the input error a missing target must produce. Both were
-    reproduced.
+    acquisition CREATES it, so the bind succeeds and doctor returns a completed
+    decision about a directory it materialized itself.
 
-    This is an INVOCATION property, not a target-state one: the carrier root is
-    fixed, so the refusal is stable across retries and belongs with the other
-    input errors (exit 2), not with report-zero UNKNOWN. It is decided purely
-    from path containment -- no filesystem write, no metadata probe -- so the
-    check itself cannot be what mutates the target.
+    Codex round 7 (E1): path containment alone is NOT sufficient on Linux.
+    ``Path.resolve()`` does not collapse bind mounts, so a bind-mount alias of
+    ``/tmp`` passes every textual check while acquisition still creates the
+    carrier visibly inside the target. Reproduced with a real ``mount --bind``:
+    the alias and ``/tmp`` share both ``st_dev`` and ``st_ino``. Object
+    identity is therefore compared as well as paths -- the alias is caught
+    because a bind mount exposes the SAME inode, which is exactly what a
+    pathname cannot express.
 
-    Containment is refused in BOTH directions: the carrier inside the target
-    (doctor would write into the target) and the target inside the carrier
-    (acquisition would materialize an ancestor of the target).
+    Codex round 7 (E3): the previous version collapsed ANY resolution failure
+    into the overlap reason, asserting an overlap it had never established. The
+    two subjects are now resolved and classified SEPARATELY: a carrier-side
+    failure is an environment problem (report-zero UNKNOWN, exit 3), while a
+    target-side failure is left entirely alone so acquisition classifies it
+    exactly as it did before this refusal existed.
+
+    Read-only by construction: only ``resolve`` and ``stat``. The check can
+    never be what mutates the target.
+
+    Declared NON-CLAIM: a bind alias of the carrier location mounted somewhere
+    DEEP inside the target subtree is not detected. Complete closure requires
+    the carrier location to be guaranteed disjoint from the target -- a
+    decision belonging to the shared K primitive, not to this command.
     """
 
     carrier_root = runtime_carrier_root_v2()
     try:
-        resolved_target = target_root.resolve(strict=False)
         resolved_carrier = carrier_root.resolve(strict=False)
-    except (OSError, RuntimeError) as exc:
-        raise DoctorInputErrorV2(
-            DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2
-        ) from exc
-    if resolved_target == resolved_carrier:
+    except (OSError, RuntimeError):
+        # Carrier-side failure: nothing about the TARGET was established, and
+        # the epoch this command depends on cannot be reasoned about.
+        return DoctorUnknownV2(
+            reason_code=TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+            stage="carrier_overlap_precheck",
+            relation=_ROOT_RELATION_V2,
+        )
+    try:
+        resolved_target = target_root.resolve(strict=False)
+    except (OSError, RuntimeError):
+        # Target-side failure: leave it to acquisition, which owns the
+        # target-subject vocabulary and classified this before the refusal
+        # existed. Asserting an overlap here would assert what was never seen.
+        return None
+
+    overlapping_paths = resolved_target == resolved_carrier or any(
+        _is_contained_path_v2(inner, outer)
+        for outer, inner in (
+            (resolved_target, resolved_carrier),
+            (resolved_carrier, resolved_target),
+        )
+    )
+    if overlapping_paths:
         raise DoctorInputErrorV2(DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2)
-    for outer, inner in ((resolved_target, resolved_carrier), (resolved_carrier, resolved_target)):
-        try:
-            inner.relative_to(outer)
-        except ValueError:
-            continue
-        raise DoctorInputErrorV2(DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2)
+
+    target_identity = _object_identity_or_none_v2(resolved_target)
+    if target_identity is not None:
+        if target_identity in _self_and_ancestor_identities_v2(resolved_carrier):
+            raise DoctorInputErrorV2(
+                DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2
+            )
+    carrier_identity = _object_identity_or_none_v2(resolved_carrier)
+    if carrier_identity is not None:
+        if carrier_identity in _self_and_ancestor_identities_v2(resolved_target):
+            raise DoctorInputErrorV2(
+                DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2
+            )
+    return None
+
+
+def _is_contained_path_v2(inner: Path, outer: Path) -> bool:
+    try:
+        inner.relative_to(outer)
+    except ValueError:
+        return False
+    return True
 
 
 def _snapshot_environment_keys_v2() -> frozenset[str]:
@@ -1619,7 +1717,11 @@ def run_doctor_v2(
     caller_target_repo = str(target_repo)
     initial_root_subject = _classify_root_subject_before_epoch_v2(caller_target)
 
-    _refuse_target_root_overlapping_runtime_carrier_v2(caller_target)
+    carrier_overlap_unknown = _refuse_target_root_overlapping_runtime_carrier_v2(
+        caller_target
+    )
+    if carrier_overlap_unknown is not None:
+        return carrier_overlap_unknown
 
     try:
         lease = acquire_target_pack_epoch_v2(target_root=caller_target, exclusive=False)

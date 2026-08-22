@@ -49,7 +49,10 @@ from tests.agent_review.test_target_pack_doctor_v2 import (
     _assert_aiops_retarget_outside_root_is_unknown_not_unhealthy,
     _assert_aiops_root_self_completed,
     _assert_containment_negative_revalidation_v2,
+    _assert_bind_mount_alias_of_carrier_is_refused_v2,
     _assert_carrier_overlapping_target_root_is_input_error_v2,
+    _assert_stable_search_denial_is_completed_negative_v2,
+    _assert_unresolvable_target_root_is_not_reported_as_overlap_v2,
     _assert_content_read_memory_exhaustion_is_unknown_v2,
     _assert_lease_release_failure_is_report_zero_unknown_v2,
     _assert_duplicate_object_release_failure_is_unknown_v2,
@@ -1132,6 +1135,72 @@ def _m_lease_release_failure_escapes_typed_boundary(
     assert raised.value.errno == errno.EIO
 
 
+def _m_carrier_overlap_is_path_only(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Drop object identity from the overlap refusal (Codex round 7, E1).
+
+    Reduces the check to what `Path.resolve()` can express, which is exactly
+    what a bind mount defeats. Must die only in the real bind-mount RED.
+    """
+
+    monkeypatch.setattr(doctor, "_object_identity_or_none_v2", lambda _path: None)
+    with pytest.raises(BaseException) as raised:
+        _assert_bind_mount_alias_of_carrier_is_refused_v2(root)
+    assert not isinstance(raised.value, doctor.DoctorInputErrorV2)
+
+
+def _m_carrier_overlap_collapses_resolution_failure(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore the single collapsed catch (Codex round 7, E3).
+
+    Reporting the overlap reason for a target that merely failed to resolve
+    asserts a relation that was never established.
+    """
+
+    def _refuse_target_root_overlapping_runtime_carrier_v2(target_root: Path):
+        raise doctor.DoctorInputErrorV2(
+            doctor.DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2
+        )
+
+    monkeypatch.setattr(
+        doctor,
+        "_refuse_target_root_overlapping_runtime_carrier_v2",
+        _refuse_target_root_overlapping_runtime_carrier_v2,
+    )
+    with pytest.raises(doctor.DoctorInputErrorV2) as raised:
+        _assert_unresolvable_target_root_is_not_reported_as_overlap_v2(root)
+    assert raised.value.reason_code == (
+        doctor.DOCTOR_TARGET_ROOT_OVERLAPS_RUNTIME_CARRIER_REASON_V2
+    )
+
+
+def _m_stable_denial_recorded_as_missing(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Record a stable denial as `missing` again (Codex round 7, E2).
+
+    Final revalidation then demands the path still be MISSING, the traversal
+    denies again instead, and a documented completed negative is flipped into
+    stale/unknown.
+    """
+
+    real_lookup = doctor._DoctorObservationSessionV2._transient_current_lookup_v2
+
+    def _transient_current_lookup_v2(self: object, resolved_path: Path, *, relation: str):
+        kind, current = real_lookup(self, resolved_path, relation=relation)
+        return ("missing" if kind == "denied" else kind), current
+
+    monkeypatch.setattr(
+        doctor._DoctorObservationSessionV2,
+        "_transient_current_lookup_v2",
+        _transient_current_lookup_v2,
+    )
+    with pytest.raises(AssertionError):
+        _assert_stable_search_denial_is_completed_negative_v2(root, monkeypatch)
+
+
 _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     "M_UNKNOWN_AS_FALSE_REPORT": _m_unknown_as_false_report,
     "M_INVALID_ROOT_AS_UNKNOWN": _m_invalid_root_as_unknown,
@@ -1205,6 +1274,11 @@ _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     "M_LEASE_RELEASE_FAILURE_ESCAPES_TYPED_BOUNDARY": (
         _m_lease_release_failure_escapes_typed_boundary
     ),
+    "M_CARRIER_OVERLAP_IS_PATH_ONLY": _m_carrier_overlap_is_path_only,
+    "M_CARRIER_OVERLAP_COLLAPSES_RESOLUTION_FAILURE": (
+        _m_carrier_overlap_collapses_resolution_failure
+    ),
+    "M_STABLE_DENIAL_RECORDED_AS_MISSING": _m_stable_denial_recorded_as_missing,
 }
 
 

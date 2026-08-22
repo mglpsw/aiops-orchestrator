@@ -72,7 +72,14 @@
   owes an input error for). An operational failure while releasing the lease is
   report-zero `unknown` instead of replacing the pending decision with a raw
   traceback; programmer errno still raises, and an in-flight exception is never
-  masked by cleanup.
+  masked by cleanup. Overlap is decided from OBJECT IDENTITY as well as paths,
+  because `Path.resolve()` does not collapse bind mounts and a bind alias of
+  the carrier's parent otherwise passes every textual check while acquisition
+  still writes inside the target; target-side and carrier-side resolution
+  failures are classified separately so a target that merely fails to resolve
+  is never reported as an overlap that was not established. A stable search
+  denial is recorded as the denial it is, so a documented completed negative is
+  no longer flipped into stale/unknown by final revalidation.
   Completed
   CLI JSON is byte-shape compatible.
   `intended_behavior_change: true`.
