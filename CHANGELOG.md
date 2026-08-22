@@ -35,7 +35,16 @@
   after `open`, and makes the doctor caller own lease cleanup before fallible
   capability entry validation; operational entry failures remain report-zero
   `unknown`, while programmer failures still raise after releasing K and all
-  tracked descriptors. Completed CLI JSON is byte-shape compatible.
+  tracked descriptors. The later Ready-review hardening makes observation
+  cleanup total: every retained release is attempted and every registry is
+  cleared before an operational close failure becomes report-zero `unknown`
+  or a programmer errno is re-raised. All doctor-local target-object FDs,
+  including initial and final transient lookups, join the one raw-fork tracker
+  before fallible configuration and leave it on local release. The sole
+  provisional content open is nonblocking and validates the returned object's
+  type and identity before any read, so a raced FIFO/device/non-regular swap
+  becomes stale/unknown instead of retaining K-SH indefinitely. Completed CLI
+  JSON is byte-shape compatible.
   `intended_behavior_change: true`.
   The claim is target-read-only and cooperative within the same host/EUID/
   mount namespace and K object. External writers, undetectable ABA,

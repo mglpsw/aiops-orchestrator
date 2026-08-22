@@ -144,7 +144,19 @@ this implementation.
   profile bytes feed parsing, semantic hashing, and ledger hashing, while
   hardlink aliases retain independent path-specific conformance relations.
   Missing, non-regular, and unreadable observations are cached too. Every FD
-  remains non-inheritable and retained through final revalidation.
+  remains non-inheritable and retained through final revalidation. Initial,
+  content, and final-relookup FDs enter the same raw-fork tracker before any
+  fallible configuration; local release removes them from that tracker.
+- Cleanup is total across the session's owned observations: failure closing
+  one FD does not skip later release attempts or registry clearing. An
+  operational cleanup failure yields report-zero `unknown`; a programmer
+  errno is re-raised only after every release attempt. The lease remains the
+  exception-safety backstop until K is released.
+- The single provisional content open uses `O_NONBLOCK` and compares the
+  returned descriptor's file type and identity with the prior `O_PATH`
+  observation before reading. `O_NONBLOCK` is behavior-neutral for regular
+  files; a raced FIFO, device, directory, symlink, or different regular inode
+  is classified stale/unknown without a blocking read.
 - A sanctioned resolved object may be the target root itself. Directory roles
   reuse the already-held root object; regular-file roles observe that the root
   is non-regular and preserve the relation's existing completed-negative

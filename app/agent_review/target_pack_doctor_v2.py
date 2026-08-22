@@ -17,6 +17,7 @@ import errno
 import hashlib
 import os
 import stat
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal, NoReturn
@@ -350,7 +351,12 @@ class _DoctorObservationSessionV2:
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
-        self.close()
+        try:
+            self.close()
+        except _DoctorUnknownAbortV2:
+            if exc is not None:
+                return
+            raise
 
     def close(self) -> None:
         if self._closed:
@@ -360,11 +366,16 @@ class _DoctorObservationSessionV2:
             retained.fd
             for retained in (*self._directories.values(), *self._physical_objects.values())
         }
-        for fd in sorted(retained_fds, reverse=True):
-            self._root_binding.release_observation_fd_v2(fd)
-        self._directories.clear()
-        self._physical_objects.clear()
-        self._resolved_observations.clear()
+        try:
+            self._release_observation_fds_v2(
+                sorted(retained_fds, reverse=True),
+                stage="observation_session_cleanup",
+                relation=_ROOT_RELATION_V2,
+            )
+        finally:
+            self._directories.clear()
+            self._physical_objects.clear()
+            self._resolved_observations.clear()
 
     def _resolve_initial_v2(
         self,
@@ -436,6 +447,71 @@ class _DoctorObservationSessionV2:
                 relation=relation,
                 exc=exc,
             )
+
+    def _register_fd_v2(
+        self,
+        *,
+        fd: int,
+        relation: str,
+    ) -> None:
+        try:
+            self._root_binding.register_observation_fd_v2(fd)
+        except TargetPackEpochError as exc:
+            raise _DoctorUnknownAbortV2(
+                DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage="register_observation_fd",
+                relation=relation,
+            ) from exc
+        except OSError as exc:
+            _raise_binding_primitive_oserror_v2(
+                stage="register_observation_fd",
+                relation=relation,
+                exc=exc,
+            )
+
+    def _release_observation_fds_v2(
+        self,
+        fds: Iterable[int],
+        *,
+        stage: str,
+        relation: str,
+    ) -> None:
+        close_errors: list[OSError] = []
+        for fd in tuple(fds):
+            try:
+                self._root_binding.release_observation_fd_v2(int(fd))
+            except OSError as exc:
+                close_errors.append(exc)
+        if not close_errors:
+            return
+        programmer_error = next(
+            (
+                exc
+                for exc in close_errors
+                if exc.errno in _PROGRAMMER_ERRNOS_V2 or exc.errno is None
+            ),
+            None,
+        )
+        if programmer_error is not None:
+            raise programmer_error
+        raise _DoctorUnknownAbortV2(
+            DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+            stage=stage,
+            relation=relation,
+        ) from close_errors[0]
+
+    def _release_observation_fd_v2(
+        self,
+        fd: int,
+        *,
+        stage: str,
+        relation: str,
+    ) -> None:
+        self._release_observation_fds_v2(
+            (fd,),
+            stage=stage,
+            relation=relation,
+        )
 
     def _root_fd_v2(self, *, stage: str, relation: str) -> int:
         try:
@@ -543,6 +619,7 @@ class _DoctorObservationSessionV2:
                     os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
                     dir_fd=parent_fd,
                 )
+                self._register_fd_v2(fd=candidate_fd, relation=relation)
             except OSError as exc:
                 self._diagnose_component_open_error_v2(
                     parent_fd=parent_fd,
@@ -582,7 +659,11 @@ class _DoctorObservationSessionV2:
                 parent_fd = retained.fd
             finally:
                 if candidate_fd >= 0:
-                    os.close(candidate_fd)
+                    self._release_observation_fd_v2(
+                        candidate_fd,
+                        stage="object_binding",
+                        relation=relation,
+                    )
         return parent_fd
 
     def _open_leaf_path_fd_v2(
@@ -600,6 +681,7 @@ class _DoctorObservationSessionV2:
                 os.O_PATH | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
                 dir_fd=parent_fd,
             )
+            self._register_fd_v2(fd=fd, relation=relation)
         except OSError as exc:
             _raise_classified_observation_oserror_v2(
                 stage="object_binding",
@@ -621,7 +703,11 @@ class _DoctorObservationSessionV2:
                 )
             return fd, observed
         except BaseException:
-            os.close(fd)
+            self._release_observation_fd_v2(
+                fd,
+                stage="object_binding",
+                relation=relation,
+            )
             raise
 
     def observe_directory_v2(self, *, logical_path: Path, relation: str) -> None:
@@ -674,7 +760,11 @@ class _DoctorObservationSessionV2:
                     relation=relation,
                 )
             except BaseException:
-                os.close(leaf_fd)
+                self._release_observation_fd_v2(
+                    leaf_fd,
+                    stage="object_binding",
+                    relation=relation,
+                )
                 raise
             retained = _RetainedObjectV2(
                 fd=leaf_fd,
@@ -699,7 +789,11 @@ class _DoctorObservationSessionV2:
                     relation=relation,
                 )
             except BaseException:
-                os.close(leaf_fd)
+                self._release_observation_fd_v2(
+                    leaf_fd,
+                    stage="object_binding",
+                    relation=relation,
+                )
                 raise
             existing = _RetainedObjectV2(
                 fd=leaf_fd,
@@ -708,7 +802,11 @@ class _DoctorObservationSessionV2:
             )
             self._directories[resolved] = existing
         else:
-            os.close(leaf_fd)
+            self._release_observation_fd_v2(
+                leaf_fd,
+                stage="object_binding",
+                relation=relation,
+            )
             if existing.identity != _object_identity_v2(observed):
                 raise _DoctorUnknownAbortV2(
                     DOCTOR_OBSERVATION_STALE_REASON_V2,
@@ -800,7 +898,11 @@ class _DoctorObservationSessionV2:
                     relation=relation,
                 )
             except BaseException:
-                os.close(path_fd)
+                self._release_observation_fd_v2(
+                    path_fd,
+                    stage="object_binding",
+                    relation=relation,
+                )
                 raise
             retained = _RetainedObjectV2(
                 fd=path_fd,
@@ -821,9 +923,13 @@ class _DoctorObservationSessionV2:
         try:
             data_fd = os.open(
                 resolved.name,
-                os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                os.O_RDONLY
+                | os.O_NONBLOCK
+                | os.O_NOFOLLOW
+                | getattr(os, "O_CLOEXEC", 0),
                 dir_fd=parent_fd,
             )
+            self._register_fd_v2(fd=data_fd, relation=relation)
         except OSError as exc:
             if exc.errno in _STABLE_UNREADABLE_ERRNOS_V2:
                 try:
@@ -832,7 +938,11 @@ class _DoctorObservationSessionV2:
                         relation=relation,
                     )
                 except BaseException:
-                    os.close(path_fd)
+                    self._release_observation_fd_v2(
+                        path_fd,
+                        stage="object_binding",
+                        relation=relation,
+                    )
                     raise
                 retained_unreadable = _RetainedObjectV2(
                     fd=path_fd,
@@ -857,7 +967,11 @@ class _DoctorObservationSessionV2:
                     )
                 )
                 raise _DoctorCompletedNegativeV2(unreadable_reason) from exc
-            os.close(path_fd)
+            self._release_observation_fd_v2(
+                path_fd,
+                stage="object_binding",
+                relation=relation,
+            )
             if exc.errno in _PROGRAMMER_ERRNOS_V2 or exc.errno is None:
                 raise
             if exc.errno in _RESOURCE_UNAVAILABLE_ERRNOS_V2:
@@ -883,10 +997,17 @@ class _DoctorObservationSessionV2:
                     relation=relation,
                 )
         except BaseException:
-            os.close(path_fd)
-            os.close(data_fd)
+            self._release_observation_fds_v2(
+                (path_fd, data_fd),
+                stage="object_binding",
+                relation=relation,
+            )
             raise
-        os.close(path_fd)
+        self._release_observation_fd_v2(
+            path_fd,
+            stage="object_binding",
+            relation=relation,
+        )
 
         physical_identity = _object_identity_v2(data_stat)
         retained = self._physical_objects.get(physical_identity)
@@ -897,7 +1018,11 @@ class _DoctorObservationSessionV2:
                     relation=relation,
                 )
             except BaseException:
-                os.close(data_fd)
+                self._release_observation_fd_v2(
+                    data_fd,
+                    stage="object_binding",
+                    relation=relation,
+                )
                 raise
             retained = _RetainedObjectV2(
                 fd=data_fd,
@@ -906,7 +1031,11 @@ class _DoctorObservationSessionV2:
             )
             self._physical_objects[physical_identity] = retained
         else:
-            os.close(data_fd)
+            self._release_observation_fd_v2(
+                data_fd,
+                stage="object_binding",
+                relation=relation,
+            )
             if retained.metadata != _metadata_identity_v2(data_stat):
                 raise _DoctorUnknownAbortV2(
                     DOCTOR_OBSERVATION_STALE_REASON_V2,
@@ -1014,6 +1143,7 @@ class _DoctorObservationSessionV2:
                     dir_fd=parent_fd,
                 )
                 opened.append(fd)
+                self._register_fd_v2(fd=fd, relation=relation)
                 os.set_inheritable(fd, False)
                 parent_fd = fd
             leaf_fd = os.open(
@@ -1022,6 +1152,7 @@ class _DoctorObservationSessionV2:
                 dir_fd=parent_fd,
             )
             opened.append(leaf_fd)
+            self._register_fd_v2(fd=leaf_fd, relation=relation)
             os.set_inheritable(leaf_fd, False)
             observed = os.fstat(leaf_fd)
             if stat.S_ISLNK(observed.st_mode):
@@ -1032,8 +1163,11 @@ class _DoctorObservationSessionV2:
                 return ("missing", None)
             raise
         finally:
-            for fd in reversed(opened):
-                os.close(fd)
+            self._release_observation_fds_v2(
+                reversed(opened),
+                stage="final_revalidation",
+                relation=relation,
+            )
 
     def _revalidate_root_v2(self) -> None:
         try:
@@ -1048,11 +1182,16 @@ class _DoctorObservationSessionV2:
                 self.target_root_real,
                 os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
             )
+            self._register_fd_v2(fd=current_fd, relation=_ROOT_RELATION_V2)
             try:
                 os.set_inheritable(current_fd, False)
                 current = os.fstat(current_fd)
             finally:
-                os.close(current_fd)
+                self._release_observation_fd_v2(
+                    current_fd,
+                    stage="final_revalidation",
+                    relation=_ROOT_RELATION_V2,
+                )
             held_identity = self._root_binding.object_identity
         except _DoctorUnknownAbortV2:
             raise

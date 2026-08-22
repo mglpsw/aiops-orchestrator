@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -168,7 +169,448 @@ def _completed_report(outcome: object):
 
 
 def _live_process_fds_v2() -> set[int]:
-    return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
+    live: set[int] = set()
+    for name in os.listdir("/proc/self/fd"):
+        if not name.isdigit():
+            continue
+        fd = int(name)
+        try:
+            os.fstat(fd)
+        except OSError as exc:
+            if exc.errno == errno.EBADF:
+                continue
+            raise
+        live.add(fd)
+    return live
+
+
+def _materialize_healthy_target_v2(target_root: Path) -> None:
+    aiops = target_root / ".aiops"
+    aiops.mkdir(parents=True, exist_ok=True)
+    profile = aiops / "target-profile.v2.yaml"
+    profile.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+    receipt = _receipt(
+        manifest_digest=compute_target_pack_manifest_digest_v2(_manifest()),
+        target_owned_paths=(".aiops/target-profile.v2.yaml",),
+        target_owned_file_hashes={
+            ".aiops/target-profile.v2.yaml": _sha256(profile.read_bytes())
+        },
+    )
+    (aiops / "install-receipt.v2.json").write_text(
+        json.dumps(receipt.model_dump(mode="json")), encoding="utf-8"
+    )
+
+
+def _assert_session_cleanup_totality_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    position: str,
+    close_errno: int = errno.EIO,
+    original_unknown: bool = False,
+    iterations: int = 3,
+) -> None:
+    """Exercise the real retained-FD release primitive and aggregate failures."""
+
+    import app.agent_review.target_pack_epoch_v2 as epoch_module
+
+    _materialize_healthy_target_v2(target_root)
+    real_init = doctor_module._DoctorObservationSessionV2.__init__
+    real_release = epoch_module.TargetPackTargetBindingV2.release_observation_fd_v2
+    real_close = os.close
+    records: list[dict[str, object]] = []
+    active_failure: list[tuple[int, dict[str, object]] | None] = [None]
+
+    def capture_init(self: object, *args: object, **kwargs: object) -> None:
+        real_init(self, *args, **kwargs)
+        records.append(
+            {
+                "session": self,
+                "attempts": [],
+                "ordered": (),
+                "injected": False,
+            }
+        )
+
+    def record_for_binding(binding: object) -> dict[str, object]:
+        return next(
+            record
+            for record in reversed(records)
+            if getattr(record["session"], "_root_binding") is binding
+        )
+
+    def fail_selected_close(fd: int) -> None:
+        selected = active_failure[0]
+        if selected is not None and selected[0] == fd and not bool(selected[1]["injected"]):
+            selected[1]["injected"] = True
+            raise OSError(close_errno, f"injected cleanup failure at {position}")
+        real_close(fd)
+
+    def counted_release(self: object, fd: int) -> None:
+        record = record_for_binding(self)
+        session = record["session"]
+        if not bool(getattr(session, "_closed")):
+            real_release(self, fd)
+            return
+        ordered = record["ordered"]
+        if not ordered:
+            ordered = tuple(
+                sorted(
+                    {
+                        retained.fd
+                        for retained in (
+                            *getattr(session, "_directories").values(),
+                            *getattr(session, "_physical_objects").values(),
+                        )
+                    },
+                    reverse=True,
+                )
+            )
+            record["ordered"] = ordered
+        attempts = record["attempts"]
+        assert isinstance(attempts, list)
+        attempt_index = len(attempts)
+        attempts.append(fd)
+        selected_index = {
+            "first": 0,
+            "middle": len(ordered) // 2,
+            "last": len(ordered) - 1,
+        }[position]
+        if attempt_index == selected_index:
+            active_failure[0] = (fd, record)
+        try:
+            real_release(self, fd)
+        finally:
+            active_failure[0] = None
+
+    monkeypatch.setattr(
+        doctor_module._DoctorObservationSessionV2, "__init__", capture_init
+    )
+    monkeypatch.setattr(
+        epoch_module.TargetPackTargetBindingV2,
+        "release_observation_fd_v2",
+        counted_release,
+    )
+    monkeypatch.setattr(os, "close", fail_selected_close)
+
+    if original_unknown:
+        def abort_after_evidence(_self: object) -> None:
+            raise doctor_module._DoctorUnknownAbortV2(
+                doctor_module.DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage="injected_original_unknown",
+                relation="profile",
+            )
+
+        monkeypatch.setattr(
+            doctor_module._DoctorObservationSessionV2,
+            "revalidate_v2",
+            abort_after_evidence,
+        )
+
+    baseline_fds = _live_process_fds_v2()
+    baseline_tracker = set(epoch_module._LIVE_EPOCH_FDS_V2)
+    violations: list[str] = []
+    for iteration in range(iterations):
+        outcome: object | None = None
+        escaped: BaseException | None = None
+        try:
+            outcome = run_doctor_v2(
+                target_root=target_root,
+                manifest=_manifest(),
+                target_repo="owner/repo",
+            )
+        except BaseException as exc:  # measured programmer/raw cleanup outcome
+            escaped = exc
+
+        record = records[iteration]
+        ordered = tuple(record["ordered"])
+        attempts = tuple(record["attempts"])
+        if len(ordered) < 2:
+            violations.append(f"retained-corpus[{iteration}]={len(ordered)}")
+        if attempts != ordered:
+            violations.append(
+                f"cleanup-attempt-count[{iteration}]={len(attempts)}/{len(ordered)}"
+            )
+        if not bool(record["injected"]):
+            violations.append(f"injection-not-fired[{iteration}]")
+
+        session = record["session"]
+        if any(
+            getattr(session, name)
+            for name in (
+                "_directories",
+                "_physical_objects",
+                "_resolved_observations",
+            )
+        ):
+            violations.append(f"registry-clear-skipped[{iteration}]")
+
+        if close_errno == errno.EBADF:
+            if not isinstance(escaped, OSError) or escaped.errno != errno.EBADF:
+                violations.append(
+                    f"programmer-taxonomy[{iteration}]={type(escaped).__name__}"
+                )
+        elif original_unknown:
+            if not (
+                isinstance(outcome, DoctorUnknownV2)
+                and outcome.reason_code
+                == doctor_module.DOCTOR_OBSERVATION_STALE_REASON_V2
+                and outcome.stage == "injected_original_unknown"
+                and outcome.relation == "profile"
+                and escaped is None
+            ):
+                violations.append(
+                    f"outcome-taxonomy[{iteration}]={type(outcome).__name__}/"
+                    f"{type(escaped).__name__}"
+                )
+        elif not (
+            isinstance(outcome, DoctorUnknownV2)
+            and outcome.reason_code
+            == doctor_module.DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2
+            and outcome.stage == "observation_session_cleanup"
+            and outcome.relation == "target_root"
+            and escaped is None
+        ):
+            violations.append(
+                f"outcome-taxonomy[{iteration}]={type(outcome).__name__}/"
+                f"{type(escaped).__name__}"
+            )
+
+        for fd in ordered:
+            try:
+                os.fstat(fd)
+            except OSError as exc:
+                if exc.errno != errno.EBADF:
+                    raise
+            else:
+                violations.append(f"retained-fd-open[{iteration}]={fd}")
+        if _live_process_fds_v2() != baseline_fds:
+            violations.append(f"proc-fd-set-drift[{iteration}]")
+        if set(epoch_module._LIVE_EPOCH_FDS_V2) != baseline_tracker:
+            violations.append(f"fork-tracker-drift[{iteration}]")
+        try:
+            with acquire_target_pack_epoch_v2(
+                target_root=target_root, exclusive=True
+            ):
+                pass
+        except TargetPackEpochError as exc:
+            violations.append(f"writer-not-admitted[{iteration}]={exc.reason_code}")
+
+    assert not violations, " | ".join(violations)
+
+
+def _assert_transient_relookup_raw_fork_tracking_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    seam: str,
+    exec_after_fork: bool = False,
+    iterations: int = 3,
+) -> None:
+    """Fork while the real intermediate/leaf transient descriptor is live."""
+
+    import app.agent_review.target_pack_epoch_v2 as epoch_module
+
+    _materialize_healthy_target_v2(target_root)
+    aiops = (target_root / ".aiops").resolve()
+    profile = (aiops / "target-profile.v2.yaml").resolve()
+    selected_path = aiops if seam == "intermediate" else profile
+    real_lookup = doctor_module._DoctorObservationSessionV2._transient_current_lookup_v2
+    real_set_inheritable = os.set_inheritable
+    active_lookup: list[Path] = []
+    child_states: list[str] = []
+    injected = 0
+    armed = False
+
+    def tracked_lookup(
+        self: doctor_module._DoctorObservationSessionV2,
+        resolved_path: Path,
+        *,
+        relation: str,
+    ) -> tuple[str, os.stat_result | None]:
+        active_lookup.append(resolved_path)
+        try:
+            return real_lookup(self, resolved_path, relation=relation)
+        finally:
+            active_lookup.pop()
+
+    def fork_while_live(fd: int, inheritable: bool) -> None:
+        nonlocal armed, injected
+        opened_path: Path | None = None
+        if active_lookup and active_lookup[-1] == profile:
+            try:
+                opened_path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:
+                pass
+        if armed and opened_path == selected_path:
+            armed = False
+            injected += 1
+            read_fd, write_fd = os.pipe()
+            if exec_after_fork:
+                real_set_inheritable(write_fd, True)
+            pid = os.fork()
+            if pid == 0:
+                os.close(read_fd)
+                if exec_after_fork:
+                    child_code = (
+                        "import errno, os, sys; "
+                        "fd=int(sys.argv[1]); out=int(sys.argv[2]); "
+                        "result=b'OPEN'; "
+                        "\ntry: os.fstat(fd)"
+                        "\nexcept OSError as exc: result=f'ERRNO:{exc.errno}'.encode()"
+                        "\nos.write(out,result); os.close(out)"
+                    )
+                    os.execv(
+                        sys.executable,
+                        [sys.executable, "-c", child_code, str(fd), str(write_fd)],
+                    )
+                try:
+                    os.fstat(fd)
+                except OSError as exc:
+                    result = f"ERRNO:{exc.errno}".encode()
+                else:
+                    result = b"OPEN"
+                os.write(write_fd, result)
+                os.close(write_fd)
+                os._exit(0)
+            os.close(write_fd)
+            child_states.append(os.read(read_fd, 64).decode())
+            os.close(read_fd)
+            os.waitpid(pid, 0)
+        real_set_inheritable(fd, inheritable)
+
+    monkeypatch.setattr(
+        doctor_module._DoctorObservationSessionV2,
+        "_transient_current_lookup_v2",
+        tracked_lookup,
+    )
+    monkeypatch.setattr(os, "set_inheritable", fork_while_live)
+    baseline_tracker = set(epoch_module._LIVE_EPOCH_FDS_V2)
+    for _ in range(iterations):
+        armed = True
+        outcome = run_doctor_v2(
+            target_root=target_root,
+            manifest=_manifest(),
+            target_repo="owner/repo",
+        )
+        assert isinstance(outcome, DoctorDecisionV2)
+        assert set(epoch_module._LIVE_EPOCH_FDS_V2) == baseline_tracker
+    assert injected == iterations
+    assert child_states == [f"ERRNO:{errno.EBADF}"] * iterations, child_states
+
+
+def _assert_provisional_content_open_is_bounded_v2(
+    target_root: Path,
+    *,
+    strip_nonblock: bool = False,
+    deadline_seconds: float = 3.0,
+) -> None:
+    """Bound a real FIFO race and require K to become available again."""
+
+    _materialize_healthy_target_v2(target_root)
+    child_code = r'''
+import os
+import stat
+import sys
+from pathlib import Path
+import app.agent_review.target_pack_doctor_v2 as doctor
+from tests.agent_review.test_target_pack_doctor_v2 import _manifest
+
+root = Path(sys.argv[1])
+strip_nonblock = sys.argv[2] == "1"
+profile = root / ".aiops" / "target-profile.v2.yaml"
+real_open = os.open
+if strip_nonblock:
+    def vulnerable_open(path, flags, *args, **kwargs):
+        if os.fspath(path) == profile.name and flags & getattr(os, "O_NONBLOCK", 0):
+            flags &= ~os.O_NONBLOCK
+        return real_open(path, flags, *args, **kwargs)
+    os.open = vulnerable_open
+
+real_leaf = doctor._DoctorObservationSessionV2._open_leaf_path_fd_v2
+armed = True
+def swap_after_path_observation(self, **kwargs):
+    global armed
+    result = real_leaf(self, **kwargs)
+    if armed and kwargs["resolved_path"] == profile.resolve() and stat.S_ISREG(result[1].st_mode):
+        armed = False
+        os.unlink(profile)
+        os.mkfifo(profile)
+        print("SWAPPED", flush=True)
+    return result
+
+doctor._DoctorObservationSessionV2._open_leaf_path_fd_v2 = swap_after_path_observation
+real_read = os.read
+def forbid_fifo_content_read(fd, size):
+    observed = os.fstat(fd)
+    if stat.S_ISFIFO(observed.st_mode):
+        raise RuntimeError("fifo content was read before type discrimination")
+    return real_read(fd, size)
+os.read = forbid_fifo_content_read
+
+try:
+    outcome = doctor.run_doctor_v2(target_root=root, manifest=_manifest(), target_repo="owner/repo")
+    print(
+        "OUTCOME:"
+        + type(outcome).__name__
+        + ":"
+        + str(getattr(outcome, "reason_code", ""))
+        + ":"
+        + str(getattr(outcome, "stage", ""))
+        + ":"
+        + str(getattr(outcome, "relation", "")),
+        flush=True,
+    )
+except BaseException as exc:
+    print("EXCEPTION:" + type(exc).__name__ + ":" + str(exc), flush=True)
+    raise
+'''
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            child_code,
+            str(target_root),
+            "1" if strip_nonblock else "0",
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    swapped = process.stdout.readline().strip()
+    assert swapped == "SWAPPED"
+
+    admitted = False
+    deadline = time.monotonic() + deadline_seconds
+    while time.monotonic() < deadline:
+        try:
+            with acquire_target_pack_epoch_v2(
+                target_root=target_root, exclusive=True
+            ):
+                admitted = True
+            break
+        except TargetPackEpochError as exc:
+            assert exc.reason_code == TARGET_PACK_EPOCH_BUSY_REASON_V2
+            time.sleep(0.02)
+
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1)
+    stdout_tail, stderr = process.communicate(timeout=1)
+    output = "\n".join(part for part in (swapped, stdout_tail.strip()) if part)
+    with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
+        pass
+    assert admitted, f"doctor retained K beyond deadline; output={output!r} stderr={stderr!r}"
+    assert (
+        "OUTCOME:DoctorUnknownV2:target_pack_doctor_observation_stale:"
+        "object_binding:profile"
+    ) in output, output
 
 
 def _assert_transient_relookup_setup_failure_has_no_fd_leak_v2(
@@ -2548,3 +2990,211 @@ def test_raw_fork_child_does_not_prolong_doctor_fds_or_k(
     finally:
         os.kill(child_pid[0], signal.SIGTERM)
         os.waitpid(child_pid[0], 0)
+
+
+@pytest.mark.parametrize("position", ["first", "middle", "last"])
+def test_session_cleanup_attempts_every_retained_fd_and_returns_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, position: str
+) -> None:
+    _assert_session_cleanup_totality_v2(
+        tmp_path,
+        monkeypatch,
+        position=position,
+    )
+
+
+def test_session_cleanup_preserves_original_unknown_after_attempting_every_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_session_cleanup_totality_v2(
+        tmp_path,
+        monkeypatch,
+        position="first",
+        original_unknown=True,
+    )
+
+
+def test_session_cleanup_programmer_errno_raises_only_after_total_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_session_cleanup_totality_v2(
+        tmp_path,
+        monkeypatch,
+        position="middle",
+        close_errno=errno.EBADF,
+    )
+
+
+@pytest.mark.parametrize("seam", ["intermediate", "leaf"])
+def test_transient_final_relookup_fds_are_closed_in_raw_fork_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seam: str
+) -> None:
+    _assert_transient_relookup_raw_fork_tracking_v2(
+        tmp_path,
+        monkeypatch,
+        seam=seam,
+    )
+
+
+def test_transient_final_relookup_fd_remains_closed_after_fork_exec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_transient_relookup_raw_fork_tracking_v2(
+        tmp_path,
+        monkeypatch,
+        seam="leaf",
+        exec_after_fork=True,
+        iterations=1,
+    )
+
+
+def test_every_target_object_fd_is_fork_tracked_before_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.agent_review.target_pack_epoch_v2 as epoch_module
+
+    _materialize_healthy_target_v2(tmp_path)
+    real_set_inheritable = os.set_inheritable
+    observed_target_fds = 0
+
+    def require_tracker_ownership(fd: int, inheritable: bool) -> None:
+        nonlocal observed_target_fds
+        try:
+            opened_path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            opened_path = None
+        if opened_path is not None and (
+            opened_path == tmp_path.resolve()
+            or tmp_path.resolve() in opened_path.parents
+        ):
+            observed_target_fds += 1
+            assert fd in epoch_module._LIVE_EPOCH_FDS_V2
+        real_set_inheritable(fd, inheritable)
+
+    monkeypatch.setattr(os, "set_inheritable", require_tracker_ownership)
+    outcome = run_doctor_v2(
+        target_root=tmp_path,
+        manifest=_manifest(),
+        target_repo="owner/repo",
+    )
+    assert isinstance(outcome, DoctorDecisionV2)
+    assert observed_target_fds >= 6
+
+
+def test_fifo_type_swap_returns_stale_and_releases_k_within_deadline(
+    tmp_path: Path,
+) -> None:
+    _assert_provisional_content_open_is_bounded_v2(tmp_path)
+
+
+def test_nonblocking_regular_file_open_is_byte_semantics_neutral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _materialize_healthy_target_v2(tmp_path)
+    expected = run_doctor_v2(
+        target_root=tmp_path,
+        manifest=_manifest(),
+        target_repo="owner/repo",
+    )
+    assert isinstance(expected, DoctorDecisionV2)
+    assert expected.report.is_healthy
+
+    real_open = os.open
+    observed_content_flags: list[int] = []
+
+    def without_nonblock(
+        path: object, flags: int, *args: object, **kwargs: object
+    ) -> int:
+        if (
+            os.fspath(path)
+            in {"target-profile.v2.yaml", "install-receipt.v2.json"}
+            and not flags & getattr(os, "O_PATH", 0)
+        ):
+            observed_content_flags.append(flags)
+            flags &= ~getattr(os, "O_NONBLOCK", 0)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", without_nonblock)
+    control = run_doctor_v2(
+        target_root=tmp_path,
+        manifest=_manifest(),
+        target_repo="owner/repo",
+    )
+    assert control == expected
+    assert observed_content_flags
+    assert all(flags & os.O_NONBLOCK for flags in observed_content_flags)
+
+
+@pytest.mark.parametrize(
+    ("replacement", "expected_stage"),
+    [
+        ("directory", "object_binding"),
+        ("symlink", "content_open"),
+        ("regular", "object_binding"),
+        ("device", "object_binding"),
+    ],
+)
+def test_raced_content_object_type_or_identity_is_stale_before_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+    expected_stage: str,
+) -> None:
+    _materialize_healthy_target_v2(tmp_path)
+    profile = tmp_path / ".aiops" / "target-profile.v2.yaml"
+    receipt = tmp_path / ".aiops" / "install-receipt.v2.json"
+    real_leaf = doctor_module._DoctorObservationSessionV2._open_leaf_path_fd_v2
+    real_open = os.open
+    real_read = os.read
+    armed = True
+    reads = 0
+
+    def swap_after_path_observation(self: object, **kwargs: object):
+        nonlocal armed
+        result = real_leaf(self, **kwargs)
+        if armed and kwargs["resolved_path"] == profile.resolve():
+            armed = False
+            if replacement != "device":
+                profile.unlink()
+            if replacement == "directory":
+                profile.mkdir()
+            elif replacement == "symlink":
+                profile.symlink_to(receipt.name)
+            elif replacement == "regular":
+                profile.write_text("replacement generation", encoding="utf-8")
+        return result
+
+    def device_content_open(
+        path: object, flags: int, *args: object, **kwargs: object
+    ) -> int:
+        if (
+            replacement == "device"
+            and os.fspath(path) == profile.name
+            and not flags & getattr(os, "O_PATH", 0)
+        ):
+            return real_open("/dev/null", flags)
+        return real_open(path, flags, *args, **kwargs)
+
+    def counted_read(fd: int, size: int) -> bytes:
+        nonlocal reads
+        reads += 1
+        return real_read(fd, size)
+
+    monkeypatch.setattr(
+        doctor_module._DoctorObservationSessionV2,
+        "_open_leaf_path_fd_v2",
+        swap_after_path_observation,
+    )
+    monkeypatch.setattr(os, "open", device_content_open)
+    monkeypatch.setattr(os, "read", counted_read)
+    outcome = run_doctor_v2(
+        target_root=tmp_path,
+        manifest=_manifest(),
+        target_repo="owner/repo",
+    )
+    assert armed is False
+    assert isinstance(outcome, DoctorUnknownV2)
+    assert outcome.reason_code == doctor_module.DOCTOR_OBSERVATION_STALE_REASON_V2
+    assert outcome.stage == expected_stage
+    assert outcome.relation == "profile"
+    assert reads == 0

@@ -60,7 +60,14 @@ _FORBIDDEN_ATTR_CALLS_V2 = frozenset(
 _FORBIDDEN_MODULE_CALLS_V2 = frozenset({"remove", "mkdir", "makedirs", "rename", "replace", "unlink"})
 _ALLOWED_OPEN_MODES_V2 = frozenset({"r", "rb"})
 _ALLOWED_OBSERVATION_OS_OPEN_FLAGS_V2 = frozenset(
-    {"O_RDONLY", "O_PATH", "O_DIRECTORY", "O_NOFOLLOW", "O_CLOEXEC"}
+    {
+        "O_RDONLY",
+        "O_PATH",
+        "O_DIRECTORY",
+        "O_NOFOLLOW",
+        "O_CLOEXEC",
+        "O_NONBLOCK",
+    }
 )
 
 
@@ -166,6 +173,46 @@ def test_read_only_modules_call_no_filesystem_mutating_primitive() -> None:
             f"non-statically-provable read-only mode), violating its own 'READ-ONLY BY "
             f"CONSTRUCTION' docstring guarantee: {offenders}"
         )
+
+
+def test_doctor_has_one_non_path_content_open_and_it_is_provisionally_nonblocking() -> None:
+    """A raced leaf type is discriminated before any potentially blocking read."""
+
+    tree = _parse(DOCTOR_MODULE_PATH)
+    owners: dict[int, str] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for line in range(function.lineno, (function.end_lineno or function.lineno) + 1):
+                owners[line] = function.name
+
+    content_opens: list[tuple[str, set[str]]] = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "os"
+            and node.func.attr == "open"
+            and len(node.args) >= 2
+        ):
+            continue
+        names = {
+            part.attr
+            for part in ast.walk(node.args[1])
+            if isinstance(part, ast.Attribute)
+            and isinstance(part.value, ast.Name)
+            and part.value.id == "os"
+            and part.attr.startswith("O_")
+        }
+        if "O_PATH" not in names:
+            content_opens.append((owners.get(node.lineno, "<module>"), names))
+
+    assert content_opens == [
+        (
+            "_observe_regular_v2",
+            {"O_RDONLY", "O_NOFOLLOW", "O_NONBLOCK"},
+        )
+    ]
 
 
 def test_read_only_entry_points_have_no_mutating_parameter() -> None:
@@ -388,6 +435,9 @@ _DOCTOR_REACHABLE_LOCAL_FUNCTIONS_V2 = frozenset(
         "_resolve_initial_v2",
         "_prepare_fd_v2",
         "_retain_fd_v2",
+        "_register_fd_v2",
+        "_release_observation_fds_v2",
+        "_release_observation_fd_v2",
         "_root_fd_v2",
         "_is_root_self_v2",
         "_root_self_stat_v2",

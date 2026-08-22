@@ -51,8 +51,12 @@ from tests.agent_review.test_target_pack_doctor_v2 import (
     _assert_operational_lease_entry_failure_is_released_v2,
     _assert_path_object_type_drift_is_unknown,
     _assert_profile_completed_negative_status_is_explicit,
+    _assert_provisional_content_open_is_bounded_v2,
+    _assert_session_cleanup_totality_v2,
+    _assert_transient_relookup_raw_fork_tracking_v2,
     _assert_transient_relookup_setup_failure_has_no_fd_leak_v2,
     _manifest,
+    _materialize_healthy_target_v2,
     _receipt,
     _sha256,
 )
@@ -763,6 +767,130 @@ def _m_lease_entry_failure_without_explicit_release(
     assert raised.value.errno == errno.EIO
 
 
+def _m_session_cleanup_aborts_on_first_close_failure(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def vulnerable_close(self: doctor._DoctorObservationSessionV2) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        retained_fds = {
+            retained.fd
+            for retained in (*self._directories.values(), *self._physical_objects.values())
+        }
+        for fd in sorted(retained_fds, reverse=True):
+            self._root_binding.release_observation_fd_v2(fd)
+        self._directories.clear()
+        self._physical_objects.clear()
+        self._resolved_observations.clear()
+
+    monkeypatch.setattr(
+        doctor._DoctorObservationSessionV2,
+        "close",
+        vulnerable_close,
+    )
+    with pytest.raises(AssertionError) as raised:
+        _assert_session_cleanup_totality_v2(
+            root,
+            monkeypatch,
+            position="first",
+            iterations=1,
+        )
+    message = str(raised.value)
+    assert "cleanup-attempt-count" in message
+    assert "outcome-taxonomy" in message
+
+
+def _m_transient_relookup_fd_not_fork_tracked(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def vulnerable_lookup(
+        self: doctor._DoctorObservationSessionV2,
+        resolved_path: Path,
+        *,
+        relation: str,
+    ) -> tuple[str, os.stat_result | None]:
+        if self._is_root_self_v2(resolved_path):
+            return (
+                "present",
+                self._root_self_stat_v2(
+                    stage="final_revalidation", relation=relation
+                ),
+            )
+        relative = resolved_path.relative_to(self.target_root_real)
+        parent_fd = self._root_fd_v2(
+            stage="final_revalidation", relation=relation
+        )
+        opened: list[int] = []
+        try:
+            for component in relative.parts[:-1]:
+                fd = os.open(
+                    component,
+                    os.O_PATH
+                    | os.O_DIRECTORY
+                    | os.O_NOFOLLOW
+                    | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=parent_fd,
+                )
+                opened.append(fd)
+                os.set_inheritable(fd, False)
+                parent_fd = fd
+            leaf_fd = os.open(
+                relative.parts[-1],
+                os.O_PATH | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_fd,
+            )
+            opened.append(leaf_fd)
+            os.set_inheritable(leaf_fd, False)
+            observed = os.fstat(leaf_fd)
+            if stat.S_ISLNK(observed.st_mode):
+                raise OSError(errno.ELOOP, os.strerror(errno.ELOOP))
+            return ("present", observed)
+        except OSError as exc:
+            if exc.errno in doctor._STABLE_MISSING_ERRNOS_V2:
+                return ("missing", None)
+            raise
+        finally:
+            for fd in reversed(opened):
+                os.close(fd)
+
+    monkeypatch.setattr(
+        doctor._DoctorObservationSessionV2,
+        "_transient_current_lookup_v2",
+        vulnerable_lookup,
+    )
+
+    no_fork_root = root / "no-fork"
+    _materialize_healthy_target_v2(no_fork_root)
+    baseline_tracker = set(epoch._LIVE_EPOCH_FDS_V2)
+    no_fork = run_doctor_v2(
+        target_root=no_fork_root,
+        manifest=_manifest(),
+        target_repo="owner/repo",
+    )
+    assert isinstance(no_fork, DoctorDecisionV2)
+    assert set(epoch._LIVE_EPOCH_FDS_V2) == baseline_tracker
+
+    with pytest.raises(AssertionError, match="OPEN"):
+        _assert_transient_relookup_raw_fork_tracking_v2(
+            root / "raw-fork",
+            monkeypatch,
+            seam="leaf",
+            iterations=1,
+        )
+
+
+def _m_provisional_content_open_can_block_on_type_swap(
+    root: Path, _monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(AssertionError, match="retained K beyond deadline"):
+        _assert_provisional_content_open_is_bounded_v2(
+            root,
+            strip_nonblock=True,
+            deadline_seconds=0.25,
+        )
+
+
 _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     "M_UNKNOWN_AS_FALSE_REPORT": _m_unknown_as_false_report,
     "M_INVALID_ROOT_AS_UNKNOWN": _m_invalid_root_as_unknown,
@@ -796,6 +924,15 @@ _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     ),
     "M_LEASE_ENTRY_FAILURE_WITHOUT_EXPLICIT_RELEASE": (
         _m_lease_entry_failure_without_explicit_release
+    ),
+    "M_SESSION_CLEANUP_ABORTS_ON_FIRST_CLOSE_FAILURE": (
+        _m_session_cleanup_aborts_on_first_close_failure
+    ),
+    "M_TRANSIENT_RELOOKUP_FD_NOT_FORK_TRACKED": (
+        _m_transient_relookup_fd_not_fork_tracked
+    ),
+    "M_PROVISIONAL_CONTENT_OPEN_CAN_BLOCK_ON_TYPE_SWAP": (
+        _m_provisional_content_open_can_block_on_type_swap
     ),
 }
 

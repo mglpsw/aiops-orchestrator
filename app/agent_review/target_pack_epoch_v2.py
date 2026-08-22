@@ -309,6 +309,15 @@ class TargetPackTargetBindingV2:
         self._require_active_v2()
         return self._identity
 
+    def register_observation_fd_v2(self, fd: int) -> int:
+        """Install lease/fork cleanup ownership before fallible FD setup."""
+
+        self._require_active_v2()
+        if fd not in self._lease._observation_fds:
+            self._lease._observation_fds.append(fd)
+            _track_epoch_fd_v2(fd)
+        return fd
+
     def retain_observation_fd_v2(self, fd: int) -> int:
         """Attach one non-inheritable descendant FD to this live lease.
 
@@ -317,7 +326,7 @@ class TargetPackTargetBindingV2:
         exception-safety backstop and for the existing post-fork tracker.
         """
 
-        self._require_active_v2()
+        self.register_observation_fd_v2(fd)
         try:
             os.set_inheritable(fd, False)
         except OSError as exc:
@@ -326,15 +335,20 @@ class TargetPackTargetBindingV2:
                 operation_errno=exc.errno,
                 stage="retain_observation_fd",
             ) from exc
-        self._lease._observation_fds.append(fd)
-        return _track_epoch_fd_v2(fd)
+        return fd
 
     def release_observation_fd_v2(self, fd: int) -> None:
         if fd in self._lease._observation_fds:
-            self._lease._observation_fds.remove(fd)
             try:
                 os.close(fd)
-            finally:
+            except OSError:
+                # Keep the descriptor under the lease backstop when the close
+                # did not complete.  Session cleanup will continue with its
+                # other resources; lease.release gets the final best-effort
+                # attempt before K is dropped.
+                raise
+            else:
+                self._lease._observation_fds.remove(fd)
                 _LIVE_EPOCH_FDS_V2.discard(fd)
 
     def _require_active_v2(self) -> None:
@@ -480,6 +494,7 @@ class TargetPackEpochLeaseV2:
                 stage="open",
             ) from exc
         try:
+            _track_epoch_fd_v2(fd)
             try:
                 os.set_inheritable(fd, False)
             except OSError as exc:
@@ -504,10 +519,12 @@ class TargetPackEpochLeaseV2:
                 )
             binding = TargetPackTargetBindingV2(self, fd, (observed.st_dev, observed.st_ino))
             self._bindings.append(binding)
-            _track_epoch_fd_v2(fd)
             return binding
         except BaseException:
-            os.close(fd)
+            try:
+                os.close(fd)
+            finally:
+                _LIVE_EPOCH_FDS_V2.discard(fd)
             raise
 
     def release(self) -> None:
