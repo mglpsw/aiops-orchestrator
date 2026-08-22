@@ -30,8 +30,13 @@
   while profile, receipt, and ledger file roles preserve their existing
   completed non-regular reasons. Profile status projection is explicit over
   named reasons rather than reason-code spelling, and object identity remains
-  the single type-stability discriminator. Completed CLI JSON is byte-shape
-  compatible. `intended_behavior_change: true`.
+  the single type-stability discriminator. Post-ready resource-lifetime
+  hardening registers every transient relookup FD for cleanup immediately
+  after `open`, and makes the doctor caller own lease cleanup before fallible
+  capability entry validation; operational entry failures remain report-zero
+  `unknown`, while programmer failures still raise after releasing K and all
+  tracked descriptors. Completed CLI JSON is byte-shape compatible.
+  `intended_behavior_change: true`.
   The claim is target-read-only and cooperative within the same host/EUID/
   mount namespace and K object. External writers, undetectable ABA,
   provenance/generation identity, `generated_file_hashes` conformance,

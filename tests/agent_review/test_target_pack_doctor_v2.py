@@ -34,6 +34,7 @@ from app.agent_review.target_pack_doctor_v2 import (
 )
 from app.agent_review.target_pack_epoch_v2 import (
     TARGET_PACK_EPOCH_BUSY_REASON_V2,
+    TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2,
     TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
     TargetPackEpochError,
     TargetPackObservationBindingErrorV2,
@@ -164,6 +165,150 @@ def _receipt(required_secret_names: tuple[str, ...] = (), **overrides: object) -
 def _completed_report(outcome: object):
     assert isinstance(outcome, DoctorDecisionV2), outcome
     return outcome.report
+
+
+def _live_process_fds_v2() -> set[int]:
+    return {int(name) for name in os.listdir("/proc/self/fd") if name.isdigit()}
+
+
+def _assert_transient_relookup_setup_failure_has_no_fd_leak_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    seam: str,
+    iterations: int = 3,
+) -> None:
+    aiops = target_root / ".aiops"
+    aiops.mkdir()
+    profile = aiops / "target-profile.v2.yaml"
+    profile.write_text(_VALID_PROFILE_YAML, encoding="utf-8")
+
+    real_lookup = doctor_module._DoctorObservationSessionV2._transient_current_lookup_v2
+    real_set_inheritable = doctor_module.os.set_inheritable
+    active_lookup: list[Path] = []
+    injected = 0
+
+    def tracked_lookup(
+        self: doctor_module._DoctorObservationSessionV2,
+        resolved_path: Path,
+        *,
+        relation: str,
+    ) -> tuple[str, os.stat_result | None]:
+        active_lookup.append(resolved_path)
+        try:
+            return real_lookup(self, resolved_path, relation=relation)
+        finally:
+            active_lookup.pop()
+
+    def fail_after_open(fd: int, inheritable: bool) -> None:
+        nonlocal injected
+        if active_lookup and active_lookup[-1] == profile.resolve():
+            opened_path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+            selected = aiops.resolve() if seam == "intermediate" else profile.resolve()
+            if opened_path == selected:
+                injected += 1
+                raise OSError(errno.EIO, f"injected {seam} setup failure")
+        real_set_inheritable(fd, inheritable)
+
+    monkeypatch.setattr(
+        doctor_module._DoctorObservationSessionV2,
+        "_transient_current_lookup_v2",
+        tracked_lookup,
+    )
+    monkeypatch.setattr(doctor_module.os, "set_inheritable", fail_after_open)
+
+    baseline_fds = _live_process_fds_v2()
+    leaked_fds: set[int] = set()
+    try:
+        for _ in range(iterations):
+            outcome = run_doctor_v2(
+                target_root=target_root,
+                manifest=_manifest(),
+                target_repo="owner/repo",
+            )
+            assert isinstance(outcome, DoctorUnknownV2)
+            assert outcome.reason_code == "target_pack_doctor_observation_stale"
+            assert outcome.stage == "final_revalidation"
+            assert outcome.relation == "profile"
+            with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
+                pass
+
+        leaked_fds = _live_process_fds_v2() - baseline_fds
+        assert injected == iterations
+        assert not leaked_fds
+    finally:
+        for fd in leaked_fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def _assert_operational_lease_entry_failure_is_released_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    seam: str,
+    iterations: int = 3,
+) -> None:
+    import app.agent_review.target_pack_epoch_v2 as epoch_module
+
+    real_acquire = doctor_module.acquire_target_pack_epoch_v2
+    real_fstat = doctor_module.os.fstat
+    captured: list[object] = []
+
+    def acquire_and_arm(**kwargs: object) -> object:
+        lease = real_acquire(**kwargs)
+        real_release = lease.release
+        lease._test_release_calls = 0
+
+        def counted_release() -> None:
+            lease._test_release_calls += 1
+            real_release()
+
+        lease.release = counted_release
+        captured.append(lease)
+        target_fd = lease._namespace_fd if seam == "namespace" else lease._carrier_fd
+        failed = False
+
+        def fail_once(fd: int) -> os.stat_result:
+            nonlocal failed
+            if fd == target_fd and not failed:
+                failed = True
+                raise OSError(errno.EIO, f"injected {seam} lease-entry failure")
+            return real_fstat(fd)
+
+        monkeypatch.setattr(doctor_module.os, "fstat", fail_once)
+        return lease
+
+    monkeypatch.setattr(doctor_module, "acquire_target_pack_epoch_v2", acquire_and_arm)
+    baseline_fds = _live_process_fds_v2()
+    try:
+        for _ in range(iterations):
+            outcome = doctor_module.run_doctor_v2(
+                target_root=target_root,
+                manifest=_manifest(),
+                target_repo="owner/repo",
+            )
+            assert isinstance(outcome, DoctorUnknownV2)
+            assert outcome.reason_code == TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2
+            assert outcome.stage == "epoch_acquire"
+            assert outcome.relation == "target_root"
+            lease = captured[-1]
+            assert lease._active is False
+            assert lease._test_release_calls == 1
+            for fd in (lease._namespace_fd, lease._carrier_fd):
+                with pytest.raises(OSError) as raised:
+                    real_fstat(fd)
+                assert raised.value.errno == errno.EBADF
+                assert fd not in epoch_module._LIVE_EPOCH_FDS_V2
+            with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
+                pass
+        assert _live_process_fds_v2() == baseline_fds
+    finally:
+        for lease in captured:
+            if lease._active:
+                lease.release()
 
 
 def _profile_check_from_completed_reason(reason_code: str):
@@ -1198,12 +1343,15 @@ def test_raw_operational_epoch_oserror_is_stage_classified_not_caught_globally(
     assert outcome.relation == "target_root"
 
 
-def test_raw_programmer_epoch_oserror_is_not_hidden_as_unknown(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("operation_errno", (errno.EBADF, errno.ENOSPC))
+def test_raw_programmer_or_unenumerated_epoch_oserror_is_not_hidden_as_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation_errno: int,
 ) -> None:
     import app.agent_review.target_pack_doctor_v2 as doctor_module
 
-    injected = OSError(errno.EBADF, "injected")
+    injected = OSError(operation_errno, "injected")
 
     def fail(**_: object) -> object:
         raise injected
@@ -1212,6 +1360,106 @@ def test_raw_programmer_epoch_oserror_is_not_hidden_as_unknown(
     with pytest.raises(OSError) as raised:
         run_doctor_v2(target_root=tmp_path, manifest=_manifest(), target_repo="owner/repo")
     assert raised.value is injected
+
+
+@pytest.mark.parametrize("seam", ("namespace", "carrier"))
+def test_operational_lease_entry_failure_is_report_zero_unknown_and_releases_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    seam: str,
+) -> None:
+    _assert_operational_lease_entry_failure_is_released_v2(
+        tmp_path,
+        monkeypatch,
+        seam=seam,
+    )
+
+
+def test_lease_entry_capability_mismatch_preserves_typed_reason_and_releases_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.agent_review.target_pack_epoch_v2 as epoch_module
+
+    real_acquire = doctor_module.acquire_target_pack_epoch_v2
+    real_fstat = doctor_module.os.fstat
+    captured: list[object] = []
+
+    def acquire_with_mismatched_identity(**kwargs: object) -> object:
+        lease = real_acquire(**kwargs)
+        captured.append(lease)
+        lease._namespace_identity = (-1, -1)
+        return lease
+
+    monkeypatch.setattr(
+        doctor_module,
+        "acquire_target_pack_epoch_v2",
+        acquire_with_mismatched_identity,
+    )
+    try:
+        outcome = doctor_module.run_doctor_v2(
+            target_root=tmp_path,
+            manifest=_manifest(),
+            target_repo="owner/repo",
+        )
+        assert isinstance(outcome, DoctorUnknownV2)
+        assert outcome.reason_code == TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2
+        assert outcome.stage == "epoch_acquire"
+        lease = captured[-1]
+        assert lease._active is False
+        for fd in (lease._namespace_fd, lease._carrier_fd):
+            with pytest.raises(OSError) as raised:
+                real_fstat(fd)
+            assert raised.value.errno == errno.EBADF
+            assert fd not in epoch_module._LIVE_EPOCH_FDS_V2
+        with acquire_target_pack_epoch_v2(target_root=tmp_path, exclusive=True):
+            pass
+    finally:
+        for lease in captured:
+            if lease._active:
+                lease.release()
+
+
+def test_programmer_lease_entry_failure_still_raises_but_releases_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_acquire = doctor_module.acquire_target_pack_epoch_v2
+    real_fstat = doctor_module.os.fstat
+    captured: list[object] = []
+
+    def acquire_and_arm(**kwargs: object) -> object:
+        lease = real_acquire(**kwargs)
+        captured.append(lease)
+        target_fd = lease._namespace_fd
+        failed = False
+
+        def fail_once(fd: int) -> os.stat_result:
+            nonlocal failed
+            if fd == target_fd and not failed:
+                failed = True
+                raise OSError(errno.EBADF, "injected programmer lease-entry failure")
+            return real_fstat(fd)
+
+        monkeypatch.setattr(doctor_module.os, "fstat", fail_once)
+        return lease
+
+    monkeypatch.setattr(doctor_module, "acquire_target_pack_epoch_v2", acquire_and_arm)
+    try:
+        with pytest.raises(OSError) as raised:
+            doctor_module.run_doctor_v2(
+                target_root=tmp_path,
+                manifest=_manifest(),
+                target_repo="owner/repo",
+            )
+        assert raised.value.errno == errno.EBADF
+        assert captured[-1]._active is False
+        with acquire_target_pack_epoch_v2(target_root=tmp_path, exclusive=True):
+            pass
+    finally:
+        for lease in captured:
+            if lease._active:
+                lease.release()
 
 
 @pytest.mark.parametrize(
@@ -1385,6 +1633,50 @@ def test_doctor_root_binding_resource_exhaustion_is_unknown(
     assert isinstance(outcome, DoctorUnknownV2)
     assert outcome.reason_code == "target_pack_doctor_observation_unavailable"
     assert outcome.stage == "target_root_binding"
+
+
+def test_operational_root_binding_entry_failure_is_unknown_under_lease_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.agent_review.target_pack_epoch_v2 as epoch_module
+
+    real_bind = epoch_module.TargetPackEpochLeaseV2.bind_target_root_for_observation_v2
+    captured: list[object] = []
+
+    def bind_and_arm(self: object, *, target_root: Path) -> object:
+        binding = real_bind(self, target_root=target_root)
+        captured.append(binding)
+        real_require_active = binding._require_active_v2
+        failed = False
+
+        def fail_once() -> None:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise OSError(errno.EIO, "injected root-binding entry failure")
+            real_require_active()
+
+        binding._require_active_v2 = fail_once
+        return binding
+
+    monkeypatch.setattr(
+        epoch_module.TargetPackEpochLeaseV2,
+        "bind_target_root_for_observation_v2",
+        bind_and_arm,
+    )
+    outcome = doctor_module.run_doctor_v2(
+        target_root=tmp_path,
+        manifest=_manifest(),
+        target_repo="owner/repo",
+    )
+
+    assert isinstance(outcome, DoctorUnknownV2)
+    assert outcome.reason_code == "target_pack_doctor_observation_unavailable"
+    assert outcome.stage == "target_root_binding"
+    assert captured[-1]._active is False
+    with acquire_target_pack_epoch_v2(target_root=tmp_path, exclusive=True):
+        pass
 
 
 def test_doctor_eio_while_reading_material_is_unknown_not_unhealthy(
@@ -1961,6 +2253,19 @@ def test_hardlink_deduplicates_content_but_preserves_path_specific_relations(
 
     assert nonempty_reads == 1
     assert report.receipt.reason_code == DOCTOR_TARGET_OWNED_IDENTITY_UNRECONCILED_REASON_V2
+
+
+@pytest.mark.parametrize("seam", ("intermediate", "leaf"))
+def test_transient_final_relookup_registers_cleanup_before_fallible_setup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    seam: str,
+) -> None:
+    _assert_transient_relookup_setup_failure_has_no_fd_leak_v2(
+        tmp_path,
+        monkeypatch,
+        seam=seam,
+    )
 
 
 def test_final_relookup_permission_failure_is_unknown_stale(

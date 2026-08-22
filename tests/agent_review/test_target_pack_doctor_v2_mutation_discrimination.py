@@ -48,8 +48,10 @@ from tests.agent_review.test_target_pack_doctor_v2 import (
     _VALID_PROFILE_YAML,
     _assert_aiops_retarget_outside_root_is_unknown_not_unhealthy,
     _assert_aiops_root_self_completed,
+    _assert_operational_lease_entry_failure_is_released_v2,
     _assert_path_object_type_drift_is_unknown,
     _assert_profile_completed_negative_status_is_explicit,
+    _assert_transient_relookup_setup_failure_has_no_fd_leak_v2,
     _manifest,
     _receipt,
     _sha256,
@@ -680,6 +682,87 @@ def _m_bind_extension_breaks_writer(root: Path, monkeypatch: pytest.MonkeyPatch)
     assert raised.value.operation_errno == errno.EMFILE
 
 
+def _m_transient_fd_registered_after_fallible_setup(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def vulnerable_lookup(
+        self: doctor._DoctorObservationSessionV2,
+        resolved_path: Path,
+        *,
+        relation: str,
+    ) -> tuple[str, os.stat_result | None]:
+        relative = resolved_path.relative_to(self.target_root_real)
+        parent_fd = self._root_fd_v2(
+            stage="final_revalidation", relation=relation
+        )
+        opened: list[int] = []
+        try:
+            for component in relative.parts[:-1]:
+                fd = os.open(
+                    component,
+                    os.O_PATH
+                    | os.O_DIRECTORY
+                    | os.O_NOFOLLOW
+                    | getattr(os, "O_CLOEXEC", 0),
+                    dir_fd=parent_fd,
+                )
+                os.set_inheritable(fd, False)
+                opened.append(fd)
+                parent_fd = fd
+            leaf_fd = os.open(
+                relative.parts[-1],
+                os.O_PATH | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent_fd,
+            )
+            os.set_inheritable(leaf_fd, False)
+            opened.append(leaf_fd)
+            observed = os.fstat(leaf_fd)
+            return ("present", observed)
+        finally:
+            for fd in reversed(opened):
+                os.close(fd)
+
+    monkeypatch.setattr(
+        doctor._DoctorObservationSessionV2,
+        "_transient_current_lookup_v2",
+        vulnerable_lookup,
+    )
+    with pytest.raises(AssertionError):
+        _assert_transient_relookup_setup_failure_has_no_fd_leak_v2(
+            root,
+            monkeypatch,
+            seam="leaf",
+            iterations=1,
+        )
+
+
+def _m_lease_entry_failure_without_explicit_release(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def vulnerable_run(
+        *,
+        target_root: Path,
+        manifest: TargetPackManifestV2,
+        target_repo: str,
+    ) -> DoctorDecisionV2:
+        del manifest, target_repo
+        lease = doctor.acquire_target_pack_epoch_v2(
+            target_root=target_root, exclusive=False
+        )
+        with lease:
+            return _dummy_unhealthy_decision(target_root)
+
+    monkeypatch.setattr(doctor, "run_doctor_v2", vulnerable_run)
+    with pytest.raises(OSError) as raised:
+        _assert_operational_lease_entry_failure_is_released_v2(
+            root,
+            monkeypatch,
+            seam="namespace",
+            iterations=1,
+        )
+    assert raised.value.errno == errno.EIO
+
+
 _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     "M_UNKNOWN_AS_FALSE_REPORT": _m_unknown_as_false_report,
     "M_INVALID_ROOT_AS_UNKNOWN": _m_invalid_root_as_unknown,
@@ -708,6 +791,12 @@ _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     "M_REVALIDATE_VIA_FSTAT_ONLY": _m_revalidate_via_fstat_only,
     "M_CARRIER_DOMAIN_BLANKET_EXCLUSION": _m_carrier_domain_blanket_exclusion,
     "M_BIND_EXTENSION_BREAKS_WRITER": _m_bind_extension_breaks_writer,
+    "M_TRANSIENT_FD_REGISTERED_AFTER_FALLIBLE_SETUP": (
+        _m_transient_fd_registered_after_fallible_setup
+    ),
+    "M_LEASE_ENTRY_FAILURE_WITHOUT_EXPLICIT_RELEASE": (
+        _m_lease_entry_failure_without_explicit_release
+    ),
 }
 
 

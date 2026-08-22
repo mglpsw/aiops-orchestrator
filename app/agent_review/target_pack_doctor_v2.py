@@ -1013,16 +1013,16 @@ class _DoctorObservationSessionV2:
                     os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
                     dir_fd=parent_fd,
                 )
-                os.set_inheritable(fd, False)
                 opened.append(fd)
+                os.set_inheritable(fd, False)
                 parent_fd = fd
             leaf_fd = os.open(
                 relative.parts[-1],
                 os.O_PATH | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
                 dir_fd=parent_fd,
             )
-            os.set_inheritable(leaf_fd, False)
             opened.append(leaf_fd)
+            os.set_inheritable(leaf_fd, False)
             observed = os.fstat(leaf_fd)
             if stat.S_ISLNK(observed.st_mode):
                 raise OSError(errno.ELOOP, os.strerror(errno.ELOOP))
@@ -1243,7 +1243,7 @@ def _unknown_for_epoch_error_v2(exc: TargetPackEpochError) -> DoctorUnknownV2:
 
 
 def _unknown_for_epoch_oserror_v2(exc: OSError) -> DoctorUnknownV2:
-    if exc.errno in _PROGRAMMER_ERRNOS_V2 or exc.errno is None:
+    if exc.errno not in _RESOURCE_UNAVAILABLE_ERRNOS_V2:
         raise exc
     return DoctorUnknownV2(
         reason_code=TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
@@ -1290,9 +1290,21 @@ def run_doctor_v2(
     except OSError as exc:
         return _unknown_for_epoch_oserror_v2(exc)
 
-    with lease:
+    # Acquisition transferred two locked FDs to this caller.  Install cleanup
+    # ownership before the capability's fallible entry validation so UNKNOWN
+    # and programmer-error paths release the same lease exactly once.
+    try:
         try:
-            root_binding = lease.bind_target_root_for_observation_v2(target_root=caller_target)
+            lease.__enter__()
+        except TargetPackEpochError as exc:
+            return _unknown_for_epoch_error_v2(exc)
+        except OSError as exc:
+            return _unknown_for_epoch_oserror_v2(exc)
+
+        try:
+            root_binding = lease.bind_target_root_for_observation_v2(
+                target_root=caller_target
+            )
         except TargetPackObservationBindingErrorV2 as exc:
             return _classify_root_binding_failure_v2(exc)
         except TargetPackEpochError as exc:
@@ -1302,7 +1314,7 @@ def run_doctor_v2(
                 relation=_ROOT_RELATION_V2,
             )
         except OSError as exc:
-            if exc.errno in _PROGRAMMER_ERRNOS_V2 or exc.errno is None:
+            if exc.errno not in _RESOURCE_UNAVAILABLE_ERRNOS_V2:
                 raise
             return DoctorUnknownV2(
                 reason_code=DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
@@ -1310,40 +1322,68 @@ def run_doctor_v2(
                 relation=_ROOT_RELATION_V2,
             )
 
-        with root_binding:
-            try:
-                with _DoctorObservationSessionV2(
-                    target_root=caller_target, root_binding=root_binding
-                ) as session:
-                    try:
-                        session.observe_directory_v2(
-                            logical_path=_AIOPS_DIR_RELATIVE_V2, relation=_AIOPS_RELATION_V2
-                        )
-                    except _DoctorCompletedNegativeV2:
-                        pass
+        # The lease registered this binding before returning it.  Entry is a
+        # validation step only; lease.release remains the single cleanup
+        # authority for root binding, carrier and namespace resources.
+        try:
+            root_binding.__enter__()
+        except TargetPackEpochError:
+            return DoctorUnknownV2(
+                reason_code=DOCTOR_OBSERVATION_STALE_REASON_V2,
+                stage="target_root_binding",
+                relation=_ROOT_RELATION_V2,
+            )
+        except OSError as exc:
+            if exc.errno not in _RESOURCE_UNAVAILABLE_ERRNOS_V2:
+                raise
+            return DoctorUnknownV2(
+                reason_code=DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+                stage="target_root_binding",
+                relation=_ROOT_RELATION_V2,
+            )
 
-                    profile_check = _check_profile_v2(session)
-                    receipt_check = _check_receipt_v2(
-                        session=session,
-                        manifest=manifest,
-                        profile_check=profile_check,
-                        target_repo=caller_target_repo,
+        try:
+            with _DoctorObservationSessionV2(
+                target_root=caller_target, root_binding=root_binding
+            ) as session:
+                try:
+                    session.observe_directory_v2(
+                        logical_path=_AIOPS_DIR_RELATIVE_V2,
+                        relation=_AIOPS_RELATION_V2,
                     )
-                    expected_secret_names = (
-                        receipt_check.receipt.required_secret_names if receipt_check.receipt else ()
-                    )
-                    report = DoctorReportV2(
-                        target_root=target_display,
-                        profile=profile_check,
-                        receipt=receipt_check,
-                        secret_names=_check_secret_names_v2(
-                            expected_secret_names, environment_keys=environment_keys
-                        ),
-                        required_capabilities_declared=tuple(manifest.required_capabilities),
-                    )
-                    session.revalidate_v2()
-                    return DoctorDecisionV2(report=report)
-            except _DoctorUnknownAbortV2 as exc:
-                return DoctorUnknownV2(
-                    reason_code=exc.reason_code, stage=exc.stage, relation=exc.relation
+                except _DoctorCompletedNegativeV2:
+                    pass
+
+                profile_check = _check_profile_v2(session)
+                receipt_check = _check_receipt_v2(
+                    session=session,
+                    manifest=manifest,
+                    profile_check=profile_check,
+                    target_repo=caller_target_repo,
                 )
+                expected_secret_names = (
+                    receipt_check.receipt.required_secret_names
+                    if receipt_check.receipt
+                    else ()
+                )
+                report = DoctorReportV2(
+                    target_root=target_display,
+                    profile=profile_check,
+                    receipt=receipt_check,
+                    secret_names=_check_secret_names_v2(
+                        expected_secret_names, environment_keys=environment_keys
+                    ),
+                    required_capabilities_declared=tuple(
+                        manifest.required_capabilities
+                    ),
+                )
+                session.revalidate_v2()
+                return DoctorDecisionV2(report=report)
+        except _DoctorUnknownAbortV2 as exc:
+            return DoctorUnknownV2(
+                reason_code=exc.reason_code,
+                stage=exc.stage,
+                relation=exc.relation,
+            )
+    finally:
+        lease.release()
