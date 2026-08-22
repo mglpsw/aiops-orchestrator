@@ -154,8 +154,8 @@ ReviewerObservation   what someone reports — advisory, whatever its source
       ↓
 ValidatedFinding      reproduced, material, violated proposition identified
       ↓
-RecurrenceCandidate   two validated findings in one boundary, with a
-                      declared correction attempt between them
+RecurrenceCandidate   two validated findings in one boundary, on ordered
+                      subjects — formed without asking about correction
       ↓
 RecurrenceAdmission   the candidate qualified under the rule below
       ↓
@@ -180,32 +180,56 @@ the defeat entirely, because recurrence counts admissions, which are facts about
 what was established at a time, not lifecycle states that can be revised
 afterwards.
 
-**Admission is by rule, not by anyone's say-so.** A `RecurrenceCandidate` is
-admitted when, and only when, all of the following hold:
+**Candidate formation asks nothing about correction.** A `RecurrenceCandidate`
+exists when, and only when, all of the following hold:
 
 ```text
 ValidatedFinding(f1)                     f1 met the finding-level predicates
 BoundaryAssignment(f1, B)                the reviewer who raised f1 assigned it
                                          to B, which is predeclared or emergent
+FreshReview(r2) on a later subject
+ValidatedFinding(f2)                     f2 met them too
+BoundaryAssignment(f2, B)                and landed in the same boundary
+```
+
+A formed candidate claims one thing: two historically relevant occurrences
+landed in `B` and now need qualifying. It is not a recurrence and fires nothing.
+Formation is deliberately cheap, because the expensive judgement belongs at the
+next step — where it can be held open, rather than answered by default in
+whichever direction the missing information happens to favour.
+
+**Admission is by rule, not by anyone's say-so.** A formed candidate is admitted
+when, and only when, the correction barrier holds across it:
+
+```text
 CorrectionAttempt(c, B)                  declared before the next review, naming
                                          its before/after subjects, the boundary,
                                          the proposition it means to restore, the
                                          corrective abstraction and its intended
                                          discriminants
 ReviewEpoch(f1) < epoch(c) < ReviewEpoch(f2)
-FreshReview(r2) on the after-subject
-ValidatedFinding(f2)                     f2 met them too
-BoundaryAssignment(f2, B)                and landed in the same boundary
+```
+
+The barrier is a predicate, and predicates here take three values and not two —
+the rule below, on what `UNKNOWN` means and what it does not, owns that:
+
+```text
+TRUE      a precommitted attempt record for B sits strictly between the two
+          reviews                        →  the candidate is admitted
+FALSE     it is positively established that no correction of B was attempted in
+          the interval                   →  no recurrence by failed correction
+UNKNOWN   neither is established         →  HOLD_FOR_ADJUDICATION
 ```
 
 The temporal shape is the point. **Concurrence is not recurrence.** Two reviewers
 validating the same defect on the same subject is corroboration — the finding is
 better evidenced, not repeated — and admitting it would mean that adding
 reviewers makes a change likelier to be redesigned, which is an absurd
-incentive. Equally, two findings in one boundary with no correction between them
-are one episode still open, not a recurrence: nothing was tried and failed. What
-recurrence means is that the boundary was corrected, reviewed again on a later
-subject, and produced a validated finding anyway.
+incentive. Equally, two findings in one boundary with no correction attempted
+between them — established, not merely unrecorded — are one episode still open,
+not a recurrence: nothing was tried and failed. What recurrence means is that the
+boundary was corrected, reviewed again on a later subject, and produced a
+validated finding anyway.
 
 **A change touching a boundary is not a correction of it.** Version control
 establishes the subjects, their order, and the exact delta between them; it
@@ -256,9 +280,11 @@ and it needs no causal judgement:
 same subject, several reviewers   →  corroboration; one finding, better evidenced
 same subject, several defects     →  distinct findings in one round; no barrier
                                      crossed, so no recurrence yet
-later subject, no attempt between →  no barrier; the episode is still open
-later subject, attempt between    →  recurrence candidate, whether or not the
+later subject                     →  candidate formed; the barrier then decides
+  barrier TRUE                    →  recurrence admitted, whether or not the
                                      second finding is "the same defect"
+  barrier FALSE                   →  no barrier; the episode is still open
+  barrier UNKNOWN                 →  HOLD_FOR_ADJUDICATION; the candidate stands
 ```
 
 A second reviewer agreeing that two findings look like the same recurrence is
@@ -286,16 +312,19 @@ boundary assignment         the reviewer who raised the finding
 ```
 
 Candidate-level predicates relate two findings and only exist once both do.
-They belong to a `RecurrenceCandidate`, never to the validation of a single
-finding:
+They belong to a `RecurrenceCandidate` — to forming one, or to qualifying one
+already formed — never to the validation of a single finding:
 
 ```text
+same-boundary relation      the two boundary assignments, compared
+                            — this one forms the candidate
+
 correction delta            the version-control record: the before/after
                             subjects, their ordering, and what changed
 correction attempt          the precommitted record: that this delta was
                             intended to correct B, with which discriminants
 epoch ordering              the version-control and review records together
-same-boundary relation      the two boundary assignments, compared
+                            — these three qualify a formed candidate
 ```
 
 That split is load-bearing. An earlier draft scoped one undivided table over
@@ -320,6 +349,11 @@ correction barrier  =  correction delta  ∧  correction attempt
 ChangeTouches(B)    ⇏  CorrectionAttempt(B)
 ```
 
+That conjunction is over three-valued predicates, and it is evaluated as one:
+`FALSE` in either conjunct is `FALSE`, and `UNKNOWN` in either — with the other
+not `FALSE` — is `UNKNOWN`. It never collapses an unestablished conjunct to a
+settled answer in the direction that happens to be convenient.
+
 A finding is validated by meeting the finding-level predicates, not by being labelled
 `VALID`; an `INVALID` is a claim that contradicting evidence exists and is open to
 challenge on that evidence. Where a predicate cannot be established from its
@@ -341,6 +375,35 @@ clear one either.
 
 Otherwise the rule is defeated by manufacturing ambiguity instead of writing
 `INVALID` — the cheaper attack, and the harder one to see.
+
+**A missing attempt record is `UNKNOWN`, never `FALSE`.** The cheapest attack on
+this section is not to argue about a barrier but to file nothing, so that no
+barrier can be established and the candidate reads as cleared:
+
+```text
+MissingAttemptRecord   ⇏   NoCorrectionAttempt
+```
+
+The precommitted record is what makes an attempt *admissible*. It is not a census
+of what the author did, so its absence establishes nothing about whether
+corrective work happened, and cannot be read as establishing that none did. An
+author who files no record reaches `HOLD_FOR_ADJUDICATION`, not a cleared
+candidate. Omission can cost them a decision; it cannot buy them one.
+
+`FALSE` is available, and reaching it takes the same precommitment in the other
+direction: a declaration, made before the review that follows, that the interval
+contained no correction of `B`. That is admissible for exactly the reason an
+attempt record is — it is made without knowing whether an `f2` is coming. A
+declaration produced after `f2` lands is not that, and does not establish `FALSE`.
+Neither does an attempt record naming some other boundary: a record about `B'`
+reports on `B'`, and says nothing at all about whether `B` was corrected.
+Nor is either declaration incontestable: the version-control delta is open to the
+reviewer, and where the reviewer contests the declaration and the question does
+not resolve, the barrier is `UNKNOWN` and the candidate stands.
+
+Inaction is not failed correction. Where `FALSE` is established, two findings in
+one boundary remain one open episode, and nothing here manufactures a stop out of
+corrective work that was never attempted.
 
 **The reviewer is not the author, and the record says who they were.**
 Observations are worth having because they come from someone who does not pay the
@@ -406,12 +469,17 @@ findings. The first two carry a transition; the third does not, and the
 difference is stated rather than left to the reader:
 
 **Load-bearing.** A "yes" here, once the candidate qualifies under the admission
-rule, is an admitted recurrence and fires the trigger.
+rule, is an admitted recurrence and fires the trigger. Where a candidate is formed
+but its correction barrier is `UNKNOWN`, the answer is neither "yes" nor "no": it
+is `HOLD_FOR_ADJUDICATION`. The trigger does not fire, and the change may not be
+declared ready or convergent on that history.
 
 1. Did a validated finding this round land in a boundary that already holds a
-   validated finding from an earlier round of this loop, with a declared
-   correction attempt for that boundary between them? Name the boundary, both
-   findings and the attempt.
+   validated finding from an earlier round of this loop? Name the boundary and
+   both findings. That forms a candidate; the correction barrier then qualifies
+   it, and the barrier's value decides between admission, an open episode, and a
+   hold. A candidate with no attempt record filed against it is not thereby a
+   "no"; it is a hold.
 2. From round three onward: does one boundary hold a validated finding from this
    round and from both preceding ones? Before round three the answer is "no" —
    there is no window to look at.
@@ -438,9 +506,10 @@ A "yes" is recorded, may motivate a spike, and may inform how a boundary is
 read. It is not an admission and does not fire anything by itself. `UNKNOWN` is
 an available and often correct answer.
 
-An unanswered question is not a "no": a round whose questions were not put has
-not been reviewed for convergence, and the change may not be declared ready on
-the strength of it. That applies to the supporting question too — it must be
+An unanswered question is not a "no", and neither is a held one: a round whose
+questions were not put has not been reviewed for convergence, and a round holding
+for adjudication has not finished answering them. The change may not be declared
+ready on the strength of either. That applies to the supporting question too — it must be
 asked and answered, including `UNKNOWN`; what it may not do is transition.
 
 A "yes" to a load-bearing question, once the candidate qualifies under the
