@@ -49,6 +49,7 @@ from tests.agent_review.test_target_pack_doctor_v2 import (
     _assert_aiops_retarget_outside_root_is_unknown_not_unhealthy,
     _assert_aiops_root_self_completed,
     _assert_containment_negative_revalidation_v2,
+    _assert_content_read_memory_exhaustion_is_unknown_v2,
     _assert_environment_snapshot_failure_is_unknown_v2,
     _assert_operational_lease_entry_failure_is_released_v2,
     _assert_path_object_type_drift_is_unknown,
@@ -992,6 +993,55 @@ def _m_env_snapshot_outside_typed_boundary(
         _assert_environment_snapshot_failure_is_unknown_v2(root, monkeypatch)
 
 
+def _m_env_snapshot_memoryerror_escapes_typed_boundary(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restore the RuntimeError-only enumeration `R4_F27` found.
+
+    Round 4 native review: a genuine `MemoryError` while materializing the one
+    environment-key snapshot escaped `run_doctor_v2` because the boundary
+    enumerated only `RuntimeError`. Killed by the MemoryError arm of the same
+    shared RED the RuntimeError arm uses, so both classes discriminate against
+    one set of assertions.
+    """
+
+    def runtime_error_only() -> frozenset[str]:
+        try:
+            return frozenset(doctor.os.environ.keys())
+        except RuntimeError as exc:
+            raise doctor._DoctorUnknownAbortV2(
+                doctor.DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+                stage="environment_snapshot",
+                relation=doctor._ENVIRONMENT_RELATION_V2,
+            ) from exc
+
+    monkeypatch.setattr(doctor, "_snapshot_environment_keys_v2", runtime_error_only)
+    with pytest.raises(MemoryError):
+        _assert_environment_snapshot_failure_is_unknown_v2(
+            root, monkeypatch, failure=MemoryError
+        )
+
+
+def _m_content_read_memoryerror_escapes_typed_boundary(
+    root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un-enumerate `MemoryError` at the content-read seam.
+
+    Round 4 method note: the REAL constrained-address-space characterization
+    reaches this seam before the environment snapshot, because each chunk
+    allocates a megabyte-scale buffer. Rebinding the name the module's
+    `except MemoryError` clause resolves is a faithful model of "this class is
+    not enumerated here" without editing the production text.
+    """
+
+    class UnrelatedAllocationError(Exception):
+        pass
+
+    monkeypatch.setitem(doctor.__dict__, "MemoryError", UnrelatedAllocationError)
+    with pytest.raises(MemoryError):
+        _assert_content_read_memory_exhaustion_is_unknown_v2(root, monkeypatch)
+
+
 _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     "M_UNKNOWN_AS_FALSE_REPORT": _m_unknown_as_false_report,
     "M_INVALID_ROOT_AS_UNKNOWN": _m_invalid_root_as_unknown,
@@ -1046,6 +1096,12 @@ _MUTATION_IMPLEMENTATIONS: dict[str, MutationRunner] = {
     ),
     "M_ENV_SNAPSHOT_OUTSIDE_TYPED_BOUNDARY": (
         _m_env_snapshot_outside_typed_boundary
+    ),
+    "M_ENV_SNAPSHOT_MEMORYERROR_ESCAPES_TYPED_BOUNDARY": (
+        _m_env_snapshot_memoryerror_escapes_typed_boundary
+    ),
+    "M_CONTENT_READ_MEMORYERROR_ESCAPES_TYPED_BOUNDARY": (
+        _m_content_read_memoryerror_escapes_typed_boundary
     ),
 }
 

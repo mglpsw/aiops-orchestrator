@@ -51,8 +51,15 @@
   type and identity before any read, so a raced FIFO/device/non-regular swap
   becomes stale/unknown instead of retaining K-SH indefinitely. Containment
   negatives are themselves registered observations and must remain negative
-  at final revalidation; a repaired escape/loop is stale/unknown. Environment
-  key-snapshot iteration failure is likewise report-zero `unknown`. Completed
+  at final revalidation; a repaired escape/loop is stale/unknown. Inability to
+  materialize an observation is report-zero `unknown` at both seams where it
+  was reproduced: the one environment key snapshot (concurrent `os.environ`
+  mutation, and genuine `MemoryError`) and the content read, whose per-chunk
+  megabyte-scale buffers are what a genuinely exhausted process fails on
+  first. Only classes reproduced as real production failures are enumerated;
+  neither `except Exception` nor `except BaseException` is used, so
+  `KeyboardInterrupt`/`SystemExit` keep propagating and no partial snapshot or
+  partial content is ever returned. Completed
   CLI JSON is byte-shape compatible.
   `intended_behavior_change: true`.
   The claim is target-read-only and cooperative within the same host/EUID/

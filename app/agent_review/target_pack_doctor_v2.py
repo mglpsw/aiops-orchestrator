@@ -1089,6 +1089,23 @@ class _DoctorObservationSessionV2:
                     missing_reason=missing_reason,
                     unreadable_reason=unreadable_reason,
                 )
+            except MemoryError as exc:
+                # Round 4: the environment-snapshot boundary (`R4_F27`) was
+                # only the first site of this class. A REAL constrained-
+                # address-space probe against this pack's own observation
+                # plane lands here first, not there -- each chunk allocates a
+                # megabyte-scale buffer, so an exhausted process fails at the
+                # content read long before the key snapshot. Failing to
+                # allocate an observation buffer establishes nothing about the
+                # installed state, so it is report-zero UNKNOWN, exactly like
+                # every other inability to observe. Enumerated, never
+                # `except Exception`: the class is here because it was
+                # reproduced here.
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+                    stage="content_read",
+                    relation=relation,
+                ) from exc
             if retained.metadata != _metadata_identity_v2(after_read):
                 raise _DoctorUnknownAbortV2(
                     DOCTOR_OBSERVATION_STALE_REASON_V2,
@@ -1096,7 +1113,19 @@ class _DoctorObservationSessionV2:
                     relation=relation,
                 )
             retained.sha256 = digest.hexdigest()
-            retained.content_bytes = b"".join(chunks) if require_bytes else None
+            try:
+                retained.content_bytes = b"".join(chunks) if require_bytes else None
+            except MemoryError as exc:
+                # Same class, same seam: joining the retained chunks is the
+                # second allocation this function performs, and it is the one
+                # that grows with the observed file. It cannot be reached
+                # without the loop above having succeeded, so it gets the same
+                # stage/relation rather than a new vocabulary.
+                raise _DoctorUnknownAbortV2(
+                    DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
+                    stage="content_read",
+                    relation=relation,
+                ) from exc
             retained.content_acquisitions = 1
         elif require_bytes and retained.content_bytes is None:
             raise RuntimeError("one-read registry would need to reread retained content")
@@ -1425,11 +1454,28 @@ def _check_secret_names_v2(
 
 
 def _snapshot_environment_keys_v2() -> frozenset[str]:
-    """Capture the environment evidence once without observing any value."""
+    """Capture the environment evidence once without observing any value.
+
+    Two enumerated failure classes, both separately reproduced, are the only
+    ones this boundary converts:
+
+    - ``RuntimeError`` -- a concurrent mutation of ``os.environ`` observed as
+      "dictionary changed size during iteration";
+    - ``MemoryError`` -- genuine resource exhaustion while materializing the
+      one snapshot, reproduced under a constrained ``RLIMIT_AS`` against a
+      real ``os._Environ``.
+
+    Neither ``except Exception`` nor ``except BaseException`` is used: a class
+    that has not been reproduced as a real production failure must not be
+    silently relabelled as an observation outcome, and ``KeyboardInterrupt``/
+    ``SystemExit`` must keep propagating.  A partial key set is never
+    returned -- the snapshot either materializes completely or the whole
+    decision becomes report-zero UNKNOWN.
+    """
 
     try:
         return frozenset(os.environ.keys())
-    except RuntimeError as exc:
+    except (RuntimeError, MemoryError) as exc:
         raise _DoctorUnknownAbortV2(
             DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2,
             stage="environment_snapshot",

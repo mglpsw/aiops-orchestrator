@@ -177,8 +177,21 @@ this implementation.
   but absent at the under-K binding step is instead stale/unknown. There is no
   `healthy: null` or synthetic failed report.
 - The environment key set is captured once and secret checks use membership in
-  that snapshot. Snapshot iteration failure is report-zero `unknown`; no
-  environment value is read or reported.
+  that snapshot; no environment value is read or reported.
+- Inability to MATERIALIZE an observation is report-zero `unknown` at the two
+  seams where that failure was reproduced against real production behaviour:
+  the environment key snapshot (concurrent `os.environ` mutation, and genuine
+  `MemoryError`) and the content read. The content read is listed second but
+  fails first in practice -- it allocates a megabyte-scale buffer per chunk,
+  so a genuinely exhausted process reaches it well before the key snapshot.
+  Only reproduced classes are enumerated: `except Exception` and
+  `except BaseException` are deliberately absent, `KeyboardInterrupt` and
+  `SystemExit` keep propagating, and no partial key set or partial content is
+  ever returned.
+- Under TOTAL address-space starvation, small allocations inside the already
+  merged K primitive can fail before the doctor plane is reached. That is
+  pre-existing `#258` behaviour this pack does not own; it is reported as
+  such rather than absorbed here.
 
 The completed-observation claim is cooperative only: same host, effective UID,
 mount namespace, K object, and participating AgentReview readers/writers.

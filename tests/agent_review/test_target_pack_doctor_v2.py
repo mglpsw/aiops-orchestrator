@@ -4,6 +4,8 @@ import errno
 import hashlib
 import json
 import os
+import resource
+import select
 import signal
 import shutil
 import stat
@@ -538,7 +540,19 @@ def _assert_raced_root_absence_is_unknown_v2(
 def _assert_environment_snapshot_failure_is_unknown_v2(
     target_root: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    failure: type[BaseException] = RuntimeError,
 ) -> None:
+    """One shared proposition for every enumerated snapshot failure class.
+
+    `failure` selects which reproduced production class is raised while the
+    single environment snapshot is being materialized -- `RuntimeError` for a
+    concurrent `os.environ` mutation, `MemoryError` for genuine resource
+    exhaustion. Both must reach the same typed report-zero outcome, so the
+    mutants for each class discriminate against the same assertions rather
+    than against two independently drifting helpers.
+    """
+
     _materialize_healthy_target_v2(target_root)
     real_os = doctor_module.os
 
@@ -548,11 +562,20 @@ def _assert_environment_snapshot_failure_is_unknown_v2(
         def keys(self) -> object:
             self.keys_calls += 1
 
-            class ChangedDuringIteration:
-                def __iter__(self) -> object:
-                    raise RuntimeError("dictionary changed size during iteration")
+            # Faithful per-class diagnostics: CPython's own wording for the
+            # concurrent-mutation case, so the RuntimeError arm keeps matching
+            # what a real interpreter emits.
+            message = (
+                "dictionary changed size during iteration"
+                if failure is RuntimeError
+                else "cannot allocate the environment key snapshot"
+            )
 
-            return ChangedDuringIteration()
+            class FailsDuringMaterialization:
+                def __iter__(self) -> object:
+                    raise failure(message)
+
+            return FailsDuringMaterialization()
 
         def __getitem__(self, _name: str) -> str:
             raise AssertionError("environment value read")
@@ -577,6 +600,45 @@ def _assert_environment_snapshot_failure_is_unknown_v2(
     assert outcome.reason_code == DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2
     assert outcome.stage == "environment_snapshot"
     assert outcome.relation == "environment"
+    assert not hasattr(outcome, "report")
+    with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
+        pass
+
+
+def _assert_content_read_memory_exhaustion_is_unknown_v2(
+    target_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Allocation failure while reading observed content is report-zero UNKNOWN.
+
+    Round 4: the real constrained-address-space probe reaches THIS seam before
+    the environment-key snapshot, because each chunk allocates a
+    megabyte-scale buffer. Failing to allocate an observation buffer
+    establishes nothing about the installed state, so it must join the same
+    typed outcome as every other inability to observe -- not escape as a raw
+    exception, and never a completed verdict.
+    """
+
+    _materialize_healthy_target_v2(target_root)
+    real_read = doctor_module.os.read
+    reads = {"count": 0}
+
+    def exhausted_read(fd: int, size: int) -> bytes:
+        reads["count"] += 1
+        raise MemoryError("injected observation buffer exhaustion")
+
+    monkeypatch.setattr(doctor_module.os, "read", exhausted_read)
+    outcome = run_doctor_v2(
+        target_root=target_root,
+        manifest=_manifest(),
+        target_repo="owner/repo",
+    )
+    monkeypatch.undo()
+
+    assert reads["count"] >= 1
+    assert isinstance(outcome, DoctorUnknownV2)
+    assert outcome.reason_code == DOCTOR_OBSERVATION_UNAVAILABLE_REASON_V2
+    assert outcome.stage == "content_read"
     assert not hasattr(outcome, "report")
     with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
         pass
@@ -682,26 +744,101 @@ def _assert_transient_relookup_raw_fork_tracking_v2(
     assert child_states == [f"ERRNO:{errno.EBADF}"] * iterations, child_states
 
 
+def _read_framed_message_v2(
+    read_fd: int, pending: bytearray, deadline: float
+) -> str | None:
+    """One newline-framed message from a pipe, or None once the deadline passes.
+
+    Framing is explicit rather than inferred from arrival timing: the caller
+    decides what a message MEANS, and the deadline only bounds how long it is
+    willing to wait for one.
+    """
+
+    while True:
+        newline = pending.find(b"\n")
+        if newline >= 0:
+            message = pending[:newline].decode()
+            del pending[: newline + 1]
+            return message
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        readable, _, _ = select.select([read_fd], [], [], remaining)
+        if not readable:
+            return None
+        chunk = os.read(read_fd, 4096)
+        if not chunk:
+            return None
+        pending.extend(chunk)
+
+
 def _assert_provisional_content_open_is_bounded_v2(
     target_root: Path,
     *,
     strip_nonblock: bool = False,
     deadline_seconds: float = 3.0,
+    publication_stall_seconds: float = 1.5,
 ) -> None:
-    """Bound a real FIFO race and require K to become available again."""
+    """Bound a real FIFO race with a CAUSAL handshake, never with timing.
+
+    Round 4 (`R4_F28`) invalidated the previous harness. It asserted the
+    diagnostic outcome after `process.wait(timeout=1)`, which silently assumed
+
+        K released  =>  diagnostic already published
+
+    That implication is false: K is dropped inside `lease.release`, and the
+    child still has to return from release, finish `run_doctor_v2`, and format
+    its result. Under integrated load that work can exceed any fixed window,
+    so the harness could kill the child before it published and then fail the
+    assertion it was supposed to be proving.
+
+    The replacement establishes two INDEPENDENT authorities over a real pipe
+    pair, so neither is inferred from the other:
+
+    - `K_RELEASED` is emitted by the child from inside a wrapper around the
+      real `TargetPackEpochLeaseV2.release`, AFTER the genuine release has
+      returned. It is the product-liveness authority.
+    - `OUTCOME` is emitted only after `run_doctor_v2` returns. It is the
+      diagnostic-result authority.
+
+    Between them the parent deliberately stalls the child LONGER than the old
+    one-second window while holding it blocked on an ACK. If publication
+    scheduling still mattered, that stall would break the test; it does not,
+    which is the point.
+
+    The production mutant (`strip_nonblock=True`) blocks inside the FIFO open,
+    so `release` is never reached, `K_RELEASED` never arrives, and the
+    writer stays BUSY -- the mutant dies on K liveness, exactly as before.
+    """
 
     _materialize_healthy_target_v2(target_root)
+    ready_read, ready_write = os.pipe()
+    ack_read, ack_write = os.pipe()
     child_code = r'''
 import os
 import stat
 import sys
 from pathlib import Path
 import app.agent_review.target_pack_doctor_v2 as doctor
+import app.agent_review.target_pack_epoch_v2 as epoch
 from tests.agent_review.test_target_pack_doctor_v2 import _manifest
 
 root = Path(sys.argv[1])
 strip_nonblock = sys.argv[2] == "1"
+ready_fd = int(sys.argv[3])
+ack_fd = int(sys.argv[4])
 profile = root / ".aiops" / "target-profile.v2.yaml"
+
+# Captured BEFORE any instrumentation: the handshake pipes are themselves
+# FIFOs, so the later FIFO-content guard must never mediate them or the
+# harness would strangle its own control channel.
+pristine_read = os.read
+
+
+def emit(message):
+    os.write(ready_fd, (message + "\n").encode())
+
+
 real_open = os.open
 if strip_nonblock:
     def vulnerable_open(path, flags, *args, **kwargs):
@@ -709,6 +846,19 @@ if strip_nonblock:
             flags &= ~os.O_NONBLOCK
         return real_open(path, flags, *args, **kwargs)
     os.open = vulnerable_open
+
+# The K-release authority: wrap the REAL release, emit only after it returns,
+# then block until the parent acknowledges. The parent therefore observes a
+# window in which K is provably free and the outcome is provably unpublished.
+real_release = epoch.TargetPackEpochLeaseV2.release
+def release_then_handshake(self):
+    real_release(self)
+    emit("K_RELEASED")
+    while True:
+        acknowledgement = pristine_read(ack_fd, 4096)
+        if acknowledgement:
+            break
+epoch.TargetPackEpochLeaseV2.release = release_then_handshake
 
 real_leaf = doctor._DoctorObservationSessionV2._open_leaf_path_fd_v2
 armed = True
@@ -719,7 +869,7 @@ def swap_after_path_observation(self, **kwargs):
         armed = False
         os.unlink(profile)
         os.mkfifo(profile)
-        print("SWAPPED", flush=True)
+        emit("SWAPPED")
     return result
 
 doctor._DoctorObservationSessionV2._open_leaf_path_fd_v2 = swap_after_path_observation
@@ -733,7 +883,8 @@ os.read = forbid_fifo_content_read
 
 try:
     outcome = doctor.run_doctor_v2(target_root=root, manifest=_manifest(), target_repo="owner/repo")
-    print(
+    os.read = real_read
+    emit(
         "OUTCOME:"
         + type(outcome).__name__
         + ":"
@@ -741,11 +892,11 @@ try:
         + ":"
         + str(getattr(outcome, "stage", ""))
         + ":"
-        + str(getattr(outcome, "relation", "")),
-        flush=True,
+        + str(getattr(outcome, "relation", ""))
     )
 except BaseException as exc:
-    print("EXCEPTION:" + type(exc).__name__ + ":" + str(exc), flush=True)
+    os.read = real_read
+    emit("EXCEPTION:" + type(exc).__name__ + ":" + str(exc))
     raise
 '''
     process = subprocess.Popen(
@@ -755,53 +906,68 @@ except BaseException as exc:
             child_code,
             str(target_root),
             "1" if strip_nonblock else "0",
+            str(ready_write),
+            str(ack_read),
         ],
         cwd=Path(__file__).resolve().parents[2],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        pass_fds=(ready_write, ack_read),
     )
-    assert process.stdout is not None
-    swapped = process.stdout.readline().strip()
-    assert swapped == "SWAPPED"
+    os.close(ready_write)
+    os.close(ack_read)
+    pending = bytearray()
+    observed: list[str] = []
+    try:
+        swapped = _read_framed_message_v2(
+            ready_read, pending, time.monotonic() + max(deadline_seconds, 10.0)
+        )
+        assert swapped == "SWAPPED", f"child never reached the race: {swapped!r}"
+        observed.append(swapped)
 
-    admitted = False
-    deadline = time.monotonic() + deadline_seconds
-    while time.monotonic() < deadline:
-        try:
-            with acquire_target_pack_epoch_v2(
-                target_root=target_root, exclusive=True
-            ):
-                admitted = True
-            break
-        except TargetPackEpochError as exc:
-            assert exc.reason_code == TARGET_PACK_EPOCH_BUSY_REASON_V2
-            time.sleep(0.02)
+        released = _read_framed_message_v2(
+            ready_read, pending, time.monotonic() + deadline_seconds
+        )
+        if released != "K_RELEASED":
+            raise AssertionError(
+                "doctor retained K beyond deadline; "
+                f"last messages={observed!r} signal={released!r}"
+            )
+        observed.append(released)
 
-    # K release precedes the child's diagnostic print.  Once the writer is
-    # admitted, give the child a bounded chance to emit the already-computed
-    # outcome instead of racing an immediate terminate against that print.
-    if admitted and process.poll() is None:
-        try:
-            process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
+        # K is provably free while the child is still blocked on the ACK.
+        with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
             pass
-    if process.poll() is None:
-        process.terminate()
+
+        # Deliberately outlast the old fixed one-second publication window to
+        # prove the diagnostic no longer depends on child scheduling.
+        time.sleep(publication_stall_seconds)
+        assert process.poll() is None, "child exited before it was acknowledged"
+        os.write(ack_write, b"ACK\n")
+
+        outcome_message = _read_framed_message_v2(
+            ready_read, pending, time.monotonic() + max(deadline_seconds, 10.0)
+        )
+        assert outcome_message is not None, f"child published nothing; got {observed!r}"
+        observed.append(outcome_message)
+        assert outcome_message == (
+            "OUTCOME:DoctorUnknownV2:target_pack_doctor_observation_stale:"
+            "object_binding:profile"
+        ), observed
+    finally:
+        os.close(ready_read)
+        os.close(ack_write)
+        if process.poll() is None:
+            process.terminate()
         try:
-            process.wait(timeout=1)
+            process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait(timeout=1)
-    stdout_tail, stderr = process.communicate(timeout=1)
-    output = "\n".join(part for part in (swapped, stdout_tail.strip()) if part)
+            process.wait(timeout=10)
+        process.communicate()
     with acquire_target_pack_epoch_v2(target_root=target_root, exclusive=True):
         pass
-    assert admitted, f"doctor retained K beyond deadline; output={output!r} stderr={stderr!r}"
-    assert (
-        "OUTCOME:DoctorUnknownV2:target_pack_doctor_observation_stale:"
-        "object_binding:profile"
-    ) in output, output
 
 
 def _assert_transient_relookup_setup_failure_has_no_fd_leak_v2(
@@ -3238,10 +3404,129 @@ def test_target_removed_after_shared_epoch_acquisition_is_unknown_stale(
     _assert_raced_root_absence_is_unknown_v2(tmp_path, monkeypatch)
 
 
-def test_environment_snapshot_iteration_failure_is_report_zero_unknown(
+@pytest.mark.parametrize("failure", [RuntimeError, MemoryError])
+def test_environment_snapshot_failure_is_report_zero_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: type[BaseException]
+) -> None:
+    """Both enumerated snapshot failure classes reach the same typed outcome.
+
+    `RuntimeError` models a concurrent `os.environ` mutation. `MemoryError`
+    models genuine resource exhaustion while materializing the snapshot --
+    round 4 (`R4_F27`) reproduced that class escaping `run_doctor_v2` as a raw
+    exception, because the boundary enumerated only `RuntimeError`. This is
+    the permanent deterministic regression gate; the real constrained-address-
+    space characterization below is empirical support, never a CI dependency.
+    """
+
+    _assert_environment_snapshot_failure_is_unknown_v2(
+        tmp_path, monkeypatch, failure=failure
+    )
+
+
+def test_real_memory_exhaustion_in_the_doctor_observation_plane_is_unknown(
+    tmp_path: Path,
+) -> None:
+    """Characterization against real `os._Environ` and a real `RLIMIT_AS`.
+
+    Round 4 method note, deliberately recorded here rather than in prose only:
+    this probe FALSIFIED the first scoping of `R4_F27`. The finding named the
+    environment-key snapshot, but a genuinely exhausted process reaches the
+    CONTENT READ first -- each chunk allocates a megabyte-scale buffer, while
+    the key snapshot allocates comparatively little. The enumeration at the
+    content-read seam exists because this probe put it there, not because it
+    seemed tidy.
+
+    Scope, and why this test can skip: under total address-space starvation
+    every allocation fails, including small ones inside the already-merged K
+    primitive (`target_pack_epoch_v2._runtime_filesystem_type_v2` reads
+    `/proc/self/mountinfo`, tens of kilobytes). That module is `#258` code
+    this PR does not touch, so an escape there is adjacent and pre-existing,
+    exactly like `F23`/`#260` -- it is reported as a skip naming the site,
+    never as a green, and never as a failure attributed to this PR. The
+    assertion fires only when a `MemoryError` escapes a seam this PR owns.
+
+    The deterministic parametrized RED above remains the permanent gate; this
+    is empirical support and never a CI dependency.
+    """
+
+    if not hasattr(resource, "RLIMIT_AS"):
+        pytest.skip("RLIMIT_AS unavailable on this platform")
+
+    _materialize_healthy_target_v2(tmp_path)
+    child = r"""
+import os, resource, sys, traceback
+from pathlib import Path
+import app.agent_review.target_pack_doctor_v2 as doctor
+from tests.agent_review.test_target_pack_doctor_v2 import _manifest
+
+root = Path(sys.argv[1])
+manifest = _manifest()
+blob = "x" * 65536
+for index in range(256):
+    os.environ["AGENTREVIEW_R4_PROBE_%d" % index] = blob
+soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+resource.setrlimit(resource.RLIMIT_AS, (48 * 1024 * 1024, hard))
+try:
+    outcome = doctor.run_doctor_v2(
+        target_root=root, manifest=manifest, target_repo="owner/repo"
+    )
+except MemoryError:
+    resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+    # Attribute to the innermost AGENT-REVIEW frame, never to the innermost
+    # frame overall: a MemoryError raised inside a stdlib helper called from
+    # a seam this PR owns must still be attributed to this PR, or the probe
+    # could skip on exactly the failure it exists to catch.
+    frames = traceback.extract_tb(sys.exc_info()[2])
+    owned = [f for f in frames if os.sep + "agent_review" + os.sep in f.filename]
+    frame = owned[-1] if owned else frames[-1]
+    print("ESCAPED:%s:%s" % (os.path.basename(frame.filename), frame.name), flush=True)
+    raise SystemExit(0)
+except BaseException as exc:
+    resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+    print("OTHER:" + type(exc).__name__, flush=True)
+    raise SystemExit(0)
+resource.setrlimit(resource.RLIMIT_AS, (soft, hard))
+print(
+    "OUTCOME:"
+    + type(outcome).__name__
+    + ":"
+    + str(getattr(outcome, "reason_code", ""))
+    + ":"
+    + str(getattr(outcome, "stage", "")),
+    flush=True,
+)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", child, str(tmp_path)],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+    lines = [line for line in completed.stdout.strip().splitlines() if line]
+    tail = lines[-1] if lines else ""
+    if not tail.startswith(("OUTCOME:", "ESCAPED:", "OTHER:")):
+        pytest.skip(f"probe never reached the decision: {completed.stderr[-400:]!r}")
+    if tail.startswith("OTHER:"):
+        pytest.skip(f"platform raised a different class first: {tail}")
+    if tail.startswith("ESCAPED:"):
+        _, module_name, function_name = tail.split(":", 2)
+        assert module_name != "target_pack_doctor_v2.py", (
+            "a genuine MemoryError escaped a seam this PR owns "
+            f"({module_name}:{function_name}) instead of becoming a typed outcome"
+        )
+        pytest.skip(
+            "total address-space starvation failed first inside pre-existing "
+            f"merged code ({module_name}:{function_name}); adjacent to this PR"
+        )
+    assert tail.startswith("OUTCOME:DoctorUnknownV2"), tail
+    assert "target_pack_doctor_observation_unavailable" in tail, tail
+
+
+def test_content_read_memory_exhaustion_is_report_zero_unknown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _assert_environment_snapshot_failure_is_unknown_v2(tmp_path, monkeypatch)
+    _assert_content_read_memory_exhaustion_is_unknown_v2(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize("seam", ["intermediate", "leaf"])
