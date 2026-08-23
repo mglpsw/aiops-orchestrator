@@ -44,12 +44,24 @@ one reports that no candidate formed, that a recurrence was admitted, or that a
 formed candidate is held for investigation, and the supporting one may be left
 undecided. A hold is recorded as neither a "yes" nor a "no".
 
-Two uncertainties live in this document and must not merge. This section's
-"Unknown" is a preflight question nobody can answer yet, and it blocks
-implementation. A recurrence hold is a candidate that did form and whose
-qualification is unresolved, and it blocks the convergence claim. Different
-subjects, different process contexts; neither is the other's answer, and
-resolving one establishes nothing about the other.
+Uncertainty arises at several distinct stages of this document, and the subjects
+must not merge. Three are named where they arise, and they are not a census:
+
+```text
+preflight Unknown         a §§1–7 question nobody can answer yet
+                          → the design is not ready to implement
+
+unresolved bearing        a finding is factually established, and whether it
+                          bears on the claim is not
+                          → the fact stands; no validated finding for that
+                            claim; the claim may not rest on its irrelevance
+
+recurrence hold           a candidate did form and its qualification is open
+                          → the convergence claim is blocked on that candidate
+```
+
+Different subjects, different process contexts. Resolving any one of them
+establishes nothing about the others, and none is another's answer.
 
 ## 1. Property
 
@@ -166,14 +178,18 @@ Four things are distinct here, and collapsing any adjacent pair is what has
 repeatedly broken this section:
 
 ```text
-ReviewerObservation   what someone reports — advisory, whatever its source
+ReviewerObservation      what someone reports — advisory, whatever its source
+      ↓ factual qualification
+FindingEstablished(f)    reproduced, violated proposition identified, defect
+                         domain demonstrated — the defect is real
+      ↓ decision-relevance, established separately and never derived from the above
+MaterialToClaim(f, C)    whether that established finding bears on claim C
+      ↓ both established, and only then
+ValidatedFinding(f, C)   shorthand for the pair, not a third truth-maker
       ↓
-ValidatedFinding      reproduced, material, violated proposition identified,
-                      defect domain demonstrated
-      ↓
-RecurrenceCandidate   a validated finding on the subject a declared correction
-                      produced, that correction answering an earlier validated
-                      finding — structural, not a similarity judgement
+RecurrenceCandidate      a validated finding on the subject a declared correction
+                         produced, that correction answering an earlier validated
+                         finding — structural, not a similarity judgement
       ↓
 RecurrenceAdmission   evidence establishes that the proposition the correction
                       meant to restore is validly violated again on the subject
@@ -182,9 +198,23 @@ RecurrenceAdmission   evidence establishes that the proposition the correction
 STOP / REDESIGN       policy over admitted recurrence, not over observations
 ```
 
+```text
+ValidatedFinding(f, C)  =  FindingEstablished(f)  ∧  Established(MaterialToClaim(f, C))
+```
+
+`ValidatedFinding` is a shorthand for both predicates being in hand, and nothing
+more. It establishes no truth of its own: `FindingEstablished` owns whether the
+defect is real, `MaterialToClaim` owns whether it bears on `C`, and neither is
+derived from the other. Note that it now carries a claim — there is no
+`ValidatedFinding(f)` unqualified, because there is no materiality without a
+decision to be material to.
+
 Collapsing the first two makes a reviewer's raw output a process decision.
 Collapsing the last two makes the party the rule binds the party who decides
-whether it binds them. Both have been tried here and both failed.
+whether it binds them. Collapsing fact into relevance — which an earlier revision
+did, by putting materiality inside the factual predicate — lets whoever answers
+*"does this matter?"* control which facts the method can ever see. All three have
+been tried here and all three failed.
 
 **Disposition sits on a different axis, and does not reach backwards.** A
 validated finding may later be dispositioned `fixed`, `superseded`,
@@ -193,8 +223,10 @@ what was established at the time. Two histories are kept, and they are not one
 record:
 
 ```text
-ValidationHistory(f)            f met the finding-level predicates at its review
-                                epoch — a fact about that epoch
+ValidationHistory(f, C)         f was factually established and its bearing on C
+                                was established, both at their epochs — facts
+                                about those epochs, and about C. It records no
+                                materiality to any other claim
 
 RecurrenceAdmissionHistory(c)   candidate c qualified under the rule below at the
                                 epoch it qualified — a fact about that epoch
@@ -228,9 +260,11 @@ settled and where it is not.
 `RecurrenceCandidate` exists when, and only when, all of the following hold:
 
 ```text
-ValidatedFinding(f1) on S1               f1 met the finding-level predicates,
-                                         among them the proposition P it was
-                                         validated as violating
+ValidatedFinding(f1, C) on S1            f1 is factually established, among its
+                                         predicates the proposition P it violates,
+                                         AND its bearing on this loop's claim C is
+                                         established — a finding whose materiality
+                                         is unresolved has not met this row
 CorrectionAttempt(c) answering f1        declared before the review that follows
                                          it, naming its before/after subjects,
                                          the corrective abstraction, and the
@@ -254,7 +288,11 @@ before_subject(c) is S1 or descends      the attempt answers f1 and sits on the
 after_subject(c)  = S2                   the attempt produced the subject that
                                          was then reviewed
 FreshReview(r2) on S2, a later subject
-ValidatedFinding(f2) on S2               f2 met them too
+ValidatedFinding(f2, C) on S2            f2 met them too, against the same claim
+                                         C — if the claim itself changed
+                                         materially between the two findings, that
+                                         is a different subject and this document
+                                         does not settle it here
 Subject(f2) = Subject(r2) = S2           and f2 came out of that review of that
                                          subject, not out of a report against an
                                          earlier one
@@ -1114,8 +1152,8 @@ correction was attempted, that a correction failed, that a recurrence occurred,
 or that none did. It says only that a claim is being made on a basis that is not
 in hand, which is the same objection this document raises everywhere else.
 
-**Which findings the accounting must cover is an open question here, and is
-deliberately left open.** Two attempts have failed. The first scoped it to the
+**The convergence-basis closure problem — which established findings a claim
+must reconcile — is open here, and is deliberately left open.** Two attempts have failed. The first scoped it to the
 propositions a claim "actually consumes", which let the claimant decide what
 their own claim depended on. The second derived a set from validation history,
 historical materiality and loop membership — and materiality was itself
@@ -1152,8 +1190,8 @@ Disposition(f)                  ⇏  ConvergenceEstablished
 ```
 
 The middle two matter as much as the first, because they are the cheaper escape:
-a finding that cannot be argued out of the accounting can be labelled out of it
-instead. It cannot. Each of those labels asserts something, each assertion needs
+a finding that cannot be argued out of a claim's reckoning can be labelled out of
+it instead. It cannot. Each of those labels asserts something, each assertion needs
 the evidence it asserts, and none of them is self-supporting. "Out of scope" in
 particular is a materiality claim wearing a lifecycle label, and it answers to
 §"Materiality is a relation, not a property" like any other. That is the same `FinalState != History`
@@ -1181,9 +1219,13 @@ here merges them.
 Two conditions, on different axes, and both are required:
 
 ```text
-SemanticPromotionEligible(C)   the convergence claim C is established — which
-                               requires, among whatever else the method demands,
-                               the derived finding-basis condition above
+SemanticPromotionEligible(C)   the convergence claim C is established — and it
+                               is not, wherever any material predicate it rests
+                               on is unresolved. Which established findings such
+                               a claim must reconcile is the unresolved
+                               convergence-basis closure problem above, so this
+                               conjunct is a necessary condition and not a
+                               complete one
 Authorized(g, promote, C)      an operational grant permits the action
 ```
 
@@ -1223,10 +1265,16 @@ the situation is believed to obtain:
   whoever holds both fixes in mind, and nothing here reconstructs it afterwards
   from a record. It is therefore established when someone establishes it, which
   is the general rule below rather than an exception to it;
-- an input still inside the change's declared required-acceptance domain
-  begins failing (a feature deliberately made unsupported under §3 is a
-  contraction, not a regression — but only if that decision is written down
-  before the failure, not after it);
+- an input the change is accountable to begins failing. A feature deliberately
+  made unsupported under §3 is a contraction rather than a regression **only
+  where the authority for that support decision is independently established**.
+  Writing the decision down before the failure prevents hindsight rewriting and
+  establishes nothing else: timing fixes an epoch, not a right to narrow the
+  accepted domain, exactly as it does not for the discriminant set. An earlier
+  revision made the record's date sufficient, which let a prewritten local
+  declaration convert a break into a contraction and avoid this trigger. Where
+  that authority is unresolved, so is whether this is a contraction — investigate
+  it rather than defaulting either way;
 - fixing a finding would require reproducing internals of an upstream authority
   inside this change, to a degree that makes this change a second
   implementation of that authority;
@@ -1384,7 +1432,10 @@ that starts distinguishing genuinely equivalent inputs has over-corrected.
 
 ## Finding validation, and the corrective cut
 
-`ReviewerFinding != ValidatedFinding`. For each finding, in order — every
+`ReviewerFinding != FindingEstablished`. This section establishes the factual
+axis only; whether an established finding bears on a claim is
+§"Materiality is a relation, not a property", and the two together are what
+`ValidatedFinding(f, C)` is shorthand for. For each finding, in order — every
 finding, since deciding in advance which ones matter is the same discretion the
 STOP triggers refuse:
 
@@ -1518,37 +1569,49 @@ CarrierValidity            ⇏   ObjectiveAuthority
 OperationalGrant           ⇏   MaterialToClaim
 ```
 
-**What does establish it, so far as this document can say.** One case is
-available now and rests on authority this document already names. Where the
-proposition `f` violates is an applicable obligation owned by an authority the
-change does **not** own — §2's question about which component owns the semantic
-rule — the change cannot narrow that obligation away, because it never held it:
+**What does establish it: nothing this document supplies.** An earlier revision
+claimed a floor here — that a proposition owned by an upstream authority is
+thereby material — and it was wrong, because owning a rule and that rule
+governing a particular decision are different relations:
 
 ```text
-ApplicableObligation(P, C) owned upstream of C
-∧ FindingEstablished(f) violating P
-      →  MaterialToClaim(f, C)
+Owns(A, P)   ⇏   Applicable(P, C)
 ```
 
-Local acceptance conditions have no power over that. A change accountable to a
-public contract, a security requirement or a required-safe-input domain does not
-escape it by omitting it from a locally written scope, however early the omission
-was recorded and however valid the document recording it. This is
-§"Authority non-escalation" applied to materiality: a change cannot acquire, by
-declaration, an authority it does not have.
+An upstream policy may legitimately own a rule about production parsers while a
+change to a test-only serializer is not governed by it. The owner is known; the
+applicability is not, and asserting it would be the same unowned predicate this
+document refuses everywhere else. That derivation is withdrawn.
 
-The converse case is legitimate and must not be barred. A task genuinely bounded
-by whoever holds authority over it may exclude ground no applicable obligation
-requires it to cover, and a finding about that ground is then immaterial to it.
-**This document does not define who holds that authority.** It does not name an
-objective owner, and it will not appoint one by default: not the author, not the
-maintainer, not the reviewer, not whoever wrote a scope first, not the holder of
-an operational grant, and not a contract's signer merely because a field exists
-to sign. Where such authority is independently established, this relation
-consumes it like any other established predicate. Where it is not:
+What survives is narrower and is a **non-waiver** law, not a source of
+materiality. It says what a local declaration cannot undo, given a relation
+already established by some independent admissible basis:
 
 ```text
-no applicable upstream obligation resolves the relation
+Established(Applicable(P, C))  ∧  AuthorityOwns(A, P)
+      →  no local acceptance, scope text or capability declaration waives P
+```
+
+That has real force where its antecedent holds: a change genuinely governed by a
+public contract or a security requirement does not escape it by omitting it
+locally, however early the omission was recorded and however valid the document
+recording it. This is §"Authority non-escalation" applied to materiality — a
+change cannot acquire, by declaration, an authority it does not have. But it
+establishes nothing on its own, because it consumes `Applicable(P, C)` rather
+than producing it.
+
+**This document supplies no general derivation of applicability or of
+materiality, and will not approximate one.** It does not name an objective owner
+and will not appoint one by default: not the author, not the maintainer, not the
+reviewer, not whoever wrote a scope first, not the holder of an operational
+grant, and not a contract's signer merely because a field exists to sign. Nor
+will it accept a proxy — same repository, same file, same module, same violated
+proposition, or the appearance of relatedness. Where an independent authority or
+evidence relation establishes materiality, this relation consumes that result
+like any other established predicate. Where none does:
+
+```text
+no independently established Applicable(P, C)
 ∧ no legitimate authority over the objective is established
       →  MaterialToClaim(f, C) is unresolved
 ```
@@ -1576,7 +1639,7 @@ FindingEstablished(f)  ∧  Unknown(MaterialToClaim(f, C))
       →  the finding stands as a fact
       →  it may not be treated as material
       →  it may not be treated as immaterial
-      →  it does not silently leave the accounting
+      →  it does not silently drop out of the claim's reckoning
       →  no RecurrenceCandidate forms from that unresolved relation
       →  and no claim may rest on its irrelevance
 ```
