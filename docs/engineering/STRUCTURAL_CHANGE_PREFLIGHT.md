@@ -173,8 +173,9 @@ RecurrenceCandidate   a validated finding on the subject a declared correction
                       produced, that correction answering an earlier validated
                       finding — structural, not a similarity judgement
       ↓
-RecurrenceAdmission   evidence establishes that the correction's own declared
-                      discriminants are still defeated
+RecurrenceAdmission   evidence establishes that the proposition the correction
+                      meant to restore is validly violated again on the subject
+                      it produced
       ↓
 STOP / REDESIGN       policy over admitted recurrence, not over observations
 ```
@@ -216,12 +217,19 @@ afterwards.
 `RecurrenceCandidate` exists when, and only when, all of the following hold:
 
 ```text
-ValidatedFinding(f1) on S1               f1 met the finding-level predicates
+ValidatedFinding(f1) on S1               f1 met the finding-level predicates,
+                                         among them the proposition P it was
+                                         validated as violating
 CorrectionAttempt(c) answering f1        declared before the review that follows
                                          it, naming its before/after subjects,
-                                         the proposition it means to restore, the
-                                         corrective abstraction, and its intended
-                                         discriminants D(c)
+                                         the corrective abstraction, and the
+                                         probes it plans to run
+intended_proposition(c) = P              not a free choice: an attempt that
+                                         declares it answers f1 is an attempt to
+                                         restore what f1 was validated against.
+                                         An author may decline to answer f1; what
+                                         they may not do is claim to answer it
+                                         while aiming at something else
 before_subject(c) is S1 or descends      the attempt answers f1 and sits on the
                   from it                same line of development
 after_subject(c)  = S2                   the attempt produced the subject that
@@ -235,10 +243,17 @@ ReviewEpoch(f1) < epoch(c) < ReviewEpoch(f2)
 ```
 
 Nothing in that list is a similarity judgement and nothing in it is anyone's
-assignment. Every row is a subject relation, an epoch relation, or a record the
-author wrote before the finding that would test it existed. A candidate is
-structurally present or it is not, and asking a second person does not change
-which.
+assignment. Every row is a subject relation, an epoch relation, a finding-level
+predicate already established under §"Finding validation, and the corrective
+cut", or a record the author wrote before the finding that would test it existed.
+A candidate is structurally present or it is not, and asking a second person does
+not change which.
+
+**`intended_proposition(c)` is derived, not declared.** It is read off `f1`'s own
+violated proposition, which is a finding-level predicate with a named authority —
+the normative contract the change is measured against — established when `f1` was
+validated and before `c` was written. The author chooses whether to answer `f1`
+and how; they do not get to choose what answering it would mean.
 
 **`f2` must belong to the review of the later subject, and the identity is the
 binding — not the ordering.** Without it, a report against the *old* subject,
@@ -257,45 +272,49 @@ does not exclude this, because the stale finding really is later in time; only
 subject identity does.
 
 A formed candidate claims one thing: a declared correction ran between two
-validated findings on ordered subjects, and whether it did what it said belongs
-to the next step. It is not a recurrence and fires nothing. Formation is
-deliberately cheap, because the expensive question — did the correction's own
-discriminants survive? — is where evidence is needed, and where it can be held
-open rather than answered by default in whichever direction the missing
-information happens to favour.
+validated findings on ordered subjects, and what the later finding was validated
+against belongs to the next step. It is not a recurrence and fires nothing.
+Formation is deliberately cheap, because the expensive question — is the
+proposition the correction meant to restore violated again? — is where evidence
+is needed, and where it can be held open rather than answered by default in
+whichever direction the missing information happens to favour.
 
 **Admission is by evidence, not by anyone's say-so.** A formed candidate is
 admitted when, and only when, the correction barrier holds across it, and one
 derived relation is what establishes that barrier:
 
 ```text
-DefeatsCorrectionAttempt(f2, c)   the evidence behind f2 establishes that a
-                                  discriminant in D(c) still fails on the exact
-                                  after-subject the attempt produced
+EstablishedCorrectionFailure(c, f2)   ViolatedProposition(f2) = intended_proposition(c)
+                                      — the proposition c meant to restore is
+                                      validly violated again, on the exact
+                                      after-subject c produced
 ```
 
 This introduces no authority, no record kind and no entity. It is derived, each
-time, from two things that already exist: what `c` declared it would
-discriminate, and the reproducer that established `f2`. The question is narrow
-and checkable — *`c` said `d1` would hold on `S2`; does `d1` hold on `S2`?* — and
-it is answered by the same evidence that validated `f2`, against the same exact
-subject.
+time, from two predicates that already exist and already have named authorities:
+the proposition `f1` was validated as violating, and the proposition `f2` was
+validated as violating. Both come from the normative contract the change is
+measured against, not from anyone's opinion, and both were fixed by their own
+findings before this relation was asked about.
 
 ```text
-c declares:      restore proposition P, discriminants d1, d2
-f2 establishes:  d1 still fails on S2, the exact after-subject of c
-                 →  DefeatsCorrectionAttempt(f2, c)
+c responds to f1, whose violated proposition is P
+f2 is validated on S2 as violating P
+      →  the attempt to restore P did not restore it
+      →  EstablishedCorrectionFailure(c, f2)
 ```
 
 What may **not** establish it is resemblance of any kind. "The same abstraction
 is wrong", "these look like one defect", "this is the same approach" — none is
-the relation, whoever says it and however many agree. The relation is a defeated
-declared discriminant, or it is nothing.
+the relation, whoever says it and however many agree. Nor may a plan establish
+it: see §"Probes are a plan, not a verdict" below.
 
-**Discriminants are read as they were declared.** `D(c)` is fixed at `epoch(c)`,
-which is before the review that produces `f2`. A discriminant rewritten once `f2`
-exists is not `D(c)` and does not participate; the precommitment is the entire
-reason this relation cannot be tuned toward the answer its author would prefer.
+**What is precommitted is the answer relation, not the evidence plan.** Fixed at
+`epoch(c)`, before the review that produces `f2`, is that `c` claims to answer
+`f1` — and therefore that it aims at `P`. That is what cannot be rewritten once
+`f2` lands. An author who waits for `f2` and then says the earlier patch was
+aimed at something else is redescribing a precommitment, and the redescription
+does not participate.
 
 The subject relations carry as much weight as the epochs. An attempt whose
 after-subject is not the one reviewed is an attempt at something else, however
@@ -304,25 +323,59 @@ not answering `f1`. Requiring `before_subject(c)` to *descend from* `S1` rather
 than equal it leaves room for the ordinary case where other work lands between
 the finding and the attempt.
 
-The barrier is established, unsettled, or shown not to hold — and that third
-outcome is reached only by positive evidence that the declared discriminants
-survived, never by the absence of a record:
+**Probes are a plan, not a verdict.** A `CorrectionAttempt` is expected to say
+which probes, witnesses or discriminants it intends to run. Recording them is
+good practice — it makes the attempt reviewable, guides the sibling search, and
+is exactly the mutation-discrimination discipline §5 asks for. What they do
+**not** do is decide anything here:
 
 ```text
-established       DefeatsCorrectionAttempt(f2, c) holds on the evidence
-                  →  the candidate is admitted
-shown not to hold the evidence establishes that every discriminant in D(c)
-                  survives on S2  →  the correction did what it said, and there
-                  is no recurrence to admit
-unsettled         the evidence settles neither  →  HOLD_FOR_INVESTIGATION
+every planned probe passes  →  those probes passed
+                            ⇏  the correction succeeded
+                            ⇏  the barrier is out of scope or cleared
+
+a planned probe fails       →  that probe failed
+                            ⇏  a recurrence
+                            ⇏  anything, until it is carried into a
+                               ValidatedFinding under the rules above
 ```
 
-Keep the third row distinct from the negative this document refuses elsewhere.
-"This correction worked" is a claim about `c` and `S2` backed by a reproducer,
-and it needs no authority over any interval. "No correction was attempted" is a
-claim about everything that did not happen over a whole interval, and it has no
-legitimate source here. Establishing the first is ordinary; the second remains
-unreachable.
+An earlier revision made this set decisive in both directions, and it was wrong
+in both. The author writes the set, so a narrow one could clear a correction
+whose proposition was still violated by a manifestation nobody planned to probe,
+and a broad one could turn any unrelated failure into a mandatory redesign. A
+set the measured party composes cannot carry a mandatory transition, and the
+repair is not to certify the set — no `SoundD`, `CompleteD` or `ApprovedD` is
+introduced, and certifying it would need exactly the completeness oracle refused
+elsewhere. The repair is that the set stops deciding.
+
+The barrier is established, out of scope for this attempt, or unsettled:
+
+```text
+established     ViolatedProposition(f2) = intended_proposition(c)
+                →  the candidate is admitted
+out of scope    f2 was validated against a different proposition
+                →  this is not a recurrence of c. It is a finding in its own
+                   right, with whatever obligations that carries, and it may be
+                   strong structural evidence — but it is not this attempt
+                   failing
+unsettled       the proposition f2 violates could not be established, or its
+                identity with P is genuinely contested
+                →  HOLD_FOR_INVESTIGATION
+```
+
+Note what the middle row is and is not. It says this attempt is not what `f2`
+reports on; it does not say the attempt succeeded, and nothing here licenses
+reading it that way. A correction is not declared to have worked by this
+document at all — the absence of a validated finding against `P` is the absence
+of a found defect, which §"Epistemic classification" already refuses to treat as
+proof. `NON_REFUTED` within a declared scope is the most a clean review yields,
+and it is not a clearance certificate for `c`.
+
+Keep all three rows distinct from the negative this document refuses elsewhere.
+"No correction was attempted" is a claim about everything that did not happen
+over a whole interval, and it has no legitimate source here. None of the rows
+above reaches it.
 
 `HOLD_FOR_INVESTIGATION` is not a verdict about the boundary. It does not say a
 recurrence occurred, does not say none did, does not say a correction was
@@ -394,20 +447,21 @@ The temporal shape is the point. **Concurrence is not recurrence.** Two reviewer
 validating the same defect on the same subject is corroboration — the finding is
 better evidenced, not repeated — and admitting it would mean that adding
 reviewers makes a change likelier to be redesigned, which is an absurd
-incentive. Equally, two findings in one boundary with nothing tried between them
-are one episode still open, not a recurrence — but that is a statement about what
-recurrence *means*, not a disposition anyone may reach from a silent record. What
-recurrence means is that the boundary was corrected, reviewed again on the
-corrected subject, and produced a validated finding anyway. Where the record does
-not show that, the question is held, not answered.
+incentive. Equally, two findings against one proposition with nothing tried
+between them are one episode still open, not a recurrence — but that is a
+statement about what recurrence *means*, not a disposition anyone may reach from
+a silent record. What recurrence means is that a declared attempt to restore a
+proposition ran, the subject it produced was reviewed, and that proposition was
+validly violated there anyway. Where the record does not show that, the question
+is held, not answered.
 
-**A change touching a boundary is not a correction of it.** Version control
-establishes the subjects, their order, and the exact delta between them; it
-cannot establish that the delta was corrective, and treating it as though it
-could would let a cosmetic touch manufacture the barrier:
+**A change touching the ground a finding sits on is not a correction of it.**
+Version control establishes the subjects, their order, and the exact delta
+between them; it cannot establish that the delta was corrective, and treating it
+as though it could would let a cosmetic touch manufacture the barrier:
 
 ```text
-ChangeTouches(B)   ⇏   CorrectionOf(B)
+ChangeTouches(the ground f1 sits on)   ⇏   CorrectionAttempt answering f1
 ```
 
 So the barrier is a `CorrectionAttempt`, not a correction, and the authorities
@@ -415,22 +469,35 @@ divide:
 
 ```text
 version control        the two subjects, their ordering, the delta
-the attempt record     that this delta was meant to correct B, and how
-tests / reproducers    whether the intended discriminants exercise it
-the later review       whether a validated finding in B recurred anyway
+the attempt record     that this delta was declared to answer f1
+the normative contract what proposition f1 was validated as violating, and so
+                       what c is aiming at
+the later review       whether that same proposition was validly violated on the
+                       exact after-subject
+tests / reproducers    the evidence that settles the row above; and, separately,
+                       the planned probes, which guide work and settle nothing
 ```
 
-Nothing here has to prove the attempt worked. If `f2` appears, that is evidence it
-did not — which is the whole signal. What matters is that the attempt is
-**declared before the review that follows it**. An author chooses which correction
-to attempt, and that is theirs to choose; what they cannot do is wait until `f2`
-lands and then decide the earlier patch was not a correction of `B` after all.
-Precommitment is what separates choosing a correction from controlling whether
-recurrence can be established.
+Nothing here has to prove the attempt worked, and nothing here treats the mere
+appearance of `f2` as proof it failed. An earlier revision said exactly that —
+*"if `f2` appears, that is evidence it did not"* — and it is withdrawn: a
+validated finding against some other proposition on `S2` says nothing about
+whether `c` restored `P`. What matters is that the attempt is **declared before
+the review that follows it**. An author chooses which correction to attempt, and
+that is theirs to choose; what they cannot do is wait until `f2` lands and then
+decide the earlier patch was aimed elsewhere. Precommitment is what separates
+choosing a correction from controlling whether recurrence can be established.
 
-Note that `f2` need not violate the same proposition as `f1`. Requiring that would
-be too narrow: working by boundary exists precisely to catch a *different*
-material defect thrown off by the same abstraction.
+**`f2` must violate the same proposition as `f1`, and this reverses an earlier
+choice in this document.** The previous text said requiring it "would be too
+narrow", on the reasoning that working by boundary exists to catch a *different*
+material defect thrown off by the same abstraction. That reasoning is sound about
+what is worth investigating and wrong about what may fire a mandatory transition:
+with boundary no longer a truth-maker, "different defect, same abstraction" has
+nothing left establishing it except someone's reading of how far the abstraction
+extends. A different proposition violated on `S2` is a finding with its own
+obligations and may be strong architectural evidence; it is not this attempt
+failing, and it does not fire `STOP` on `c`.
 
 **Nor need `f2` be a different defect from `f1`.** An earlier draft required that
 `f2` "is not another observation of `f1`", and that condition is removed. It
@@ -453,18 +520,18 @@ same subject, several defects     →  distinct findings in one round; no declar
                                      have been defeated yet
 later subject, after a declared   →  candidate formed; the evidence then decides
 correction
-  discriminants defeated          →  recurrence admitted, whether or not the
-                                     second finding is "the same defect"
-  discriminants survived          →  the correction did what it said; no
-                                     recurrence
+  same proposition violated       →  recurrence admitted, whether or not the
+     again on the after-subject       second finding is "the same defect"
+  a different proposition         →  not a recurrence of this attempt; a finding
+                                     in its own right
   neither established             →  HOLD_FOR_INVESTIGATION; the candidate stands
 later subject, no declared        →  no candidate, and no mandatory transition.
 correction                           A structural signal worth investigating
 ```
 
 A second reviewer agreeing that two findings look like the same recurrence adds
-nothing to the relation above. Agreement is not evidence that a declared
-discriminant failed; independence does not make it so; and no quantity of it
+nothing to the relation above. Agreement is not evidence that a proposition was
+violated again; independence does not make it so; and no quantity of it
 substitutes for the conditions above, because concurring opinions compose into a
 stronger opinion and never into an established relation. That is what a model
 reviewer's output is worth here, and a human reviewer's too: either can raise
@@ -500,12 +567,13 @@ already formed — never to the validation of a single finding:
 correction delta            the version-control record: the before/after
                             subjects, their ordering, and what changed
 correction attempt          the precommitted record: that this delta was declared
-                            to answer f1, with which discriminants D(c)
+                            to answer f1, and so aims at f1's proposition
 epoch ordering              the version-control and review records together
                             — these three form the candidate
 
-defeated discriminant       the reproducer behind f2, read against D(c) on the
-                            exact after-subject
+same violated proposition   the two findings' violated propositions, each
+                            established against the normative contract, compared
+                            on the exact after-subject
                             — this one qualifies a formed candidate
 ```
 
@@ -530,7 +598,7 @@ barrier is the two together:
 ```text
 correction barrier  =  correction delta
                      ∧  correction attempt
-                     ∧  DefeatsCorrectionAttempt(f2, c)
+                     ∧  EstablishedCorrectionFailure(c, f2)
 
 ChangeTouches(f1's ground)  ⇏  CorrectionAttempt answering f1
 ```
@@ -538,9 +606,9 @@ ChangeTouches(f1's ground)  ⇏  CorrectionAttempt answering f1
 All three conjuncts must be in hand. The first two form the candidate and the
 third qualifies it; a barrier with any one missing is not established, and an
 unestablished conjunct is never read as a settled answer in whichever direction
-happens to be convenient. Note what the third conjunct excludes: a declared
-correction that ran and demonstrably worked leaves the first two satisfied and
-the barrier unestablished, which is the correct result rather than a gap.
+happens to be convenient. Note what the third conjunct excludes: a later finding
+against some other proposition leaves the first two satisfied and the barrier
+unestablished, which is the correct result rather than a gap.
 
 A finding is validated by meeting the finding-level predicates, not by being labelled
 `VALID`; an `INVALID` is a claim that contradicting evidence exists and is open to
@@ -751,9 +819,9 @@ from landings alone.
 
 1. Did a validated finding this round land on the subject a declared correction
    produced, where that correction answered an earlier validated finding of this
-   loop? Name the correction, both findings, and the discriminants `c` declared.
-   That forms a candidate; the evidence then decides between an admitted
-   recurrence, a correction shown to have held, and a hold. A candidate whose
+   loop? Name the correction, both findings, and the proposition `c` was aiming
+   at. That forms a candidate; the evidence then decides between an admitted
+   recurrence, a finding against some other proposition, and a hold. A candidate whose
    evidence settles neither is not thereby a "no"; it is a hold.
 2. From round three onward: does this loop hold two or more candidates whose
    declared corrections were each shown to have been defeated? Before round three
@@ -784,7 +852,7 @@ mandatory stop — the mirror of the defect the whole section exists to prevent,
 since the party who found the defect would decide that the process must halt.
 A "yes" is recorded and may motivate a spike or a sibling search. It may **not**
 reach a load-bearing predicate, directly or by influence: it cannot change a
-boundary membership, cannot supply or strengthen `DefeatsCorrectionAttempt`,
+boundary membership, cannot supply or strengthen `EstablishedCorrectionFailure`,
 cannot turn a hold into an admission, cannot convert an unresolved membership
 into an established one, and has no precedence over the barrier. An earlier
 version let it "inform how a boundary is read", which was a mandatory transition
