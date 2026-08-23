@@ -367,39 +367,55 @@ own that is larger, smaller or differently shaped; that is a fact about `f2`. Al
 that matters here is whether the concrete violating witness that made `f2` a
 validated finding lands inside the ground `c` answered for.
 
-**The relation is not vacuous: a manifestation nobody enumerated can still land
-inside a historical `Δ1`, when the domain was demonstrated as a condition rather
-than as a list of witnesses.** A bounded sibling search does not have to stop at
-the exact inputs tried; where it establishes *why* a class of inputs shares the
-defect — a shared construction path, a shared precondition — that characterization
-is itself what was demonstrated, and it is checkable against a new witness without
-asking anyone's opinion:
+**The relation is reachable, not logically empty — nothing more is claimed.**
+Non-vacuity here means `∃ f2 : EstablishedCorrectionFailure(c, f2)`, not that the
+relation extends to manifestations nobody ever demonstrated. Two cases already
+present in this document's own vocabulary suffice, and neither needs anything new:
 
 ```text
-P:   parser construction preserves semantic identity
-f1:  a defect reproduces at the point where any value enters the shared
-     constructor path K while condition C holds; the sibling search establishes
-     C as the actual gate — not "the two or three values tried" — by showing the
-     defect present for every sampled value satisfying C and absent otherwise
-Δ1:  { v : v enters K under C }, demonstrated as a condition, not a list
+same manifestation
+  m ∈ Δ1, demonstrated by f1's own reproducer
+  c attempts to restore P over Δ1
+  f2 on S2 reproduces the same P violation through m
+    →  witness(f2) = m ∈ Δ1
+    →  EstablishedCorrectionFailure(c, f2)
 
-c:   attempts to restore P for Δ1
-
-f2:  a later manifestation nobody enumerated before c. Its evidence establishes
-     that its execution passes through K under C
-     →  witness(f2) ∈ Δ1, checkable from f2's own reproducer against the
-        condition f1's evidence already established
-     →  ViolatedProposition(f2) = P, witness in Δ1
-     →  EstablishedCorrectionFailure(c, f2)
+distinct, both pre-demonstrated
+  f1's manifestation is m1; bounded sibling search before c also reproduces
+  m2, so both m1 ∈ Δ1 and m2 ∈ Δ1 are demonstrated before c exists
+  c attempts to restore P over Δ1 = {m1, m2}
+  f2 on S2 reproduces P through m2 — a manifestation different from f1's own,
+  but one the pre-c evidence had already placed in Δ1
+    →  witness(f2) = m2 ∈ Δ1
+    →  EstablishedCorrectionFailure(c, f2)
 ```
 
-Membership here is read off `f2`'s own reproducer against a characterization `f1`
-already demonstrated — not off a reviewer's sense that the two look alike, and not
-off an LLM's judgement that they belong to the same family. Where the sibling
-search demonstrated only a list of exact witnesses and not a condition, a novel
-manifestation has no basis for membership and is correctly `UNKNOWN`, per
-§"Finding validation". That is the ordinary case and stays conservative by design;
-this one is the existence proof that the relation can fire beyond it.
+The second case is what rules out a causal-identity or exact-manifestation
+requirement: `f2` need not reproduce `f1`'s own witness, only one already inside
+the historical domain. It does not, and is not offered to, prove anything about a
+manifestation `Δ(f1)`'s evidence never touched.
+
+**An unseen manifestation stays `UNKNOWN`, and nothing here changes that.** For a
+witness `u` no pre-`c` evidence ever placed in `Δ1`:
+
+```text
+u not previously demonstrated inside Δ1   ⇏   u ∈ Δ1
+u not previously demonstrated inside Δ1   ⇏   u ∉ Δ1
+                                           →   membership(u, Δ1) = UNKNOWN
+```
+
+Finite sampling never closes this gap by itself. Observing a defect on every
+member of some finite set and absent otherwise is `EMPIRICALLY_SUPPORTED` over
+that set, per §"Epistemic classification" — it is not a derivation that some
+condition is the domain's true boundary, and treating it as one risks exactly what
+that section already warns against: a hidden confound shared by every sampled
+witness, later absent from an unrelated defect that happens to satisfy the same
+finite pattern. No inference from sample to condition is licensed here, by an
+author, a reviewer, or a model. Where some other legitimate basis — a formal
+derivation, a mechanized contract, an authoritative exhaustive enumeration —
+genuinely establishes that `u ∈ Δ1`, that basis is consumed like any other
+established predicate. This document invents no such mechanism and promises none;
+absent one, `UNKNOWN` is the honest and complete answer.
 
 What may **not** establish it is resemblance of any kind. "The same abstraction
 is wrong", "these look like one defect", "this is the same approach" — none is
