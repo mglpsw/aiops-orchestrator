@@ -209,11 +209,20 @@ that held at its epoch and any recurrence admitted on the strength of it.
 `FinalState != History` throughout — a later state never rewrites the epoch it
 succeeded.
 
-That single property is what keeps the author from deciding whether the rule
-fires. It costs nothing — the lifecycle record is kept as usual — and it removes
-the defeat entirely, because recurrence counts admissions, which are facts about
-what was established at a time, not lifecycle states that can be revised
-afterwards.
+That single property is what keeps the author from deciding, *after the fact*,
+whether the rule fires. It costs nothing — the lifecycle record is kept as
+usual — and it closes that defeat, because recurrence counts admissions, which
+are facts about what was established at a time, not lifecycle states that can be
+revised afterwards.
+
+Be exact about the bound, because an earlier revision said this removed the
+defeat "entirely" and it does not. The rules in this section govern what happens
+**once a finding has admissibly reached the relation**. They do not establish
+that the set of findings reaching it is complete, nor that the gate admitting
+findings into it is itself beyond the reach of the party the rule constrains.
+That upstream question is materiality, it is a different subject, and
+§"Materiality is a relation, not a property" states how far it is currently
+settled and where it is not.
 
 **Candidate formation runs off a declared correction, not off a boundary.** A
 `RecurrenceCandidate` exists when, and only when, all of the following hold:
@@ -681,14 +690,13 @@ levels must not be mixed.**
 
 Finding-level predicates are everything a finding needs to stand on its own —
 they belong to `f1` alone, use no fact about a second finding, and none needs a
-correction attempt or a later review to exist:
+correction attempt or a later review to exist. They establish that the defect
+**is real**, and nothing about which decision it bears on:
 
 ```text
 exact subject / head        the version-control record — fixed once f1 is raised
 reproducer result           executable evidence — fixed once f1 is validated
 violated proposition        the normative contract — fixed once f1 is validated
-materiality                 the change's acceptance conditions — fixed once f1 is
-                            validated
 demonstrated defect domain  this finding's own reproducer, earliest locus and
                             bounded sibling search — what they placed there, and
                             no more; unlike the rows above, further bounded
@@ -696,6 +704,28 @@ demonstrated defect domain  this finding's own reproducer, earliest locus and
                             f1 is validated, up to whatever a CorrectionAttempt
                             freezes — see §"Canonical epoch of Δ1"
 ```
+
+Call that `FindingEstablished(f)`. Note what is **no longer** in the list.
+
+**Materiality was in it, and moving it out is this section's whole point.** A
+finding's truth and a finding's bearing on a decision are different
+propositions, and an earlier revision made the second a precondition of the
+first. That put the question *"does this matter?"* upstream of the question
+*"is this real?"*, so whoever answered the first controlled which facts the
+method could ever see. Every truth-maker repair in this document — boundary
+extent, the discriminant set, reviewer identity, the dependency relation — was
+the same defect one level higher, and this is where it had come to rest.
+
+```text
+FindingEstablished(f)      ⇏   MaterialToClaim(f, C)
+MaterialToClaim(f, C)      ⇏   FindingEstablished(f)
+```
+
+Both directions are needed. A real formatting defect can be established beyond
+dispute and bear on no runtime-semantics claim. An unvalidated report against a
+change's central requirement can be obviously decisive *if true* while its truth
+is still unresolved. Neither relation derives the other, and §"Materiality is a
+relation, not a property" below governs the second.
 
 A boundary assignment is recorded alongside these and is deliberately **not** one
 of them. It organises the record rather than establishing anything, so a finding
@@ -1084,79 +1114,31 @@ correction was attempted, that a correction failed, that a recurrence occurred,
 or that none did. It says only that a claim is being made on a basis that is not
 in hand, which is the same objection this document raises everywhere else.
 
-**What the claim must account for is derived from the loop's own history, not
-chosen.** An earlier revision scoped this to the propositions a claim "actually
-consumes", which handed the measured party the one decision that matters: a
-claimant who declined to acknowledge a finding excluded it from the gate. That
-is the same actor-controlled classification this document removes from boundary
-extent, from the discriminant set and from reviewer identity, relocated onto the
-dependency relation. The set is derived instead:
+**Which findings the accounting must cover is an open question here, and is
+deliberately left open.** Two attempts have failed. The first scoped it to the
+propositions a claim "actually consumes", which let the claimant decide what
+their own claim depended on. The second derived a set from validation history,
+historical materiality and loop membership — and materiality was itself
+established against locally written acceptance conditions, so the same selection
+survived one level down. Both are withdrawn rather than left standing as rules
+with a known defect.
+
+What that leaves is a stated gap, not a silent one:
 
 ```text
-F_L  =  { f | ValidationHistory(f)
-             ∧ MaterialAtValidation(f)
-             ∧ InReviewLoop(f, L) }
+a convergence claim may not rest on a proposition whose basis is absent
+      →  established, and enforced by everything below
+
+which findings such a claim must account for
+      →  NOT established here
 ```
 
-Every term is an existing historical fact with its own basis. `ValidationHistory(f)`
-was established at `f`'s review epoch; `MaterialAtValidation(f)` is the
-finding-level materiality predicate established when `f` was validated, against
-the change's acceptance conditions; loop membership is the review and subject
-record. Nobody enumerates `F_L` — not the author, not the reviewer — and nothing
-here persists it, serializes it, or turns it into a registry. It is a way of
-naming which findings the accounting may not skip.
-
-**The condition is necessary, and deliberately not sufficient:**
-
-```text
-ConvergenceEstablished(L)
-      ⇒  for every f ∈ F_L : DispositionBasisEstablished(f)
-```
-
-Read only in that direction. The converse is **not** claimed: satisfying it
-removes one known insufficiency and establishes convergence no more than a clean
-review establishes proof. Whatever else the method requires of a convergence
-claim it still requires.
-
-Equivalently, and this is the operative form:
-
-```text
-∃ f ∈ F_L whose relied-upon disposition lacks its required basis
-      →  ConvergenceEstablished(L) is not established
-```
-
-`DispositionBasisEstablished(f)` introduces no authority and no new record. It
-says the disposition being relied upon for `f` has the evidence that *that*
-disposition actually requires — which the disposition rule already governs, and
-this section does not restate. Where the relied-upon disposition is that `f` was
-answered by corrective work, S1 already names the basis: an admissible
-precommitted `CorrectionAttempt` answering `f`. Where it is that `f` was
-invalidated, the basis is the contradicting evidence. Different dispositions,
-different bases, same rule.
-
-```text
-f ∈ F_L                              ⇏   a CorrectionAttempt is owed for f
-f ∈ F_L                              ⇒   the accounting may not omit f
-DispositionLabel(f)                  ⇏   DispositionBasisEstablished(f)
-```
-
-The converse overreach is refused as firmly as the first. Membership in `F_L` is
-an accounting obligation, never an artifact obligation: a finding invalidated by
-admissible contradicting evidence is answered by that evidence, not by a
-correction nobody claims to have made, and demanding an attempt record for it
-would be the ledger this document refuses. Where `F_L` is empty the condition
-holds vacuously and no artifact is owed merely because a review loop existed. A
-claim may be abandoned rather than converged.
-
-**Historical materiality is not re-decided later.** `MaterialAtValidation(f)` is
-a fact about `f`'s epoch, and `FinalState != History` applies to it as to
-everything else. Narrowing the objective's wording after `f` was validated does
-not establish that `f` was never material, and does not remove it from `F_L`; a
-label edit is not evidence. If later admissible evidence supports a different
-disposition for `f`, that is a disposition question with its own basis. If the
-objective has changed so materially that whether this is even the same claim is
-in question, that is a different subject from this one, and this document does
-not settle it here.
+Closing it needs materiality to be establishable without the claimant choosing
+it, which is §"Materiality is a relation, not a property" — and where that
+relation is unresolved, §"Findings whose bearing is unresolved" says what
+follows. The closure itself is a later question and is not answered in this
+revision. Until it is, this section blocks what it can name and does not pretend
+to name everything.
 
 **A disposition is a record, not a basis.** Writing `fixed` against a finding
 records a lifecycle state; it does not establish that a declared correction
@@ -1170,21 +1152,23 @@ Disposition(f)                  ⇏  ConvergenceEstablished
 ```
 
 The middle two matter as much as the first, because they are the cheaper escape:
-a claimant who cannot remove `f` from `F_L` by declaring the claim does not
-depend on it can try to remove it by labelling it away instead. They cannot. Each
-of those labels asserts something, each assertion needs the evidence it asserts,
-and none of them is self-supporting. That is the same `FinalState != History`
+a finding that cannot be argued out of the accounting can be labelled out of it
+instead. It cannot. Each of those labels asserts something, each assertion needs
+the evidence it asserts, and none of them is self-supporting. "Out of scope" in
+particular is a materiality claim wearing a lifecycle label, and it answers to
+§"Materiality is a relation, not a property" like any other. That is the same `FinalState != History`
 property the disposition rule relies on elsewhere, read in the direction that
 matters here: a label cannot manufacture the evidence it summarises.
 
 **Where a material predicate is unresolved, so is the claim that rests on it.**
-This reaches `F_L` directly: a finding whose convergence-relevant disposition is
-materially unresolved does not have `DispositionBasisEstablished(f)`, and a
-recurrence candidate involving `f` that is `HOLD_FOR_INVESTIGATION` blocks the
-convergence claim for as long as it holds. No operational disposition converts
-either into semantic sufficiency. A hold, an open finding, an unestablished membership — each leaves the
-claim that rests on it unestablished, and none of them becomes false by being
-unresolved. This is claim sufficiency, not a verdict on history.
+A recurrence candidate that is `HOLD_FOR_INVESTIGATION` blocks the convergence
+claim for as long as it holds. So does a finding whose bearing on the claim was
+never established, wherever the claim would need it to be irrelevant — that is
+§"Findings whose bearing is unresolved", and it reaches the claim by the same
+route. A hold, an open finding, an unestablished membership, an unresolved
+bearing: each leaves the claim that rests on it unestablished, none becomes false
+by being unresolved, and no operational disposition converts any of them into
+semantic sufficiency. This is claim sufficiency, not a verdict on history.
 
 The structural analogy is `NON_REFUTED`, which §"Epistemic classification"
 already refuses to admit for a review with no declared scope: the absence of a
@@ -1463,6 +1447,161 @@ finding that could not be validated either way: it requires the attempt made and
 the exact limitation that blocked it, and it leaves the finding **open** — it is
 a record of an unfinished validation, not a way to close one. Never patch merely
 because a reviewer suggested text.
+
+These four dispositions are about the **factual** axis and nothing else. `VALID`
+says the evidence establishes the defect; `INVALID` says contradicting evidence
+exists; `PARTIAL` says both, over different portions; `UNAVAILABLE_TO_VALIDATE`
+says the attempt was made and something specific blocked it. None of them says
+anything about whether the finding bears on a decision, and none may be
+repurposed to say it. In particular `UNAVAILABLE_TO_VALIDATE` does **not** mean
+"real but perhaps irrelevant", and `INVALID` does **not** mean "true but does
+not matter here". A finding may be factually `VALID` while its bearing on a given
+claim is established, refuted, or unresolved; the factual record is the same in
+all three cases.
+
+## Materiality is a relation, not a property
+
+Whether a finding bears on a decision is a separate question from whether the
+finding is true, and it is always a question **about a particular decision**:
+
+```text
+MaterialToClaim(f, C)
+```
+
+Never `Material(f)` unqualified. A finding has no global materiality to be
+labelled with, because the same established defect can bear on one claim and not
+another:
+
+```text
+MaterialToClaim(f, C1)   ≠   MaterialToClaim(f, C2)      in general
+```
+
+A formatting defect may be immaterial to a claim about a runtime invariant and
+squarely material to a claim about preserving formatting. Nothing about the
+defect changed between those two sentences; the decision did.
+
+**The relation takes three values, and the third is not a gap to be closed by
+default.**
+
+```text
+established material      the finding bears on C, on a basis named below
+established immaterial    it does not, on a basis named below
+unresolved                neither has been established
+```
+
+```text
+Unknown(MaterialToClaim(f, C))   ⇏   MaterialToClaim(f, C)
+Unknown(MaterialToClaim(f, C))   ⇏   NotMaterialToClaim(f, C)
+MissingMaterialityAuthority      ⇏   immaterial
+MissingMaterialityAuthority      ⇏   material
+```
+
+Both coercions are tempting from opposite directions and both are refused. *"It
+is true, so it must matter"* over-attaches every real defect to every claim.
+*"I cannot tell whether it matters, so I may proceed"* is the one that clears a
+finding by shrugging. The honest state between them is the third row.
+
+**What may not establish it.** Not the reviewer's judgement that a finding is
+important, and not the author's that it is not — the same reason reviewer
+identity carries no load anywhere else here. Not a declaration's timing: writing
+an acceptance set before any review prevents adaptive rewriting and does not make
+its author entitled to have written it, exactly as §"Probes are a plan, not a
+verdict" holds for the discriminant set. And not the structural validity of
+whatever carries it: a well-formed contract, PR body or scope declaration is a
+carrier, and this document's standing rule is that a carrier never becomes an
+authority by being well formed.
+
+```text
+ReviewerJudgement          ⇏   MaterialToClaim / NotMaterialToClaim
+PrecommittedAcceptance     ⇏   AuthoritativeAcceptance
+CarrierValidity            ⇏   ObjectiveAuthority
+OperationalGrant           ⇏   MaterialToClaim
+```
+
+**What does establish it, so far as this document can say.** One case is
+available now and rests on authority this document already names. Where the
+proposition `f` violates is an applicable obligation owned by an authority the
+change does **not** own — §2's question about which component owns the semantic
+rule — the change cannot narrow that obligation away, because it never held it:
+
+```text
+ApplicableObligation(P, C) owned upstream of C
+∧ FindingEstablished(f) violating P
+      →  MaterialToClaim(f, C)
+```
+
+Local acceptance conditions have no power over that. A change accountable to a
+public contract, a security requirement or a required-safe-input domain does not
+escape it by omitting it from a locally written scope, however early the omission
+was recorded and however valid the document recording it. This is
+§"Authority non-escalation" applied to materiality: a change cannot acquire, by
+declaration, an authority it does not have.
+
+The converse case is legitimate and must not be barred. A task genuinely bounded
+by whoever holds authority over it may exclude ground no applicable obligation
+requires it to cover, and a finding about that ground is then immaterial to it.
+**This document does not define who holds that authority.** It does not name an
+objective owner, and it will not appoint one by default: not the author, not the
+maintainer, not the reviewer, not whoever wrote a scope first, not the holder of
+an operational grant, and not a contract's signer merely because a field exists
+to sign. Where such authority is independently established, this relation
+consumes it like any other established predicate. Where it is not:
+
+```text
+no applicable upstream obligation resolves the relation
+∧ no legitimate authority over the objective is established
+      →  MaterialToClaim(f, C) is unresolved
+```
+
+That residual is real and is recorded rather than closed. It is the honest limit
+of what materiality can be established from here, and closing it needs an
+authority relation that belongs to a different subject than this document.
+
+**Same person, different roles.** Person identity is not the truth-maker and
+never has been. One human may legitimately hold authority over a task and also
+implement it; that overlap alone neither validates nor invalidates the
+objective-setting act, and nothing here requires an independent second person.
+What the overlap does not license is amending an already-bound objective from the
+implementation side afterwards to clear a finding — that is a later act by a
+different role, and it is the same hindsight this document refuses everywhere.
+
+## Findings whose bearing is unresolved
+
+A finding may be established and its bearing on the current claim unresolved.
+That state has to be recordable, because both ways of collapsing it lose
+something:
+
+```text
+FindingEstablished(f)  ∧  Unknown(MaterialToClaim(f, C))
+      →  the finding stands as a fact
+      →  it may not be treated as material
+      →  it may not be treated as immaterial
+      →  it does not silently leave the accounting
+      →  no RecurrenceCandidate forms from that unresolved relation
+      →  and no claim may rest on its irrelevance
+```
+
+The last line is the operative one. A convergence claim that depends on this
+finding not mattering is resting on something unestablished, and §"Convergence is
+a claim" governs that as it governs any other missing basis.
+
+**This is not the recurrence hold, and the two must not be run together.** They
+have different subjects and different exits:
+
+```text
+unresolved bearing        the finding is established; whether it bears on C is
+                          open; no candidate has formed
+HOLD_FOR_INVESTIGATION    a candidate has formed; the correction barrier is open
+```
+
+Resolving either establishes nothing about the other. A finding whose bearing is
+settled may still produce a candidate that holds; a candidate that resolves says
+nothing about some other finding whose bearing was never established.
+
+**It is also not `UNAVAILABLE_TO_VALIDATE`.** That disposition records a factual
+validation that could not be completed. This records a factual validation that
+*was* completed, with a relevance question left open. Recording one as the other
+would put a fact in the file as though it were a doubt.
 
 ## Causal mutation discrimination
 
