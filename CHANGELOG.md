@@ -66,18 +66,24 @@
   A further round named the hold for the investigation it invites rather than for
   a resolver the method declines to define, separated a finding's validation
   history from a candidate's recurrence-admission history, and reconciled the
-  round-output vocabulary across this file and the preflight. The revision
-  applies prospectively; the preflight owns that rule and this entry does not
-  restate it.
+  round-output vocabulary across this file and the preflight. Later rounds bound
+  the recurrence relation to a demonstrated defect domain rather than the
+  proposition alone, and separated a finding's factual establishment from its
+  bearing on the decision at hand — a finding can be real without yet being
+  material to the claim under review, and that unresolved bearing is preserved
+  rather than coerced either way. The revision applies prospectively; the
+  preflight owns these rules and this entry does not restate them.
 
   **Known limitation.** The method has no route by which "no correction was
   attempted" becomes an established fact — that would need either a complete
   attempt ledger or a declaration by the party the rule constrains, and neither
-  is introduced. An unestablished correction barrier therefore holds for
-  investigation rather than clearing, which can hold conservatively over histories
-  in which nothing was in fact attempted, and where investigation is exhausted the
-  work is dispositioned without the proposition being resolved. The limitation is
-  tracked separately; the preflight states the rule and the reasoning.
+  is introduced. An author who files no attempt record does not thereby form a
+  candidate that holds; no candidate forms through that relation at all, and
+  nothing is established about whether corrective work happened. Separately,
+  which findings a convergence claim must account for before it can be declared
+  established remains an open question the preflight does not yet close. The
+  limitation is tracked separately; the preflight states the rules and the
+  reasoning.
 
   Process/methodology only: no runtime, schema or public-contract change, and no
   test over the method's normative content, which has no oracle outside the

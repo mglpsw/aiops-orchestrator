@@ -132,16 +132,22 @@ represented, instead, as a documented mutation-discrimination requirement
 
 ## Where the architectural stop should have occurred
 
-The stop signal was present after round 3 of `#236`'s seven adversarial rounds:
-three consecutive rounds of findings on one boundary — re-derived parser
-semantics. What counts as a stop signal is defined by
+A pattern was present after round 3 of `#236`'s seven adversarial rounds: three
+consecutive rounds of findings on one boundary — re-derived parser semantics.
+The work continued for four more rounds before the mechanism itself was
+replaced, each round finding a *different* way the same re-derivation was
+wrong. That repeated failure was motivating evidence for the later methodology
+and for the eventual architectural replacement.
+
+What counts as a stop signal today is defined by
 [`STRUCTURAL_CHANGE_PREFLIGHT.md`](STRUCTURAL_CHANGE_PREFLIGHT.md), which owns
-those criteria; read them there rather than from this account, which describes
-what was observed at the time. The work continued for four more rounds before
-the mechanism itself
-was replaced, each round finding a *different* way the same re-derivation
-was wrong — a repetition the preflight's STOP/REDESIGN
-condition now names explicitly.
+those criteria and has been substantially revised since `#236`; read them there
+rather than from this account. This postmortem does not classify `#236` under
+the current recurrence rule — doing so would need a precommitted
+`CorrectionAttempt` record, a demonstrated defect domain and an established
+bearing on the claim under review for each round, none of which was recorded at
+the time and none of which this account reconstructs after the fact. The
+current criteria are prospective and stated only in the preflight.
 
 ## Why a disposable spike was necessary
 
