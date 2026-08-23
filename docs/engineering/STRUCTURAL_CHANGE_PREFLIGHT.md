@@ -237,8 +237,9 @@ CorrectionObligation(c) = (P, Δ1)        not a free choice, and not the whole o
                                          aiming at something else, or while
                                          aiming at more or less ground than f1
                                          demonstrated
-Δ1 = DemonstratedDefectDomain(f1)        as demonstrated at the last review epoch
-     at the epoch before c               before c — see below
+Δ1 = PreAttemptSnapshot(Δ(f1), epoch(c)) the state of f1's demonstrated defect
+                                         domain immediately before c is recorded
+                                         — see below
 before_subject(c) is S1 or descends      the attempt answers f1 and sits on the
                   from it                same line of development
 after_subject(c)  = S2                   the attempt produced the subject that
@@ -259,11 +260,14 @@ A candidate is structurally present or it is not, and asking a second person doe
 not change which.
 
 **`CorrectionObligation(c)` is derived, not declared.** Both components are read
-off `f1`: the proposition it was validated as violating, which comes from the
-normative contract the change is measured against, and the defect domain its own
-evidence demonstrated. Both were fixed when `f1` was validated, before `c` was
-written. The author chooses whether to answer `f1` and how; they do not get to
-choose what answering it would mean, nor how much ground it would cover.
+off `f1`, and their epochs differ. `P` is fixed at `f1`'s validation — the
+normative contract does not move between then and `c`. `Δ1` is not fixed there:
+`f1`'s demonstrated domain may keep growing while the review loop continues to
+investigate it, and `Δ1` takes whatever it has grown to by `epoch(c)`, not what it
+was at validation. §"Canonical epoch of Δ1" below states the one rule this
+document uses for that snapshot. The author chooses whether to answer `f1` and
+how; they do not get to choose what answering it would mean, nor how much ground
+it would cover.
 
 **`f2` must belong to the review of the later subject, and the identity is the
 binding — not the ordering.** Without it, a report against the *old* subject,
@@ -289,31 +293,38 @@ proposition the correction meant to restore violated again? — is where evidenc
 is needed, and where it can be held open rather than answered by default in
 whichever direction the missing information happens to favour.
 
-**The obligation is bounded by a domain this section does not define.** `Δ(f)`
-is the demonstrated defect domain, owned by §"Finding validation, and the
-corrective cut": evidence places a manifestation inside it, evidence places one
-outside it, and everything else is `UNKNOWN` rather than "outside". Neither the
-author nor the reviewer sets its extent, and enlarging it is always available by
-demonstrating it. That section states the rule; this one consumes it and does not
-restate it. What matters here is only that the correction obligation already had
-a bound — §"Finding validation" has always required the smallest correction that
-restores the proposition *across the demonstrated defect domain* — and that this
-section had been ignoring it.
+**§"Finding validation, and the corrective cut" owns `Δ(f)`.** What a
+manifestation is inside it, outside it, or undetermined about; who may set its
+extent — nobody does, it is demonstrated, never declared; how it grows. That
+section states all of it, and it is not restated here. What this section adds is
+narrow: a single rule for which state of `Δ(f1)` a given `c` is bound to.
 
-**The obligation is fixed at the epoch the attempt was formed.** `Δ1` is `f1`'s
-demonstrated domain as it stood before `c`, and `c` cannot move it in either
-direction: it may not narrow the ground it answers for, and it does not acquire
-ground that had not been demonstrated when it was written. That epoch-binding is
-what stops the obligation being edited by hindsight from either side, and it is
-the same `FinalState != History` property the disposition rule relies on.
+**Canonical epoch of `Δ1`.**
 
-If later evidence shows the original defect domain was wider than anyone had
-demonstrated at `epoch(c)`, current knowledge grows and the historical obligation
-does not. `c` promised what was demonstrated then; it did not promise ground
-discovered afterwards. That later discovery is a real and often important
-result — it may be strong evidence that the abstraction was drawn too narrowly —
-but it reaches `c` only through some other relation legitimately established, and
-never by reading the present record back into the past.
+```text
+Δ1 = PreAttemptSnapshot( Δ(f1), epoch(c) )
+```
+
+`Δ1` is the state of `f1`'s demonstrated defect domain at the instant immediately
+before `c` is recorded — not at `f1`'s validation, and not at any review epoch in
+between. Domain evidence can keep accumulating throughout the loop: further
+bounded sibling search between `f1`'s validation and `c` can demonstrate more of
+`Δ(f1)`, and all of it belongs to `Δ1` once demonstrated before `c` exists. Only
+`c`'s own epoch draws the line. `c` freezes that snapshot for its own obligation
+and cannot move it in either direction: it may not narrow the ground it answers
+for, and it does not acquire ground demonstrated only after it was written.
+
+```text
+CurrentDomainKnowledge(f1, t2)   ≠   HistoricalCorrectionDomain(c)
+```
+
+If later evidence — after `c` — shows the domain was wider than anything
+demonstrated before `c`, current knowledge grows and `Δ1` does not. `c` promised
+what had been demonstrated by its own epoch; it did not promise ground discovered
+afterwards. That later discovery may be strong evidence the abstraction was drawn
+too narrowly, but it reaches `c` only through some other relation legitimately
+established, never by reading the present record back into the past. This is the
+same `FinalState != History` property the disposition rule relies on.
 
 **Admission is by evidence, not by anyone's say-so.** A formed candidate is
 admitted when, and only when, the correction barrier holds across it, and one
@@ -355,6 +366,40 @@ Note what is **not** required: `Δ(f2) = Δ1`. `f2` may demonstrate a domain of 
 own that is larger, smaller or differently shaped; that is a fact about `f2`. All
 that matters here is whether the concrete violating witness that made `f2` a
 validated finding lands inside the ground `c` answered for.
+
+**The relation is not vacuous: a manifestation nobody enumerated can still land
+inside a historical `Δ1`, when the domain was demonstrated as a condition rather
+than as a list of witnesses.** A bounded sibling search does not have to stop at
+the exact inputs tried; where it establishes *why* a class of inputs shares the
+defect — a shared construction path, a shared precondition — that characterization
+is itself what was demonstrated, and it is checkable against a new witness without
+asking anyone's opinion:
+
+```text
+P:   parser construction preserves semantic identity
+f1:  a defect reproduces at the point where any value enters the shared
+     constructor path K while condition C holds; the sibling search establishes
+     C as the actual gate — not "the two or three values tried" — by showing the
+     defect present for every sampled value satisfying C and absent otherwise
+Δ1:  { v : v enters K under C }, demonstrated as a condition, not a list
+
+c:   attempts to restore P for Δ1
+
+f2:  a later manifestation nobody enumerated before c. Its evidence establishes
+     that its execution passes through K under C
+     →  witness(f2) ∈ Δ1, checkable from f2's own reproducer against the
+        condition f1's evidence already established
+     →  ViolatedProposition(f2) = P, witness in Δ1
+     →  EstablishedCorrectionFailure(c, f2)
+```
+
+Membership here is read off `f2`'s own reproducer against a characterization `f1`
+already demonstrated — not off a reviewer's sense that the two look alike, and not
+off an LLM's judgement that they belong to the same family. Where the sibling
+search demonstrated only a list of exact witnesses and not a condition, a novel
+manifestation has no basis for membership and is correctly `UNKNOWN`, per
+§"Finding validation". That is the ordinary case and stays conservative by design;
+this one is the existence proof that the relation can fire beyond it.
 
 What may **not** establish it is resemblance of any kind. "The same abstraction
 is wrong", "these look like one defect", "this is the same approach" — none is
@@ -610,18 +655,22 @@ off anyone's view that a recurrence occurred.
 authority that can establish it. The predicates sit at two levels, and the
 levels must not be mixed.**
 
-Finding-level predicates are everything a finding needs to stand on its own.
-Each is knowable at the epoch of that finding, using nothing that happens after
-it:
+Finding-level predicates are everything a finding needs to stand on its own —
+they belong to `f1` alone, use no fact about a second finding, and none needs a
+correction attempt or a later review to exist:
 
 ```text
-exact subject / head        the version-control record
-reproducer result           executable evidence
-violated proposition        the normative contract the change is measured against
-materiality                 the change's acceptance conditions, against evidence
+exact subject / head        the version-control record — fixed once f1 is raised
+reproducer result           executable evidence — fixed once f1 is validated
+violated proposition        the normative contract — fixed once f1 is validated
+materiality                 the change's acceptance conditions — fixed once f1 is
+                            validated
 demonstrated defect domain  this finding's own reproducer, earliest locus and
                             bounded sibling search — what they placed there, and
-                            no more
+                            no more; unlike the rows above, further bounded
+                            sibling search may keep demonstrating more of it after
+                            f1 is validated, up to whatever a CorrectionAttempt
+                            freezes — see §"Canonical epoch of Δ1"
 ```
 
 A boundary assignment is recorded alongside these and is deliberately **not** one
