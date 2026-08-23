@@ -187,9 +187,10 @@ MaterialToClaim(f, C)    whether that established finding bears on claim C
       ↓ both established, and only then
 ValidatedFinding(f, C)   shorthand for the pair, not a third truth-maker
       ↓
-RecurrenceCandidate      a validated finding on the subject a declared correction
-                         produced, that correction answering an earlier validated
-                         finding — structural, not a similarity judgement
+RecurrenceCandidate      a ValidatedFinding(f2, C) on the subject a declared
+                         correction produced, that correction answering an earlier
+                         ValidatedFinding(f1, C) — same claim, structural, not a
+                         similarity judgement
       ↓
 RecurrenceAdmission   evidence establishes that the proposition the correction
                       meant to restore is validly violated again on the subject
@@ -217,7 +218,7 @@ did, by putting materiality inside the factual predicate — lets whoever answer
 been tried here and all three failed.
 
 **Disposition sits on a different axis, and does not reach backwards.** A
-validated finding may later be dispositioned `fixed`, `superseded`,
+established finding may later be dispositioned `fixed`, `superseded`,
 `out_of_scope`, or invalidated by new evidence. None of that reaches back into
 what was established at the time. Two histories are kept, and they are not one
 record:
@@ -333,8 +334,8 @@ does not exclude this, because the stale finding really is later in time; only
 subject identity does.
 
 A formed candidate claims one thing: a declared correction ran between two
-validated findings on ordered subjects, and what the later finding was validated
-against belongs to the next step. It is not a recurrence and fires nothing.
+validated findings on ordered subjects, against the same claim, and what the
+later finding was validated against belongs to the next step. It is not a recurrence and fires nothing.
 Formation is deliberately cheap, because the expensive question — is the
 proposition the correction meant to restore violated again? — is where evidence
 is needed, and where it can be held open rather than answered by default in
@@ -538,9 +539,11 @@ become a correction that held.
 Note what the middle row is and is not. It says this attempt is not what `f2`
 reports on; it does not say the attempt succeeded, and nothing here licenses
 reading it that way. A correction is not declared to have worked by this
-document at all — the absence of a validated finding against `P` is the absence
-of a found defect, which §"Epistemic classification" already refuses to treat as
-proof. `NON_REFUTED` within a declared scope is the most a clean review yields,
+document at all. And the absence of a validated finding against `P` is weaker
+evidence than it looks: it may mean no defect was established, or that one was
+established and shown not to bear on this claim, or that one was established and
+its bearing was never settled at all. Only the first is "no defect found", and
+§"Epistemic classification" already refuses to treat even that as proof. `NON_REFUTED` within a declared scope is the most a clean review yields,
 and it is not a clearance certificate for `c`.
 
 Keep all three rows distinct from the negative this document refuses elsewhere.
@@ -767,8 +770,10 @@ relation, not a property" below governs the second.
 
 A boundary assignment is recorded alongside these and is deliberately **not** one
 of them. It organises the record rather than establishing anything, so a finding
-whose boundary is disputed is still a validated finding, and an unresolved
-membership blocks nothing.
+whose boundary is disputed is established exactly as it was, and an unresolved
+membership blocks nothing. Boundary assignment bears on neither axis: it does not
+establish or defeat the factual predicates, and it does not establish or defeat
+`MaterialToClaim(f, C)` — which is settled on its own basis, or not at all.
 
 Candidate-level predicates relate two findings and only exist once both do.
 They belong to a `RecurrenceCandidate` — to forming one, or to qualifying one
@@ -825,8 +830,9 @@ proposition, or against the same one outside the ground `c` answered for, leaves
 the first two satisfied and the barrier unestablished — the correct result rather
 than a gap.
 
-A finding is validated by meeting the finding-level predicates, not by being labelled
-`VALID`; an `INVALID` is a claim that contradicting evidence exists and is open to
+A finding is factually established by meeting the finding-level predicates, not
+by being labelled `VALID` — and factual establishment alone does not make it a
+`ValidatedFinding(f, C)`, which needs its bearing on `C` established too; an `INVALID` is a claim that contradicting evidence exists and is open to
 challenge on that evidence. Where a predicate cannot be established from its
 declared authority its value is `UNKNOWN` — not a value the author selects, and
 **not a "no"**:
@@ -871,9 +877,9 @@ corrected.
 Be exact about what omission buys, because two earlier statements here were wrong
 in opposite directions. It is not true that omission "can cost a decision but
 never buy one". Nor does it buy a clearance: nothing is established about the
-history, the findings and their validation stand, and two validated findings on
-related ground with no record of what was tried between them remain a structural
-signal worth investigating.
+history, the findings and their establishment stand, and two established
+findings on related ground with no record of what was tried between them remain a
+structural signal worth investigating.
 
 What omission does buy is narrow and stated exactly: **no candidate forms from
 that relation, so no mandatory recurrence can be established through it.** That
@@ -958,7 +964,7 @@ weight, not admissibility.
 The two are distinct, and an earlier draft's failure to separate them made the
 same assignment both permitted and forbidden — a reviewer was free to join two
 proposed boundaries, while those boundaries were frozen against merging. A label
-that has never held a `ValidatedFinding` has no history to protect. It is
+that no finding has ever been assigned to has no history to protect. It is
 vocabulary the author offered, and the author is the party the rule constrains,
 so it cannot bind the reviewer:
 
@@ -1003,13 +1009,16 @@ boundary that has already participated, that is a split wearing a new name, and
 the finding belongs to the boundary that already existed.
 
 **`Admitted` means one thing here, and it is about recurrence.** A finding that
-meets the finding-level predicates is a **validated finding** — never an
-"admitted" one. `RecurrenceCandidate` and `RecurrenceAdmission` are the only
-things the word covers, which is why the two histories the disposition rule
-above keeps are named for their subjects and not for each other:
-`ValidationHistory` takes a finding, `RecurrenceAdmissionHistory` takes a
-candidate, and there is no third and no `FindingAdmission`, implied or
-otherwise. The questions below run over validated findings in the record.
+meets the finding-level predicates is **established** — never an "admitted" one,
+and not yet a validated finding either, which additionally needs its bearing on
+the claim established. `RecurrenceCandidate` and `RecurrenceAdmission` are the
+only things the word "admitted" covers, which is why the two histories the
+disposition rule above keeps are named for their subjects and not for each
+other: `ValidationHistory` takes a finding **and the claim it was material to**,
+`RecurrenceAdmissionHistory` takes a candidate, and there is no third and no
+`FindingAdmission`, implied or otherwise. The questions below run over
+`ValidatedFinding(f, C)` for this loop's claim `C` — never over findings whose
+bearing on `C` was never established.
 Invalidating `f1` afterwards changes `f1`'s disposition; it leaves the
 validation that held at `f1`'s epoch and any recurrence admitted on the
 strength of it exactly where they were.
@@ -1036,13 +1045,46 @@ field name or a machine-readable form. Naming them is only what stops a hold fro
 being written down as one of the other two. Neither question reaches a transition
 from landings alone.
 
-1. Did a validated finding this round land on the subject a declared correction
-   produced, where that correction answered an earlier validated finding of this
-   loop? Name the correction, both findings, the proposition `c` was aiming at,
-   and the ground `f1` had demonstrated. That forms a candidate; the evidence
-   then decides between an admitted recurrence, a finding that falls outside what
-   `c` answered for, and a hold. A candidate whose
-   evidence settles neither is not thereby a "no"; it is a hold.
+**Before the questions are put, sort this round's established findings by their
+bearing on the claim.** The questions run over validated findings, and a finding
+is not one until both its axes are established — so this step decides what is
+even eligible to be asked about:
+
+```text
+for each FindingEstablished(f) in this round's record, against this loop's claim C
+
+  MaterialToClaim(f, C) established
+        →  f participates as ValidatedFinding(f, C)
+
+  NotMaterialToClaim(f, C) independently established
+        →  f stands as an established fact; it does not participate in
+           recurrence for C on materiality grounds; this is a real answer
+
+  MaterialToClaim(f, C) unresolved
+        →  record the unresolved bearing
+        →  f is NOT a ValidatedFinding(f, C)
+        →  no candidate forms through it
+        →  and this is NOT "no candidate formed" in the sense the questions
+           mean — nothing has been cleared
+```
+
+The third row is the one that gets lost. A finding sitting there has not been
+answered, dismissed or resolved; it has been left open on an axis the questions
+below do not ask about, and the round's record says so rather than passing over
+it in silence.
+
+1. Did a `ValidatedFinding(f2, C)` from this round land on the subject a declared
+   correction produced, where that correction answered an earlier
+   `ValidatedFinding(f1, C)` of this loop — the same claim `C` in both? Name
+   `C`, the correction `c`, both findings, the proposition `P` that `c` was
+   aiming at, the ground `Δ1` it answered over, and the subjects `S1` and `S2`.
+   That forms a candidate; the evidence then decides between an admitted
+   recurrence, a finding that falls outside what `c` answered for, and a hold. A
+   candidate whose evidence settles neither is not thereby a "no"; it is a hold.
+   Where `f1` and `f2` were material to *different* claims, or the relation
+   between those claims is unresolved, do not read them as one: the recurrence
+   relation qualified here does not settle cross-claim applicability, and
+   nothing is cleared by that gap either.
 2. From round three onward: does this loop hold two or more candidates whose
    declared corrections were each shown to have been defeated? Before round three
    there is no window to look at. Name the candidates the window contains and
@@ -1057,11 +1099,14 @@ relation, so neither offers a route to a mandatory stop that the other does not.
 
 **Supporting only — no transition of its own.**
 
-3. Does a validated finding this round hold that an approach is wrong which an
-   earlier validated finding also held was wrong — as opposed to objecting to
-   how that approach was tuned? Name both, or answer `undecided` where the two
-   cannot responsibly be compared — the word this section already uses below, and
-   not either of the two unknowns above, neither of which this question carries.
+3. Does a `ValidatedFinding(f, C)` this round hold that an approach is wrong
+   which an earlier `ValidatedFinding(f', C)` of this loop also held was wrong —
+   the same claim `C` in both — as opposed to objecting to how that approach was
+   tuned? Name both, or answer `undecided` where the two cannot responsibly be
+   compared. That `undecided` is local to this non-load-bearing comparison: it is
+   not any of the unresolved states defined elsewhere in this document, and
+   nothing transitions on it either way. Where the claim relation between the two
+   findings is unresolved, do not infer continuity.
 
 This question was load-bearing in an earlier draft and is deliberately demoted.
 Deciding that two findings condemn "the same approach" is a judgement with no
