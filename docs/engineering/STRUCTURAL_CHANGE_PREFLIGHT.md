@@ -39,10 +39,17 @@ document belong to the review loop and are answered at the end of each round.
 Write the answers into
 the PR body. "Unknown" is a valid answer to any of the §§1–7 questions, and a
 blocking one — it means the design is not ready to implement yet. The recurrence
-questions answer on a different footing, stated where they are: the load-bearing
-ones report an admitted recurrence or a hold, and the supporting one may be left
-undecided. None of those is this section's "Unknown", and none of them may be
-recorded as a "no".
+questions answer on a different footing, stated where they are: each load-bearing
+one reports that no candidate formed, that a recurrence was admitted, or that a
+formed candidate is held for investigation, and the supporting one may be left
+undecided. A hold is recorded as neither a "yes" nor a "no".
+
+Two uncertainties live in this document and must not merge. This section's
+"Unknown" is a preflight question nobody can answer yet, and it blocks
+implementation. A recurrence hold is a candidate that did form and whose
+qualification is unresolved, and it blocks the convergence claim. Different
+subjects, different process contexts; neither is the other's answer, and
+resolving one establishes nothing about the other.
 
 ## 1. Property
 
@@ -169,13 +176,28 @@ Collapsing the first two makes a reviewer's raw output a process decision.
 Collapsing the last two makes the party the rule binds the party who decides
 whether it binds them. Both have been tried here and both failed.
 
-**Disposition sits on a different axis, and does not reach backwards.** A finding
-that was admitted may later be dispositioned `fixed`, `superseded`,
-`out_of_scope`, or invalidated by new evidence. None of that erases the admission:
+**Disposition sits on a different axis, and does not reach backwards.** A
+validated finding may later be dispositioned `fixed`, `superseded`,
+`out_of_scope`, or invalidated by new evidence. None of that reaches back into
+what was established at the time. Two histories are kept, and they are not one
+record:
 
 ```text
-Disposition(f)  does not erase  AdmissionHistory(f)
+ValidationHistory(f)            f met the finding-level predicates at its review
+                                epoch — a fact about that epoch
+
+RecurrenceAdmissionHistory(c)   candidate c qualified under the rule below at the
+                                epoch it qualified — a fact about that epoch
+
+Disposition(f)  erases neither
 ```
+
+A finding is never "admitted": findings are validated, candidates are admitted,
+and there is no `FindingAdmission` here or anywhere below. Invalidating `f1`
+afterwards changes `f1`'s disposition and leaves standing both the validation
+that held at its epoch and any recurrence admitted on the strength of it.
+`FinalState != History` throughout — a later state never rewrites the epoch it
+succeeded.
 
 That single property is what keeps the author from deciding whether the rule
 fires. It costs nothing — the lifecycle record is kept as usual — and it removes
@@ -249,15 +271,74 @@ third route by which it is established *not* to hold:
 ```text
 established       the attempt record above is in hand, and its subjects and
                   epochs line up  →  the candidate may be admitted
-not established   anything else   →  HOLD_FOR_ADJUDICATION
+not established   anything else   →  HOLD_FOR_INVESTIGATION
 ```
 
-`HOLD_FOR_ADJUDICATION` is not a verdict about the boundary. It does not say a
+`HOLD_FOR_INVESTIGATION` is not a verdict about the boundary. It does not say a
 recurrence occurred, does not say none did, does not say a correction was
 attempted and does not say none was. It says the record does not settle the
-question, and that a change may not be promoted on a history that has not been
-settled. That is the honest reading of an unestablished barrier, and it is the
-only one this version offers.
+question. The state is named for what remains available — investigation — and
+deliberately not for an adjudicator: nothing here appoints anyone to convert an
+unresolved question into a resolved one, and a name promising a resolver this
+document declines to define would promise an exit it does not supply.
+
+What a hold suspends, and what it does not:
+
+```text
+suspends    the convergence claim, and any promotion resting on that claim
+preserves   the candidate, which stands and carries into later rounds, and the
+            evidence and the epoch as they were
+does not    fire the STOP / REDESIGN trigger, or the freeze-preserve-spike
+            sequence that is reserved for an admitted recurrence
+does not    freeze the branch, forbid further work, or assert anything at all
+            about the boundary
+```
+
+A hold suspends a decision, not a repository. Only the decisions that actually
+rest on the unresolved predicate are suspended; work the predicate does not bear
+on continues, and continues under a candidate that has not gone away.
+
+**What a hold invites is investigation.** An unresolved predicate has a shape:
+something specific could not be established from its declared authority. Name
+that, and name what would settle it:
+
+```text
+Unknown(P)  →  identify MissingBasis(P) — what the record does not contain
+            →  identify what admissible evidence would establish it
+            →  derive the questions that evidence would have to answer
+            →  investigate within the scope and authority already held
+```
+
+If later evidence legitimately establishes `P`, current knowledge changes and the
+historical unknown does not. `Unknown(P)` at `t1` stays a true fact about `t1`
+after `P` is established at `t2`, and the record is not rewritten as though
+`t2`'s evidence had been available at `t1`.
+
+If admissible investigation is exhausted and `P` is still unresolved, `P` stays
+unresolved. There is no state to promote it to and nobody appointed to promote
+it. What is left is a decision about the *work* — defer it, abandon it, restart
+from another design, or permit some further transition where whatever governs the
+change allows — and that decision belongs to the operational authority described
+in §"Authority non-escalation". None of it writes a value into `P`:
+
+```text
+ProcessDisposition(Unknown(P))   ⇏   EpistemicResolution(P)
+```
+
+This is that section's non-composition read in the direction this case needs. No
+quantity of semantic evidence composes into operational authority, and no grant
+makes a claim better supported. Someone who authorises work to continue over an
+unresolved barrier has authorised work to continue and has established nothing
+about the barrier; the record shows both facts and does not merge them.
+
+Where the party the rule constrains and the party holding that operational
+authority are the same person, the separation is procedural rather than
+organizational. Role identity is not person identity, and the same human acting
+under a recorded operational grant acquires no semantic authority over `P` by
+acting under it — but the independence is then a discipline the arrangement does
+not enforce, and this document does not claim otherwise. What compensates is
+independent review or evidence alongside an explicitly recorded disposition, not
+an assertion of separation the structure does not supply.
 
 The temporal shape is the point. **Concurrence is not recurrence.** Two reviewers
 validating the same defect on the same subject is corroboration — the finding is
@@ -322,7 +403,7 @@ same subject, several defects     →  distinct findings in one round; no barrie
 later subject                     →  candidate formed; the barrier then decides
   barrier established             →  recurrence admitted, whether or not the
                                      second finding is "the same defect"
-  barrier not established         →  HOLD_FOR_ADJUDICATION; the candidate stands
+  barrier not established         →  HOLD_FOR_INVESTIGATION; the candidate stands
 ```
 
 A second reviewer agreeing that two findings look like the same recurrence is
@@ -398,12 +479,14 @@ declared authority its value is `UNKNOWN` — not a value the author selects, an
 **not a "no"**:
 
 ```text
+UNKNOWN(P)                  ⇏   P
+UNKNOWN(P)                  ⇏   ¬P
 UNKNOWN(admission)          ≠   recurrence disproved
 UNKNOWN(correction-barrier) ≠   no correction was attempted
 ```
 
-It cuts both ways deliberately. An unresolvable predicate that is material to
-whether patching continues holds the question open — `HOLD_FOR_ADJUDICATION` —
+It cuts both ways deliberately. An unresolvable predicate that is material to a
+decision this loop rests on holds that decision open — `HOLD_FOR_INVESTIGATION` —
 rather than resolving it in the direction the party holding the question prefers.
 Read the first line alone and ambiguity becomes a way to avoid a recurrence;
 read the second alone and it becomes a way to manufacture one. Neither is
@@ -425,10 +508,22 @@ absence of evidence    ⇏   evidence of absence
 The precommitted record is what makes an attempt *admissible*. It is not a census
 of what the author did, so its absence establishes nothing about whether
 corrective work happened, and cannot be read as establishing that none did. An
-author who files no record reaches `HOLD_FOR_ADJUDICATION`, not a cleared
-candidate. Omission can cost them a decision; it cannot buy them one. The same
-holds for a record naming some other boundary: a record about `B'` reports on
-`B'`, and says nothing at all about whether `B` was corrected.
+author who files no record reaches `HOLD_FOR_INVESTIGATION`, not a cleared
+candidate. The same holds for a record naming some other boundary: a record about
+`B'` reports on `B'`, and says nothing at all about whether `B` was corrected.
+
+Be exact about what omission buys, because an earlier statement here — that it
+can cost a decision but cannot buy one — was too strong. Omission does not clear
+a candidate and does not buy readiness. It does buy continued patching, because a
+hold does not fire the freeze that the same history would have fired had the
+attempt been recorded. That asymmetry is real and is recorded rather than
+smoothed over. What omission costs is that the candidate stands, holds accumulate
+across the rounds of the loop, and neither convergence nor promotion may be
+claimed on that history: reaching a promotion then needs an explicit operational
+disposition over a visibly accumulating held set, where recording the attempt
+would have bought a bounded freeze and spike instead. The incentive therefore
+runs against omission on the path that matters — but it is not the mandatory
+stop, and this document does not claim it is.
 
 **There is deliberately no route to the negative.** Reaching "no correction was
 attempted" as an established fact would need an authority able to speak for the
@@ -527,23 +622,36 @@ the finding belongs to the boundary that already existed.
 **`Admitted` means one thing here, and it is about recurrence.** A finding that
 meets the finding-level predicates is a **validated finding** — never an
 "admitted" one. `RecurrenceCandidate` and `RecurrenceAdmission` are the only
-things the word covers, so `AdmissionHistory` has exactly one possible subject:
-the candidate. There is no `FindingAdmission`, implied or otherwise, and the
-questions below run over validated findings in the record. Where the
-disposition rule above says an admission is not erased, it is the candidate's
-admission that survives — invalidating `f1` afterwards changes `f1`'s
-disposition and leaves the recurrence that was admitted on the record.
+things the word covers, which is why the two histories the disposition rule
+above keeps are named for their subjects and not for each other:
+`ValidationHistory` takes a finding, `RecurrenceAdmissionHistory` takes a
+candidate, and there is no third and no `FindingAdmission`, implied or
+otherwise. The questions below run over validated findings in the record.
+Invalidating `f1` afterwards changes `f1`'s disposition; it leaves the
+validation that held at `f1`'s epoch and any recurrence admitted on the
+strength of it exactly where they were.
 
 **At the end of each round, these are answered on the record**, over validated
 findings. The first two carry a transition; the third does not, and the
 difference is stated rather than left to the reader:
 
 **Load-bearing.** Each of these forms candidates and then reports what the
-correction barrier did with them. A candidate whose barrier is established is an
-admitted recurrence and fires the trigger. A candidate whose barrier is not
-established is neither a "yes" nor a "no": it is `HOLD_FOR_ADJUDICATION`, the
-trigger does not fire, and the change may not be declared ready or convergent on
-that history. Neither question reaches a transition from landings alone.
+correction barrier did with them, so each answers in exactly one of three ways:
+
+```text
+no candidate formed      the facts do not assemble a RecurrenceCandidate. This
+                         is the only place a bare "no" is honest.
+recurrence admitted      candidate formed, barrier established. The trigger
+                         fires and the freeze-preserve-spike sequence runs.
+held for investigation   candidate formed, barrier not established. The trigger
+                         does not fire, the candidate stands, and the change may
+                         not be declared ready or convergent on that history.
+```
+
+Those are three classes of result, not a schema: nothing here asks for an enum, a
+field name or a machine-readable form. Naming them is only what stops a hold from
+being written down as one of the other two. Neither question reaches a transition
+from landings alone.
 
 1. Did a validated finding this round land in a boundary that already holds a
    validated finding from an earlier round of this loop? Name the boundary and
@@ -567,8 +675,9 @@ offers a route to a mandatory stop that the other does not.
 
 3. Does a validated finding this round hold that an approach is wrong which an
    earlier validated finding also held was wrong — as opposed to objecting to
-   how that approach was tuned? Name both, or answer `UNKNOWN` where the two
-   cannot responsibly be compared.
+   how that approach was tuned? Name both, or answer `undecided` where the two
+   cannot responsibly be compared — the word this section already uses below, and
+   not either of the two unknowns above, neither of which this question carries.
 
 This question was load-bearing in an earlier draft and is deliberately demoted.
 Deciding that two findings condemn "the same approach" is a judgement with no
@@ -585,13 +694,15 @@ allowed to stay indeterminate precisely because nothing transitions on it. This
 document names no authority over what "the same approach" is, and does not
 invent one.
 
-An unanswered question is not a "no", and neither is a held one: a round whose
-questions were not put has not been reviewed for convergence, and a round holding
-for adjudication has not finished answering them. The change may not be declared
-ready on the strength of either. A round's record is complete when each
-load-bearing question names its candidates and, for each, either the admitted
-recurrence or the hold — a bare "no" is only available where no candidate formed
-at all. The supporting question must be asked and answered too, and may be
+An unanswered question is not a "no", and neither is a held one, but the two fail
+differently: a round whose questions were not put has not been reviewed for
+convergence at all, while a round that answers "held" has answered honestly and
+still may not be declared convergent. The change may not be declared ready on the
+strength of either. A round's record is complete when each load-bearing question
+reports one of the three classes above and names the candidates behind it — the
+boundary and both findings for an admitted recurrence or for a hold, and for a
+hold also what could not be established. A bare "no" is available only where no
+candidate formed at all. The supporting question must be asked and answered too, and may be
 answered as undecided; what it may not do is transition.
 
 A "yes" to a load-bearing question, once the candidate qualifies under the
@@ -1032,10 +1143,12 @@ see §"Authority non-escalation".
   unbacked negative is the easiest way for this document to be satisfied by a
   change that violates it.
 - **Every round records who reviewed it and their answers to the three
-  recurrence questions**, in the form that section requires — the bare answer where it is
-  "no", and the boundary and finding named where it is "yes". Recording only the
-  fires makes the negative unreconstructable: a later reader can see that a STOP
-  was declared, but not that one was ever considered and correctly declined.
+  recurrence questions**, in the form that section requires — the bare answer
+  where no candidate formed, and the boundary and both findings named for an
+  admitted recurrence or for a hold, with a hold also recording what could not be
+  established. Recording only the fires makes the rest unreconstructable: a later
+  reader can see that a STOP was declared, but not that one was ever considered
+  and correctly declined, nor that a question was left open.
   Together with the per-finding boundary assignments, this is what lets someone
   other than the author check the claim that a loop was converging.
 - A PR that triggers the STOP condition must additionally record which trigger

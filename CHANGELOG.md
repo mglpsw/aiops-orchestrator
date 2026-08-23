@@ -63,14 +63,21 @@
   one were separated; a candidate's second finding was bound to the subject that
   was actually reviewed; boundary identity was tied to participation rather than
   to predeclaration; and the vocabulary of admission was reserved for recurrence.
+  A further round named the hold for the investigation it invites rather than for
+  a resolver the method declines to define, separated a finding's validation
+  history from a candidate's recurrence-admission history, and reconciled the
+  round-output vocabulary across this file and the preflight. The revision
+  applies prospectively; the preflight owns that rule and this entry does not
+  restate it.
 
   **Known limitation.** The method has no route by which "no correction was
   attempted" becomes an established fact — that would need either a complete
   attempt ledger or a declaration by the party the rule constrains, and neither
   is introduced. An unestablished correction barrier therefore holds for
-  adjudication rather than clearing, which can hold conservatively over histories
-  in which nothing was in fact attempted. The limitation is tracked separately;
-  the preflight states the rule and the reasoning.
+  investigation rather than clearing, which can hold conservatively over histories
+  in which nothing was in fact attempted, and where investigation is exhausted the
+  work is dispositioned without the proposition being resolved. The limitation is
+  tracked separately; the preflight states the rule and the reasoning.
 
   Process/methodology only: no runtime, schema or public-contract change, and no
   test over the method's normative content, which has no oracle outside the
