@@ -412,8 +412,8 @@ f2's violating witness is established to lie in Δ1
 
 Note what is **not** required: `Δ(f2) = Δ1`. `f2` may demonstrate a domain of its
 own that is larger, smaller or differently shaped; that is a fact about `f2`. All
-that matters here is whether the concrete violating witness that made `f2` a
-validated finding lands inside the ground `c` answered for.
+that matters here is whether the concrete violating witness behind `f2` — the one
+its factual establishment rests on — lands inside the ground `c` answered for.
 
 **The relation is reachable, not logically empty — nothing more is claimed.**
 Non-vacuity here means `∃ f2 : EstablishedCorrectionFailure(c, f2)`, not that the
@@ -801,8 +801,9 @@ correction barrier into the validation of `f1` — and it does not exist yet whe
 `f1` is raised. Validating `f1` then required
 knowing about a correction made in response to `f1` and about a later `f2`, so
 no first finding could be validated and no first recurrence could ever be
-admitted. A finding is validated by information available when it is found;
-anything else is a fact about a pair.
+admitted. A finding is factually established by information available when it is
+found; anything else is a fact about a pair. Whether it then bears on a claim is
+a further question again, and not one this paragraph settles.
 
 The two rows that were both called `correction barrier` are the same repair
 seen from the other side. They were never rival authorities for one relation:
