@@ -156,10 +156,11 @@ not do what it was declared to do. It is not a judgement about where findings
 keep landing, and it is not anyone's view that two defects are alike — an earlier
 draft made it both, and both made the measurement a matter of who was asked. Nor
 is it a predicate over the author's own records alone, which would make the
-measured party the source of the measurement. What carries it is the one pair the
-author cannot tune after the fact and no reviewer can assert into being: a
-precommitted statement of what a correction would discriminate, and later
-admissible evidence about whether it does.
+measured party the source of the measurement. What carries it is the pair the
+author cannot tune after the fact and no reviewer can assert into being: an
+obligation fixed before the fact — the proposition a correction undertook to
+restore, over the ground its finding had demonstrated — and later admissible
+evidence that the same proposition is violated again inside that ground.
 
 Four things are distinct here, and collapsing any adjacent pair is what has
 repeatedly broken this section:
@@ -167,7 +168,8 @@ repeatedly broken this section:
 ```text
 ReviewerObservation   what someone reports — advisory, whatever its source
       ↓
-ValidatedFinding      reproduced, material, violated proposition identified
+ValidatedFinding      reproduced, material, violated proposition identified,
+                      defect domain demonstrated
       ↓
 RecurrenceCandidate   a validated finding on the subject a declared correction
                       produced, that correction answering an earlier validated
@@ -175,7 +177,7 @@ RecurrenceCandidate   a validated finding on the subject a declared correction
       ↓
 RecurrenceAdmission   evidence establishes that the proposition the correction
                       meant to restore is validly violated again on the subject
-                      it produced
+                      it produced, inside the ground it answered for
       ↓
 STOP / REDESIGN       policy over admitted recurrence, not over observations
 ```
@@ -224,12 +226,19 @@ CorrectionAttempt(c) answering f1        declared before the review that follows
                                          it, naming its before/after subjects,
                                          the corrective abstraction, and the
                                          probes it plans to run
-intended_proposition(c) = P              not a free choice: an attempt that
-                                         declares it answers f1 is an attempt to
-                                         restore what f1 was validated against.
-                                         An author may decline to answer f1; what
-                                         they may not do is claim to answer it
-                                         while aiming at something else
+CorrectionObligation(c) = (P, Δ1)        not a free choice, and not the whole of
+                                         P: an attempt that declares it answers
+                                         f1 is an attempt to restore what f1 was
+                                         validated as violating, across the
+                                         defect domain f1 demonstrated. Both
+                                         components are read off f1. An author
+                                         may decline to answer f1; what they may
+                                         not do is claim to answer it while
+                                         aiming at something else, or while
+                                         aiming at more or less ground than f1
+                                         demonstrated
+Δ1 = DemonstratedDefectDomain(f1)        as demonstrated at the last review epoch
+     at the epoch before c               before c — see below
 before_subject(c) is S1 or descends      the attempt answers f1 and sits on the
                   from it                same line of development
 after_subject(c)  = S2                   the attempt produced the subject that
@@ -249,11 +258,12 @@ cut", or a record the author wrote before the finding that would test it existed
 A candidate is structurally present or it is not, and asking a second person does
 not change which.
 
-**`intended_proposition(c)` is derived, not declared.** It is read off `f1`'s own
-violated proposition, which is a finding-level predicate with a named authority —
-the normative contract the change is measured against — established when `f1` was
-validated and before `c` was written. The author chooses whether to answer `f1`
-and how; they do not get to choose what answering it would mean.
+**`CorrectionObligation(c)` is derived, not declared.** Both components are read
+off `f1`: the proposition it was validated as violating, which comes from the
+normative contract the change is measured against, and the defect domain its own
+evidence demonstrated. Both were fixed when `f1` was validated, before `c` was
+written. The author chooses whether to answer `f1` and how; they do not get to
+choose what answering it would mean, nor how much ground it would cover.
 
 **`f2` must belong to the review of the later subject, and the identity is the
 binding — not the ordering.** Without it, a report against the *old* subject,
@@ -279,30 +289,72 @@ proposition the correction meant to restore violated again? — is where evidenc
 is needed, and where it can be held open rather than answered by default in
 whichever direction the missing information happens to favour.
 
+**The obligation is bounded by a domain this section does not define.** `Δ(f)`
+is the demonstrated defect domain, owned by §"Finding validation, and the
+corrective cut": evidence places a manifestation inside it, evidence places one
+outside it, and everything else is `UNKNOWN` rather than "outside". Neither the
+author nor the reviewer sets its extent, and enlarging it is always available by
+demonstrating it. That section states the rule; this one consumes it and does not
+restate it. What matters here is only that the correction obligation already had
+a bound — §"Finding validation" has always required the smallest correction that
+restores the proposition *across the demonstrated defect domain* — and that this
+section had been ignoring it.
+
+**The obligation is fixed at the epoch the attempt was formed.** `Δ1` is `f1`'s
+demonstrated domain as it stood before `c`, and `c` cannot move it in either
+direction: it may not narrow the ground it answers for, and it does not acquire
+ground that had not been demonstrated when it was written. That epoch-binding is
+what stops the obligation being edited by hindsight from either side, and it is
+the same `FinalState != History` property the disposition rule relies on.
+
+If later evidence shows the original defect domain was wider than anyone had
+demonstrated at `epoch(c)`, current knowledge grows and the historical obligation
+does not. `c` promised what was demonstrated then; it did not promise ground
+discovered afterwards. That later discovery is a real and often important
+result — it may be strong evidence that the abstraction was drawn too narrowly —
+but it reaches `c` only through some other relation legitimately established, and
+never by reading the present record back into the past.
+
 **Admission is by evidence, not by anyone's say-so.** A formed candidate is
 admitted when, and only when, the correction barrier holds across it, and one
 derived relation is what establishes that barrier:
 
 ```text
-EstablishedCorrectionFailure(c, f2)   ViolatedProposition(f2) = intended_proposition(c)
-                                      — the proposition c meant to restore is
-                                      validly violated again, on the exact
-                                      after-subject c produced
+EstablishedCorrectionFailure(c, f2)   ViolatedProposition(f2) = P
+                                    ∧ the concrete validated violating witness
+                                      behind f2 is established to lie in Δ1
+                                      — what c was obliged to restore is violated
+                                      again, inside the ground it answered for,
+                                      on the exact after-subject it produced
 ```
 
 This introduces no authority, no record kind and no entity. It is derived, each
-time, from two predicates that already exist and already have named authorities:
-the proposition `f1` was validated as violating, and the proposition `f2` was
-validated as violating. Both come from the normative contract the change is
-measured against, not from anyone's opinion, and both were fixed by their own
-findings before this relation was asked about.
+time, from predicates that already exist and already have named authorities: the
+proposition each finding was validated as violating, which comes from the
+normative contract the change is measured against; and the domain each finding
+demonstrated, which comes from its own reproducer, locus and sibling search. All
+were fixed by their own findings before this relation was asked about.
+
+**Both conjuncts are needed, and the second is what a broad proposition makes
+necessary.** A normative proposition can be wide — "the parser preserves all
+accepted YAML semantics" is one proposition and covers a great deal of unrelated
+ground. Matching on the proposition alone would make any two defects under a wide
+enough rule a recurrence of each other, which is the same over-merge that
+disqualified boundary, relocated onto `P`. The domain conjunct is what keeps the
+relation attached to the obligation `c` actually took on.
 
 ```text
-c responds to f1, whose violated proposition is P
+c answers f1: proposition P, demonstrated domain Δ1
 f2 is validated on S2 as violating P
-      →  the attempt to restore P did not restore it
+f2's violating witness is established to lie in Δ1
+      →  what c undertook to restore is violated again inside that ground
       →  EstablishedCorrectionFailure(c, f2)
 ```
+
+Note what is **not** required: `Δ(f2) = Δ1`. `f2` may demonstrate a domain of its
+own that is larger, smaller or differently shaped; that is a fact about `f2`. All
+that matters here is whether the concrete violating witness that made `f2` a
+validated finding lands inside the ground `c` answered for.
 
 What may **not** establish it is resemblance of any kind. "The same abstraction
 is wrong", "these look like one defect", "this is the same approach" — none is
@@ -311,8 +363,8 @@ it: see §"Probes are a plan, not a verdict" below.
 
 **What is precommitted is the answer relation, not the evidence plan.** Fixed at
 `epoch(c)`, before the review that produces `f2`, is that `c` claims to answer
-`f1` — and therefore that it aims at `P`. That is what cannot be rewritten once
-`f2` lands. An author who waits for `f2` and then says the earlier patch was
+`f1` — and therefore both what it aims at, `P`, and how far that reaches, `Δ1`.
+That is what cannot be rewritten once `f2` lands. An author who waits for `f2` and then says the earlier patch was
 aimed at something else is redescribing a precommitment, and the redescription
 does not participate.
 
@@ -352,17 +404,28 @@ elsewhere. The repair is that the set stops deciding.
 The barrier is established, out of scope for this attempt, or unsettled:
 
 ```text
-established     ViolatedProposition(f2) = intended_proposition(c)
+established     ViolatedProposition(f2) = P, and f2's violating witness is
+                established to lie in Δ1
                 →  the candidate is admitted
-out of scope    f2 was validated against a different proposition
+
+out of scope    f2 was validated against a different proposition; or the same
+                proposition, with its witness established to lie outside Δ1
                 →  this is not a recurrence of c. It is a finding in its own
                    right, with whatever obligations that carries, and it may be
-                   strong structural evidence — but it is not this attempt
-                   failing
+                   strong evidence that the abstraction was drawn too narrowly —
+                   but it does not falsify an obligation c never took on
+
 unsettled       the proposition f2 violates could not be established, or its
-                identity with P is genuinely contested
+                identity with P is genuinely contested; or the proposition
+                matches but membership of f2's witness in Δ1 is undetermined
                 →  HOLD_FOR_INVESTIGATION
 ```
+
+The third row covers the case a wide proposition makes common: `P` matches, and
+whether the witness sits inside the ground `c` answered for was never
+established either way. That is `UNKNOWN`, and it stays `UNKNOWN` — it does not
+become "outside the domain", it does not become `NO_CANDIDATE`, and it does not
+become a correction that held.
 
 Note what the middle row is and is not. It says this attempt is not what `f2`
 reports on; it does not say the attempt succeeded, and nothing here licenses
@@ -377,7 +440,7 @@ Keep all three rows distinct from the negative this document refuses elsewhere.
 over a whole interval, and it has no legitimate source here. None of the rows
 above reaches it.
 
-`HOLD_FOR_INVESTIGATION` is not a verdict about the boundary. It does not say a
+`HOLD_FOR_INVESTIGATION` is not a verdict about the correction. It does not say a
 recurrence occurred, does not say none did, does not say a correction was
 attempted and does not say none was. It says the record does not settle the
 question. The state is named for what remains available — investigation — and
@@ -394,7 +457,7 @@ preserves   the candidate, which stands and carries into later rounds, and the
 does not    fire the STOP / REDESIGN trigger, or the freeze-preserve-spike
             sequence that is reserved for an admitted recurrence
 does not    freeze the branch, forbid further work, or assert anything at all
-            about the boundary
+            about the correction or its domain
 ```
 
 A hold suspends a decision, not a repository. Only the decisions that actually
@@ -451,8 +514,8 @@ incentive. Equally, two findings against one proposition with nothing tried
 between them are one episode still open, not a recurrence — but that is a
 statement about what recurrence *means*, not a disposition anyone may reach from
 a silent record. What recurrence means is that a declared attempt to restore a
-proposition ran, the subject it produced was reviewed, and that proposition was
-validly violated there anyway. Where the record does not show that, the question
+proposition over demonstrated ground ran, the subject it produced was reviewed,
+and that proposition was validly violated there again inside that same ground. Where the record does not show that, the question
 is held, not answered.
 
 **A change touching the ground a finding sits on is not a correction of it.**
@@ -473,7 +536,7 @@ the attempt record     that this delta was declared to answer f1
 the normative contract what proposition f1 was validated as violating, and so
                        what c is aiming at
 the later review       whether that same proposition was validly violated on the
-                       exact after-subject
+                       exact after-subject, inside the ground f1 demonstrated
 tests / reproducers    the evidence that settles the row above; and, separately,
                        the planned probes, which guide work and settle nothing
 ```
@@ -488,16 +551,19 @@ that is theirs to choose; what they cannot do is wait until `f2` lands and then
 decide the earlier patch was aimed elsewhere. Precommitment is what separates
 choosing a correction from controlling whether recurrence can be established.
 
-**`f2` must violate the same proposition as `f1`, and this reverses an earlier
-choice in this document.** The previous text said requiring it "would be too
-narrow", on the reasoning that working by boundary exists to catch a *different*
-material defect thrown off by the same abstraction. That reasoning is sound about
-what is worth investigating and wrong about what may fire a mandatory transition:
-with boundary no longer a truth-maker, "different defect, same abstraction" has
-nothing left establishing it except someone's reading of how far the abstraction
-extends. A different proposition violated on `S2` is a finding with its own
-obligations and may be strong architectural evidence; it is not this attempt
-failing, and it does not fire `STOP` on `c`.
+**`f2` must violate the same proposition as `f1`, inside the same demonstrated
+ground, and this reverses an earlier choice in this document.** The previous text
+said requiring the same proposition "would be too narrow", on the reasoning that
+working by boundary exists to catch a *different* material defect thrown off by
+the same abstraction. That reasoning is sound about what is worth investigating
+and wrong about what may fire a mandatory transition: with boundary no longer a
+truth-maker, "different defect, same abstraction" has nothing left establishing
+it except someone's reading of how far the abstraction extends. A different
+proposition violated on `S2` is a finding with its own obligations and may be
+strong architectural evidence; it is not this attempt failing, and it does not
+fire `STOP` on `c`. The same holds for the same proposition violated outside
+`Δ1`: wide propositions cover ground `c` never answered for, and matching the
+proposition alone would relocate the old over-merge from the boundary onto `P`.
 
 **Nor need `f2` be a different defect from `f1`.** An earlier draft required that
 `f2` "is not another observation of `f1`", and that condition is removed. It
@@ -520,10 +586,11 @@ same subject, several defects     →  distinct findings in one round; no declar
                                      have been defeated yet
 later subject, after a declared   →  candidate formed; the evidence then decides
 correction
-  same proposition violated       →  recurrence admitted, whether or not the
-     again on the after-subject       second finding is "the same defect"
-  a different proposition         →  not a recurrence of this attempt; a finding
-                                     in its own right
+  same proposition, witness       →  recurrence admitted, whether or not the
+     established inside Δ1            second finding is "the same defect"
+  a different proposition, or a   →  not a recurrence of this attempt; a finding
+     witness established outside     in its own right
+     Δ1
   neither established             →  HOLD_FOR_INVESTIGATION; the candidate stands
 later subject, no declared        →  no candidate, and no mandatory transition.
 correction                           A structural signal worth investigating
@@ -552,6 +619,9 @@ exact subject / head        the version-control record
 reproducer result           executable evidence
 violated proposition        the normative contract the change is measured against
 materiality                 the change's acceptance conditions, against evidence
+demonstrated defect domain  this finding's own reproducer, earliest locus and
+                            bounded sibling search — what they placed there, and
+                            no more
 ```
 
 A boundary assignment is recorded alongside these and is deliberately **not** one
@@ -567,13 +637,15 @@ already formed — never to the validation of a single finding:
 correction delta            the version-control record: the before/after
                             subjects, their ordering, and what changed
 correction attempt          the precommitted record: that this delta was declared
-                            to answer f1, and so aims at f1's proposition
+                            to answer f1, and so takes on f1's proposition over
+                            the ground f1 demonstrated
 epoch ordering              the version-control and review records together
                             — these three form the candidate
 
-same violated proposition   the two findings' violated propositions, each
-                            established against the normative contract, compared
-                            on the exact after-subject
+correction failure          the two findings' violated propositions, each
+                            established against the normative contract; and f2's
+                            concrete violating witness, established against Δ1 as
+                            f1 demonstrated it before c
                             — this one qualifies a formed candidate
 ```
 
@@ -589,8 +661,9 @@ anything else is a fact about a pair.
 The two rows that were both called `correction barrier` are the same repair
 seen from the other side. They were never rival authorities for one relation:
 version control establishes the delta and the order of the subjects, and the
-precommitted record establishes that the delta was *meant* to answer `f1` and
-what it claimed it would discriminate.
+precommitted record establishes that the delta was *meant* to answer `f1` — and
+so, by `f1`'s own finding-level predicates, which proposition and which
+demonstrated ground it took on.
 Naming both the same thing made the falsified reading — history alone
 establishes the barrier — look like a live alternative to the correct one. The
 barrier is the two together:
@@ -606,9 +679,10 @@ ChangeTouches(f1's ground)  ⇏  CorrectionAttempt answering f1
 All three conjuncts must be in hand. The first two form the candidate and the
 third qualifies it; a barrier with any one missing is not established, and an
 unestablished conjunct is never read as a settled answer in whichever direction
-happens to be convenient. Note what the third conjunct excludes: a later finding
-against some other proposition leaves the first two satisfied and the barrier
-unestablished, which is the correct result rather than a gap.
+happens to be convenient. Note what the third conjunct excludes: a later finding against some other
+proposition, or against the same one outside the ground `c` answered for, leaves
+the first two satisfied and the barrier unestablished — the correct result rather
+than a gap.
 
 A finding is validated by meeting the finding-level predicates, not by being labelled
 `VALID`; an `INVALID` is a claim that contradicting evidence exists and is open to
@@ -731,9 +805,12 @@ Requiring every boundary to have been declared before the review that finds a
 defect in it asks for knowledge nobody had. A review that discovers a boundary
 the predeclaration missed is doing the job; the finding that revealed it is its
 first occurrence, not a finding that cannot count. An earlier draft required
-`f1`'s boundary to be declared before `f1`'s review, which meant a genuinely
-emergent boundary could never hold an admitted recurrence at all, and the stop
-condition failed open exactly where discovery was real.
+`f1`'s boundary to be declared before `f1`'s review, which — while boundaries
+still qualified recurrences — meant a genuinely emergent one could never hold an
+admitted recurrence at all, and the stop condition failed open exactly where
+discovery was real. Boundaries no longer qualify anything, so that particular
+failure is now closed twice over; the predeclared/emergent distinction is kept
+because coverage records still need it.
 
 Predeclaration is still preferred, because a boundary named in advance was named
 without knowing which findings would land in it. What it buys is evidential
@@ -754,12 +831,14 @@ first BoundaryAssignment lands      →  that boundary now has an identity in th
                                        history, and it is frozen from here
 ```
 
-This is what defeats a partition drawn finely enough to scatter recurrences. An
-author who predeclares fifty narrow labels has proposed fifty names, not fifty
-protected boundaries; the reviewer who meets the first finding spanning several
-of them assigns it to the boundary it actually belongs in and the redundant
-labels never acquire an identity. No reviewer is forced to pick a cell out of a
-partition that no finding has ever occupied.
+No recurrence turns on how the partition is drawn — that is what demoting the
+boundary bought — but the record still has to mean something, and a fifty-label
+partition nobody ever occupied describes no coverage at all. An author who
+predeclares fifty narrow labels has proposed fifty names, not fifty protected
+boundaries; the reviewer who meets the first finding spanning several of them
+assigns it to the boundary it actually belongs in and the redundant labels never
+acquire an identity. No reviewer is forced to pick a cell out of a partition that
+no finding has ever occupied.
 
 Once a boundary has participated, the protection is absolute and runs the other
 way — including against the same joining that was free a moment earlier:
@@ -771,10 +850,12 @@ retroactive semantic reassignment   forbidden
 identity-preserving rename          allowed, recorded, identity unchanged
 ```
 
-Nothing may be redrawn in a way that changes a recurrence already established or
-prevents one already implied. A rename that preserves identity is a rename; one
-that moves the ground it covers is a reclassification, and after participation it
-is not available. Emergent boundaries freeze the same way — at their first
+Nothing may be redrawn in a way that rewrites what the record showed at the time.
+No recurrence turns on this either way — boundaries qualify nothing — but a
+record that can be reshaped afterwards stops being evidence of what a round
+covered, which is the whole of what boundaries are kept for. A rename that
+preserves identity is a rename; one that moves the ground it covers is a
+reclassification, and after participation it is not available. Emergent boundaries freeze the same way — at their first
 occurrence rather than at the start of the loop — because that occurrence is
 exactly the participation that creates the identity.
 
@@ -819,9 +900,10 @@ from landings alone.
 
 1. Did a validated finding this round land on the subject a declared correction
    produced, where that correction answered an earlier validated finding of this
-   loop? Name the correction, both findings, and the proposition `c` was aiming
-   at. That forms a candidate; the evidence then decides between an admitted
-   recurrence, a finding against some other proposition, and a hold. A candidate whose
+   loop? Name the correction, both findings, the proposition `c` was aiming at,
+   and the ground `f1` had demonstrated. That forms a candidate; the evidence
+   then decides between an admitted recurrence, a finding that falls outside what
+   `c` answered for, and a hold. A candidate whose
    evidence settles neither is not thereby a "no"; it is a hold.
 2. From round three onward: does this loop hold two or more candidates whose
    declared corrections were each shown to have been defeated? Before round three
@@ -870,8 +952,9 @@ convergence at all, while a round that answers "held" has answered honestly and
 still may not be declared convergent. The change may not be declared ready on the
 strength of either. A round's record is complete when each load-bearing question
 reports one of the three classes above and names the candidates behind it — the
-boundary and both findings for an admitted recurrence or for a hold, and for a
-hold also what could not be established. A bare "no" is available only where no
+correction, both findings, the proposition it answered for and the ground it
+answered over, for an admitted recurrence or for a hold, and for a hold also what
+could not be established. A bare "no" is available only where no
 candidate formed at all. The supporting question must be asked and answered too, and may be
 answered as undecided; what it may not do is transition.
 
@@ -951,8 +1034,9 @@ reasoned around in the PR body of the change it is currently constraining. A
 threshold an actor may reinterpret while it is binding them is not a threshold,
 and the indirection is closed too: **an amendment to this paragraph, or to any
 rule a STOP trigger depends on — a threshold, the recurrence questions, the
-boundary-assignment rule, wherever in this document they are defined — does not
-apply to a review loop already under way when it lands.** Otherwise the
+correction-obligation and defect-domain rules, wherever in this document they
+are defined — does not apply to a review loop already under way when it
+lands.** Otherwise the
 tripwire is
 defeated by a second change that merely raises the number and returns.
 
@@ -1048,8 +1132,8 @@ x  !~R  y      and      F(x) == F(y)
 then `F` is insufficient for that decision: it discards exactly what the
 decision depends on. Repair `F` — the earliest **lossy** boundary, the point in
 the path where the distinction was discarded. That is a different subject from
-the convergence boundaries the STOP triggers are evaluated against, and the two
-are not interchangeable. Do **not** compensate downstream with vocabulary
+the convergence boundaries a change declares for its review loop, which organise
+the search and qualify nothing, and the two are not interchangeable. Do **not** compensate downstream with vocabulary
 scanners, an
 ever-widening AST grammar, extra leaf conditionals, or heuristic
 reconstruction; each re-derives, one layer below the authority, what was
@@ -1075,6 +1159,33 @@ Where nothing was discarded — an authority is simply wrong, a check is absent,
 lossless reads race — the locus is wherever the proposition first fails to hold,
 and the lossy-boundary analysis does not apply. Do not manufacture a lossy
 boundary to satisfy the sequence.
+
+**The defect domain records what the evidence placed there.** `Δ(f)` is that
+domain, and *demonstrated* is the word carrying the weight — the sequence above
+reaches it only after the reproducer, the earliest locus and the bounded sibling
+search:
+
+```text
+in Δ(f)        a manifestation this finding's own evidence placed there
+not in Δ(f)    established by evidence to lie elsewhere
+undetermined   everything else — and this is UNKNOWN, not "outside"
+```
+
+Neither party sets the extent. An author who writes "the domain is all parser
+behaviour" over evidence covering the scalar construction path has written a
+larger sentence, not demonstrated a larger domain; an author who writes "scalar
+only" over evidence that reproduced scalar *and* list has not made the list
+manifestation go away. The same holds for the reviewer: naming ten mechanisms as
+one domain is an investigation hypothesis until the evidence places them there,
+and the disposition rule below applies unchanged — a record "does not make the
+evidence show it, and either party may dispute one on the evidence". Enlarging
+`Δ(f)` is always available, and always by the same route: demonstrate it.
+
+`Δ(f)` is a positive record of what was shown, never a claim of exhaustiveness. A
+manifestation nobody investigated is undetermined, which is why the third row is
+`UNKNOWN`; reading it as "outside" would be the coercion this document refuses
+everywhere else. §"The recurrence conditions are answered, not computed" is the
+consumer of this domain and states how, and this section does not restate that.
 
 Patch after this classification, not before.
 Several similar manifestations frequently belong to one defect class; fixing
@@ -1336,13 +1447,15 @@ see §"Authority non-escalation".
   change that violates it.
 - **Every round records who reviewed it and their answers to the three
   recurrence questions**, in the form that section requires — the bare answer
-  where no candidate formed, and the boundary and both findings named for an
+  where no candidate formed, and the correction, both findings and the
+  proposition it answered for and the ground it answered over named for an
   admitted recurrence or for a hold, with a hold also recording what could not be
   established. Recording only the fires makes the rest unreconstructable: a later
   reader can see that a STOP was declared, but not that one was ever considered
   and correctly declined, nor that a question was left open.
-  Together with the per-finding boundary assignments, this is what lets someone
-  other than the author check the claim that a loop was converging.
+  Together with the per-finding violated propositions and demonstrated defect
+  domains, this is what lets someone other than the author check the claim that a
+  loop was converging.
 - A PR that triggers the STOP condition must additionally record which trigger
   fired and what the spike concluded, even if the final mechanism differs from
   every design considered during patching.
