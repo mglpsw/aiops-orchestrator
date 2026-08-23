@@ -37,6 +37,60 @@
   `TargetInstallReceiptV2` have no diff, exported schemas are byte-identical,
   and the same real manifest builds to identical canonical bytes and digest
   on both sides. Refs #203.
+- **Structural Change Preflight now defines *Authority-First Convergence
+  Review*, the repository's reusable structural-review method (`#203`)**: a
+  claim-first method in which the proposition under test and the authority that
+  establishes it are named before implementation, and in which findings are
+  reproduced and dispositioned before they are patched. The preflight already
+  owned the `STOP / REDESIGN` criteria; this change amends them.
+
+  The rules themselves are not restated here — that is the preflight's job, and
+  a summary that restates them becomes a second copy that drifts from the one
+  that is normative. Read them there. What follows records the *shape* of the
+  change and its known limitations, and is not a definition of any rule.
+
+  The method is stated without the cases that produced it: no past change,
+  commit, review outcome or claim about another artifact appears in it, and
+  removing every illustration leaves the rules intact. It carries no second
+  artifact that is normative for its rules — the preflight states why, and this
+  entry does not repeat the reasoning. Two mechanisms were retired rather than
+  reformulated after repeated failure: a general rule for inferring tree equality
+  from the shape of a squash merge, and the apparatus of computing convergence
+  from the author's own records.
+
+  Recurrence semantics were then reconciled over several rounds of adversarial
+  review, each recorded on `#263`. Forming a recurrence candidate and qualifying
+  one were separated; a candidate's second finding was bound to the subject that
+  was actually reviewed; boundary identity was tied to participation rather than
+  to predeclaration; and the vocabulary of admission was reserved for recurrence.
+  A further round named the hold for the investigation it invites rather than for
+  a resolver the method declines to define, separated a finding's validation
+  history from a candidate's recurrence-admission history, and reconciled the
+  round-output vocabulary across this file and the preflight. Later rounds bound
+  the recurrence relation to a demonstrated defect domain rather than the
+  proposition alone, and separated a finding's factual establishment from its
+  bearing on the decision at hand — a finding can be real without yet being
+  material to the claim under review, and that unresolved bearing is preserved
+  rather than coerced either way. The revision applies prospectively; the
+  preflight owns these rules and this entry does not restate them.
+
+  **Known limitation.** The method has no route by which "no correction was
+  attempted" becomes an established fact — that would need either a complete
+  attempt ledger or a declaration by the party the rule constrains, and neither
+  is introduced. An author who files no attempt record does not thereby form a
+  candidate that holds; no candidate forms through that relation at all, and
+  nothing is established about whether corrective work happened. Separately,
+  which findings a convergence claim must account for before it can be declared
+  established remains an open question the preflight does not yet close. The
+  limitation is tracked separately; the preflight states the rules and the
+  reasoning.
+
+  Process/methodology only: no runtime, schema or public-contract change, and no
+  test over the method's normative content, which has no oracle outside the
+  document. That is a claim about the content: a document's syntax does have an
+  external oracle in the Markdown grammar, and a lint over `docs/` would be
+  non-circular by the same criterion. Adding one is a separate objective and is
+  not taken here. Refs #203.
 
 ### Fixed
 
