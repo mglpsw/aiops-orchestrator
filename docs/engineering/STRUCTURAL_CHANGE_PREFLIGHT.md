@@ -543,10 +543,18 @@ after `P` is established at `t2`, and the record is not rewritten as though
 
 If admissible investigation is exhausted and `P` is still unresolved, `P` stays
 unresolved. There is no state to promote it to and nobody appointed to promote
-it. What is left is a decision about the *work* — defer it, abandon it, restart
-from another design, or permit some further transition where whatever governs the
-change allows — and that decision belongs to the operational authority described
-in §"Authority non-escalation". None of it writes a value into `P`:
+it. What is left is a decision about the *work* — continue investigating, defer
+the claim, abandon it, redesign, or pursue a demonstrably different claim — and
+that decision belongs to the operational authority described in §"Authority
+non-escalation".
+
+What is **not** on that list is promoting the same claim while it still depends
+on `P`. A disposition may decide what happens to the work; it cannot supply the
+basis the claim is missing, and §"Convergence is a claim" governs that
+separately. An earlier revision of this document did offer "permit some further
+transition" as an open-ended option here, which made a hold reachable by
+promotion through an operational grant — the exact composition the next line
+forbids. None of these dispositions writes a value into `P`:
 
 ```text
 ProcessDisposition(Unknown(P))   ⇏   EpistemicResolution(P)
@@ -794,19 +802,16 @@ corrected.
 
 Be exact about what omission buys, because two earlier statements here were wrong
 in opposite directions. It is not true that omission "can cost a decision but
-never buy one": under this version, omitting the record means no candidate forms
-and no mandatory recurrence can be established at all, which is the largest thing
-omission has ever bought here. Nor does it buy a clearance: nothing is
-established about the history, the findings and their validation stand, and two
-validated findings on related ground with no record of what was tried between
-them remain a structural signal worth investigating.
+never buy one". Nor does it buy a clearance: nothing is established about the
+history, the findings and their validation stand, and two validated findings on
+related ground with no record of what was tried between them remain a structural
+signal worth investigating.
 
-**This is the sharpest open edge in this version, and it is recorded rather than
-smoothed over.** Closing it needs a rule about what an unexplained correction
-history costs a change that wants to be declared convergent — a question about
-promotion rather than about what this section establishes, and one this version
-deliberately leaves open instead of answering in whichever direction is
-convenient.
+What omission does buy is narrow and stated exactly: **no candidate forms from
+that relation, so no mandatory recurrence can be established through it.** That
+is a fact about the recurrence relation. It is not a fact about the history, and
+it is not a licence to claim the loop converged — those are separate subjects,
+and §"Convergence is a claim" below governs the second one.
 
 **There is deliberately no route to the negative.** Reaching "no correction was
 attempted" as an established fact would need an authority able to speak for the
@@ -1034,6 +1039,129 @@ sound is a permitted outcome.
 This is not a mechanical check and does not pretend to be one. What it changes is
 where authority sits: observations are advisory whatever their source, admission
 is by rule, and only admitted recurrence moves the process.
+
+### Convergence is a claim
+
+"This loop has converged" is a claim like any other in this document, about a
+declared subject and scope, and it answers to the same rule every other claim
+does: it must name the basis that establishes it, and it may not consume a
+proposition whose basis has not been established. Nothing about it is special
+except how easily it gets asserted by default.
+
+It is **not** established by any of these, alone or together:
+
+```text
+no recurrence candidate formed
+no STOP trigger fired
+this round's reviewer found nothing further
+the branch has been open long enough
+a maintainer is willing to authorise promotion
+```
+
+The first deserves saying plainly, because the recurrence rules above make it
+tempting:
+
+```text
+NoRecurrenceCandidate   ⇏   ConvergenceEstablished
+```
+
+A recurrence question answers a recurrence question. A candidate that never
+formed says the facts did not assemble that relation — it says nothing about
+whether the claim has the basis it needs for everything else it rests on.
+
+**Two different subjects, and the distinction is the whole of this section.** One
+is historical: *did corrective work happen?* The other is evidential: *does this
+claim have the basis it requires?* Confusing them is how a missing record turns
+into either a fabricated negative or a free pass, and both have been tried here:
+
+```text
+MissingAttemptRecord   ⇏   NoCorrectionAttempt          (history: still UNKNOWN)
+MissingRequiredBasis   ⇒   the claim that needs it is not established
+```
+
+The second line asserts nothing about the world. It does not establish that no
+correction was attempted, that a correction failed, that a recurrence occurred,
+or that none did. It says only that a claim is being made on a basis that is not
+in hand, which is the same objection this document raises everywhere else.
+
+**The required basis follows the claim, not a checklist.** A convergence claim
+must have an admissible basis for every material proposition *it actually
+consumes*, and for nothing else. Where the claim rests on a material validated
+finding having been answered by corrective work, the basis for **that**
+proposition is the precommitted `CorrectionAttempt` record, and:
+
+```text
+the claim consumes "f was answered by a declared correction"
+∧ no admissible CorrectionAttempt answering f
+      →  that basis is absent
+      →  the convergence claim is not established
+      →  and still nothing is established about what happened
+```
+
+The converse overreach is refused just as firmly. This does **not** make an
+attempt record universally mandatory, and a loop is not obliged to manufacture
+one. A finding later invalidated by admissible contradicting evidence is
+answered by that evidence, not by a correction nobody claims to have made. A
+claim may be abandoned rather than converged. A loop may contain no material
+finding whose disposition a convergence claim depends on at all, and then no
+attempt record is owed. The obligation is generated by what the claim leans on;
+it is not a ledger every history must fill.
+
+**A disposition is a record, not a basis.** Writing `fixed` against a finding
+records a lifecycle state; it does not establish that a declared correction
+answered it, and it cannot supply the basis its own claim is missing:
+
+```text
+Disposition(f) = fixed   ⇏   an admissible CorrectionAttempt answering f exists
+Disposition(f)           ⇏   ConvergenceEstablished
+```
+
+That is the same `FinalState != History` property the disposition rule relies on
+elsewhere, read in the direction that matters here: a label cannot manufacture
+the evidence it summarises.
+
+**Where a material predicate the claim depends on is unresolved, so is the
+claim.** A hold, an open finding, an unestablished membership — each leaves the
+claim that rests on it unestablished, and none of them becomes false by being
+unresolved. This is claim sufficiency, not a verdict on history.
+
+The structural analogy is `NON_REFUTED`, which §"Epistemic classification"
+already refuses to admit for a review with no declared scope: the absence of a
+found defect is not the presence of a basis. Convergence answers to the same
+discipline. It is a different predicate about a different subject, and nothing
+here merges them.
+
+### Promotion, and what a grant does not repair
+
+Two conditions, on different axes, and both are required:
+
+```text
+SemanticPromotionEligible(C)   the convergence claim C has an established
+                               basis for every material predicate it consumes
+Authorized(g, promote, C)      an operational grant permits the action
+```
+
+```text
+SemanticPromotionEligible(C) ∧ Authorized(g, promote, C)
+      →  promotion may proceed under whatever rules govern it
+
+Authorized(g, promote, C)   ⇏   SemanticPromotionEligible(C)
+Authorized(g, promote, C)   ⇏   the convergence basis is sufficient
+```
+
+Which actions are protected, what a grant must contain and how it is revalidated
+are not this document's subject; §"Authority non-escalation" owns that boundary
+and this section does not extend it. What this section adds is only the first
+conjunct — that eligibility is a question about evidence, answered before any
+question about permission arises.
+
+Two consequences worth stating because both have been got wrong here before. A
+grant does not repair a missing basis: *no grant makes a claim better supported*
+is the existing rule, and this is that rule applied to convergence. And where one
+person holds every role — author, reviewer, grant holder — nothing changes, in
+either direction. Occupying two roles supplies no evidence, and occupying them
+does not remove evidence either; the predicates are decided by their bases
+whoever is asking.
 
 ### Triggers, and what follows when one fires
 
