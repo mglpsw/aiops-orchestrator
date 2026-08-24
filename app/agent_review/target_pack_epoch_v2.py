@@ -17,6 +17,7 @@ import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 from typing import Literal
 
 
@@ -30,6 +31,15 @@ TARGET_PACK_EPOCH_BUSY_REASON_V2 = "target_pack_epoch_busy"
 TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2 = "target_pack_epoch_unavailable"
 TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2 = "target_pack_epoch_target_subject_changed"
 TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2 = "target_pack_epoch_capability_invalid"
+# `K-DISJOINT` (#262).  Two reasons, deliberately distinct: one says the
+# carrier and the target were established to share visible physical ground, the
+# other says the relation could not be established at all.  Collapsing them
+# would let "we could not look" read as "we looked and it was fine", which is
+# the exact fail-open this authority exists to remove.
+TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2 = "target_pack_epoch_carrier_overlaps_target"
+TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2 = (
+    "target_pack_epoch_carrier_disjointness_unknown"
+)
 
 # `O_CLOEXEC` closes an FD at exec, but a raw Python `fork()` first duplicates
 # the open file description.  Track live protocol FDs so the child closes its
@@ -118,35 +128,246 @@ def _mount_namespace_identity_v2() -> tuple[int, int]:
         os.close(fd)
 
 
-_MOUNT_ESCAPE_RE_V2 = re.compile(r"\\\\([0-7]{3})")
+# `/proc/self/mountinfo` escapes space, tab, newline and backslash in its path
+# fields as a SINGLE backslash plus three octal digits.  Matching two
+# backslashes decodes no real mountinfo path at all.
+_MOUNT_ESCAPE_RE_V2 = re.compile(r"\\([0-7]{3})")
 
 
 def _unescape_mountinfo_path_v2(value: str) -> str:
     return _MOUNT_ESCAPE_RE_V2.sub(lambda match: chr(int(match.group(1), 8)), value)
 
 
+class MountRecordV2(NamedTuple):
+    """One row of `/proc/self/mountinfo`, decoded.
+
+    `root` is the subtree of the filesystem this mount exposes -- `"/"` for a
+    whole filesystem, and also `"/"` for a bind of a whole filesystem root --
+    while `mount_point` is where that root is attached in this namespace.
+    Both are path fields and both are escaped, so both decode.
+    """
+
+    mount_id: int
+    parent_id: int
+    device: int
+    root: str
+    mount_point: str
+    filesystem_type: str
+
+
+class MountTopologySnapshotV2:
+    """The module's SOLE mount authority (`#262`).
+
+    Nothing else parses `/proc/self/mountinfo`, so there is exactly one
+    decoding rule and exactly one error policy.  Visibility, projection and
+    the disjointness decision are all derived from this one observation.
+
+    Why a graph rather than a flat table: a flat
+    `(device, root, mount_point, filesystem_type)` scan cannot express mount
+    VISIBILITY, and two real topologies prove it.  A subtree bind covered by a
+    whole-filesystem mount at the same point leaves both rows present, so a
+    flat scan sees the shadowed one; and an older, deeper mount hidden by a
+    newer, shallower one defeats longest-prefix selection outright.  In both
+    cases the discriminator is the parent relation, which only the graph has.
+    """
+
+    def __init__(self, records: tuple[MountRecordV2, ...]) -> None:
+        self.records = records
+        self.by_id: dict[int, MountRecordV2] = {}
+        for record in records:
+            if record.mount_id in self.by_id:
+                # Two rows claiming one identity: the graph cannot be trusted.
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                )
+            self.by_id[record.mount_id] = record
+        self.children: dict[int, list[MountRecordV2]] = {}
+        for record in records:
+            self.children.setdefault(record.parent_id, []).append(record)
+        self._visible_cache: dict[int, bool] = {}
+
+    # ---- observation ------------------------------------------------------
+    @classmethod
+    def observe(cls) -> "MountTopologySnapshotV2":
+        try:
+            text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            ) from exc
+        return cls.parse(text)
+
+    @classmethod
+    def parse(cls, text: str) -> "MountTopologySnapshotV2":
+        records: list[MountRecordV2] = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                before_separator, after_separator = line.split(" - ", 1)
+                before = before_separator.split()
+                major_text, minor_text = before[2].split(":", 1)
+                records.append(MountRecordV2(
+                    mount_id=int(before[0]),
+                    parent_id=int(before[1]),
+                    device=os.makedev(int(major_text), int(minor_text)),
+                    root=_unescape_mountinfo_path_v2(before[3]),
+                    mount_point=_unescape_mountinfo_path_v2(before[4]),
+                    filesystem_type=after_separator.split()[0],
+                ))
+            except (IndexError, ValueError) as exc:
+                # A row this module cannot read is a mount whose position it
+                # cannot rule out.  Refuse rather than skip it.
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                ) from exc
+        if not records:
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
+        return cls(tuple(records))
+
+    # ---- validation -------------------------------------------------------
+    def validate_relevant_chain_v2(self, record: MountRecordV2) -> None:
+        """Walk *record* to the visible root, refusing a cycle.
+
+        A parent with no represented row is NOT malformed in general: Linux
+        permits the process-visible root mount's parent to lie outside the
+        process root, so it simply has no row.  That is a boundary, not a
+        defect, and the visible root is not required to be self-parented.  A
+        missing parent only matters where it is needed to resolve a chain this
+        decision actually depends on -- which is exactly this walk, and the
+        walk ends at the boundary rather than failing there.
+        """
+
+        seen = {record.mount_id}
+        current = record
+        while current.parent_id in self.by_id:
+            current = self.by_id[current.parent_id]
+            if current.mount_id in seen:
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                )
+            seen.add(current.mount_id)
+
+    # ---- governing mount --------------------------------------------------
+    def _visible_root_v2(self) -> MountRecordV2:
+        roots = [r for r in self.records if r.mount_point == "/"]
+        if not roots:
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
+        base = [r for r in roots if r.parent_id not in self.by_id] or roots
+        if len(base) > 1:
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
+        return self._climb_stack_v2(base[0], "/")
+
+    def _climb_stack_v2(self, current: MountRecordV2, point: str) -> MountRecordV2:
+        """Follow mounts stacked at the very same point, via the parent
+        relation, to the unique top."""
+
+        while True:
+            stacked = [c for c in self.children.get(current.mount_id, [])
+                       if c.mount_point == point]
+            if not stacked:
+                return current
+            if len(stacked) > 1:
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                )
+            current = stacked[0]
+
+    def governing_mount_v2(self, path: str) -> MountRecordV2:
+        """The mount pathname lookup of *path* actually traverses.
+
+        Descends the mount tree.  At each prefix only records that are
+        CHILDREN of the currently-governing mount may be attached there, which
+        is what makes a mount hanging off a covered tree stay hidden no matter
+        how long its textual mount point is.
+        """
+
+        path = _normalize_absolute_v2(path)
+        current = self._visible_root_v2()
+        prefix = ""
+        for component in [c for c in path.split("/") if c]:
+            prefix += "/" + component
+            attached = [c for c in self.children.get(current.mount_id, [])
+                        if c.mount_point == prefix]
+            if not attached:
+                continue
+            if len(attached) > 1:
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                )
+            current = self._climb_stack_v2(attached[0], prefix)
+        self.validate_relevant_chain_v2(current)
+        return current
+
+    # ---- visibility, derived from the SAME relation -----------------------
+    def is_visible_v2(self, record: MountRecordV2) -> bool:
+        cached = self._visible_cache.get(record.mount_id)
+        if cached is not None:
+            return cached
+        try:
+            visible = self.governing_mount_v2(record.mount_point).mount_id == record.mount_id
+        except TargetPackEpochError:
+            visible = False
+        self._visible_cache[record.mount_id] = visible
+        return visible
+
+    def visible_child_mounts_v2(self, path: str) -> tuple[MountRecordV2, ...]:
+        prefix = _normalize_absolute_v2(path).rstrip("/") + "/"
+        return tuple(r for r in self.records
+                     if r.mount_point.startswith(prefix) and self.is_visible_v2(r))
+
+    # ---- physical projection ---------------------------------------------
+    def project_v2(self, path: str) -> tuple[int, str]:
+        """Namespace path -> the physical `(device, filesystem-internal path)`
+        it actually resolves to.  Consumes the governing relation; visibility
+        is never inferred back out of a projection."""
+
+        path = _normalize_absolute_v2(path)
+        governing = self.governing_mount_v2(path)
+        remainder = path[len(governing.mount_point.rstrip("/")):]
+        if not remainder or governing.mount_point == path:
+            return (governing.device, governing.root)
+        internal = _normalize_absolute_v2(governing.root.rstrip("/") + remainder)
+        # Path arithmetic must never walk out of the mount's own root.
+        if not _within_v2(internal, governing.root):
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
+        return (governing.device, internal)
+
+
+def _normalize_absolute_v2(path: str) -> str:
+    return os.path.normpath(path) if path.startswith("/") else os.path.normpath("/" + path)
+
+
+def _within_v2(candidate: str, ancestor: str) -> bool:
+    """Physical containment over two already-normalized internal paths."""
+
+    if candidate == ancestor:
+        return True
+    return candidate.startswith(ancestor.rstrip("/") + "/")
+
+
 def _runtime_filesystem_type_v2(path: Path) -> str | None:
-    """Return the mountinfo filesystem type containing *path*, if known."""
+    """Return the mountinfo filesystem type containing *path*, if known.
+
+    Consumes the single canonical topology observation rather than parsing
+    `/proc/self/mountinfo` a second time: a second parser would mean a second
+    decoding rule and a second error policy for the same table, and whichever
+    ran first would decide what the caller sees.
+    """
 
     try:
-        text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
         candidate = str(path.resolve(strict=True))
     except (OSError, RuntimeError):
         return None
-
-    matches: list[tuple[int, str]] = []
-    for line in text.splitlines():
-        try:
-            before_separator, after_separator = line.split(" - ", 1)
-            before = before_separator.split()
-            after = after_separator.split()
-            mount_point = _unescape_mountinfo_path_v2(before[4])
-            filesystem_type = after[0]
-        except (IndexError, ValueError):
-            continue
-        if candidate == mount_point or candidate.startswith(mount_point.rstrip("/") + "/"):
-            matches.append((len(mount_point), filesystem_type))
-    return max(matches, default=(0, None))[1]
+    return MountTopologySnapshotV2.observe().governing_mount_v2(candidate).filesystem_type
 
 
 def _same_identity_v2(left: os.stat_result, right: os.stat_result) -> bool:
@@ -230,6 +451,143 @@ def _open_protocol_directory_v2(*, parent_fd: int, euid: int) -> tuple[int, str,
     except BaseException:
         os.close(fd)
         raise
+
+
+class _PhysicalSegmentV2(NamedTuple):
+    """A slice of one filesystem that is actually visible at some namespace
+    path: everything under `internal_path` on `device`, MINUS the internal
+    prefixes covered by visible child mounts."""
+
+    device: int
+    internal_path: str
+    covered: tuple[str, ...]
+
+    def intersects(self, device: int, internal_path: str) -> bool:
+        """Do this visible segment and the subtree rooted at *internal_path*
+        share any ground?
+
+        Symmetric on purpose.  A carrier site can sit INSIDE the target (the
+        pack asked to diagnose a directory beneath its own runtime carrier),
+        and the target can sit inside a carrier site (the carrier root
+        contains the target).  Both are the same failure, and testing only one
+        direction misses the other.
+        """
+
+        if device != self.device:
+            return False
+        if _within_v2(internal_path, self.internal_path):
+            # A visible child mount REPLACES the slice it covers, so storage
+            # that still exists underneath it is no longer reachable there and
+            # is not part of this segment.
+            return not any(_within_v2(internal_path, hidden) for hidden in self.covered)
+        if _within_v2(self.internal_path, internal_path):
+            return True
+        return False
+
+
+def _visible_physical_domain_v2(
+    snapshot: MountTopologySnapshotV2, path: str
+) -> tuple[_PhysicalSegmentV2, ...]:
+    """The physical ground actually reachable beneath *path*, as a PARTITION.
+
+    Not a union of whole subtrees.  A naive union would count both the covered
+    lower storage and the visible mount that replaced it, so an object that no
+    longer appears anywhere under *path* would still be judged to be in its
+    domain.  Each segment therefore excludes the slices its visible children
+    cover, and each visible child contributes its own segment (`#262`, spike
+    amendment 1).
+
+    Hidden mounts contribute nothing: they are not reachable beneath *path* at
+    all, so nothing they expose belongs to this domain either.
+    """
+
+    path = _normalize_absolute_v2(path)
+    segments: list[_PhysicalSegmentV2] = []
+    children = snapshot.visible_child_mounts_v2(path)
+
+    def covered_for(container_path: str, container_device: int, container_internal: str) -> tuple[str, ...]:
+        covered: list[str] = []
+        for child in children:
+            if not _within_v2(child.mount_point, container_path):
+                continue
+            # only the child's own attachment point, projected into THIS
+            # container's filesystem, is covered by it
+            remainder = child.mount_point[len(container_path.rstrip("/")):]
+            if not remainder:
+                covered.append(container_internal)
+                continue
+            covered.append(_normalize_absolute_v2(container_internal.rstrip("/") + remainder))
+        return tuple(covered)
+
+    base_device, base_internal = snapshot.project_v2(path)
+    segments.append(_PhysicalSegmentV2(
+        base_device, base_internal,
+        covered_for(path, base_device, base_internal)))
+
+    for child in children:
+        child_covered = covered_for(child.mount_point, child.device, child.root)
+        segments.append(_PhysicalSegmentV2(
+            child.device, child.root,
+            tuple(c for c in child_covered if c != child.root)))
+    return tuple(segments)
+
+
+def _carrier_mutation_sites_v2(euid: int) -> tuple[str, ...]:
+    """Exactly what K mutates, as namespace paths.
+
+    The protocol directory subtree, and nothing else.  That single path covers
+    all three mutations: `mkdir` CREATES this path (which is exactly the
+    directory entry added to the runtime parent -- the entry *is* this path,
+    so it needs no separate site), and the `<K>.lock` is created inside it.
+
+    The runtime parent is deliberately NOT a site of its own.  Naming it would
+    make its whole subtree carrier ground, and a target sitting beside the
+    protocol directory under the same parent is genuinely disjoint and must
+    still be accepted.  A target that legitimately conflicts by CONTAINING the
+    runtime parent already contains this path, so it is caught here anyway.
+    """
+
+    return (str(_RUNTIME_PARENT_PATH_V2 / _protocol_directory_name_v2(euid)),)
+
+
+def _establish_carrier_disjoint_v2(
+    *, canonical_target_subject: bytes, euid: int
+) -> None:
+    """Establish `CarrierVisibleMutationDomain(K) ∩ TargetVisiblePhysicalDomain(D) = ∅`,
+    or refuse.  Called BEFORE any carrier materialization, so a refused target
+    is never mutated first.
+
+    This is ONE relation over visible physical ground, not a list of alias
+    rules.  Each historical alias case -- target containing the carrier, a bind
+    alias of the runtime parent, a deep alias inside the target, an ancestral
+    alias, a pre-existing carrier mounted from the target, a runtime parent
+    grafted from a target subtree -- is the same statement once both sides are
+    projected through the visible mount topology, and none of them needs a rule
+    of its own.
+
+    Scope bound, stated rather than glossed: the topology is observed once,
+    immediately before materialization.  A cooperating process does not remount
+    underneath itself, and `#262` excludes external non-cooperating actors,
+    distributed coordination and crash atomicity.  Against an adversary racing
+    a mount into the window between this proof and the carrier write, this
+    establishes nothing, and no claim to the contrary is made here.
+    """
+
+    try:
+        target_path = os.fsdecode(canonical_target_subject)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise TargetPackEpochError(
+            TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        ) from exc
+
+    snapshot = MountTopologySnapshotV2.observe()
+    target_domain = _visible_physical_domain_v2(snapshot, target_path)
+
+    for site in _carrier_mutation_sites_v2(euid):
+        device, internal = snapshot.project_v2(site)
+        for segment in target_domain:
+            if segment.intersects(device, internal):
+                raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
 
 
 def _lock_nonblocking_v2(fd: int, mode: int) -> None:
@@ -430,6 +788,10 @@ def acquire_target_pack_epoch_v2(*, target_root: Path, exclusive: bool) -> Targe
     namespace_fd: int | None = None
     carrier_fd: int | None = None
     try:
+        # `K-DISJOINT` (#262).  The earliest authority: established here, before
+        # the protocol directory is created, so a refused target is never
+        # mutated first.  No consumer re-derives it.
+        _establish_carrier_disjoint_v2(canonical_target_subject=canonical_subject, euid=euid)
         namespace_fd, namespace_name, namespace_identity = _open_protocol_directory_v2(parent_fd=parent_fd, euid=euid)
         _lock_nonblocking_v2(namespace_fd, fcntl.LOCK_SH)
         _validate_protocol_directory_v2(
