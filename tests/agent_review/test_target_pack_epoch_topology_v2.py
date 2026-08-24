@@ -1334,21 +1334,26 @@ def test_f6b_case_sensitive_control_takes_the_normal_path(
 def test_f6_filesystems_without_casefold_support_are_not_probed(
     runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """tmpfs/ext2/ext3 cannot carry a casefolded directory, so their name
-    semantics follow from the filesystem type. Probing them would risk reading
-    an `ENOTTY` as an answer."""
+    """ext2/ext3 cannot carry a casefolded directory, so their name semantics
+    follow from the filesystem type and probing them would risk reading an
+    `ENOTTY` as an answer.
+
+    An earlier revision of this test used tmpfs, which was wrong: current
+    kernels DO casefold tmpfs, and `test_f6_tmpfs2_real_casefolded_tmpfs_parent_is_unknown`
+    now proves it against a real mount.
+    """
 
     probed: list[str] = []
     monkeypatch.setattr(epoch_module, "_directory_is_casefolded_v2",
                         lambda path: probed.append(path) or None)
     real_observe = MountTopologySnapshotV2.observe
 
-    def _as_tmpfs(cls=None):
+    def _as_ext3(cls=None):
         snapshot = real_observe()
         return MountTopologySnapshotV2(tuple(
-            r._replace(filesystem_type="tmpfs") for r in snapshot.records))
+            r._replace(filesystem_type="ext3") for r in snapshot.records))
 
-    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_as_tmpfs))
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_as_ext3))
     target = tmp_path / "project"
     target.mkdir()
     assert _acquire(target) == "acquired"
@@ -1541,3 +1546,308 @@ def test_no_topology_test_name_contradicts_its_assertions() -> None:
         if not claims_unknown:
             offenders.append(name)
     assert offenders == [], f"tests naming UNKNOWN without asserting it: {offenders}"
+
+
+# ============ F6 scope: name semantics belong to the LOOKUP PARENT =========
+#
+# A pathname's spelling is decided by the directory it is looked up IN, never
+# by the object itself. Probing the final object was wrong twice: the target's
+# interior lookup semantics do not decide whether the target's NAME collides
+# with another spelling, and opening it needs read permission the caller may
+# legitimately lack. A mode-0300 target -- writable, searchable, deliberately
+# unreadable -- answered "flag unreadable", which is UNKNOWN, and refused an
+# acquisition the contract requires to succeed. Running as root hid it, because
+# root bypasses the permission check; CI, which is not root, did not.
+
+
+def _casefold_tmpfs_available() -> bool:
+    if os.geteuid() != 0:
+        return False
+    import tempfile as _t
+    base = Path(_t.mkdtemp())
+    try:
+        if subprocess.run(["mount", "-t", "tmpfs", "-o", "casefold", "tmpfs", str(base)],
+                          capture_output=True).returncode != 0:
+            return False
+        subprocess.run(["umount", str(base)], check=False)
+        return True
+    finally:
+        import shutil as _s
+        _s.rmtree(base, ignore_errors=True)
+
+
+requires_casefold_tmpfs = pytest.mark.skipif(
+    not _casefold_tmpfs_available(),
+    reason="BLOCKED_BY_ENVIRONMENT: needs a real casefold-capable tmpfs; a skip "
+    "is absent evidence, never a pass")
+
+
+def test_f6_scope1_the_target_object_itself_is_not_a_lookup_authority(tmp_path: Path) -> None:
+    """F6-SCOPE-1. The object never resolves its own name."""
+
+    target = tmp_path / "a" / "b" / "target"
+    target.mkdir(parents=True)
+    authorities = epoch_module._lookup_authorities_v2(str(target))
+    assert str(target) not in authorities
+    assert str(tmp_path / "a" / "b") in authorities, "the resolving parent must be an authority"
+    assert str(tmp_path / "a") in authorities, "intermediate ancestors resolve components too"
+    assert "/" in authorities
+
+
+def test_f6_scope_nonexistent_components_resolve_nothing(tmp_path: Path) -> None:
+    """Only existing ancestors are authorities; the nearest existing one
+    governs what this primitive later creates beneath it."""
+
+    missing = tmp_path / "not" / "there" / "yet"
+    authorities = epoch_module._lookup_authorities_v2(str(missing))
+    assert str(tmp_path) in authorities
+    assert not any("not" in a.rsplit("/", 1)[-1] for a in authorities)
+
+
+def test_f6_ci1_ci2_mode_0300_target_acquires_for_both_principals(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """F6-CI-1/F6-CI-2. The regression CI caught, asserted directly.
+
+    The privileged and unprivileged answers must AGREE -- that agreement is
+    the property, since the original defect was visible only to a non-root
+    principal.
+    """
+
+    target = tmp_path / "mode-0300"
+    target.mkdir()
+    target.chmod(0o300)
+    try:
+        # the object is unreadable...
+        assert epoch_module._directory_is_casefolded_v2(str(target)) in (False, None)
+        # ...and is not consulted, because it is not a lookup authority
+        assert str(target) not in epoch_module._lookup_authorities_v2(str(target))
+        assert _acquire(target) == "acquired"
+    finally:
+        target.chmod(0o700)
+
+
+def test_f6_ci3_unreadable_relevant_parent_is_unknown(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F6-CI-3 / F6-SCOPE-2. The fail-closed policy is UNCHANGED -- only the
+    scope moved. An authority whose flag cannot be established is UNKNOWN."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    parent = str(tmp_path)
+
+    real_probe = epoch_module._directory_is_casefolded_v2
+    monkeypatch.setattr(
+        epoch_module, "_directory_is_casefolded_v2",
+        lambda path: None if path == parent else real_probe(path))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_f6_scope2_casefolded_resolving_parent_is_unknown(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "project"
+    target.mkdir()
+    parent = str(tmp_path)
+
+    real_probe = epoch_module._directory_is_casefolded_v2
+    monkeypatch.setattr(
+        epoch_module, "_directory_is_casefolded_v2",
+        lambda path: True if path == parent else real_probe(path))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_f6_tmpfs1_tmpfs_is_classified_casefold_capable() -> None:
+    """F6-TMPFS-1. Listing only ext4 was stale: current kernels casefold tmpfs."""
+
+    assert "tmpfs" in epoch_module._CASEFOLD_CAPABLE_FILESYSTEMS_V2
+    assert "ext4" in epoch_module._CASEFOLD_CAPABLE_FILESYSTEMS_V2
+    assert epoch_module._CASEFOLD_CAPABLE_FILESYSTEMS_V2 <= \
+        epoch_module._DIRECT_PROJECTION_FILESYSTEMS_V2, (
+        "name semantics are only asked about filesystems projection already admits")
+
+
+@requires_casefold_tmpfs
+def test_f6_tmpfs2_real_casefolded_tmpfs_parent_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F6-TMPFS-2. A REAL casefolded filesystem, not a simulated flag.
+
+    Two spellings genuinely name one entry here, which is exactly the
+    condition under which this module's textual equality and containment stop
+    being valid discriminators.
+    """
+
+    holder = tmp_path / "cf"
+    holder.mkdir()
+    subprocess.run(["mount", "-t", "tmpfs", "-o", "casefold", "tmpfs", str(holder)], check=True)
+    try:
+        parent = holder / "workspace"
+        parent.mkdir()
+        subprocess.run(["chattr", "+F", str(parent)], check=True)
+        assert epoch_module._directory_is_casefolded_v2(str(parent)) is True
+
+        # the hazard itself: one entry, two spellings
+        (parent / "project").mkdir()
+        assert (parent / "PROJECT").is_dir(), "casefolded lookup should alias the spelling"
+        assert os.stat(parent / "project").st_ino == os.stat(parent / "PROJECT").st_ino
+
+        runtime = tmp_path / "runtime-parent"
+        runtime.mkdir()
+        runtime.chmod(0o1777)
+        monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", runtime)
+        monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid())
+        assert _acquire(parent / "project") == \
+            TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+    finally:
+        subprocess.run(["umount", str(holder)], check=False)
+
+
+@requires_casefold_tmpfs
+def test_f6_tmpfs3_case_sensitive_tmpfs_control_proceeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F6-TMPFS-3. OVER-REJECTION CONTROL: an ordinary tmpfs, casefold-capable
+    as a type but with the flag clear, must still acquire."""
+
+    holder = tmp_path / "plain"
+    holder.mkdir()
+    subprocess.run(["mount", "-t", "tmpfs", "tmpfs", str(holder)], check=True)
+    try:
+        parent = holder / "workspace"
+        parent.mkdir()
+        target = parent / "project"
+        target.mkdir()
+        assert epoch_module._directory_is_casefolded_v2(str(parent)) is False
+        assert not (parent / "PROJECT").exists(), "control must be case-sensitive"
+
+        runtime = tmp_path / "runtime-parent"
+        runtime.mkdir()
+        runtime.chmod(0o1777)
+        monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", runtime)
+        monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid())
+        assert _acquire(target) == "acquired"
+    finally:
+        subprocess.run(["umount", str(holder)], check=False)
+
+
+# ------------------------- scope mutants ----------------------------------
+
+
+def test_mutant_probe_final_target_directory(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_PROBE_FINAL_TARGET_DIRECTORY -- restore the old scope; the mode-0300
+    target is refused again, exactly as CI caught."""
+
+    target = tmp_path / "mode-0300"
+    target.mkdir()
+    target.chmod(0o300)
+    try:
+        assert _acquire(target) == "acquired"
+
+        real_probe = epoch_module._directory_is_casefolded_v2
+
+        def _also_probe_the_object(snapshot, *paths):
+            for path in paths:
+                governing = snapshot.governing_mount_v2(path)
+                if governing.filesystem_type not in epoch_module._CASEFOLD_CAPABLE_FILESYSTEMS_V2:
+                    continue
+                probe = path
+                while not os.path.isdir(probe):
+                    parent = os.path.dirname(probe)
+                    if parent == probe:
+                        break
+                    probe = parent
+                if real_probe(probe) is not False:
+                    raise TargetPackEpochError(
+                        TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
+
+        monkeypatch.setattr(
+            epoch_module, "_require_name_semantics_applicable_v2", _also_probe_the_object)
+        # judged by the real filesystem's permission behaviour, not by the mutant
+        assert os.geteuid() == 0 or _acquire(target) == \
+            TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        assert epoch_module._lookup_authorities_v2(str(target)) and \
+            str(target) not in epoch_module._lookup_authorities_v2(str(target))
+    finally:
+        target.chmod(0o700)
+
+
+def test_mutant_skip_relevant_lookup_parent(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_SKIP_RELEVANT_LOOKUP_PARENT -- consult only the immediate parent, so a
+    casefolded INTERMEDIATE ancestor slips through."""
+
+    target = tmp_path / "a" / "b" / "project"
+    target.mkdir(parents=True)
+    intermediate = str(tmp_path / "a")
+
+    real_probe = epoch_module._directory_is_casefolded_v2
+    monkeypatch.setattr(
+        epoch_module, "_directory_is_casefolded_v2",
+        lambda path: True if path == intermediate else real_probe(path))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+    monkeypatch.setattr(epoch_module, "_lookup_authorities_v2",
+                        lambda path: (os.path.dirname(epoch_module._normalize_absolute_v2(path)),))
+    assert _acquire(target) == "acquired", "mutant should have skipped the intermediate ancestor"
+
+
+def test_mutant_tmpfs_assumed_never_casefolded(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_TMPFS_ASSUMED_NEVER_CASEFOLDED -- the stale `{"ext4"}` set."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    parent = str(tmp_path)
+    real_probe = epoch_module._directory_is_casefolded_v2
+    monkeypatch.setattr(
+        epoch_module, "_directory_is_casefolded_v2",
+        lambda path: True if path == parent else real_probe(path))
+
+    real_observe = MountTopologySnapshotV2.observe
+
+    def _as_tmpfs(cls=None):
+        snapshot = real_observe()
+        return MountTopologySnapshotV2(tuple(
+            r._replace(filesystem_type="tmpfs") for r in snapshot.records))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_as_tmpfs))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+    monkeypatch.setattr(epoch_module, "_CASEFOLD_CAPABLE_FILESYSTEMS_V2", frozenset({"ext4"}))
+    assert _acquire(target) == "acquired", "mutant should have assumed tmpfs never casefolds"
+
+
+def test_mutant_casefold_observation_failure_means_false(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_CASEFOLD_OBSERVATION_FAILURE_MEANS_FALSE -- an unreadable flag read as
+    "case sensitive"."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    parent = str(tmp_path)
+    real_probe = epoch_module._directory_is_casefolded_v2
+    monkeypatch.setattr(
+        epoch_module, "_directory_is_casefolded_v2",
+        lambda path: None if path == parent else real_probe(path))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+    def _none_means_sensitive(snapshot, *paths):
+        for path in paths:
+            governing = snapshot.governing_mount_v2(path)
+            if governing.filesystem_type not in epoch_module._CASEFOLD_CAPABLE_FILESYSTEMS_V2:
+                continue
+            for authority in epoch_module._lookup_authorities_v2(path):
+                if epoch_module._directory_is_casefolded_v2(authority) is True:
+                    raise TargetPackEpochError(
+                        TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
+
+    monkeypatch.setattr(
+        epoch_module, "_require_name_semantics_applicable_v2", _none_means_sensitive)
+    assert _acquire(target) == "acquired", "mutant should have read UNKNOWN as case-sensitive"

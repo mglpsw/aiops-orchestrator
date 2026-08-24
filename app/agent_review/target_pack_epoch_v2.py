@@ -519,11 +519,20 @@ def _open_protocol_directory_v2(*, parent_fd: int, euid: int) -> tuple[int, str,
 # be.
 _DIRECT_PROJECTION_FILESYSTEMS_V2 = frozenset({"ext2", "ext3", "ext4", "tmpfs"})
 
-# Only ext4 among the direct-projection filesystems can carry a casefolded
-# directory, and casefolding makes two differently-spelled pathnames name one
-# entry -- which is exactly what the textual equality and containment in this
+# Filesystems in the direct-projection set that can carry a casefolded
+# directory.  Casefolding makes two differently-spelled pathnames name ONE
+# entry, which is exactly what the textual equality and containment in this
 # module assume cannot happen (`#262` F6).
-_CASEFOLD_CAPABLE_FILESYSTEMS_V2 = frozenset({"ext4"})
+#
+# tmpfs belongs here.  An earlier revision listed only ext4 and said so in a
+# comment; that was stale -- current kernels take `-o casefold` on tmpfs and
+# honour `+F` per directory, with new directories inheriting it, and this host
+# reproduces exactly that.  The two authorities stay separate on purpose: a
+# filesystem may be projection-applicable and still have unknown name
+# semantics, and other casefold-capable filesystems (f2fs, bcachefs) are
+# irrelevant here precisely because projection applicability already refuses
+# them.
+_CASEFOLD_CAPABLE_FILESYSTEMS_V2 = frozenset({"ext4", "tmpfs"})
 _FS_IOC_GETFLAGS_V2 = 0x80086601
 _FS_CASEFOLD_FL_V2 = 0x40000000
 
@@ -568,6 +577,47 @@ def _directory_is_casefolded_v2(path: str) -> bool | None:
         os.close(fd)
 
 
+def _lookup_authorities_v2(path: str) -> tuple[str, ...]:
+    """The existing directories that RESOLVE the components of *path*.
+
+    A pathname's own spelling is decided by the directory it is looked up IN.
+    For `/a/b/c`, `c` is resolved by `/a/b`, `b` by `/a`, and `a` by `/` -- so
+    those are the authorities, and `/a/b/c` itself is NOT one of them.
+
+    An earlier revision probed the final object whenever it existed.  That is
+    the wrong scope twice over: the target's own interior lookup semantics do
+    not decide whether the target's NAME collides with another spelling, and
+    opening it requires read permission the caller may legitimately not have.
+    A mode-0300 target -- writable and searchable, deliberately unreadable --
+    then answered "flag unreadable", which is UNKNOWN, and refused an
+    acquisition the contract requires to succeed.  Running as root masked it
+    entirely, because root bypasses the permission check.
+
+    A component that does not exist yet resolves nothing, so only existing
+    ancestors are returned; the nearest existing one governs whatever this
+    primitive later creates beneath it, since the casefold attribute is
+    inherited at creation and nothing here sets it.
+
+    Bound, stated rather than assumed: the only caller-supplied spelling this
+    decision consumes is the target root, plus the carrier path this module
+    composes itself.  Every other path in the relation -- mount points -- comes
+    from the kernel in canonical form and is compared against other kernel
+    output, so no user-chosen spelling mediates those comparisons.
+    """
+
+    normalized = _normalize_absolute_v2(path)
+    authorities: list[str] = []
+    current = os.path.dirname(normalized)
+    while True:
+        if os.path.isdir(current):
+            authorities.append(current)
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return tuple(authorities)
+
+
 def _require_name_semantics_applicable_v2(
     snapshot: "MountTopologySnapshotV2", *paths: str
 ) -> None:
@@ -589,23 +639,12 @@ def _require_name_semantics_applicable_v2(
         governing = snapshot.governing_mount_v2(path)
         if governing.filesystem_type not in _CASEFOLD_CAPABLE_FILESYSTEMS_V2:
             continue
-        # Probe the nearest EXISTING directory on the path. A directory that
-        # does not exist yet resolves no names, and ext4 inherits the casefold
-        # flag from the parent at creation -- so the nearest existing ancestor
-        # is exactly what decides the lookup semantics a future child would
-        # get. Probing a non-existent path instead would answer "flag
-        # unreadable" and refuse every ordinary first acquisition.
-        probe = path
-        while not os.path.isdir(probe):
-            parent = os.path.dirname(probe)
-            if parent == probe:
-                break
-            probe = parent
-        casefolded = _directory_is_casefolded_v2(probe)
-        if casefolded is None or casefolded:
-            raise TargetPackEpochError(
-                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-            )
+        for authority in _lookup_authorities_v2(path):
+            casefolded = _directory_is_casefolded_v2(authority)
+            if casefolded is None or casefolded:
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                )
 
 
 class _PhysicalSegmentV2(NamedTuple):
