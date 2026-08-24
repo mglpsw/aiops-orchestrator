@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Post-merge review debt on the Authority-First Convergence Review
+  methodology (`#263`)**: three P2 findings raised after that PR merged, all
+  reproduced on `master@ff9fbdd`.  (1) The target-profile YAML corpus test's
+  module documentation stated, in the present tense, that three consecutive
+  findings on one abstraction boundary are the preflight's unconditional
+  STOP/REDESIGN trigger — a rule the current MethodAuthority has superseded,
+  and one a maintainer could have applied with no `CorrectionAttempt` or
+  admitted recurrence in evidence.  Both occurrences are now marked as
+  historical record and point to `STRUCTURAL_CHANGE_PREFLIGHT.md` as the sole
+  authority for current STOP semantics, without restating it.  (2) The word
+  `disposition` named two different axes — the factual validation outcome
+  (`VALID`/`INVALID`/`PARTIAL`/`UNAVAILABLE_TO_VALIDATE`) and later lifecycle
+  resolution (`fixed`/`superseded`/`out_of_scope`) — so a record implementing
+  "record a disposition" could not tell whether the two shared one field and
+  overwrote each other.  They now carry distinct identities,
+  `FindingValidationOutcome(f)` and `LifecycleDisposition(f)`, with neither
+  derivable from the other and both simultaneously representable.  (3) The
+  round-output block declared an exhaustive set of three results while the
+  correction barrier distinguishes `established`/`out of scope`/`unsettled`,
+  leaving an established out-of-scope candidate with no honest outcome and
+  routing it to a hold reserved for unsettled evidence.  A fourth result,
+  `candidate out of scope`, is added, and `held for investigation` is narrowed
+  to an unsettled barrier.  Prose only: no schema, enum, persisted record or
+  new contract artifact, and no change to the S1 recurrence kernel, the S3a
+  finding-truth/materiality separation, or the open status of S2a/S2b.
+
 ### Changed
 
 - **Target-pack `init --apply` now uses one private cooperative K epoch

@@ -60,13 +60,19 @@ registry actually consulted.
 
 SPIKE (round 5). Rounds 2, 3, and 4 had by this point landed on the same
 abstraction boundary -- `property_family` verification -- three times
-consecutively, which is `STRUCTURAL_CHANGE_PREFLIGHT.md`'s own
-unconditional STOP/REDESIGN trigger, with no convergence exception written
-into that document. Round 4 proceeded past this point on an ad-hoc
-convergence judgement recorded only in the PR body, not in the preflight
-itself -- round-5 review correctly named this as the preflight's own rule
-applied selectively rather than honoured or amended. This is the disposable
-spike the preflight requires, performed (late) once that was pointed out:
+consecutively. Under the preflight revision governing that historical
+round, that repetition was by itself an unconditional STOP/REDESIGN
+trigger, and round 4 had proceeded past it on an ad-hoc convergence
+judgement recorded only in the PR body; round-5 review named that as the
+rule applied selectively rather than honoured or amended, and the
+disposable spike below was performed (late) in response.
+
+This paragraph is a historical record of why the spike happened. It is NOT
+a statement of current STOP semantics and must not be read as one -- the
+rule it describes has since been superseded, and
+`docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md` is the sole authority for
+what triggers a stop today. Do not restate that authority here; consult it.
+The spike, as performed then:
 
   - question: is the round-3/4 mechanism (one registry mapping
     property_family -> a per-case assertion, consumed by both a
@@ -103,13 +109,16 @@ that pytest collects any case that invokes it. Deleting every
 disk/metadata bijection -- leaves the closure green with that family's
 evidence gone (reproduced before fixing).
 
-Three preflight triggers fired simultaneously at this point, not one:
-3 consecutive rounds on the same boundary (4, 5, 6); successive fixes
-falsifying prior assumptions (round 4's fix falsified by round 5, round 5's
-by round 6); and a load-bearing test repeatedly failing to discriminate the
-defect it claims to guard. Round 5's spike conclusion ("keep the
-mechanism") is therefore retracted -- it was the right call on round 5's
-evidence and the wrong one on round 6's.
+Under the preflight revision in force at that historical round, three
+triggers were recorded as firing simultaneously, not one: 3 consecutive
+rounds on the same boundary (4, 5, 6); successive fixes falsifying prior
+assumptions (round 4's fix falsified by round 5, round 5's by round 6); and
+a load-bearing test repeatedly failing to discriminate the defect it claims
+to guard. That is what was recorded then, under the rules then; it is not
+what triggers a stop now, and the current authority is
+`docs/engineering/STRUCTURAL_CHANGE_PREFLIGHT.md`. Round 5's spike
+conclusion ("keep the mechanism") is therefore retracted -- it was the
+right call on round 5's evidence and the wrong one on round 6's.
 
   - root cause, correctly located: every one of these fixes asserted
     coverage as a property of a DECLARED STRUCTURE (a label set, a
