@@ -9,6 +9,7 @@ mutation/journal vocabulary.
 from __future__ import annotations
 
 import errno
+import array
 import fcntl
 import hashlib
 import os
@@ -229,20 +230,38 @@ class MountTopologySnapshotV2:
 
     # ---- validation -------------------------------------------------------
     def validate_relevant_chain_v2(self, record: MountRecordV2) -> None:
-        """Walk *record* to the visible root, refusing a cycle.
+        """Walk *record* toward the visible root, refusing a cycle or a gap.
 
-        A parent with no represented row is NOT malformed in general: Linux
-        permits the process-visible root mount's parent to lie outside the
-        process root, so it simply has no row.  That is a boundary, not a
-        defect, and the visible root is not required to be self-parented.  A
-        missing parent only matters where it is needed to resolve a chain this
-        decision actually depends on -- which is exactly this walk, and the
-        walk ends at the boundary rather than failing there.
+        Two different things look alike here and must not be merged.
+
+        The process-visible ROOT's parent may legitimately lie outside the
+        process root -- after a `chroot` or in a container -- so it has no row,
+        and it may equally report `mount_id == parent_id`.  Both are boundary
+        conditions, and the visible root is not required to be self-parented.
+
+        Any OTHER record whose parent is absent is a mount this snapshot cannot
+        connect to the tree.  Its position relative to the target is therefore
+        unestablished, and an earlier revision silently treated it as hidden --
+        a disconnected mount beneath the target simply vanished from the
+        domain.  That is fail-open, and it is now UNKNOWN.
         """
 
+        root = self._visible_root_v2()
         seen = {record.mount_id}
         current = record
-        while current.parent_id in self.by_id:
+        while True:
+            if current.mount_id == root.mount_id:
+                return
+            if current.parent_id not in self.by_id:
+                # not the boundary -- the boundary is the visible root above
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                )
+            if current.parent_id == current.mount_id:
+                # a non-root self-parent is a cycle of length one
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                )
             current = self.by_id[current.parent_id]
             if current.mount_id in seen:
                 raise TargetPackEpochError(
@@ -266,11 +285,20 @@ class MountTopologySnapshotV2:
 
     def _climb_stack_v2(self, current: MountRecordV2, point: str) -> MountRecordV2:
         """Follow mounts stacked at the very same point, via the parent
-        relation, to the unique top."""
+        relation, to the unique top.
 
+        Bounded by a visited set.  The root of a mount tree may legitimately
+        report `mount_id == parent_id`, which makes it its own child at its own
+        mount point; an unbounded climb then selects the same record forever
+        and the public entry point HANGS rather than refusing.  A repeat visit
+        is a cycle, and a cycle is UNKNOWN -- except that the selected root's
+        self-reference is not a stack at all and terminates immediately below.
+        """
+
+        visited = {current.mount_id}
         while True:
             stacked = [c for c in self.children.get(current.mount_id, [])
-                       if c.mount_point == point]
+                       if c.mount_point == point and c.mount_id != current.mount_id]
             if not stacked:
                 return current
             if len(stacked) > 1:
@@ -278,6 +306,11 @@ class MountTopologySnapshotV2:
                     TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
                 )
             current = stacked[0]
+            if current.mount_id in visited:
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                )
+            visited.add(current.mount_id)
 
     def governing_mount_v2(self, path: str) -> MountRecordV2:
         """The mount pathname lookup of *path* actually traverses.
@@ -307,20 +340,37 @@ class MountTopologySnapshotV2:
 
     # ---- visibility, derived from the SAME relation -----------------------
     def is_visible_v2(self, record: MountRecordV2) -> bool:
+        """VISIBLE / HIDDEN, or UNKNOWN by raising.
+
+        Visibility is a PARTIAL relation.  An earlier revision caught the
+        topology refusal here and answered `False`, which turned "this mount's
+        position cannot be established" into "this mount is not there" -- so an
+        ambiguous child beneath the target was dropped from its domain and
+        acquisition could answer `acquired` where the contract requires
+        UNKNOWN.  The refusal now propagates.
+        """
+
         cached = self._visible_cache.get(record.mount_id)
         if cached is not None:
             return cached
-        try:
-            visible = self.governing_mount_v2(record.mount_point).mount_id == record.mount_id
-        except TargetPackEpochError:
-            visible = False
+        visible = self.governing_mount_v2(record.mount_point).mount_id == record.mount_id
         self._visible_cache[record.mount_id] = visible
         return visible
 
     def visible_child_mounts_v2(self, path: str) -> tuple[MountRecordV2, ...]:
+        """Visible mounts strictly beneath *path*.
+
+        Every record considered here is RELEVANT by construction -- its mount
+        point lies beneath the path whose domain is being computed -- so an
+        unresolvable one is not skipped.  Records elsewhere in the table are
+        never consulted, so unrelated breakage does not poison the decision.
+        """
+
         prefix = _normalize_absolute_v2(path).rstrip("/") + "/"
-        return tuple(r for r in self.records
-                     if r.mount_point.startswith(prefix) and self.is_visible_v2(r))
+        relevant = [r for r in self.records if r.mount_point.startswith(prefix)]
+        for record in relevant:
+            self.validate_relevant_chain_v2(record)
+        return tuple(r for r in relevant if self.is_visible_v2(r))
 
     # ---- physical projection ---------------------------------------------
     def project_v2(self, path: str) -> tuple[int, str]:
@@ -354,7 +404,7 @@ def _within_v2(candidate: str, ancestor: str) -> bool:
     return candidate.startswith(ancestor.rstrip("/") + "/")
 
 
-def _runtime_filesystem_type_v2(path: Path) -> str | None:
+def _runtime_filesystem_type_v2(path: Path, snapshot: "MountTopologySnapshotV2") -> str | None:
     """Return the mountinfo filesystem type containing *path*, if known.
 
     Consumes the single canonical topology observation rather than parsing
@@ -367,14 +417,14 @@ def _runtime_filesystem_type_v2(path: Path) -> str | None:
         candidate = str(path.resolve(strict=True))
     except (OSError, RuntimeError):
         return None
-    return MountTopologySnapshotV2.observe().governing_mount_v2(candidate).filesystem_type
+    return snapshot.governing_mount_v2(candidate).filesystem_type
 
 
 def _same_identity_v2(left: os.stat_result, right: os.stat_result) -> bool:
     return left.st_dev == right.st_dev and left.st_ino == right.st_ino
 
 
-def _open_runtime_parent_v2(*, euid: int) -> tuple[int, tuple[int, int]]:
+def _open_runtime_parent_v2(*, euid: int, snapshot: "MountTopologySnapshotV2") -> tuple[int, tuple[int, int]]:
     """Open and validate the fixed `/tmp` root without following aliases."""
 
     if sys.platform != "linux" or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
@@ -399,7 +449,7 @@ def _open_runtime_parent_v2(*, euid: int) -> tuple[int, tuple[int, int]]:
             or fd_stat.st_uid != _RUNTIME_PARENT_EXPECTED_OWNER_V2
             or not (mode & stat.S_ISVTX)
             or not os.access(_RUNTIME_PARENT_PATH_V2, os.W_OK | os.X_OK)
-            or _runtime_filesystem_type_v2(_RUNTIME_PARENT_PATH_V2) not in _SUPPORTED_RUNTIME_FILESYSTEMS_V2
+            or _runtime_filesystem_type_v2(_RUNTIME_PARENT_PATH_V2, snapshot) not in _SUPPORTED_RUNTIME_FILESYSTEMS_V2
         ):
             raise TargetPackEpochError(TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2)
         return fd, (fd_stat.st_dev, fd_stat.st_ino)
@@ -451,6 +501,111 @@ def _open_protocol_directory_v2(*, parent_fd: int, euid: int) -> tuple[int, str,
     except BaseException:
         os.close(fd)
         raise
+
+
+# Filesystems whose `(device, root, mount_point)` triple is known to describe
+# where a write physically lands, so `project_v2` means what K-DISJOINT needs
+# it to mean.  An ALLOWLIST, deliberately: an unrecognised filesystem is
+# UNKNOWN rather than assumed direct.
+#
+# `overlay` is the case that forced this (`#262` F2).  Its mount row carries a
+# device of its own and says nothing, in the fields this module models, about
+# the upper and lower trees a write actually reaches -- so a carrier written
+# through an overlay's upperdir appears in the target while the two projections
+# compare as different devices.  The `upperdir=`/`lowerdir=` super-options do
+# exist in mountinfo, but overlay semantics are richer than one backing path
+# (multiple lowers, redirects, whiteouts, metacopy) and this slice does not own
+# a general OverlayFS model.  Refusing is honest; modelling it badly would not
+# be.
+_DIRECT_PROJECTION_FILESYSTEMS_V2 = frozenset({"ext2", "ext3", "ext4", "tmpfs"})
+
+# Only ext4 among the direct-projection filesystems can carry a casefolded
+# directory, and casefolding makes two differently-spelled pathnames name one
+# entry -- which is exactly what the textual equality and containment in this
+# module assume cannot happen (`#262` F6).
+_CASEFOLD_CAPABLE_FILESYSTEMS_V2 = frozenset({"ext4"})
+_FS_IOC_GETFLAGS_V2 = 0x80086601
+_FS_CASEFOLD_FL_V2 = 0x40000000
+
+
+def _require_projection_applicable_v2(
+    snapshot: "MountTopologySnapshotV2", *paths: str
+) -> None:
+    """Establish that a physical projection means what K-DISJOINT reads it to
+    mean for every *path*, or refuse as UNKNOWN.
+
+    Answers one question only -- can the later relation be established? -- and
+    decides nothing about K itself.
+    """
+
+    for path in paths:
+        governing = snapshot.governing_mount_v2(path)
+        if governing.filesystem_type not in _DIRECT_PROJECTION_FILESYSTEMS_V2:
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
+
+
+def _directory_is_casefolded_v2(path: str) -> bool | None:
+    """`True`/`False` where the flag can be read, `None` where it cannot.
+
+    `None` is never read as "case sensitive": an unreadable flag is an
+    unestablished predicate, and the caller refuses.
+    """
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        buffer = array.array("i", [0])
+        fcntl.ioctl(fd, _FS_IOC_GETFLAGS_V2, buffer, True)
+        return bool(buffer[0] & _FS_CASEFOLD_FL_V2)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def _require_name_semantics_applicable_v2(
+    snapshot: "MountTopologySnapshotV2", *paths: str
+) -> None:
+    """Establish that pathname SPELLING is a valid discriminator, or refuse.
+
+    This module compares and contains paths textually.  That is only sound
+    where lookup is case-sensitive.  Scope bound, kept minimal on purpose: the
+    directories whose lookup this decision actually consumes are the ones the
+    carrier and target names are resolved in, so only those are probed -- not
+    arbitrary descendants, which decide nothing here.
+
+    ext2/ext3/tmpfs cannot carry a casefolded directory at all, so their
+    case-sensitivity is established by the filesystem type and no probe is
+    attempted -- which also avoids reading an `ENOTTY` from a filesystem that
+    simply has no such flag as though it were an answer.
+    """
+
+    for path in paths:
+        governing = snapshot.governing_mount_v2(path)
+        if governing.filesystem_type not in _CASEFOLD_CAPABLE_FILESYSTEMS_V2:
+            continue
+        # Probe the nearest EXISTING directory on the path. A directory that
+        # does not exist yet resolves no names, and ext4 inherits the casefold
+        # flag from the parent at creation -- so the nearest existing ancestor
+        # is exactly what decides the lookup semantics a future child would
+        # get. Probing a non-existent path instead would answer "flag
+        # unreadable" and refuse every ordinary first acquisition.
+        probe = path
+        while not os.path.isdir(probe):
+            parent = os.path.dirname(probe)
+            if parent == probe:
+                break
+            probe = parent
+        casefolded = _directory_is_casefolded_v2(probe)
+        if casefolded is None or casefolded:
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
 
 
 class _PhysicalSegmentV2(NamedTuple):
@@ -551,7 +706,8 @@ def _carrier_mutation_sites_v2(euid: int) -> tuple[str, ...]:
 
 
 def _establish_carrier_disjoint_v2(
-    *, canonical_target_subject: bytes, euid: int
+    *, canonical_target_subject: bytes, euid: int,
+    snapshot: "MountTopologySnapshotV2 | None" = None,
 ) -> None:
     """Establish `CarrierVisibleMutationDomain(K) ∩ TargetVisiblePhysicalDomain(D) = ∅`,
     or refuse.  Called BEFORE any carrier materialization, so a refused target
@@ -580,10 +736,19 @@ def _establish_carrier_disjoint_v2(
             TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
         ) from exc
 
-    snapshot = MountTopologySnapshotV2.observe()
+    if snapshot is None:
+        raise TargetPackEpochError(
+            TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        )
+
+    sites = _carrier_mutation_sites_v2(euid)
+    # Applicability BEFORE projection is consumed, for both sides.
+    _require_projection_applicable_v2(snapshot, target_path, *sites)
+    _require_name_semantics_applicable_v2(snapshot, target_path, *sites)
+
     target_domain = _visible_physical_domain_v2(snapshot, target_path)
 
-    for site in _carrier_mutation_sites_v2(euid):
+    for site in sites:
         device, internal = snapshot.project_v2(site)
         for segment in target_domain:
             if segment.intersects(device, internal):
@@ -784,14 +949,26 @@ def acquire_target_pack_epoch_v2(*, target_root: Path, exclusive: bool) -> Targe
     key = compute_target_pack_epoch_key_from_components_v2(
         euid=euid, mount_namespace_identity=mount_identity, canonical_target_subject=canonical_subject
     )
-    parent_fd, _ = _open_runtime_parent_v2(euid=euid)
+    # `#262` F4.  ONE observation per acquisition: runtime-parent eligibility
+    # and the disjointness decision must be established from the SAME topology,
+    # or they can describe different worlds.
+    topology = MountTopologySnapshotV2.observe()
+    parent_fd, parent_identity = _open_runtime_parent_v2(euid=euid, snapshot=topology)
     namespace_fd: int | None = None
     carrier_fd: int | None = None
     try:
         # `K-DISJOINT` (#262).  The earliest authority: established here, before
         # the protocol directory is created, so a refused target is never
         # mutated first.  No consumer re-derives it.
-        _establish_carrier_disjoint_v2(canonical_target_subject=canonical_subject, euid=euid)
+        # the opened parent FD must be the object the captured topology
+        # describes; a mismatch means the two disagree and is not resolvable here
+        if parent_identity[0] != topology.governing_mount_v2(
+            str(_RUNTIME_PARENT_PATH_V2)).device:
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
+        _establish_carrier_disjoint_v2(
+            canonical_target_subject=canonical_subject, euid=euid, snapshot=topology)
         namespace_fd, namespace_name, namespace_identity = _open_protocol_directory_v2(parent_fd=parent_fd, euid=euid)
         _lock_nonblocking_v2(namespace_fd, fcntl.LOCK_SH)
         _validate_protocol_directory_v2(

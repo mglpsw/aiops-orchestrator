@@ -708,13 +708,21 @@ def test_missing_parent_for_a_relevant_internal_mount_is_unknown() -> None:
 
     table = (
         "36 35 98:0 / / rw - ext4 /dev/root rw\n"
-        "40 39 98:0 /x /deep rw - ext4 /dev/root rw\n"          # parent 39 absent
+        "40 39 98:0 /x /deep_target_parent/child rw - ext4 /dev/root rw\n"   # parent 39 absent
     )
     snapshot = MountTopologySnapshotV2.parse(table)
-    # unreachable from the visible root: its parent is not represented, so the
-    # walk never reaches it and it governs nothing
-    assert snapshot.governing_mount_v2("/deep").mount_id == 36
-    assert not snapshot.is_visible_v2(snapshot.by_id[40])
+
+    # An earlier revision of THIS TEST asserted the defect: that the
+    # disconnected record simply governs nothing and is silently hidden. That
+    # is fail-open -- a mount beneath the target whose position cannot be
+    # established was dropped from the target's domain -- and the test's name
+    # claimed the opposite of what its body certified. It now asserts UNKNOWN.
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        snapshot.validate_relevant_chain_v2(snapshot.by_id[40])
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+    with pytest.raises(TargetPackEpochError):
+        snapshot.visible_child_mounts_v2("/deep_target_parent")
 
 
 # ========================== FAIL-CLOSED (§11) =============================
@@ -755,15 +763,36 @@ def test_unusable_topology_is_unknown(table: str, label: str) -> None:
     assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
 
 
-def test_cycle_in_the_relevant_chain_is_unknown() -> None:
+def test_cycle_not_involving_the_root_is_unknown() -> None:
+    """A genuine unresolvable cycle: two mounts parenting each other, neither
+    of them the visible root.
+
+    A cycle that runs THROUGH the root is a different thing and is not this:
+    the walk terminates at the root boundary before ever traversing it, which
+    `test_a_cycle_through_the_root_terminates_at_the_boundary` asserts.
+    """
+
+    records = (
+        MountRecordV2(1, 9, 0, "/", "/", "ext4"),
+        MountRecordV2(2, 3, 0, "/a", "/tmp/p/x", "ext4"),
+        MountRecordV2(3, 2, 0, "/b", "/tmp/p/y", "ext4"),
+    )
+    snapshot = MountTopologySnapshotV2(records)
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        snapshot.validate_relevant_chain_v2(records[1])
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_a_cycle_through_the_root_terminates_at_the_boundary() -> None:
+    """The root is where the walk stops, so a parent link above it decides
+    nothing and must not be mistaken for an unresolvable topology."""
+
     records = (
         MountRecordV2(1, 2, 0, "/", "/", "ext4"),
         MountRecordV2(2, 1, 0, "/", "/a", "ext4"),
     )
     snapshot = MountTopologySnapshotV2(records)
-    with pytest.raises(TargetPackEpochError) as excinfo:
-        snapshot.validate_relevant_chain_v2(records[0])
-    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+    snapshot.validate_relevant_chain_v2(records[0])   # must not raise
 
 
 def test_ambiguous_same_point_stack_is_unknown() -> None:
@@ -1075,3 +1104,440 @@ def test_the_mutation_oracle_is_never_the_mutant() -> None:
     body = inspect.getsource(_assert_mutant_disagrees_with_reality)
     assert "realise(truth," in body, "the oracle must realise via the trusted snapshot"
     assert "realise(mutant" not in body and "realise(self" not in body
+
+
+# ============== F1-F6: native review of d74b9ea, corrective corpus =========
+#
+# The topology graph survived that review; what it found were gaps INSIDE the
+# relation, plus one architectural over-claim. The graph establishes VISIBLE
+# MOUNT TOPOLOGY. It does not, by itself, establish that a physical projection
+# means what K-DISJOINT reads it to mean, nor that pathname spelling is a valid
+# discriminator. Those are now explicit preconditions, and where either cannot
+# be established the answer is UNKNOWN.
+
+
+def test_f1a_self_parented_root_resolves_instead_of_hanging() -> None:
+    """F1. A root reporting `mount_id == parent_id` is legitimate, and made an
+    unbounded stack climb select the same record forever -- public acquisition
+    HUNG rather than refusing. Termination is the property under test, so this
+    must complete, not raise."""
+
+    snapshot = MountTopologySnapshotV2((MountRecordV2(1, 1, 0, "/", "/", "ext4"),))
+    assert snapshot.governing_mount_v2("/tmp/anything").mount_id == 1
+
+
+def test_f1b_root_with_an_external_parent_is_a_boundary_not_a_defect() -> None:
+    table = ("36 35 98:0 / / rw - ext4 /d rw\n"
+             "37 36 0:22 / /tmp rw - tmpfs t rw\n")
+    assert MountTopologySnapshotV2.parse(table).governing_mount_v2("/tmp/x").mount_id == 37
+
+
+def test_f1c_non_root_self_parent_is_unknown() -> None:
+    """A self-parent that is NOT the visible root is a cycle of length one."""
+
+    table = ("36 35 98:0 / / rw - ext4 /d rw\n"
+             "40 40 98:0 /x /tmp/p/v rw - ext4 /d rw\n")
+    snapshot = MountTopologySnapshotV2.parse(table)
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        snapshot.visible_child_mounts_v2("/tmp/p")
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_f1d_same_point_stack_cycle_terminates_as_unknown() -> None:
+    records = (
+        MountRecordV2(1, 9, 0, "/", "/", "ext4"),
+        MountRecordV2(2, 3, 0, "/a", "/tmp/p/x", "ext4"),
+        MountRecordV2(3, 2, 0, "/b", "/tmp/p/y", "ext4"),
+    )
+    # Asked through the relevant scope: these records are beneath the path
+    # whose domain is being computed, so their unresolvable chain is UNKNOWN
+    # rather than quietly unreachable.
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        MountTopologySnapshotV2(records).visible_child_mounts_v2("/tmp/p")
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_f4a_one_acquisition_reads_the_mount_table_exactly_once(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F4. One PARSER is not one OBSERVATION. Runtime-parent eligibility and
+    the disjointness decision previously read mountinfo separately and could
+    describe different worlds."""
+
+    reads: list[str] = []
+    real_read_text = Path.read_text
+
+    def _counting(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self) == "/proc/self/mountinfo":
+            reads.append(str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _counting)
+    target = tmp_path / "ordinary"
+    target.mkdir()
+    assert _acquire(target) == "acquired"
+    assert len(reads) == 1, f"expected exactly one mountinfo observation, saw {len(reads)}"
+
+
+def test_f5a_ambiguous_visible_descendant_propagates_unknown_publicly(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F5. An unresolvable child beneath the target must reach the CALLER as
+    UNKNOWN, not be quietly treated as absent."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    real_observe = MountTopologySnapshotV2.observe
+
+    def _with_ambiguous_child(cls=None):
+        snapshot = real_observe()
+        extra = (
+            MountRecordV2(10 ** 7, 10 ** 7 + 1, 0, "/a", str(target / "v"), "ext4"),
+            MountRecordV2(10 ** 7 + 2, 10 ** 7 + 3, 0, "/b", str(target / "v"), "ext4"),
+        )
+        return MountTopologySnapshotV2(snapshot.records + extra)
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_with_ambiguous_child))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def _overlay_available() -> bool:
+    if os.geteuid() != 0:
+        return False
+    import tempfile as _t
+    base = Path(_t.mkdtemp())
+    for name in ("low", "up", "work", "mnt"):
+        (base / name).mkdir()
+    try:
+        result = subprocess.run(
+            ["mount", "-t", "overlay", "overlay", "-o",
+             f"lowerdir={base}/low,upperdir={base}/up,workdir={base}/work", str(base / "mnt")],
+            capture_output=True)
+        if result.returncode != 0:
+            return False
+        subprocess.run(["umount", str(base / "mnt")], check=False)
+        return True
+    finally:
+        import shutil as _s
+        _s.rmtree(base, ignore_errors=True)
+
+
+requires_overlay = pytest.mark.skipif(
+    not _overlay_available(),
+    reason="BLOCKED_BY_ENVIRONMENT: needs a real overlay mount; a skip is absent evidence")
+
+
+@requires_overlay
+def test_f2a_overlay_target_whose_upper_tree_holds_the_carrier_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2, the P1. The carrier's writes reach the target through the overlay's
+    upper layer while the two projections compare as different devices, so the
+    old code declared them disjoint and materialized K inside the target.
+
+    Projection applicability now refuses before any mutation. This asserts the
+    REFUSAL and the absence of mutation -- not a reconstructed overlay model,
+    which this slice deliberately does not own.
+    """
+
+    for name in ("low", "up", "work", "mnt"):
+        (tmp_path / name).mkdir()
+    parent = tmp_path / "up"
+    os.chmod(parent, 0o1777)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", parent)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid())
+    subprocess.run(
+        ["mount", "-t", "overlay", "overlay", "-o",
+         f"lowerdir={tmp_path}/low,upperdir={tmp_path}/up,workdir={tmp_path}/work",
+         str(tmp_path / "mnt")], check=True)
+    try:
+        target = tmp_path / "mnt"
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        assert [p.name for p in target.iterdir() if p.name.startswith("agentreview")] == []
+    finally:
+        umount(tmp_path / "mnt")
+
+
+def test_f2b_supported_direct_projection_filesystem_still_acquires(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """POSITIVE CONTROL for F2: the allowlist must not refuse ordinary work."""
+
+    target = tmp_path / "ordinary"
+    target.mkdir()
+    snapshot = MountTopologySnapshotV2.observe()
+    assert snapshot.governing_mount_v2(str(target)).filesystem_type in \
+        epoch_module._DIRECT_PROJECTION_FILESYSTEMS_V2
+    assert _acquire(target) == "acquired"
+
+
+def test_f2_unrecognised_filesystem_is_unknown_not_assumed_direct() -> None:
+    """The allowlist is POSITIVE: an unmodeled filesystem refuses rather than
+    being assumed to project directly.
+
+    Asserted against the applicability gate itself. Through public acquisition
+    an unsupported RUNTIME-PARENT filesystem is refused even earlier, by
+    runtime-parent eligibility with its own reason code, so that path would not
+    exercise this gate.
+    """
+
+    table = ("36 35 0:77 / / rw - somefuturefs src rw\n")
+    snapshot = MountTopologySnapshotV2.parse(table)
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        epoch_module._require_projection_applicable_v2(snapshot, "/some/target")
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+    ext4_table = ("36 35 98:0 / / rw - ext4 /dev/root rw\n")
+    epoch_module._require_projection_applicable_v2(
+        MountTopologySnapshotV2.parse(ext4_table), "/some/target")   # must not raise
+
+
+def test_f6a_casefolded_lookup_directory_is_unknown(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F6. Where lookup is casefolded, two spellings name ONE entry, and this
+    module's textual equality and containment stop being valid discriminators.
+
+    Runtime status is honest: a genuine casefolded ext4 could not be built in
+    this environment (loop mounts are not permitted), so the flag observation
+    is driven directly. That exercises the guard, and does NOT claim the kernel
+    behaviour was reproduced.
+    """
+
+    target = tmp_path / "project"
+    target.mkdir()
+    monkeypatch.setattr(epoch_module, "_directory_is_casefolded_v2", lambda _path: True)
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_f6a_unreadable_casefold_flag_is_unknown_not_assumed_sensitive(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unreadable flag is an unestablished predicate. It must never be read
+    as "case sensitive" -- that is the fail-open this guard exists to remove."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    monkeypatch.setattr(epoch_module, "_directory_is_casefolded_v2", lambda _path: None)
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_f6b_case_sensitive_control_takes_the_normal_path(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    target = tmp_path / "project"
+    target.mkdir()
+    assert epoch_module._directory_is_casefolded_v2(str(target)) is False
+    assert _acquire(target) == "acquired"
+
+
+def test_f6_filesystems_without_casefold_support_are_not_probed(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tmpfs/ext2/ext3 cannot carry a casefolded directory, so their name
+    semantics follow from the filesystem type. Probing them would risk reading
+    an `ENOTTY` as an answer."""
+
+    probed: list[str] = []
+    monkeypatch.setattr(epoch_module, "_directory_is_casefolded_v2",
+                        lambda path: probed.append(path) or None)
+    real_observe = MountTopologySnapshotV2.observe
+
+    def _as_tmpfs(cls=None):
+        snapshot = real_observe()
+        return MountTopologySnapshotV2(tuple(
+            r._replace(filesystem_type="tmpfs") for r in snapshot.records))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_as_tmpfs))
+    target = tmp_path / "project"
+    target.mkdir()
+    assert _acquire(target) == "acquired"
+    assert probed == [], "a filesystem that cannot casefold must not be probed"
+
+
+# ---------------------------- corrective mutants --------------------------
+
+
+def test_mutant_self_parent_root_loops() -> None:
+    """M_SELF_PARENT_ROOT_LOOPS -- restore the unbounded climb and show it does
+    not terminate on a self-parented root.
+
+    Deliberately NOT executed to exhaustion: an earlier draft of this test ran
+    the real infinite loop on a daemon thread, which kept busy-spinning after
+    the assertion and starved the rest of the suite. The mutant is instead run
+    under a step budget, and exceeding the budget IS the non-termination
+    result -- the honest thing to prove, at no cost to the run.
+    """
+
+    snapshot = MountTopologySnapshotV2((MountRecordV2(1, 1, 0, "/", "/", "ext4"),))
+    budget = 1000
+    current = snapshot.records[0]
+    steps = 0
+    while steps < budget:
+        stacked = [c for c in snapshot.children.get(current.mount_id, [])
+                   if c.mount_point == "/"]          # the missing `!= current.mount_id`
+        if not stacked:
+            break
+        current = stacked[0]
+        steps += 1
+    assert steps == budget, "unbounded climb should never terminate on a self-parented root"
+
+    # the real implementation terminates on exactly this input
+    assert snapshot.governing_mount_v2("/tmp/x").mount_id == 1
+
+
+def test_mutant_nonroot_self_parent_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_NONROOT_SELF_PARENT_ACCEPTED."""
+
+    table = ("36 35 98:0 / / rw - ext4 /d rw\n"
+             "40 40 98:0 /x /tmp/p/v rw - ext4 /d rw\n")
+    snapshot = MountTopologySnapshotV2.parse(table)
+    with pytest.raises(TargetPackEpochError):
+        snapshot.visible_child_mounts_v2("/tmp/p")
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "validate_relevant_chain_v2",
+                        lambda self, record: None)
+    assert MountTopologySnapshotV2.parse(table).visible_child_mounts_v2("/tmp/p") is not None
+
+
+def test_mutant_internal_missing_parent_treated_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_INTERNAL_MISSING_PARENT_TREATED_HIDDEN -- the exact fail-open the old
+    test certified."""
+
+    table = ("36 35 98:0 / / rw - ext4 /d rw\n"
+             "40 39 0:99 /b /tmp/p/vendor rw - ext4 /d2 rw\n")
+    with pytest.raises(TargetPackEpochError):
+        MountTopologySnapshotV2.parse(table).visible_child_mounts_v2("/tmp/p")
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "validate_relevant_chain_v2",
+                        lambda self, record: None)
+    assert MountTopologySnapshotV2.parse(table).visible_child_mounts_v2("/tmp/p") == ()
+
+
+def test_mutant_second_topology_observation(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_SECOND_TOPOLOGY_OBSERVATION -- a helper reading the table again."""
+
+    reads: list[str] = []
+    real_read_text = Path.read_text
+
+    def _counting(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self) == "/proc/self/mountinfo":
+            reads.append(str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    real_probe = epoch_module._runtime_filesystem_type_v2
+
+    def _probe_reading_again(path, snapshot):
+        MountTopologySnapshotV2.observe()      # the removed second read
+        return real_probe(path, snapshot)
+
+    monkeypatch.setattr(Path, "read_text", _counting)
+    monkeypatch.setattr(epoch_module, "_runtime_filesystem_type_v2", _probe_reading_again)
+    target = tmp_path / "ordinary"
+    target.mkdir()
+    _acquire(target)
+    assert len(reads) > 1, "mutant should have observed the mount table more than once"
+
+
+def test_mutant_visibility_unknown_becomes_false(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_VISIBILITY_UNKNOWN_BECOMES_FALSE -- killed through PUBLIC acquisition."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    real_observe = MountTopologySnapshotV2.observe
+
+    def _with_ambiguous_child(cls=None):
+        snapshot = real_observe()
+        extra = (
+            MountRecordV2(10 ** 7, 10 ** 7 + 1, 0, "/a", str(target / "v"), "ext4"),
+            MountRecordV2(10 ** 7 + 2, 10 ** 7 + 3, 0, "/b", str(target / "v"), "ext4"),
+        )
+        return MountTopologySnapshotV2(snapshot.records + extra)
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_with_ambiguous_child))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+    def _swallowing(self, path):
+        prefix = epoch_module._normalize_absolute_v2(path).rstrip("/") + "/"
+        out = []
+        for record in self.records:
+            if not record.mount_point.startswith(prefix):
+                continue
+            try:
+                if self.governing_mount_v2(record.mount_point).mount_id == record.mount_id:
+                    out.append(record)
+            except TargetPackEpochError:
+                continue                       # UNKNOWN -> HIDDEN
+        return tuple(out)
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "visible_child_mounts_v2", _swallowing)
+    assert _acquire(target) == "acquired", "mutant should have swallowed the UNKNOWN"
+
+
+@requires_overlay
+def test_mutant_overlay_assumed_direct(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_OVERLAY_ASSUMED_DIRECT -- killed by real overlay topology."""
+
+    for name in ("low", "up", "work", "mnt"):
+        (tmp_path / name).mkdir()
+    parent = tmp_path / "up"
+    os.chmod(parent, 0o1777)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", parent)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid())
+    subprocess.run(
+        ["mount", "-t", "overlay", "overlay", "-o",
+         f"lowerdir={tmp_path}/low,upperdir={tmp_path}/up,workdir={tmp_path}/work",
+         str(tmp_path / "mnt")], check=True)
+    try:
+        target = tmp_path / "mnt"
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+        monkeypatch.setattr(epoch_module, "_require_projection_applicable_v2",
+                            lambda snapshot, *paths: None)
+        assert _acquire(target) == "acquired", "mutant should have assumed overlay projects directly"
+        assert [p.name for p in target.iterdir() if p.name.startswith("agentreview")] != [], (
+            "and the carrier should then be visible inside the target")
+    finally:
+        umount(tmp_path / "mnt")
+
+
+def test_mutant_casefold_lookup_assumed_case_sensitive(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_CASEFOLD_LOOKUP_ASSUMED_CASE_SENSITIVE."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    monkeypatch.setattr(epoch_module, "_directory_is_casefolded_v2", lambda _path: True)
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+    monkeypatch.setattr(epoch_module, "_require_name_semantics_applicable_v2",
+                        lambda snapshot, *paths: None)
+    assert _acquire(target) == "acquired", "mutant should have assumed case-sensitive lookup"
+
+
+# ------------------ §13 semantic audit of test names ----------------------
+
+
+def test_no_topology_test_name_contradicts_its_assertions() -> None:
+    """Durable guard against the defect F3 exposed: a test named `..._is_unknown`
+    whose body asserted the fail-open it was supposed to forbid."""
+
+    import inspect
+    module = __import__(__name__, fromlist=["*"])
+    offenders = []
+    for name, function in vars(module).items():
+        if not (name.startswith("test_") and callable(function)):
+            continue
+        if "_is_unknown" not in name and "_unknown" not in name:
+            continue
+        body = inspect.getsource(function)
+        claims_unknown = (
+            "DISJOINTNESS_UNKNOWN_REASON_V2" in body or "pytest.raises(TargetPackEpochError)" in body)
+        if not claims_unknown:
+            offenders.append(name)
+    assert offenders == [], f"tests naming UNKNOWN without asserting it: {offenders}"
