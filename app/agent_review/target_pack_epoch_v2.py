@@ -276,8 +276,16 @@ class MountTopologySnapshotV2:
             raise TargetPackEpochError(
                 TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
             )
-        base = [r for r in roots if r.parent_id not in self.by_id] or roots
-        if len(base) > 1:
+        # A boundary root is one whose parent lies outside this snapshot: either
+        # the row is absent, or the kernel reports the tree root as its own
+        # parent.  Both are boundaries and BOTH must be candidates -- an earlier
+        # revision only accepted the absent form and fell back to "all roots"
+        # otherwise, so a self-parented root with anything stacked at `/` gave
+        # two candidates and refused a topology whose parent relation resolves
+        # it uniquely.
+        base = [r for r in roots
+                if r.parent_id not in self.by_id or r.parent_id == r.mount_id]
+        if len(base) != 1:
             raise TargetPackEpochError(
                 TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
             )
@@ -366,11 +374,21 @@ class MountTopologySnapshotV2:
         never consulted, so unrelated breakage does not poison the decision.
         """
 
-        prefix = _normalize_absolute_v2(path).rstrip("/") + "/"
-        relevant = [r for r in self.records if r.mount_point.startswith(prefix)]
-        for record in relevant:
-            self.validate_relevant_chain_v2(record)
-        return tuple(r for r in relevant if self.is_visible_v2(r))
+        root = _normalize_absolute_v2(path)
+        prefix = root.rstrip("/") + "/"
+
+        # Two DIFFERENT sets, and conflating them hid a defect.  Chain
+        # validation is relevant for every record AT or beneath the domain
+        # root, because a record attached exactly AT the root decides which
+        # mount governs it; a malformed one there was previously skipped by a
+        # strict-descendant filter and the target was projected through the
+        # underlying mount instead of refusing.  The mounts RETURNED are the
+        # visible ones strictly beneath, which is what a child segment means.
+        for record in self.records:
+            if record.mount_point == root or record.mount_point.startswith(prefix):
+                self.validate_relevant_chain_v2(record)
+        return tuple(r for r in self.records
+                     if r.mount_point.startswith(prefix) and self.is_visible_v2(r))
 
     # ---- physical projection ---------------------------------------------
     def project_v2(self, path: str) -> tuple[int, str]:
@@ -577,6 +595,45 @@ def _directory_is_casefolded_v2(path: str) -> bool | None:
         os.close(fd)
 
 
+_DIRECTORY_PRESENT_V2 = "directory"
+_DIRECTORY_ABSENT_V2 = "absent"
+_DIRECTORY_UNKNOWN_V2 = "unknown"
+
+
+def _observe_directory_v2(path: str) -> str:
+    """`present` / `absent` / `unknown`, preserving the error classes.
+
+    `os.path.isdir`, `exists` and friends collapse every `OSError` into
+    `False`, which makes "this directory exists but I may not look at it"
+    indistinguishable from "this directory is not there".  For a predicate
+    whose whole purpose is to fail closed, that collapse is the bug.
+
+    `ENOENT`/`ENOTDIR` establish absence.  `EACCES`, `EIO`, `ELOOP`, `ESTALE`
+    and anything else establish nothing, and a non-directory where a lookup
+    authority was expected is equally unestablished.
+    """
+
+    try:
+        mode = os.lstat(path).st_mode
+    except FileNotFoundError:
+        return _DIRECTORY_ABSENT_V2
+    except NotADirectoryError:
+        return _DIRECTORY_ABSENT_V2
+    except OSError:
+        return _DIRECTORY_UNKNOWN_V2
+    if stat.S_ISDIR(mode):
+        return _DIRECTORY_PRESENT_V2
+    # A symlink is not a lookup authority and must not be reported UNKNOWN
+    # here.  Target paths are canonicalised before they ever reach this
+    # module, so no symlink survives on that side; a symlink at a CARRIER path
+    # is already refused by protocol-directory validation, which opens with
+    # `O_NOFOLLOW` and answers `target_pack_epoch_unavailable`.  Answering
+    # UNKNOWN would preempt that established classification with a different
+    # reason code for a case the module already handles, and it would report
+    # "could not establish" for a topology that is in fact refused outright.
+    return _DIRECTORY_ABSENT_V2
+
+
 def _lookup_authorities_v2(path: str) -> tuple[str, ...]:
     """The existing directories that RESOLVE the components of *path*.
 
@@ -609,7 +666,17 @@ def _lookup_authorities_v2(path: str) -> tuple[str, ...]:
     authorities: list[str] = []
     current = os.path.dirname(normalized)
     while True:
-        if os.path.isdir(current):
+        observation = _observe_directory_v2(current)
+        if observation is _DIRECTORY_UNKNOWN_V2:
+            # `os.path.isdir` answers False for a directory that EXISTS but
+            # cannot be observed, which is indistinguishable from absent -- so
+            # an unreadable, possibly casefolded, authority was silently
+            # dropped and the textual comparisons proceeded as though lookup
+            # were case-sensitive.  An unobservable authority is UNKNOWN.
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
+        if observation is _DIRECTORY_PRESENT_V2:
             authorities.append(current)
         parent = os.path.dirname(current)
         if parent == current:
@@ -699,6 +766,21 @@ def _visible_physical_domain_v2(
     segments: list[_PhysicalSegmentV2] = []
     children = snapshot.visible_child_mounts_v2(path)
 
+    # DOMAIN CLOSURE (`#262` N7).  Applicability must hold for EVERY segment
+    # admitted into the domain, not merely for the governing mount of the
+    # target root.  An earlier revision gated the root and the carrier sites
+    # and then admitted child segments unchecked, so an overlay mounted inside
+    # an ext4 target contributed a segment described by its own opaque device,
+    # intersected nothing, and the carrier landed in ground visible beneath
+    # the target.  A segment this module cannot project is not a segment it
+    # may reason about.
+    #
+    # HIDDEN unsupported mounts are deliberately NOT consulted: they
+    # contribute no segment, so they cannot poison a domain they are not part
+    # of.  That distinction is load-bearing -- the alternative refuses every
+    # host with an unrelated overlay parked somewhere out of view.
+    _require_projection_applicable_v2(snapshot, path, *[c.mount_point for c in children])
+
     def covered_for(container_path: str, container_device: int, container_internal: str) -> tuple[str, ...]:
         covered: list[str] = []
         for child in children:
@@ -726,26 +808,62 @@ def _visible_physical_domain_v2(
     return tuple(segments)
 
 
-def _carrier_mutation_sites_v2(euid: int) -> tuple[str, ...]:
-    """Exactly what K mutates, as namespace paths.
+def _carrier_operational_sites_v2(euid: int, key: str) -> tuple[str, ...]:
+    """Every filesystem object this acquisition actually OPERATES ON.
 
-    The protocol directory subtree, and nothing else.  That single path covers
-    all three mutations: `mkdir` CREATES this path (which is exactly the
-    directory entry added to the runtime parent -- the entry *is* this path,
-    so it needs no separate site), and the `<K>.lock` is created inside it.
+    "Operates on" rather than "mutates", because the two are not the same and
+    conflating them understates the domain.  The `<key>.lock` carries the K
+    SH/EX advisory lock; holding it is observable from any other opener of the
+    same object even when no byte is ever written.  A contract that tracked
+    only persistent writes would call that disjoint.
 
-    The runtime parent is deliberately NOT a site of its own.  Naming it would
-    make its whole subtree carrier ground, and a target sitting beside the
-    protocol directory under the same parent is genuinely disjoint and must
-    still be accepted.  A target that legitimately conflicts by CONTAINING the
-    runtime parent already contains this path, so it is caught here anyway.
+    An earlier revision named the protocol directory alone and asserted, in a
+    comment, that projecting that one subtree covered `<key>.lock` too.  That
+    is false the moment a mount sits at the lock path itself: bind a file from
+    inside the target onto `<protocol_dir>/<key>.lock` and the lock K takes IS
+    that file -- same `st_dev`/`st_ino`, contention observable from the target
+    side -- while the protocol directory's own projection stays innocently
+    outside the target.  Projecting a subtree root does not project mounts
+    nested beneath it.
+
+    So both real sites are named:
+
+      protocol directory   created by `mkdir`, opened, holds the namespace SH
+                           flock, and receives the lock's directory entry
+      <key>.lock           opened `O_RDWR|O_CREAT`, holds the K SH/EX flock,
+                           and may itself be a mount or an alias
+
+    Exactly these two and nothing else.  A mount at some unrelated name inside
+    the protocol directory is never touched by this acquisition and must not
+    be refused for merely existing there -- which is why this is a precise
+    operational domain rather than a blanket "anything beneath the carrier is
+    UNKNOWN" rule.
+
+    `key` is the K already computed for this acquisition and is threaded in
+    rather than recomputed, so the site named here is the object actually
+    opened later.
     """
 
-    return (str(_RUNTIME_PARENT_PATH_V2 / _protocol_directory_name_v2(euid)),)
+    protocol_directory = _RUNTIME_PARENT_PATH_V2 / _protocol_directory_name_v2(euid)
+    return (str(protocol_directory), str(protocol_directory / f"{key}.lock"))
+
+
+def _declared_carrier_operation_sites_v2(euid: int, key: str) -> tuple[str, ...]:
+    """The sites the implementation DECLARES it operates on.
+
+    A named seam so the closure between what acquisition actually opens and
+    what K-DISJOINT proves about can be asserted mechanically by a test rather
+    than by prose, which drifts the first time an operation is added.  The
+    regression this guards against is precisely the one that occurred: a
+    second filesystem object (`<key>.lock`) was operated on while the domain
+    still named only the first.
+    """
+
+    return _carrier_operational_sites_v2(euid, key)
 
 
 def _establish_carrier_disjoint_v2(
-    *, canonical_target_subject: bytes, euid: int,
+    *, canonical_target_subject: bytes, euid: int, key: str,
     snapshot: "MountTopologySnapshotV2 | None" = None,
 ) -> None:
     """Establish `CarrierVisibleMutationDomain(K) ∩ TargetVisiblePhysicalDomain(D) = ∅`,
@@ -780,7 +898,7 @@ def _establish_carrier_disjoint_v2(
             TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
         )
 
-    sites = _carrier_mutation_sites_v2(euid)
+    sites = _carrier_operational_sites_v2(euid, key)
     # Applicability BEFORE projection is consumed, for both sides.
     _require_projection_applicable_v2(snapshot, target_path, *sites)
     _require_name_semantics_applicable_v2(snapshot, target_path, *sites)
@@ -1007,7 +1125,8 @@ def acquire_target_pack_epoch_v2(*, target_root: Path, exclusive: bool) -> Targe
                 TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
             )
         _establish_carrier_disjoint_v2(
-            canonical_target_subject=canonical_subject, euid=euid, snapshot=topology)
+            canonical_target_subject=canonical_subject, euid=euid, key=key,
+            snapshot=topology)
         namespace_fd, namespace_name, namespace_identity = _open_protocol_directory_v2(parent_fd=parent_fd, euid=euid)
         _lock_nonblocking_v2(namespace_fd, fcntl.LOCK_SH)
         _validate_protocol_directory_v2(

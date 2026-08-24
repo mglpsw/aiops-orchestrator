@@ -783,16 +783,25 @@ def test_cycle_not_involving_the_root_is_unknown() -> None:
     assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
 
 
-def test_a_cycle_through_the_root_terminates_at_the_boundary() -> None:
-    """The root is where the walk stops, so a parent link above it decides
-    nothing and must not be mistaken for an unresolvable topology."""
+def test_a_root_with_a_present_non_self_parent_has_no_boundary_and_is_unknown() -> None:
+    """Sharpened by the N8 boundary rule.
+
+    An earlier revision fell back to "all roots are candidates" when none had
+    an absent parent, so this table resolved. It should not: record 1 sits at
+    `/` but its parent IS present and is not itself, so there is no boundary
+    root at all and the chain closes into a cycle. UNKNOWN is the precise
+    answer, and the legitimate boundary forms are covered by
+    `test_n8_boundary_root_forms`.
+    """
 
     records = (
         MountRecordV2(1, 2, 0, "/", "/", "ext4"),
         MountRecordV2(2, 1, 0, "/", "/a", "ext4"),
     )
     snapshot = MountTopologySnapshotV2(records)
-    snapshot.validate_relevant_chain_v2(records[0])   # must not raise
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        snapshot.validate_relevant_chain_v2(records[0])
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
 
 
 def test_ambiguous_same_point_stack_is_unknown() -> None:
@@ -1791,8 +1800,21 @@ def test_mutant_skip_relevant_lookup_parent(
         lambda path: True if path == intermediate else real_probe(path))
     assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
 
-    monkeypatch.setattr(epoch_module, "_lookup_authorities_v2",
-                        lambda path: (os.path.dirname(epoch_module._normalize_absolute_v2(path)),))
+    # The mutant must isolate ONE defect: consulting only the nearest existing
+    # parent instead of every ancestor. Returning a literal `dirname` would
+    # also hand back the not-yet-created protocol directory, and the probe
+    # would refuse for non-existence -- killing the mutant by the wrong
+    # proposition rather than by the skipped ancestor.
+    def _nearest_existing_parent_only(path):
+        current = os.path.dirname(epoch_module._normalize_absolute_v2(path))
+        while epoch_module._observe_directory_v2(current) != epoch_module._DIRECTORY_PRESENT_V2:
+            parent = os.path.dirname(current)
+            if parent == current:
+                return ()
+            current = parent
+        return (current,)
+
+    monkeypatch.setattr(epoch_module, "_lookup_authorities_v2", _nearest_existing_parent_only)
     assert _acquire(target) == "acquired", "mutant should have skipped the intermediate ancestor"
 
 
@@ -1851,3 +1873,508 @@ def test_mutant_casefold_observation_failure_means_false(
     monkeypatch.setattr(
         epoch_module, "_require_name_semantics_applicable_v2", _none_means_sensitive)
     assert _acquire(target) == "acquired", "mutant should have read UNKNOWN as case-sensitive"
+
+
+# ================= N7-N10 + CLI: DOMAIN CLOSURE ===========================
+#
+# Two findings, from two different channels, had ONE cause: a domain builder
+# admitted or represented members that the gates never validated.
+#
+#   target side   applicability was checked at the target ROOT only, while
+#                 TargetVisiblePhysicalDomain also admits child segments
+#   carrier side  the carrier was represented by the protocol-directory ROOT,
+#                 while K also operates an exact <key>.lock path beneath it
+#
+# Both are closed by correcting the BUILDERS, not by adding counterexample
+# rules.
+
+
+@requires_overlay
+def test_n7_unsupported_filesystem_in_a_visible_child_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N7 (P1). The target root is ext4 and passes applicability; a visible
+    child is an overlay whose upperdir IS the runtime parent. The old gate
+    checked only the root and the carrier, so the overlay segment entered the
+    domain described by its own opaque device, intersected nothing, and K
+    landed in ground visible beneath the target."""
+
+    for name in ("low", "work"):
+        (tmp_path / name).mkdir()
+    parent = tmp_path / "runtime-parent"
+    parent.mkdir()
+    parent.chmod(0o1777)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", parent)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid())
+
+    target = tmp_path / "project"
+    child = target / "vendor"
+    child.mkdir(parents=True)
+    subprocess.run(
+        ["mount", "-t", "overlay", "overlay", "-o",
+         f"lowerdir={tmp_path}/low,upperdir={parent},workdir={tmp_path}/work", str(child)],
+        check=True)
+    try:
+        snapshot = MountTopologySnapshotV2.observe()
+        assert snapshot.governing_mount_v2(str(target)).filesystem_type in \
+            epoch_module._DIRECT_PROJECTION_FILESYSTEMS_V2, "the ROOT is supported"
+        assert any(snapshot.governing_mount_v2(c.mount_point).filesystem_type == "overlay"
+                   for c in snapshot.visible_child_mounts_v2(str(target)))
+
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        assert [p.name for p in child.iterdir() if p.name.startswith("agentreview")] == []
+    finally:
+        umount(child)
+
+
+def test_n7_hidden_unsupported_child_does_not_poison_the_domain(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The load-bearing distinction. A HIDDEN unsupported mount contributes no
+    segment, so it must not refuse anything -- otherwise any host with an
+    unrelated overlay parked out of view becomes unusable."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    real_observe = MountTopologySnapshotV2.observe
+
+    def _with_hidden_overlay(cls=None):
+        snapshot = real_observe()
+        hidden = MountRecordV2(10 ** 7, 10 ** 7 + 5, 0, "/", str(target / "ghost"), "overlay")
+        return MountTopologySnapshotV2(snapshot.records + (hidden,))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_with_hidden_overlay))
+    # disconnected -> relevant-chain validation refuses it as UNKNOWN, which is
+    # the honest answer for a record whose position cannot be established;
+    # what must NOT happen is that it silently contributes an overlay segment.
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_n8_self_parented_root_with_a_stack_resolves(tmp_path: Path) -> None:
+    """N8 (P2). Both root forms are boundaries and both must be candidates."""
+
+    records = (MountRecordV2(1, 1, 0, "/", "/", "ext4"),
+               MountRecordV2(2, 1, 0, "/", "/", "tmpfs"))
+    assert MountTopologySnapshotV2(records).governing_mount_v2("/tmp/x").mount_id == 2
+
+
+@pytest.mark.parametrize(
+    "records,expected",
+    [
+        (((1, 1, "/", "ext4"),), 1),
+        (((1, 9, "/", "ext4"),), 1),
+        (((1, 1, "/", "ext4"), (2, 1, "/", "tmpfs")), 2),
+        (((1, 9, "/", "ext4"), (2, 1, "/", "tmpfs")), 2),
+    ],
+    ids=["self-parent-alone", "external-parent-alone",
+         "self-parent+stack", "external-parent+stack"])
+def test_n8_boundary_root_forms(records, expected) -> None:
+    snapshot = MountTopologySnapshotV2(tuple(
+        MountRecordV2(i, p, 0, "/", mp, fs) for i, p, mp, fs in records))
+    assert snapshot.governing_mount_v2("/tmp/x").mount_id == expected
+
+
+def test_n8_two_competing_boundary_roots_is_unknown() -> None:
+    records = (MountRecordV2(1, 1, 0, "/", "/", "ext4"),
+               MountRecordV2(2, 2, 0, "/", "/", "ext4"))
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        MountTopologySnapshotV2(records).governing_mount_v2("/x")
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_n9_malformed_record_exactly_at_the_target_is_unknown() -> None:
+    """N9 (P2). A record AT the domain root decides which mount governs it, so
+    it is relevant even though it is not a strict descendant. The earlier
+    prefix filter excluded it and the target was projected through the
+    underlying mount instead of refusing."""
+
+    table = ("36 35 98:0 / / rw - ext4 /d rw\n"
+             "40 39 0:99 /b /tmp/target rw - ext4 /d2 rw\n")
+    snapshot = MountTopologySnapshotV2.parse(table)
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        snapshot.visible_child_mounts_v2("/tmp/target")
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_n9_relevant_set_is_at_or_beneath_but_children_are_strictly_beneath() -> None:
+    """The two sets are different and must stay different: a record AT the root
+    is validated, but it is not a CHILD segment of that root."""
+
+    table = ("36 35 98:0 / / rw - ext4 /d rw\n"
+             "40 36 98:0 /at /tmp/t rw - ext4 /d rw\n"
+             "41 40 98:0 /below /tmp/t/sub rw - ext4 /d rw\n")
+    snapshot = MountTopologySnapshotV2.parse(table)
+    children = snapshot.visible_child_mounts_v2("/tmp/t")
+    assert [c.mount_point for c in children] == ["/tmp/t/sub"]
+
+
+def test_n10_unobservable_ancestor_is_unknown_not_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N10 (P2). `os.path.isdir` answers False for a directory that exists but
+    cannot be observed, which is indistinguishable from absent -- so an
+    unreadable, possibly casefolded, authority was silently dropped."""
+
+    assert epoch_module._observe_directory_v2(str(tmp_path)) == epoch_module._DIRECTORY_PRESENT_V2
+    assert epoch_module._observe_directory_v2(str(tmp_path / "nope")) == \
+        epoch_module._DIRECTORY_ABSENT_V2
+
+    not_a_directory = tmp_path / "file"
+    not_a_directory.write_text("x", encoding="utf-8")
+    assert epoch_module._observe_directory_v2(str(not_a_directory)) == \
+        epoch_module._DIRECTORY_ABSENT_V2
+    assert epoch_module._observe_directory_v2(str(not_a_directory / "under")) == \
+        epoch_module._DIRECTORY_ABSENT_V2
+
+    # A symlink is NOT a lookup authority and is not UNKNOWN either: target
+    # paths are canonicalised before reaching this module, and a symlink at a
+    # carrier path is refused by protocol-directory validation with its own
+    # established reason code, which this gate must not preempt.
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "nowhere")
+    assert epoch_module._observe_directory_v2(str(link)) == epoch_module._DIRECTORY_ABSENT_V2
+
+    # the UNKNOWN branch itself -- an observation error establishes neither
+    real_lstat = os.lstat
+    victim = str(tmp_path / "eio")
+
+    def _eio(path, *args, **kwargs):
+        if str(path) == victim:
+            raise OSError(5, "EIO")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", _eio)
+    assert epoch_module._observe_directory_v2(victim) == epoch_module._DIRECTORY_UNKNOWN_V2
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        epoch_module._lookup_authorities_v2(victim + "/child")
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_n10_lookup_authority_observation_error_is_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    victim = str(tmp_path)
+    real_lstat = os.lstat
+
+    def _eio(path, *args, **kwargs):
+        if str(path) == victim:
+            raise OSError(5, "EIO")
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", _eio)
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        epoch_module._lookup_authorities_v2(str(tmp_path / "project"))
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+# ---------- carrier operational domain: CARRIER-1..6 ----------------------
+
+
+def _key_for(target: Path) -> str:
+    return epoch_module.compute_target_pack_epoch_key_from_components_v2(
+        euid=os.geteuid(),
+        mount_namespace_identity=epoch_module._mount_namespace_identity_v2(),
+        canonical_target_subject=epoch_module._canonical_target_subject_v2(target))
+
+
+def _bind_onto_lock(runtime_parent: Path, target: Path, source: Path) -> Path:
+    carrier = _carrier(runtime_parent)
+    if not carrier.exists():
+        carrier.mkdir(mode=0o700)
+    lock = carrier / f"{_key_for(target)}.lock"
+    lock.touch()
+    os.chmod(lock, 0o600)
+    bind(source, lock)
+    return lock
+
+
+@requires_bind_mount
+def test_carrier1_target_file_bound_onto_the_exact_lock_path_is_refused(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """CARRIER-1. Found by a local Codex CLI adversarial review, not by the
+    native one. The lock K takes IS a file inside the target -- same
+    st_dev/st_ino, and an independent flock on the target's own path contends
+    while the epoch is held -- yet the protocol directory's projection stayed
+    outside the target, so acquisition succeeded."""
+
+    target = tmp_path / "target"
+    target.mkdir()
+    victim = target / "lock-source"
+    victim.touch()
+    os.chmod(victim, 0o600)
+    lock = _bind_onto_lock(runtime_parent, target, victim)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2
+    finally:
+        umount(lock)
+
+
+@requires_bind_mount
+def test_carrier2_target_descendant_file_bound_onto_the_lock_path_is_refused(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    target = tmp_path / "target"
+    inner = target / "deep" / "er"
+    inner.mkdir(parents=True)
+    victim = inner / "lock-source"
+    victim.touch()
+    os.chmod(victim, 0o600)
+    lock = _bind_onto_lock(runtime_parent, target, victim)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2
+    finally:
+        umount(lock)
+
+
+@requires_bind_mount
+def test_carrier3_unrelated_file_bound_onto_the_lock_path_may_proceed(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """CARRIER-3. The lock path being a mount is not itself disqualifying --
+    only its landing inside the target is."""
+
+    target = tmp_path / "target"
+    target.mkdir()
+    outsider = tmp_path / "elsewhere"
+    outsider.touch()
+    os.chmod(outsider, 0o600)
+    lock = _bind_onto_lock(runtime_parent, target, outsider)
+    try:
+        assert _acquire(target) == "acquired"
+    finally:
+        umount(lock)
+
+
+@requires_bind_mount
+def test_carrier4_unrelated_mount_inside_the_protocol_directory_is_not_refused(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """CARRIER-4. The control that forbids restoring a blanket "anything
+    beneath the carrier is UNKNOWN" rule. This acquisition never touches that
+    name, so its existence decides nothing."""
+
+    target = tmp_path / "target"
+    target.mkdir()
+    carrier = _carrier(runtime_parent)
+    carrier.mkdir(mode=0o700)
+    unrelated = carrier / "unrelated-name"
+    unrelated.mkdir()
+    source = tmp_path / "src"
+    source.mkdir()
+    bind(source, unrelated)
+    try:
+        os.chmod(carrier, 0o700)
+        assert _acquire(target) == "acquired"
+    finally:
+        umount(unrelated)
+
+
+@requires_bind_mount
+def test_carrier5_protocol_directory_aliasing_the_target_is_refused(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    carrier = _prepare_bound_carrier(runtime_parent, target)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2
+    finally:
+        umount(carrier)
+
+
+def test_carrier6_target_containing_the_lock_path_is_refused(runtime_parent: Path) -> None:
+    """CARRIER-6. Symmetric containment, via the runtime parent."""
+
+    assert _acquire(runtime_parent) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2
+
+
+def test_carrier_operational_domain_names_exactly_the_operated_objects(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """§11 closure guard, mechanical rather than prose.
+
+    The regression this exists to prevent already happened once: a second
+    filesystem object was operated on while the domain still named only the
+    first. If acquisition gains another site, this fails.
+    """
+
+    target = tmp_path / "target"
+    target.mkdir()
+    key = _key_for(target)
+    sites = epoch_module._declared_carrier_operation_sites_v2(os.geteuid(), key)
+    carrier = _carrier(runtime_parent)
+    assert set(sites) == {str(carrier), str(carrier / f"{key}.lock")}
+
+    source = Path(epoch_module.__file__).read_text(encoding="utf-8")
+    # the objects acquisition actually opens, by name, in the module
+    assert 'os.mkdir(name, 0o700, dir_fd=parent_fd)' in source
+    assert 'carrier_name = f"{key}.lock"' in source
+    assert source.count("dir_fd=parent_fd") >= 1
+
+
+# ------------------------------ mutants -----------------------------------
+
+
+@requires_overlay
+def test_mutant_target_child_fs_not_gated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_TARGET_CHILD_FS_NOT_GATED -- gate the root only, as before."""
+
+    for name in ("low", "work"):
+        (tmp_path / name).mkdir()
+    parent = tmp_path / "runtime-parent"
+    parent.mkdir()
+    parent.chmod(0o1777)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", parent)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid())
+    target = tmp_path / "project"
+    child = target / "vendor"
+    child.mkdir(parents=True)
+    subprocess.run(
+        ["mount", "-t", "overlay", "overlay", "-o",
+         f"lowerdir={tmp_path}/low,upperdir={parent},workdir={tmp_path}/work", str(child)],
+        check=True)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+        real_gate = epoch_module._require_projection_applicable_v2
+        monkeypatch.setattr(
+            epoch_module, "_require_projection_applicable_v2",
+            lambda snapshot, *paths: real_gate(snapshot, paths[0]) if paths else None)
+        assert _acquire(target) == "acquired", "mutant should have admitted the overlay segment"
+        assert [p.name for p in child.iterdir() if p.name.startswith("agentreview")] != []
+    finally:
+        umount(child)
+
+
+@requires_bind_mount
+def test_mutant_carrier_domain_protocol_root_only(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_CARRIER_DOMAIN_PROTOCOL_ROOT_ONLY / M_CARRIER_LOCK_PATH_NOT_IN_DOMAIN."""
+
+    target = tmp_path / "target"
+    target.mkdir()
+    victim = target / "lock-source"
+    victim.touch()
+    os.chmod(victim, 0o600)
+    lock = _bind_onto_lock(runtime_parent, target, victim)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2
+
+        monkeypatch.setattr(
+            epoch_module, "_carrier_operational_sites_v2",
+            lambda euid, key: (str(_carrier(runtime_parent)),))
+        assert _acquire(target) == "acquired", "mutant should have dropped the lock path"
+        # judged by real filesystem identity, not by anything the mutant computed
+        assert os.stat(lock).st_ino == os.stat(victim).st_ino
+    finally:
+        umount(lock)
+
+
+@requires_bind_mount
+def test_mutant_protocol_dir_blanket_descendant_refusal(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_PROTOCOL_DIR_BLANKET_DESCENDANT_REFUSAL -- the tempting over-refusal.
+    Killed by CARRIER-4, which proves precision is required, not just safety."""
+
+    target = tmp_path / "target"
+    target.mkdir()
+    carrier = _carrier(runtime_parent)
+    carrier.mkdir(mode=0o700)
+    unrelated = carrier / "unrelated-name"
+    unrelated.mkdir()
+    source = tmp_path / "src"
+    source.mkdir()
+    bind(source, unrelated)
+    try:
+        os.chmod(carrier, 0o700)
+        assert _acquire(target) == "acquired"
+
+        def _blanket(snapshot, *paths):
+            for record in snapshot.records:
+                if epoch_module._within_v2(record.mount_point, str(carrier)):
+                    raise TargetPackEpochError(
+                        TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
+
+        monkeypatch.setattr(epoch_module, "_require_name_semantics_applicable_v2", _blanket)
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
+            "blanket mutant should have over-refused the unrelated mount")
+    finally:
+        umount(unrelated)
+
+
+def test_mutant_root_self_parent_stack_ambiguous(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_ROOT_SELF_PARENT_STACK_AMBIGUOUS -- restore `or roots`."""
+
+    records = (MountRecordV2(1, 1, 0, "/", "/", "ext4"),
+               MountRecordV2(2, 1, 0, "/", "/", "tmpfs"))
+    snapshot = MountTopologySnapshotV2(records)
+    assert snapshot.governing_mount_v2("/tmp/x").mount_id == 2
+
+    def _old_boundary(self):
+        roots = [r for r in self.records if r.mount_point == "/"]
+        base = [r for r in roots if r.parent_id not in self.by_id] or roots
+        if len(base) > 1:
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
+        return self._climb_stack_v2(base[0], "/")
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "_visible_root_v2", _old_boundary)
+    with pytest.raises(TargetPackEpochError):
+        MountTopologySnapshotV2(records).governing_mount_v2("/tmp/x")
+
+
+def test_mutant_exact_target_malformed_record_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_EXACT_TARGET_MALFORMED_RECORD_IGNORED -- strict-descendant relevance."""
+
+    table = ("36 35 98:0 / / rw - ext4 /d rw\n"
+             "40 39 0:99 /b /tmp/target rw - ext4 /d2 rw\n")
+    with pytest.raises(TargetPackEpochError):
+        MountTopologySnapshotV2.parse(table).visible_child_mounts_v2("/tmp/target")
+
+    def _strict(self, path):
+        prefix = epoch_module._normalize_absolute_v2(path).rstrip("/") + "/"
+        relevant = [r for r in self.records if r.mount_point.startswith(prefix)]
+        for record in relevant:
+            self.validate_relevant_chain_v2(record)
+        return tuple(r for r in relevant if self.is_visible_v2(r))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "visible_child_mounts_v2", _strict)
+    assert MountTopologySnapshotV2.parse(table).visible_child_mounts_v2("/tmp/target") == ()
+
+
+def test_mutant_lookup_authority_eacces_as_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_LOOKUP_AUTHORITY_EACCES_AS_ABSENT -- the isdir() collapse."""
+
+    victim = str(tmp_path)
+    real_lstat = os.lstat
+
+    real_stat = os.stat
+
+    def _eacces(path, *args, **kwargs):
+        if str(path) == victim:
+            raise OSError(13, "EACCES")
+        return real_lstat(path, *args, **kwargs)
+
+    def _eacces_stat(path, *args, **kwargs):
+        if str(path) == victim:
+            raise OSError(13, "EACCES")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", _eacces)
+    monkeypatch.setattr(os, "stat", _eacces_stat)
+    with pytest.raises(TargetPackEpochError):
+        epoch_module._lookup_authorities_v2(str(tmp_path / "project"))
+
+    monkeypatch.setattr(
+        epoch_module, "_observe_directory_v2",
+        lambda path: epoch_module._DIRECTORY_PRESENT_V2 if os.path.isdir(path)
+        else epoch_module._DIRECTORY_ABSENT_V2)
+    authorities = epoch_module._lookup_authorities_v2(str(tmp_path / "project"))
+    assert victim not in authorities, "mutant should have silently dropped the unreadable ancestor"
