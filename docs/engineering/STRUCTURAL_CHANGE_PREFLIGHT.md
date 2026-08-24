@@ -217,11 +217,30 @@ did, by putting materiality inside the factual predicate — lets whoever answer
 *"does this matter?"* control which facts the method can ever see. All three have
 been tried here and all three failed.
 
-**Disposition sits on a different axis, and does not reach backwards.** A
-established finding may later be dispositioned `fixed`, `superseded`,
+**Lifecycle disposition sits on a different axis, and does not reach backwards.**
+A established finding may later be dispositioned `fixed`, `superseded`,
 `out_of_scope`, or invalidated by new evidence. None of that reaches back into
-what was established at the time. Two histories are kept, and they are not one
-record:
+what was established at the time.
+
+That axis is `LifecycleDisposition(f)`, and it is **not** the factual record of
+whether the finding validated. That record is `FindingValidationOutcome(f)` —
+`VALID`, `INVALID`, `PARTIAL` or `UNAVAILABLE_TO_VALIDATE` — owned by §"Finding
+validation, and the corrective cut". Two axes, two identities, and neither
+vocabulary may be written into the other's place:
+
+```text
+FindingValidationOutcome(f)   what the evidence showed, at the epoch it showed it
+LifecycleDisposition(f)       what later happened to the work on f
+
+FindingValidationOutcome(f)   ⇏   LifecycleDisposition(f)
+LifecycleDisposition(f)       ⇏   FindingValidationOutcome(f)
+```
+
+A finding is routinely both at once — `VALID` on the factual axis and `fixed` on
+the lifecycle axis — and a record that keeps only one of those has lost
+information the method needs. Where this document says "record a disposition",
+read which axis the surrounding section owns; where it says either name, that is
+the axis meant. Two histories are kept, and they are not one record:
 
 ```text
 ValidationHistory(f, C)         f was factually established and its bearing on C
@@ -232,13 +251,14 @@ ValidationHistory(f, C)         f was factually established and its bearing on C
 RecurrenceAdmissionHistory(c)   candidate c qualified under the rule below at the
                                 epoch it qualified — a fact about that epoch
 
-Disposition(f)  erases neither
+LifecycleDisposition(f)  erases neither
 ```
 
 A finding is never "admitted": findings are validated, candidates are admitted,
 and there is no `FindingAdmission` here or anywhere below. Invalidating `f1`
-afterwards changes `f1`'s disposition and leaves standing both the validation
-that held at its epoch and any recurrence admitted on the strength of it.
+afterwards changes `f1`'s lifecycle disposition and leaves standing both the
+validation that held at its epoch and any recurrence admitted on the strength
+of it.
 `FinalState != History` throughout — a later state never rewrites the epoch it
 succeeded.
 
@@ -372,7 +392,7 @@ what had been demonstrated by its own epoch; it did not promise ground discovere
 afterwards. That later discovery may be strong evidence the abstraction was drawn
 too narrowly, but it reaches `c` only through some other relation legitimately
 established, never by reading the present record back into the past. This is the
-same `FinalState != History` property the disposition rule relies on.
+same `FinalState != History` property the lifecycle-disposition rule relies on.
 
 **Admission is by evidence, not by anyone's say-so.** A formed candidate is
 admitted when, and only when, the correction barrier holds across it, and one
@@ -522,7 +542,9 @@ out of scope    f2 was validated against a different proposition; or the same
                 →  this is not a recurrence of c. It is a finding in its own
                    right, with whatever obligations that carries, and it may be
                    strong evidence that the abstraction was drawn too narrowly —
-                   but it does not falsify an obligation c never took on
+                   but it does not falsify an obligation c never took on. The
+                   round reports this as `candidate out of scope`, which is
+                   neither a hold nor `no candidate formed`
 
 unsettled       the proposition f2 violates could not be established, or its
                 identity with P is genuinely contested; or the proposition
@@ -1014,13 +1036,13 @@ meets the finding-level predicates is **established** — never an "admitted" on
 and not yet a validated finding either, which additionally needs its bearing on
 the claim established. `RecurrenceCandidate` and `RecurrenceAdmission` are the
 only things the word "admitted" covers, which is why the two histories the
-disposition rule above keeps are named for their subjects and not for each
+lifecycle-disposition rule above keeps are named for their subjects and not for each
 other: `ValidationHistory` takes a finding **and the claim it was material to**,
 `RecurrenceAdmissionHistory` takes a candidate, and there is no third and no
 `FindingAdmission`, implied or otherwise. The questions below run over
 `ValidatedFinding(f, C)` for this loop's claim `C` — never over findings whose
 bearing on `C` was never established.
-Invalidating `f1` afterwards changes `f1`'s disposition; it leaves the
+Invalidating `f1` afterwards changes `f1`'s lifecycle disposition; it leaves the
 validation that held at `f1`'s epoch and any recurrence admitted on the
 strength of it exactly where they were.
 
@@ -1029,22 +1051,35 @@ findings. The first two carry a transition; the third does not, and the
 difference is stated rather than left to the reader:
 
 **Load-bearing.** Each of these forms candidates and then reports what the
-correction barrier did with them, so each answers in exactly one of three ways:
+correction barrier did with them, so each answers in exactly one of four ways:
 
 ```text
 no candidate formed      the facts do not assemble a RecurrenceCandidate. This
                          is the only place a bare "no" is honest.
 recurrence admitted      candidate formed, barrier established. The trigger
                          fires and the freeze-preserve-spike sequence runs.
-held for investigation   candidate formed, barrier not established. The trigger
-                         does not fire, the candidate stands, and the change may
-                         not be declared ready or convergent on that history.
+candidate out of scope   candidate formed, barrier established to be out of
+                         scope for this attempt — f2 was validated against a
+                         different proposition, or against the same one with its
+                         witness established to lie outside Δ1. Nothing is
+                         unsettled here: the evidence resolved the question and
+                         resolved it away from recurrence. The trigger does not
+                         fire, and this outcome blocks nothing on its own. f2
+                         remains a finding in its own right, carrying whatever
+                         obligations it carries.
+held for investigation   candidate formed, barrier unsettled. The trigger does
+                         not fire, the candidate stands, and the change may not
+                         be declared ready or convergent on that history.
 ```
 
-Those are three classes of result, not a schema: nothing here asks for an enum, a
-field name or a machine-readable form. Naming them is only what stops a hold from
-being written down as one of the other two. Neither question reaches a transition
-from landings alone.
+Those are four classes of result, not a schema: nothing here asks for an enum, a
+field name or a machine-readable form. Naming them is only what stops one from
+being written down as another. The third and fourth are the pair most easily
+merged and must not be: a hold is reserved for evidence that did not settle, so
+recording an established out-of-scope candidate as a hold would block a claim on
+a question the evidence already answered, and recording it as `no candidate
+formed` would deny that a candidate formed at all. Neither question reaches a
+transition from landings alone.
 
 **Before the questions are put, sort this round's established findings by their
 bearing on the claim.** The questions run over validated findings, and a finding
@@ -1135,17 +1170,20 @@ differently: a round whose questions were not put has not been reviewed for
 convergence at all, while a round that answers "held" has answered honestly and
 still may not be declared convergent. The change may not be declared ready on the
 strength of either. A round's record is complete when each load-bearing question
-reports one of the three classes above and names the candidates behind it — the
+reports one of the four classes above and names the candidates behind it — the
 correction, both findings, the proposition it answered for and the ground it
-answered over, for an admitted recurrence or for a hold, and for a hold also what
-could not be established. A bare "no" is available only where no
+answered over, for an admitted recurrence, for an out-of-scope candidate or for a
+hold; for a hold also what could not be established, and for an out-of-scope
+candidate what *was* established — the differing proposition, or the witness's
+established position outside `Δ1`. A bare "no" is available only where no
 candidate formed at all. The supporting question must be asked and answered too, and may be
 answered as undecided; what it may not do is transition.
 
 A "yes" to a load-bearing question, once the candidate qualifies under the
 admission rule, is an admitted recurrence, so the trigger fires on it and the
-author does not get to dispose of it — the admission already happened, and disposition does
-not reach backwards. What the trigger buys is bounded, which is why it can be
+author does not get to dispose of it — the admission already happened, and
+lifecycle disposition does not reach backwards. What the trigger buys is
+bounded, which is why it can be
 unconditional: the freeze-preserve-spike sequence below, where "does the
 abstraction need replacing?" gets answered. A spike concluding the abstraction is
 sound is a permitted outcome.
@@ -1224,15 +1262,15 @@ follows. The closure itself is a later question and is not answered in this
 revision. Until it is, this section blocks what it can name and does not pretend
 to name everything.
 
-**A disposition is a record, not a basis.** Writing `fixed` against a finding
+**A lifecycle disposition is a record, not a basis.** Writing `fixed` against a finding
 records a lifecycle state; it does not establish that a declared correction
 answered it, and it cannot supply the basis its own claim is missing:
 
 ```text
-Disposition(f) = fixed          ⇏  an admissible CorrectionAttempt answering f
-Disposition(f) = out_of_scope   ⇏  f is out of scope
-Disposition(f) = superseded     ⇏  f was superseded
-Disposition(f)                  ⇏  ConvergenceEstablished
+LifecycleDisposition(f) = fixed        ⇏  an admissible CorrectionAttempt answering f
+LifecycleDisposition(f) = out_of_scope ⇏  f is out of scope
+LifecycleDisposition(f) = superseded   ⇏  f was superseded
+LifecycleDisposition(f)                ⇏  ConvergenceEstablished
 ```
 
 The middle two matter as much as the first, because they are the cheaper escape:
@@ -1241,7 +1279,7 @@ it instead. It cannot. Each of those labels asserts something, each assertion ne
 the evidence it asserts, and none of them is self-supporting. "Out of scope" in
 particular is a materiality claim wearing a lifecycle label, and it answers to
 §"Materiality is a relation, not a property" like any other. That is the same `FinalState != History`
-property the disposition rule relies on elsewhere, read in the direction that
+property the lifecycle-disposition rule relies on elsewhere, read in the direction that
 matters here: a label cannot manufacture the evidence it summarises.
 
 **Where a material predicate is unresolved, so is the claim that rests on it.**
@@ -1513,7 +1551,7 @@ larger sentence, not demonstrated a larger domain; an author who writes "scalar
 only" over evidence that reproduced scalar *and* list has not made the list
 manifestation go away. The same holds for the reviewer: naming ten mechanisms as
 one domain is an investigation hypothesis until the evidence places them there,
-and the disposition rule below applies unchanged — a record "does not make the
+and the validation-outcome rule below applies unchanged — a record "does not make the
 evidence show it, and either party may dispute one on the evidence". Enlarging
 `Δ(f)` is always available, and always by the same route: demonstrate it.
 
@@ -1532,20 +1570,23 @@ across the demonstrated defect domain** — not the smallest textual diff. A
 minimal diff that leaves the abstraction false is a larger change deferred,
 usually to the next round.
 
-Record a disposition for every finding — `VALID`, `INVALID`, `PARTIAL`, or
-`UNAVAILABLE_TO_VALIDATE`. A disposition records what the evidence shows; it does
-not make the evidence show it, and either party may dispute one on the evidence.
+Record a `FindingValidationOutcome(f)` for every finding — `VALID`, `INVALID`,
+`PARTIAL`, or `UNAVAILABLE_TO_VALIDATE`. This is the **factual** axis, and it is
+not `LifecycleDisposition(f)` (§"The recurrence conditions are answered, not
+computed"), which records what later happened to the work. An outcome records
+what the evidence shows; it does not make the evidence show it, and either party
+may dispute one on the evidence.
 `VALID` requires the reproducer; `INVALID` requires the contradicting evidence;
 `PARTIAL` requires **both**, because it asserts two
 things at once — that some portion reproduces and that the rest does not hold —
 and a `PARTIAL` backed on one side only is an unexamined claim wearing a
-disposition. Never resolve on less. The fourth is for a
+validation outcome. Never resolve on less. The fourth is for a
 finding that could not be validated either way: it requires the attempt made and
 the exact limitation that blocked it, and it leaves the finding **open** — it is
 a record of an unfinished validation, not a way to close one. Never patch merely
 because a reviewer suggested text.
 
-These four dispositions are about the **factual** axis and nothing else. `VALID`
+These four outcomes are about the **factual** axis and nothing else. `VALID`
 says the evidence establishes the defect; `INVALID` says contradicting evidence
 exists; `PARTIAL` says both, over different portions; `UNAVAILABLE_TO_VALIDATE`
 says the attempt was made and something specific blocked it. None of them says
@@ -1707,7 +1748,7 @@ Resolving either establishes nothing about the other. A finding whose bearing is
 settled may still produce a candidate that holds; a candidate that resolves says
 nothing about some other finding whose bearing was never established.
 
-**It is also not `UNAVAILABLE_TO_VALIDATE`.** That disposition records a factual
+**It is also not `UNAVAILABLE_TO_VALIDATE`.** That validation outcome records a factual
 validation that could not be completed. This records a factual validation that
 *was* completed, with a relevance question left open. Recording one as the other
 would put a fact in the file as though it were a doubt.
