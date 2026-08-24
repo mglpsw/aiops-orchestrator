@@ -613,6 +613,7 @@ def test_bind_alias_of_carrier_root_deep_inside_target_is_refused(
 # -- Mutants: #262 F1 correction must be load-bearing, and not over-refuse --
 
 
+@requires_bind_mount
 def test_mutant_ignore_ancestral_alias_mount_lets_f1_reproduce(
     runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -648,6 +649,7 @@ def test_mutant_ignore_ancestral_alias_mount_lets_f1_reproduce(
         subprocess.run(["umount", str(alias)], check=False)
 
 
+@requires_bind_mount
 def test_mutant_mount_scan_descendants_only_lets_f1_reproduce(
     runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
