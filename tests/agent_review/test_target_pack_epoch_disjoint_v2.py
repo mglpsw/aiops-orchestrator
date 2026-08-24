@@ -24,6 +24,7 @@ silently passed — where the environment cannot provide one.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -33,6 +34,7 @@ import app.agent_review.target_pack_epoch_v2 as epoch_module
 from app.agent_review.target_pack_epoch_v2 import (
     TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2,
     TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2,
+    TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
     TargetPackEpochError,
     acquire_target_pack_epoch_v2,
 )
@@ -317,8 +319,11 @@ def test_well_formed_mount_table_is_parsed_completely(monkeypatch: pytest.Monkey
 
     entries = epoch_module._read_mount_table_v2()
 
-    assert [point for _device, point in entries] == ["/", "/tmp", "/var/lib/x"]
+    assert [point for _device, point, _fs in entries] == ["/", "/tmp", "/var/lib/x"]
     assert entries[1][0] == os.makedev(0, 22)
+    # the filesystem type travels with the entry, because this table is now the
+    # SOLE mountinfo authority and the runtime-parent probe consumes it too.
+    assert [fs for _device, _point, fs in entries] == ["ext4", "tmpfs", "ext4"]
 
 
 def test_empty_mount_table_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -678,7 +683,7 @@ def test_mutant_mount_scan_descendants_only_lets_f1_reproduce(
             raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2) from exc
         if target_stat is not None and epoch_module._same_identity_v2(target_stat, parent_stat):
             raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
-        for device, mount_point in epoch_module._read_mount_table_v2():
+        for device, mount_point, _filesystem_type in epoch_module._read_mount_table_v2():
             if device == parent_stat.st_dev and epoch_module._is_at_or_beneath_v2(mount_point, target_path):
                 raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
 
@@ -727,4 +732,363 @@ def test_mutant_treat_common_root_mount_as_alias_breaks_the_positive_control(
     assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2, (
         "mutant should have broken the R18 positive control by over-refusing "
         "an ordinary same-filesystem target"
+    )
+
+
+# -- R21-R28: #262 N1/N2/N3 -- native Codex exact-head review on 2d52733 -----
+#
+# N1 (P1)  /proc/self/mountinfo escapes space/tab/newline/backslash as a
+#          SINGLE backslash plus three octal digits.  The decoder matched two
+#          backslashes, so no real mountinfo path was ever decoded and any
+#          carrier-relevant mount whose point contained one of those bytes was
+#          invisible to every containment rule.
+# N2 (P1)  Every rule reasoned about where the TARGET is; none observed what
+#          the CARRIER path itself resolves to.  An existing protocol
+#          directory that is a bind mount of the target (or of a descendant of
+#          the target) routed K straight into the target.
+# N3 (P2)  `_runtime_filesystem_type_v2` kept a second mountinfo parser with
+#          the opposite error policy and ran FIRST, so an unreadable mount
+#          table surfaced as `unavailable` and the contracted
+#          `carrier_disjointness_unknown` was unreachable publicly.
+
+
+def test_r21_mountinfo_single_backslash_escapes_are_decoded() -> None:
+    """R21.  Unit control for N1, over the four escapes mountinfo actually
+    emits.  The old two-backslash pattern decoded none of them."""
+
+    assert epoch_module._unescape_mountinfo_path_v2("/x\\040y") == "/x y"
+    assert epoch_module._unescape_mountinfo_path_v2("/x\\011y") == "/x\ty"
+    assert epoch_module._unescape_mountinfo_path_v2("/x\\012y") == "/x\ny"
+    assert epoch_module._unescape_mountinfo_path_v2("/x\\134y") == "/x\\y"
+
+
+def test_r21_decoding_is_single_pass_and_does_not_re_decode() -> None:
+    """A decoded `\\134` must not have its output re-read as a new escape."""
+
+    assert epoch_module._unescape_mountinfo_path_v2("/x\\134040y") == "/x\\040y"
+
+
+@requires_bind_mount
+def test_r22_carrier_relevant_mount_point_containing_a_space_is_refused(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """R22.  The load-bearing N1 case: exactly the R15 ancestral-alias
+    topology, reached through a mountpoint whose path contains a literal
+    space.  Before the decoder fix this was ACCEPTED and K materialized inside
+    the target; R15 with an unescaped path was refused, so the two differed
+    only by an encoding this module could not read."""
+
+    alias = tmp_path / "alias mount dir"
+    alias.mkdir()
+    subprocess.run(["mount", "--bind", str(runtime_parent), str(alias)], check=True)
+    try:
+        target = alias / f"agentreview-target-locks-v1-{os.geteuid()}"
+        carrier_root = _carrier_root(runtime_parent)
+
+        assert "\\040" in Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2
+        assert not carrier_root.exists()
+    finally:
+        subprocess.run(["umount", str(alias)], check=False)
+
+
+def _prepare_bound_carrier(runtime_parent: Path, source: Path) -> Path:
+    """Create the protocol directory with the owner/mode validation requires,
+    then bind *source* onto it -- so the case reaches the defect under test
+    rather than failing for an incidental permission reason."""
+
+    carrier_root = _carrier_root(runtime_parent)
+    carrier_root.mkdir(mode=0o700)
+    subprocess.run(["mount", "--bind", str(source), str(carrier_root)], check=True)
+    os.chmod(carrier_root, 0o700)
+    return carrier_root
+
+
+@requires_bind_mount
+def test_r23_existing_carrier_root_bound_to_the_target_root_is_refused(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """R23.  N2 as Codex reported it: the carrier path already exists and is a
+    bind mount of the target root."""
+
+    target = tmp_path / "work-project"
+    target.mkdir()
+    carrier_root = _prepare_bound_carrier(runtime_parent, target)
+    try:
+        before = sorted(entry.name for entry in target.iterdir())
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        assert sorted(entry.name for entry in target.iterdir()) == before
+        assert list(target.rglob("*.lock")) == []
+    finally:
+        subprocess.run(["umount", str(carrier_root)], check=False)
+
+
+@requires_bind_mount
+def test_r24_existing_carrier_root_bound_to_a_target_descendant_is_refused(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """R24.  The stronger sibling: the carrier path is a bind mount of a
+    DESCENDANT of the target, so the target's own identity never appears in
+    the relation at all.  A fix keyed on `identity(carrier) == identity(target)`
+    would leave this open; K still lands inside the target subtree."""
+
+    target = tmp_path / "work-project"
+    inner = target / "subdir"
+    inner.mkdir(parents=True)
+    carrier_root = _prepare_bound_carrier(runtime_parent, inner)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        assert list(target.rglob("*.lock")) == []
+    finally:
+        subprocess.run(["umount", str(carrier_root)], check=False)
+
+
+def test_r25_ordinary_pre_existing_carrier_root_is_still_reused(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """R25.  POSITIVE CONTROL for N2.  A protocol directory left by a previous
+    epoch is a plain directory, never a mount point, and must keep working --
+    otherwise the N2 rule would break every second acquisition."""
+
+    target = tmp_path / "ordinary-target"
+    target.mkdir()
+
+    assert _acquire(target) == "acquired"
+    carrier_root = _carrier_root(runtime_parent)
+    assert carrier_root.exists()
+    assert not os.path.ismount(carrier_root)
+
+    assert _acquire(target) == "acquired"
+    assert _carrier_material_beneath(target) == []
+
+
+@pytest.mark.parametrize("errno_code", [5, 13], ids=["EIO", "EACCES"])
+def test_r26_r27_public_acquisition_reports_unknown_for_unreadable_mount_table(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, errno_code: int
+) -> None:
+    """R26/R27.  N3 through the PUBLIC entry point, which is the only place a
+    caller can observe the reason code.  The pre-existing direct-authority
+    test asserted the same proposition against the internal function and
+    passed even while the public path answered `unavailable`."""
+
+    real_read_text = Path.read_text
+
+    def _raise_for_mountinfo(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self) == "/proc/self/mountinfo":
+            raise OSError(errno_code, os.strerror(errno_code))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _raise_for_mountinfo)
+
+    target = tmp_path / "unrelated-target"
+    target.mkdir()
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_r28_malformed_mount_table_line_stays_fail_closed_for_every_consumer(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R28.  A table mixing well-formed lines with one malformed line must
+    refuse, not silently skip -- and must do so through the public path, which
+    also exercises the filesystem-type probe.  Before the parsers were
+    unified those two consumers disagreed: one skipped the line, the other
+    failed closed."""
+
+    real_read_text = Path.read_text
+    good = "1 0 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw"
+    malformed = "2 0 not-a-device / /mnt rw - ext4 /dev/sdb1 rw"
+
+    def _mixed(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self) == "/proc/self/mountinfo":
+            return good + "\n" + malformed + "\n"
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _mixed)
+
+    target = tmp_path / "unrelated-target"
+    target.mkdir()
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_the_module_has_exactly_one_mountinfo_parser() -> None:
+    """The structural invariant behind N1 and N3 together: one decoding rule
+    and one error policy, because there is only one reader."""
+
+    source = Path(epoch_module.__file__).read_text(encoding="utf-8")
+    assert source.count('"/proc/self/mountinfo"') == 1
+
+
+# -- Mutants for N1/N2/N3 ---------------------------------------------------
+
+
+@requires_bind_mount
+def test_mutant_mountinfo_single_escape_not_decoded_lets_n1_reproduce(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_MOUNTINFO_SINGLE_ESCAPE_NOT_DECODED -- restore the exact pre-fix
+    two-backslash pattern; R22 must go back to being accepted."""
+
+    assert epoch_module._unescape_mountinfo_path_v2("/x\\040y") == "/x y"
+    monkeypatch.setattr(epoch_module, "_MOUNT_ESCAPE_RE_V2", re.compile(r"\\\\([0-7]{3})"))
+    assert epoch_module._unescape_mountinfo_path_v2("/x\\040y") == "/x\\040y"
+
+    alias = tmp_path / "alias mount dir"
+    alias.mkdir()
+    subprocess.run(["mount", "--bind", str(runtime_parent), str(alias)], check=True)
+    try:
+        target = alias / f"agentreview-target-locks-v1-{os.geteuid()}"
+        assert _acquire(target) == "acquired", "mutant should have let N1 reproduce"
+        assert any(target.iterdir())
+    finally:
+        subprocess.run(["umount", str(alias)], check=False)
+
+
+@requires_bind_mount
+def test_mutant_existing_protocol_mount_not_inspected_lets_n2_reproduce(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_EXISTING_PROTOCOL_MOUNT_NOT_INSPECTED -- blind the carrier-location
+    rule by reporting an empty mount table to it alone; R23 must reproduce."""
+
+    target = tmp_path / "work-project"
+    target.mkdir()
+    carrier_root = _prepare_bound_carrier(runtime_parent, target)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+        # Blind ONLY the carrier-location rule, by hiding the mount that sits
+        # at the protocol directory.  Returning an empty table instead would
+        # also blind `_runtime_filesystem_type_v2`, which now consumes the same
+        # authority -- the acquisition would fail as `unavailable` and the
+        # mutant would be killed by the wrong proposition.
+        real_table = epoch_module._read_mount_table_v2
+        carrier_path = str(carrier_root)
+
+        def _hide_the_carrier_mount() -> tuple:
+            return tuple(
+                entry
+                for entry in real_table()
+                if not epoch_module._is_at_or_beneath_v2(entry[1], carrier_path)
+            )
+
+        monkeypatch.setattr(epoch_module, "_read_mount_table_v2", _hide_the_carrier_mount)
+        assert _acquire(target) == "acquired", "mutant should have let N2 reproduce"
+        assert list(target.rglob("*.lock")) != []
+    finally:
+        subprocess.run(["umount", str(carrier_root)], check=False)
+
+
+@requires_bind_mount
+def test_mutant_protocol_mount_target_descendant_allowed_lets_n2b_reproduce(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_PROTOCOL_MOUNT_TARGET_DESCENDANT_ALLOWED -- the narrower fix a
+    reviewer might have stopped at: refuse only when the carrier mount equals
+    the target root, by identity.  R24's descendant topology then reopens."""
+
+    target = tmp_path / "work-project"
+    inner = target / "subdir"
+    inner.mkdir(parents=True)
+    carrier_root = _prepare_bound_carrier(runtime_parent, inner)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+        target_identity = os.stat(target)
+        real_table = epoch_module._read_mount_table_v2
+
+        def _identity_keyed_only(*, mount_point: str, protocol_directory: str) -> bool:
+            try:
+                return epoch_module._same_identity_v2(os.stat(mount_point), target_identity)
+            except OSError:
+                return False
+
+        def _narrow_table() -> tuple:
+            return tuple(
+                entry
+                for entry in real_table()
+                if not (
+                    epoch_module._is_at_or_beneath_v2(entry[1], str(carrier_root))
+                    and not _identity_keyed_only(
+                        mount_point=entry[1], protocol_directory=str(carrier_root)
+                    )
+                )
+            )
+
+        monkeypatch.setattr(epoch_module, "_read_mount_table_v2", _narrow_table)
+        assert _acquire(target) == "acquired", "mutant should have let N2-b reproduce"
+        assert list(target.rglob("*.lock")) != []
+    finally:
+        subprocess.run(["umount", str(carrier_root)], check=False)
+
+
+@pytest.mark.parametrize("errno_code", [5, 13], ids=["EIO", "EACCES"])
+def test_mutant_runtime_fs_probe_preempts_disjoint_unknown(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, errno_code: int
+) -> None:
+    """M_RUNTIME_FS_PROBE_PREEMPTS_DISJOINT_UNKNOWN -- restore the probe's own
+    parser and its swallow-on-error policy; the public reason regresses from
+    UNKNOWN back to `unavailable`, which is exactly N3."""
+
+    real_read_text = Path.read_text
+
+    def _raise_for_mountinfo(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self) == "/proc/self/mountinfo":
+            raise OSError(errno_code, os.strerror(errno_code))
+        return real_read_text(self, *args, **kwargs)
+
+    def _pre_fix_probe(path: Path) -> str | None:
+        try:
+            Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+        except (OSError, RuntimeError):
+            return None
+        return "tmpfs"
+
+    monkeypatch.setattr(Path, "read_text", _raise_for_mountinfo)
+    monkeypatch.setattr(epoch_module, "_runtime_filesystem_type_v2", _pre_fix_probe)
+
+    target = tmp_path / "unrelated-target"
+    target.mkdir()
+    assert _acquire(target) == TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2, (
+        "mutant should have let the filesystem probe preempt the UNKNOWN classification"
+    )
+
+
+def test_mutant_malformed_mountinfo_skipped(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_MALFORMED_MOUNTINFO_SKIPPED -- restore `continue` on an unparseable
+    line.  R28's mixed table then reports no refusal at all, which is the
+    silent-skip policy the unified parser exists to remove."""
+
+    real_read_text = Path.read_text
+    good = "1 0 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw"
+    malformed = "2 0 not-a-device / /mnt rw - ext4 /dev/sdb1 rw"
+
+    def _mixed(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self) == "/proc/self/mountinfo":
+            return good + "\n" + malformed + "\n"
+        return real_read_text(self, *args, **kwargs)
+
+    def _skipping_table() -> tuple:
+        entries = []
+        for line in (good, malformed):
+            try:
+                before_separator, after_separator = line.split(" - ", 1)
+                before = before_separator.split()
+                major_text, minor_text = before[2].split(":", 1)
+                device = os.makedev(int(major_text), int(minor_text))
+                mount_point = epoch_module._unescape_mountinfo_path_v2(before[4])
+                filesystem_type = after_separator.split()[0]
+            except (IndexError, ValueError):
+                continue
+            entries.append((device, mount_point, filesystem_type))
+        return tuple(entries)
+
+    monkeypatch.setattr(Path, "read_text", _mixed)
+    monkeypatch.setattr(epoch_module, "_read_mount_table_v2", _skipping_table)
+
+    target = tmp_path / "unrelated-target"
+    target.mkdir()
+    assert _acquire(target) != TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
+        "mutant should have silently skipped the malformed line instead of failing closed"
     )

@@ -127,7 +127,12 @@ def _mount_namespace_identity_v2() -> tuple[int, int]:
         os.close(fd)
 
 
-_MOUNT_ESCAPE_RE_V2 = re.compile(r"\\\\([0-7]{3})")
+# `/proc/self/mountinfo` escapes space, tab, newline and backslash in path
+# fields as a SINGLE backslash followed by three octal digits (`\040`, `\011`,
+# `\012`, `\134`).  An earlier revision matched two backslashes, so no real
+# mountinfo path was ever decoded and any mount point containing one of those
+# characters silently failed every containment comparison (`#262` N1).
+_MOUNT_ESCAPE_RE_V2 = re.compile(r"\\([0-7]{3})")
 
 
 def _unescape_mountinfo_path_v2(value: str) -> str:
@@ -135,24 +140,29 @@ def _unescape_mountinfo_path_v2(value: str) -> str:
 
 
 def _runtime_filesystem_type_v2(path: Path) -> str | None:
-    """Return the mountinfo filesystem type containing *path*, if known."""
+    """Return the mountinfo filesystem type containing *path*, if known.
+
+    Consumes the single canonical mount-table observation rather than parsing
+    `/proc/self/mountinfo` a second time.  An earlier revision kept its own
+    parser here with the opposite error policy -- read failure became `None`
+    and a malformed line was skipped -- so an unreadable mount table reached
+    the caller as `target_pack_epoch_unavailable` from this probe *before*
+    the disjointness authority ever ran, and the promised
+    `target_pack_epoch_carrier_disjointness_unknown` was unreachable through
+    the public entry point (`#262` N3).  Read and parse failures now fail
+    closed as UNKNOWN, from one place, for every consumer.
+
+    A target that cannot be resolved is a different subject and still answers
+    `None` here, which the caller reads as an unsupported runtime parent.
+    """
 
     try:
-        text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
         candidate = str(path.resolve(strict=True))
     except (OSError, RuntimeError):
         return None
 
     matches: list[tuple[int, str]] = []
-    for line in text.splitlines():
-        try:
-            before_separator, after_separator = line.split(" - ", 1)
-            before = before_separator.split()
-            after = after_separator.split()
-            mount_point = _unescape_mountinfo_path_v2(before[4])
-            filesystem_type = after[0]
-        except (IndexError, ValueError):
-            continue
+    for _device, mount_point, filesystem_type in _read_mount_table_v2():
         if candidate == mount_point or candidate.startswith(mount_point.rstrip("/") + "/"):
             matches.append((len(mount_point), filesystem_type))
     return max(matches, default=(0, None))[1]
@@ -241,8 +251,11 @@ def _open_protocol_directory_v2(*, parent_fd: int, euid: int) -> tuple[int, str,
         raise
 
 
-def _read_mount_table_v2() -> tuple[tuple[int, str], ...]:
-    """Return `(device, mount_point)` for every mount in this mount namespace.
+def _read_mount_table_v2() -> tuple[tuple[int, str, str], ...]:
+    """Return `(device, mount_point, filesystem_type)` for every mount in this
+    mount namespace.  This is the module's SOLE mountinfo authority: no other
+    function parses `/proc/self/mountinfo`, so there is exactly one decoding
+    rule and exactly one error policy (`#262` N1/N3).
 
     `/proc/self/mountinfo` is the kernel's own record of what is mounted where.
     That is the authority this module consults; it does not re-derive mount
@@ -260,22 +273,24 @@ def _read_mount_table_v2() -> tuple[tuple[int, str], ...]:
             TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
         ) from exc
 
-    entries: list[tuple[int, str]] = []
+    entries: list[tuple[int, str, str]] = []
     for line in text.splitlines():
         if not line.strip():
             continue
         try:
-            before = line.split(" - ", 1)[0].split()
+            before_separator, after_separator = line.split(" - ", 1)
+            before = before_separator.split()
             major_text, minor_text = before[2].split(":", 1)
             device = os.makedev(int(major_text), int(minor_text))
             mount_point = _unescape_mountinfo_path_v2(before[4])
+            filesystem_type = after_separator.split()[0]
         except (IndexError, ValueError) as exc:
             # A line this module cannot parse is a line whose mount point it
             # cannot rule out.  Refuse rather than skip it.
             raise TargetPackEpochError(
                 TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
             ) from exc
-        entries.append((device, mount_point))
+        entries.append((device, mount_point, filesystem_type))
     if not entries:
         raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
     return tuple(entries)
@@ -319,8 +334,8 @@ def _establish_carrier_disjoint_v2(
     the runtime parent's device is not reachable at or beneath the target
     establishes disjointness for the whole domain.
 
-    Four independent ways a target can reach the carrier, and what rules each
-    out:
+    Five independent ways the carrier and the target can meet, and what
+    rules each out:
 
     - **by path** — the target is the runtime parent, the protocol directory, or
       an ancestor of either.  Canonical path containment, both directions.
@@ -332,6 +347,10 @@ def _establish_carrier_disjoint_v2(
       target carries the runtime parent's device, which is how a deep bind
       alias exposes the carrier inside an otherwise unrelated target.  The
       kernel mount table decides this one; no path arithmetic can.
+    - **by a mount at the carrier's own location** — the protocol directory
+      already exists as a mount point, so writes through it land somewhere
+      this function never observed, which may be the target or any part of
+      it.  Refused as UNKNOWN; see the inline note at that rule.
     - **by a distinct mount ancestral to the target** — the target is reached
       only through some *other* same-device mount that is not itself an
       ancestor of, or the runtime parent path (`#262` F1): the runtime parent
@@ -416,11 +435,35 @@ def _establish_carrier_disjoint_v2(
     if target_stat is not None and _same_identity_v2(target_stat, parent_stat):
         raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
 
+    # -- by a mount AT the carrier's own location (#262 N2) -----------------
+    # Every rule above reasons about where the TARGET is.  None of them
+    # observes what the carrier path itself resolves to.  If the protocol
+    # directory already exists and is a mount point, the carrier's writes land
+    # wherever that mount leads -- which may be the target, or any part of it
+    # -- while the target stays unrelated to the runtime parent by path,
+    # identity and mount position alike.  That is not an established overlap;
+    # it is a topology in which the carrier's physical destination was never
+    # established at all, so it is UNKNOWN and refused rather than assumed
+    # disjoint.  Source device is deliberately not consulted: the objection is
+    # that the destination is unobserved, not that it is on any given device.
+    #
+    # This is checked against the mount table rather than by opening the
+    # directory, because it must hold BEFORE `_open_protocol_directory_v2`
+    # touches anything, and because an ordinary protocol directory left by a
+    # previous epoch is a plain directory, never a mount point -- so the
+    # ordinary reuse path is untouched.
+    runtime_parent_path = str(_RUNTIME_PARENT_PATH_V2)
+    mount_table = _read_mount_table_v2()
+    for _device, mount_point, _filesystem_type in mount_table:
+        if _is_at_or_beneath_v2(mount_point, protocol_directory):
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
+
     # -- by a mount at or beneath the target, or a distinct same-device mount
     #    ancestral to the target that does not itself reach the runtime parent
     #    (#262 F1) -----------------------------------------------------------
-    runtime_parent_path = str(_RUNTIME_PARENT_PATH_V2)
-    for device, mount_point in _read_mount_table_v2():
+    for device, mount_point, _filesystem_type in mount_table:
         if device != parent_stat.st_dev:
             continue
         if _is_at_or_beneath_v2(mount_point, target_path):
