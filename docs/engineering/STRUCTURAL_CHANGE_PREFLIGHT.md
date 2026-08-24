@@ -40,9 +40,10 @@ Write the answers into
 the PR body. "Unknown" is a valid answer to any of the §§1–7 questions, and a
 blocking one — it means the design is not ready to implement yet. The recurrence
 questions answer on a different footing, stated where they are: each load-bearing
-one reports that no candidate formed, that a recurrence was admitted, or that a
-formed candidate is held for investigation, and the supporting one may be left
-undecided. A hold is recorded as neither a "yes" nor a "no".
+one reports that no candidate formed, that a recurrence was admitted, that a
+formed candidate was established out of scope, or that a formed candidate is
+held for investigation, and the supporting one may be left undecided. A hold is
+recorded as neither a "yes" nor a "no".
 
 Uncertainty arises at several distinct stages of this document, and the subjects
 must not merge. Three are named where they arise, and they are not a census:
@@ -218,9 +219,12 @@ did, by putting materiality inside the factual predicate — lets whoever answer
 been tried here and all three failed.
 
 **Lifecycle disposition sits on a different axis, and does not reach backwards.**
-A established finding may later be dispositioned `fixed`, `superseded`,
-`out_of_scope`, or invalidated by new evidence. None of that reaches back into
-what was established at the time.
+A established finding may later be dispositioned `fixed`, `superseded`, or
+`out_of_scope`. New evidence that contradicts an earlier `VALID` is not a
+lifecycle event at all: it records a later `FindingValidationOutcome(f)` at its
+own epoch, on the factual axis, and does not by itself change
+`LifecycleDisposition(f)`. Neither reaches back into what was established at
+the time.
 
 That axis is `LifecycleDisposition(f)`, and it is **not** the factual record of
 whether the finding validated. That record is `FindingValidationOutcome(f)` —
@@ -255,10 +259,11 @@ LifecycleDisposition(f)  erases neither
 ```
 
 A finding is never "admitted": findings are validated, candidates are admitted,
-and there is no `FindingAdmission` here or anywhere below. Invalidating `f1`
-afterwards changes `f1`'s lifecycle disposition and leaves standing both the
-validation that held at its epoch and any recurrence admitted on the strength
-of it.
+and there is no `FindingAdmission` here or anywhere below. New evidence that
+contradicts `f1` afterwards records a later `FindingValidationOutcome(f1)` at
+its own epoch; it does not, on that basis alone, change `f1`'s lifecycle
+disposition, and it leaves standing both the validation that held at `f1`'s
+epoch and any recurrence admitted on the strength of it.
 `FinalState != History` throughout — a later state never rewrites the epoch it
 succeeded.
 
@@ -1042,9 +1047,11 @@ other: `ValidationHistory` takes a finding **and the claim it was material to**,
 `FindingAdmission`, implied or otherwise. The questions below run over
 `ValidatedFinding(f, C)` for this loop's claim `C` — never over findings whose
 bearing on `C` was never established.
-Invalidating `f1` afterwards changes `f1`'s lifecycle disposition; it leaves the
-validation that held at `f1`'s epoch and any recurrence admitted on the
-strength of it exactly where they were.
+New evidence that contradicts `f1` afterwards records a later
+`FindingValidationOutcome(f1)` at its own epoch; it does not, on that basis
+alone, change `f1`'s lifecycle disposition, and it leaves the validation that
+held at `f1`'s epoch and any recurrence admitted on the strength of it exactly
+where they were.
 
 **At the end of each round, these are answered on the record**, over validated
 findings. The first two carry a transition; the third does not, and the
@@ -1993,10 +2000,13 @@ see §"Authority non-escalation".
   recurrence questions**, in the form that section requires — the bare answer
   where no candidate formed, and the correction, both findings and the
   proposition it answered for and the ground it answered over named for an
-  admitted recurrence or for a hold, with a hold also recording what could not be
-  established. Recording only the fires makes the rest unreconstructable: a later
-  reader can see that a STOP was declared, but not that one was ever considered
-  and correctly declined, nor that a question was left open.
+  admitted recurrence, for an out-of-scope candidate, or for a hold, with a hold
+  also recording what could not be established, and an out-of-scope candidate
+  also recording what *was* established — the differing proposition, or the
+  witness's established position outside `Δ1`. Recording only the fires makes
+  the rest unreconstructable: a later reader can see that a STOP was declared,
+  but not that one was ever considered and correctly declined, nor that a
+  question was left open or resolved away from recurrence.
   Together with the per-finding violated propositions and demonstrated defect
   domains, this is what lets someone other than the author check the claim that a
   loop was converging.
