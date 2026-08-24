@@ -162,7 +162,7 @@ def _runtime_filesystem_type_v2(path: Path) -> str | None:
         return None
 
     matches: list[tuple[int, str]] = []
-    for _device, mount_point, filesystem_type in _read_mount_table_v2():
+    for _device, _root, mount_point, filesystem_type in _read_mount_table_v2():
         if candidate == mount_point or candidate.startswith(mount_point.rstrip("/") + "/"):
             matches.append((len(mount_point), filesystem_type))
     return max(matches, default=(0, None))[1]
@@ -251,9 +251,15 @@ def _open_protocol_directory_v2(*, parent_fd: int, euid: int) -> tuple[int, str,
         raise
 
 
-def _read_mount_table_v2() -> tuple[tuple[int, str, str], ...]:
-    """Return `(device, mount_point, filesystem_type)` for every mount in this
-    mount namespace.  This is the module's SOLE mountinfo authority: no other
+def _read_mount_table_v2() -> tuple[tuple[int, str, str, str], ...]:
+    """Return `(device, root, mount_point, filesystem_type)` for every mount in
+    this mount namespace.
+
+    `root` is mountinfo field 4 -- the root of that mount WITHIN its own
+    filesystem -- and `mount_point` is field 5, where that root is attached in
+    this namespace.  A whole-filesystem mount has `root == "/"`; a bind of a
+    subtree carries that subtree's path.  Both are decoded through the same
+    escape decoder, because both are path fields and both can be escaped.  This is the module's SOLE mountinfo authority: no other
     function parses `/proc/self/mountinfo`, so there is exactly one decoding
     rule and exactly one error policy (`#262` N1/N3).
 
@@ -282,6 +288,7 @@ def _read_mount_table_v2() -> tuple[tuple[int, str, str], ...]:
             before = before_separator.split()
             major_text, minor_text = before[2].split(":", 1)
             device = os.makedev(int(major_text), int(minor_text))
+            root = _unescape_mountinfo_path_v2(before[3])
             mount_point = _unescape_mountinfo_path_v2(before[4])
             filesystem_type = after_separator.split()[0]
         except (IndexError, ValueError) as exc:
@@ -290,7 +297,7 @@ def _read_mount_table_v2() -> tuple[tuple[int, str, str], ...]:
             raise TargetPackEpochError(
                 TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
             ) from exc
-        entries.append((device, mount_point, filesystem_type))
+        entries.append((device, root, mount_point, filesystem_type))
     if not entries:
         raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
     return tuple(entries)
@@ -334,7 +341,7 @@ def _establish_carrier_disjoint_v2(
     the runtime parent's device is not reachable at or beneath the target
     establishes disjointness for the whole domain.
 
-    Five independent ways the carrier and the target can meet, and what
+    Six independent ways the carrier and the target can meet, and what
     rules each out:
 
     - **by path** — the target is the runtime parent, the protocol directory, or
@@ -349,8 +356,14 @@ def _establish_carrier_disjoint_v2(
       kernel mount table decides this one; no path arithmetic can.
     - **by a mount at the carrier's own location** — the protocol directory
       already exists as a mount point, so writes through it land somewhere
-      this function never observed, which may be the target or any part of
-      it.  Refused as UNKNOWN; see the inline note at that rule.
+      this function never observed.  Refused as UNKNOWN, except where that
+      mount's identity is directly observable as the target, which is an
+      established overlap and is reported as one.
+    - **by a subtree bind ancestral to the carrier** — the runtime parent (or
+      something above it) is a graft of an arbitrary subtree, so the carrier's
+      writes land inside that subtree.  The kernel's `root` field decides
+      this; mount position alone cannot, because ordinary mounts are ancestral
+      to the carrier on every real system.
     - **by a distinct mount ancestral to the target** — the target is reached
       only through some *other* same-device mount that is not itself an
       ancestor of, or the runtime parent path (`#262` F1): the runtime parent
@@ -454,8 +467,40 @@ def _establish_carrier_disjoint_v2(
     # ordinary reuse path is untouched.
     runtime_parent_path = str(_RUNTIME_PARENT_PATH_V2)
     mount_table = _read_mount_table_v2()
-    for _device, mount_point, _filesystem_type in mount_table:
+    for _device, root, mount_point, _filesystem_type in mount_table:
+        # (i) a mount AT or BENEATH the carrier: its destination is unobserved.
+        #     Where the mount point is exactly the protocol directory and its
+        #     identity is directly observable as the target, the overlap is
+        #     ESTABLISHED and says so; anything else stays UNKNOWN, because a
+        #     suspected overlap is not an established one (`#262` N5).
         if _is_at_or_beneath_v2(mount_point, protocol_directory):
+            if mount_point == protocol_directory and target_stat is not None:
+                try:
+                    carrier_stat: os.stat_result | None = os.lstat(protocol_directory)
+                except OSError:
+                    carrier_stat = None
+                if carrier_stat is not None and _same_identity_v2(carrier_stat, target_stat):
+                    raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
+
+        # (ii) a mount AT or ANCESTRAL to the carrier that grafts a SUBTREE
+        #      (`root != "/"`) rather than a whole filesystem.  The carrier's
+        #      writes then land inside that arbitrary subtree, which this
+        #      function has no way to relate to the target -- the `#262` N4
+        #      topology, where the runtime parent itself is a bind of a target
+        #      descendant.  Position alone cannot decide this: an ordinary host
+        #      mount is ancestral to the carrier on essentially every system,
+        #      so the kernel's own `root` field is the discriminator.
+        #
+        #      A whole-filesystem mount (`root == "/"`) is deliberately NOT
+        #      refused here: it preserves device identity, so any target that
+        #      shares ground with it still appears in this same table at the
+        #      target's own position and is caught by the device-gated target
+        #      rules below.  Verified against a real tmpfs and a real bind of
+        #      that tmpfs root, both of which report `root == "/"`.
+        if root != "/" and _is_at_or_beneath_v2(protocol_directory, mount_point):
             raise TargetPackEpochError(
                 TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
             )
@@ -463,7 +508,7 @@ def _establish_carrier_disjoint_v2(
     # -- by a mount at or beneath the target, or a distinct same-device mount
     #    ancestral to the target that does not itself reach the runtime parent
     #    (#262 F1) -----------------------------------------------------------
-    for device, mount_point, _filesystem_type in mount_table:
+    for device, _root, mount_point, _filesystem_type in mount_table:
         if device != parent_stat.st_dev:
             continue
         if _is_at_or_beneath_v2(mount_point, target_path):

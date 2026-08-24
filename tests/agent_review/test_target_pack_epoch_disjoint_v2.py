@@ -319,11 +319,11 @@ def test_well_formed_mount_table_is_parsed_completely(monkeypatch: pytest.Monkey
 
     entries = epoch_module._read_mount_table_v2()
 
-    assert [point for _device, point, _fs in entries] == ["/", "/tmp", "/var/lib/x"]
+    assert [point for _device, _root, point, _fs in entries] == ["/", "/tmp", "/var/lib/x"]
     assert entries[1][0] == os.makedev(0, 22)
     # the filesystem type travels with the entry, because this table is now the
     # SOLE mountinfo authority and the runtime-parent probe consumes it too.
-    assert [fs for _device, _point, fs in entries] == ["ext4", "tmpfs", "ext4"]
+    assert [fs for _device, _root, _point, fs in entries] == ["ext4", "tmpfs", "ext4"]
 
 
 def test_empty_mount_table_is_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -683,7 +683,7 @@ def test_mutant_mount_scan_descendants_only_lets_f1_reproduce(
             raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2) from exc
         if target_stat is not None and epoch_module._same_identity_v2(target_stat, parent_stat):
             raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
-        for device, mount_point, _filesystem_type in epoch_module._read_mount_table_v2():
+        for device, _root, mount_point, _filesystem_type in epoch_module._read_mount_table_v2():
             if device == parent_stat.st_dev and epoch_module._is_at_or_beneath_v2(mount_point, target_path):
                 raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
 
@@ -809,14 +809,21 @@ def test_r23_existing_carrier_root_bound_to_the_target_root_is_refused(
     runtime_parent: Path, tmp_path: Path
 ) -> None:
     """R23.  N2 as Codex reported it: the carrier path already exists and is a
-    bind mount of the target root."""
+    bind mount of the target root.
+
+    The REFUSAL is the N2 proposition and is what this case guards.  The
+    reason code was later refined by N5: this topology'"'"'s destination is in fact
+    identifiable -- `lstat(protocol_directory)` IS the target -- so it is an
+    ESTABLISHED overlap rather than an unobservable one.  R34 asserts that
+    classification directly; here the point remains that nothing is written.
+    """
 
     target = tmp_path / "work-project"
     target.mkdir()
     carrier_root = _prepare_bound_carrier(runtime_parent, target)
     try:
         before = sorted(entry.name for entry in target.iterdir())
-        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2
         assert sorted(entry.name for entry in target.iterdir()) == before
         assert list(target.rglob("*.lock")) == []
     finally:
@@ -954,7 +961,7 @@ def test_mutant_existing_protocol_mount_not_inspected_lets_n2_reproduce(
     target.mkdir()
     carrier_root = _prepare_bound_carrier(runtime_parent, target)
     try:
-        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2
 
         # Blind ONLY the carrier-location rule, by hiding the mount that sits
         # at the protocol directory.  Returning an empty table instead would
@@ -968,7 +975,7 @@ def test_mutant_existing_protocol_mount_not_inspected_lets_n2_reproduce(
             return tuple(
                 entry
                 for entry in real_table()
-                if not epoch_module._is_at_or_beneath_v2(entry[1], carrier_path)
+                if not epoch_module._is_at_or_beneath_v2(entry[2], carrier_path)
             )
 
         monkeypatch.setattr(epoch_module, "_read_mount_table_v2", _hide_the_carrier_mount)
@@ -1007,9 +1014,9 @@ def test_mutant_protocol_mount_target_descendant_allowed_lets_n2b_reproduce(
                 entry
                 for entry in real_table()
                 if not (
-                    epoch_module._is_at_or_beneath_v2(entry[1], str(carrier_root))
+                    epoch_module._is_at_or_beneath_v2(entry[2], str(carrier_root))
                     and not _identity_keyed_only(
-                        mount_point=entry[1], protocol_directory=str(carrier_root)
+                        mount_point=entry[2], protocol_directory=str(carrier_root)
                     )
                 )
             )
@@ -1077,11 +1084,12 @@ def test_mutant_malformed_mountinfo_skipped(
                 before = before_separator.split()
                 major_text, minor_text = before[2].split(":", 1)
                 device = os.makedev(int(major_text), int(minor_text))
+                root = epoch_module._unescape_mountinfo_path_v2(before[3])
                 mount_point = epoch_module._unescape_mountinfo_path_v2(before[4])
                 filesystem_type = after_separator.split()[0]
             except (IndexError, ValueError):
                 continue
-            entries.append((device, mount_point, filesystem_type))
+            entries.append((device, root, mount_point, filesystem_type))
         return tuple(entries)
 
     monkeypatch.setattr(Path, "read_text", _mixed)
@@ -1092,3 +1100,357 @@ def test_mutant_malformed_mountinfo_skipped(
     assert _acquire(target) != TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
         "mutant should have silently skipped the malformed line instead of failing closed"
     )
+
+
+# -- R29-R37: #262 N4/N5 -- mount reachability made explicit ----------------
+#
+# N4 (P1)  The runtime parent itself bind-mounted from a target descendant.
+#          Every prior rule missed it: the controlling mount is ANCESTRAL to
+#          the carrier, and the earlier carrier rule scanned only at-or-beneath.
+# N5 (P2)  Where the carrier mount's identity IS the target, the overlap is
+#          established without mutation and must be reported as OVERLAP; the
+#          rule reported UNKNOWN unconditionally.
+#
+# Mount POSITION alone cannot decide N4: an ordinary host mount is ancestral to
+# the carrier on essentially every system.  The discriminator is the kernel's
+# own `root` field -- whole filesystem (`/`) versus grafted subtree.  A whole-
+# filesystem bind also reports `root == "/"`, verified against a real tmpfs and
+# a real bind of that tmpfs root, so `root != "/"` means specifically "subtree
+# graft", not "is a bind".
+
+
+def _bind(source: Path, mount_point: Path) -> None:
+    subprocess.run(["mount", "--bind", str(source), str(mount_point)], check=True)
+
+
+def test_r29_mount_table_carries_and_decodes_the_root_field(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R29 + R36.  `root` is a path field like `mount_point`, can be escaped,
+    and must travel through the SAME canonical decoder."""
+
+    table = (
+        "36 35 98:0 / / rw,relatime - ext4 /dev/root rw\n"
+        "37 36 0:22 /srv/a\\040b /mnt/x rw - ext4 /dev/sdb rw\n"
+    )
+    monkeypatch.setattr(Path, "read_text", lambda *_a, **_k: table)
+
+    entries = epoch_module._read_mount_table_v2()
+    assert [root for _d, root, _mp, _fs in entries] == ["/", "/srv/a b"]
+    assert [mp for _d, _r, mp, _fs in entries] == ["/", "/mnt/x"]
+
+
+def test_r37_unparseable_mount_root_line_fails_closed(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R37.  A line whose fields cannot be read is a mount whose root this
+    module cannot rule out -- UNKNOWN, through the public path."""
+
+    real_read_text = Path.read_text
+    truncated = "40 35 98:0 /only-four-fields"
+
+    def _bad(self: Path, *args: object, **kwargs: object) -> str:
+        if str(self) == "/proc/self/mountinfo":
+            return "36 35 98:0 / / rw - ext4 /dev/root rw\n" + truncated + "\n"
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _bad)
+    target = tmp_path / "unrelated"
+    target.mkdir()
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_r30_ordinary_whole_filesystem_ancestry_is_still_accepted(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """R30.  POSITIVE CONTROL for N4, and the reason position alone cannot be
+    the rule: the host's own mount is ancestral to the protocol directory on
+    every real system, with `root == "/"`, and must not be refused."""
+
+    protocol_directory = _carrier_root(runtime_parent)
+    ancestral = [
+        (root, mount_point)
+        for _device, root, mount_point, _fs in epoch_module._read_mount_table_v2()
+        if epoch_module._is_at_or_beneath_v2(str(protocol_directory), mount_point)
+    ]
+    assert ancestral, "the host must have at least one mount ancestral to the carrier"
+    assert all(root == "/" for root, _mp in ancestral)
+
+    target = tmp_path / "ordinary-target"
+    target.mkdir()
+    assert _acquire(target) == "acquired"
+    assert _carrier_material_beneath(target) == []
+
+
+@requires_bind_mount
+def test_r31_runtime_parent_reached_through_a_subtree_bind_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R31.  N4 exactly as reported: the runtime parent IS a bind of a target
+    descendant.  Before this rule the lock landed at
+    `<target>/scratch/agentreview-target-locks-v1-<euid>/<key>.lock`."""
+
+    target = tmp_path / "work-project"
+    inner = target / "scratch"
+    inner.mkdir(parents=True)
+    os.chmod(inner, 0o1777)
+    parent = tmp_path / "runtime-parent"
+    parent.mkdir()
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", parent)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid())
+
+    _bind(inner, parent)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        assert list(target.rglob("*.lock")) == []
+    finally:
+        subprocess.run(["umount", str(parent)], check=False)
+
+
+@requires_bind_mount
+def test_r32_subtree_bind_above_the_runtime_parent_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R32.  The controlling mount need not be at the runtime parent: it is
+    enough that it is ancestral to the protocol directory."""
+
+    target = tmp_path / "work-project"
+    target.mkdir()
+    source = tmp_path / "source-tree"
+    (source / "rp").mkdir(parents=True)
+    os.chmod(source / "rp", 0o1777)
+    above = tmp_path / "above"
+    above.mkdir()
+
+    _bind(source, above)
+    try:
+        monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", above / "rp")
+        monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid())
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+    finally:
+        subprocess.run(["umount", str(above)], check=False)
+
+
+@requires_bind_mount
+def test_r33_transitive_subtree_bind_controlling_the_carrier_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R33.  A bind of a bind keeps the ORIGINAL subtree as its root, so
+    stacking hops does not launder the graft."""
+
+    target = tmp_path / "work-project"
+    inner = target / "scratch"
+    inner.mkdir(parents=True)
+    os.chmod(inner, 0o1777)
+    hop = tmp_path / "hop"
+    hop.mkdir()
+    parent = tmp_path / "runtime-parent"
+    parent.mkdir()
+
+    _bind(inner, hop)
+    try:
+        _bind(hop, parent)
+        try:
+            monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", parent)
+            monkeypatch.setattr(
+                epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid()
+            )
+            assert (
+                _acquire(target)
+                == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
+            assert list(target.rglob("*.lock")) == []
+        finally:
+            subprocess.run(["umount", str(parent)], check=False)
+    finally:
+        subprocess.run(["umount", str(hop)], check=False)
+
+
+@requires_bind_mount
+def test_r34_carrier_bound_to_the_target_root_is_reported_as_overlap(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """R34.  N5: the identity is directly observable, so this is an ESTABLISHED
+    overlap and must not be reported as an unobservable destination."""
+
+    target = tmp_path / "work-project"
+    target.mkdir()
+    carrier_root = _prepare_bound_carrier(runtime_parent, target)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2
+        assert list(target.rglob("*.lock")) == []
+    finally:
+        subprocess.run(["umount", str(carrier_root)], check=False)
+
+
+@requires_bind_mount
+def test_r35_carrier_bound_to_a_target_descendant_stays_unknown(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """R35.  The other side of the N5 discrimination: the bind source is a
+    DESCENDANT, so target-root identity establishes nothing and the honest
+    answer stays UNKNOWN.  Promoting this to OVERLAP would be the same error
+    in the opposite direction."""
+
+    target = tmp_path / "work-project"
+    inner = target / "subdir"
+    inner.mkdir(parents=True)
+    carrier_root = _prepare_bound_carrier(runtime_parent, inner)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        assert list(target.rglob("*.lock")) == []
+    finally:
+        subprocess.run(["umount", str(carrier_root)], check=False)
+
+
+# -- Mutants for N4/N5 ------------------------------------------------------
+
+
+def test_mutant_mount_root_discarded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_MOUNT_ROOT_DISCARDED -- the canonical observation stops carrying
+    `root`; R29 can no longer see it."""
+
+    table = "37 36 0:22 /srv/a\\040b /mnt/x rw - ext4 /dev/sdb rw\n"
+    monkeypatch.setattr(Path, "read_text", lambda *_a, **_k: table)
+    assert epoch_module._read_mount_table_v2()[0][1] == "/srv/a b"
+
+    monkeypatch.setattr(
+        epoch_module, "_read_mount_table_v2", lambda: ((0, "/", "/mnt/x", "ext4"),)
+    )
+    assert epoch_module._read_mount_table_v2()[0][1] == "/"
+
+
+def test_mutant_mount_root_escape_not_decoded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_MOUNT_ROOT_ESCAPE_NOT_DECODED -- decode the mount point but not the
+    root; R29's escaped-root assertion fails."""
+
+    table = "37 36 0:22 /srv/a\\040b /mnt/x rw - ext4 /dev/sdb rw\n"
+    monkeypatch.setattr(Path, "read_text", lambda *_a, **_k: table)
+    assert epoch_module._read_mount_table_v2()[0][1] == "/srv/a b"
+
+    monkeypatch.setattr(epoch_module, "_MOUNT_ESCAPE_RE_V2", re.compile(r"\\\\([0-7]{3})"))
+    assert epoch_module._read_mount_table_v2()[0][1] == "/srv/a\\040b"
+
+
+@requires_bind_mount
+def test_mutant_ancestral_subtree_bind_allowed_lets_n4_reproduce(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_ANCESTRAL_SUBTREE_BIND_ALLOWED -- report every mount as a whole
+    filesystem, so the subtree graft is invisible; R31 must reproduce."""
+
+    target = tmp_path / "work-project"
+    inner = target / "scratch"
+    inner.mkdir(parents=True)
+    os.chmod(inner, 0o1777)
+    parent = tmp_path / "runtime-parent"
+    parent.mkdir()
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", parent)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid())
+
+    _bind(inner, parent)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+        real_table = epoch_module._read_mount_table_v2
+        monkeypatch.setattr(
+            epoch_module,
+            "_read_mount_table_v2",
+            lambda: tuple((d, "/", mp, fs) for d, _r, mp, fs in real_table()),
+        )
+        assert _acquire(target) == "acquired", "mutant should have let N4 reproduce"
+        assert list(target.rglob("*.lock")) != []
+    finally:
+        subprocess.run(["umount", str(parent)], check=False)
+
+
+@requires_bind_mount
+def test_mutant_ancestral_carrier_scan_position_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_ANCESTRAL_CARRIER_SCAN_POSITION_ONLY -- the naive rule this design
+    deliberately rejected: refuse EVERY mount ancestral to the carrier,
+    ignoring `root`.  It closes N4 but destroys R30, because ordinary hosts
+    always have such a mount.  Demonstrates the `root` discriminator is
+    load-bearing in both directions."""
+
+    parent = tmp_path / "runtime-parent"
+    parent.mkdir()
+    parent.chmod(0o1777)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_PATH_V2", parent)
+    monkeypatch.setattr(epoch_module, "_RUNTIME_PARENT_EXPECTED_OWNER_V2", os.geteuid())
+
+    target = tmp_path / "ordinary-target"
+    target.mkdir()
+    assert _acquire(target) == "acquired"
+
+    real_table = epoch_module._read_mount_table_v2
+    monkeypatch.setattr(
+        epoch_module,
+        "_read_mount_table_v2",
+        lambda: tuple((d, "/not-root", mp, fs) for d, _r, mp, fs in real_table()),
+    )
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
+        "position-only mutant should have over-refused the ordinary R30 topology"
+    )
+
+
+@requires_bind_mount
+def test_mutant_known_protocol_alias_reported_unknown(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_KNOWN_PROTOCOL_ALIAS_REPORTED_UNKNOWN -- drop the identity
+    discrimination; R34's established overlap regresses to UNKNOWN."""
+
+    target = tmp_path / "work-project"
+    target.mkdir()
+    carrier_root = _prepare_bound_carrier(runtime_parent, target)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2
+
+        # Narrow the mutation to the carrier/target comparison.  Patching
+        # `_same_identity_v2` outright would also break `_open_runtime_parent_v2`,
+        # which uses it to validate the runtime parent, and the acquisition
+        # would fail as `unavailable` -- killing the mutant by the wrong
+        # proposition rather than by the lost classification.
+        real_same_identity = epoch_module._same_identity_v2
+        target_identity = (os.stat(target).st_dev, os.stat(target).st_ino)
+
+        def _blind_to_the_target(left: os.stat_result, right: os.stat_result) -> bool:
+            if target_identity in {
+                (left.st_dev, left.st_ino),
+                (right.st_dev, right.st_ino),
+            }:
+                return False
+            return real_same_identity(left, right)
+
+        monkeypatch.setattr(epoch_module, "_same_identity_v2", _blind_to_the_target)
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
+            "mutant should have lost the established-overlap classification"
+        )
+    finally:
+        subprocess.run(["umount", str(carrier_root)], check=False)
+
+
+@requires_bind_mount
+def test_mutant_unknown_descendant_alias_reported_overlap(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_UNKNOWN_DESCENDANT_ALIAS_REPORTED_OVERLAP -- the opposite error:
+    treat any carrier mount as an established overlap.  R35's descendant case,
+    whose destination is genuinely unidentifiable, is then falsely reported as
+    established."""
+
+    target = tmp_path / "work-project"
+    inner = target / "subdir"
+    inner.mkdir(parents=True)
+    carrier_root = _prepare_bound_carrier(runtime_parent, inner)
+    try:
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+        monkeypatch.setattr(epoch_module, "_same_identity_v2", lambda _left, _right: True)
+        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2, (
+            "mutant should have promoted an unidentifiable destination to OVERLAP"
+        )
+    finally:
+        subprocess.run(["umount", str(carrier_root)], check=False)
