@@ -4,6 +4,44 @@
 
 ### Fixed
 
+- **The K runtime carrier is now established disjoint from the diagnosed target,
+  or refused (`#262`)**: `acquire_target_pack_epoch_v2` chose the carrier
+  location from `euid` alone, with no reference to `target_root`, so a target
+  that equalled, contained, or bind-aliased the carrier caused the pack's own
+  runtime carrier to be materialized inside the very directory it was handed.
+  Reproduced on `master@2876434` for a target containing the carrier, a bind
+  alias of the carrier's parent, the carrier's parent bind-mounted below the
+  target, a deep bind alias several levels inside an otherwise unrelated
+  target -- the case `PR #259` explicitly declared it could not detect from
+  the consumer side -- and, as a distinct topology found in review of the
+  first candidate fix, the runtime parent bind-mounted onto an unrelated
+  mountpoint with THAT alias, or anything beneath it, handed out as the
+  target: every prior rule reasons about mounts nested inside the target, and
+  none of them considered the target itself being reached only through a
+  same-device mount that is its ancestor.  Disjointness is now established at
+  the shared primitive, before any carrier materialization, by four
+  independent rules: canonical path containment in both directions; object
+  identity against the validated runtime parent, which catches a bind alias
+  whose path differs while `st_dev`/`st_ino` agree; the kernel mount table
+  (`/proc/self/mountinfo`) for a mount at or beneath the target that carries
+  the runtime parent's device; and the same mount table for a *distinct*
+  same-device mount that is an ancestor of the target and does not itself
+  reach the runtime parent -- scoped so the ordinary case of a target that
+  merely shares the root filesystem with the runtime parent is never treated
+  as an alias, since the root mount always contains the runtime parent by
+  construction.  A topology that cannot be observed -- unreadable or
+  unparseable mount table, or an `EIO`/`EACCES` while observing the target --
+  is refused as `target_pack_epoch_carrier_disjointness_unknown`, never assumed
+  disjoint; an established overlap is refused as
+  `target_pack_epoch_carrier_overlaps_target`.  The two reasons are deliberately
+  distinct so "could not look" is never read as "looked and it was fine".  The
+  mechanism is conservative and narrows the accepted topology set; it makes no
+  claim against an external actor racing a bind mount into the window between
+  the check and the carrier write, which `#262` excludes from its own scope,
+  along with distributed coordination and crash atomicity.
+  No consumer decides disjointness, no schema or public contract changes, and
+  writer K identity, SH/EX coordination and expected-plan binding are unchanged.
+
 - **Post-merge review debt on the Authority-First Convergence Review
   methodology (`#263`)**: three P2 findings raised after that PR merged, all
   reproduced on `master@ff9fbdd`.  (1) The target-profile YAML corpus test's

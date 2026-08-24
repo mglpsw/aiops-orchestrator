@@ -30,6 +30,15 @@ TARGET_PACK_EPOCH_BUSY_REASON_V2 = "target_pack_epoch_busy"
 TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2 = "target_pack_epoch_unavailable"
 TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2 = "target_pack_epoch_target_subject_changed"
 TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2 = "target_pack_epoch_capability_invalid"
+# `K-DISJOINT` (#262).  Two reasons, deliberately distinct: one says the carrier
+# and the target were established to overlap, the other says disjointness could
+# not be established at all.  Collapsing them would let "we could not look" be
+# read as "we looked and it was fine", which is the exact fail-open this
+# correction exists to remove.
+TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2 = "target_pack_epoch_carrier_overlaps_target"
+TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2 = (
+    "target_pack_epoch_carrier_disjointness_unknown"
+)
 
 # `O_CLOEXEC` closes an FD at exec, but a raw Python `fork()` first duplicates
 # the open file description.  Track live protocol FDs so the child closes its
@@ -232,6 +241,197 @@ def _open_protocol_directory_v2(*, parent_fd: int, euid: int) -> tuple[int, str,
         raise
 
 
+def _read_mount_table_v2() -> tuple[tuple[int, str], ...]:
+    """Return `(device, mount_point)` for every mount in this mount namespace.
+
+    `/proc/self/mountinfo` is the kernel's own record of what is mounted where.
+    That is the authority this module consults; it does not re-derive mount
+    topology from path strings, because a bind alias is invisible to
+    `Path.resolve()` and shares `st_dev`/`st_ino` with its source.
+
+    Raises rather than returning a partial table: a caller must never be able to
+    read "the table could not be parsed" as "nothing is mounted there".
+    """
+
+    try:
+        text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise TargetPackEpochError(
+            TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        ) from exc
+
+    entries: list[tuple[int, str]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            before = line.split(" - ", 1)[0].split()
+            major_text, minor_text = before[2].split(":", 1)
+            device = os.makedev(int(major_text), int(minor_text))
+            mount_point = _unescape_mountinfo_path_v2(before[4])
+        except (IndexError, ValueError) as exc:
+            # A line this module cannot parse is a line whose mount point it
+            # cannot rule out.  Refuse rather than skip it.
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            ) from exc
+        entries.append((device, mount_point))
+    if not entries:
+        raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
+    return tuple(entries)
+
+
+def _is_at_or_beneath_v2(candidate: str, ancestor: str) -> bool:
+    """Pure path containment over two already-canonical absolute paths."""
+
+    if candidate == ancestor:
+        return True
+    return candidate.startswith(ancestor.rstrip("/") + "/")
+
+
+def _is_ancestral_alias_mount_v2(*, mount_point: str, target_path: str, runtime_parent_path: str) -> bool:
+    """Is *mount_point* a distinct same-device mount the target is reached
+    through, that does not itself reach back to the runtime parent (`#262`
+    F1)?  Pure over already-canonical paths; the caller supplies the device
+    match.
+
+    The runtime parent's own containing mount -- typically the shared root
+    filesystem -- always satisfies `_is_at_or_beneath_v2(runtime_parent_path,
+    mount_point)` (everything is at-or-beneath the root), so it never
+    qualifies here.  A mount installed specifically over some other path,
+    that does not reach the runtime parent, does.
+    """
+
+    return _is_at_or_beneath_v2(target_path, mount_point) and not _is_at_or_beneath_v2(
+        runtime_parent_path, mount_point
+    )
+
+
+def _establish_carrier_disjoint_v2(
+    *, canonical_target_subject: bytes, parent_fd: int, euid: int
+) -> None:
+    """Establish `RuntimeCarrierMutationDomain(K) ∩ TargetMutationDomain(D) = ∅`,
+    or refuse.  Called BEFORE any carrier materialization, so a refused target is
+    never mutated first.
+
+    The carrier's mutation domain is the protocol directory this module creates
+    under the runtime parent, plus the lock file inside it — so establishing that
+    the runtime parent's device is not reachable at or beneath the target
+    establishes disjointness for the whole domain.
+
+    Four independent ways a target can reach the carrier, and what rules each
+    out:
+
+    - **by path** — the target is the runtime parent, the protocol directory, or
+      an ancestor of either.  Canonical path containment, both directions.
+    - **by object identity** — the target is a bind alias of the runtime parent
+      or of the protocol directory itself, so its path differs while
+      `st_dev`/`st_ino` agree.  Identity comparison against the already-
+      validated parent descriptor.
+    - **by a mount beneath the target** — some mount point at or beneath the
+      target carries the runtime parent's device, which is how a deep bind
+      alias exposes the carrier inside an otherwise unrelated target.  The
+      kernel mount table decides this one; no path arithmetic can.
+    - **by a distinct mount ancestral to the target** — the target is reached
+      only through some *other* same-device mount that is not itself an
+      ancestor of, or the runtime parent path (`#262` F1): the runtime parent
+      was bind-mounted elsewhere, and the target is that alias or something
+      inside it.  Object identity alone does not catch this once the target is
+      a proper descendant of the alias mountpoint rather than the mountpoint
+      itself — a descendant has its own inode, distinct from the runtime
+      parent's, so it shares only the device.  The two mount directions are
+      independent: a carrier-relevant mount nested inside the target, and the
+      target itself nested inside a carrier-relevant alias, are different
+      topologies and neither implies the other.
+
+    The fourth rule must not fire for the ordinary case of a target that
+    merely lives on the same filesystem as the runtime parent — sharing a
+    device through the filesystem's own root mount is not an alias of
+    anything.  It is scoped to mounts that do **not** also contain the
+    runtime parent: the shared root mount always contains the runtime parent
+    (everything does, being the root), so it never satisfies that condition,
+    while a same-device mount installed specifically over some other path,
+    that does not itself reach back to the runtime parent, is exactly the
+    alias shape this rule exists to catch.
+
+    This is conservative by construction: a mount beneath the target that
+    carries the runtime parent's device is refused even when it happens to
+    expose an unrelated subtree of that device, and a same-device ancestral
+    alias mount is refused even when its own subtree beneath the target never
+    happens to collide with the carrier's own name.  Over-refusal narrows the
+    set of accepted topologies, which is a bounded cost; under-refusal would
+    fabricate the property.
+
+    Scope bound, stated rather than glossed: the mount table is read once,
+    immediately before materialization.  A cooperating process does not remount
+    underneath itself, and `#262` explicitly excludes external non-cooperating
+    actors.  Against an adversary racing a bind mount into the window between
+    this check and the carrier write, this establishes nothing, and no claim to
+    the contrary is made here.
+    """
+
+    try:
+        target_path = os.fsdecode(canonical_target_subject)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise TargetPackEpochError(
+            TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        ) from exc
+
+    try:
+        parent_stat = os.fstat(parent_fd)
+    except OSError as exc:
+        raise TargetPackEpochError(
+            TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        ) from exc
+
+    protocol_directory = str(_RUNTIME_PARENT_PATH_V2 / _protocol_directory_name_v2(euid))
+
+    # -- by path, both directions -------------------------------------------
+    # The mutation domain is the protocol directory and its contents, NOT the
+    # whole runtime parent.  Creating the protocol directory does add one entry
+    # to the runtime parent, but that only reaches a target which IS the runtime
+    # parent or contains it -- and such a target already contains the protocol
+    # directory, so the test below catches it.  Refusing every target that
+    # merely sits somewhere under the runtime parent would reject ordinary
+    # scratch targets without establishing anything.
+    if _is_at_or_beneath_v2(protocol_directory, target_path) or _is_at_or_beneath_v2(
+        target_path, protocol_directory
+    ):
+        raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
+
+    # -- by object identity (bind alias of the carrier's own location) -------
+    # A target that does not exist yet cannot alias anything; the writer's
+    # materialization path legitimately reaches here with a missing target, and
+    # the path and mount rules above/below still apply to it.
+    try:
+        target_stat: os.stat_result | None = os.lstat(target_path)
+    except FileNotFoundError:
+        target_stat = None
+    except OSError as exc:
+        # EIO/EACCES/ELOOP while observing the target: disjointness is UNKNOWN.
+        raise TargetPackEpochError(
+            TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        ) from exc
+
+    if target_stat is not None and _same_identity_v2(target_stat, parent_stat):
+        raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
+
+    # -- by a mount at or beneath the target, or a distinct same-device mount
+    #    ancestral to the target that does not itself reach the runtime parent
+    #    (#262 F1) -----------------------------------------------------------
+    runtime_parent_path = str(_RUNTIME_PARENT_PATH_V2)
+    for device, mount_point in _read_mount_table_v2():
+        if device != parent_stat.st_dev:
+            continue
+        if _is_at_or_beneath_v2(mount_point, target_path):
+            # a carrier-relevant mount is nested inside (or equal to) the target
+            raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
+        if _is_ancestral_alias_mount_v2(
+            mount_point=mount_point, target_path=target_path, runtime_parent_path=runtime_parent_path
+        ):
+            raise TargetPackEpochError(TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2)
+
+
 def _lock_nonblocking_v2(fd: int, mode: int) -> None:
     try:
         fcntl.flock(fd, mode | fcntl.LOCK_NB)
@@ -430,6 +630,12 @@ def acquire_target_pack_epoch_v2(*, target_root: Path, exclusive: bool) -> Targe
     namespace_fd: int | None = None
     carrier_fd: int | None = None
     try:
+        # `K-DISJOINT` (#262).  Established here, before the protocol directory
+        # is created, so a refused target is never mutated first.  This is the
+        # single disjointness authority: no consumer re-derives it.
+        _establish_carrier_disjoint_v2(
+            canonical_target_subject=canonical_subject, parent_fd=parent_fd, euid=euid
+        )
         namespace_fd, namespace_name, namespace_identity = _open_protocol_directory_v2(parent_fd=parent_fd, euid=euid)
         _lock_nonblocking_v2(namespace_fd, fcntl.LOCK_SH)
         _validate_protocol_directory_v2(
