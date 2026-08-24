@@ -30,6 +30,27 @@
   new contract artifact, and no change to the S1 recurrence kernel, the S3a
   finding-truth/materiality separation, or the open status of S2a/S2b.
 
+- **Post-merge review debt on `#265`**: two P2 findings raised by the native
+  Codex review of `#265`'s own merged head (`0ea09a86`), both reproduced on
+  `master@226c9c3`.  (1) `#265` added the fourth round-outcome result,
+  `candidate out of scope`, to the authority block and to the round-record
+  completeness rule, but two other places in the document still enumerate the
+  outcomes exhaustively and had not been updated: the preflight's entry
+  instructions, and the handoff/closure requirements, both of which still
+  named only `no candidate formed` / `recurrence admitted` / `held for
+  investigation`.  Both now name all four.  (2) `#265` established
+  `FindingValidationOutcome(f)` and `LifecycleDisposition(f)` as distinct axes
+  with neither derivable from the other, but three passages still treated
+  "invalidated by new evidence" as a value or transition of
+  `LifecycleDisposition(f)` — once in the lifecycle enumeration itself, and
+  twice in prose describing what happens when later evidence contradicts an
+  earlier `VALID`. All three now record a later-epoch `FindingValidationOutcome`
+  on the factual axis instead, leaving the earlier epoch's history and any
+  recurrence admitted on its strength exactly where they were, and not
+  inventing an `invalidated` lifecycle value. A full consumer sweep found no
+  further material occurrences of either pattern. Prose only: no schema, enum,
+  persisted record or new contract artifact, and no change to S1/S2/S3.
+
 ### Changed
 
 - **Target-pack `init --apply` now uses one private cooperative K epoch
