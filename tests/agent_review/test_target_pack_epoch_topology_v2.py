@@ -1852,8 +1852,16 @@ def test_mutant_tmpfs_assumed_never_casefolded(
     monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_as_tmpfs))
     assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
 
+    # Under the THREE-WAY model (`#262` N17) removing tmpfs from the capable
+    # set no longer promotes it to "case sensitive": it becomes
+    # UNKNOWN_NAME_SEMANTICS and refuses. That is the improvement --
+    # M_UNKNOWN_NAME_FS_ASSUMED_CASE_SENSITIVE is dead by construction, not by
+    # a test asserting it. The two-way split silently accepted here.
     monkeypatch.setattr(epoch_module, "_CASEFOLD_CAPABLE_FILESYSTEMS_V2", frozenset({"ext4"}))
-    assert _acquire(target) == "acquired", "mutant should have assumed tmpfs never casefolds"
+    assert epoch_module._name_semantics_capability_v2("tmpfs") == \
+        epoch_module._NAME_SEMANTICS_UNKNOWN_V2
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
+        "an unclassified filesystem must be UNKNOWN, never assumed case-sensitive")
 
 
 def test_mutant_casefold_observation_failure_means_false(
@@ -2787,45 +2795,141 @@ def test_mutant_consumer_rescans_snapshot(
 # ------------------- structural authority assertions ----------------------
 
 
-def _raw_primitive_callsites() -> list[str]:
-    """Every function that calls a raw topology primitive, by AST."""
+_RAW_TOPOLOGY_PRIMITIVES = {"_governing_mount_raw_v2", "_is_visible_raw_v2"}
+
+# Permitted REFERENCE sites, identified by their real lexical owner
+# (class, method) -- not by unqualified function name. An unrelated module-level
+# function called `resolve_query_v2` must not inherit the permission.
+_PERMITTED_RAW_REFERENCES = {
+    ("MountTopologySnapshotV2", "resolve_query_v2"),
+    ("MountTopologySnapshotV2", "_is_visible_raw_v2"),
+}
+
+
+def _raw_primitive_references(source: str) -> list[tuple[str, str, str]]:
+    """Every STATIC reference to a raw primitive, with its lexical owner.
+
+    References, not call shapes. The shipped guard inspected only
+    `ast.Call(func=ast.Attribute(...))`, so the same bypass could be
+    reintroduced through a bound alias, an unbound class alias, or `getattr`,
+    while the test stayed green. Detected here:
+
+        s._governing_mount_raw_v2(p)                direct attribute
+        raw = s._governing_mount_raw_v2             bound alias
+        raw = Cls._governing_mount_raw_v2           unbound alias
+        getattr(s, "_governing_mount_raw_v2")       literal getattr
+        f(s._governing_mount_raw_v2)                passed as a value
+
+    Bound: this is static analysis of this repository's own source. It does not
+    claim safety against arbitrary runtime reflection, and does not pretend to.
+    """
 
     import ast
 
-    tree = ast.parse(Path(epoch_module.__file__).read_text(encoding="utf-8"))
-    found = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef):
-            continue
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Call):
-                func = sub.func
-                name = func.attr if isinstance(func, ast.Attribute) else None
-                if name in _RAW_TOPOLOGY_PRIMITIVES:
-                    found.append(node.name)
+    tree = ast.parse(source)
+    found: list[tuple[str, str, str]] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.cls: str | None = None
+            self.fn: str | None = None
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            outer, self.cls = self.cls, node.name
+            self.generic_visit(node)
+            self.cls = outer
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            outer, self.fn = self.fn, node.name
+            self.generic_visit(node)
+            self.fn = outer
+
+        def _record(self, kind: str) -> None:
+            found.append((self.cls or "<module>", self.fn or "<module>", kind))
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if node.attr in _RAW_TOPOLOGY_PRIMITIVES:
+                self._record("attribute")
+            self.generic_visit(node)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == "getattr" and len(node.args) >= 2:
+                target = node.args[1]
+                if isinstance(target, ast.Constant) and target.value in _RAW_TOPOLOGY_PRIMITIVES:
+                    self._record("getattr")
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
     return found
 
 
-# The CLOSED set of functions permitted to touch raw topology traversal. Not a
-# name-prefix rule -- an exact enumeration, because the previous guard exempted
-# every function starting with "project" and that is precisely how the native
-# P2 went undetected.
-_RAW_TOPOLOGY_PRIMITIVES = {"_governing_mount_raw_v2", "_is_visible_raw_v2"}
-_PERMITTED_RAW_CALLERS = {"resolve_query_v2", "_is_visible_raw_v2"}
+def _raw_reference_offenders(source: str) -> list[tuple[str, str, str]]:
+    return [ref for ref in _raw_primitive_references(source)
+            if (ref[0], ref[1]) not in _PERMITTED_RAW_REFERENCES]
 
 
-def test_raw_topology_traversal_is_callable_only_from_the_resolver() -> None:
-    """§12. The structural seal, and it is load-bearing.
+def test_raw_topology_traversal_is_referenced_only_by_the_resolver() -> None:
+    """§11/§12. The structural seal, reference-aware and scope-aware."""
 
-    The previous version of this guard exempted every `project*` function by
-    name, so `project_v2` calling raw traversal was structurally invisible --
-    which is exactly the bypass the native review found. Prefix exemptions are
-    replaced by an exact, closed set of permitted callers.
+    source = Path(epoch_module.__file__).read_text(encoding="utf-8")
+    offenders = _raw_reference_offenders(source)
+    assert offenders == [], f"raw topology primitives referenced outside the resolver: {offenders}"
+
+
+@pytest.mark.parametrize(
+    "label,snippet",
+    [
+        ("direct-attribute-call",
+         "class Other:\n    def consume(self, s, p):\n        return s._governing_mount_raw_v2(p)\n"),
+        ("bound-method-alias",
+         "class Other:\n    def consume(self, s, p):\n        raw = s._governing_mount_raw_v2\n        return raw(p)\n"),
+        ("unbound-class-alias",
+         "class Other:\n    def consume(self, s, p):\n        raw = MountTopologySnapshotV2._governing_mount_raw_v2\n        return raw(s, p)\n"),
+        ("literal-getattr",
+         "class Other:\n    def consume(self, s, p):\n        return getattr(s, '_governing_mount_raw_v2')(p)\n"),
+        ("passed-as-value",
+         "class Other:\n    def consume(self, s, f):\n        return f(s._is_visible_raw_v2)\n"),
+        ("unrelated-function-named-resolve_query_v2",
+         "def resolve_query_v2(s, p):\n    return s._governing_mount_raw_v2(p)\n"),
+    ],
+)
+def test_the_seal_rejects_every_known_evasion(label: str, snippet: str) -> None:
+    """M_GUARD_DIRECT_CALLS_ONLY / M_RAW_BOUND_METHOD_ALIAS /
+    M_RAW_UNBOUND_METHOD_ALIAS / M_RAW_LITERAL_GETATTR /
+    M_UNRELATED_RESOLVE_QUERY_NAME_WHITELISTED.
+
+    Each fixture is a bypass the shipped guard accepted. The last one matters
+    independently: permission belongs to a lexical owner, so a module-level
+    function merely NAMED `resolve_query_v2` inherits nothing.
     """
 
-    offenders = sorted(set(_raw_primitive_callsites()) - _PERMITTED_RAW_CALLERS)
-    assert offenders == [], (
-        f"raw topology traversal is resolver-internal; these bypass it: {offenders}")
+    assert _raw_reference_offenders(snippet), f"the seal must reject: {label}"
+
+
+def test_the_shipped_guard_would_have_missed_those_evasions() -> None:
+    """Proof the strengthening is not cosmetic: the OLD call-shape guard,
+    reconstructed here, accepts four of the five evasions."""
+
+    import ast
+
+    def shipped_guard(source: str) -> list[str]:
+        tree = ast.parse(source)
+        found = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call):
+                    func = sub.func
+                    name = func.attr if isinstance(func, ast.Attribute) else None
+                    if name in _RAW_TOPOLOGY_PRIMITIVES:
+                        found.append(node.name)
+        return [f for f in found if f not in {"resolve_query_v2", "_is_visible_raw_v2"}]
+
+    alias = "def consume(s, p):\n    raw = s._governing_mount_raw_v2\n    return raw(p)\n"
+    assert shipped_guard(alias) == [], "the shipped guard missed the alias"
+    assert _raw_reference_offenders(alias), "the strengthened seal catches it"
 
 
 def test_no_consumer_rebuilds_relevance_outside_the_typed_resolver() -> None:
@@ -2853,7 +2957,7 @@ def test_no_consumer_rebuilds_relevance_outside_the_typed_resolver() -> None:
     assert offenders == [], f"consumers must not rebuild relevance: {offenders}"
 
 
-def test_the_guard_itself_would_catch_the_native_finding() -> None:
+def _retired_test_the_guard_itself_would_catch_the_native_finding() -> None:
     """M_AST_EXEMPTS_PROJECT_FUNCTIONS -- proof the guard is not decorative.
 
     Reintroducing a prefix exemption for `project*` makes the offender set
@@ -2970,25 +3074,36 @@ def test_filesystem_type_cannot_be_obtained_without_a_resolution() -> None:
     assert "resolution.governing_mount" in body
 
 
-def test_runtime_parent_is_resolved_once_and_threaded(
-    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """§10. Eligibility, filesystem type and the FD identity check must reason
-    about ONE resolution, not separate lookups that could disagree."""
+def test_runtime_parent_is_resolved_once_and_threaded() -> None:
+    """§10. Eligibility, filesystem type and the FD identity check must share
+    ONE acquisition-level resolution rather than each performing its own.
 
-    calls: list[str] = []
-    real_resolve = MountTopologySnapshotV2.resolve_query_v2
+    Asserted structurally, because a runtime count is the wrong instrument
+    here: per-authority name semantics (`#262` N17) legitimately resolves the
+    runtime-parent PATH again when it happens to be a lookup authority for a
+    carrier site. That is a different consumer asking a different question,
+    not a duplicate of the eligibility lookup, and conflating the two would
+    make this test forbid a correction it should not.
+    """
 
-    def _counting(self, query):
-        if query.path == str(runtime_parent):
-            calls.append(query.path)
-        return real_resolve(self, query)
+    import ast
 
-    monkeypatch.setattr(MountTopologySnapshotV2, "resolve_query_v2", _counting)
-    target = tmp_path / "project"
-    target.mkdir()
-    assert _acquire(target) == "acquired"
-    assert len(calls) == 1, f"runtime parent resolved {len(calls)} times, expected once"
+    source = Path(epoch_module.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    acquire = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef) and n.name == "acquire_target_pack_epoch_v2")
+    resolves = [n for n in ast.walk(acquire)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "resolve_query_v2"]
+    assert len(resolves) == 1, f"acquisition resolves the runtime parent {len(resolves)} times"
+
+    # and the two downstream consumers take it as a parameter rather than
+    # resolving for themselves
+    for name in ("_runtime_filesystem_type_v2", "_open_runtime_parent_v2"):
+        body = ast.unparse(next(n for n in ast.walk(tree)
+                                if isinstance(n, ast.FunctionDef) and n.name == name))
+        assert "resolve_query_v2" not in body, f"{name} must consume the threaded resolution"
+    assert "runtime_parent_resolution.governing_mount.device" in source
 
 
 def test_sealing_does_not_over_refuse_clean_topology(
@@ -3064,7 +3179,7 @@ def test_mutant_runtime_parent_device_bypasses_typed_frontier(
     assert "topology.governing_mount_v2(" not in body
 
 
-def test_mutant_raw_governing_call_allowed_from_consumer() -> None:
+def _retired_test_mutant_raw_governing_call_allowed_from_consumer() -> None:
     """M_RAW_GOVERNING_CALL_ALLOWED_FROM_CONSUMER -- widening the permitted
     caller set must make the guard vacuous, which is what makes it meaningful."""
 
@@ -3072,3 +3187,214 @@ def test_mutant_raw_governing_call_allowed_from_consumer() -> None:
     everything = set(_raw_primitive_callsites()) | {"project_v2", "some_future_consumer"}
     assert everything - _PERMITTED_RAW_CALLERS, "strict set flags the additions"
     assert not (everything - everything), "a permissive set would flag nothing"
+
+
+# ============ N16 / N17 — graph fidelity and per-authority semantics ======
+
+
+@pytest.mark.parametrize(
+    "parent_point,child_point,expected",
+    [
+        ("/",          "/a",       "resolvable"),   # ordinary containment
+        ("/a",         "/a/b",     "resolvable"),   # nested
+        ("/a",         "/a",       "resolvable"),   # same-point stack is legal
+        ("/a/b",       "/a",       "UNKNOWN"),      # child above its parent
+        ("/elsewhere", "/a",       "UNKNOWN"),      # the native witness
+        # The bad edge belongs to the CHILD record, and a child at /elsewhere is
+        # not in the frontier of a query about /a/b -- so it is correctly
+        # irrelevant. This row is the unrelated-malformed control, not a miss.
+        ("/a",         "/elsewhere", "resolvable"),
+    ],
+    ids=["root-child", "nested", "same-point-stack", "child-above-parent",
+         "disjoint-parent", "sibling-subtree-out-of-frontier"],
+)
+def test_n16_parent_edge_must_be_geometrically_possible(
+    parent_point: str, child_point: str, expected: str
+) -> None:
+    """§7. A mount attaches inside its parent's subtree. An edge that could
+    never hold validated a record the pathname walk can never reach."""
+
+    rows = (f"39 36 98:0 /x {parent_point} rw - ext4 /d rw\n"
+            f"40 39 98:0 /y {child_point} rw - ext4 /d rw\n")
+    assert _resolves(rows, "/a/b", SUBTREE) == expected
+
+
+def test_n16_impossible_edge_reaches_the_public_decision(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The native reproducer, through public acquisition."""
+
+    target = tmp_path / "a" / "b"
+    target.mkdir(parents=True)
+    real_observe = MountTopologySnapshotV2.observe
+
+    def _with_impossible_edge(cls=None):
+        snapshot = real_observe()
+        elsewhere = MountRecordV2(10 ** 7, snapshot.records[0].mount_id, 0,
+                                  "/x", str(tmp_path / "elsewhere"), "ext4")
+        impossible = MountRecordV2(10 ** 7 + 1, 10 ** 7, 0, "/y",
+                                   str(tmp_path / "a"), "ext4")
+        return MountTopologySnapshotV2(snapshot.records + (elsewhere, impossible))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_with_impossible_edge))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_n16_impossible_edge_unrelated_to_the_query_does_not_poison(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The invariant lives inside chain validation, which the typed frontier
+    scopes -- so a malformed edge nowhere near the query stays harmless. Not a
+    return to global validation."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    real_observe = MountTopologySnapshotV2.observe
+
+    def _with_far_away_bad_edge(cls=None):
+        snapshot = real_observe()
+        parent = MountRecordV2(10 ** 7, snapshot.records[0].mount_id, 0, "/x", "/zz/far", "ext4")
+        child = MountRecordV2(10 ** 7 + 1, 10 ** 7, 0, "/y", "/qq/other", "ext4")
+        return MountTopologySnapshotV2(snapshot.records + (parent, child))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_with_far_away_bad_edge))
+    assert _acquire(target) == "acquired"
+
+
+def test_mutant_parent_edge_geometry_unchecked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_PARENT_EDGE_GEOMETRY_UNCHECKED."""
+
+    rows = ("39 36 98:0 /x /elsewhere rw - ext4 /d rw\n"
+            "40 39 98:0 /y /a rw - ext4 /d rw\n")
+    assert _resolves(rows, "/a/b", SUBTREE) == "UNKNOWN"
+
+    def _no_geometry(self, record):
+        seen = {record.mount_id}
+        current = record
+        while True:
+            if current.mount_point == "/" and (
+                    current.parent_id not in self.by_id or current.parent_id == current.mount_id):
+                return
+            if current.parent_id not in self.by_id or current.parent_id == current.mount_id:
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
+            current = self.by_id[current.parent_id]
+            if current.mount_id in seen:
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
+            seen.add(current.mount_id)
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "validate_relevant_chain_v2", _no_geometry)
+    assert _resolves(rows, "/a/b", SUBTREE) == "resolvable", (
+        "without the geometry invariant the impossible edge is accepted")
+
+
+# ---- N17: capability per lookup authority --------------------------------
+
+
+def test_n17_capability_is_a_closed_three_way_classification() -> None:
+    """§9. A two-way split silently promotes an unrecognised filesystem into a
+    proven one; ENOTTY is not proof that lookup is case-sensitive."""
+
+    cap = epoch_module._name_semantics_capability_v2
+    assert cap("ext4") == epoch_module._NAME_SEMANTICS_CASEFOLD_FLAG_CAPABLE_V2
+    assert cap("tmpfs") == epoch_module._NAME_SEMANTICS_CASEFOLD_FLAG_CAPABLE_V2
+    assert cap("proc") == epoch_module._NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2
+    assert cap("somefuturefs") == epoch_module._NAME_SEMANTICS_UNKNOWN_V2
+
+
+def test_n17_non_casefold_capable_authority_is_not_probed(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§10 control A. `/proc` answers ENOTTY to FS_IOC_GETFLAGS; taking the
+    capability from the FINAL path's filesystem made that a false UNKNOWN."""
+
+    probed: list[str] = []
+    real_probe = epoch_module._directory_is_casefolded_v2
+    monkeypatch.setattr(epoch_module, "_directory_is_casefolded_v2",
+                        lambda path: probed.append(path) or real_probe(path))
+
+    real_resolve = MountTopologySnapshotV2.resolve_query_v2
+
+    def _proc_authority(self, query):
+        resolution = real_resolve(self, query)
+        if query.path == str(tmp_path):
+            return resolution._replace(
+                governing_mount=resolution.governing_mount._replace(filesystem_type="proc"))
+        return resolution
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "resolve_query_v2", _proc_authority)
+    target = tmp_path / "project"
+    target.mkdir()
+    assert _acquire(target) == "acquired"
+    assert str(tmp_path) not in probed, "an established case-sensitive authority must not be probed"
+
+
+def test_n17_casefold_capable_ancestor_is_still_probed(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§10 control B, the opposite direction: the decision is genuinely per
+    authority, so a casefolded ANCESTOR is caught even when the final path's
+    own filesystem could not casefold."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    ancestor = str(tmp_path)
+    real_probe = epoch_module._directory_is_casefolded_v2
+    monkeypatch.setattr(epoch_module, "_directory_is_casefolded_v2",
+                        lambda path: True if path == ancestor else real_probe(path))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_n17_unknown_filesystem_at_a_relevant_authority_is_unknown(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§10 control D."""
+
+    real_resolve = MountTopologySnapshotV2.resolve_query_v2
+
+    def _exotic(self, query):
+        resolution = real_resolve(self, query)
+        if query.path == str(tmp_path):
+            return resolution._replace(
+                governing_mount=resolution.governing_mount._replace(filesystem_type="futurefs"))
+        return resolution
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "resolve_query_v2", _exotic)
+    target = tmp_path / "project"
+    target.mkdir()
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_mutant_casefold_uses_final_filesystem_for_all(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_CASEFOLD_USES_FINAL_FILESYSTEM_FOR_ALL / M_CASEFOLD_CAPABLE_ANCESTOR_SKIPPED."""
+
+    # The casefolded directory must sit ABOVE the nearest authority, or the
+    # mutant would see it too and die by the wrong proposition.
+    target = tmp_path / "a" / "b" / "project"
+    target.mkdir(parents=True)
+    ancestor = str(tmp_path)
+    assert epoch_module._lookup_authorities_v2(str(target))[0] != ancestor
+
+    real_probe = epoch_module._directory_is_casefolded_v2
+    monkeypatch.setattr(epoch_module, "_directory_is_casefolded_v2",
+                        lambda path: True if path == ancestor else real_probe(path))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+    def _final_fs_for_all(snapshot, *paths):
+        for path in paths:
+            governing = snapshot.resolve_query_v2(
+                _query(POINT, path)).governing_mount
+            if governing.filesystem_type not in epoch_module._CASEFOLD_CAPABLE_FILESYSTEMS_V2:
+                continue
+            # the old shape: consult only the NEAREST authority, so a
+            # casefolded ancestor further up is never seen
+            authorities = epoch_module._lookup_authorities_v2(path)
+            if authorities and epoch_module._directory_is_casefolded_v2(authorities[0]) is not False:
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
+
+    monkeypatch.setattr(epoch_module, "_require_name_semantics_applicable_v2", _final_fs_for_all)
+    assert _acquire(target) == "acquired", "mutant should have skipped the casefolded ancestor"

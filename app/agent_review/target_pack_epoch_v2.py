@@ -300,7 +300,20 @@ class MountTopologySnapshotV2:
                 raise TargetPackEpochError(
                     TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
                 )
-            current = self.by_id[current.parent_id]
+            parent = self.by_id[current.parent_id]
+            # `#262` N16.  A parent that exists on an acyclic chain is not yet
+            # a parent that COULD hold this child: a mount attaches inside its
+            # parent's subtree, so the child's mount point must lie at or
+            # beneath the parent's.  An edge like (parent `/elsewhere`, child
+            # `/a`) is geometrically impossible; accepting it validated a
+            # record the pathname walk can never reach, and the decision then
+            # proceeded while silently omitting it.  Equal mount points are
+            # legal -- that is a same-point stack.
+            if not _within_v2(current.mount_point, parent.mount_point):
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                )
+            current = parent
             if current.mount_id in seen:
                 raise TargetPackEpochError(
                     TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
@@ -692,6 +705,36 @@ def _open_protocol_directory_v2(*, parent_fd: int, euid: int) -> tuple[int, str,
 # be.
 _DIRECT_PROJECTION_FILESYSTEMS_V2 = frozenset({"ext2", "ext3", "ext4", "tmpfs"})
 
+# Name-semantics capability, per filesystem, as a CLOSED three-way
+# classification (`#262` N17).  A two-way "capable / assume case-sensitive"
+# split silently promotes an unrecognised filesystem into a proven one, and
+# `ENOTTY` from `FS_IOC_GETFLAGS` is not proof that a filesystem cannot
+# implement case-insensitive lookup some other way -- it only says this ioctl
+# is unsupported.
+#
+#   CASEFOLD_FLAG_CAPABLE     inspect the directory's authoritative flag
+#   ESTABLISHED_CASE_SENSITIVE  no probe needed; the type settles it
+#   UNKNOWN_NAME_SEMANTICS    K-DISJOINT is UNKNOWN
+_NAME_SEMANTICS_CASEFOLD_FLAG_CAPABLE_V2 = "casefold_flag_capable"
+_NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2 = "established_case_sensitive"
+_NAME_SEMANTICS_UNKNOWN_V2 = "unknown_name_semantics"
+
+# Pseudo-filesystems with no on-disk name storage and no casefold support.
+# Enumerated rather than inferred, and deliberately narrow.
+_ESTABLISHED_CASE_SENSITIVE_FILESYSTEMS_V2 = frozenset({
+    "proc", "sysfs", "devtmpfs", "devpts", "cgroup", "cgroup2",
+    "ext2", "ext3",
+})
+
+
+def _name_semantics_capability_v2(filesystem_type: str) -> str:
+    if filesystem_type in _CASEFOLD_CAPABLE_FILESYSTEMS_V2:
+        return _NAME_SEMANTICS_CASEFOLD_FLAG_CAPABLE_V2
+    if filesystem_type in _ESTABLISHED_CASE_SENSITIVE_FILESYSTEMS_V2:
+        return _NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2
+    return _NAME_SEMANTICS_UNKNOWN_V2
+
+
 # Filesystems in the direct-projection set that can carry a casefolded
 # directory.  Casefolding makes two differently-spelled pathnames name ONE
 # entry, which is exactly what the textual equality and containment in this
@@ -874,11 +917,24 @@ def _require_name_semantics_applicable_v2(
     """
 
     for path in paths:
-        governing = snapshot.resolve_query_v2(
-            TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, path)).governing_mount
-        if governing.filesystem_type not in _CASEFOLD_CAPABLE_FILESYSTEMS_V2:
-            continue
+        # `#262` N17.  Each component of a pathname is resolved by ITS OWN
+        # parent directory, and those directories may sit on different
+        # filesystems.  Taking the capability from the FINAL path's filesystem
+        # and applying it to every ancestor probed authorities that cannot
+        # casefold at all -- an ext4 target beneath `/proc/...` made
+        # `FS_IOC_GETFLAGS` answer ENOTTY on `/proc`, which became a false
+        # UNKNOWN.  The decision is per authority, from that authority's own
+        # governing filesystem.
         for authority in _lookup_authorities_v2(path):
+            governing = snapshot.resolve_query_v2(
+                TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, authority)).governing_mount
+            capability = _name_semantics_capability_v2(governing.filesystem_type)
+            if capability is _NAME_SEMANTICS_ESTABLISHED_CASE_SENSITIVE_V2:
+                continue
+            if capability is _NAME_SEMANTICS_UNKNOWN_V2:
+                raise TargetPackEpochError(
+                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+                )
             casefolded = _directory_is_casefolded_v2(authority)
             if casefolded is None or casefolded:
                 raise TargetPackEpochError(
