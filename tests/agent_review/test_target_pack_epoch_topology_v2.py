@@ -42,6 +42,7 @@ import app.agent_review.target_pack_epoch_v2 as epoch_module
 from app.agent_review.target_pack_epoch_v2 import (
     TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2,
     TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2,
+    TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
     MountRecordV2,
     MountTopologySnapshotV2,
     TargetPackEpochError,
@@ -1488,7 +1489,15 @@ def test_mutant_visibility_unknown_becomes_false(
                 continue                       # UNKNOWN -> HIDDEN
         return tuple(out)
 
-    monkeypatch.setattr(MountTopologySnapshotV2, "visible_child_mounts_v2", _swallowing)
+    def _swallowing_resolver(self, query):
+        try:
+            return _real_resolve(self, query)
+        except TargetPackEpochError:
+            return epoch_module.TopologyQueryResolutionV2(
+                query, self._visible_root_v2(), (), ())      # UNKNOWN -> HIDDEN
+
+    _real_resolve = MountTopologySnapshotV2.resolve_query_v2
+    monkeypatch.setattr(MountTopologySnapshotV2, "resolve_query_v2", _swallowing_resolver)
     assert _acquire(target) == "acquired", "mutant should have swallowed the UNKNOWN"
 
 
@@ -2022,17 +2031,26 @@ def test_n10_unobservable_ancestor_is_unknown_not_absent(
     not_a_directory = tmp_path / "file"
     not_a_directory.write_text("x", encoding="utf-8")
     assert epoch_module._observe_directory_v2(str(not_a_directory)) == \
-        epoch_module._DIRECTORY_ABSENT_V2
+        epoch_module._DIRECTORY_OTHER_V2
     assert epoch_module._observe_directory_v2(str(not_a_directory / "under")) == \
         epoch_module._DIRECTORY_ABSENT_V2
 
-    # A symlink is NOT a lookup authority and is not UNKNOWN either: target
-    # paths are canonicalised before reaching this module, and a symlink at a
-    # carrier path is refused by protocol-directory validation with its own
-    # established reason code, which this gate must not preempt.
+    # A symlink is its OWN state. An earlier revision folded it into `absent`
+    # and leaned on a later O_NOFOLLOW check to stay safe -- a non-local
+    # correctness argument that this now removes.
     link = tmp_path / "link"
     link.symlink_to(tmp_path / "nowhere")
-    assert epoch_module._observe_directory_v2(str(link)) == epoch_module._DIRECTORY_ABSENT_V2
+    assert epoch_module._observe_directory_v2(str(link)) == epoch_module._DIRECTORY_SYMLINK_V2
+
+    a_file = tmp_path / "plainfile"
+    a_file.write_text("x", encoding="utf-8")
+    assert epoch_module._observe_directory_v2(str(a_file)) == epoch_module._DIRECTORY_OTHER_V2
+
+    # and a symlink where a lookup authority was expected is UNKNOWN, decided
+    # locally rather than deferred
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        epoch_module._lookup_authorities_v2(str(link / "child"))
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
 
     # the UNKNOWN branch itself -- an observation error establishes neither
     real_lstat = os.lstat
@@ -2378,3 +2396,405 @@ def test_mutant_lookup_authority_eacces_as_absent(
         else epoch_module._DIRECTORY_ABSENT_V2)
     authorities = epoch_module._lookup_authorities_v2(str(tmp_path / "project"))
     assert victim not in authorities, "mutant should have silently dropped the unreadable ancestor"
+
+
+# ============ TYPED TOPOLOGY QUERY FRONTIER — post-recurrence redesign =====
+#
+# `#262` F3 -> N9 was an ADMITTED RECURRENCE. That admission is historical fact
+# and is not cleared by this redesign; what it did was trigger the mandatory
+# spike, whose outcome selected this mechanism.
+#
+# What was falsified was not the mount graph, the parent relation, the
+# visibility partition or physical projection. It was the SEQUENCE:
+#
+#     strict-descendant -> at-or-beneath -> (next position...)
+#
+# Each correction hand-wrote how far "relevant" reached, covering the positions
+# demonstrated so far and leaving the untested one silently outside. The spike's
+# falsifier for at-or-beneath was a malformed mount ANCESTRAL to the target:
+# public acquisition returned `acquired`.
+#
+# Relevance is therefore no longer a predicate a consumer chooses. It is derived
+# from the query being asked:
+#
+#     QueryKind -> SemanticSeeds -> DependencyClosure -> QueryResolution
+
+
+def _query(kind, path):
+    return epoch_module.TopologyQueryV2(kind, path)
+
+
+POINT = epoch_module.TopologyQueryKindV2.POINT_LOOKUP
+SUBTREE = epoch_module.TopologyQueryKindV2.VISIBLE_SUBTREE
+_ROOT_ROW = "36 35 98:0 / / rw - ext4 /dev/root rw\n"
+
+
+def _resolves(extra_rows: str, path: str, kind) -> str:
+    snapshot = MountTopologySnapshotV2.parse(_ROOT_ROW + extra_rows)
+    try:
+        snapshot.resolve_query_v2(_query(kind, path))
+        return "resolvable"
+    except TargetPackEpochError as exc:
+        assert exc.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        return "UNKNOWN"
+
+
+@pytest.mark.parametrize(
+    "mount_point,point_expected,subtree_expected",
+    [
+        ("/a",        "UNKNOWN",    "UNKNOWN"),      # ancestor
+        ("/a/b",      "UNKNOWN",    "UNKNOWN"),      # nearer ancestor
+        ("/a/b/c",    "UNKNOWN",    "UNKNOWN"),      # equal
+        ("/a/b/c/d",  "resolvable", "UNKNOWN"),      # strict descendant
+        ("/a/b/z",    "resolvable", "resolvable"),   # sibling
+        ("/zz/x",     "resolvable", "resolvable"),   # unrelated
+    ],
+    ids=["ancestor", "near-ancestor", "equal", "descendant", "sibling", "unrelated"],
+)
+def test_position_matrix_follows_query_kind_not_position_branches(
+    mount_point: str, point_expected: str, subtree_expected: str
+) -> None:
+    """§14. Six positions, one derivation, no per-position branch.
+
+    The asymmetry is the point: a strict descendant cannot change which mount
+    governs a path (the walk never traverses it), but it CAN contribute visible
+    ground inside a subtree. Siblings and unrelated records fall out as
+    irrelevant by derivation rather than by exception -- which is what keeps
+    this from degenerating into a global fail-closed scan.
+    """
+
+    row = f"40 39 98:0 /x {mount_point} rw - ext4 /d rw\n"     # parent 39 ABSENT
+    assert _resolves(row, "/a/b/c", POINT) == point_expected
+    assert _resolves(row, "/a/b/c", SUBTREE) == subtree_expected
+
+
+def test_malformed_ancestor_is_refused_before_mutation(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§13. The spike's decisive falsifier of at-or-beneath, as a durable RED.
+
+    On `042d08f` this returned `acquired`.
+    """
+
+    target = tmp_path / "a" / "b" / "c"
+    target.mkdir(parents=True)
+    real_observe = MountTopologySnapshotV2.observe
+
+    def _with_malformed_ancestor(cls=None):
+        snapshot = real_observe()
+        disconnected = MountRecordV2(
+            10 ** 7, 10 ** 7 + 1, 0, "/x", str(tmp_path / "a"), "ext4")
+        return MountTopologySnapshotV2(snapshot.records + (disconnected,))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_with_malformed_ancestor))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+    assert not _carrier(runtime_parent).exists()
+
+
+def test_dependency_closure_reaches_beyond_the_semantic_seeds() -> None:
+    """§15. Seeds are not the frontier.
+
+    The seed here is the record AT `/a/b/c`. Its position is only established
+    through its parent chain, and the gap sits on a record whose own mount
+    point (`/elsewhere`) no lexical seed predicate would ever select. Closure
+    is what makes that unignorable.
+    """
+
+    rows = ("41 40 98:0 /y /a/b/c rw - ext4 /d rw\n"       # seed: equal to query
+            "40 39 98:0 /x /elsewhere rw - ext4 /d rw\n")  # its parent; 39 ABSENT
+    snapshot = MountTopologySnapshotV2.parse(_ROOT_ROW + rows)
+
+    seeds = snapshot._semantic_seeds_v2(_query(SUBTREE, "/a/b/c"))
+    assert 40 not in {r.mount_id for r in seeds}, "the gap is not a semantic seed"
+    closed = snapshot._dependency_closure_v2(seeds)
+    assert 40 in {r.mount_id for r in closed}, "closure must pull in the parent chain"
+
+    assert _resolves(rows, "/a/b/c", SUBTREE) == "UNKNOWN"
+
+
+def test_dependency_closure_pulls_in_same_point_stack_competitors() -> None:
+    """A record stacked at the seed's own mount point competes to govern it, so
+    it belongs to the proof even though it shares the seed's position."""
+
+    rows = ("41 36 98:0 /y /a/b/c rw - ext4 /d rw\n"
+            "42 39 98:0 /z /a/b/c rw - ext4 /d rw\n")      # competitor, parent ABSENT
+    assert _resolves(rows, "/a/b/c", POINT) == "UNKNOWN"
+
+
+def test_unrelated_malformed_topology_does_not_poison_a_legal_acquisition(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§16. The control that separates a derived frontier from a global scan."""
+
+    target = tmp_path / "project"
+    target.mkdir()
+    real_observe = MountTopologySnapshotV2.observe
+
+    def _with_unrelated_garbage(cls=None):
+        snapshot = real_observe()
+        unrelated = MountRecordV2(10 ** 7, 10 ** 7 + 1, 0, "/x", "/other/elsewhere", "ext4")
+        return MountTopologySnapshotV2(snapshot.records + (unrelated,))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_with_unrelated_garbage))
+    assert _acquire(target) == "acquired"
+
+
+def test_unparseable_row_is_a_different_epistemic_case() -> None:
+    """§16's distinction: a row whose relevance cannot even be determined is
+    not the same as a parsed-but-unrelated one, and stays fail-closed."""
+
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        MountTopologySnapshotV2.parse(_ROOT_ROW + "40 39 not-a-device /x /other rw - ext4 /d rw\n")
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+
+def test_query_kind_is_load_bearing_for_the_carrier(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """§10. If the carrier were a subtree query, an unrelated mount inside the
+    protocol directory would refuse a legal acquisition. CARRIER-4 is the
+    discriminator that forbids collapsing the two kinds."""
+
+    carrier = _carrier(runtime_parent)
+    carrier.mkdir(mode=0o700)
+    rows = f"40 39 98:0 /x {carrier}/unrelated-name rw - ext4 /d rw\n"
+    assert _resolves(rows, str(carrier), POINT) == "resolvable"
+    assert _resolves(rows, str(carrier), SUBTREE) == "UNKNOWN"
+
+
+def test_symlink_reason_is_owned_locally_not_deferred(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """§12. The established public reason is preserved, and the reasoning is
+    now local: `_require_carrier_object_shape_v2` establishes the forbidden
+    shape itself, so the later `O_NOFOLLOW` check is TOCTOU revalidation
+    rather than the first truth-maker for this decision."""
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _carrier(runtime_parent).symlink_to(outside, target_is_directory=True)
+
+    key = _key_for(tmp_path / "target")
+    with pytest.raises(TargetPackEpochError) as excinfo:
+        epoch_module._require_carrier_object_shape_v2(os.geteuid(), key)
+    assert excinfo.value.reason_code == TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2
+
+    target = tmp_path / "target"
+    target.mkdir()
+    assert _acquire(target) == TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2
+
+
+# ------------------------- redesign mutants -------------------------------
+
+
+def _frontier_mutant(monkeypatch, seed_fn):
+    monkeypatch.setattr(MountTopologySnapshotV2, "_semantic_seeds_v2", seed_fn)
+
+
+def test_mutant_ancestor_seed_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_ANCESTOR_SEED_OMITTED / M_AT_OR_BENEATH_ONLY -- the falsified mechanism."""
+
+    row = "40 39 98:0 /x /a rw - ext4 /d rw\n"
+    assert _resolves(row, "/a/b/c", SUBTREE) == "UNKNOWN"
+
+    def _at_or_beneath_only(self, query):
+        path = epoch_module._normalize_absolute_v2(query.path)
+        return tuple(r for r in self.records if epoch_module._within_v2(r.mount_point, path))
+
+    _frontier_mutant(monkeypatch, _at_or_beneath_only)
+    assert _resolves(row, "/a/b/c", SUBTREE) == "resolvable", "mutant should reopen the falsifier"
+
+
+def test_mutant_equal_seed_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_EQUAL_SEED_OMITTED -- the N9 witness itself."""
+
+    row = "40 39 98:0 /x /a/b/c rw - ext4 /d rw\n"
+    assert _resolves(row, "/a/b/c", SUBTREE) == "UNKNOWN"
+
+    def _strict_only(self, query):
+        path = epoch_module._normalize_absolute_v2(query.path)
+        prefix = path.rstrip("/") + "/"
+        return tuple(r for r in self.records if r.mount_point.startswith(prefix))
+
+    _frontier_mutant(monkeypatch, _strict_only)
+    assert _resolves(row, "/a/b/c", SUBTREE) == "resolvable", "mutant should reopen N9"
+
+
+def test_mutant_subtree_descendant_seed_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_SUBTREE_DESCENDANT_SEED_OMITTED / M_SUBTREE_QUERY_TREATED_AS_POINT."""
+
+    row = "40 39 98:0 /x /a/b/c/d rw - ext4 /d rw\n"
+    assert _resolves(row, "/a/b/c", SUBTREE) == "UNKNOWN"
+
+    def _point_seeds_for_everything(self, query):
+        path = epoch_module._normalize_absolute_v2(query.path)
+        return tuple(r for r in self.records if epoch_module._within_v2(path, r.mount_point))
+
+    _frontier_mutant(monkeypatch, _point_seeds_for_everything)
+    assert _resolves(row, "/a/b/c", SUBTREE) == "resolvable", "F3's own witness reopens"
+
+
+def test_mutant_unrelated_seed_included(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_UNRELATED_SEED_INCLUDED / M_GLOBAL_VALIDATE_ALL -- over-refusal."""
+
+    row = "40 39 98:0 /x /zz/x rw - ext4 /d rw\n"
+    assert _resolves(row, "/a/b/c", SUBTREE) == "resolvable"
+
+    _frontier_mutant(monkeypatch, lambda self, query: tuple(self.records))
+    assert _resolves(row, "/a/b/c", SUBTREE) == "UNKNOWN", "mutant should over-refuse"
+
+
+def test_dependency_closure_is_structural_not_behaviourally_redundant() -> None:
+    """M_FRONTIER_NO_PARENT_CLOSURE, reported honestly rather than asserted.
+
+    The closure DOES pull records into the frontier that no lexical seed
+    predicate selects -- `test_dependency_closure_reaches_beyond_the_semantic_seeds`
+    shows record 40, whose mount point is `/elsewhere`, entering the proof for
+    a query about `/a/b/c`.
+
+    But it is NOT independently discriminated by behaviour today: chain
+    validation walks parents from each seed, so removing the closure changes no
+    current answer. Rather than assert a mutant that dies by the wrong
+    proposition, the claim made here is the true and weaker one -- the frontier
+    is EXPLICIT, so a future narrowing of chain validation cannot silently
+    shrink relevance the way a consumer-side predicate once did.
+    """
+
+    rows = ("41 40 98:0 /y /a/b/c rw - ext4 /d rw\n"
+            "40 39 98:0 /x /elsewhere rw - ext4 /d rw\n")
+    snapshot = MountTopologySnapshotV2.parse(_ROOT_ROW + rows)
+    seeds = {r.mount_id for r in snapshot._semantic_seeds_v2(_query(SUBTREE, "/a/b/c"))}
+    closed = {r.mount_id for r in snapshot._dependency_closure_v2(
+        snapshot._semantic_seeds_v2(_query(SUBTREE, "/a/b/c")))}
+    assert 40 not in seeds and 40 in closed
+    assert seeds < closed, "closure must be a strict superset here"
+
+
+def test_mutant_point_query_treated_as_subtree(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_POINT_QUERY_TREATED_AS_SUBTREE -- collapses the kinds, over-refusing
+    a carrier descendant this acquisition never touches."""
+
+    carrier = _carrier(runtime_parent)
+    carrier.mkdir(mode=0o700)
+    rows = f"40 39 98:0 /x {carrier}/unrelated-name rw - ext4 /d rw\n"
+    assert _resolves(rows, str(carrier), POINT) == "resolvable"
+
+    real_seeds = MountTopologySnapshotV2._semantic_seeds_v2
+    monkeypatch.setattr(
+        MountTopologySnapshotV2, "_semantic_seeds_v2",
+        lambda self, query: real_seeds(self, _query(SUBTREE, query.path)))
+    assert _resolves(rows, str(carrier), POINT) == "UNKNOWN", "mutant should over-refuse CARRIER-4"
+
+
+def test_mutant_symlink_as_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_SYMLINK_AS_ABSENT / M_SYMLINK_RELIES_ON_LATER_ONOFOLLOW.
+
+    Restoring the fold makes the carrier-shape authority silent, so the earlier
+    decision once again depends on a downstream check to be safe.
+    """
+
+    link = tmp_path / "lnk"
+    link.symlink_to(tmp_path / "nowhere")
+    assert epoch_module._observe_directory_v2(str(link)) == epoch_module._DIRECTORY_SYMLINK_V2
+
+    real_observe = epoch_module._observe_directory_v2
+    monkeypatch.setattr(
+        epoch_module, "_observe_directory_v2",
+        lambda path: epoch_module._DIRECTORY_ABSENT_V2
+        if real_observe(path) is epoch_module._DIRECTORY_SYMLINK_V2 else real_observe(path))
+
+    key = _key_for(tmp_path / "t")
+    epoch_module._require_carrier_object_shape_v2(os.geteuid(), key)   # no longer refuses
+
+
+def test_mutant_consumer_rescans_snapshot(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_CONSUMER_RESCANS_SNAPSHOT -- consumers inventing their own relevance,
+    which is the exact shape of the defect that produced the recurrence.
+
+    BOTH consumers of the typed query must be neutered for the hole to reopen:
+    applicability and the domain builder each ask it independently. That is
+    defence in depth and is recorded as such -- a single regressing consumer
+    does not reopen the falsifier.
+    """
+
+    target = tmp_path / "a" / "b" / "c"
+    target.mkdir(parents=True)
+    real_observe = MountTopologySnapshotV2.observe
+
+    def _with_malformed_ancestor(cls=None):
+        snapshot = real_observe()
+        bad = MountRecordV2(10 ** 7, 10 ** 7 + 1, 0, "/x", str(tmp_path / "a"), "ext4")
+        return MountTopologySnapshotV2(snapshot.records + (bad,))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_with_malformed_ancestor))
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+
+    # consumer 1: applicability stops asking the typed resolver
+    monkeypatch.setattr(
+        epoch_module, "_require_projection_applicable_v2",
+        lambda snapshot, *paths: [snapshot.governing_mount_v2(p) for p in paths] and None)
+    # consumer 2: the domain builder rescans with its own at-or-beneath predicate
+    def _rescanning_builder(snapshot, path):
+        normalized = epoch_module._normalize_absolute_v2(path)
+        prefix = normalized.rstrip("/") + "/"
+        for record in snapshot.records:
+            if record.mount_point == normalized or record.mount_point.startswith(prefix):
+                snapshot.validate_relevant_chain_v2(record)
+        device, internal = snapshot.project_v2(path)
+        return (epoch_module._PhysicalSegmentV2(device, internal, ()),)
+
+    monkeypatch.setattr(epoch_module, "_visible_physical_domain_v2", _rescanning_builder)
+    assert _acquire(target) == "acquired", "re-scanning consumers reopen the falsifier"
+
+
+# ------------------- structural authority assertions ----------------------
+
+
+def test_no_consumer_rebuilds_relevance_outside_the_typed_resolver() -> None:
+    """§19. Structural, via AST rather than source-string matching.
+
+    The invariant: functions outside the snapshot class do not iterate
+    `snapshot.records` / `.children` / `.by_id` to reconstruct relevance. If a
+    future consumer wants to know what topology matters, it must ask the typed
+    resolver -- which is the whole point of the redesign.
+    """
+
+    import ast
+
+    tree = ast.parse(Path(epoch_module.__file__).read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        # methods of the snapshot class are the authority itself
+        if node.name.startswith(("_semantic_seeds", "_dependency_closure", "resolve_query",
+                                 "governing_mount", "is_visible", "visible_child_mounts",
+                                 "validate_relevant_chain", "_climb_stack", "_visible_root",
+                                 "project", "parse", "observe", "__init__")):
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Attribute) and sub.attr in {"records", "children", "by_id"}:
+                offenders.append(f"{node.name}:{sub.attr}")
+    assert offenders == [], f"consumers must not rebuild relevance: {offenders}"
+
+
+def test_single_authority_counts() -> None:
+    source = Path(epoch_module.__file__).read_text(encoding="utf-8")
+    for name, expected in [
+        ('"/proc/self/mountinfo"', 1),
+        ("def resolve_query_v2", 1),
+        ("def _semantic_seeds_v2", 1),
+        ("def _dependency_closure_v2", 1),
+        ("def governing_mount_v2", 1),
+        ("def project_v2", 1),
+        ("def _require_projection_applicable_v2", 1),
+        ("def _require_name_semantics_applicable_v2", 1),
+        ("def _visible_physical_domain_v2", 1),
+        ("def _carrier_operational_sites_v2", 1),
+        ("def _establish_carrier_disjoint_v2", 1),
+    ]:
+        assert source.count(name) == expected, f"{name} должно be {expected}"

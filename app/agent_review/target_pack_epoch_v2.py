@@ -17,6 +17,7 @@ import re
 import stat
 import sys
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 from typing import Literal
@@ -154,6 +155,41 @@ class MountRecordV2(NamedTuple):
     root: str
     mount_point: str
     filesystem_type: str
+
+
+class TopologyQueryKindV2(str, Enum):
+    """What a consumer is asking the mount graph, which decides what topology
+    can possibly answer it.
+
+    This distinction is load-bearing, not descriptive.  Relevance used to be a
+    predicate each consumer wrote for itself, and it was corrected three times
+    by widening that predicate one position at a time -- strictly-beneath, then
+    at-or-beneath, then (had this continued) ancestors.  `#262` F3 -> N9
+    qualified as an admitted recurrence for exactly that reason: the author,
+    not the query, was choosing how far "relevant" reached.
+
+    Here the frontier is DERIVED from the question being asked, so a position
+    nobody thought to test is either in the derivation or provably cannot
+    affect the answer.
+    """
+
+    POINT_LOOKUP = "point_lookup"
+    VISIBLE_SUBTREE = "visible_subtree"
+
+
+class TopologyQueryV2(NamedTuple):
+    kind: TopologyQueryKindV2
+    path: str
+
+
+class TopologyQueryResolutionV2(NamedTuple):
+    """The single answer a consumer gets. Consumers read this; they never
+    re-scan the snapshot to invent their own notion of relevance."""
+
+    query: TopologyQueryV2
+    governing_mount: "MountRecordV2"
+    validated_frontier: tuple["MountRecordV2", ...]
+    visible_descendants: tuple["MountRecordV2", ...]
 
 
 class MountTopologySnapshotV2:
@@ -365,30 +401,96 @@ class MountTopologySnapshotV2:
         self._visible_cache[record.mount_id] = visible
         return visible
 
-    def visible_child_mounts_v2(self, path: str) -> tuple[MountRecordV2, ...]:
-        """Visible mounts strictly beneath *path*.
+    # ---- typed query resolution: ONE authority over relevance -------------
+    def _semantic_seeds_v2(self, query: TopologyQueryV2) -> tuple[MountRecordV2, ...]:
+        """The records the QUERY ITSELF can be affected by, before closure.
 
-        Every record considered here is RELEVANT by construction -- its mount
-        point lies beneath the path whose domain is being computed -- so an
-        unresolvable one is not skipped.  Records elsewhere in the table are
-        never consulted, so unrelated breakage does not poison the decision.
+        `POINT_LOOKUP(P)` — resolving `P` descends from the root through each
+        of its prefixes, and a mount can only intervene where it is attached.
+        So a record matters exactly when its mount point is a prefix of, or
+        equal to, `P`.  Records strictly beneath `P` are never traversed and
+        cannot change which mount governs it.  This is read off pathname
+        traversal; it is not an "ancestor rule" someone chose.
+
+        `VISIBLE_SUBTREE(D)` — everything `POINT_LOOKUP(D)` needs, to know the
+        base segment, PLUS every attachment at-or-beneath `D`, because those
+        can contribute or cover visible ground inside the subtree.
+
+        Siblings and unrelated records are excluded by the derivation rather
+        than by an exception, which is what keeps this from becoming a
+        global fail-closed scan.
         """
 
-        root = _normalize_absolute_v2(path)
-        prefix = root.rstrip("/") + "/"
+        path = _normalize_absolute_v2(query.path)
+        seeds = [r for r in self.records if _within_v2(path, r.mount_point)]
+        if query.kind is TopologyQueryKindV2.VISIBLE_SUBTREE:
+            seeds += [r for r in self.records
+                      if _within_v2(r.mount_point, path) and r not in seeds]
+        return tuple(seeds)
 
-        # Two DIFFERENT sets, and conflating them hid a defect.  Chain
-        # validation is relevant for every record AT or beneath the domain
-        # root, because a record attached exactly AT the root decides which
-        # mount governs it; a malformed one there was previously skipped by a
-        # strict-descendant filter and the target was projected through the
-        # underlying mount instead of refusing.  The mounts RETURNED are the
-        # visible ones strictly beneath, which is what a child segment means.
-        for record in self.records:
-            if record.mount_point == root or record.mount_point.startswith(prefix):
-                self.validate_relevant_chain_v2(record)
-        return tuple(r for r in self.records
-                     if r.mount_point.startswith(prefix) and self.is_visible_v2(r))
+    def _dependency_closure_v2(
+        self, seeds: tuple[MountRecordV2, ...]
+    ) -> tuple[MountRecordV2, ...]:
+        """Close the seed set over the topology each seed's state depends on.
+
+        Semantic seeds are not yet the frontier.  A seed's position is only
+        established through its parent chain, the stack at its own mount point,
+        and the boundary root -- so those records are part of the proof even
+        when their own mount points sit somewhere lexically unintuitive.  An
+        earlier design let a consumer's lexical predicate decide what could be
+        ignored, and that is the mistake this closure exists to make
+        impossible.
+        """
+
+        closed: dict[int, MountRecordV2] = {r.mount_id: r for r in seeds}
+        pending = list(seeds)
+        while pending:
+            record = pending.pop()
+            # the chain that establishes where this record sits
+            parent = self.by_id.get(record.parent_id)
+            if parent is not None and parent.mount_id not in closed:
+                closed[parent.mount_id] = parent
+                pending.append(parent)
+            # anything stacked at the same point competes to govern it
+            for sibling in self.children.get(record.parent_id, []):
+                if sibling.mount_point == record.mount_point and sibling.mount_id not in closed:
+                    closed[sibling.mount_id] = sibling
+                    pending.append(sibling)
+            for child in self.children.get(record.mount_id, []):
+                if child.mount_point == record.mount_point and child.mount_id not in closed:
+                    closed[child.mount_id] = child
+                    pending.append(child)
+        return tuple(closed.values())
+
+    def resolve_query_v2(self, query: TopologyQueryV2) -> TopologyQueryResolutionV2:
+        """Resolve a typed topology query, or refuse as UNKNOWN.
+
+        This is the SOLE authority on which records are relevant to a decision.
+        Consumers take the resolution; none of them scans `self.records`,
+        `self.children` or `self.by_id` to rebuild a notion of relevance.
+        """
+
+        frontier = self._dependency_closure_v2(self._semantic_seeds_v2(query))
+        for record in frontier:
+            self.validate_relevant_chain_v2(record)
+
+        governing = self.governing_mount_v2(query.path)
+        descendants: tuple[MountRecordV2, ...] = ()
+        if query.kind is TopologyQueryKindV2.VISIBLE_SUBTREE:
+            prefix = _normalize_absolute_v2(query.path).rstrip("/") + "/"
+            descendants = tuple(r for r in frontier
+                                if r.mount_point.startswith(prefix) and self.is_visible_v2(r))
+        return TopologyQueryResolutionV2(query, governing, frontier, descendants)
+
+    def visible_child_mounts_v2(self, path: str) -> tuple[MountRecordV2, ...]:
+        """Thin view over the typed resolver, kept for readability only.
+
+        It performs NO relevance scan of its own -- that is the whole point of
+        the redesign, and a structural test asserts it stays that way.
+        """
+
+        return self.resolve_query_v2(
+            TopologyQueryV2(TopologyQueryKindV2.VISIBLE_SUBTREE, path)).visible_descendants
 
     # ---- physical projection ---------------------------------------------
     def project_v2(self, path: str) -> tuple[int, str]:
@@ -566,7 +668,8 @@ def _require_projection_applicable_v2(
     """
 
     for path in paths:
-        governing = snapshot.governing_mount_v2(path)
+        governing = snapshot.resolve_query_v2(
+            TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, path)).governing_mount
         if governing.filesystem_type not in _DIRECT_PROJECTION_FILESYSTEMS_V2:
             raise TargetPackEpochError(
                 TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
@@ -597,6 +700,8 @@ def _directory_is_casefolded_v2(path: str) -> bool | None:
 
 _DIRECTORY_PRESENT_V2 = "directory"
 _DIRECTORY_ABSENT_V2 = "absent"
+_DIRECTORY_SYMLINK_V2 = "symlink"
+_DIRECTORY_OTHER_V2 = "other"
 _DIRECTORY_UNKNOWN_V2 = "unknown"
 
 
@@ -623,15 +728,19 @@ def _observe_directory_v2(path: str) -> str:
         return _DIRECTORY_UNKNOWN_V2
     if stat.S_ISDIR(mode):
         return _DIRECTORY_PRESENT_V2
-    # A symlink is not a lookup authority and must not be reported UNKNOWN
-    # here.  Target paths are canonicalised before they ever reach this
-    # module, so no symlink survives on that side; a symlink at a CARRIER path
-    # is already refused by protocol-directory validation, which opens with
-    # `O_NOFOLLOW` and answers `target_pack_epoch_unavailable`.  Answering
-    # UNKNOWN would preempt that established classification with a different
-    # reason code for a case the module already handles, and it would report
-    # "could not establish" for a topology that is in fact refused outright.
-    return _DIRECTORY_ABSENT_V2
+    if stat.S_ISLNK(mode):
+        # A symlink is its OWN state, never folded into `absent`.
+        #
+        # An earlier revision reported `absent` here and justified it by the
+        # later `O_NOFOLLOW` validation that refuses a symlinked protocol
+        # directory.  That made this authority's correctness depend on a
+        # downstream check it does not own: no fail-open followed, but the
+        # argument was non-local and would have broken silently if the
+        # ordering or that check ever changed.  The caller decides what a
+        # symlink means for ITS question, locally, and the later check stays
+        # as TOCTOU revalidation rather than as the first truth-maker.
+        return _DIRECTORY_SYMLINK_V2
+    return _DIRECTORY_OTHER_V2
 
 
 def _lookup_authorities_v2(path: str) -> tuple[str, ...]:
@@ -667,6 +776,14 @@ def _lookup_authorities_v2(path: str) -> tuple[str, ...]:
     current = os.path.dirname(normalized)
     while True:
         observation = _observe_directory_v2(current)
+        if observation is _DIRECTORY_SYMLINK_V2:
+            # A symlink resolves names somewhere this walk has not established,
+            # so the lookup semantics of the real resolving directory are not
+            # in hand.  Locally unestablished -> UNKNOWN, decided here rather
+            # than deferred to a later authority.
+            raise TargetPackEpochError(
+                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+            )
         if observation is _DIRECTORY_UNKNOWN_V2:
             # `os.path.isdir` answers False for a directory that EXISTS but
             # cannot be observed, which is indistinguishable from absent -- so
@@ -678,6 +795,7 @@ def _lookup_authorities_v2(path: str) -> tuple[str, ...]:
             )
         if observation is _DIRECTORY_PRESENT_V2:
             authorities.append(current)
+        # `absent` and `other` establish that no lookup happens here yet
         parent = os.path.dirname(current)
         if parent == current:
             break
@@ -764,7 +882,12 @@ def _visible_physical_domain_v2(
 
     path = _normalize_absolute_v2(path)
     segments: list[_PhysicalSegmentV2] = []
-    children = snapshot.visible_child_mounts_v2(path)
+    # The typed query is the authority for what topology matters here. This
+    # builder performs no relevance scan of its own -- choosing that extension
+    # per-consumer is exactly what produced the F3 -> N9 recurrence.
+    resolution = snapshot.resolve_query_v2(
+        TopologyQueryV2(TopologyQueryKindV2.VISIBLE_SUBTREE, path))
+    children = resolution.visible_descendants
 
     # DOMAIN CLOSURE (`#262` N7).  Applicability must hold for EVERY segment
     # admitted into the domain, not merely for the governing mount of the
@@ -862,6 +985,30 @@ def _declared_carrier_operation_sites_v2(euid: int, key: str) -> tuple[str, ...]
     return _carrier_operational_sites_v2(euid, key)
 
 
+def _require_carrier_object_shape_v2(euid: int, key: str) -> None:
+    """Establish, locally and before any mutation, that the carrier objects
+    have a shape this module is willing to operate on.
+
+    The protocol directory may not be a symlink.  That has always been the
+    contract -- `_validate_protocol_directory_v2` refuses it and the public
+    reason is `target_pack_epoch_unavailable` -- but until now the earlier
+    disjointness reasoning depended on that LATER check to be safe.  Deciding
+    it here makes the earlier reasoning stand on its own: removing or
+    reordering the `O_NOFOLLOW` validation can no longer silently turn this
+    decision from sound to unsound, and that validation remains as TOCTOU
+    revalidation of the same contract rather than as its first truth-maker.
+
+    Only shapes already ESTABLISHED forbidden answer `unavailable` here.  A
+    shape that cannot be observed is not this function's business -- it is an
+    unestablished lookup predicate, and the disjointness authority answers it
+    as UNKNOWN.
+    """
+
+    for site in _carrier_operational_sites_v2(euid, key):
+        if _observe_directory_v2(site) is _DIRECTORY_SYMLINK_V2:
+            raise TargetPackEpochError(TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2)
+
+
 def _establish_carrier_disjoint_v2(
     *, canonical_target_subject: bytes, euid: int, key: str,
     snapshot: "MountTopologySnapshotV2 | None" = None,
@@ -898,6 +1045,9 @@ def _establish_carrier_disjoint_v2(
             TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
         )
 
+    # Carrier object shape is established here, locally, before anything else
+    # consumes these paths (`#262`, symlink reason ownership).
+    _require_carrier_object_shape_v2(euid, key)
     sites = _carrier_operational_sites_v2(euid, key)
     # Applicability BEFORE projection is consumed, for both sides.
     _require_projection_applicable_v2(snapshot, target_path, *sites)
