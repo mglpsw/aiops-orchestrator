@@ -282,19 +282,21 @@ class MountTopologySnapshotV2:
         domain.  That is fail-open, and it is now UNKNOWN.
         """
 
-        root = self._visible_root_v2()
         seen = {record.mount_id}
         current = record
         while True:
-            if current.mount_id == root.mount_id:
-                return
-            if current.parent_id not in self.by_id:
-                # not the boundary -- the boundary is the visible root above
-                raise TargetPackEpochError(
-                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-                )
-            if current.parent_id == current.mount_id:
-                # a non-root self-parent is a cycle of length one
+            at_root = current.mount_point == "/"
+            absent = current.parent_id not in self.by_id
+            self_parent = current.parent_id == current.mount_id
+            if absent or self_parent:
+                # The boundary is where the parent leaves this snapshot, and it
+                # is legitimate ONLY at "/". Comparing against the TOP-OF-STACK
+                # visible root instead was wrong: a self-parented boundary root
+                # with another mount stacked above it can never reach that top,
+                # so it was rejected as a cycle. Latent until POINT_LOOKUP
+                # seeds began including records at "/".
+                if at_root:
+                    return
                 raise TargetPackEpochError(
                     TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
                 )
@@ -356,8 +358,18 @@ class MountTopologySnapshotV2:
                 )
             visited.add(current.mount_id)
 
-    def governing_mount_v2(self, path: str) -> MountRecordV2:
-        """The mount pathname lookup of *path* actually traverses.
+    def _governing_mount_raw_v2(self, path: str) -> MountRecordV2:
+        """RESOLVER-INTERNAL raw traversal. NOT a consumer API.
+
+        This performs the pathname walk and nothing else: it does NOT establish
+        that the topology it walked over is resolvable.  Calling it directly is
+        how a consumer silently answers a question the typed authority would
+        have refused, which is exactly the bypass that produced the second
+        admitted recurrence on this PR.  Only `resolve_query_v2` and the
+        internals it drives may call it; a structural test enumerates the
+        permitted call sites exactly.
+
+        The mount pathname lookup of *path* actually traverses.
 
         Descends the mount tree.  At each prefix only records that are
         CHILDREN of the currently-governing mount may be attached there, which
@@ -382,8 +394,21 @@ class MountTopologySnapshotV2:
         self.validate_relevant_chain_v2(current)
         return current
 
+    def governing_mount_v2(self, path: str) -> MountRecordV2:
+        """Consumer-facing governing mount, THROUGH the typed authority.
+
+        A thin wrapper over `resolve_query_v2(POINT_LOOKUP, path)`; it contains
+        no traversal of its own.  A consumer asking "which mount governs this
+        path?" is asking a point query, and it gets the point query's frontier
+        validation with it -- which is the whole difference between this and
+        `_governing_mount_raw_v2`.
+        """
+
+        return self.resolve_query_v2(
+            TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, path)).governing_mount
+
     # ---- visibility, derived from the SAME relation -----------------------
-    def is_visible_v2(self, record: MountRecordV2) -> bool:
+    def _is_visible_raw_v2(self, record: MountRecordV2) -> bool:
         """VISIBLE / HIDDEN, or UNKNOWN by raising.
 
         Visibility is a PARTIAL relation.  An earlier revision caught the
@@ -397,7 +422,7 @@ class MountTopologySnapshotV2:
         cached = self._visible_cache.get(record.mount_id)
         if cached is not None:
             return cached
-        visible = self.governing_mount_v2(record.mount_point).mount_id == record.mount_id
+        visible = self._governing_mount_raw_v2(record.mount_point).mount_id == record.mount_id
         self._visible_cache[record.mount_id] = visible
         return visible
 
@@ -474,12 +499,12 @@ class MountTopologySnapshotV2:
         for record in frontier:
             self.validate_relevant_chain_v2(record)
 
-        governing = self.governing_mount_v2(query.path)
+        governing = self._governing_mount_raw_v2(query.path)
         descendants: tuple[MountRecordV2, ...] = ()
         if query.kind is TopologyQueryKindV2.VISIBLE_SUBTREE:
             prefix = _normalize_absolute_v2(query.path).rstrip("/") + "/"
             descendants = tuple(r for r in frontier
-                                if r.mount_point.startswith(prefix) and self.is_visible_v2(r))
+                                if r.mount_point.startswith(prefix) and self._is_visible_raw_v2(r))
         return TopologyQueryResolutionV2(query, governing, frontier, descendants)
 
     def visible_child_mounts_v2(self, path: str) -> tuple[MountRecordV2, ...]:
@@ -492,6 +517,20 @@ class MountTopologySnapshotV2:
         return self.resolve_query_v2(
             TopologyQueryV2(TopologyQueryKindV2.VISIBLE_SUBTREE, path)).visible_descendants
 
+    def is_visible_v2(self, record: MountRecordV2) -> bool:
+        """Consumer-facing visibility, THROUGH the typed authority.
+
+        Routed through a point query on the record's own mount point so the
+        frontier that decides its position is validated first.  The raw form
+        answered `False` for a record whose position could not be established
+        at all -- `Unknown(Visibility)` collapsed into `Hidden`, defeated
+        through a bypass rather than through the rule.
+        """
+
+        return self.resolve_query_v2(
+            TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, record.mount_point)
+        ).governing_mount.mount_id == record.mount_id
+
     # ---- physical projection ---------------------------------------------
     def project_v2(self, path: str) -> tuple[int, str]:
         """Namespace path -> the physical `(device, filesystem-internal path)`
@@ -499,7 +538,11 @@ class MountTopologySnapshotV2:
         is never inferred back out of a projection."""
 
         path = _normalize_absolute_v2(path)
-        governing = self.governing_mount_v2(path)
+        # `#262`: through the typed authority, never the raw traversal. An
+        # earlier revision called the raw walk here and answered a projection
+        # for topology the resolver refuses.
+        governing = self.resolve_query_v2(
+            TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, path)).governing_mount
         remainder = path[len(governing.mount_point.rstrip("/")):]
         if not remainder or governing.mount_point == path:
             return (governing.device, governing.root)
@@ -524,7 +567,9 @@ def _within_v2(candidate: str, ancestor: str) -> bool:
     return candidate.startswith(ancestor.rstrip("/") + "/")
 
 
-def _runtime_filesystem_type_v2(path: Path, snapshot: "MountTopologySnapshotV2") -> str | None:
+def _runtime_filesystem_type_v2(
+    path: Path, resolution: "TopologyQueryResolutionV2"
+) -> str | None:
     """Return the mountinfo filesystem type containing *path*, if known.
 
     Consumes the single canonical topology observation rather than parsing
@@ -534,17 +579,24 @@ def _runtime_filesystem_type_v2(path: Path, snapshot: "MountTopologySnapshotV2")
     """
 
     try:
-        candidate = str(path.resolve(strict=True))
+        path.resolve(strict=True)
     except (OSError, RuntimeError):
         return None
-    return snapshot.governing_mount_v2(candidate).filesystem_type
+    # The resolution is passed in, already established through the typed
+    # authority.  Resolving here would be a second semantic lookup of the same
+    # subject, and calling the raw traversal would answer a filesystem type for
+    # topology the authority refuses -- reported as `unavailable` rather than
+    # as the topology UNKNOWN it actually is.
+    return resolution.governing_mount.filesystem_type
 
 
 def _same_identity_v2(left: os.stat_result, right: os.stat_result) -> bool:
     return left.st_dev == right.st_dev and left.st_ino == right.st_ino
 
 
-def _open_runtime_parent_v2(*, euid: int, snapshot: "MountTopologySnapshotV2") -> tuple[int, tuple[int, int]]:
+def _open_runtime_parent_v2(
+    *, euid: int, runtime_parent_resolution: "TopologyQueryResolutionV2"
+) -> tuple[int, tuple[int, int]]:
     """Open and validate the fixed `/tmp` root without following aliases."""
 
     if sys.platform != "linux" or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
@@ -569,7 +621,8 @@ def _open_runtime_parent_v2(*, euid: int, snapshot: "MountTopologySnapshotV2") -
             or fd_stat.st_uid != _RUNTIME_PARENT_EXPECTED_OWNER_V2
             or not (mode & stat.S_ISVTX)
             or not os.access(_RUNTIME_PARENT_PATH_V2, os.W_OK | os.X_OK)
-            or _runtime_filesystem_type_v2(_RUNTIME_PARENT_PATH_V2, snapshot) not in _SUPPORTED_RUNTIME_FILESYSTEMS_V2
+            or _runtime_filesystem_type_v2(_RUNTIME_PARENT_PATH_V2, runtime_parent_resolution)
+            not in _SUPPORTED_RUNTIME_FILESYSTEMS_V2
         ):
             raise TargetPackEpochError(TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2)
         return fd, (fd_stat.st_dev, fd_stat.st_ino)
@@ -821,7 +874,8 @@ def _require_name_semantics_applicable_v2(
     """
 
     for path in paths:
-        governing = snapshot.governing_mount_v2(path)
+        governing = snapshot.resolve_query_v2(
+            TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, path)).governing_mount
         if governing.filesystem_type not in _CASEFOLD_CAPABLE_FILESYSTEMS_V2:
             continue
         for authority in _lookup_authorities_v2(path):
@@ -1260,7 +1314,14 @@ def acquire_target_pack_epoch_v2(*, target_root: Path, exclusive: bool) -> Targe
     # and the disjointness decision must be established from the SAME topology,
     # or they can describe different worlds.
     topology = MountTopologySnapshotV2.observe()
-    parent_fd, parent_identity = _open_runtime_parent_v2(euid=euid, snapshot=topology)
+    # `#262`: ONE typed resolution of the runtime parent, threaded to every
+    # consumer that needs it.  Eligibility, filesystem type and the FD identity
+    # check then reason about a single coherent subject instead of performing
+    # separate lookups that could disagree.
+    runtime_parent_resolution = topology.resolve_query_v2(
+        TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, str(_RUNTIME_PARENT_PATH_V2)))
+    parent_fd, parent_identity = _open_runtime_parent_v2(
+        euid=euid, runtime_parent_resolution=runtime_parent_resolution)
     namespace_fd: int | None = None
     carrier_fd: int | None = None
     try:
@@ -1269,8 +1330,7 @@ def acquire_target_pack_epoch_v2(*, target_root: Path, exclusive: bool) -> Targe
         # mutated first.  No consumer re-derives it.
         # the opened parent FD must be the object the captured topology
         # describes; a mismatch means the two disagree and is not resolvable here
-        if parent_identity[0] != topology.governing_mount_v2(
-            str(_RUNTIME_PARENT_PATH_V2)).device:
+        if parent_identity[0] != runtime_parent_resolution.governing_mount.device:
             raise TargetPackEpochError(
                 TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
             )

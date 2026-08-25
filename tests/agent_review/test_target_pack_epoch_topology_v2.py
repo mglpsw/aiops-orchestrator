@@ -853,7 +853,7 @@ def test_visibility_is_derived_from_the_governing_relation() -> None:
 
     import inspect
     body = inspect.getsource(MountTopologySnapshotV2.is_visible_v2)
-    assert "governing_mount_v2" in body
+    assert "resolve_query_v2" in body and "POINT_LOOKUP" in body
 
 
 # ================================ MUTANTS =================================
@@ -865,7 +865,7 @@ def test_visibility_is_derived_from_the_governing_relation() -> None:
 
 def _mutant_snapshot(cls_body):
     """Build a mutant subclass of the real snapshot from a governing override."""
-    return type("Mutant", (MountTopologySnapshotV2,), {"governing_mount_v2": cls_body})
+    return type("Mutant", (MountTopologySnapshotV2,), {"_governing_mount_raw_v2": cls_body})
 
 
 def _flat_longest_prefix(self, path):
@@ -1560,7 +1560,9 @@ def test_no_topology_test_name_contradicts_its_assertions() -> None:
             continue
         body = inspect.getsource(function)
         claims_unknown = (
-            "DISJOINTNESS_UNKNOWN_REASON_V2" in body or "pytest.raises(TargetPackEpochError)" in body)
+            "DISJOINTNESS_UNKNOWN_REASON_V2" in body
+            or "pytest.raises(TargetPackEpochError)" in body
+            or "_refuses(" in body)
         if not claims_unknown:
             offenders.append(name)
     assert offenders == [], f"tests naming UNKNOWN without asserting it: {offenders}"
@@ -2715,10 +2717,11 @@ def test_mutant_consumer_rescans_snapshot(
     """M_CONSUMER_RESCANS_SNAPSHOT -- consumers inventing their own relevance,
     which is the exact shape of the defect that produced the recurrence.
 
-    BOTH consumers of the typed query must be neutered for the hole to reopen:
-    applicability and the domain builder each ask it independently. That is
-    defence in depth and is recorded as such -- a single regressing consumer
-    does not reopen the falsifier.
+    Measured after authority sealing: FOUR consumers ask the typed authority
+    independently -- applicability, the domain builder, projection and name
+    semantics -- and all four must regress together before the witness gets
+    through. Before sealing, two were enough. That difference is the point of
+    sealing, and it is asserted step by step below rather than assumed.
     """
 
     target = tmp_path / "a" / "b" / "c"
@@ -2736,7 +2739,7 @@ def test_mutant_consumer_rescans_snapshot(
     # consumer 1: applicability stops asking the typed resolver
     monkeypatch.setattr(
         epoch_module, "_require_projection_applicable_v2",
-        lambda snapshot, *paths: [snapshot.governing_mount_v2(p) for p in paths] and None)
+        lambda snapshot, *paths: [snapshot._governing_mount_raw_v2(p) for p in paths] and None)
     # consumer 2: the domain builder rescans with its own at-or-beneath predicate
     def _rescanning_builder(snapshot, path):
         normalized = epoch_module._normalize_absolute_v2(path)
@@ -2748,38 +2751,139 @@ def test_mutant_consumer_rescans_snapshot(
         return (epoch_module._PhysicalSegmentV2(device, internal, ()),)
 
     monkeypatch.setattr(epoch_module, "_visible_physical_domain_v2", _rescanning_builder)
-    assert _acquire(target) == "acquired", "re-scanning consumers reopen the falsifier"
+
+    # Before authority sealing, neutering these two consumers was enough to
+    # reopen the falsifier. It no longer is: `project_v2` also routes through
+    # the typed authority, so the refusal survives two regressing consumers.
+    # That is the material difference between consumer discipline and a sealed
+    # authority, and it is asserted rather than assumed.
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
+        "sealing must hold even when both typed-query consumers regress")
+
+    # only ALSO bypassing the sealed projection reopens it -- which is exactly
+    # what the structural guard makes impossible to land
+    def _raw_projection(self, path):
+        path = epoch_module._normalize_absolute_v2(path)
+        governing = self._governing_mount_raw_v2(path)
+        remainder = path[len(governing.mount_point.rstrip("/")):]
+        if not remainder or governing.mount_point == path:
+            return (governing.device, governing.root)
+        return (governing.device,
+                epoch_module._normalize_absolute_v2(governing.root.rstrip("/") + remainder))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "project_v2", _raw_projection)
+    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
+        "three regressing consumers still do not reopen it")
+
+    # Measured, not assumed: ALL FOUR consumers of the typed authority must
+    # regress together before the witness gets through --
+    # applicability, the domain builder, projection, and name semantics.
+    monkeypatch.setattr(epoch_module, "_require_name_semantics_applicable_v2",
+                        lambda snapshot, *paths: None)
+    assert _acquire(target) == "acquired", (
+        "with every typed-query consumer bypassed, the falsifier reopens")
 
 
 # ------------------- structural authority assertions ----------------------
 
 
-def test_no_consumer_rebuilds_relevance_outside_the_typed_resolver() -> None:
-    """§19. Structural, via AST rather than source-string matching.
-
-    The invariant: functions outside the snapshot class do not iterate
-    `snapshot.records` / `.children` / `.by_id` to reconstruct relevance. If a
-    future consumer wants to know what topology matters, it must ask the typed
-    resolver -- which is the whole point of the redesign.
-    """
+def _raw_primitive_callsites() -> list[str]:
+    """Every function that calls a raw topology primitive, by AST."""
 
     import ast
 
     tree = ast.parse(Path(epoch_module.__file__).read_text(encoding="utf-8"))
-    offenders = []
+    found = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
             continue
-        # methods of the snapshot class are the authority itself
-        if node.name.startswith(("_semantic_seeds", "_dependency_closure", "resolve_query",
-                                 "governing_mount", "is_visible", "visible_child_mounts",
-                                 "validate_relevant_chain", "_climb_stack", "_visible_root",
-                                 "project", "parse", "observe", "__init__")):
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Call):
+                func = sub.func
+                name = func.attr if isinstance(func, ast.Attribute) else None
+                if name in _RAW_TOPOLOGY_PRIMITIVES:
+                    found.append(node.name)
+    return found
+
+
+# The CLOSED set of functions permitted to touch raw topology traversal. Not a
+# name-prefix rule -- an exact enumeration, because the previous guard exempted
+# every function starting with "project" and that is precisely how the native
+# P2 went undetected.
+_RAW_TOPOLOGY_PRIMITIVES = {"_governing_mount_raw_v2", "_is_visible_raw_v2"}
+_PERMITTED_RAW_CALLERS = {"resolve_query_v2", "_is_visible_raw_v2"}
+
+
+def test_raw_topology_traversal_is_callable_only_from_the_resolver() -> None:
+    """§12. The structural seal, and it is load-bearing.
+
+    The previous version of this guard exempted every `project*` function by
+    name, so `project_v2` calling raw traversal was structurally invisible --
+    which is exactly the bypass the native review found. Prefix exemptions are
+    replaced by an exact, closed set of permitted callers.
+    """
+
+    offenders = sorted(set(_raw_primitive_callsites()) - _PERMITTED_RAW_CALLERS)
+    assert offenders == [], (
+        f"raw topology traversal is resolver-internal; these bypass it: {offenders}")
+
+
+def test_no_consumer_rebuilds_relevance_outside_the_typed_resolver() -> None:
+    """Consumers must not reconstruct relevance from the snapshot's internals.
+
+    Exemptions are again an exact set, not a name prefix.
+    """
+
+    import ast
+
+    permitted = {
+        "_semantic_seeds_v2", "_dependency_closure_v2", "resolve_query_v2",
+        "_governing_mount_raw_v2", "_is_visible_raw_v2", "is_visible_v2",
+        "visible_child_mounts_v2", "validate_relevant_chain_v2", "_climb_stack_v2",
+        "_visible_root_v2", "governing_mount_v2", "parse", "observe", "__init__",
+    }
+    tree = ast.parse(Path(epoch_module.__file__).read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name in permitted:
             continue
         for sub in ast.walk(node):
             if isinstance(sub, ast.Attribute) and sub.attr in {"records", "children", "by_id"}:
                 offenders.append(f"{node.name}:{sub.attr}")
     assert offenders == [], f"consumers must not rebuild relevance: {offenders}"
+
+
+def test_the_guard_itself_would_catch_the_native_finding() -> None:
+    """M_AST_EXEMPTS_PROJECT_FUNCTIONS -- proof the guard is not decorative.
+
+    Reintroducing a prefix exemption for `project*` makes the offender set
+    empty again, i.e. the exact regression that shipped becomes invisible.
+    """
+
+    offenders = set(_raw_primitive_callsites()) - _PERMITTED_RAW_CALLERS
+    assert offenders == set()
+
+    # simulate the OLD guard: exempt anything starting with "project"
+    weakened = {c for c in _raw_primitive_callsites()
+                if not c.startswith("project")} - _PERMITTED_RAW_CALLERS
+    # and simulate project_v2 calling raw traversal again
+    with_regression = set(_raw_primitive_callsites()) | {"project_v2"}
+    assert "project_v2" in with_regression
+    assert (with_regression - _PERMITTED_RAW_CALLERS), "strict guard must flag it"
+    assert not ({c for c in with_regression if not c.startswith("project")}
+                - _PERMITTED_RAW_CALLERS), "prefix-exempting guard would NOT flag it"
+    assert weakened == set()
+
+
+def test_resolver_does_not_recurse_through_the_consumer_wrapper() -> None:
+    """`resolve_query_v2 -> _governing_mount_raw_v2`, never
+    `resolve_query_v2 -> governing_mount_v2 -> resolve_query_v2`."""
+
+    import inspect
+
+    body = inspect.getsource(MountTopologySnapshotV2.resolve_query_v2)
+    assert "_governing_mount_raw_v2(" in body
+    assert "self.governing_mount_v2(" not in body
 
 
 def test_single_authority_counts() -> None:
@@ -2798,3 +2902,173 @@ def test_single_authority_counts() -> None:
         ("def _establish_carrier_disjoint_v2", 1),
     ]:
         assert source.count(name) == expected, f"{name} должно be {expected}"
+
+
+# ============ AUTHORITY SEALING — native P2 on ac0aa6e ====================
+#
+# The typed frontier was introduced but not SEALED: five consumers could still
+# reach raw traversal and answer questions the authority refuses. The native
+# review found `project_v2`; a sibling sweep found four more, and three leaked
+# independently on the same demonstrated witness:
+#
+#   project_v2                    -> a projection through the underlying mount
+#   _runtime_filesystem_type_v2   -> None, surfacing as `unavailable`
+#   is_visible_v2                 -> False, i.e. Unknown(Visibility) -> Hidden
+#
+# That last one is the F5 law defeated through a bypass rather than through the
+# rule. This was dispositioned RECURRENCE_ADMITTED (second admission on this
+# PR) before any of it was corrected.
+
+
+_ANCESTOR_GAP = ("36 35 98:0 / / rw - ext4 /dev/root rw\n"
+                 "40 39 98:0 /x /a rw - ext4 /d rw\n")      # parent 39 ABSENT
+
+
+def _gap_snapshot() -> MountTopologySnapshotV2:
+    return MountTopologySnapshotV2.parse(_ANCESTOR_GAP)
+
+
+def _refuses(callable_):
+    try:
+        callable_()
+    except TargetPackEpochError as exc:
+        return exc.reason_code == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+    return False
+
+
+def test_projection_refuses_where_the_typed_resolver_refuses() -> None:
+    """The native P2 itself. Before sealing, `project_v2('/a/b')` returned
+    `(dev, '/a/b')` while the resolver refused the same path."""
+
+    snapshot = _gap_snapshot()
+    assert _refuses(lambda: snapshot.resolve_query_v2(
+        _query(POINT, "/a/b"))), "the typed authority must refuse"
+    assert _refuses(lambda: snapshot.project_v2("/a/b")), "projection must refuse identically"
+
+
+def test_consumer_governing_mount_refuses_where_the_resolver_refuses() -> None:
+    assert _refuses(lambda: _gap_snapshot().governing_mount_v2("/a/b"))
+
+
+def test_visibility_does_not_collapse_unknown_into_hidden_via_bypass() -> None:
+    """`is_visible_v2` answered `False` for a record whose position could not
+    be established -- the F5 law defeated through a bypass."""
+
+    snapshot = _gap_snapshot()
+    assert _refuses(lambda: snapshot.is_visible_v2(snapshot.by_id[40]))
+
+
+def test_filesystem_type_cannot_be_obtained_without_a_resolution() -> None:
+    """`_runtime_filesystem_type_v2` no longer performs a lookup of its own; it
+    consumes a resolution that, for this topology, cannot be obtained."""
+
+    snapshot = _gap_snapshot()
+    assert _refuses(lambda: snapshot.resolve_query_v2(_query(POINT, "/a/b")))
+    import inspect
+    body = inspect.getsource(epoch_module._runtime_filesystem_type_v2)
+    assert "governing_mount_v2" not in body and "_governing_mount_raw_v2" not in body
+    assert "resolution.governing_mount" in body
+
+
+def test_runtime_parent_is_resolved_once_and_threaded(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§10. Eligibility, filesystem type and the FD identity check must reason
+    about ONE resolution, not separate lookups that could disagree."""
+
+    calls: list[str] = []
+    real_resolve = MountTopologySnapshotV2.resolve_query_v2
+
+    def _counting(self, query):
+        if query.path == str(runtime_parent):
+            calls.append(query.path)
+        return real_resolve(self, query)
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "resolve_query_v2", _counting)
+    target = tmp_path / "project"
+    target.mkdir()
+    assert _acquire(target) == "acquired"
+    assert len(calls) == 1, f"runtime parent resolved {len(calls)} times, expected once"
+
+
+def test_sealing_does_not_over_refuse_clean_topology(
+    runtime_parent: Path, tmp_path: Path
+) -> None:
+    """OVER-REFUSAL CONTROL for the whole sealing change."""
+
+    snapshot = MountTopologySnapshotV2.observe()
+    assert snapshot.project_v2(str(tmp_path))[1]
+    assert snapshot.governing_mount_v2(str(tmp_path)).mount_id
+    target = tmp_path / "ordinary"
+    target.mkdir()
+    assert _acquire(target) == "acquired"
+
+
+# ---------------------------- sealing mutants -----------------------------
+
+
+def test_mutant_project_bypasses_typed_frontier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_PROJECT_BYPASSES_TYPED_FRONTIER -- the shipped regression."""
+
+    snapshot = _gap_snapshot()
+    assert _refuses(lambda: snapshot.project_v2("/a/b"))
+
+    def _raw_projection(self, path):
+        path = epoch_module._normalize_absolute_v2(path)
+        governing = self._governing_mount_raw_v2(path)          # the bypass
+        remainder = path[len(governing.mount_point.rstrip("/")):]
+        if not remainder or governing.mount_point == path:
+            return (governing.device, governing.root)
+        return (governing.device,
+                epoch_module._normalize_absolute_v2(governing.root.rstrip("/") + remainder))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "project_v2", _raw_projection)
+    assert not _refuses(lambda: _gap_snapshot().project_v2("/a/b")), (
+        "mutant should answer where the authority refuses")
+
+
+def test_mutant_visibility_bypasses_typed_frontier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_VISIBILITY_BYPASSES_TYPED_FRONTIER."""
+
+    snapshot = _gap_snapshot()
+    assert _refuses(lambda: snapshot.is_visible_v2(snapshot.by_id[40]))
+
+    monkeypatch.setattr(MountTopologySnapshotV2, "is_visible_v2",
+                        MountTopologySnapshotV2._is_visible_raw_v2)
+    fresh = _gap_snapshot()
+    assert fresh.is_visible_v2(fresh.by_id[40]) is False, (
+        "raw visibility collapses UNKNOWN into HIDDEN")
+
+
+def test_mutant_runtime_fs_bypasses_typed_frontier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_RUNTIME_FS_BYPASSES_TYPED_FRONTIER."""
+
+    snapshot = _gap_snapshot()
+
+    def _raw_fs(path, resolution):
+        return snapshot._governing_mount_raw_v2("/a/b").filesystem_type
+
+    assert _refuses(lambda: snapshot.resolve_query_v2(_query(POINT, "/a/b")))
+    assert _raw_fs(None, None) == "ext4", "raw lookup answers where the authority refuses"
+
+
+def test_mutant_runtime_parent_device_bypasses_typed_frontier(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M_RUNTIME_PARENT_DEVICE_BYPASSES_TYPED_FRONTIER -- the identity check
+    must consume the threaded resolution, not a second lookup."""
+
+    import inspect
+    body = inspect.getsource(epoch_module.acquire_target_pack_epoch_v2)
+    assert "runtime_parent_resolution.governing_mount.device" in body
+    assert "topology.governing_mount_v2(" not in body
+
+
+def test_mutant_raw_governing_call_allowed_from_consumer() -> None:
+    """M_RAW_GOVERNING_CALL_ALLOWED_FROM_CONSUMER -- widening the permitted
+    caller set must make the guard vacuous, which is what makes it meaningful."""
+
+    assert set(_raw_primitive_callsites()) - _PERMITTED_RAW_CALLERS == set()
+    everything = set(_raw_primitive_callsites()) | {"project_v2", "some_future_consumer"}
+    assert everything - _PERMITTED_RAW_CALLERS, "strict set flags the additions"
+    assert not (everything - everything), "a permissive set would flag nothing"
