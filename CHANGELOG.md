@@ -37,14 +37,30 @@
   directory's own governing filesystem, over a closed three-way classification
   (casefold-flag-capable / established case-sensitive / unknown), so an
   `ENOTTY` from `FS_IOC_GETFLAGS` is never read as proof of case sensitivity.
-  Raw topology traversal is resolver-internal, and a scope-aware AST guard
-  rejects any static reference to it -- or any consumer-side reconstruction of
-  relevance from the snapshot's internals -- across **every** production module,
-  including aliases and `getattr`. The module inventory is derived from the
-  runtime package root rather than listed, so a production module added later
-  is sealed without an inventory edit. The guard is static analysis of this
-  repository's own Python and makes no claim against dynamically computed
-  attribute names.
+  Raw topology traversal is resolver-internal, and the seal that enforces this
+  is an INTERMODULE static analysis over the repository's own non-test Python.
+  An earlier revision derived its inventory from the runtime package root
+  `app/`, and a native review falsified that: `scripts/` holds executable
+  production entry points -- one of them imports this very module -- and was
+  never analysed. Adding `scripts`, or `scripts` and `evals`, would only move
+  the boundary; root SELECTION was the defect, not root count. Directory
+  membership now decides nothing. A module is judged where it is statically
+  BOUND to the topology subject through the import / alias / re-export graph,
+  so a consumer anywhere in the repository is sealed the moment it lands, while
+  fixture corpora that never import the subject need no exclusion rule.
+  Permitted owners are `(module, class, method)`: an unrelated class of the
+  same name inherits no authority. Both permitted sets are derived from
+  semantic necessity rather than listed, which removes the consumer wrappers
+  (`project_v2`, `governing_mount_v2`, `is_visible_v2`,
+  `visible_child_mounts_v2`) that a previous revision had exempted. Detected
+  forms include direct attribute access, bound and unbound aliases,
+  passed-as-value, and literal `getattr` -- for the raw primitives and for
+  relevance internals alike -- with the receiver bound to the subject before
+  a generic name such as `records` is judged, so a legitimate typed consumer
+  and an unrelated object may share one module. The analysis is bounded to
+  static imports, aliases, re-exports, literal attribute names and explicitly
+  annotated bindings; a dynamically computed attribute name, a dynamic import
+  and an unannotated factory are explicit NONCLAIMS.
 
   Topology that cannot be established is refused as
   `target_pack_epoch_carrier_disjointness_unknown`; an established overlap as
@@ -56,10 +72,13 @@
   overlay -- refuse rather than acquire, and a runtime parent reached through a
   subtree bind is refused. Over-refusal is a bounded cost; under-refusal would
   fabricate the property. `PR #267` and `PR #268` remain forensic predecessors.
-  Two recurrences were admitted during this work and remain historical fact:
+  Three recurrences were admitted during this work and remain historical fact:
   the first drove the redesign from positional relevance rules to the typed
   query frontier, the second drove sealing that authority against consumer
-  bypass. No consumer decides disjointness, no schema or public contract
+  bypass, and the third -- an incomplete production-source inventory, admitted
+  because the evidence establishing `scripts/` as a topology-capable surface
+  was in hand when the boundary was chosen and was reasoned past -- drove the
+  replacement of directory-derived inventory by intermodule reachability. No consumer decides disjointness, no schema or public contract
   changes, and writer K identity, SH/EX coordination and expected-plan binding
   are unchanged. The proof is bounded to one topology snapshot taken
   immediately before materialization: it makes no claim against a concurrent

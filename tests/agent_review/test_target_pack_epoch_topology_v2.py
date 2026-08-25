@@ -2796,374 +2796,624 @@ def test_mutant_consumer_rescans_snapshot(
 # ------------------- structural authority assertions ----------------------
 
 
-_RAW_TOPOLOGY_PRIMITIVES = {"_governing_mount_raw_v2", "_is_visible_raw_v2"}
-
-# Permitted REFERENCE sites, identified by their real lexical owner
-# (class, method) -- not by unqualified function name. An unrelated module-level
-# function called `resolve_query_v2` must not inherit the permission.
-_PERMITTED_RAW_REFERENCES = {
-    ("MountTopologySnapshotV2", "resolve_query_v2"),
-    ("MountTopologySnapshotV2", "_is_visible_raw_v2"),
-}
-
-
-def _raw_primitive_references(source: str) -> list[tuple[str, str, str]]:
-    """Every STATIC reference to a raw primitive, with its lexical owner.
-
-    References, not call shapes. The shipped guard inspected only
-    `ast.Call(func=ast.Attribute(...))`, so the same bypass could be
-    reintroduced through a bound alias, an unbound class alias, or `getattr`,
-    while the test stayed green. Detected here:
-
-        s._governing_mount_raw_v2(p)                direct attribute
-        raw = s._governing_mount_raw_v2             bound alias
-        raw = Cls._governing_mount_raw_v2           unbound alias
-        getattr(s, "_governing_mount_raw_v2")       literal getattr
-        f(s._governing_mount_raw_v2)                passed as a value
-
-    Bound: this is static analysis of this repository's own source. It does not
-    claim safety against arbitrary runtime reflection, and does not pretend to.
-    """
-
-    import ast
-
-    tree = ast.parse(source)
-    found: list[tuple[str, str, str]] = []
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.cls: str | None = None
-            self.fn: str | None = None
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            outer, self.cls = self.cls, node.name
-            self.generic_visit(node)
-            self.cls = outer
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            outer, self.fn = self.fn, node.name
-            self.generic_visit(node)
-            self.fn = outer
-
-        def _record(self, kind: str) -> None:
-            found.append((self.cls or "<module>", self.fn or "<module>", kind))
-
-        def visit_Attribute(self, node: ast.Attribute) -> None:
-            if node.attr in _RAW_TOPOLOGY_PRIMITIVES:
-                self._record("attribute")
-            self.generic_visit(node)
-
-        def visit_Call(self, node: ast.Call) -> None:
-            func = node.func
-            if isinstance(func, ast.Name) and func.id == "getattr" and len(node.args) >= 2:
-                target = node.args[1]
-                if isinstance(target, ast.Constant) and target.value in _RAW_TOPOLOGY_PRIMITIVES:
-                    self._record("getattr")
-            self.generic_visit(node)
-
-    Visitor().visit(tree)
-    return found
-
-
-def _raw_reference_offenders(source: str) -> list[tuple[str, str, str]]:
-    return [ref for ref in _raw_primitive_references(source)
-            if (ref[0], ref[1]) not in _PERMITTED_RAW_REFERENCES]
-
-
-# --- repository-wide production inventory (`#262` N18) --------------------
+# ============ THE STATIC TOPOLOGY SEAL — recurrence #3 redesign ===========
 #
-# The seal previously parsed exactly one file, `epoch_module.__file__`, so any
-# OTHER production module could reference a raw primitive or rescan the
-# snapshot while both structural guards stayed green. Six forms were shown
-# undetected that way.
+# `#262` recurrence #3 (N18 -> N19) falsified the previous model outright. That
+# model asked "which production DIRECTORY is this file in?" and answered with
+# one hand-chosen root, `app/`. `scripts/agent-review-target-pack-v2.py`
+# imports the epoch module directly; it was never analysed. Adding `scripts` --
+# or `scripts` and `evals` -- reproduces the defect on the next surface nobody
+# remembers. Root SELECTION was the defect, not root count.
 #
-# The inventory is DERIVED from the repository's authoritative runtime package
-# root rather than listed, so a production module added tomorrow is sealed
-# without anyone remembering to update a list. That property is the whole
-# point: a manually maintained list reproduces the same silent gap the first
-# time it is not updated.
+# Everything below therefore exercises ONE authority,
+# `_topology_static_seal_v2`, which decides nothing from directory membership:
+# the universe is the repository's own non-test Python, and a module is judged
+# only where it is statically BOUND to the topology subject through the
+# import / alias / re-export graph.
 #
-# Authority for the root: `app/` is the runtime package (`app/__init__.py`,
-# and `scripts/*.py` import `from app...`), while `tests/` is a separate
-# package. There is no pyproject/setup.py in this repository, so the package
-# layout is the authority.
+# The per-file marker analyzer is GONE, not kept alongside. Two analyzers with
+# overlapping jurisdiction is how an `app/`-only inventory survived a review
+# that believed it was repository-wide.
 
-_PRODUCTION_PACKAGE_ROOTS = ("app",)
-_NON_PRODUCTION_PARTS = frozenset({
-    "__pycache__", ".venv", "venv", "build", "dist", ".git", "node_modules",
-})
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _topology_static_seal_v2 as seal  # noqa: E402
 
-def _production_python_sources() -> list[Path]:
-    """Every production Python source, derived from the package roots."""
+_REPOSITORY_ROOT = Path(epoch_module.__file__).resolve().parents[2]
 
-    repository = Path(epoch_module.__file__).resolve().parents[2]
-    sources: list[Path] = []
-    for root in _PRODUCTION_PACKAGE_ROOTS:
-        for path in sorted((repository / root).rglob("*.py")):
-            if any(part in _NON_PRODUCTION_PARTS for part in path.parts):
-                continue
-            sources.append(path)
-    return sources
-
-
-# Attribute names that reconstruct topology relevance. Generic on their own,
-# so they are only judged in modules that actually reference the topology
-# subject -- the guard identifies the subject, it does not ban the names.
-_RELEVANCE_INTERNALS = frozenset({"records", "children", "by_id"})
-_TOPOLOGY_SUBJECT_MARKERS = ("MountTopologySnapshotV2", "target_pack_epoch_v2")
-
-_PERMITTED_RELEVANCE_OWNERS = {
-    ("MountTopologySnapshotV2", "__init__"),
-    ("MountTopologySnapshotV2", "parse"),
-    ("MountTopologySnapshotV2", "observe"),
-    ("MountTopologySnapshotV2", "_semantic_seeds_v2"),
-    ("MountTopologySnapshotV2", "_dependency_closure_v2"),
-    ("MountTopologySnapshotV2", "resolve_query_v2"),
-    ("MountTopologySnapshotV2", "_governing_mount_raw_v2"),
-    ("MountTopologySnapshotV2", "_is_visible_raw_v2"),
-    ("MountTopologySnapshotV2", "is_visible_v2"),
-    ("MountTopologySnapshotV2", "visible_child_mounts_v2"),
-    ("MountTopologySnapshotV2", "validate_relevant_chain_v2"),
-    ("MountTopologySnapshotV2", "_climb_stack_v2"),
-    ("MountTopologySnapshotV2", "_visible_root_v2"),
-    ("MountTopologySnapshotV2", "governing_mount_v2"),
-    ("MountTopologySnapshotV2", "project_v2"),
-}
-
-
-def _relevance_reconstruction_offenders(source: str) -> list[tuple[str, str, str]]:
-    """Consumer-side rebuilding of relevance from the snapshot's internals.
-
-    Only meaningful where the module references the topology subject at all;
-    an unrelated class with a `.records` attribute is not this guard's
-    business, and banning the bare name repository-wide would be a grep
-    wearing an AST costume.
-    """
-
-    import ast
-
-    if not any(marker in source for marker in _TOPOLOGY_SUBJECT_MARKERS):
-        return []
-
-    found: list[tuple[str, str, str]] = []
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.cls: str | None = None
-            self.fn: str | None = None
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            outer, self.cls = self.cls, node.name
-            self.generic_visit(node)
-            self.cls = outer
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            outer, self.fn = self.fn, node.name
-            self.generic_visit(node)
-            self.fn = outer
-
-        def visit_Attribute(self, node: ast.Attribute) -> None:
-            if node.attr in _RELEVANCE_INTERNALS:
-                owner = (self.cls or "<module>", self.fn or "<module>")
-                if owner not in _PERMITTED_RELEVANCE_OWNERS:
-                    found.append((owner[0], owner[1], node.attr))
-            self.generic_visit(node)
-
-    Visitor().visit(ast.parse(source))
-    return found
-
-
-def _seal_offenders_across(sources: list[Path]) -> dict[str, list]:
-    """The repository-wide seal, over a derived source inventory."""
-
-    offences: dict[str, list] = {}
-    for path in sources:
-        source = path.read_text(encoding="utf-8")
-        raw = _raw_reference_offenders(source)
-        relevance = _relevance_reconstruction_offenders(source)
-        if raw or relevance:
-            offences[str(path)] = raw + relevance
-    return offences
-
-
-def test_the_production_inventory_is_derived_not_listed() -> None:
-    """§9/§12. Derived from the package root, so it expands by itself."""
-
-    sources = _production_python_sources()
-    assert len(sources) > 50, "the inventory must cover the whole runtime package"
-    assert any(p.name == "target_pack_epoch_v2.py" for p in sources)
-    assert not any("tests" in p.parts for p in sources), "tests are not production"
-    assert not any("__pycache__" in p.parts for p in sources)
-
-
-def test_topology_authority_is_sealed_across_every_production_module() -> None:
-    """§10. Both classes, repository-wide: raw primitives and relevance
-    reconstruction. The shipped guard read one file."""
-
-    offences = _seal_offenders_across(_production_python_sources())
-    assert offences == {}, f"topology authority escapes the seal: {offences}"
-
-
-def test_a_new_production_module_enters_the_seal_without_editing_any_list(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """§12. THE discriminator N18 requires.
-
-    A module that did not exist when this test was written must be sealed the
-    moment it lands under the package root -- with no inventory edit. This is
-    what distinguishes a derived inventory from a maintained list, and a
-    maintained list is how the same silent gap comes back.
-    """
-
-    package = tmp_path / "app" / "agent_review"
-    package.mkdir(parents=True)
-    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
-    (package / "__init__.py").write_text("", encoding="utf-8")
-    newcomer = package / "brand_new_consumer.py"
-    newcomer.write_text(
-        "from app.agent_review.target_pack_epoch_v2 import MountTopologySnapshotV2\n"
-        "def leak(snapshot, path):\n"
-        "    return snapshot._governing_mount_raw_v2(path)\n",
-        encoding="utf-8")
-
-    monkeypatch.setattr(
-        sys.modules[__name__], "_production_python_sources",
-        lambda: sorted((tmp_path / "app").rglob("*.py")))
-    offences = _seal_offenders_across(_production_python_sources())
-    assert str(newcomer) in offences, "a newly added production module must be sealed"
-
-
-@pytest.mark.parametrize(
-    "label,body",
-    [
-        ("direct-call", "def leak(s, p):\n    return s._governing_mount_raw_v2(p)\n"),
-        ("raw-visibility", "def leak(s, r):\n    return s._is_visible_raw_v2(r)\n"),
-        ("bound-alias", "def leak(s):\n    raw = s._governing_mount_raw_v2\n    return raw('/x')\n"),
-        ("unbound-alias", "def leak(s):\n    raw = MountTopologySnapshotV2._governing_mount_raw_v2\n    return raw(s, '/x')\n"),
-        ("literal-getattr", "def leak(s):\n    return getattr(s, '_governing_mount_raw_v2')('/x')\n"),
-        ("reference-as-value", "def leak(s, sink):\n    return sink(s._is_visible_raw_v2)\n"),
-        ("rescan-records", "def leak(s):\n    return tuple(s.records)\n"),
-        ("rescan-children", "def leak(s):\n    return s.children\n"),
-        ("rescan-by-id", "def leak(s, i):\n    return s.by_id[i]\n"),
-    ],
+_SUBJECT_STUB = (
+    "class MountTopologySnapshotV2:\n"
+    "    def __init__(self):\n"
+    "        self.records = ()\n"
+    "        self.children = {}\n"
+    "        self.by_id = {}\n"
+    "    def resolve_query_v2(self, q):\n"
+    "        return self._governing_mount_raw_v2('/')\n"
+    "    def _governing_mount_raw_v2(self, p):\n"
+    "        return self.children\n"
+    "    def _is_visible_raw_v2(self, r):\n"
+    "        return self._governing_mount_raw_v2('/')\n"
 )
-def test_cross_module_violations_are_all_detected(
-    label: str, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """§2 reproduction, as a durable corpus: every form the file-local guard
-    missed when placed in ANOTHER production module."""
-
-    package = tmp_path / "app"
-    package.mkdir()
-    module = package / f"consumer_{label.replace('-', '_')}.py"
-    module.write_text(
-        "from app.agent_review.target_pack_epoch_v2 import MountTopologySnapshotV2\n" + body,
-        encoding="utf-8")
-    monkeypatch.setattr(
-        sys.modules[__name__], "_production_python_sources",
-        lambda: sorted(package.rglob("*.py")))
-    assert _seal_offenders_across(_production_python_sources()), f"undetected: {label}"
 
 
-def test_the_seal_does_not_false_positive_on_unrelated_modules(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """§13 controls. The guard identifies the topology subject; it does not ban
-    generic attribute names, and it does not punish legitimate typed use."""
+def _repository(tmp_path: Path, files: dict[str, str] | None = None,
+                subject_extra: str = "") -> Path:
+    """A miniature repository with a real subject module at the real path.
 
-    package = tmp_path / "app"
-    package.mkdir()
-    (package / "unrelated.py").write_text(
-        "class Ledger:\n"
-        "    def __init__(self):\n"
-        "        self.records = []\n"
-        "        self.children = {}\n"
-        "        self.by_id = {}\n"
-        "    def all(self):\n"
-        "        return self.records, self.children, self.by_id\n",
-        encoding="utf-8")
-    (package / "typed_consumer.py").write_text(
-        "from app.agent_review.target_pack_epoch_v2 import (\n"
-        "    MountTopologySnapshotV2, TopologyQueryV2, TopologyQueryKindV2)\n"
-        "def ask(snapshot, path):\n"
-        "    return snapshot.resolve_query_v2(\n"
-        "        TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, path)).governing_mount\n",
-        encoding="utf-8")
-    monkeypatch.setattr(
-        sys.modules[__name__], "_production_python_sources",
-        lambda: sorted(package.rglob("*.py")))
-    assert _seal_offenders_across(_production_python_sources()) == {}
-
-
-def test_mutant_scan_epoch_file_only(tmp_path: Path) -> None:
-    """M_SCAN_EPOCH_FILE_ONLY -- the shipped scope. A violation in another
-    production module goes undetected, which is precisely N18."""
-
-    package = tmp_path / "app"
-    package.mkdir()
-    offender = package / "leaky.py"
-    offender.write_text(
-        "from app.agent_review.target_pack_epoch_v2 import MountTopologySnapshotV2\n"
-        "def leak(s, p):\n    return s._governing_mount_raw_v2(p)\n", encoding="utf-8")
-
-    epoch_only = [Path(epoch_module.__file__)]
-    assert _seal_offenders_across(epoch_only) == {}, "the file-local scan sees nothing"
-    assert _seal_offenders_across(sorted(package.rglob("*.py"))), "the derived scan catches it"
-
-
-def test_mutant_manual_production_file_list(tmp_path: Path) -> None:
-    """M_MANUAL_PRODUCTION_FILE_LIST -- a maintained list silently omits the
-    module nobody remembered to add."""
-
-    package = tmp_path / "app"
-    package.mkdir()
-    known = package / "known.py"
-    known.write_text("x = 1\n", encoding="utf-8")
-    forgotten = package / "forgotten.py"
-    forgotten.write_text(
-        "from app.agent_review.target_pack_epoch_v2 import MountTopologySnapshotV2\n"
-        "def leak(s, p):\n    return s._governing_mount_raw_v2(p)\n", encoding="utf-8")
-
-    maintained_list = [known]                       # the mutant: a hand-kept list
-    assert _seal_offenders_across(maintained_list) == {}
-    derived = sorted(package.rglob("*.py"))         # the real mechanism
-    assert _seal_offenders_across(derived), "a derived inventory catches the forgotten module"
-
-
-def test_dynamic_reflection_is_an_explicit_nonclaim() -> None:
-    """Bound, stated rather than implied.
-
-    This is static analysis of the repository's own Python. A dynamically
-    computed attribute name defeats it, and no claim is made otherwise --
-    saying so is the difference between a bounded guard and a false one.
+    Fixtures are written verbatim -- never dedented. A dedent silently hoists
+    an indented method out of its class, which turns an intended RED into a
+    meaningless GREEN; that mistake was made once while building this file.
     """
 
-    dynamic = ("def leak(s, name):\n"
-               "    return getattr(s, name)('/x')\n")
-    assert _raw_reference_offenders(dynamic) == []
+    root = tmp_path
+    (root / "app" / "agent_review").mkdir(parents=True, exist_ok=True)
+    (root / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "app" / "agent_review" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "app" / "agent_review" / "target_pack_epoch_v2.py").write_text(
+        _SUBJECT_STUB + subject_extra, encoding="utf-8")
+    for rel, src in (files or {}).items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(src, encoding="utf-8")
+    return root
 
 
-def _retired_test_the_guard_itself_would_catch_the_native_finding() -> None:
-    """M_AST_EXEMPTS_PROJECT_FUNCTIONS -- proof the guard is not decorative.
+_IMPORT_SUBJECT = "from app.agent_review.target_pack_epoch_v2 import MountTopologySnapshotV2\n"
 
-    Reintroducing a prefix exemption for `project*` makes the offender set
-    empty again, i.e. the exact regression that shipped becomes invisible.
+
+# ---- the seal over the real repository -----------------------------------
+
+def test_the_real_repository_is_sealed() -> None:
+    """The whole repository, through the one authority."""
+
+    offences = seal.seal_offences(_REPOSITORY_ROOT)
+    assert offences == [], f"topology authority escapes the seal: {offences}"
+
+
+def test_the_universe_is_derived_from_the_repository_not_a_root_list() -> None:
+    """`#262` N19. No directory is privileged except the test package."""
+
+    universe = seal.repository_python_universe(_REPOSITORY_ROOT)
+    tops = {p.relative_to(_REPOSITORY_ROOT).parts[0] for p in universe}
+    assert "app" in tops
+    assert "scripts" in tops, "executable entry points are repository Python"
+    assert "tests" not in tops, "the test package is explicitly privileged"
+    assert not any("__pycache__" in p.parts for p in universe)
+    assert len(universe) > len(
+        [p for p in universe if p.relative_to(_REPOSITORY_ROOT).parts[0] == "app"]), \
+        "the universe must be strictly larger than the falsified app/ root"
+
+
+def test_scripts_that_import_the_epoch_module_are_in_the_universe() -> None:
+    """The concrete N19 witness, named."""
+
+    universe = {str(p.relative_to(_REPOSITORY_ROOT))
+                for p in seal.repository_python_universe(_REPOSITORY_ROOT)}
+    assert "scripts/agent-review-target-pack-v2.py" in universe
+    assert "scripts/github_agent_review.py" in universe
+
+
+# ---- N19: discovery without any list edit --------------------------------
+
+@pytest.mark.parametrize("location", [
+    "a_surface_that_did_not_exist/cli.py",
+    "scripts/newly_added_entrypoint.py",
+    "evals/agent_review_v2/new_consumer.py",
+    "another_package/deep/nested/consumer.py",
+])
+def test_a_new_consumer_anywhere_is_sealed_without_editing_any_list(
+    location: str, tmp_path: Path
+) -> None:
+    """`#262` N19, THE discriminator.
+
+    A consumer in a location that did not exist when this test was written is
+    sealed the moment it lands, through the REAL analyzer over a REAL root. No
+    inventory is monkeypatched and no directory is named.
     """
 
-    offenders = set(_raw_primitive_callsites()) - _PERMITTED_RAW_CALLERS
-    assert offenders == set()
+    root = _repository(tmp_path, {location: (
+        _IMPORT_SUBJECT
+        + "def leak(s: MountTopologySnapshotV2):\n"
+          "    return s._governing_mount_raw_v2('/x')\n")})
+    offences = seal.seal_offences(root)
+    assert any(location in o.path for o in offences), \
+        f"a new consumer at {location} must be sealed: {offences}"
 
-    # simulate the OLD guard: exempt anything starting with "project"
-    weakened = {c for c in _raw_primitive_callsites()
-                if not c.startswith("project")} - _PERMITTED_RAW_CALLERS
-    # and simulate project_v2 calling raw traversal again
-    with_regression = set(_raw_primitive_callsites()) | {"project_v2"}
-    assert "project_v2" in with_regression
-    assert (with_regression - _PERMITTED_RAW_CALLERS), "strict guard must flag it"
-    assert not ({c for c in with_regression if not c.startswith("project")}
-                - _PERMITTED_RAW_CALLERS), "prefix-exempting guard would NOT flag it"
-    assert weakened == set()
+
+def test_fixture_corpora_that_never_import_the_subject_are_not_judged() -> None:
+    """Positive precision at repository scale.
+
+    `evals/*/case_sources/**` stands in for OTHER repositories. It needs no
+    exclusion rule: it never imports the subject, so it is never bound. This is
+    what makes reachability the right authority rather than a directory census.
+    """
+
+    bound = seal.bound_module_identities(_REPOSITORY_ROOT)
+    assert not any("case_sources" in identity for identity in bound)
+
+
+# ---- N20: intermodule subject identity -----------------------------------
+
+def test_n20_subject_is_tracked_through_multi_hop_reexports(tmp_path: Path) -> None:
+    """`#262` N20. module_c contains NEITHER literal marker."""
+
+    root = _repository(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/module_a.py":
+            "from app.agent_review.target_pack_epoch_v2 import "
+            "MountTopologySnapshotV2 as Snapshot\n",
+        "pkg/module_b.py": "from pkg.module_a import Snapshot as S\n",
+        "pkg/module_c.py":
+            "from pkg.module_b import S\n"
+            "def bad(snapshot: S):\n"
+            "    return snapshot.records\n",
+    })
+    consumer = (root / "pkg" / "module_c.py").read_text(encoding="utf-8")
+    assert "MountTopologySnapshotV2" not in consumer
+    assert "target_pack_epoch_v2" not in consumer
+
+    offences = seal.seal_offences(root)
+    assert any(o.module == "pkg.module_c" and o.name == "records" for o in offences), \
+        f"a three-hop re-export must still identify the subject: {offences}"
+
+
+def test_n20_module_alias_access_is_tracked(tmp_path: Path) -> None:
+    """`import ... as tp` then `tp.MountTopologySnapshotV2`."""
+
+    root = _repository(tmp_path, {"pkg2/c.py": (
+        "import app.agent_review.target_pack_epoch_v2 as tp\n"
+        "def bad(s: tp.MountTopologySnapshotV2):\n"
+        "    return s.by_id\n")})
+    assert any(o.module == "pkg2.c" for o in seal.seal_offences(root))
+
+
+# ---- N21: owner identity is module-qualified -----------------------------
+
+def test_n21_an_impostor_module_inherits_no_authority(tmp_path: Path) -> None:
+    """`#262` N21. Identical `(class, method)` in the wrong module."""
+
+    root = _repository(tmp_path, {"unrelated/impostor.py": (
+        "class MountTopologySnapshotV2:\n"
+        "    def resolve_query_v2(self, real):\n"
+        "        return real._governing_mount_raw_v2('/x')\n")})
+    offences = seal.seal_offences(root)
+    assert any(o.module == "unrelated.impostor" for o in offences), \
+        "authority must not transfer by name collision"
+
+
+def test_n21_permitted_owners_are_module_qualified() -> None:
+    """The permission tuples themselves carry module identity."""
+
+    for owner in seal.PERMITTED_RAW_OWNERS | seal.PERMITTED_RELEVANCE_OWNERS:
+        assert len(owner) == 3 and owner[0] == seal.SUBJECT_MODULE
+
+
+# ---- N22: the raw relevance authority boundary ---------------------------
+
+@pytest.mark.parametrize("wrapper,attribute", [
+    ("project_v2", "records"),
+    ("governing_mount_v2", "children"),
+    ("is_visible_v2", "by_id"),
+    ("visible_child_mounts_v2", "records"),
+])
+def test_n22_consumer_wrappers_may_not_rescan_relevance(
+    wrapper: str, attribute: str, tmp_path: Path
+) -> None:
+    """`#262` N22, a REGRESSION this PR introduced.
+
+    `da23bbc` did not exempt `project_v2`; `8ae0d32` added it along with the
+    other thin wrappers. A wrapper is a CONSUMER: it must obtain relevance
+    through the typed resolution contract like anything else.
+    """
+
+    root = _repository(tmp_path, subject_extra=(
+        f"    def {wrapper}(self, p):\n"
+        f"        return self.{attribute}\n"))
+    offences = [o for o in seal.seal_offences(root) if o.owner[2] == wrapper]
+    assert offences, f"{wrapper} must not be permitted to rescan .{attribute}"
+
+
+@pytest.mark.parametrize("method,attribute", [
+    ("_semantic_seeds_v2", "records"),
+    ("_dependency_closure_v2", "by_id"),
+    ("_climb_stack_v2", "children"),
+    ("_visible_root_v2", "records"),
+    ("validate_relevant_chain_v2", "by_id"),
+    ("_governing_mount_raw_v2", "children"),
+    ("__init__", "records"),
+])
+def test_n22_semantically_necessary_owners_stay_permitted(
+    method: str, attribute: str, tmp_path: Path
+) -> None:
+    """The other half. Every permitted owner is permitted because it
+    IMPLEMENTS the derivation, established from the real module, not because
+    it happened to be in a list."""
+
+    root = _repository(tmp_path, subject_extra=(
+        f"    def {method}(self, p):\n"
+        f"        return self.{attribute}\n"))
+    assert not [o for o in seal.seal_offences(root) if o.owner[2] == method]
+
+
+def test_n22_permitted_owner_sets_match_semantic_necessity() -> None:
+    """The permitted sets are exactly what the real resolver needs -- no
+    consumer wrappers, and nothing vestigial."""
+
+    assert {o[2] for o in seal.PERMITTED_RAW_OWNERS} == {
+        "_is_visible_raw_v2", "resolve_query_v2"}
+    permitted = {o[2] for o in seal.PERMITTED_RELEVANCE_OWNERS}
+    assert permitted == {
+        "__init__", "_semantic_seeds_v2", "_dependency_closure_v2",
+        "_governing_mount_raw_v2", "_climb_stack_v2", "_visible_root_v2",
+        "validate_relevant_chain_v2"}
+    for wrapper in ("project_v2", "governing_mount_v2", "is_visible_v2",
+                    "visible_child_mounts_v2"):
+        assert wrapper not in permitted, f"{wrapper} is a consumer, not an authority"
+
+
+# ---- N23 / N15 historical: static reference forms -------------------------
+
+@pytest.mark.parametrize("label,body", [
+    ("direct-call", "def leak(s: MountTopologySnapshotV2):\n"
+                    "    return s._governing_mount_raw_v2('/x')\n"),
+    ("raw-visibility", "def leak(s: MountTopologySnapshotV2):\n"
+                       "    return s._is_visible_raw_v2(None)\n"),
+    ("bound-alias", "def leak(s: MountTopologySnapshotV2):\n"
+                    "    raw = s._governing_mount_raw_v2\n"
+                    "    return raw('/x')\n"),
+    ("unbound-alias", "def leak(s):\n"
+                      "    raw = MountTopologySnapshotV2._governing_mount_raw_v2\n"
+                      "    return raw(s, '/x')\n"),
+    ("literal-getattr", "def leak(s: MountTopologySnapshotV2):\n"
+                        "    return getattr(s, '_governing_mount_raw_v2')('/x')\n"),
+    ("passed-as-value", "def leak(s: MountTopologySnapshotV2, sink):\n"
+                        "    return sink(s._is_visible_raw_v2)\n"),
+])
+def test_every_raw_reference_form_is_detected_cross_module(
+    label: str, body: str, tmp_path: Path
+) -> None:
+    """The N15 corpus, preserved and now enforced ACROSS modules."""
+
+    root = _repository(tmp_path, {"consumer/mod.py": _IMPORT_SUBJECT + body})
+    assert any(o.module == "consumer.mod" for o in seal.seal_offences(root)), \
+        f"undetected raw reference form: {label}"
+
+
+@pytest.mark.parametrize("internal", ["records", "children", "by_id"])
+def test_n23_literal_getattr_on_relevance_internals_is_detected(
+    internal: str, tmp_path: Path
+) -> None:
+    """`#262` N23. A literal name is static; only a COMPUTED name is not."""
+
+    root = _repository(tmp_path, {"consumer/g.py": (
+        _IMPORT_SUBJECT
+        + "def leak(s: MountTopologySnapshotV2):\n"
+          f"    return getattr(s, '{internal}')\n")})
+    offences = seal.seal_offences(root)
+    assert any(o.name == internal and o.form == "literal-getattr" for o in offences)
+
+
+def test_dynamic_reflection_is_an_explicit_nonclaim(tmp_path: Path) -> None:
+    """Bound, asserted rather than implied.
+
+    A dynamically computed attribute name defeats static analysis. Saying so is
+    the difference between a bounded guard and a false one.
+    """
+
+    root = _repository(tmp_path, {"consumer/dyn.py": (
+        _IMPORT_SUBJECT
+        + "def leak(s: MountTopologySnapshotV2, name):\n"
+          "    return getattr(s, name)\n")})
+    assert not [o for o in seal.seal_offences(root) if o.module == "consumer.dyn"]
+
+
+# ---- N25: receiver precision ---------------------------------------------
+
+def test_n25_typed_consumer_and_unrelated_object_in_the_same_module(
+    tmp_path: Path
+) -> None:
+    """`#262` N25, the positive control that the old model could not pass.
+
+    The falsified model asked only whether the MODULE contained a marker, so
+    every `.records` in a file that legitimately used the typed API was
+    reported. Both halves live in one module here, deliberately.
+    """
+
+    root = _repository(tmp_path, {"consumer/mixed.py": (
+        _IMPORT_SUBJECT
+        + "class Ledger:\n"
+          "    def __init__(self):\n"
+          "        self.records = []\n"
+          "        self.children = {}\n"
+          "        self.by_id = {}\n"
+          "    def all(self):\n"
+          "        return self.records, self.children, self.by_id\n"
+          "def good(s: MountTopologySnapshotV2):\n"
+          "    return s.resolve_query_v2(None)\n")})
+    assert seal.seal_offences(root) == []
+
+
+def test_n25_the_same_module_still_reports_real_reconstruction(
+    tmp_path: Path
+) -> None:
+    """The other half: precision must not become blindness."""
+
+    root = _repository(tmp_path, {"consumer/mixed2.py": (
+        _IMPORT_SUBJECT
+        + "class Ledger:\n"
+          "    def __init__(self):\n"
+          "        self.records = []\n"
+          "def bad(s: MountTopologySnapshotV2):\n"
+          "    return s.records\n")})
+    offences = seal.seal_offences(root)
+    assert [o.owner[2] for o in offences] == ["bad"], \
+        f"only the real reconstruction may be reported: {offences}"
+
+
+# ---- factory-obtained receivers -------------------------------------------
+
+def test_a_factory_obtained_snapshot_is_still_the_subject(tmp_path: Path) -> None:
+    """A snapshot is normally obtained from `observe()` / `parse()`, not by
+    calling the class. This path is statically expressible, so leaving it out
+    would have been a hole rather than a bound -- it was found by adversarial
+    probing after the first 23 vectors all passed.
+    """
+
+    root = _repository(tmp_path, {"consumer/fac.py": (
+        _IMPORT_SUBJECT
+        + "def leak():\n"
+          "    snap = MountTopologySnapshotV2.observe()\n"
+          "    return snap.records\n")}, subject_extra=(
+        "    @classmethod\n"
+        "    def observe(cls) -> 'MountTopologySnapshotV2':\n"
+        "        return cls()\n"))
+    assert any(o.module == "consumer.fac" for o in seal.seal_offences(root))
+
+
+def test_an_annotated_factory_binds_across_modules(tmp_path: Path) -> None:
+    """The return annotation is read where the factory is DEFINED, and the
+    binding survives the import into another module."""
+
+    root = _repository(tmp_path, {
+        "consumer/__init__.py": "",
+        "consumer/build.py": _IMPORT_SUBJECT
+            + "def make() -> MountTopologySnapshotV2:\n"
+              "    return MountTopologySnapshotV2()\n",
+        "consumer/use.py": "from consumer.build import make\n"
+                           "def leak():\n"
+                           "    snap = make()\n"
+                           "    return snap.by_id\n",
+    })
+    assert any(o.module == "consumer.use" for o in seal.seal_offences(root))
+
+
+def test_an_unannotated_factory_is_an_explicit_nonclaim(tmp_path: Path) -> None:
+    """The bound, stated. Without an annotation this would be return-type
+    inference, which this analyzer does not claim to do."""
+
+    root = _repository(tmp_path, {"consumer/un.py": (
+        _IMPORT_SUBJECT
+        + "def make():\n"
+          "    return MountTopologySnapshotV2()\n"
+          "def leak():\n"
+          "    snap = make()\n"
+          "    return snap.records\n")})
+    assert not [o for o in seal.seal_offences(root) if o.module == "consumer.un"]
+
+
+# ---- mutants: each dies by its own intended evidence ----------------------
+
+def _offences_over(root: Path, sources: list[Path]) -> list:
+    graph = seal.build_module_graph(sources, root)
+    out: list = []
+    for identity in sorted(graph):
+        out.extend(seal.analyze_module(graph, graph[identity]))
+    return out
+
+
+def _newcomer_repository(tmp_path: Path) -> Path:
+    return _repository(tmp_path, {"brand_new_surface/consumer.py": (
+        _IMPORT_SUBJECT
+        + "def leak(s: MountTopologySnapshotV2):\n"
+          "    return s._governing_mount_raw_v2('/x')\n")})
+
+
+@pytest.mark.parametrize("label,roots", [
+    ("M_APP_ROOT_ONLY", {"app"}),
+    ("M_MANUAL_ROOT_LIST", {"app", "scripts"}),
+])
+def test_mutant_root_restricted_inventory(label: str, roots: set[str],
+                                          tmp_path: Path) -> None:
+    """The falsified architecture, and the architecture that would merely
+    postpone it. Both go blind on a surface outside their roots."""
+
+    root = _newcomer_repository(tmp_path)
+    assert seal.seal_offences(root), "the real seal must catch the newcomer"
+    restricted = [p for p in seal.repository_python_universe(root)
+                  if p.relative_to(root).parts[0] in roots]
+    assert _offences_over(root, restricted) == [], \
+        f"{label} must be blind here -- that is what it is being kept to show"
+
+
+def test_mutant_reexport_not_followed(tmp_path: Path,
+                                      monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_REEXPORT_NOT_FOLLOWED."""
+
+    root = _repository(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/a.py": "from app.agent_review.target_pack_epoch_v2 import "
+                    "MountTopologySnapshotV2 as Snapshot\n",
+        "pkg/b.py": "from pkg.a import Snapshot as S\n"
+                    "def bad(x: S):\n"
+                    "    return x.records\n",
+    })
+    assert seal.seal_offences(root), "the real seal must follow the re-export"
+    monkeypatch.setattr(seal, "_resolve",
+                        lambda graph, module, symbol, seen=frozenset(): (module, symbol))
+    assert seal.seal_offences(root) == []
+
+
+def test_mutant_owner_identity_omits_module(tmp_path: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_OWNER_IDENTITY_OMITS_MODULE -- exactly N21's defect, reconstructed."""
+
+    root = _repository(tmp_path, {"unrelated/impostor.py": (
+        "class MountTopologySnapshotV2:\n"
+        "    def resolve_query_v2(self, real):\n"
+        "        return real._governing_mount_raw_v2('/x')\n")})
+    assert seal.seal_offences(root), "module-qualified identity must flag it"
+
+    def blind(self, kind, name, form, line):
+        owner = self._owner()
+        permitted = (seal.PERMITTED_RAW_OWNERS if kind == "raw"
+                     else seal.PERMITTED_RELEVANCE_OWNERS)
+        if any(cls == owner[1] and fn == owner[2] for _, cls, fn in permitted):
+            return
+        self.offences.append(seal.Offence(self.node.identity, str(self.node.path),
+                                          owner, kind, name, form, line))
+
+    monkeypatch.setattr(seal._ModuleVisitor, "_record", blind)
+    assert seal.seal_offences(root) == []
+
+
+def test_mutant_consumer_wrapper_allowed_rescan(tmp_path: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_CONSUMER_WRAPPER_ALLOWED_RESCAN -- the shipped `8ae0d32` allowlist."""
+
+    root = _repository(tmp_path, subject_extra=(
+        "    def project_v2(self, p):\n"
+        "        return self.records\n"))
+    assert seal.seal_offences(root), "a wrapper rescan must be an offence"
+    monkeypatch.setattr(seal, "PERMITTED_RELEVANCE_OWNERS",
+                        seal.PERMITTED_RELEVANCE_OWNERS
+                        | {(seal.SUBJECT_MODULE, seal.SUBJECT_CLASS, "project_v2")})
+    assert seal.seal_offences(root) == []
+
+
+def test_mutant_relevance_literal_getattr_unseen(tmp_path: Path,
+                                                 monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_RELEVANCE_LITERAL_GETATTR_UNSEEN."""
+
+    import ast as _ast
+
+    root = _repository(tmp_path, {"consumer/g.py": (
+        _IMPORT_SUBJECT
+        + "def leak(s: MountTopologySnapshotV2):\n"
+          "    return getattr(s, 'records')\n")})
+    assert seal.seal_offences(root), "literal getattr must be seen"
+    monkeypatch.setattr(seal._ModuleVisitor, "visit_Call",
+                        lambda self, node: _ast.NodeVisitor.generic_visit(self, node))
+    assert seal.seal_offences(root) == []
+
+
+def test_mutant_receiver_identity_ignored(tmp_path: Path,
+                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    """M_RECEIVER_IDENTITY_IGNORED -- the falsified module-marker model.
+
+    This mutant dies by OVER-refusal: it reports the unrelated `Ledger`, which
+    is precisely N25.
+    """
+
+    root = _repository(tmp_path, {"consumer/mixed.py": (
+        _IMPORT_SUBJECT
+        + "class Ledger:\n"
+          "    def __init__(self):\n"
+          "        self.records = []\n"
+          "def good(s: MountTopologySnapshotV2):\n"
+          "    return s.resolve_query_v2(None)\n")})
+    assert seal.seal_offences(root) == [], "the real seal must accept this module"
+    monkeypatch.setattr(seal._ModuleVisitor, "_receiver_is_subject",
+                        lambda self, expr: True)
+    assert seal.seal_offences(root), "the marker model would flag Ledger"
+
+
+def test_mutant_newcomer_test_supplies_its_own_inventory(tmp_path: Path) -> None:
+    """M_NEWCOMER_TEST_SUPPLIES_ITS_OWN_INVENTORY -- `#262` N24.
+
+    The `8ae0d32` newcomer test replaced the inventory function with a lambda
+    that already contained the newcomer, so it proved only that a list contains
+    what was put in it. Here the discriminator is that the REAL derivation
+    finds the newcomer; a hand-supplied inventory that omits it goes blind.
+    """
+
+    root = _newcomer_repository(tmp_path)
+    assert seal.seal_offences(root), "the real derivation must find the newcomer"
+
+    pretended = [p for p in seal.repository_python_universe(root)
+                 if "brand_new_surface" not in p.parts]
+    assert _offences_over(root, pretended) == [], \
+        "a supplied inventory omitting the newcomer proves nothing"
+
+
+def _this_module_ast() -> "ast.Module":
+    import ast
+    return ast.parse(Path(__file__).read_text(encoding="utf-8"))
+
+
+def test_the_inventory_oracle_is_never_supplied_by_the_test() -> None:
+    """N24 as a standing discipline, asserted STRUCTURALLY.
+
+    No test here may monkeypatch the universe derivation itself: the newcomer
+    discriminator has to run the real function against a real root, or it
+    proves only that a list contains what was put in it.
+
+    This is checked on the AST, not by substring -- a guard that greps its own
+    source matches its own vocabulary and fails for the wrong reason.
+    """
+
+    import ast
+
+    forbidden = {"repository_python_universe", "module_identity"}
+    for node in ast.walk(_this_module_ast()):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "setattr"):
+            continue
+        if len(node.args) < 2:
+            continue
+        target, attribute = node.args[0], node.args[1]
+        if not (isinstance(target, ast.Name) and target.id == "seal"):
+            continue
+        if isinstance(attribute, ast.Constant) and attribute.value in forbidden:
+            raise AssertionError(
+                f"the inventory oracle must not be supplied by the test: "
+                f"seal.{attribute.value} patched at line {node.lineno}")
+
+
+def test_there_is_exactly_one_static_seal_authority() -> None:
+    """`#262` §20. The per-file marker analyzer is SUPERSEDED, not parallel.
+
+    Two analyzers with overlapping jurisdiction is how an `app/`-only inventory
+    survived a review that believed it was repository-wide. Checked on the AST
+    so the retired names may still be NAMED in prose and in this list.
+    """
+
+    import ast
+
+    retired = {
+        "_production_python_sources", "_seal_offenders_across",
+        "_relevance_reconstruction_offenders", "_raw_reference_offenders",
+        "_raw_primitive_references", "_TOPOLOGY_SUBJECT_MARKERS",
+        "_PRODUCTION_PACKAGE_ROOTS", "_PERMITTED_RELEVANCE_OWNERS",
+    }
+    tree = _this_module_ast()
+    defined: set[str] = set()
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            defined.add(node.name)
+        elif isinstance(node, ast.Name):
+            (defined if isinstance(node.ctx, ast.Store) else used).add(node.id)
+    assert not (retired & defined), \
+        f"retired analyzer routes must not be redefined here: {retired & defined}"
+    assert not (retired & used), \
+        f"retired analyzer routes must not be called here: {retired & used}"
+
+    helper = Path(__file__).resolve().parent / "_topology_static_seal_v2.py"
+    assert helper.exists(), "the single authority must exist as one module"
+    assert helper.read_text(encoding="utf-8").count("def seal_offences") == 1
 
 
 def test_resolver_does_not_recurse_through_the_consumer_wrapper() -> None:
