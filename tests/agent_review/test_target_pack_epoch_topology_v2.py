@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -2869,92 +2870,278 @@ def _raw_reference_offenders(source: str) -> list[tuple[str, str, str]]:
             if (ref[0], ref[1]) not in _PERMITTED_RAW_REFERENCES]
 
 
-def test_raw_topology_traversal_is_referenced_only_by_the_resolver() -> None:
-    """§11/§12. The structural seal, reference-aware and scope-aware."""
+# --- repository-wide production inventory (`#262` N18) --------------------
+#
+# The seal previously parsed exactly one file, `epoch_module.__file__`, so any
+# OTHER production module could reference a raw primitive or rescan the
+# snapshot while both structural guards stayed green. Six forms were shown
+# undetected that way.
+#
+# The inventory is DERIVED from the repository's authoritative runtime package
+# root rather than listed, so a production module added tomorrow is sealed
+# without anyone remembering to update a list. That property is the whole
+# point: a manually maintained list reproduces the same silent gap the first
+# time it is not updated.
+#
+# Authority for the root: `app/` is the runtime package (`app/__init__.py`,
+# and `scripts/*.py` import `from app...`), while `tests/` is a separate
+# package. There is no pyproject/setup.py in this repository, so the package
+# layout is the authority.
 
-    source = Path(epoch_module.__file__).read_text(encoding="utf-8")
-    offenders = _raw_reference_offenders(source)
-    assert offenders == [], f"raw topology primitives referenced outside the resolver: {offenders}"
+_PRODUCTION_PACKAGE_ROOTS = ("app",)
+_NON_PRODUCTION_PARTS = frozenset({
+    "__pycache__", ".venv", "venv", "build", "dist", ".git", "node_modules",
+})
+
+
+def _production_python_sources() -> list[Path]:
+    """Every production Python source, derived from the package roots."""
+
+    repository = Path(epoch_module.__file__).resolve().parents[2]
+    sources: list[Path] = []
+    for root in _PRODUCTION_PACKAGE_ROOTS:
+        for path in sorted((repository / root).rglob("*.py")):
+            if any(part in _NON_PRODUCTION_PARTS for part in path.parts):
+                continue
+            sources.append(path)
+    return sources
+
+
+# Attribute names that reconstruct topology relevance. Generic on their own,
+# so they are only judged in modules that actually reference the topology
+# subject -- the guard identifies the subject, it does not ban the names.
+_RELEVANCE_INTERNALS = frozenset({"records", "children", "by_id"})
+_TOPOLOGY_SUBJECT_MARKERS = ("MountTopologySnapshotV2", "target_pack_epoch_v2")
+
+_PERMITTED_RELEVANCE_OWNERS = {
+    ("MountTopologySnapshotV2", "__init__"),
+    ("MountTopologySnapshotV2", "parse"),
+    ("MountTopologySnapshotV2", "observe"),
+    ("MountTopologySnapshotV2", "_semantic_seeds_v2"),
+    ("MountTopologySnapshotV2", "_dependency_closure_v2"),
+    ("MountTopologySnapshotV2", "resolve_query_v2"),
+    ("MountTopologySnapshotV2", "_governing_mount_raw_v2"),
+    ("MountTopologySnapshotV2", "_is_visible_raw_v2"),
+    ("MountTopologySnapshotV2", "is_visible_v2"),
+    ("MountTopologySnapshotV2", "visible_child_mounts_v2"),
+    ("MountTopologySnapshotV2", "validate_relevant_chain_v2"),
+    ("MountTopologySnapshotV2", "_climb_stack_v2"),
+    ("MountTopologySnapshotV2", "_visible_root_v2"),
+    ("MountTopologySnapshotV2", "governing_mount_v2"),
+    ("MountTopologySnapshotV2", "project_v2"),
+}
+
+
+def _relevance_reconstruction_offenders(source: str) -> list[tuple[str, str, str]]:
+    """Consumer-side rebuilding of relevance from the snapshot's internals.
+
+    Only meaningful where the module references the topology subject at all;
+    an unrelated class with a `.records` attribute is not this guard's
+    business, and banning the bare name repository-wide would be a grep
+    wearing an AST costume.
+    """
+
+    import ast
+
+    if not any(marker in source for marker in _TOPOLOGY_SUBJECT_MARKERS):
+        return []
+
+    found: list[tuple[str, str, str]] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.cls: str | None = None
+            self.fn: str | None = None
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            outer, self.cls = self.cls, node.name
+            self.generic_visit(node)
+            self.cls = outer
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            outer, self.fn = self.fn, node.name
+            self.generic_visit(node)
+            self.fn = outer
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if node.attr in _RELEVANCE_INTERNALS:
+                owner = (self.cls or "<module>", self.fn or "<module>")
+                if owner not in _PERMITTED_RELEVANCE_OWNERS:
+                    found.append((owner[0], owner[1], node.attr))
+            self.generic_visit(node)
+
+    Visitor().visit(ast.parse(source))
+    return found
+
+
+def _seal_offenders_across(sources: list[Path]) -> dict[str, list]:
+    """The repository-wide seal, over a derived source inventory."""
+
+    offences: dict[str, list] = {}
+    for path in sources:
+        source = path.read_text(encoding="utf-8")
+        raw = _raw_reference_offenders(source)
+        relevance = _relevance_reconstruction_offenders(source)
+        if raw or relevance:
+            offences[str(path)] = raw + relevance
+    return offences
+
+
+def test_the_production_inventory_is_derived_not_listed() -> None:
+    """§9/§12. Derived from the package root, so it expands by itself."""
+
+    sources = _production_python_sources()
+    assert len(sources) > 50, "the inventory must cover the whole runtime package"
+    assert any(p.name == "target_pack_epoch_v2.py" for p in sources)
+    assert not any("tests" in p.parts for p in sources), "tests are not production"
+    assert not any("__pycache__" in p.parts for p in sources)
+
+
+def test_topology_authority_is_sealed_across_every_production_module() -> None:
+    """§10. Both classes, repository-wide: raw primitives and relevance
+    reconstruction. The shipped guard read one file."""
+
+    offences = _seal_offenders_across(_production_python_sources())
+    assert offences == {}, f"topology authority escapes the seal: {offences}"
+
+
+def test_a_new_production_module_enters_the_seal_without_editing_any_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§12. THE discriminator N18 requires.
+
+    A module that did not exist when this test was written must be sealed the
+    moment it lands under the package root -- with no inventory edit. This is
+    what distinguishes a derived inventory from a maintained list, and a
+    maintained list is how the same silent gap comes back.
+    """
+
+    package = tmp_path / "app" / "agent_review"
+    package.mkdir(parents=True)
+    (tmp_path / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    newcomer = package / "brand_new_consumer.py"
+    newcomer.write_text(
+        "from app.agent_review.target_pack_epoch_v2 import MountTopologySnapshotV2\n"
+        "def leak(snapshot, path):\n"
+        "    return snapshot._governing_mount_raw_v2(path)\n",
+        encoding="utf-8")
+
+    monkeypatch.setattr(
+        sys.modules[__name__], "_production_python_sources",
+        lambda: sorted((tmp_path / "app").rglob("*.py")))
+    offences = _seal_offenders_across(_production_python_sources())
+    assert str(newcomer) in offences, "a newly added production module must be sealed"
 
 
 @pytest.mark.parametrize(
-    "label,snippet",
+    "label,body",
     [
-        ("direct-attribute-call",
-         "class Other:\n    def consume(self, s, p):\n        return s._governing_mount_raw_v2(p)\n"),
-        ("bound-method-alias",
-         "class Other:\n    def consume(self, s, p):\n        raw = s._governing_mount_raw_v2\n        return raw(p)\n"),
-        ("unbound-class-alias",
-         "class Other:\n    def consume(self, s, p):\n        raw = MountTopologySnapshotV2._governing_mount_raw_v2\n        return raw(s, p)\n"),
-        ("literal-getattr",
-         "class Other:\n    def consume(self, s, p):\n        return getattr(s, '_governing_mount_raw_v2')(p)\n"),
-        ("passed-as-value",
-         "class Other:\n    def consume(self, s, f):\n        return f(s._is_visible_raw_v2)\n"),
-        ("unrelated-function-named-resolve_query_v2",
-         "def resolve_query_v2(s, p):\n    return s._governing_mount_raw_v2(p)\n"),
+        ("direct-call", "def leak(s, p):\n    return s._governing_mount_raw_v2(p)\n"),
+        ("raw-visibility", "def leak(s, r):\n    return s._is_visible_raw_v2(r)\n"),
+        ("bound-alias", "def leak(s):\n    raw = s._governing_mount_raw_v2\n    return raw('/x')\n"),
+        ("unbound-alias", "def leak(s):\n    raw = MountTopologySnapshotV2._governing_mount_raw_v2\n    return raw(s, '/x')\n"),
+        ("literal-getattr", "def leak(s):\n    return getattr(s, '_governing_mount_raw_v2')('/x')\n"),
+        ("reference-as-value", "def leak(s, sink):\n    return sink(s._is_visible_raw_v2)\n"),
+        ("rescan-records", "def leak(s):\n    return tuple(s.records)\n"),
+        ("rescan-children", "def leak(s):\n    return s.children\n"),
+        ("rescan-by-id", "def leak(s, i):\n    return s.by_id[i]\n"),
     ],
 )
-def test_the_seal_rejects_every_known_evasion(label: str, snippet: str) -> None:
-    """M_GUARD_DIRECT_CALLS_ONLY / M_RAW_BOUND_METHOD_ALIAS /
-    M_RAW_UNBOUND_METHOD_ALIAS / M_RAW_LITERAL_GETATTR /
-    M_UNRELATED_RESOLVE_QUERY_NAME_WHITELISTED.
+def test_cross_module_violations_are_all_detected(
+    label: str, body: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§2 reproduction, as a durable corpus: every form the file-local guard
+    missed when placed in ANOTHER production module."""
 
-    Each fixture is a bypass the shipped guard accepted. The last one matters
-    independently: permission belongs to a lexical owner, so a module-level
-    function merely NAMED `resolve_query_v2` inherits nothing.
+    package = tmp_path / "app"
+    package.mkdir()
+    module = package / f"consumer_{label.replace('-', '_')}.py"
+    module.write_text(
+        "from app.agent_review.target_pack_epoch_v2 import MountTopologySnapshotV2\n" + body,
+        encoding="utf-8")
+    monkeypatch.setattr(
+        sys.modules[__name__], "_production_python_sources",
+        lambda: sorted(package.rglob("*.py")))
+    assert _seal_offenders_across(_production_python_sources()), f"undetected: {label}"
+
+
+def test_the_seal_does_not_false_positive_on_unrelated_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§13 controls. The guard identifies the topology subject; it does not ban
+    generic attribute names, and it does not punish legitimate typed use."""
+
+    package = tmp_path / "app"
+    package.mkdir()
+    (package / "unrelated.py").write_text(
+        "class Ledger:\n"
+        "    def __init__(self):\n"
+        "        self.records = []\n"
+        "        self.children = {}\n"
+        "        self.by_id = {}\n"
+        "    def all(self):\n"
+        "        return self.records, self.children, self.by_id\n",
+        encoding="utf-8")
+    (package / "typed_consumer.py").write_text(
+        "from app.agent_review.target_pack_epoch_v2 import (\n"
+        "    MountTopologySnapshotV2, TopologyQueryV2, TopologyQueryKindV2)\n"
+        "def ask(snapshot, path):\n"
+        "    return snapshot.resolve_query_v2(\n"
+        "        TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, path)).governing_mount\n",
+        encoding="utf-8")
+    monkeypatch.setattr(
+        sys.modules[__name__], "_production_python_sources",
+        lambda: sorted(package.rglob("*.py")))
+    assert _seal_offenders_across(_production_python_sources()) == {}
+
+
+def test_mutant_scan_epoch_file_only(tmp_path: Path) -> None:
+    """M_SCAN_EPOCH_FILE_ONLY -- the shipped scope. A violation in another
+    production module goes undetected, which is precisely N18."""
+
+    package = tmp_path / "app"
+    package.mkdir()
+    offender = package / "leaky.py"
+    offender.write_text(
+        "from app.agent_review.target_pack_epoch_v2 import MountTopologySnapshotV2\n"
+        "def leak(s, p):\n    return s._governing_mount_raw_v2(p)\n", encoding="utf-8")
+
+    epoch_only = [Path(epoch_module.__file__)]
+    assert _seal_offenders_across(epoch_only) == {}, "the file-local scan sees nothing"
+    assert _seal_offenders_across(sorted(package.rglob("*.py"))), "the derived scan catches it"
+
+
+def test_mutant_manual_production_file_list(tmp_path: Path) -> None:
+    """M_MANUAL_PRODUCTION_FILE_LIST -- a maintained list silently omits the
+    module nobody remembered to add."""
+
+    package = tmp_path / "app"
+    package.mkdir()
+    known = package / "known.py"
+    known.write_text("x = 1\n", encoding="utf-8")
+    forgotten = package / "forgotten.py"
+    forgotten.write_text(
+        "from app.agent_review.target_pack_epoch_v2 import MountTopologySnapshotV2\n"
+        "def leak(s, p):\n    return s._governing_mount_raw_v2(p)\n", encoding="utf-8")
+
+    maintained_list = [known]                       # the mutant: a hand-kept list
+    assert _seal_offenders_across(maintained_list) == {}
+    derived = sorted(package.rglob("*.py"))         # the real mechanism
+    assert _seal_offenders_across(derived), "a derived inventory catches the forgotten module"
+
+
+def test_dynamic_reflection_is_an_explicit_nonclaim() -> None:
+    """Bound, stated rather than implied.
+
+    This is static analysis of the repository's own Python. A dynamically
+    computed attribute name defeats it, and no claim is made otherwise --
+    saying so is the difference between a bounded guard and a false one.
     """
 
-    assert _raw_reference_offenders(snippet), f"the seal must reject: {label}"
-
-
-def test_the_shipped_guard_would_have_missed_those_evasions() -> None:
-    """Proof the strengthening is not cosmetic: the OLD call-shape guard,
-    reconstructed here, accepts four of the five evasions."""
-
-    import ast
-
-    def shipped_guard(source: str) -> list[str]:
-        tree = ast.parse(source)
-        found = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef):
-                continue
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Call):
-                    func = sub.func
-                    name = func.attr if isinstance(func, ast.Attribute) else None
-                    if name in _RAW_TOPOLOGY_PRIMITIVES:
-                        found.append(node.name)
-        return [f for f in found if f not in {"resolve_query_v2", "_is_visible_raw_v2"}]
-
-    alias = "def consume(s, p):\n    raw = s._governing_mount_raw_v2\n    return raw(p)\n"
-    assert shipped_guard(alias) == [], "the shipped guard missed the alias"
-    assert _raw_reference_offenders(alias), "the strengthened seal catches it"
-
-
-def test_no_consumer_rebuilds_relevance_outside_the_typed_resolver() -> None:
-    """Consumers must not reconstruct relevance from the snapshot's internals.
-
-    Exemptions are again an exact set, not a name prefix.
-    """
-
-    import ast
-
-    permitted = {
-        "_semantic_seeds_v2", "_dependency_closure_v2", "resolve_query_v2",
-        "_governing_mount_raw_v2", "_is_visible_raw_v2", "is_visible_v2",
-        "visible_child_mounts_v2", "validate_relevant_chain_v2", "_climb_stack_v2",
-        "_visible_root_v2", "governing_mount_v2", "parse", "observe", "__init__",
-    }
-    tree = ast.parse(Path(epoch_module.__file__).read_text(encoding="utf-8"))
-    offenders = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.FunctionDef) or node.name in permitted:
-            continue
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Attribute) and sub.attr in {"records", "children", "by_id"}:
-                offenders.append(f"{node.name}:{sub.attr}")
-    assert offenders == [], f"consumers must not rebuild relevance: {offenders}"
+    dynamic = ("def leak(s, name):\n"
+               "    return getattr(s, name)('/x')\n")
+    assert _raw_reference_offenders(dynamic) == []
 
 
 def _retired_test_the_guard_itself_would_catch_the_native_finding() -> None:

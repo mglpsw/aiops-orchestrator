@@ -38,8 +38,13 @@
   (casefold-flag-capable / established case-sensitive / unknown), so an
   `ENOTTY` from `FS_IOC_GETFLAGS` is never read as proof of case sensitivity.
   Raw topology traversal is resolver-internal, and a scope-aware AST guard
-  rejects any static reference to it from outside, including aliases and
-  `getattr`.
+  rejects any static reference to it -- or any consumer-side reconstruction of
+  relevance from the snapshot's internals -- across **every** production module,
+  including aliases and `getattr`. The module inventory is derived from the
+  runtime package root rather than listed, so a production module added later
+  is sealed without an inventory edit. The guard is static analysis of this
+  repository's own Python and makes no claim against dynamically computed
+  attribute names.
 
   Topology that cannot be established is refused as
   `target_pack_epoch_carrier_disjointness_unknown`; an established overlap as
