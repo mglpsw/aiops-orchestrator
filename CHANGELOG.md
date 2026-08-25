@@ -4,6 +4,63 @@
 
 ### Fixed
 
+- **K runtime carrier established disjoint from the diagnosed target, or
+  refused (`#262`)**: `acquire_target_pack_epoch_v2` chose the carrier location
+  from `euid` alone, with no reference to `target_root`, so a target that
+  equalled, contained or aliased the carrier caused the pack's own runtime
+  carrier to be materialized inside the very directory it was handed.
+  Reproduced on `master@2876434` for a target containing the carrier, a bind
+  alias of the runtime parent, a deep alias several levels inside an otherwise
+  unrelated target, and a runtime parent grafted from a target subtree.
+
+  Disjointness is established at the shared primitive, before any carrier
+  materialization, from a single observation of `/proc/self/mountinfo`.
+  Relevance is **derived from the topology query being asked** rather than
+  written as a growing list of positions:
+
+  ```text
+  QueryKind -> SemanticSeeds -> DependencyClosure -> graph validity
+            -> QueryResolution -> sealed consumer APIs
+            -> per-authority name semantics -> physical domains -> K-DISJOINT
+  ```
+
+  `POINT_LOOKUP(P)` seeds on mounts attached at the prefixes a pathname walk
+  traverses; `VISIBLE_SUBTREE(D)` adds attachments at-or-beneath `D`. Siblings
+  and unrelated mounts are excluded by the derivation, not by exception, so an
+  unrelated malformed record cannot refuse a legal acquisition. The target's
+  domain is a visibility PARTITION -- each segment excludes the slices its
+  visible children cover -- and the carrier's domain names exactly the two
+  objects an acquisition operates on: the protocol directory and the exact
+  `<key>.lock`. Chain validation establishes that each parent edge is
+  geometrically possible, not merely that a parent exists. Name-semantics
+  applicability is decided per lookup-authority directory from that
+  directory's own governing filesystem, over a closed three-way classification
+  (casefold-flag-capable / established case-sensitive / unknown), so an
+  `ENOTTY` from `FS_IOC_GETFLAGS` is never read as proof of case sensitivity.
+  Raw topology traversal is resolver-internal, and a scope-aware AST guard
+  rejects any static reference to it from outside, including aliases and
+  `getattr`.
+
+  Topology that cannot be established is refused as
+  `target_pack_epoch_carrier_disjointness_unknown`; an established overlap as
+  `target_pack_epoch_carrier_overlaps_target`. The two are deliberately
+  distinct so "could not look" is never read as "looked and it was fine".
+
+  Accepted topologies are narrowed deliberately: filesystems outside the
+  direct-projection allowlist (`ext2`/`ext3`/`ext4`/`tmpfs`) -- including
+  overlay -- refuse rather than acquire, and a runtime parent reached through a
+  subtree bind is refused. Over-refusal is a bounded cost; under-refusal would
+  fabricate the property. `PR #267` and `PR #268` remain forensic predecessors.
+  Two recurrences were admitted during this work and remain historical fact:
+  the first drove the redesign from positional relevance rules to the typed
+  query frontier, the second drove sealing that authority against consumer
+  bypass. No consumer decides disjointness, no schema or public contract
+  changes, and writer K identity, SH/EX coordination and expected-plan binding
+  are unchanged. The proof is bounded to one topology snapshot taken
+  immediately before materialization: it makes no claim against a concurrent
+  external remounter, a non-cooperating external actor, distributed
+  coordination or crash atomicity.
+
 - **Post-merge review debt on the Authority-First Convergence Review
   methodology (`#263`)**: three P2 findings raised after that PR merged, all
   reproduced on `master@ff9fbdd`.  (1) The target-profile YAML corpus test's
