@@ -17,6 +17,7 @@ import stat
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MemberDescriptorType
 from typing import Literal
 from typing import NamedTuple
 
@@ -140,121 +141,159 @@ for _public_topology_contract_v2 in (
     _public_topology_contract_v2.__module__ = __name__
 
 
-_TOPOLOGY_CAPABILITY_SLOT_PREFIX_V2 = "_MountTopologySnapshotV2__"
-_TopologySubclassPickleStateV2 = tuple[
-    tuple[tuple[str, object], ...],
-    tuple[tuple[int, str, object], ...],
-]
+_TopologyNativePickleStateV2 = (
+    dict[object, object]
+    | tuple[dict[object, object] | None, dict[str, object]]
+    | None
+)
 
 
-def _topology_slot_storage_name_v2(owner: type, declared_name: str) -> str:
-    """Return the descriptor name produced by Python slot name-mangling."""
+def _topology_capability_base_slot_names_v2(base_type: type) -> frozenset[str]:
+    """Read capability-owned storage from Python's actual member descriptors."""
 
-    if declared_name.startswith("__") and not declared_name.endswith("__"):
-        return f"_{owner.__name__.lstrip('_')}{declared_name}"
-    return declared_name
+    return frozenset(
+        name
+        for name, value in base_type.__dict__.items()
+        if isinstance(value, MemberDescriptorType)
+    )
 
 
-def _is_forbidden_topology_pickle_state_name_v2(name: str) -> bool:
+def _is_forbidden_topology_pickle_state_name_v2(
+    name: object, base_slot_names: frozenset[str]
+) -> bool:
     return (
         name in _TOPOLOGY_CAPABILITY_FORBIDDEN_API_NAMES_V2
-        or name.startswith(_TOPOLOGY_CAPABILITY_SLOT_PREFIX_V2)
+        or name in base_slot_names
         or name in {"__dict__", "__weakref__"}
     )
 
 
-def _capture_topology_subclass_pickle_state_v2(
+def _native_topology_subclass_pickle_state_v2(
     capability: object, base_type: type
-) -> _TopologySubclassPickleStateV2:
-    """Capture ordinary subclass state without serializing capability slots.
+) -> _TopologyNativePickleStateV2:
+    """Filter capability-owned storage from Python's native object state.
 
-    This is intentionally bounded to an ordinary instance dictionary and slots
-    declared by classes above the capability base in the concrete type MRO.
-    Product subclasses with custom pickle hooks do not exist in this repository
-    and are not a generalized support claim of this protocol.
+    Python remains authoritative for dictionary order, absent slots, actual
+    private-slot names and graph references. This filter owns only the
+    application boundary: base capability descriptors and forbidden raw API
+    names are never ordinary subclass state. Repository topology subclasses do
+    not define custom pickle hooks; those remain outside this bounded claim.
     """
 
-    dictionary_items: tuple[tuple[str, object], ...] = ()
-    try:
-        dictionary = object.__getattribute__(capability, "__dict__")
-    except AttributeError:
-        pass
+    native_state = object.__getstate__(capability)
+    if native_state is None:
+        return None
+    if isinstance(native_state, dict):
+        dictionary_state = native_state
+        slot_state: dict[str, object] | None = None
+    elif isinstance(native_state, tuple) and len(native_state) == 2:
+        dictionary_state, slot_state = native_state
+        if dictionary_state is not None and not isinstance(dictionary_state, dict):
+            raise TypeError("invalid native topology subclass dictionary state")
+        if not isinstance(slot_state, dict):
+            raise TypeError("invalid native topology subclass slot state")
     else:
-        dictionary_items = tuple(sorted(
-            (
-                (name, value)
-                for name, value in dictionary.items()
-                if not _is_forbidden_topology_pickle_state_name_v2(name)
-            ),
-            key=lambda item: item[0],
-        ))
+        raise TypeError("invalid native topology subclass state")
 
-    slot_items: list[tuple[int, str, object]] = []
-    base_found = False
-    for mro_index, owner in enumerate(type(capability).__mro__):
+    base_slot_names = _topology_capability_base_slot_names_v2(base_type)
+    filtered_dictionary = None
+    if dictionary_state is not None:
+        filtered_dictionary = {
+            name: value
+            for name, value in dictionary_state.items()
+            if not _is_forbidden_topology_pickle_state_name_v2(
+                name, base_slot_names
+            )
+        }
+    if slot_state is None:
+        return filtered_dictionary
+    filtered_slots = {
+        name: value
+        for name, value in slot_state.items()
+        if not _is_forbidden_topology_pickle_state_name_v2(name, base_slot_names)
+    }
+    if not filtered_slots:
+        return filtered_dictionary
+    return filtered_dictionary, filtered_slots
+
+
+def _topology_subclass_slot_descriptor_v2(
+    capability: object, base_type: type, storage_name: str
+) -> MemberDescriptorType | None:
+    """Find an actual subclass-owned slot descriptor without deriving names."""
+
+    for owner in type(capability).__mro__:
         if owner is base_type:
-            base_found = True
-            break
-        declared_slots = owner.__dict__.get("__slots__", ())
-        if isinstance(declared_slots, str):
-            declared_slots = (declared_slots,)
-        for declared_name in declared_slots:
-            storage_name = _topology_slot_storage_name_v2(owner, declared_name)
-            if (
-                _is_forbidden_topology_pickle_state_name_v2(declared_name)
-                or _is_forbidden_topology_pickle_state_name_v2(storage_name)
-            ):
-                continue
-            descriptor = owner.__dict__.get(storage_name)
-            if descriptor is None or not hasattr(descriptor, "__get__"):
-                continue
-            try:
-                value = descriptor.__get__(capability, type(capability))
-            except AttributeError:
-                continue
-            slot_items.append((mro_index, storage_name, value))
-    if not base_found:
-        raise TypeError("topology pickle subject is not a capability subclass")
-    return dictionary_items, tuple(slot_items)
+            return None
+        descriptor = owner.__dict__.get(storage_name)
+        if isinstance(descriptor, MemberDescriptorType):
+            return descriptor
+    raise TypeError("topology pickle subject is not a capability subclass")
+
+
+def _apply_native_topology_subclass_pickle_state_v2(
+    capability: object,
+    base_type: type,
+    native_state: object,
+) -> None:
+    """Apply validated native state without accepting capability-owned slots."""
+
+    if isinstance(native_state, dict):
+        dictionary_state = native_state
+        slot_state: dict[str, object] | None = None
+    elif isinstance(native_state, tuple) and len(native_state) == 2:
+        dictionary_state, slot_state = native_state
+        if dictionary_state is not None and not isinstance(dictionary_state, dict):
+            raise ValueError("invalid topology subclass dictionary state")
+        if not isinstance(slot_state, dict):
+            raise ValueError("invalid topology subclass slot state")
+    else:
+        raise ValueError("invalid topology subclass pickle state")
+
+    base_slot_names = _topology_capability_base_slot_names_v2(base_type)
+    if dictionary_state is not None:
+        if any(
+            _is_forbidden_topology_pickle_state_name_v2(name, base_slot_names)
+            for name in dictionary_state
+        ):
+            raise ValueError("forbidden topology subclass dictionary state")
+        try:
+            dictionary = object.__getattribute__(capability, "__dict__")
+        except AttributeError as exc:
+            raise ValueError("invalid topology subclass dictionary state") from exc
+        dictionary.update(dictionary_state)
+
+    if slot_state is None:
+        return
+    for storage_name, value in slot_state.items():
+        if (
+            not isinstance(storage_name, str)
+            or _is_forbidden_topology_pickle_state_name_v2(
+                storage_name, base_slot_names
+            )
+        ):
+            raise ValueError("forbidden topology subclass slot state")
+        descriptor = _topology_subclass_slot_descriptor_v2(
+            capability, base_type, storage_name
+        )
+        if descriptor is None:
+            raise ValueError("unknown topology subclass slot state")
+        descriptor.__set__(capability, value)
 
 
 def _restore_mount_topology_snapshot_v2(
     capability_type: type,
     records: tuple[MountRecordV2, ...],
-    subclass_state: _TopologySubclassPickleStateV2,
 ) -> object:
-    """Reconstruct topology first, then restore supported subclass state."""
+    """Allocate without subclass initialization, then restore capability data."""
 
-    capability = capability_type(records)
-    dictionary_items, slot_items = subclass_state
-
-    if dictionary_items:
-        try:
-            dictionary = object.__getattribute__(capability, "__dict__")
-        except AttributeError as exc:
-            raise ValueError("invalid topology subclass dictionary state") from exc
-        for name, value in dictionary_items:
-            if _is_forbidden_topology_pickle_state_name_v2(name):
-                raise ValueError("forbidden topology subclass dictionary state")
-            dictionary[name] = value
-
-    mro = type(capability).__mro__
-    try:
-        base_index = mro.index(MountTopologySnapshotV2)
-    except ValueError as exc:
-        raise ValueError("invalid topology capability pickle type") from exc
-    for mro_index, storage_name, value in slot_items:
-        if (
-            not isinstance(mro_index, int)
-            or mro_index < 0
-            or mro_index >= base_index
-            or _is_forbidden_topology_pickle_state_name_v2(storage_name)
-        ):
-            raise ValueError("invalid topology subclass slot state")
-        descriptor = mro[mro_index].__dict__.get(storage_name)
-        if descriptor is None or not hasattr(descriptor, "__set__"):
-            raise ValueError("unknown topology subclass slot state")
-        descriptor.__set__(capability, value)
+    if (
+        not isinstance(capability_type, type)
+        or not issubclass(capability_type, MountTopologySnapshotV2)
+    ):
+        raise TypeError("invalid topology capability pickle type")
+    capability = object.__new__(capability_type)
+    MountTopologySnapshotV2.__init__(capability, records)
     return capability
 
 
@@ -271,10 +310,11 @@ def _build_topology_capability_type_v2(
         or raw traversal method. The captured closures are deliberately subject
         to the documented callable-closure nonclaim. Pickle is a separate,
         explicit compatibility channel: ``__reduce__`` serializes the record
-        inventory solely as reconstruction data, then restores supported
-        subclass-owned ``__dict__``/slot state after construction. Base typed
-        callable slots are never subclass state. This is not an ordinary typed
-        query result or consumer field.
+        inventory solely as reconstruction data. Python's native pickle state
+        channel owns supported subclass ``__dict__``/slot semantics after the
+        object is memoized; actual base member descriptors are filtered from
+        that state. This is not an ordinary typed query result or consumer
+        field, nor a claim for arbitrary custom subclass pickle hooks.
         """
 
         __slots__ = (
@@ -317,16 +357,21 @@ def _build_topology_capability_type_v2(
                 raise AttributeError("typed topology capability is immutable")
             object.__delattr__(self, name)
 
-        def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        def __reduce__(self) -> tuple[object, tuple[object, ...], object]:
             return (
                 _restore_mount_topology_snapshot_v2,
                 (
                     type(self),
                     self.__pickle_payload(),
-                    _capture_topology_subclass_pickle_state_v2(
-                        self, _MountTopologySnapshotV2
-                    ),
                 ),
+                _native_topology_subclass_pickle_state_v2(
+                    self, _MountTopologySnapshotV2
+                ),
+            )
+
+        def __setstate__(self, native_state: object) -> None:
+            _apply_native_topology_subclass_pickle_state_v2(
+                self, _MountTopologySnapshotV2, native_state
             )
 
         def resolve_query_v2(

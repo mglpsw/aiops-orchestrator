@@ -32,10 +32,12 @@ therefore judges the mutant against a REAL filesystem observation (markers and
 
 from __future__ import annotations
 
+import base64
 import os
 import pickle
 import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -75,6 +77,88 @@ class SlottedSnapshotV2(TopologyQueryCapabilityV2):
     def __init__(self, records):
         super().__init__(records)
         self.marker = "initial"
+
+
+class OrderedSnapshotV2(TopologyQueryCapabilityV2):
+    """Module-level subclass whose dictionary starts empty."""
+
+
+class PrivateSlottedSnapshotV2(TopologyQueryCapabilityV2):
+    __slots__ = ("__marker",)
+
+    def __init__(self, records):
+        super().__init__(records)
+        self.__marker = "initial"
+
+    def marker(self):
+        return self.__marker
+
+
+class ___(TopologyQueryCapabilityV2):
+    """Python does not mangle a private slot for an all-underscore owner."""
+
+    __slots__ = ("__marker",)
+
+    def __init__(self, records):
+        super().__init__(records)
+        self.__marker = "initial"
+
+    def marker(self):
+        return self.__marker
+
+
+class PrivateSlotLevelOneV2(TopologyQueryCapabilityV2):
+    __slots__ = ("__one",)
+
+    def __init__(self, records):
+        super().__init__(records)
+        self.__one = "initial-one"
+
+    def one(self):
+        return self.__one
+
+
+class PrivateSlotLevelTwoV2(PrivateSlotLevelOneV2):
+    __slots__ = ("__two",)
+
+    def __init__(self, records):
+        super().__init__(records)
+        self.__two = "initial-two"
+
+    def two(self):
+        return self.__two
+
+
+class InitCountingSnapshotV2(TopologyQueryCapabilityV2):
+    init_calls = 0
+
+    def __init__(self, records):
+        type(self).init_calls += 1
+        super().__init__(records)
+        self.default = "initial"
+
+
+# Protocol-4 bytes emitted by exact parent
+# 6a1142530c5ff557240fc6e9f9ded69af717998f. That reducer encoded only the
+# concrete type and records; it never encoded ordinary subclass state.
+_PARENT_BASE_PICKLE_V2 = (
+    "gASVogAAAAAAAACMJWFwcC5hZ2VudF9yZXZpZXcudGFyZ2V0X3BhY2tfZXBvY2hfdjKU"
+    "jCNfcmVzdG9yZV9tb3VudF90b3BvbG9neV9zbmFwc2hvdF92MpSTlGgAjBdNb3VudFRv"
+    "cG9sb2d5U25hcHNob3RWMpSTlGgAjA1Nb3VudFJlY29yZFYylJOUKEsBSwFNAQGMAS+U"
+    "aAeMBGV4dDSUdJSBlIWUhpRSlC4="
+)
+_PARENT_DICT_SUBCLASS_PICKLE_V2 = (
+    "gASVpQAAAAAAAACMJWFwcC5hZ2VudF9yZXZpZXcudGFyZ2V0X3BhY2tfZXBvY2hfdjKU"
+    "jCNfcmVzdG9yZV9tb3VudF90b3BvbG9neV9zbmFwc2hvdF92MpSTlGgAjBpMZWdhY3lQ"
+    "YXJlbnREaWN0U25hcHNob3RWMpSTlGgAjA1Nb3VudFJlY29yZFYylJOUKEsBSwFNAQGM"
+    "AS+UaAeMBGV4dDSUdJSBlIWUhpRSlC4="
+)
+_PARENT_SLOT_SUBCLASS_PICKLE_V2 = (
+    "gASVpQAAAAAAAACMJWFwcC5hZ2VudF9yZXZpZXcudGFyZ2V0X3BhY2tfZXBvY2hfdjKU"
+    "jCNfcmVzdG9yZV9tb3VudF90b3BvbG9neV9zbmFwc2hvdF92MpSTlGgAjBpMZWdhY3lQ"
+    "YXJlbnRTbG90U25hcHNob3RWMpSTlGgAjA1Nb3VudFJlY29yZFYylJOUKEsBSwFNAQGM"
+    "AS+UaAeMBGV4dDSUdJSBlIWUhpRSlC4="
+)
 
 
 def _can_bind_mount() -> bool:
@@ -3091,6 +3175,163 @@ def test_subclass_slots_survive_pickle_after_constructor_defaults() -> None:
     assert boundary.capability_shape_violations(restored) == ()
 
 
+def test_pickle_reducer_uses_two_args_and_native_state_position() -> None:
+    base = _minimal_capability()
+    reconstruct, arguments, state = base.__reduce__()
+    assert callable(reconstruct)
+    assert len(arguments) == 2
+    assert state is None
+
+    subclass = StatefulSnapshotV2((
+        MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),
+    ))
+    subclass.z = 1
+    subclass.a = 2
+    reconstruct, arguments, state = subclass.__reduce__()
+    assert callable(reconstruct)
+    assert len(arguments) == 2
+    assert isinstance(state, dict)
+    assert list(state) == ["extra", "counter", "z", "a"]
+
+
+def test_deleted_subclass_dictionary_and_slot_members_stay_absent() -> None:
+    records = (MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),)
+    dictionary_subject = StatefulSnapshotV2(records)
+    del dictionary_subject.extra
+    slot_subject = SlottedSnapshotV2(records)
+    del slot_subject.marker
+
+    restored_dictionary = pickle.loads(pickle.dumps(dictionary_subject))
+    restored_slot = pickle.loads(pickle.dumps(slot_subject))
+
+    assert not hasattr(restored_dictionary, "extra")
+    assert not hasattr(restored_slot, "marker")
+
+
+def test_native_pickle_state_memoizes_cycles_before_applying_state() -> None:
+    records = (MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),)
+    subject = StatefulSnapshotV2(records)
+    subject.peer = subject
+    subject.container = [subject]
+    subject.mapping = {"self": subject}
+
+    restored = pickle.loads(pickle.dumps(subject))
+
+    assert restored.peer is restored
+    assert restored.container[0] is restored
+    assert restored.mapping["self"] is restored
+
+    other = StatefulSnapshotV2(records)
+    subject.peer = other
+    other.peer = subject
+    restored_pair = pickle.loads(pickle.dumps(subject))
+    assert restored_pair.peer.peer is restored_pair
+
+
+def test_subclass_dictionary_insertion_order_survives_pickle() -> None:
+    subject = OrderedSnapshotV2((
+        MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),
+    ))
+    subject.z = 1
+    subject.a = 2
+
+    restored = pickle.loads(pickle.dumps(subject))
+
+    assert list(subject.__dict__) == ["z", "a"]
+    assert list(restored.__dict__) == ["z", "a"]
+
+
+def test_python_owned_slot_names_survive_across_private_mro_edges() -> None:
+    records = (MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),)
+    private = PrivateSlottedSnapshotV2(records)
+    object.__setattr__(private, "_PrivateSlottedSnapshotV2__marker", "private")
+    underscore = ___(records)
+    object.__setattr__(underscore, "__marker", "underscore")
+    layered = PrivateSlotLevelTwoV2(records)
+    object.__setattr__(layered, "_PrivateSlotLevelOneV2__one", "one")
+    object.__setattr__(layered, "_PrivateSlotLevelTwoV2__two", "two")
+
+    restored_private = pickle.loads(pickle.dumps(private))
+    restored_underscore = pickle.loads(pickle.dumps(underscore))
+    restored_layered = pickle.loads(pickle.dumps(layered))
+
+    assert restored_private.marker() == "private"
+    assert restored_underscore.marker() == "underscore"
+    assert restored_layered.one() == "one"
+    assert restored_layered.two() == "two"
+
+
+def test_pickle_reconstruction_does_not_rerun_subclass_initializers() -> None:
+    InitCountingSnapshotV2.init_calls = 0
+    subject = InitCountingSnapshotV2((
+        MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),
+    ))
+    subject.default = "changed"
+    calls_before_pickle = InitCountingSnapshotV2.init_calls
+
+    restored = pickle.loads(pickle.dumps(subject))
+
+    assert InitCountingSnapshotV2.init_calls == calls_before_pickle
+    assert restored.default == "changed"
+
+
+def test_exact_parent_two_argument_pickles_load_without_inventing_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_type = TopologyQueryCapabilityV2
+
+    def dictionary_init(self, records):
+        base_type.__init__(self, records)
+        self.extra = "candidate-default"
+
+    def slot_init(self, records):
+        base_type.__init__(self, records)
+        self.marker = "candidate-default"
+
+    dictionary_type = type(
+        "LegacyParentDictSnapshotV2",
+        (base_type,),
+        {
+            "__module__": epoch_module.__name__,
+            "__init__": dictionary_init,
+        },
+    )
+    slot_type = type(
+        "LegacyParentSlotSnapshotV2",
+        (base_type,),
+        {
+            "__module__": epoch_module.__name__,
+            "__slots__": ("marker",),
+            "__init__": slot_init,
+        },
+    )
+    monkeypatch.setattr(
+        epoch_module, "LegacyParentDictSnapshotV2", dictionary_type, raising=False
+    )
+    monkeypatch.setattr(
+        epoch_module, "LegacyParentSlotSnapshotV2", slot_type, raising=False
+    )
+
+    restored_base = pickle.loads(base64.b64decode(_PARENT_BASE_PICKLE_V2))
+    restored_dictionary = pickle.loads(
+        base64.b64decode(_PARENT_DICT_SUBCLASS_PICKLE_V2)
+    )
+    restored_slot = pickle.loads(
+        base64.b64decode(_PARENT_SLOT_SUBCLASS_PICKLE_V2)
+    )
+
+    assert type(restored_base) is base_type
+    assert type(restored_dictionary) is dictionary_type
+    assert type(restored_slot) is slot_type
+    assert restored_base.governing_mount_v2("/").mount_id == 1
+    assert restored_dictionary.governing_mount_v2("/").mount_id == 1
+    assert restored_slot.governing_mount_v2("/").mount_id == 1
+    # The parent format carried no subclass state, so loading must not invent
+    # constructor defaults that were never serialized.
+    assert not hasattr(restored_dictionary, "extra")
+    assert not hasattr(restored_slot, "marker")
+
+
 def test_parse_and_observe_subclass_state_survive_pickle() -> None:
     parsed = StatefulSnapshotV2.parse(
         "1 1 1:1 / / rw - ext4 /dev/root rw\n"
@@ -3107,10 +3348,10 @@ def test_parse_and_observe_subclass_state_survive_pickle() -> None:
 
 def test_pickle_state_excludes_base_private_slots_and_forbidden_raw_names() -> None:
     base = _minimal_capability()
-    reconstruct, arguments = base.__reduce__()
+    reconstruct, arguments, state = base.__reduce__()
     assert callable(reconstruct)
-    assert len(arguments) == 3
-    assert arguments[2] == ((), ())
+    assert len(arguments) == 2
+    assert state is None
 
     subclass = StatefulSnapshotV2((
         MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),
@@ -3118,18 +3359,33 @@ def test_pickle_state_excludes_base_private_slots_and_forbidden_raw_names() -> N
     subclass.__dict__["records"] = ("M_RAW_GRAPH_RESTORED_AS_PUBLIC_FIELD",)
     subclass.__dict__["children"] = {}
     subclass.__dict__["by_id"] = {}
-    reconstruct, arguments = subclass.__reduce__()
-    dictionary_state, slot_state = arguments[2]
-    names = {name for name, _value in dictionary_state}
+    reconstruct, arguments, state = subclass.__reduce__()
+    assert isinstance(state, dict)
+    names = set(state)
     assert not names & {"records", "children", "by_id"}
-    assert all("_MountTopologySnapshotV2__" not in name for name in names)
-    assert all("_MountTopologySnapshotV2__" not in name for _, name, _ in slot_state)
+    base_slot_names = {
+        name
+        for name, value in TopologyQueryCapabilityV2.__dict__.items()
+        if isinstance(value, types.MemberDescriptorType)
+    }
+    assert not names & base_slot_names
 
-    restored = reconstruct(*arguments)
+    restored = pickle.loads(pickle.dumps(subclass))
     assert not hasattr(restored, "records")
     assert not hasattr(restored, "children")
     assert not hasattr(restored, "by_id")
     assert boundary.capability_shape_violations(restored) == ()
+
+    for hostile_state in (
+        {"records": ("raw",)},
+        ({"by_id": {}}, {}),
+        ({"children": {}}, {}),
+        (None, {next(iter(base_slot_names)): "evil"}),
+        (None, {"unknown_slot": "evil"}),
+        ("malformed", "state"),
+    ):
+        with pytest.raises(ValueError):
+            subclass.__setstate__(hostile_state)
 
 
 def test_cross_module_alias_and_reexport_still_yield_the_opaque_capability() -> None:

@@ -78,6 +78,26 @@
   the ordinary representation. The six admitted recurrences remain unchanged;
   this is not a `PROVED` or globally-clean claim.
 
+  The exact-head native review of `5919d0d` returned P1=0/P2=5 and falsified
+  that manual subclass-state protocol as
+  `MANUAL_SUBCLASS_PICKLE_STATE_PROTOCOL_INSUFFICIENT`: it recreated deleted
+  constructor defaults, recursed on cyclic state before memoization, sorted
+  observable dictionary order, reimplemented private-slot mangling incorrectly,
+  and rejected persisted two-argument reductions from exact parent `6a11425`.
+  The successor delegates ordinary subclass state to Python's native pickle
+  state channel. Its stable reconstruction callable again receives only the
+  concrete type and records, allocates without invoking subclass `__init__`,
+  and initializes only capability internals; pickle then applies state after
+  memoization. Base implementation storage is filtered and validated from the
+  real member descriptors Python created, never from hand-written naming rules.
+  This preserves absence, cycles, insertion order, actual Python slot names and
+  loading of the parent two-argument format while keeping raw topology state out
+  of the ordinary capability. The falsified three-argument `5919d0d` format is
+  not retained as a parallel protocol or compatibility claim. Arbitrary custom
+  pickle hooks and Python privacy remain nonclaims. The six historical
+  recurrences remain admitted, no recurrence #7 is admitted, and this is not a
+  `PROVED` or globally-clean claim.
+
   The 400+ line Python semantic frontend is deleted, not retained as a parallel
   authority. Its replacement is a small finite gate that answers only two
   questions: exactly which non-test repository source **paths** contain an
