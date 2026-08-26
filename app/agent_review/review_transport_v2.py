@@ -64,6 +64,7 @@ from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from pydantic import ValidationError
 
+from app.common.strict_json import strict_json_loads
 from app.agent_review._router_receipt_v2 import (
     RouterReceiptError,
     _RouterTransportResponseV2,
@@ -495,12 +496,7 @@ def agent_router_transport_v2(
             raise ChunkTransportError(CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2) from exc
 
         try:
-            decoded = json.loads(
-                raw_text,
-                parse_constant=lambda _value: (_ for _ in ()).throw(
-                    ValueError("non-finite JSON value")
-                ),
-            )
+            decoded = strict_json_loads(raw_text)
             if not isinstance(decoded, Mapping):
                 raise ValueError("Router response must be a JSON object")
         except (json.JSONDecodeError, TypeError, ValueError, UnicodeError) as exc:

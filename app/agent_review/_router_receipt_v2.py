@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from app.agent_review.contracts_v2 import ChunkReviewResultV2
 from app.agent_review.review_transport_contract_v2 import ChunkReviewRequestV2
+from app.common.strict_json import strict_json_loads
 
 ROUTER_RECEIPT_INVALID_REASON_V2 = "router_receipt_invalid"
 ROUTER_INPUT_MISMATCH_REASON_V2 = "router_input_mismatch"
@@ -510,8 +511,12 @@ def _verify_router_transport_response_v2(
     caller_metadata = receipt.caller_declared_metadata.model_dump(exclude_none=True)
     if caller_metadata != _expected_caller_metadata_v2(request):
         raise RouterReceiptError(ROUTER_CALLER_BINDING_MISMATCH_REASON_V2)
+    selected_attempt = receipt.routing_execution.attempts[
+        receipt.routing_execution.selected_attempt_index - 1
+    ]
     if (
         choice_finish_reason != "stop"
+        or selected_attempt.finish_reason != choice_finish_reason
         or receipt.execution.finish_reason != choice_finish_reason
     ):
         raise RouterReceiptError(ROUTER_FINISH_REASON_INCONCLUSIVE_REASON_V2)

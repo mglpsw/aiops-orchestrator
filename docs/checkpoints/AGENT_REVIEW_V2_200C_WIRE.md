@@ -56,9 +56,11 @@ The HTTP Router path no longer interprets an AgentReview transport envelope or
 F1 echo as a current Router response. It requires one non-streaming structured
 review response with `agent-router.inference-receipt.v2`, validates the frozen
 F2-A route grammar (and optional F2-B grammar when present), binds the receipt's
-input digest to the exact sent `messages[]`, binds all six caller declarations,
-requires a conclusive `stop`, binds the output digest to the exact public
-assistant content, and only then parses `ChunkReviewResultV2`.
+  input digest to the exact sent `messages[]`, binds all six caller declarations,
+  requires public, receipt and selected-attempt finish to converge on `stop`,
+  binds the output digest to the exact public assistant content, and only then
+  parses `ChunkReviewResultV2`. Duplicate JSON keys and non-finite numbers are
+  refused before any receipt field acquires meaning.
 
 The offline path remains source-specific and unchanged at its proof boundary.
 Both paths converge only at the common result scope validator and
@@ -68,9 +70,9 @@ domain object; publication of execution provenance remains M2.
 
 ## Local evidence on the candidate tree
 
-- focused consumer/transport suite: `56 passed`;
+- focused consumer/transport suite: `59 passed`;
 - full suite with the two environment-dependent `sudo` baseline cases excluded:
-  `3234 passed, 16 skipped, 2 deselected`;
+  `3237 passed, 16 skipped, 2 deselected`;
 - unfiltered suite classified the same two failures in
   `tests/agent_review/test_isolated_executor_v2.py`; neither that test file nor
   `app/agent_review/isolated_executor_v2.py` differs from the exact base, and
@@ -79,7 +81,7 @@ domain object; publication of execution provenance remains M2.
 - CAEM F0 pin: valid; RI-B0a.2 and target-pack generated views: byte-identical;
 - no live Router, provider, target, deploy, release, or runtime mutation.
 
-Four causal mutants were observed RED and then removed:
+Six causal mutants were observed RED and then removed:
 
 1. bypassing payload/content equality reached the mocked HTTP opener;
 2. ignoring the received-input digest let the adulterated case reach `bound`;
@@ -87,6 +89,17 @@ Four causal mutants were observed RED and then removed:
    `router_output_mismatch` precedence to `router_result_invalid`;
 4. removing the contract-ID subset check made both offline and Router results
    escape payload scope.
+5. ignoring the selected attempt finish let `length` and omitted observations
+   reach `bound` while public finishes said `stop`;
+6. replacing strict raw JSON parsing with last-key-wins parsing let a duplicated
+   receipt identity field reach `bound`.
+
+Independent exact-HEAD review round 1 on `6af59994dca6f9a4367b7474475c7742c5ec3069`
+reported those last two defects as P1/P2. Both were reproduced, classified
+`VALID` and material, assigned to distinct violated propositions, and corrected
+under the precommitted C1 attempt recorded on PR #270. No recurrence candidate
+formed in round 1 because no declared correction ran between its same-subject
+findings.
 
 ## Remaining gates and scope fence
 

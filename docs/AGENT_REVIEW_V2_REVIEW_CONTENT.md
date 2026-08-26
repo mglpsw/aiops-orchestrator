@@ -299,8 +299,10 @@ so the existing coverage/readiness authority retains the missing coverage.
   It sends the exact two-message array, all six caller-binding metadata fields,
   and `response_format={"type":"json_object"}`. The returned assistant content
   remains opaque until the private receipt-v2 consumer verifies the exact
-  sent-message digest, requested preset, caller metadata, conclusive finish,
-  route trace, and exact assistant-content digest. Only then is
+  sent-message digest, requested preset, caller metadata, route trace,
+  convergence of public/receipt/selected-attempt finish, and exact
+  assistant-content digest. Raw response JSON rejects duplicate keys and
+  non-finite values before receipt validation. Only then is
   `ChunkReviewResultV2` parsed. Local and provider-fallback Router fixtures are
   exercised against mocked HTTP only; no live Router/provider call qualifies
   this slice.
@@ -317,7 +319,7 @@ This hardening applies to offline responses too and reuses
 | Condition | Chunk outcome |
 |---|---|
 | response file missing / unreadable | `manual_required` / `transport_failure` |
-| response body is not valid JSON | `manual_required` / `transport_invalid_response` |
+| response body is invalid, non-finite, or has duplicate keys | `manual_required` / `transport_invalid_response` |
 | HTTP 5xx / 429 from Router | `manual_required` / `transport_unavailable` |
 | network timeout | `manual_required` / `transport_timeout` |
 | tampered offline echo | `manual_required` / `content_echo_mismatch` or `request_echo_mismatch` |

@@ -458,6 +458,7 @@ def _run_mocked_router_chunk(
     fixture_name: str = "local-success-f2a.json",
     receipt_mutator=None,
     response_mutator=None,
+    raw_response_mutator=None,
     result_mutator=None,
     chunk_content_override=None,
 ):
@@ -517,7 +518,10 @@ def _run_mocked_router_chunk(
         }
         if response_mutator is not None:
             response_mutator(response_body)
-        return _FakeResponse(json.dumps(response_body).encode("utf-8"))
+        raw_response = json.dumps(response_body)
+        if raw_response_mutator is not None:
+            raw_response = raw_response_mutator(raw_response)
+        return _FakeResponse(raw_response.encode("utf-8"))
 
     transport = agent_router_transport_v2(
         base_url="https://router.example/",
@@ -745,6 +749,18 @@ def test_agent_router_exact_semantic_finding_reaches_the_agentreview_domain(
             lambda receipt: receipt["execution"].update({"finish_reason": "length"}),
             ROUTER_FINISH_REASON_INCONCLUSIVE_REASON_V2,
         ),
+        (
+            lambda receipt: receipt["routing_execution"]["attempts"][0].update(
+                {"finish_reason": "length"}
+            ),
+            ROUTER_FINISH_REASON_INCONCLUSIVE_REASON_V2,
+        ),
+        (
+            lambda receipt: receipt["routing_execution"]["attempts"][0].pop(
+                "finish_reason"
+            ),
+            ROUTER_FINISH_REASON_INCONCLUSIVE_REASON_V2,
+        ),
     ],
 )
 def test_agent_router_receipt_v2_mutations_fail_closed(
@@ -773,6 +789,24 @@ def test_agent_router_rejects_old_f1_style_transport_envelope_on_the_http_path(
 
     assert outcome.state == "manual_required"
     assert outcome.reason_code == ROUTER_RECEIPT_INVALID_REASON_V2
+
+
+def test_agent_router_rejects_duplicate_keys_inside_receipt_identity(
+    tmp_path: Path,
+) -> None:
+    def duplicate_received_input_sha256(raw_response: str) -> str:
+        return raw_response.replace(
+            '"sha256": "',
+            f'"sha256": "{"0" * 64}", "sha256": "',
+            1,
+        )
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, raw_response_mutator=duplicate_received_input_sha256
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2
 
 
 def test_agent_router_verifies_exact_output_before_parsing_the_domain(

@@ -10,8 +10,10 @@
   six caller-binding declarations, and JSON-object output mode to the sole
   `/v1/chat/completions` endpoint. A private strict consumer verifies
   `agent-router.inference-receipt.v2` input/output digests, declarations,
-  route trace, finish reason, and exact assistant content before parsing the
-  AgentReview domain. Offline echo proof and Router receipt proof converge
+  route trace, public/receipt/selected-attempt finish convergence, and exact
+  assistant content before parsing the AgentReview domain. Raw Router JSON
+  rejects duplicate keys and non-finite numbers before receipt validation.
+  Offline echo proof and Router receipt proof converge
   only at the common payload-scope validator and one sealed
   `BoundChunkResponseV2` constructor. Payload/content mismatch stops before
   request/message/HTTP construction, and contract IDs can no longer escape
