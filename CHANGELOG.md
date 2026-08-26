@@ -37,30 +37,36 @@
   directory's own governing filesystem, over a closed three-way classification
   (casefold-flag-capable / established case-sensitive / unknown), so an
   `ENOTTY` from `FS_IOC_GETFLAGS` is never read as proof of case sensitivity.
-  Raw topology traversal is resolver-internal, and the seal that enforces this
-  is an INTERMODULE static analysis over the repository's own non-test Python.
-  An earlier revision derived its inventory from the runtime package root
-  `app/`, and a native review falsified that: `scripts/` holds executable
-  production entry points -- one of them imports this very module -- and was
-  never analysed. Adding `scripts`, or `scripts` and `evals`, would only move
-  the boundary; root SELECTION was the defect, not root count. Directory
-  membership now decides nothing. A module is judged where it is statically
-  BOUND to the topology subject through the import / alias / re-export graph,
-  so a consumer anywhere in the repository is sealed the moment it lands, while
-  fixture corpora that never import the subject need no exclusion rule.
-  Permitted owners are `(module, class, method)`: an unrelated class of the
-  same name inherits no authority. Both permitted sets are derived from
-  semantic necessity rather than listed, which removes the consumer wrappers
-  (`project_v2`, `governing_mount_v2`, `is_visible_v2`,
-  `visible_child_mounts_v2`) that a previous revision had exempted. Detected
-  forms include direct attribute access, bound and unbound aliases,
-  passed-as-value, and literal `getattr` -- for the raw primitives and for
-  relevance internals alike -- with the receiver bound to the subject before
-  a generic name such as `records` is judged, so a legitimate typed consumer
-  and an unrelated object may share one module. The analysis is bounded to
-  static imports, aliases, re-exports, literal attribute names and explicitly
-  annotated bindings; a dynamically computed attribute name, a dynamic import
-  and an unannotated factory are explicit NONCLAIMS.
+  The custom intermodular static analyzer that previously tried to seal raw
+  traversal is **falsified for this property**. The exact-head native review of
+  `6d17b55` returned P1=0/P2=17 across independent Python semantic classes
+  (imports/packages, lexical scopes, receiver/type propagation, reflection and
+  syntax, source discovery, owner identity, and qualification oracles). The
+  mandatory `STOP_ARCHITECTURAL_BOUNDARY` fired; those findings are evidence
+  that the enforcement architecture was insufficient, not 17 runtime defects
+  to patch individually.
+
+  The replacement is structural capability encapsulation. One private module,
+  `app.agent_review._mount_topology_raw_v2`, owns mountinfo parsing, raw graph
+  storage (`records`, `children`, `by_id`), graph validation and raw traversal.
+  Its sole product importer, `target_pack_epoch_v2`, captures that representation
+  in typed closures and gives ordinary consumers an immutable, slotted
+  capability exposing only `resolve_query_v2`, `governing_mount_v2`,
+  `visible_child_mounts_v2`, `is_visible_v2`, and `project_v2`. The consumer
+  representation has no raw graph field, raw traversal method or `__dict__`.
+  K-DISJOINT policy remains in `target_pack_epoch_v2`; it is not duplicated in
+  the raw module.
+
+  The 400+ line Python semantic frontend is deleted, not retained as a parallel
+  authority. Its replacement is a small finite gate that answers only two
+  questions: exactly which non-test repository sources statically import/name
+  the private raw module, and whether the real capability object's ordinary
+  API/representation exposes forbidden raw state. It deliberately performs no
+  receiver propagation, import-graph inference, union/subclass/factory
+  inference or `MatchClass` semantics. Computed imports, `callable.__closure__`,
+  hostile deliberate reflection into implementation internals, monkeypatching
+  and C-level introspection are explicit NONCLAIMS; this is not a claim of
+  Python privacy.
 
   Topology that cannot be established is refused as
   `target_pack_epoch_carrier_disjointness_unknown`; an established overlap as
@@ -72,18 +78,24 @@
   overlay -- refuse rather than acquire, and a runtime parent reached through a
   subtree bind is refused. Over-refusal is a bounded cost; under-refusal would
   fabricate the property. `PR #267` and `PR #268` remain forensic predecessors.
-  Three recurrences were admitted during this work and remain historical fact:
+  Four recurrences were admitted during this work and remain historical fact:
   the first drove the redesign from positional relevance rules to the typed
   query frontier, the second drove sealing that authority against consumer
   bypass, and the third -- an incomplete production-source inventory, admitted
   because the evidence establishing `scripts/` as a topology-capable surface
   was in hand when the boundary was chosen and was reasoned past -- drove the
-  replacement of directory-derived inventory by intermodule reachability. No consumer decides disjointness, no schema or public contract
-  changes, and writer K identity, SH/EX coordination and expected-plan binding
-  are unchanged. The proof is bounded to one topology snapshot taken
+  attempted replacement of directory-derived inventory by intermodule
+  reachability. The fourth is N15 -> N21 (`SAME_PROPOSITION`,
+  `Δ15 = ESTABLISHED_INSIDE`): permitted raw-owner identity was incomplete,
+  and the successor still collapsed unrelated owners; mechanized replay showed
+  both witnesses suppressed by the same analyzer mechanism. None of the four
+  admissions is erased or downgraded by the successor architecture. No
+  consumer decides disjointness, no schema or external public contract changes,
+  and writer K identity, SH/EX coordination and expected-plan binding are
+  unchanged. The claim remains bounded to one topology snapshot taken
   immediately before materialization: it makes no claim against a concurrent
   external remounter, a non-cooperating external actor, distributed
-  coordination or crash atomicity.
+  coordination or crash atomicity. It is not a `PROVED` or globally-clean claim.
 
 - **Post-merge review debt on the Authority-First Convergence Review
   methodology (`#263`)**: three P2 findings raised after that PR merged, all

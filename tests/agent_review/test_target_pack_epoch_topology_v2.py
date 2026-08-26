@@ -39,13 +39,17 @@ from pathlib import Path
 
 import pytest
 
+import app.agent_review._mount_topology_raw_v2 as raw_topology_module
 import app.agent_review.target_pack_epoch_v2 as epoch_module
+from app.agent_review._mount_topology_raw_v2 import (
+    RawMountTopologyRepresentationV2 as MountTopologySnapshotV2,
+)
 from app.agent_review.target_pack_epoch_v2 import (
     TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2,
     TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2,
     TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
     MountRecordV2,
-    MountTopologySnapshotV2,
+    MountTopologySnapshotV2 as TopologyQueryCapabilityV2,
     TargetPackEpochError,
     acquire_target_pack_epoch_v2,
 )
@@ -835,18 +839,22 @@ def test_mount_root_and_mount_point_share_one_escape_decoder() -> None:
 
 
 def test_escape_decoding_is_single_pass() -> None:
-    assert epoch_module._unescape_mountinfo_path_v2("/x\\134040y") == "/x\\040y"
+    assert raw_topology_module._unescape_mountinfo_path_v2("/x\\134040y") == "/x\\040y"
 
 
 # ======================== SINGLE-AUTHORITY SWEEP ==========================
 
 
 def test_exactly_one_mountinfo_authority() -> None:
-    source = Path(epoch_module.__file__).read_text(encoding="utf-8")
-    assert source.count('"/proc/self/mountinfo"') == 1
-    assert source.count("def _establish_carrier_disjoint_v2") == 1
-    assert source.count("def governing_mount_v2") == 1
-    assert source.count("def project_v2") == 1
+    raw_source = Path(raw_topology_module.__file__).read_text(encoding="utf-8")
+    owner_source = Path(epoch_module.__file__).read_text(encoding="utf-8")
+    assert raw_source.count('"/proc/self/mountinfo"') == 1
+    assert owner_source.count('"/proc/self/mountinfo"') == 0
+    assert owner_source.count("def _establish_carrier_disjoint_v2") == 1
+    assert raw_source.count("def governing_mount_v2") == 1
+    assert raw_source.count("def project_v2") == 1
+    assert owner_source.count("def governing_mount_v2") == 1  # opaque facade only
+    assert owner_source.count("def project_v2") == 1  # opaque facade only
 
 
 def test_visibility_is_derived_from_the_governing_relation() -> None:
@@ -2303,37 +2311,22 @@ def test_mutant_carrier_domain_protocol_root_only(
         umount(lock)
 
 
-@requires_bind_mount
 def test_mutant_protocol_dir_blanket_descendant_refusal(
-    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runtime_parent: Path, tmp_path: Path
 ) -> None:
-    """M_PROTOCOL_DIR_BLANKET_DESCENDANT_REFUSAL -- the tempting over-refusal.
-    Killed by CARRIER-4, which proves precision is required, not just safety."""
+    """M_PROTOCOL_DIR_BLANKET_DESCENDANT_REFUSAL cannot rescan raw records.
+
+    The old mutant required the ordinary consumer snapshot to expose
+    ``records``. The capability boundary now kills that route before its
+    over-refusing predicate can exist; the clean product control still runs.
+    """
 
     target = tmp_path / "target"
     target.mkdir()
-    carrier = _carrier(runtime_parent)
-    carrier.mkdir(mode=0o700)
-    unrelated = carrier / "unrelated-name"
-    unrelated.mkdir()
-    source = tmp_path / "src"
-    source.mkdir()
-    bind(source, unrelated)
-    try:
-        os.chmod(carrier, 0o700)
-        assert _acquire(target) == "acquired"
-
-        def _blanket(snapshot, *paths):
-            for record in snapshot.records:
-                if epoch_module._within_v2(record.mount_point, str(carrier)):
-                    raise TargetPackEpochError(
-                        TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2)
-
-        monkeypatch.setattr(epoch_module, "_require_name_semantics_applicable_v2", _blanket)
-        assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
-            "blanket mutant should have over-refused the unrelated mount")
-    finally:
-        umount(unrelated)
+    capability = TopologyQueryCapabilityV2.observe()
+    with pytest.raises(AttributeError):
+        getattr(capability, "records")
+    assert _acquire(target) == "acquired"
 
 
 def test_mutant_root_self_parent_stack_ambiguous(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2721,728 +2714,399 @@ def test_mutant_symlink_as_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
 
 
 def test_mutant_consumer_rescans_snapshot(
-    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runtime_parent: Path, tmp_path: Path
 ) -> None:
-    """M_CONSUMER_RESCANS_SNAPSHOT -- consumers inventing their own relevance,
-    which is the exact shape of the defect that produced the recurrence.
-
-    Measured after authority sealing: FOUR consumers ask the typed authority
-    independently -- applicability, the domain builder, projection and name
-    semantics -- and all four must regress together before the witness gets
-    through. Before sealing, two were enough. That difference is the point of
-    sealing, and it is asserted step by step below rather than assumed.
-    """
+    """M_CONSUMER_RESCANS_SNAPSHOT dies because no raw relation is received."""
 
     target = tmp_path / "a" / "b" / "c"
     target.mkdir(parents=True)
-    real_observe = MountTopologySnapshotV2.observe
-
-    def _with_malformed_ancestor(cls=None):
-        snapshot = real_observe()
-        bad = MountRecordV2(10 ** 7, 10 ** 7 + 1, 0, "/x", str(tmp_path / "a"), "ext4")
-        return MountTopologySnapshotV2(snapshot.records + (bad,))
-
-    monkeypatch.setattr(MountTopologySnapshotV2, "observe", staticmethod(_with_malformed_ancestor))
-    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-
-    # consumer 1: applicability stops asking the typed resolver
-    monkeypatch.setattr(
-        epoch_module, "_require_projection_applicable_v2",
-        lambda snapshot, *paths: [snapshot._governing_mount_raw_v2(p) for p in paths] and None)
-    # consumer 2: the domain builder rescans with its own at-or-beneath predicate
-    def _rescanning_builder(snapshot, path):
-        normalized = epoch_module._normalize_absolute_v2(path)
-        prefix = normalized.rstrip("/") + "/"
-        for record in snapshot.records:
-            if record.mount_point == normalized or record.mount_point.startswith(prefix):
-                snapshot.validate_relevant_chain_v2(record)
-        device, internal = snapshot.project_v2(path)
-        return (epoch_module._PhysicalSegmentV2(device, internal, ()),)
-
-    monkeypatch.setattr(epoch_module, "_visible_physical_domain_v2", _rescanning_builder)
-
-    # Before authority sealing, neutering these two consumers was enough to
-    # reopen the falsifier. It no longer is: `project_v2` also routes through
-    # the typed authority, so the refusal survives two regressing consumers.
-    # That is the material difference between consumer discipline and a sealed
-    # authority, and it is asserted rather than assumed.
-    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
-        "sealing must hold even when both typed-query consumers regress")
-
-    # only ALSO bypassing the sealed projection reopens it -- which is exactly
-    # what the structural guard makes impossible to land
-    def _raw_projection(self, path):
-        path = epoch_module._normalize_absolute_v2(path)
-        governing = self._governing_mount_raw_v2(path)
-        remainder = path[len(governing.mount_point.rstrip("/")):]
-        if not remainder or governing.mount_point == path:
-            return (governing.device, governing.root)
-        return (governing.device,
-                epoch_module._normalize_absolute_v2(governing.root.rstrip("/") + remainder))
-
-    monkeypatch.setattr(MountTopologySnapshotV2, "project_v2", _raw_projection)
-    assert _acquire(target) == TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2, (
-        "three regressing consumers still do not reopen it")
-
-    # Measured, not assumed: ALL FOUR consumers of the typed authority must
-    # regress together before the witness gets through --
-    # applicability, the domain builder, projection, and name semantics.
-    monkeypatch.setattr(epoch_module, "_require_name_semantics_applicable_v2",
-                        lambda snapshot, *paths: None)
-    assert _acquire(target) == "acquired", (
-        "with every typed-query consumer bypassed, the falsifier reopens")
+    capability = TopologyQueryCapabilityV2.observe()
+    for raw_name in (
+        "records",
+        "children",
+        "by_id",
+        "_governing_mount_raw_v2",
+        "validate_relevant_chain_v2",
+    ):
+        with pytest.raises(AttributeError):
+            getattr(capability, raw_name)
+    assert _acquire(target) == "acquired"
 
 
 # ------------------- structural authority assertions ----------------------
 
 
-# ============ THE STATIC TOPOLOGY SEAL — recurrence #3 redesign ===========
+# ============ FINITE CAPABILITY-BOUNDARY GATE ============================
 #
-# `#262` recurrence #3 (N18 -> N19) falsified the previous model outright. That
-# model asked "which production DIRECTORY is this file in?" and answered with
-# one hand-chosen root, `app/`. `scripts/agent-review-target-pack-v2.py`
-# imports the epoch module directly; it was never analysed. Adding `scripts` --
-# or `scripts` and `evals` -- reproduces the defect on the next surface nobody
-# remembers. Root SELECTION was the defect, not root count.
-#
-# Everything below therefore exercises ONE authority,
-# `_topology_static_seal_v2`, which decides nothing from directory membership:
-# the universe is the repository's own non-test Python, and a module is judged
-# only where it is statically BOUND to the topology subject through the
-# import / alias / re-export graph.
-#
-# The per-file marker analyzer is GONE, not kept alongside. Two analyzers with
-# overlapping jurisdiction is how an `app/`-only inventory survived a review
-# that believed it was repository-wide.
+# The intermodular semantic analyzer on 6d17b55 is falsified for this
+# property. The replacement answers only finite import-boundary and real
+# consumer-representation questions. It does not infer Python receiver types,
+# factories, aliases, unions, subclasses, or reflection semantics.
 
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import _topology_static_seal_v2 as seal  # noqa: E402
+import _topology_capability_boundary_v2 as boundary  # noqa: E402
 
 _REPOSITORY_ROOT = Path(epoch_module.__file__).resolve().parents[2]
 
-_SUBJECT_STUB = (
-    "class MountTopologySnapshotV2:\n"
-    "    def __init__(self):\n"
-    "        self.records = ()\n"
-    "        self.children = {}\n"
-    "        self.by_id = {}\n"
-    "    def resolve_query_v2(self, q):\n"
-    "        return self._governing_mount_raw_v2('/')\n"
-    "    def _governing_mount_raw_v2(self, p):\n"
-    "        return self.children\n"
-    "    def _is_visible_raw_v2(self, r):\n"
-    "        return self._governing_mount_raw_v2('/')\n"
-)
 
+def _minimal_raw() -> MountTopologySnapshotV2:
+    return MountTopologySnapshotV2((
+        MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),
+    ))
 
-def _repository(tmp_path: Path, files: dict[str, str] | None = None,
-                subject_extra: str = "") -> Path:
-    """A miniature repository with a real subject module at the real path.
 
-    Fixtures are written verbatim -- never dedented. A dedent silently hoists
-    an indented method out of its class, which turns an intended RED into a
-    meaningless GREEN; that mistake was made once while building this file.
-    """
+def _minimal_capability() -> TopologyQueryCapabilityV2:
+    return TopologyQueryCapabilityV2((
+        MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),
+    ))
 
-    root = tmp_path
-    (root / "app" / "agent_review").mkdir(parents=True, exist_ok=True)
-    (root / "app" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "app" / "agent_review" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "app" / "agent_review" / "target_pack_epoch_v2.py").write_text(
-        _SUBJECT_STUB + subject_extra, encoding="utf-8")
-    for rel, src in (files or {}).items():
-        path = root / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(src, encoding="utf-8")
-    return root
 
+def test_red_first_frozen_representation_exposed_raw_authority() -> None:
+    """Material RED witness reconstructed from frozen 6d17b55 behavior."""
 
-_IMPORT_SUBJECT = "from app.agent_review.target_pack_epoch_v2 import MountTopologySnapshotV2\n"
+    raw = _minimal_raw()
+    assert raw.records
+    assert raw.children
+    assert raw.by_id
+    assert callable(raw._governing_mount_raw_v2)
+    assert callable(raw._is_visible_raw_v2)
 
 
-# ---- the seal over the real repository -----------------------------------
-
-def test_the_real_repository_is_sealed() -> None:
-    """The whole repository, through the one authority."""
-
-    offences = seal.seal_offences(_REPOSITORY_ROOT)
-    assert offences == [], f"topology authority escapes the seal: {offences}"
-
-
-def test_the_universe_is_derived_from_the_repository_not_a_root_list() -> None:
-    """`#262` N19. No directory is privileged except the test package."""
-
-    universe = seal.repository_python_universe(_REPOSITORY_ROOT)
-    tops = {p.relative_to(_REPOSITORY_ROOT).parts[0] for p in universe}
-    assert "app" in tops
-    assert "scripts" in tops, "executable entry points are repository Python"
-    assert "tests" not in tops, "the test package is explicitly privileged"
-    assert not any("__pycache__" in p.parts for p in universe)
-    assert len(universe) > len(
-        [p for p in universe if p.relative_to(_REPOSITORY_ROOT).parts[0] == "app"]), \
-        "the universe must be strictly larger than the falsified app/ root"
-
-
-def test_scripts_that_import_the_epoch_module_are_in_the_universe() -> None:
-    """The concrete N19 witness, named."""
-
-    universe = {str(p.relative_to(_REPOSITORY_ROOT))
-                for p in seal.repository_python_universe(_REPOSITORY_ROOT)}
-    assert "scripts/agent-review-target-pack-v2.py" in universe
-    assert "scripts/github_agent_review.py" in universe
-
-
-# ---- N19: discovery without any list edit --------------------------------
-
-@pytest.mark.parametrize("location", [
-    "a_surface_that_did_not_exist/cli.py",
-    "scripts/newly_added_entrypoint.py",
-    "evals/agent_review_v2/new_consumer.py",
-    "another_package/deep/nested/consumer.py",
-])
-def test_a_new_consumer_anywhere_is_sealed_without_editing_any_list(
-    location: str, tmp_path: Path
-) -> None:
-    """`#262` N19, THE discriminator.
-
-    A consumer in a location that did not exist when this test was written is
-    sealed the moment it lands, through the REAL analyzer over a REAL root. No
-    inventory is monkeypatched and no directory is named.
-    """
-
-    root = _repository(tmp_path, {location: (
-        _IMPORT_SUBJECT
-        + "def leak(s: MountTopologySnapshotV2):\n"
-          "    return s._governing_mount_raw_v2('/x')\n")})
-    offences = seal.seal_offences(root)
-    assert any(location in o.path for o in offences), \
-        f"a new consumer at {location} must be sealed: {offences}"
-
-
-def test_fixture_corpora_that_never_import_the_subject_are_not_judged() -> None:
-    """Positive precision at repository scale.
-
-    `evals/*/case_sources/**` stands in for OTHER repositories. It needs no
-    exclusion rule: it never imports the subject, so it is never bound. This is
-    what makes reachability the right authority rather than a directory census.
-    """
-
-    bound = seal.bound_module_identities(_REPOSITORY_ROOT)
-    assert not any("case_sources" in identity for identity in bound)
-
-
-# ---- N20: intermodule subject identity -----------------------------------
-
-def test_n20_subject_is_tracked_through_multi_hop_reexports(tmp_path: Path) -> None:
-    """`#262` N20. module_c contains NEITHER literal marker."""
-
-    root = _repository(tmp_path, {
-        "pkg/__init__.py": "",
-        "pkg/module_a.py":
-            "from app.agent_review.target_pack_epoch_v2 import "
-            "MountTopologySnapshotV2 as Snapshot\n",
-        "pkg/module_b.py": "from pkg.module_a import Snapshot as S\n",
-        "pkg/module_c.py":
-            "from pkg.module_b import S\n"
-            "def bad(snapshot: S):\n"
-            "    return snapshot.records\n",
-    })
-    consumer = (root / "pkg" / "module_c.py").read_text(encoding="utf-8")
-    assert "MountTopologySnapshotV2" not in consumer
-    assert "target_pack_epoch_v2" not in consumer
-
-    offences = seal.seal_offences(root)
-    assert any(o.module == "pkg.module_c" and o.name == "records" for o in offences), \
-        f"a three-hop re-export must still identify the subject: {offences}"
-
-
-def test_n20_module_alias_access_is_tracked(tmp_path: Path) -> None:
-    """`import ... as tp` then `tp.MountTopologySnapshotV2`."""
-
-    root = _repository(tmp_path, {"pkg2/c.py": (
-        "import app.agent_review.target_pack_epoch_v2 as tp\n"
-        "def bad(s: tp.MountTopologySnapshotV2):\n"
-        "    return s.by_id\n")})
-    assert any(o.module == "pkg2.c" for o in seal.seal_offences(root))
-
-
-# ---- N21: owner identity is module-qualified -----------------------------
-
-def test_n21_an_impostor_module_inherits_no_authority(tmp_path: Path) -> None:
-    """`#262` N21. Identical `(class, method)` in the wrong module."""
-
-    root = _repository(tmp_path, {"unrelated/impostor.py": (
-        "class MountTopologySnapshotV2:\n"
-        "    def resolve_query_v2(self, real):\n"
-        "        return real._governing_mount_raw_v2('/x')\n")})
-    offences = seal.seal_offences(root)
-    assert any(o.module == "unrelated.impostor" for o in offences), \
-        "authority must not transfer by name collision"
-
-
-def test_n21_permitted_owners_are_module_qualified() -> None:
-    """The permission tuples themselves carry module identity."""
-
-    for owner in seal.PERMITTED_RAW_OWNERS | seal.PERMITTED_RELEVANCE_OWNERS:
-        assert len(owner) == 3 and owner[0] == seal.SUBJECT_MODULE
-
-
-# ---- N22: the raw relevance authority boundary ---------------------------
-
-@pytest.mark.parametrize("wrapper,attribute", [
-    ("project_v2", "records"),
-    ("governing_mount_v2", "children"),
-    ("is_visible_v2", "by_id"),
-    ("visible_child_mounts_v2", "records"),
-])
-def test_n22_consumer_wrappers_may_not_rescan_relevance(
-    wrapper: str, attribute: str, tmp_path: Path
-) -> None:
-    """`#262` N22, a REGRESSION this PR introduced.
-
-    `da23bbc` did not exempt `project_v2`; `8ae0d32` added it along with the
-    other thin wrappers. A wrapper is a CONSUMER: it must obtain relevance
-    through the typed resolution contract like anything else.
-    """
-
-    root = _repository(tmp_path, subject_extra=(
-        f"    def {wrapper}(self, p):\n"
-        f"        return self.{attribute}\n"))
-    offences = [o for o in seal.seal_offences(root) if o.owner[2] == wrapper]
-    assert offences, f"{wrapper} must not be permitted to rescan .{attribute}"
-
-
-@pytest.mark.parametrize("method,attribute", [
-    ("_semantic_seeds_v2", "records"),
-    ("_dependency_closure_v2", "by_id"),
-    ("_climb_stack_v2", "children"),
-    ("_visible_root_v2", "records"),
-    ("validate_relevant_chain_v2", "by_id"),
-    ("_governing_mount_raw_v2", "children"),
-    ("__init__", "records"),
-])
-def test_n22_semantically_necessary_owners_stay_permitted(
-    method: str, attribute: str, tmp_path: Path
-) -> None:
-    """The other half. Every permitted owner is permitted because it
-    IMPLEMENTS the derivation, established from the real module, not because
-    it happened to be in a list."""
-
-    root = _repository(tmp_path, subject_extra=(
-        f"    def {method}(self, p):\n"
-        f"        return self.{attribute}\n"))
-    assert not [o for o in seal.seal_offences(root) if o.owner[2] == method]
-
-
-def test_n22_permitted_owner_sets_match_semantic_necessity() -> None:
-    """The permitted sets are exactly what the real resolver needs -- no
-    consumer wrappers, and nothing vestigial."""
-
-    assert {o[2] for o in seal.PERMITTED_RAW_OWNERS} == {
-        "_is_visible_raw_v2", "resolve_query_v2"}
-    permitted = {o[2] for o in seal.PERMITTED_RELEVANCE_OWNERS}
-    assert permitted == {
-        "__init__", "_semantic_seeds_v2", "_dependency_closure_v2",
-        "_governing_mount_raw_v2", "_climb_stack_v2", "_visible_root_v2",
-        "validate_relevant_chain_v2"}
-    for wrapper in ("project_v2", "governing_mount_v2", "is_visible_v2",
-                    "visible_child_mounts_v2"):
-        assert wrapper not in permitted, f"{wrapper} is a consumer, not an authority"
-
-
-# ---- N23 / N15 historical: static reference forms -------------------------
-
-@pytest.mark.parametrize("label,body", [
-    ("direct-call", "def leak(s: MountTopologySnapshotV2):\n"
-                    "    return s._governing_mount_raw_v2('/x')\n"),
-    ("raw-visibility", "def leak(s: MountTopologySnapshotV2):\n"
-                       "    return s._is_visible_raw_v2(None)\n"),
-    ("bound-alias", "def leak(s: MountTopologySnapshotV2):\n"
-                    "    raw = s._governing_mount_raw_v2\n"
-                    "    return raw('/x')\n"),
-    ("unbound-alias", "def leak(s):\n"
-                      "    raw = MountTopologySnapshotV2._governing_mount_raw_v2\n"
-                      "    return raw(s, '/x')\n"),
-    ("literal-getattr", "def leak(s: MountTopologySnapshotV2):\n"
-                        "    return getattr(s, '_governing_mount_raw_v2')('/x')\n"),
-    ("passed-as-value", "def leak(s: MountTopologySnapshotV2, sink):\n"
-                        "    return sink(s._is_visible_raw_v2)\n"),
-])
-def test_every_raw_reference_form_is_detected_cross_module(
-    label: str, body: str, tmp_path: Path
-) -> None:
-    """The N15 corpus, preserved and now enforced ACROSS modules."""
-
-    root = _repository(tmp_path, {"consumer/mod.py": _IMPORT_SUBJECT + body})
-    assert any(o.module == "consumer.mod" for o in seal.seal_offences(root)), \
-        f"undetected raw reference form: {label}"
-
-
-@pytest.mark.parametrize("internal", ["records", "children", "by_id"])
-def test_n23_literal_getattr_on_relevance_internals_is_detected(
-    internal: str, tmp_path: Path
-) -> None:
-    """`#262` N23. A literal name is static; only a COMPUTED name is not."""
-
-    root = _repository(tmp_path, {"consumer/g.py": (
-        _IMPORT_SUBJECT
-        + "def leak(s: MountTopologySnapshotV2):\n"
-          f"    return getattr(s, '{internal}')\n")})
-    offences = seal.seal_offences(root)
-    assert any(o.name == internal and o.form == "literal-getattr" for o in offences)
-
-
-def test_dynamic_reflection_is_an_explicit_nonclaim(tmp_path: Path) -> None:
-    """Bound, asserted rather than implied.
-
-    A dynamically computed attribute name defeats static analysis. Saying so is
-    the difference between a bounded guard and a false one.
-    """
-
-    root = _repository(tmp_path, {"consumer/dyn.py": (
-        _IMPORT_SUBJECT
-        + "def leak(s: MountTopologySnapshotV2, name):\n"
-          "    return getattr(s, name)\n")})
-    assert not [o for o in seal.seal_offences(root) if o.module == "consumer.dyn"]
-
-
-# ---- N25: receiver precision ---------------------------------------------
-
-def test_n25_typed_consumer_and_unrelated_object_in_the_same_module(
-    tmp_path: Path
-) -> None:
-    """`#262` N25, the positive control that the old model could not pass.
-
-    The falsified model asked only whether the MODULE contained a marker, so
-    every `.records` in a file that legitimately used the typed API was
-    reported. Both halves live in one module here, deliberately.
-    """
-
-    root = _repository(tmp_path, {"consumer/mixed.py": (
-        _IMPORT_SUBJECT
-        + "class Ledger:\n"
-          "    def __init__(self):\n"
-          "        self.records = []\n"
-          "        self.children = {}\n"
-          "        self.by_id = {}\n"
-          "    def all(self):\n"
-          "        return self.records, self.children, self.by_id\n"
-          "def good(s: MountTopologySnapshotV2):\n"
-          "    return s.resolve_query_v2(None)\n")})
-    assert seal.seal_offences(root) == []
-
-
-def test_n25_the_same_module_still_reports_real_reconstruction(
-    tmp_path: Path
-) -> None:
-    """The other half: precision must not become blindness."""
-
-    root = _repository(tmp_path, {"consumer/mixed2.py": (
-        _IMPORT_SUBJECT
-        + "class Ledger:\n"
-          "    def __init__(self):\n"
-          "        self.records = []\n"
-          "def bad(s: MountTopologySnapshotV2):\n"
-          "    return s.records\n")})
-    offences = seal.seal_offences(root)
-    assert [o.owner[2] for o in offences] == ["bad"], \
-        f"only the real reconstruction may be reported: {offences}"
-
-
-# ---- factory-obtained receivers -------------------------------------------
-
-def test_a_factory_obtained_snapshot_is_still_the_subject(tmp_path: Path) -> None:
-    """A snapshot is normally obtained from `observe()` / `parse()`, not by
-    calling the class. This path is statically expressible, so leaving it out
-    would have been a hole rather than a bound -- it was found by adversarial
-    probing after the first 23 vectors all passed.
-    """
-
-    root = _repository(tmp_path, {"consumer/fac.py": (
-        _IMPORT_SUBJECT
-        + "def leak():\n"
-          "    snap = MountTopologySnapshotV2.observe()\n"
-          "    return snap.records\n")}, subject_extra=(
-        "    @classmethod\n"
-        "    def observe(cls) -> 'MountTopologySnapshotV2':\n"
-        "        return cls()\n"))
-    assert any(o.module == "consumer.fac" for o in seal.seal_offences(root))
-
-
-def test_an_annotated_factory_binds_across_modules(tmp_path: Path) -> None:
-    """The return annotation is read where the factory is DEFINED, and the
-    binding survives the import into another module."""
-
-    root = _repository(tmp_path, {
-        "consumer/__init__.py": "",
-        "consumer/build.py": _IMPORT_SUBJECT
-            + "def make() -> MountTopologySnapshotV2:\n"
-              "    return MountTopologySnapshotV2()\n",
-        "consumer/use.py": "from consumer.build import make\n"
-                           "def leak():\n"
-                           "    snap = make()\n"
-                           "    return snap.by_id\n",
-    })
-    assert any(o.module == "consumer.use" for o in seal.seal_offences(root))
-
-
-def test_an_unannotated_factory_is_an_explicit_nonclaim(tmp_path: Path) -> None:
-    """The bound, stated. Without an annotation this would be return-type
-    inference, which this analyzer does not claim to do."""
-
-    root = _repository(tmp_path, {"consumer/un.py": (
-        _IMPORT_SUBJECT
-        + "def make():\n"
-          "    return MountTopologySnapshotV2()\n"
-          "def leak():\n"
-          "    snap = make()\n"
-          "    return snap.records\n")})
-    assert not [o for o in seal.seal_offences(root) if o.module == "consumer.un"]
-
-
-# ---- mutants: each dies by its own intended evidence ----------------------
-
-def _offences_over(root: Path, sources: list[Path]) -> list:
-    graph = seal.build_module_graph(sources, root)
-    out: list = []
-    for identity in sorted(graph):
-        out.extend(seal.analyze_module(graph, graph[identity]))
-    return out
-
-
-def _newcomer_repository(tmp_path: Path) -> Path:
-    return _repository(tmp_path, {"brand_new_surface/consumer.py": (
-        _IMPORT_SUBJECT
-        + "def leak(s: MountTopologySnapshotV2):\n"
-          "    return s._governing_mount_raw_v2('/x')\n")})
-
-
-@pytest.mark.parametrize("label,roots", [
-    ("M_APP_ROOT_ONLY", {"app"}),
-    ("M_MANUAL_ROOT_LIST", {"app", "scripts"}),
-])
-def test_mutant_root_restricted_inventory(label: str, roots: set[str],
-                                          tmp_path: Path) -> None:
-    """The falsified architecture, and the architecture that would merely
-    postpone it. Both go blind on a surface outside their roots."""
-
-    root = _newcomer_repository(tmp_path)
-    assert seal.seal_offences(root), "the real seal must catch the newcomer"
-    restricted = [p for p in seal.repository_python_universe(root)
-                  if p.relative_to(root).parts[0] in roots]
-    assert _offences_over(root, restricted) == [], \
-        f"{label} must be blind here -- that is what it is being kept to show"
-
-
-def test_mutant_reexport_not_followed(tmp_path: Path,
-                                      monkeypatch: pytest.MonkeyPatch) -> None:
-    """M_REEXPORT_NOT_FOLLOWED."""
-
-    root = _repository(tmp_path, {
-        "pkg/__init__.py": "",
-        "pkg/a.py": "from app.agent_review.target_pack_epoch_v2 import "
-                    "MountTopologySnapshotV2 as Snapshot\n",
-        "pkg/b.py": "from pkg.a import Snapshot as S\n"
-                    "def bad(x: S):\n"
-                    "    return x.records\n",
-    })
-    assert seal.seal_offences(root), "the real seal must follow the re-export"
-    monkeypatch.setattr(seal, "_resolve",
-                        lambda graph, module, symbol, seen=frozenset(): (module, symbol))
-    assert seal.seal_offences(root) == []
-
-
-def test_mutant_owner_identity_omits_module(tmp_path: Path,
-                                            monkeypatch: pytest.MonkeyPatch) -> None:
-    """M_OWNER_IDENTITY_OMITS_MODULE -- exactly N21's defect, reconstructed."""
-
-    root = _repository(tmp_path, {"unrelated/impostor.py": (
-        "class MountTopologySnapshotV2:\n"
-        "    def resolve_query_v2(self, real):\n"
-        "        return real._governing_mount_raw_v2('/x')\n")})
-    assert seal.seal_offences(root), "module-qualified identity must flag it"
-
-    def blind(self, kind, name, form, line):
-        owner = self._owner()
-        permitted = (seal.PERMITTED_RAW_OWNERS if kind == "raw"
-                     else seal.PERMITTED_RELEVANCE_OWNERS)
-        if any(cls == owner[1] and fn == owner[2] for _, cls, fn in permitted):
-            return
-        self.offences.append(seal.Offence(self.node.identity, str(self.node.path),
-                                          owner, kind, name, form, line))
-
-    monkeypatch.setattr(seal._ModuleVisitor, "_record", blind)
-    assert seal.seal_offences(root) == []
-
-
-def test_mutant_consumer_wrapper_allowed_rescan(tmp_path: Path,
-                                                monkeypatch: pytest.MonkeyPatch) -> None:
-    """M_CONSUMER_WRAPPER_ALLOWED_RESCAN -- the shipped `8ae0d32` allowlist."""
-
-    root = _repository(tmp_path, subject_extra=(
-        "    def project_v2(self, p):\n"
-        "        return self.records\n"))
-    assert seal.seal_offences(root), "a wrapper rescan must be an offence"
-    monkeypatch.setattr(seal, "PERMITTED_RELEVANCE_OWNERS",
-                        seal.PERMITTED_RELEVANCE_OWNERS
-                        | {(seal.SUBJECT_MODULE, seal.SUBJECT_CLASS, "project_v2")})
-    assert seal.seal_offences(root) == []
-
-
-def test_mutant_relevance_literal_getattr_unseen(tmp_path: Path,
-                                                 monkeypatch: pytest.MonkeyPatch) -> None:
-    """M_RELEVANCE_LITERAL_GETATTR_UNSEEN."""
-
-    import ast as _ast
-
-    root = _repository(tmp_path, {"consumer/g.py": (
-        _IMPORT_SUBJECT
-        + "def leak(s: MountTopologySnapshotV2):\n"
-          "    return getattr(s, 'records')\n")})
-    assert seal.seal_offences(root), "literal getattr must be seen"
-    monkeypatch.setattr(seal._ModuleVisitor, "visit_Call",
-                        lambda self, node: _ast.NodeVisitor.generic_visit(self, node))
-    assert seal.seal_offences(root) == []
-
-
-def test_mutant_receiver_identity_ignored(tmp_path: Path,
-                                          monkeypatch: pytest.MonkeyPatch) -> None:
-    """M_RECEIVER_IDENTITY_IGNORED -- the falsified module-marker model.
-
-    This mutant dies by OVER-refusal: it reports the unrelated `Ledger`, which
-    is precisely N25.
-    """
-
-    root = _repository(tmp_path, {"consumer/mixed.py": (
-        _IMPORT_SUBJECT
-        + "class Ledger:\n"
-          "    def __init__(self):\n"
-          "        self.records = []\n"
-          "def good(s: MountTopologySnapshotV2):\n"
-          "    return s.resolve_query_v2(None)\n")})
-    assert seal.seal_offences(root) == [], "the real seal must accept this module"
-    monkeypatch.setattr(seal._ModuleVisitor, "_receiver_is_subject",
-                        lambda self, expr: True)
-    assert seal.seal_offences(root), "the marker model would flag Ledger"
-
-
-def test_mutant_newcomer_test_supplies_its_own_inventory(tmp_path: Path) -> None:
-    """M_NEWCOMER_TEST_SUPPLIES_ITS_OWN_INVENTORY -- `#262` N24.
-
-    The `8ae0d32` newcomer test replaced the inventory function with a lambda
-    that already contained the newcomer, so it proved only that a list contains
-    what was put in it. Here the discriminator is that the REAL derivation
-    finds the newcomer; a hand-supplied inventory that omits it goes blind.
-    """
-
-    root = _newcomer_repository(tmp_path)
-    assert seal.seal_offences(root), "the real derivation must find the newcomer"
-
-    pretended = [p for p in seal.repository_python_universe(root)
-                 if "brand_new_surface" not in p.parts]
-    assert _offences_over(root, pretended) == [], \
-        "a supplied inventory omitting the newcomer proves nothing"
-
-
-def _this_module_ast() -> "ast.Module":
-    import ast
-    return ast.parse(Path(__file__).read_text(encoding="utf-8"))
-
-
-def test_the_inventory_oracle_is_never_supplied_by_the_test() -> None:
-    """N24 as a standing discipline, asserted STRUCTURALLY.
-
-    No test here may monkeypatch the universe derivation itself: the newcomer
-    discriminator has to run the real function against a real root, or it
-    proves only that a list contains what was put in it.
-
-    This is checked on the AST, not by substring -- a guard that greps its own
-    source matches its own vocabulary and fails for the wrong reason.
-    """
-
-    import ast
-
-    forbidden = {"repository_python_universe", "module_identity"}
-    for node in ast.walk(_this_module_ast()):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if not (isinstance(func, ast.Attribute) and func.attr == "setattr"):
-            continue
-        if len(node.args) < 2:
-            continue
-        target, attribute = node.args[0], node.args[1]
-        if not (isinstance(target, ast.Name) and target.id == "seal"):
-            continue
-        if isinstance(attribute, ast.Constant) and attribute.value in forbidden:
-            raise AssertionError(
-                f"the inventory oracle must not be supplied by the test: "
-                f"seal.{attribute.value} patched at line {node.lineno}")
-
-
-def test_there_is_exactly_one_static_seal_authority() -> None:
-    """`#262` §20. The per-file marker analyzer is SUPERSEDED, not parallel.
-
-    Two analyzers with overlapping jurisdiction is how an `app/`-only inventory
-    survived a review that believed it was repository-wide. Checked on the AST
-    so the retired names may still be NAMED in prose and in this list.
-    """
-
-    import ast
-
-    retired = {
-        "_production_python_sources", "_seal_offenders_across",
-        "_relevance_reconstruction_offenders", "_raw_reference_offenders",
-        "_raw_primitive_references", "_TOPOLOGY_SUBJECT_MARKERS",
-        "_PRODUCTION_PACKAGE_ROOTS", "_PERMITTED_RELEVANCE_OWNERS",
+def test_real_product_raw_import_boundary_is_exactly_one() -> None:
+    assert boundary.product_raw_importers(_REPOSITORY_ROOT) == {
+        boundary.EXPECTED_PRODUCT_IMPORTER
     }
-    tree = _this_module_ast()
-    defined: set[str] = set()
-    used: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            defined.add(node.name)
-        elif isinstance(node, ast.Name):
-            (defined if isinstance(node.ctx, ast.Store) else used).add(node.id)
-    assert not (retired & defined), \
-        f"retired analyzer routes must not be redefined here: {retired & defined}"
-    assert not (retired & used), \
-        f"retired analyzer routes must not be called here: {retired & used}"
-
-    helper = Path(__file__).resolve().parent / "_topology_static_seal_v2.py"
-    assert helper.exists(), "the single authority must exist as one module"
-    assert helper.read_text(encoding="utf-8").count("def seal_offences") == 1
 
 
-def test_resolver_does_not_recurse_through_the_consumer_wrapper() -> None:
-    """`resolve_query_v2 -> _governing_mount_raw_v2`, never
-    `resolve_query_v2 -> governing_mount_v2 -> resolve_query_v2`."""
-
-    import inspect
-
-    body = inspect.getsource(MountTopologySnapshotV2.resolve_query_v2)
-    assert "_governing_mount_raw_v2(" in body
-    assert "self.governing_mount_v2(" not in body
+def test_raw_module_and_representation_are_not_reexported_by_the_owner() -> None:
+    assert not hasattr(epoch_module, "_raw_topology")
+    assert not hasattr(epoch_module, "_RawMountTopologyRepresentationV2")
 
 
-def test_single_authority_counts() -> None:
-    source = Path(epoch_module.__file__).read_text(encoding="utf-8")
-    for name, expected in [
-        ('"/proc/self/mountinfo"', 1),
-        ("def resolve_query_v2", 1),
-        ("def _semantic_seeds_v2", 1),
-        ("def _dependency_closure_v2", 1),
-        ("def governing_mount_v2", 1),
-        ("def project_v2", 1),
-        ("def _require_projection_applicable_v2", 1),
-        ("def _require_name_semantics_applicable_v2", 1),
-        ("def _visible_physical_domain_v2", 1),
-        ("def _carrier_operational_sites_v2", 1),
-        ("def _establish_carrier_disjoint_v2", 1),
-    ]:
-        assert source.count(name) == expected, f"{name} должно be {expected}"
+@pytest.mark.parametrize(
+    "relative,body",
+    [
+        (
+            "app/agent_review/second_owner.py",
+            "from app.agent_review import _mount_topology_raw_v2\n",
+        ),
+        (
+            "app/agent_review/reexport.py",
+            "from app.agent_review._mount_topology_raw_v2 import "
+            "RawMountTopologyRepresentationV2\n",
+        ),
+        (
+            "scripts/new_consumer.py",
+            "import app.agent_review._mount_topology_raw_v2 as raw\n",
+        ),
+        (
+            "evals/new_consumer.py",
+            "from app.agent_review import _mount_topology_raw_v2 as raw\n",
+        ),
+        (
+            "brand_new_package/consumer.py",
+            "from app.agent_review._mount_topology_raw_v2 import MountRecordV2\n",
+        ),
+    ],
+    ids=[
+        "M_SECOND_IMPORTER_OF_RAW_MODULE",
+        "M_RAW_MODULE_REEXPORTED",
+        "M_RAW_MODULE_IMPORTED_FROM_SCRIPT",
+        "M_RAW_MODULE_IMPORTED_FROM_EVAL",
+        "M_RAW_MODULE_IMPORTED_FROM_NEW_PACKAGE",
+    ],
+)
+def test_raw_import_mutants_die_by_the_finite_boundary(
+    tmp_path: Path, relative: str, body: str
+) -> None:
+    canonical = tmp_path / "app/agent_review/target_pack_epoch_v2.py"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text(
+        "from app.agent_review import _mount_topology_raw_v2 as raw\n",
+        encoding="utf-8",
+    )
+    mutant = tmp_path / relative
+    mutant.parent.mkdir(parents=True, exist_ok=True)
+    mutant.write_text(body, encoding="utf-8")
+
+    importers = boundary.product_raw_importers(tmp_path)
+    assert boundary.EXPECTED_PRODUCT_IMPORTER in importers
+    assert len(importers) == 2
+    assert boundary._module_identity(tmp_path, mutant) in importers
+
+
+def test_computed_import_is_an_explicit_nonclaim(tmp_path: Path) -> None:
+    source = tmp_path / "consumer.py"
+    source.write_text(
+        "import importlib\n"
+        "raw = importlib.import_module("
+        "'app.agent_review._mount_topology_raw_v2')\n",
+        encoding="utf-8",
+    )
+    assert boundary.raw_import_sites(tmp_path) == ()
+
+
+def test_real_capability_api_shape_contains_no_raw_representation() -> None:
+    capability = _minimal_capability()
+    assert boundary.capability_shape_violations(capability) == ()
+    assert not hasattr(capability, "__dict__")
+    assert set(name for name in dir(capability) if not name.startswith("_")) == {
+        "governing_mount_v2",
+        "is_visible_v2",
+        "observe",
+        "parse",
+        "project_v2",
+        "resolve_query_v2",
+        "visible_child_mounts_v2",
+    }
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "records",
+        "children",
+        "by_id",
+        "_governing_mount_raw_v2",
+        "_is_visible_raw_v2",
+        "_visible_root_v2",
+        "_climb_stack_v2",
+        "validate_relevant_chain_v2",
+        "_semantic_seeds_v2",
+        "_dependency_closure_v2",
+    ],
+)
+def test_capability_direct_and_bound_lookup_cannot_reach_raw(name: str) -> None:
+    capability = _minimal_capability()
+    with pytest.raises(AttributeError):
+        getattr(capability, name)
+    with pytest.raises(AttributeError):
+        __builtins__["getattr"](capability, name) if isinstance(__builtins__, dict) else getattr(capability, name)
+
+
+@pytest.mark.parametrize("operation", ["setattr", "delattr"])
+def test_capability_cannot_be_mutated_to_expose_raw(operation: str) -> None:
+    capability = _minimal_capability()
+    with pytest.raises(AttributeError):
+        if operation == "setattr":
+            setattr(capability, "records", ())
+        else:
+            delattr(capability, "records")
+
+
+def test_capability_has_no_vars_or_dict_representation() -> None:
+    capability = _minimal_capability()
+    with pytest.raises(TypeError):
+        vars(capability)
+    assert not hasattr(capability, "__dict__")
+
+
+def test_capability_slots_hold_typed_closures_not_bound_raw_objects() -> None:
+    capability = _minimal_capability()
+    for slot in TopologyQueryCapabilityV2.__slots__:
+        stored_name = f"_MountTopologySnapshotV2{slot}"
+        operation = object.__getattribute__(capability, stored_name)
+        assert callable(operation)
+        assert not hasattr(operation, "__self__")
+        assert operation.__closure__, "raw state must be closure-captured"
+        with pytest.raises(AttributeError):
+            setattr(capability, stored_name, operation)
+
+
+def test_capability_matchclass_cannot_extract_raw_state() -> None:
+    capability = _minimal_capability()
+    matched = False
+    match capability:
+        case TopologyQueryCapabilityV2(records=_):
+            matched = True
+        case _:
+            pass
+    assert matched is False
+
+
+def test_capability_subclass_and_factory_return_inherit_no_raw_state() -> None:
+    class ConsumerSubclass(TopologyQueryCapabilityV2):
+        __slots__ = ()
+
+    records = (MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),)
+    subclass = ConsumerSubclass(records)
+    factory_result = TopologyQueryCapabilityV2.parse(
+        "1 1 1:1 / / rw - ext4 /dev/root rw\n"
+    )
+    for value in (subclass, factory_result):
+        assert boundary.capability_shape_violations(value) == ()
+        assert not hasattr(value, "records")
+
+
+def test_cross_module_alias_and_reexport_still_yield_the_opaque_capability() -> None:
+    alias = epoch_module.MountTopologySnapshotV2
+    capability = alias((MountRecordV2(1, 1, 0, "/", "/", "ext4"),))
+    assert type(capability) is TopologyQueryCapabilityV2
+    assert boundary.capability_shape_violations(capability) == ()
+
+
+def test_public_topology_and_error_import_identities_are_preserved() -> None:
+    for contract in (
+        MountRecordV2,
+        epoch_module.TopologyQueryKindV2,
+        epoch_module.TopologyQueryV2,
+        epoch_module.TopologyQueryResolutionV2,
+        TargetPackEpochError,
+    ):
+        assert contract.__module__ == "app.agent_review.target_pack_epoch_v2"
+
+
+@pytest.mark.parametrize(
+    "mutant_name,mutant_type",
+    [
+        ("M_RAW_EXPOSED_AS_ATTRIBUTE", type("MRaw", (), {"raw": object()})),
+        ("M_PUBLIC_API_LEAKS_RECORDS", type("MRecords", (), {"records": ()})),
+        ("M_PUBLIC_API_LEAKS_CHILDREN", type("MChildren", (), {"children": {}})),
+        ("M_PUBLIC_API_LEAKS_BY_ID", type("MById", (), {"by_id": {}})),
+        (
+            "M_RAW_TRAVERSAL_EXPOSED",
+            type("MTraversal", (), {"_governing_mount_raw_v2": lambda self, path: None}),
+        ),
+        ("M_CLOSURE_REPLACED_BY_PUBLIC_SLOT", type("MSlot", (), {"__slots__": ("raw",)})),
+    ],
+)
+def test_api_shape_mutants_die_by_the_same_finite_gate(
+    mutant_name: str, mutant_type: type
+) -> None:
+    mutant = mutant_type()
+    assert boundary.capability_shape_violations(mutant), mutant_name
+
+
+def test_m_second_raw_authority_dies_as_a_second_importer(tmp_path: Path) -> None:
+    canonical = tmp_path / "app/agent_review/target_pack_epoch_v2.py"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text(
+        "from app.agent_review import _mount_topology_raw_v2 as raw\n",
+        encoding="utf-8",
+    )
+    duplicate = tmp_path / "app/agent_review/duplicate_authority.py"
+    duplicate.write_text(
+        "from app.agent_review import _mount_topology_raw_v2 as raw\n"
+        "def observe(): return raw.RawMountTopologyRepresentationV2.observe()\n",
+        encoding="utf-8",
+    )
+    assert len(boundary.product_raw_importers(tmp_path)) == 2
+
+
+def test_raw_typed_and_k_disjoint_authorities_are_single() -> None:
+    import ast
+    import app.agent_review._mount_topology_raw_v2 as raw_module
+
+    raw_tree = ast.parse(Path(raw_module.__file__).read_text(encoding="utf-8"))
+    epoch_tree = ast.parse(Path(epoch_module.__file__).read_text(encoding="utf-8"))
+    raw_classes = [
+        node for node in ast.walk(raw_tree)
+        if isinstance(node, ast.ClassDef)
+        and node.name == "RawMountTopologyRepresentationV2"
+    ]
+    raw_resolvers = [
+        node for node in ast.walk(raw_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "resolve_query_v2"
+    ]
+    k_authorities = [
+        node for node in ast.walk(epoch_tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_establish_carrier_disjoint_v2"
+    ]
+    facade_resolver = next(
+        node for node in ast.walk(epoch_tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "resolve_query_v2"
+    )
+    assert len(raw_classes) == 1
+    assert len(raw_resolvers) == 1
+    assert len(k_authorities) == 1
+    assert len(facade_resolver.body) == 1
+    assert isinstance(facade_resolver.body[0], ast.Return)
+
+
+def test_custom_semantic_analyzer_is_removed_not_parallel() -> None:
+    assert not (
+        Path(__file__).resolve().parent / "_topology_static_seal_v2.py"
+    ).exists()
+
+
+def test_differential_point_subtree_projection_and_reason_codes() -> None:
+    table = (
+        "1 1 1:1 / / rw - ext4 /dev/root rw\n"
+        "2 1 2:1 / /a rw - ext4 /dev/a rw\n"
+        "3 2 3:1 / /a/b rw - tmpfs tmpfs rw\n"
+    )
+    raw = MountTopologySnapshotV2.parse(table)
+    capability = TopologyQueryCapabilityV2.parse(table)
+    for query in (
+        epoch_module.TopologyQueryV2(
+            epoch_module.TopologyQueryKindV2.POINT_LOOKUP, "/a/b/c"
+        ),
+        epoch_module.TopologyQueryV2(
+            epoch_module.TopologyQueryKindV2.VISIBLE_SUBTREE, "/a"
+        ),
+    ):
+        assert capability.resolve_query_v2(query) == raw.resolve_query_v2(query)
+    assert capability.governing_mount_v2("/a/b/c") == raw.governing_mount_v2("/a/b/c")
+    assert capability.visible_child_mounts_v2("/a") == raw.visible_child_mounts_v2("/a")
+    assert capability.project_v2("/a/b/c") == raw.project_v2("/a/b/c")
+
+    malformed = (
+        "1 1 1:1 / / rw - ext4 /dev/root rw\n"
+        "4 99 4:1 /x /a rw - ext4 /dev/bad rw\n"
+    )
+    for factory in (MountTopologySnapshotV2.parse, TopologyQueryCapabilityV2.parse):
+        subject = factory(malformed)
+        with pytest.raises(TargetPackEpochError) as excinfo:
+            subject.governing_mount_v2("/a/x")
+        assert excinfo.value.reason_code == (
+            TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+        )
+
+
+def test_differential_public_acquisition_and_refusal_reason(
+    runtime_parent: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "ordinary-target"
+    target.mkdir()
+    with monkeypatch.context() as mutation:
+        mutation.setattr(epoch_module, "MountTopologySnapshotV2", MountTopologySnapshotV2)
+        raw_result = _acquire(target)
+    capability_result = _acquire(target)
+    assert raw_result == capability_result == "acquired"
+
+    refused_target = tmp_path / "a" / "b" / "c"
+    refused_target.mkdir(parents=True)
+    real_observe = MountTopologySnapshotV2.observe
+
+    def malformed_observe(cls=None):
+        raw = real_observe()
+        bad = MountRecordV2(
+            10 ** 7,
+            10 ** 7 + 1,
+            0,
+            "/x",
+            str(tmp_path / "a"),
+            "ext4",
+        )
+        return MountTopologySnapshotV2(raw.records + (bad,))
+
+    with monkeypatch.context() as mutation:
+        mutation.setattr(
+            MountTopologySnapshotV2, "observe", staticmethod(malformed_observe)
+        )
+        mutation.setattr(epoch_module, "MountTopologySnapshotV2", MountTopologySnapshotV2)
+        raw_reason = _acquire(refused_target)
+    with monkeypatch.context() as mutation:
+        mutation.setattr(
+            MountTopologySnapshotV2, "observe", staticmethod(malformed_observe)
+        )
+        capability_reason = _acquire(refused_target)
+    assert raw_reason == capability_reason == (
+        TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
+    )
 
 
 # ============ AUTHORITY SEALING — native P2 on ac0aa6e ====================

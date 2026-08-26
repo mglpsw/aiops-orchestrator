@@ -13,14 +13,29 @@ import array
 import fcntl
 import hashlib
 import os
-import re
 import stat
 import sys
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
-from typing import NamedTuple
 from typing import Literal
+from typing import NamedTuple
+
+from app.agent_review._mount_topology_raw_v2 import (
+    MountRecordV2 as _MountRecordV2,
+    RawMountTopologyRepresentationV2 as _RawMountTopologyRepresentationV2,
+    TopologyQueryKindV2 as _TopologyQueryKindV2,
+    TopologyQueryResolutionV2 as _TopologyQueryResolutionV2,
+    TopologyQueryV2 as _TopologyQueryV2,
+)
+from app.agent_review._target_pack_epoch_contract_v2 import (
+    TARGET_PACK_EPOCH_BUSY_REASON_V2,
+    TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2,
+    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2,
+    TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2,
+    TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2,
+    TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
+    TargetPackEpochError,
+)
 
 
 TARGET_PACK_EPOCH_PROTOCOL_VERSION_V2 = "agentreview.target-epoch-k.v1"
@@ -28,20 +43,6 @@ _RUNTIME_PARENT_PATH_V2 = Path("/tmp")
 _RUNTIME_PARENT_EXPECTED_OWNER_V2 = 0
 _RUNTIME_NAMESPACE_PREFIX_V2 = "agentreview-target-locks-v1-"
 _SUPPORTED_RUNTIME_FILESYSTEMS_V2 = frozenset({"ext2", "ext3", "ext4", "tmpfs"})
-
-TARGET_PACK_EPOCH_BUSY_REASON_V2 = "target_pack_epoch_busy"
-TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2 = "target_pack_epoch_unavailable"
-TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2 = "target_pack_epoch_target_subject_changed"
-TARGET_PACK_EPOCH_CAPABILITY_INVALID_REASON_V2 = "target_pack_epoch_capability_invalid"
-# `K-DISJOINT` (#262).  Two reasons, deliberately distinct: one says the
-# carrier and the target were established to share visible physical ground, the
-# other says the relation could not be established at all.  Collapsing them
-# would let "we could not look" read as "we looked and it was fine", which is
-# the exact fail-open this authority exists to remove.
-TARGET_PACK_EPOCH_CARRIER_OVERLAP_REASON_V2 = "target_pack_epoch_carrier_overlaps_target"
-TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2 = (
-    "target_pack_epoch_carrier_disjointness_unknown"
-)
 
 # `O_CLOEXEC` closes an FD at exec, but a raw Python `fork()` first duplicates
 # the open file description.  Track live protocol FDs so the child closes its
@@ -67,14 +68,6 @@ def _close_inherited_epoch_fds_after_fork_v2() -> None:
 
 if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_close_inherited_epoch_fds_after_fork_v2)
-
-
-class TargetPackEpochError(ValueError):
-    """A typed refusal while establishing or consuming a private epoch."""
-
-    def __init__(self, reason_code: str) -> None:
-        super().__init__(reason_code)
-        self.reason_code = reason_code
 
 
 def _frame_v2(value: bytes) -> bytes:
@@ -130,442 +123,131 @@ def _mount_namespace_identity_v2() -> tuple[int, int]:
         os.close(fd)
 
 
-# `/proc/self/mountinfo` escapes space, tab, newline and backslash in its path
-# fields as a SINGLE backslash plus three octal digits.  Matching two
-# backslashes decodes no real mountinfo path at all.
-_MOUNT_ESCAPE_RE_V2 = re.compile(r"\\([0-7]{3})")
+# Public typed topology contracts remain import-compatible. Their raw storage
+# and traversal implementation live behind the one private-module boundary.
+MountRecordV2 = _MountRecordV2
+TopologyQueryKindV2 = _TopologyQueryKindV2
+TopologyQueryV2 = _TopologyQueryV2
+TopologyQueryResolutionV2 = _TopologyQueryResolutionV2
+for _public_topology_contract_v2 in (
+    MountRecordV2,
+    TopologyQueryKindV2,
+    TopologyQueryV2,
+    TopologyQueryResolutionV2,
+):
+    _public_topology_contract_v2.__module__ = __name__
 
 
-def _unescape_mountinfo_path_v2(value: str) -> str:
-    return _MOUNT_ESCAPE_RE_V2.sub(lambda match: chr(int(match.group(1), 8)), value)
+def _build_topology_capability_type_v2(
+    raw_type: type[_RawMountTopologyRepresentationV2],
+) -> type:
+    """Close the raw implementation type outside the owner module namespace."""
 
+    class _MountTopologySnapshotV2:
+        """Opaque consumer capability for typed mount-topology operations.
 
-class MountRecordV2(NamedTuple):
-    """One row of `/proc/self/mountinfo`, decoded.
-
-    `root` is the subtree of the filesystem this mount exposes -- `"/"` for a
-    whole filesystem, and also `"/"` for a bind of a whole filesystem root --
-    while `mount_point` is where that root is attached in this namespace.
-    Both are path fields and both are escaped, so both decode.
-    """
-
-    mount_id: int
-    parent_id: int
-    device: int
-    root: str
-    mount_point: str
-    filesystem_type: str
-
-
-class TopologyQueryKindV2(str, Enum):
-    """What a consumer is asking the mount graph, which decides what topology
-    can possibly answer it.
-
-    This distinction is load-bearing, not descriptive.  Relevance used to be a
-    predicate each consumer wrote for itself, and it was corrected three times
-    by widening that predicate one position at a time -- strictly-beneath, then
-    at-or-beneath, then (had this continued) ancestors.  `#262` F3 -> N9
-    qualified as an admitted recurrence for exactly that reason: the author,
-    not the query, was choosing how far "relevant" reached.
-
-    Here the frontier is DERIVED from the question being asked, so a position
-    nobody thought to test is either in the derivation or provably cannot
-    affect the answer.
-    """
-
-    POINT_LOOKUP = "point_lookup"
-    VISIBLE_SUBTREE = "visible_subtree"
-
-
-class TopologyQueryV2(NamedTuple):
-    kind: TopologyQueryKindV2
-    path: str
-
-
-class TopologyQueryResolutionV2(NamedTuple):
-    """The single answer a consumer gets. Consumers read this; they never
-    re-scan the snapshot to invent their own notion of relevance."""
-
-    query: TopologyQueryV2
-    governing_mount: "MountRecordV2"
-    validated_frontier: tuple["MountRecordV2", ...]
-    visible_descendants: tuple["MountRecordV2", ...]
-
-
-class MountTopologySnapshotV2:
-    """The module's SOLE mount authority (`#262`).
-
-    Nothing else parses `/proc/self/mountinfo`, so there is exactly one
-    decoding rule and exactly one error policy.  Visibility, projection and
-    the disjointness decision are all derived from this one observation.
-
-    Why a graph rather than a flat table: a flat
-    `(device, root, mount_point, filesystem_type)` scan cannot express mount
-    VISIBILITY, and two real topologies prove it.  A subtree bind covered by a
-    whole-filesystem mount at the same point leaves both rows present, so a
-    flat scan sees the shadowed one; and an older, deeper mount hidden by a
-    newer, shallower one defeats longest-prefix selection outright.  In both
-    cases the discriminator is the parent relation, which only the graph has.
-    """
-
-    def __init__(self, records: tuple[MountRecordV2, ...]) -> None:
-        self.records = records
-        self.by_id: dict[int, MountRecordV2] = {}
-        for record in records:
-            if record.mount_id in self.by_id:
-                # Two rows claiming one identity: the graph cannot be trusted.
-                raise TargetPackEpochError(
-                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-                )
-            self.by_id[record.mount_id] = record
-        self.children: dict[int, list[MountRecordV2]] = {}
-        for record in records:
-            self.children.setdefault(record.parent_id, []).append(record)
-        self._visible_cache: dict[int, bool] = {}
-
-    # ---- observation ------------------------------------------------------
-    @classmethod
-    def observe(cls) -> "MountTopologySnapshotV2":
-        try:
-            text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
-            raise TargetPackEpochError(
-                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-            ) from exc
-        return cls.parse(text)
-
-    @classmethod
-    def parse(cls, text: str) -> "MountTopologySnapshotV2":
-        records: list[MountRecordV2] = []
-        for line in text.splitlines():
-            if not line.strip():
-                continue
-            try:
-                before_separator, after_separator = line.split(" - ", 1)
-                before = before_separator.split()
-                major_text, minor_text = before[2].split(":", 1)
-                records.append(MountRecordV2(
-                    mount_id=int(before[0]),
-                    parent_id=int(before[1]),
-                    device=os.makedev(int(major_text), int(minor_text)),
-                    root=_unescape_mountinfo_path_v2(before[3]),
-                    mount_point=_unescape_mountinfo_path_v2(before[4]),
-                    filesystem_type=after_separator.split()[0],
-                ))
-            except (IndexError, ValueError) as exc:
-                # A row this module cannot read is a mount whose position it
-                # cannot rule out.  Refuse rather than skip it.
-                raise TargetPackEpochError(
-                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-                ) from exc
-        if not records:
-            raise TargetPackEpochError(
-                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-            )
-        return cls(tuple(records))
-
-    # ---- validation -------------------------------------------------------
-    def validate_relevant_chain_v2(self, record: MountRecordV2) -> None:
-        """Walk *record* toward the visible root, refusing a cycle or a gap.
-
-        Two different things look alike here and must not be merged.
-
-        The process-visible ROOT's parent may legitimately lie outside the
-        process root -- after a `chroot` or in a container -- so it has no row,
-        and it may equally report `mount_id == parent_id`.  Both are boundary
-        conditions, and the visible root is not required to be self-parented.
-
-        Any OTHER record whose parent is absent is a mount this snapshot cannot
-        connect to the tree.  Its position relative to the target is therefore
-        unestablished, and an earlier revision silently treated it as hidden --
-        a disconnected mount beneath the target simply vanished from the
-        domain.  That is fail-open, and it is now UNKNOWN.
+        The object contains only typed callables. It has no instance dictionary
+        and exposes no raw graph, record inventory, adjacency map, identity map,
+        or raw traversal method. The captured closures are deliberately subject
+        to the documented callable-closure nonclaim.
         """
 
-        seen = {record.mount_id}
-        current = record
-        while True:
-            at_root = current.mount_point == "/"
-            absent = current.parent_id not in self.by_id
-            self_parent = current.parent_id == current.mount_id
-            if absent or self_parent:
-                # The boundary is where the parent leaves this snapshot, and it
-                # is legitimate ONLY at "/". Comparing against the TOP-OF-STACK
-                # visible root instead was wrong: a self-parented boundary root
-                # with another mount stacked above it can never reach that top,
-                # so it was rejected as a cycle. Latent until POINT_LOOKUP
-                # seeds began including records at "/".
-                if at_root:
-                    return
-                raise TargetPackEpochError(
-                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-                )
-            parent = self.by_id[current.parent_id]
-            # `#262` N16.  A parent that exists on an acyclic chain is not yet
-            # a parent that COULD hold this child: a mount attaches inside its
-            # parent's subtree, so the child's mount point must lie at or
-            # beneath the parent's.  An edge like (parent `/elsewhere`, child
-            # `/a`) is geometrically impossible; accepting it validated a
-            # record the pathname walk can never reach, and the decision then
-            # proceeded while silently omitting it.  Equal mount points are
-            # legal -- that is a same-point stack.
-            if not _within_v2(current.mount_point, parent.mount_point):
-                raise TargetPackEpochError(
-                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-                )
-            current = parent
-            if current.mount_id in seen:
-                raise TargetPackEpochError(
-                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-                )
-            seen.add(current.mount_id)
+        __slots__ = (
+            "__resolve_query",
+            "__governing_mount",
+            "__visible_child_mounts",
+            "__is_visible",
+            "__project",
+        )
 
-    # ---- governing mount --------------------------------------------------
-    def _visible_root_v2(self) -> MountRecordV2:
-        roots = [r for r in self.records if r.mount_point == "/"]
-        if not roots:
-            raise TargetPackEpochError(
-                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-            )
-        # A boundary root is one whose parent lies outside this snapshot: either
-        # the row is absent, or the kernel reports the tree root as its own
-        # parent.  Both are boundaries and BOTH must be candidates -- an earlier
-        # revision only accepted the absent form and fell back to "all roots"
-        # otherwise, so a self-parented root with anything stacked at `/` gave
-        # two candidates and refused a topology whose parent relation resolves
-        # it uniquely.
-        base = [r for r in roots
-                if r.parent_id not in self.by_id or r.parent_id == r.mount_id]
-        if len(base) != 1:
-            raise TargetPackEpochError(
-                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-            )
-        return self._climb_stack_v2(base[0], "/")
+        def __init__(self, records: tuple[MountRecordV2, ...]) -> None:
+            initialize(self, raw_type(records))
 
-    def _climb_stack_v2(self, current: MountRecordV2, point: str) -> MountRecordV2:
-        """Follow mounts stacked at the very same point, via the parent
-        relation, to the unique top.
+        @classmethod
+        def observe(cls) -> "MountTopologySnapshotV2":
+            capability = object.__new__(cls)
+            initialize(capability, raw_type.observe())
+            return capability
 
-        Bounded by a visited set.  The root of a mount tree may legitimately
-        report `mount_id == parent_id`, which makes it its own child at its own
-        mount point; an unbounded climb then selects the same record forever
-        and the public entry point HANGS rather than refusing.  A repeat visit
-        is a cycle, and a cycle is UNKNOWN -- except that the selected root's
-        self-reference is not a stack at all and terminates immediately below.
-        """
+        @classmethod
+        def parse(cls, text: str) -> "MountTopologySnapshotV2":
+            capability = object.__new__(cls)
+            initialize(capability, raw_type.parse(text))
+            return capability
 
-        visited = {current.mount_id}
-        while True:
-            stacked = [c for c in self.children.get(current.mount_id, [])
-                       if c.mount_point == point and c.mount_id != current.mount_id]
-            if not stacked:
-                return current
-            if len(stacked) > 1:
-                raise TargetPackEpochError(
-                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-                )
-            current = stacked[0]
-            if current.mount_id in visited:
-                raise TargetPackEpochError(
-                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-                )
-            visited.add(current.mount_id)
+        def __setattr__(self, name: str, value: object) -> None:
+            raise AttributeError("typed topology capability is immutable")
 
-    def _governing_mount_raw_v2(self, path: str) -> MountRecordV2:
-        """RESOLVER-INTERNAL raw traversal. NOT a consumer API.
+        def __delattr__(self, name: str) -> None:
+            raise AttributeError("typed topology capability is immutable")
 
-        This performs the pathname walk and nothing else: it does NOT establish
-        that the topology it walked over is resolvable.  Calling it directly is
-        how a consumer silently answers a question the typed authority would
-        have refused, which is exactly the bypass that produced the second
-        admitted recurrence on this PR.  Only `resolve_query_v2` and the
-        internals it drives may call it; a structural test enumerates the
-        permitted call sites exactly.
+        def resolve_query_v2(
+            self, query: TopologyQueryV2
+        ) -> TopologyQueryResolutionV2:
+            return self.__resolve_query(query)
 
-        The mount pathname lookup of *path* actually traverses.
+        def governing_mount_v2(self, path: str) -> MountRecordV2:
+            return self.__governing_mount(path)
 
-        Descends the mount tree.  At each prefix only records that are
-        CHILDREN of the currently-governing mount may be attached there, which
-        is what makes a mount hanging off a covered tree stay hidden no matter
-        how long its textual mount point is.
-        """
+        def visible_child_mounts_v2(self, path: str) -> tuple[MountRecordV2, ...]:
+            return self.__visible_child_mounts(path)
 
-        path = _normalize_absolute_v2(path)
-        current = self._visible_root_v2()
-        prefix = ""
-        for component in [c for c in path.split("/") if c]:
-            prefix += "/" + component
-            attached = [c for c in self.children.get(current.mount_id, [])
-                        if c.mount_point == prefix]
-            if not attached:
-                continue
-            if len(attached) > 1:
-                raise TargetPackEpochError(
-                    TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-                )
-            current = self._climb_stack_v2(attached[0], prefix)
-        self.validate_relevant_chain_v2(current)
-        return current
+        def is_visible_v2(self, record: MountRecordV2) -> bool:
+            return self.__is_visible(record)
 
-    def governing_mount_v2(self, path: str) -> MountRecordV2:
-        """Consumer-facing governing mount, THROUGH the typed authority.
+        def project_v2(self, path: str) -> tuple[int, str]:
+            return self.__project(path)
 
-        A thin wrapper over `resolve_query_v2(POINT_LOOKUP, path)`; it contains
-        no traversal of its own.  A consumer asking "which mount governs this
-        path?" is asking a point query, and it gets the point query's frontier
-        validation with it -- which is the whole difference between this and
-        `_governing_mount_raw_v2`.
-        """
+    def initialize(
+        capability: _MountTopologySnapshotV2,
+        raw: _RawMountTopologyRepresentationV2,
+    ) -> None:
+        """Capture raw state in typed closures, never in a consumer field."""
 
-        return self.resolve_query_v2(
-            TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, path)).governing_mount
+        def resolve_query(query: TopologyQueryV2) -> TopologyQueryResolutionV2:
+            return raw.resolve_query_v2(query)
 
-    # ---- visibility, derived from the SAME relation -----------------------
-    def _is_visible_raw_v2(self, record: MountRecordV2) -> bool:
-        """VISIBLE / HIDDEN, or UNKNOWN by raising.
+        def governing_mount(path: str) -> MountRecordV2:
+            return raw.governing_mount_v2(path)
 
-        Visibility is a PARTIAL relation.  An earlier revision caught the
-        topology refusal here and answered `False`, which turned "this mount's
-        position cannot be established" into "this mount is not there" -- so an
-        ambiguous child beneath the target was dropped from its domain and
-        acquisition could answer `acquired` where the contract requires
-        UNKNOWN.  The refusal now propagates.
-        """
+        def visible_child_mounts(path: str) -> tuple[MountRecordV2, ...]:
+            return raw.visible_child_mounts_v2(path)
 
-        cached = self._visible_cache.get(record.mount_id)
-        if cached is not None:
-            return cached
-        visible = self._governing_mount_raw_v2(record.mount_point).mount_id == record.mount_id
-        self._visible_cache[record.mount_id] = visible
-        return visible
+        def is_visible(record: MountRecordV2) -> bool:
+            return raw.is_visible_v2(record)
 
-    # ---- typed query resolution: ONE authority over relevance -------------
-    def _semantic_seeds_v2(self, query: TopologyQueryV2) -> tuple[MountRecordV2, ...]:
-        """The records the QUERY ITSELF can be affected by, before closure.
+        def project(path: str) -> tuple[int, str]:
+            return raw.project_v2(path)
 
-        `POINT_LOOKUP(P)` — resolving `P` descends from the root through each
-        of its prefixes, and a mount can only intervene where it is attached.
-        So a record matters exactly when its mount point is a prefix of, or
-        equal to, `P`.  Records strictly beneath `P` are never traversed and
-        cannot change which mount governs it.  This is read off pathname
-        traversal; it is not an "ancestor rule" someone chose.
+        object.__setattr__(
+            capability, "_MountTopologySnapshotV2__resolve_query", resolve_query
+        )
+        object.__setattr__(
+            capability, "_MountTopologySnapshotV2__governing_mount", governing_mount
+        )
+        object.__setattr__(
+            capability,
+            "_MountTopologySnapshotV2__visible_child_mounts",
+            visible_child_mounts,
+        )
+        object.__setattr__(
+            capability, "_MountTopologySnapshotV2__is_visible", is_visible
+        )
+        object.__setattr__(
+            capability, "_MountTopologySnapshotV2__project", project
+        )
 
-        `VISIBLE_SUBTREE(D)` — everything `POINT_LOOKUP(D)` needs, to know the
-        base segment, PLUS every attachment at-or-beneath `D`, because those
-        can contribute or cover visible ground inside the subtree.
+    _MountTopologySnapshotV2.__name__ = "MountTopologySnapshotV2"
+    _MountTopologySnapshotV2.__qualname__ = "MountTopologySnapshotV2"
+    _MountTopologySnapshotV2.__module__ = __name__
+    return _MountTopologySnapshotV2
 
-        Siblings and unrelated records are excluded by the derivation rather
-        than by an exception, which is what keeps this from becoming a
-        global fail-closed scan.
-        """
 
-        path = _normalize_absolute_v2(query.path)
-        seeds = [r for r in self.records if _within_v2(path, r.mount_point)]
-        if query.kind is TopologyQueryKindV2.VISIBLE_SUBTREE:
-            seeds += [r for r in self.records
-                      if _within_v2(r.mount_point, path) and r not in seeds]
-        return tuple(seeds)
-
-    def _dependency_closure_v2(
-        self, seeds: tuple[MountRecordV2, ...]
-    ) -> tuple[MountRecordV2, ...]:
-        """Close the seed set over the topology each seed's state depends on.
-
-        Semantic seeds are not yet the frontier.  A seed's position is only
-        established through its parent chain, the stack at its own mount point,
-        and the boundary root -- so those records are part of the proof even
-        when their own mount points sit somewhere lexically unintuitive.  An
-        earlier design let a consumer's lexical predicate decide what could be
-        ignored, and that is the mistake this closure exists to make
-        impossible.
-        """
-
-        closed: dict[int, MountRecordV2] = {r.mount_id: r for r in seeds}
-        pending = list(seeds)
-        while pending:
-            record = pending.pop()
-            # the chain that establishes where this record sits
-            parent = self.by_id.get(record.parent_id)
-            if parent is not None and parent.mount_id not in closed:
-                closed[parent.mount_id] = parent
-                pending.append(parent)
-            # anything stacked at the same point competes to govern it
-            for sibling in self.children.get(record.parent_id, []):
-                if sibling.mount_point == record.mount_point and sibling.mount_id not in closed:
-                    closed[sibling.mount_id] = sibling
-                    pending.append(sibling)
-            for child in self.children.get(record.mount_id, []):
-                if child.mount_point == record.mount_point and child.mount_id not in closed:
-                    closed[child.mount_id] = child
-                    pending.append(child)
-        return tuple(closed.values())
-
-    def resolve_query_v2(self, query: TopologyQueryV2) -> TopologyQueryResolutionV2:
-        """Resolve a typed topology query, or refuse as UNKNOWN.
-
-        This is the SOLE authority on which records are relevant to a decision.
-        Consumers take the resolution; none of them scans `self.records`,
-        `self.children` or `self.by_id` to rebuild a notion of relevance.
-        """
-
-        frontier = self._dependency_closure_v2(self._semantic_seeds_v2(query))
-        for record in frontier:
-            self.validate_relevant_chain_v2(record)
-
-        governing = self._governing_mount_raw_v2(query.path)
-        descendants: tuple[MountRecordV2, ...] = ()
-        if query.kind is TopologyQueryKindV2.VISIBLE_SUBTREE:
-            prefix = _normalize_absolute_v2(query.path).rstrip("/") + "/"
-            descendants = tuple(r for r in frontier
-                                if r.mount_point.startswith(prefix) and self._is_visible_raw_v2(r))
-        return TopologyQueryResolutionV2(query, governing, frontier, descendants)
-
-    def visible_child_mounts_v2(self, path: str) -> tuple[MountRecordV2, ...]:
-        """Thin view over the typed resolver, kept for readability only.
-
-        It performs NO relevance scan of its own -- that is the whole point of
-        the redesign, and a structural test asserts it stays that way.
-        """
-
-        return self.resolve_query_v2(
-            TopologyQueryV2(TopologyQueryKindV2.VISIBLE_SUBTREE, path)).visible_descendants
-
-    def is_visible_v2(self, record: MountRecordV2) -> bool:
-        """Consumer-facing visibility, THROUGH the typed authority.
-
-        Routed through a point query on the record's own mount point so the
-        frontier that decides its position is validated first.  The raw form
-        answered `False` for a record whose position could not be established
-        at all -- `Unknown(Visibility)` collapsed into `Hidden`, defeated
-        through a bypass rather than through the rule.
-        """
-
-        return self.resolve_query_v2(
-            TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, record.mount_point)
-        ).governing_mount.mount_id == record.mount_id
-
-    # ---- physical projection ---------------------------------------------
-    def project_v2(self, path: str) -> tuple[int, str]:
-        """Namespace path -> the physical `(device, filesystem-internal path)`
-        it actually resolves to.  Consumes the governing relation; visibility
-        is never inferred back out of a projection."""
-
-        path = _normalize_absolute_v2(path)
-        # `#262`: through the typed authority, never the raw traversal. An
-        # earlier revision called the raw walk here and answered a projection
-        # for topology the resolver refuses.
-        governing = self.resolve_query_v2(
-            TopologyQueryV2(TopologyQueryKindV2.POINT_LOOKUP, path)).governing_mount
-        remainder = path[len(governing.mount_point.rstrip("/")):]
-        if not remainder or governing.mount_point == path:
-            return (governing.device, governing.root)
-        internal = _normalize_absolute_v2(governing.root.rstrip("/") + remainder)
-        # Path arithmetic must never walk out of the mount's own root.
-        if not _within_v2(internal, governing.root):
-            raise TargetPackEpochError(
-                TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2
-            )
-        return (governing.device, internal)
+MountTopologySnapshotV2 = _build_topology_capability_type_v2(
+    _RawMountTopologyRepresentationV2
+)
+del _build_topology_capability_type_v2
+del _RawMountTopologyRepresentationV2
 
 
 def _normalize_absolute_v2(path: str) -> str:
