@@ -520,11 +520,27 @@ def _verify_router_transport_response_v2(
         or receipt.execution.finish_reason != choice_finish_reason
     ):
         raise RouterReceiptError(ROUTER_FINISH_REASON_INCONCLUSIVE_REASON_V2)
-    output_sha256 = hashlib.sha256(assistant_content.encode("utf-8")).hexdigest()
+    if (
+        (receipt.coverage is not None and receipt.coverage.truncated)
+        or (
+            receipt.limitations is not None
+            and "coverage_incomplete" in receipt.limitations.codes
+        )
+    ):
+        raise RouterReceiptError(ROUTER_RECEIPT_INVALID_REASON_V2)
+    try:
+        assistant_content_bytes = assistant_content.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise RouterReceiptError(ROUTER_OUTPUT_MISMATCH_REASON_V2) from exc
+    output_sha256 = hashlib.sha256(assistant_content_bytes).hexdigest()
     if receipt.returned_output.sha256 != output_sha256:
         raise RouterReceiptError(ROUTER_OUTPUT_MISMATCH_REASON_V2)
 
     try:
+        # The outer Router document and the embedded AgentReview document are
+        # independent JSON authorities.  Strictly parsing the former cannot
+        # see duplicate keys hidden inside the latter's string scalar.
+        strict_json_loads(assistant_content)
         result = ChunkReviewResultV2.model_validate_json(assistant_content, strict=True)
     except (ValidationError, TypeError, ValueError, UnicodeError) as exc:
         raise RouterReceiptError(ROUTER_RESULT_INVALID_REASON_V2) from exc

@@ -1,8 +1,8 @@
 # Checkpoint — AgentReview v2 Router receipt-v2 wire binding (`#200-C-WIRE`)
 
-**Status:** implementation candidate qualified locally; exact-HEAD forge CI and
-independent review remain the next gates. This is a checkpoint of this slice,
-not a claim about a future live `master`.
+**Status:** review-round-2 corrections qualified locally; a new exact-HEAD forge
+CI and independent review remain the next gates. This is a checkpoint of this
+slice, not a claim about a future live `master`.
 
 ```yaml
 subject:
@@ -58,9 +58,10 @@ review response with `agent-router.inference-receipt.v2`, validates the frozen
 F2-A route grammar (and optional F2-B grammar when present), binds the receipt's
   input digest to the exact sent `messages[]`, binds all six caller declarations,
   requires public, receipt and selected-attempt finish to converge on `stop`,
-  binds the output digest to the exact public assistant content, and only then
-  parses `ChunkReviewResultV2`. Duplicate JSON keys and non-finite numbers are
-  refused before any receipt field acquires meaning.
+  refuses explicit truncated/incomplete F2-B coverage, binds the output digest
+  to exact UTF-8 public assistant content, and only then parses
+  `ChunkReviewResultV2`. Duplicate JSON keys and non-finite numbers are refused
+  independently in both the outer Router JSON and embedded AgentReview JSON.
 
 The offline path remains source-specific and unchanged at its proof boundary.
 Both paths converge only at the common result scope validator and
@@ -70,9 +71,9 @@ domain object; publication of execution provenance remains M2.
 
 ## Local evidence on the candidate tree
 
-- focused consumer/transport suite: `59 passed`;
+- focused consumer/transport suite after review-round-2 corrections: `66 passed`;
 - full suite with the two environment-dependent `sudo` baseline cases excluded:
-  `3237 passed, 16 skipped, 2 deselected`;
+  `3244 passed, 16 skipped, 2 deselected`;
 - unfiltered suite classified the same two failures in
   `tests/agent_review/test_isolated_executor_v2.py`; neither that test file nor
   `app/agent_review/isolated_executor_v2.py` differs from the exact base, and
@@ -81,7 +82,7 @@ domain object; publication of execution provenance remains M2.
 - CAEM F0 pin: valid; RI-B0a.2 and target-pack generated views: byte-identical;
 - no live Router, provider, target, deploy, release, or runtime mutation.
 
-Six causal mutants were observed RED and then removed:
+Nine causal mutants were observed RED and then removed:
 
 1. bypassing payload/content equality reached the mocked HTTP opener;
 2. ignoring the received-input digest let the adulterated case reach `bound`;
@@ -93,6 +94,12 @@ Six causal mutants were observed RED and then removed:
    reach `bound` while public finishes said `stop`;
 6. replacing strict raw JSON parsing with last-key-wins parsing let a duplicated
    receipt identity field reach `bound`.
+7. bypassing strict parsing of the embedded assistant JSON let duplicate
+   top-level and nested domain keys reach `bound`;
+8. removing the Unicode-to-typed conversion let high and low unpaired
+   surrogates escape as `UnicodeEncodeError`;
+9. bypassing the explicit F2-B completeness gate let `truncated=true` and
+   `coverage_incomplete`, independently and together, reach `bound`.
 
 Independent exact-HEAD review round 1 on `6af59994dca6f9a4367b7474475c7742c5ec3069`
 reported those last two defects as P1/P2. Both were reproduced, classified
@@ -101,9 +108,19 @@ under the precommitted C1 attempt recorded on PR #270. No recurrence candidate
 formed in round 1 because no declared correction ran between its same-subject
 findings.
 
+Independent exact-HEAD review round 2 on
+`b84a76180e5dee4fa7d79bb643c20d797ab1a0ab` reported three further findings:
+duplicate keys inside the independently parsed assistant JSON, unpaired
+surrogates escaping the UTF-8 output canonicalization, and explicit incomplete
+F2-B coverage reaching the domain. All three were reproduced and classified
+`VALID` and material. Candidates against C1 were established out of scope:
+they violate different propositions, and the inner-JSON witness is outside the
+outer-document domain demonstrated before C1. C2 and its causal probes were
+recorded on PR #270 before this correction.
+
 ## Remaining gates and scope fence
 
-The next permitted transition is one Draft PR followed by exact-HEAD CI and an
-independent exact-HEAD review. Ready, merge, release, tag, deploy, live Router or
-provider use, `#193-#198`, AgentEscala `#763`, and CT102/CT104 mutation remain
-outside this slice and require their own grants.
+The Draft PR remains the only permitted publication. Its next transition is a
+new exact-HEAD CI and independent exact-HEAD review. Ready, merge, release, tag,
+deploy, live Router or provider use, `#193-#198`, AgentEscala `#763`, and
+CT102/CT104 mutation remain outside this slice and require their own grants.

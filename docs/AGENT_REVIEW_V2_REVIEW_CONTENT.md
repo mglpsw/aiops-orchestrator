@@ -301,11 +301,15 @@ so the existing coverage/readiness authority retains the missing coverage.
   remains opaque until the private receipt-v2 consumer verifies the exact
   sent-message digest, requested preset, caller metadata, route trace,
   convergence of public/receipt/selected-attempt finish, and exact
-  assistant-content digest. Raw response JSON rejects duplicate keys and
-  non-finite values before receipt validation. Only then is
-  `ChunkReviewResultV2` parsed. Local and provider-fallback Router fixtures are
-  exercised against mocked HTTP only; no live Router/provider call qualifies
-  this slice.
+  assistant-content digest. Raw response JSON and the independently embedded
+  assistant domain JSON each reject duplicate keys and non-finite values at
+  their own parse boundary. Content that cannot encode under
+  `assistant-content-utf8.v1` is rejected as an output mismatch. Omitted F2-B
+  remains valid; when F2-B explicitly reports `coverage.truncated=true` or the
+  `coverage_incomplete` limitation, the result is refused before domain
+  exposure. Only then is `ChunkReviewResultV2` parsed. Local and
+  provider-fallback Router fixtures are exercised against mocked HTTP only; no
+  live Router/provider call qualifies this slice.
 
 Both paths call the same factored scope authority and the same private
 `_make_bound_chunk_response_v2` constructor with one `_BINDING_SENTINEL`.
@@ -325,8 +329,11 @@ This hardening applies to offline responses too and reuses
 | tampered offline echo | `manual_required` / `content_echo_mismatch` or `request_echo_mismatch` |
 | payload/content divergence before request construction | `manual_required` / `content_payload_sha256_mismatch`, zero HTTP calls |
 | missing/malformed/extra-field receipt v2 | `manual_required` / `router_receipt_invalid` |
+| receipt explicitly declares incomplete Router input coverage | `manual_required` / `router_receipt_invalid` |
 | receipt input/output/caller declaration mismatch | `manual_required` / typed `router_*_mismatch` |
 | non-conclusive or divergent finish reason | `manual_required` / `router_finish_reason_inconclusive` |
+| assistant content cannot satisfy UTF-8 output canonicalization | `manual_required` / `router_output_mismatch` |
+| assistant domain JSON has duplicate keys or non-finite numbers | `manual_required` / `router_result_invalid` |
 | exact assistant content is not `ChunkReviewResultV2` | `manual_required` / `router_result_invalid` |
 | result escapes payload file/coverage/contract scope | `manual_required` / `response_scope_mismatch` |
 

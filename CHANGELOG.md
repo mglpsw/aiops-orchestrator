@@ -12,7 +12,12 @@
   `agent-router.inference-receipt.v2` input/output digests, declarations,
   route trace, public/receipt/selected-attempt finish convergence, and exact
   assistant content before parsing the AgentReview domain. Raw Router JSON
-  rejects duplicate keys and non-finite numbers before receipt validation.
+  and the independently embedded AgentReview JSON each reject duplicate keys
+  and non-finite numbers before acquiring meaning. Assistant content that
+  cannot satisfy the receipt's UTF-8 canonicalization becomes a typed output
+  rejection, never an escaping exception. Optional F2-B remains optional, but
+  an explicit truncated-coverage or `coverage_incomplete` declaration refuses
+  the result before any finding is exposed.
   Offline echo proof and Router receipt proof converge
   only at the common payload-scope validator and one sealed
   `BoundChunkResponseV2` constructor. Payload/content mismatch stops before

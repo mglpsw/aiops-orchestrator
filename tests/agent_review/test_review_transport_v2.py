@@ -809,6 +809,86 @@ def test_agent_router_rejects_duplicate_keys_inside_receipt_identity(
     assert outcome.reason_code == CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2
 
 
+@pytest.mark.parametrize(
+    ("existing_member", "duplicate_members"),
+    [
+        ('"findings":[]', '"findings":[],"findings":[]'),
+        ('"status":"complete"', '"status":"complete","status":"complete"'),
+    ],
+)
+def test_agent_router_rejects_duplicate_keys_inside_assistant_domain_json(
+    tmp_path: Path,
+    existing_member: str,
+    duplicate_members: str,
+) -> None:
+    def duplicate_domain_member(raw_response: str) -> str:
+        response_body = json.loads(raw_response)
+        old_content = response_body["choices"][0]["message"]["content"]
+        new_content = old_content.replace(
+            existing_member, duplicate_members, 1
+        )
+        assert new_content != old_content
+        response_body["choices"][0]["message"]["content"] = new_content
+        response_body["inference_receipt"]["returned_output"]["sha256"] = (
+            hashlib.sha256(new_content.encode("utf-8")).hexdigest()
+        )
+        return json.dumps(response_body)
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, raw_response_mutator=duplicate_domain_member
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == ROUTER_RESULT_INVALID_REASON_V2
+
+
+@pytest.mark.parametrize("unpaired_surrogate", ["\ud800", "\udfff"])
+def test_agent_router_converts_non_utf8_assistant_content_to_typed_rejection(
+    tmp_path: Path,
+    unpaired_surrogate: str,
+) -> None:
+    def replace_assistant_content(response_body: dict) -> None:
+        response_body["choices"][0]["message"]["content"] = unpaired_surrogate
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, response_mutator=replace_assistant_content
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == ROUTER_OUTPUT_MISMATCH_REASON_V2
+
+
+@pytest.mark.parametrize(
+    "incomplete_declaration",
+    ["truncated", "limitation", "both"],
+)
+def test_agent_router_rejects_explicit_incomplete_input_coverage(
+    tmp_path: Path,
+    incomplete_declaration: str,
+) -> None:
+    def declare_incomplete_coverage(receipt: dict) -> None:
+        if incomplete_declaration in {"truncated", "both"}:
+            receipt["coverage"] = {
+                "schema": "agent-router.input-coverage.v1",
+                "basis": "router-review-plan.v1",
+                "mode": "single",
+                "chunk_count": 1,
+                "truncated": True,
+            }
+        if incomplete_declaration in {"limitation", "both"}:
+            receipt["limitations"] = {
+                "schema": "agent-router.limitations.v1",
+                "codes": ["coverage_incomplete"],
+            }
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, receipt_mutator=declare_incomplete_coverage
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == ROUTER_RECEIPT_INVALID_REASON_V2
+
+
 def test_agent_router_verifies_exact_output_before_parsing_the_domain(
     tmp_path: Path,
 ) -> None:
