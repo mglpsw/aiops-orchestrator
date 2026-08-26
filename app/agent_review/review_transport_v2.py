@@ -57,7 +57,10 @@ authority is reused exactly as-is.
 
 from __future__ import annotations
 
+import http.client
 import json
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol, Sequence
@@ -391,6 +394,21 @@ def offline_file_transport_v2(responses_dir: Path) -> ChunkReviewTransportV2:
 # -- real Agent Router transport (explicit flag only, never provider-direct) --
 
 
+class _NoRedirectHandlerV2(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects before urllib can construct a credentialed request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+
+def _open_agent_router_request_v2(
+    http_request: urllib.request.Request,
+    timeout_seconds: float,
+) -> Any:
+    opener = urllib.request.build_opener(_NoRedirectHandlerV2())
+    return opener.open(http_request, timeout=timeout_seconds)
+
+
 _ROUTER_SYSTEM_MESSAGE_V2 = (
     "You are AgentReview v2. Review only the supplied redacted chunk and "
     "return exactly one JSON object conforming to the supplied output contract."
@@ -454,9 +472,6 @@ def agent_router_transport_v2(
         chunk_content: ChunkContentV2,
         payload: ChunkPayloadV2,
     ) -> _RouterTransportResponseV2:
-        import urllib.error
-        import urllib.request
-
         messages = _build_agent_router_messages_v2(
             chunk_content=chunk_content,
             payload=payload,
@@ -482,12 +497,18 @@ def agent_router_transport_v2(
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(http_request, timeout=timeout_seconds) as response:
+            with _open_agent_router_request_v2(
+                http_request, timeout_seconds
+            ) as response:
                 raw_text = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             if exc.code == 429 or exc.code >= 500:
                 raise ChunkTransportError(CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2) from exc
             raise ChunkTransportError(CHUNK_TRANSPORT_FAILURE_REASON_V2) from exc
+        except http.client.IncompleteRead as exc:
+            raise ChunkTransportError(
+                CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2
+            ) from exc
         except TimeoutError as exc:
             raise ChunkTransportError(CHUNK_TRANSPORT_TIMEOUT_REASON_V2) from exc
         except urllib.error.URLError as exc:

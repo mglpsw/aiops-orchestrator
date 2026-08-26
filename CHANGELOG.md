@@ -19,7 +19,9 @@
   an explicit truncated-coverage or `coverage_incomplete` declaration refuses
   the result before any finding is exposed. The public choice selector requires
   the exact integer zero (not boolean/float equality), and recursion-limit
-  failures at either JSON boundary become sanitized typed rejections.
+  failures at either JSON boundary become sanitized typed rejections. HTTP
+  redirects are refused before urllib constructs another credentialed request,
+  and truncated bodies become typed invalid responses.
   Offline echo proof and Router receipt proof converge
   only at the common payload-scope validator and one sealed
   `BoundChunkResponseV2` constructor. Payload/content mismatch stops before

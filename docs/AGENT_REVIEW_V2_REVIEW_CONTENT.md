@@ -296,6 +296,8 @@ so the existing coverage/readiness authority retains the missing coverage.
   proof and existing corpus; valid offline responses remain accepted;
 - `agent_router_transport_v2(base_url, api_key, model)` is locked to exactly
   `{base_url}/v1/chat/completions`, with no provider-direct or second endpoint.
+  Its private opener refuses every redirect before a second request can carry
+  the bearer credential, and truncated HTTP bodies fail typed before parsing.
   It sends the exact two-message array, all six caller-binding metadata fields,
   and `response_format={"type":"json_object"}`. The returned assistant content
   remains opaque until the private receipt-v2 consumer verifies the exact
@@ -326,6 +328,8 @@ This hardening applies to offline responses too and reuses
 | Condition | Chunk outcome |
 |---|---|
 | response file missing / unreadable | `manual_required` / `transport_failure` |
+| Router attempts an HTTP redirect | `manual_required` / `transport_failure` |
+| Router body is truncated during acquisition | `manual_required` / `transport_invalid_response` |
 | response body is invalid, non-finite, or has duplicate keys | `manual_required` / `transport_invalid_response` |
 | outer Router JSON exceeds the decoder recursion limit | `manual_required` / `transport_invalid_response` |
 | HTTP 5xx / 429 from Router | `manual_required` / `transport_unavailable` |

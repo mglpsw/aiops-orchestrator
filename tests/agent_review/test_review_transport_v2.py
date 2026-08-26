@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import http.client
 import json
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from unittest import mock
 
@@ -31,6 +34,8 @@ from app.agent_review.review_transport_v2 import (
     ROUTER_DISABLED_REASON_V2,
     ROUTER_MODEL_UNSUPPORTED_REASON_V2,
     ChunkTransportError,
+    _NoRedirectHandlerV2,
+    _open_agent_router_request_v2,
     agent_router_transport_v2,
     execute_chunk_review_v2,
     offline_file_transport_v2,
@@ -416,6 +421,46 @@ def test_agent_router_transport_refuses_an_unstructured_review_preset() -> None:
     assert excinfo.value.reason_code == ROUTER_MODEL_UNSUPPORTED_REASON_V2
 
 
+def test_agent_router_redirect_handler_refuses_before_a_second_request() -> None:
+    request = urllib.request.Request(
+        "https://router.example/v1/chat/completions",
+        data=b"{}",
+        method="POST",
+        headers={"Authorization": "Bearer test-token"},
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        _NoRedirectHandlerV2().redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://other-origin.example/collect",
+        )
+
+    assert excinfo.value.code == 302
+    assert excinfo.value.url == request.full_url
+
+
+def test_agent_router_http_boundary_installs_the_no_redirect_handler() -> None:
+    request = urllib.request.Request(
+        "https://router.example/v1/chat/completions",
+        data=b"{}",
+        method="POST",
+    )
+    response = object()
+    opener = mock.Mock()
+    opener.open.return_value = response
+
+    with mock.patch("urllib.request.build_opener", return_value=opener) as build:
+        observed = _open_agent_router_request_v2(request, 3.0)
+
+    assert observed is response
+    assert isinstance(build.call_args.args[0], _NoRedirectHandlerV2)
+    opener.open.assert_called_once_with(request, timeout=3.0)
+
+
 _ROUTER_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "router_receipt_v2"
 
 
@@ -529,7 +574,10 @@ def _run_mocked_router_chunk(
         api_key="secret-token",
         model="review:code",
     )
-    with mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        side_effect=_fake_urlopen,
+    ):
         outcome = execute_chunk_review_v2(
             chunk_content,
             run_id=content.run_id,
@@ -1022,7 +1070,10 @@ def test_payload_content_mismatch_stops_before_message_builder_and_http(
     )
     opener = mock.Mock(side_effect=AssertionError("HTTP must not be called"))
 
-    with mock.patch("urllib.request.urlopen", opener):
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        opener,
+    ):
         outcome = execute_chunk_review_v2(
             mismatched,
             run_id=content.run_id,
@@ -1052,7 +1103,10 @@ def test_agent_router_transport_maps_5xx_to_unavailable_never_approval(
     def _raise_503(http_request, timeout):
         raise urllib.error.HTTPError("https://router.example/v1/chat/completions", 503, "unavailable", {}, None)
 
-    with mock.patch("urllib.request.urlopen", side_effect=_raise_503):
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        side_effect=_raise_503,
+    ):
         outcome = execute_chunk_review_v2(
             content.chunks[0],
             run_id=content.run_id,
@@ -1062,6 +1116,43 @@ def test_agent_router_transport_maps_5xx_to_unavailable_never_approval(
         )
     assert outcome.state == "manual_required"
     assert outcome.reason_code == CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2
+
+
+def test_agent_router_transport_maps_truncated_body_to_invalid_response(
+    tmp_path: Path,
+) -> None:
+    manifest, content, payload_by_chunk_id = _build_repo_manifest_and_content(tmp_path)
+    payload = payload_by_chunk_id[content.chunks[0].chunk_id]
+    transport = agent_router_transport_v2(
+        base_url="https://router.example",
+        api_key="secret",
+        model="review:code",
+    )
+
+    class _TruncatedResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            raise http.client.IncompleteRead(b'{"partial":', 10)
+
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        return_value=_TruncatedResponse(),
+    ):
+        outcome = execute_chunk_review_v2(
+            content.chunks[0],
+            run_id=content.run_id,
+            head_sha=manifest.identity.head_sha,
+            payload=payload,
+            transport=transport,
+        )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2
 
 
 def test_agent_router_transport_maps_invalid_utf8_to_invalid_response(
@@ -1085,7 +1176,10 @@ def test_agent_router_transport_maps_invalid_utf8_to_invalid_response(
         def read(self):
             return b"\xff\xfe"
 
-    with mock.patch("urllib.request.urlopen", return_value=_InvalidUtf8Response()):
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        return_value=_InvalidUtf8Response(),
+    ):
         outcome = execute_chunk_review_v2(
             content.chunks[0],
             run_id=content.run_id,
