@@ -499,8 +499,16 @@ def agent_router_transport_v2(
             decoded = strict_json_loads(raw_text)
             if not isinstance(decoded, Mapping):
                 raise ValueError("Router response must be a JSON object")
-        except (json.JSONDecodeError, TypeError, ValueError, UnicodeError) as exc:
-            raise ChunkTransportError(CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2) from exc
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+            RecursionError,
+        ) as exc:
+            raise ChunkTransportError(
+                CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2
+            ) from exc
         return _make_router_transport_response_v2(
             sent_messages=messages,
             response=decoded,

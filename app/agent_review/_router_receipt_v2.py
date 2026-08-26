@@ -453,7 +453,11 @@ def _extract_router_response_v2(
     ):
         raise RouterReceiptError(ROUTER_RECEIPT_INVALID_REASON_V2)
     choice = choices[0]
-    if not isinstance(choice, Mapping) or choice.get("index") != 0:
+    if (
+        not isinstance(choice, Mapping)
+        or type(choice.get("index")) is not int
+        or choice.get("index") != 0
+    ):
         raise RouterReceiptError(ROUTER_RECEIPT_INVALID_REASON_V2)
     message = choice.get("message")
     if not isinstance(message, Mapping) or message.get("role") != "assistant":
@@ -495,7 +499,13 @@ def _verify_router_transport_response_v2(
             json.dumps(raw_receipt, ensure_ascii=False, allow_nan=False),
             strict=True,
         )
-    except (ValidationError, TypeError, ValueError, UnicodeError) as exc:
+    except (
+        ValidationError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        RecursionError,
+    ) as exc:
         raise RouterReceiptError(ROUTER_RECEIPT_INVALID_REASON_V2) from exc
 
     if receipt.requested.model != exchange._requested_model:
@@ -542,7 +552,13 @@ def _verify_router_transport_response_v2(
         # see duplicate keys hidden inside the latter's string scalar.
         strict_json_loads(assistant_content)
         result = ChunkReviewResultV2.model_validate_json(assistant_content, strict=True)
-    except (ValidationError, TypeError, ValueError, UnicodeError) as exc:
+    except (
+        ValidationError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        RecursionError,
+    ) as exc:
         raise RouterReceiptError(ROUTER_RESULT_INVALID_REASON_V2) from exc
     fresh_request = ChunkReviewRequestV2.model_validate_json(
         request.model_dump_json(), strict=True

@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -791,6 +792,22 @@ def test_agent_router_rejects_old_f1_style_transport_envelope_on_the_http_path(
     assert outcome.reason_code == ROUTER_RECEIPT_INVALID_REASON_V2
 
 
+@pytest.mark.parametrize("invalid_index", [False, 0.0])
+def test_agent_router_requires_an_actual_integer_zero_choice_index(
+    tmp_path: Path,
+    invalid_index: object,
+) -> None:
+    def replace_choice_index(response_body: dict) -> None:
+        response_body["choices"][0]["index"] = invalid_index
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, response_mutator=replace_choice_index
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == ROUTER_RECEIPT_INVALID_REASON_V2
+
+
 def test_agent_router_rejects_duplicate_keys_inside_receipt_identity(
     tmp_path: Path,
 ) -> None:
@@ -840,6 +857,43 @@ def test_agent_router_rejects_duplicate_keys_inside_assistant_domain_json(
 
     assert outcome.state == "manual_required"
     assert outcome.reason_code == ROUTER_RESULT_INVALID_REASON_V2
+
+
+def test_agent_router_converts_deep_assistant_json_to_typed_rejection(
+    tmp_path: Path,
+) -> None:
+    def deeply_nest_assistant_json(raw_response: str) -> str:
+        response_body = json.loads(raw_response)
+        nesting = sys.getrecursionlimit() + 100
+        assistant_content = "[" * nesting + "0" + "]" * nesting
+        response_body["choices"][0]["message"]["content"] = assistant_content
+        response_body["inference_receipt"]["returned_output"]["sha256"] = (
+            hashlib.sha256(assistant_content.encode("utf-8")).hexdigest()
+        )
+        return json.dumps(response_body)
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, raw_response_mutator=deeply_nest_assistant_json
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == ROUTER_RESULT_INVALID_REASON_V2
+
+
+def test_agent_router_converts_deep_outer_json_to_typed_rejection(
+    tmp_path: Path,
+) -> None:
+    def deeply_nest_outer_json(raw_response: str) -> str:
+        nesting = sys.getrecursionlimit() + 100
+        deep_value = "[" * nesting + "0" + "]" * nesting
+        return f'{{"deep":{deep_value},' + raw_response[1:]
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, raw_response_mutator=deeply_nest_outer_json
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2
 
 
 @pytest.mark.parametrize("unpaired_surrogate", ["\ud800", "\udfff"])

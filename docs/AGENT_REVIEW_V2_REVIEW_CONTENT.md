@@ -307,7 +307,10 @@ so the existing coverage/readiness authority retains the missing coverage.
   `assistant-content-utf8.v1` is rejected as an output mismatch. Omitted F2-B
   remains valid; when F2-B explicitly reports `coverage.truncated=true` or the
   `coverage_incomplete` limitation, the result is refused before domain
-  exposure. Only then is `ChunkReviewResultV2` parsed. Local and
+  exposure. The sole public choice requires an actual integer-zero selector;
+  boolean/float equality is insufficient. Recursion-limit failures at both JSON
+  parse boundaries are converted to their boundary's existing typed rejection.
+  Only then is `ChunkReviewResultV2` parsed. Local and
   provider-fallback Router fixtures are exercised against mocked HTTP only; no
   live Router/provider call qualifies this slice.
 
@@ -324,16 +327,19 @@ This hardening applies to offline responses too and reuses
 |---|---|
 | response file missing / unreadable | `manual_required` / `transport_failure` |
 | response body is invalid, non-finite, or has duplicate keys | `manual_required` / `transport_invalid_response` |
+| outer Router JSON exceeds the decoder recursion limit | `manual_required` / `transport_invalid_response` |
 | HTTP 5xx / 429 from Router | `manual_required` / `transport_unavailable` |
 | network timeout | `manual_required` / `transport_timeout` |
 | tampered offline echo | `manual_required` / `content_echo_mismatch` or `request_echo_mismatch` |
 | payload/content divergence before request construction | `manual_required` / `content_payload_sha256_mismatch`, zero HTTP calls |
 | missing/malformed/extra-field receipt v2 | `manual_required` / `router_receipt_invalid` |
+| public choice index is boolean/float rather than integer zero | `manual_required` / `router_receipt_invalid` |
 | receipt explicitly declares incomplete Router input coverage | `manual_required` / `router_receipt_invalid` |
 | receipt input/output/caller declaration mismatch | `manual_required` / typed `router_*_mismatch` |
 | non-conclusive or divergent finish reason | `manual_required` / `router_finish_reason_inconclusive` |
 | assistant content cannot satisfy UTF-8 output canonicalization | `manual_required` / `router_output_mismatch` |
 | assistant domain JSON has duplicate keys or non-finite numbers | `manual_required` / `router_result_invalid` |
+| assistant domain JSON exceeds the decoder recursion limit | `manual_required` / `router_result_invalid` |
 | exact assistant content is not `ChunkReviewResultV2` | `manual_required` / `router_result_invalid` |
 | result escapes payload file/coverage/contract scope | `manual_required` / `response_scope_mismatch` |
 
