@@ -4,6 +4,156 @@
 
 ### Fixed
 
+- **K runtime carrier established disjoint from the diagnosed target, or
+  refused (`#262`)**: `acquire_target_pack_epoch_v2` chose the carrier location
+  from `euid` alone, with no reference to `target_root`, so a target that
+  equalled, contained or aliased the carrier caused the pack's own runtime
+  carrier to be materialized inside the very directory it was handed.
+  Reproduced on `master@2876434` for a target containing the carrier, a bind
+  alias of the runtime parent, a deep alias several levels inside an otherwise
+  unrelated target, and a runtime parent grafted from a target subtree.
+
+  Disjointness is established at the shared primitive, before any carrier
+  materialization, from a single observation of `/proc/self/mountinfo`.
+  Relevance is **derived from the topology query being asked** rather than
+  written as a growing list of positions:
+
+  ```text
+  QueryKind -> SemanticSeeds -> DependencyClosure -> graph validity
+            -> QueryResolution -> sealed consumer APIs
+            -> per-authority name semantics -> physical domains -> K-DISJOINT
+  ```
+
+  `POINT_LOOKUP(P)` seeds on mounts attached at the prefixes a pathname walk
+  traverses; `VISIBLE_SUBTREE(D)` adds attachments at-or-beneath `D`. Siblings
+  and unrelated mounts are excluded by the derivation, not by exception, so an
+  unrelated malformed record cannot refuse a legal acquisition. The target's
+  domain is a visibility PARTITION -- each segment excludes the slices its
+  visible children cover -- and the carrier's domain names exactly the two
+  objects an acquisition operates on: the protocol directory and the exact
+  `<key>.lock`. Chain validation establishes that each parent edge is
+  geometrically possible, not merely that a parent exists. Name-semantics
+  applicability is decided per lookup-authority directory from that
+  directory's own governing filesystem, over a closed three-way classification
+  (casefold-flag-capable / established case-sensitive / unknown), so an
+  `ENOTTY` from `FS_IOC_GETFLAGS` is never read as proof of case sensitivity.
+  The custom intermodular static analyzer that previously tried to seal raw
+  traversal is **falsified for this property**. The exact-head native review of
+  `6d17b55` returned P1=0/P2=17 across independent Python semantic classes
+  (imports/packages, lexical scopes, receiver/type propagation, reflection and
+  syntax, source discovery, owner identity, and qualification oracles). The
+  mandatory `STOP_ARCHITECTURAL_BOUNDARY` fired; those findings are evidence
+  that the enforcement architecture was insufficient, not 17 runtime defects
+  to patch individually.
+
+  The replacement is structural capability encapsulation. One private module,
+  `app.agent_review._mount_topology_raw_v2`, owns mountinfo parsing, raw graph
+  storage (`records`, `children`, `by_id`), graph validation and raw traversal.
+  Its sole product importer, `target_pack_epoch_v2`, captures that representation
+  in typed closures and gives ordinary consumers an immutable, slotted
+  capability exposing only `resolve_query_v2`, `governing_mount_v2`,
+  `visible_child_mounts_v2`, `is_visible_v2`, and `project_v2`. The consumer
+  representation has no raw graph field, raw traversal method or `__dict__`.
+  The exact-head native review of `ebff0a2` returned P1=1/P2=6. The P1 found
+  that the ordinary typed result still returned the proof-only
+  `validated_frontier`, allowing consumers to reconstruct the raw inventory;
+  the public `TopologyQueryResolutionV2` now projects only `query`,
+  `governing_mount`, and the legitimately required `visible_descendants`.
+  The internal resolver retains its frontier for validation. A product
+  consumer and positional-use sweep found no dependency on the removed field.
+  Pickle round-tripping is restored through an explicit reconstruction channel
+  without restoring raw ordinary fields, and `parse()`/`observe()` again invoke
+  subclass construction. K-DISJOINT policy remains in
+  `target_pack_epoch_v2`; it is not duplicated in the raw module. Topology and
+  K-DISJOINT also consume the same canonical path-containment function rather
+  than independently copied `_within_v2` bodies.
+
+  The exact-head native review of `6a11425` returned P1=0/P2=1. The valid
+  compatibility finding in `discussion_r3858955407` showed that reconstruction
+  preserved the subclass type but re-ran constructor defaults without restoring
+  post-construction subclass state. This is a different proposition from F28,
+  so it admits no seventh recurrence. The explicit pickle channel now restores
+  supported subclass-owned ordinary `__dict__` and declared slot state after
+  canonical reconstruction while continuing to exclude raw topology state from
+  the ordinary representation. The six admitted recurrences remain unchanged;
+  this is not a `PROVED` or globally-clean claim.
+
+  The exact-head native review of `5919d0d` returned P1=0/P2=5 and falsified
+  that manual subclass-state protocol as
+  `MANUAL_SUBCLASS_PICKLE_STATE_PROTOCOL_INSUFFICIENT`: it recreated deleted
+  constructor defaults, recursed on cyclic state before memoization, sorted
+  observable dictionary order, reimplemented private-slot mangling incorrectly,
+  and rejected persisted two-argument reductions from exact parent `6a11425`.
+  The successor delegates ordinary subclass state to Python's native pickle
+  state channel. Its stable reconstruction callable again receives only the
+  concrete type and records, allocates without invoking subclass `__init__`,
+  and initializes only capability internals; pickle then applies state after
+  memoization. Base implementation storage is filtered and validated from the
+  real member descriptors Python created, never from hand-written naming rules.
+  This preserves absence, cycles, insertion order, actual Python slot names and
+  loading of the parent two-argument format while keeping raw topology state out
+  of the ordinary capability. The falsified three-argument `5919d0d` format is
+  not retained as a parallel protocol or compatibility claim. Arbitrary custom
+  pickle hooks and Python privacy remain nonclaims. The six historical
+  recurrences remain admitted, no recurrence #7 is admitted, and this is not a
+  `PROVED` or globally-clean claim.
+
+  The 400+ line Python semantic frontend is deleted, not retained as a parallel
+  authority. Its replacement is a small finite gate that answers only two
+  questions: exactly which non-test repository source **paths** contain an
+  ordinary static `Import`/`ImportFrom` site naming the unique
+  `_mount_topology_raw_v2` leaf, whether the canonical owner path is the sole
+  such product source, and whether the real capability/result ordinary shape
+  exposes forbidden raw state. Two further recurrences on `ebff0a2` falsified
+  the first replacement gate before it was corrected: it again lost package
+  identity for a relative import in `__init__.py`, and again collapsed
+  `module.py` with `module/__init__.py`. The gate was redesigned rather than
+  taught those cases. It now counts exact source paths from the lexical leaf
+  and deliberately reconstructs no package graph or module identity. It also
+  performs no receiver propagation, import-graph inference,
+  union/subclass/factory inference or `MatchClass` semantics. Computed imports,
+  `callable.__closure__`, hostile deliberate reflection into implementation
+  internals, monkeypatching and C-level introspection are explicit NONCLAIMS;
+  this is not a claim of Python privacy. The closure-cell P2 was reproduced and
+  retained as `CANDIDATE_OUT_OF_SCOPE` under that preimplementation nonclaim,
+  not called false or fixed.
+
+  Topology that cannot be established is refused as
+  `target_pack_epoch_carrier_disjointness_unknown`; an established overlap as
+  `target_pack_epoch_carrier_overlaps_target`. The two are deliberately
+  distinct so "could not look" is never read as "looked and it was fine".
+
+  Accepted topologies are narrowed deliberately: filesystems outside the
+  direct-projection allowlist (`ext2`/`ext3`/`ext4`/`tmpfs`) -- including
+  overlay -- refuse rather than acquire, and a runtime parent reached through a
+  subtree bind is refused. Over-refusal is a bounded cost; under-refusal would
+  fabricate the property. `PR #267` and `PR #268` remain forensic predecessors.
+  Six recurrences were admitted during this work and remain historical fact:
+  the first drove the redesign from positional relevance rules to the typed
+  query frontier, the second drove sealing that authority against consumer
+  bypass, and the third -- an incomplete production-source inventory, admitted
+  because the evidence establishing `scripts/` as a topology-capable surface
+  was in hand when the boundary was chosen and was reasoned past -- drove the
+  attempted replacement of directory-derived inventory by intermodule
+  reachability. The fourth is N15 -> N21 (`SAME_PROPOSITION`,
+  `Δ15 = ESTABLISHED_INSIDE`): permitted raw-owner identity was incomplete,
+  and the successor still collapsed unrelated owners; mechanized replay showed
+  both witnesses suppressed by the same analyzer mechanism. The fifth is the
+  repeated loss of package identity for a relative `ImportFrom` originating in
+  `__init__.py`; the sixth is the repeated collapse of distinct `x.py` and
+  `x/__init__.py` source paths. Both are `SAME_PROPOSITION` with their current
+  witnesses `ESTABLISHED_INSIDE` the earlier demonstrated deltas. None of the
+  six admissions is erased or downgraded by the successor architecture. No
+  consumer decides disjointness, no target-facing schema changes, and writer K
+  identity, SH/EX coordination and expected-plan binding are unchanged. The
+  typed topology result intentionally narrows by one proof-only field; explicit
+  pickle reconstruction and subclass construction are compatibility channels,
+  not ordinary raw consumer APIs. The claim remains bounded to one topology
+  snapshot taken immediately before materialization: it makes no claim against
+  a concurrent external remounter, a non-cooperating external actor,
+  distributed coordination or crash atomicity. It is not a `PROVED` or
+  globally-clean claim.
+
 - **Post-merge review debt on the Authority-First Convergence Review
   methodology (`#263`)**: three P2 findings raised after that PR merged, all
   reproduced on `master@ff9fbdd`.  (1) The target-profile YAML corpus test's
