@@ -58,6 +58,25 @@ from app.agent_review.target_pack_epoch_v2 import (
 PROTOCOL = f"agentreview-target-locks-v1-{os.geteuid()}"
 
 
+class StatefulSnapshotV2(TopologyQueryCapabilityV2):
+    """Module-level supported subclass so pickle can resolve its identity."""
+
+    def __init__(self, records):
+        super().__init__(records)
+        self.extra = "initial"
+        self.counter = 1
+
+
+class SlottedSnapshotV2(TopologyQueryCapabilityV2):
+    """Module-level subclass with ordinary state outside ``__dict__``."""
+
+    __slots__ = ("marker",)
+
+    def __init__(self, records):
+        super().__init__(records)
+        self.marker = "initial"
+
+
 def _can_bind_mount() -> bool:
     if os.geteuid() != 0:
         return False
@@ -3034,6 +3053,83 @@ def test_capability_pickle_round_trip_preserves_typed_semantics() -> None:
         assert restored.resolve_query_v2(query) == subject.resolve_query_v2(query)
         assert restored.project_v2("/") == subject.project_v2("/")
         assert boundary.capability_shape_violations(restored) == ()
+
+
+def test_subclass_dict_state_survives_pickle_after_constructor_defaults() -> None:
+    snapshot = StatefulSnapshotV2((
+        MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),
+    ))
+    snapshot.extra = "changed-once"
+    snapshot.extra = "changed"
+    snapshot.counter = 7
+    snapshot.note = "ordinary subclass state"
+
+    restored = pickle.loads(pickle.dumps(snapshot))
+
+    assert type(restored) is StatefulSnapshotV2
+    assert restored.extra == "changed"
+    assert restored.counter == 7
+    assert restored.note == "ordinary subclass state"
+    query = epoch_module.TopologyQueryV2(
+        epoch_module.TopologyQueryKindV2.POINT_LOOKUP, "/"
+    )
+    assert restored.resolve_query_v2(query) == snapshot.resolve_query_v2(query)
+    assert boundary.capability_shape_violations(restored) == ()
+
+
+def test_subclass_slots_survive_pickle_after_constructor_defaults() -> None:
+    snapshot = SlottedSnapshotV2((
+        MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),
+    ))
+    snapshot.marker = "changed"
+
+    restored = pickle.loads(pickle.dumps(snapshot))
+
+    assert type(restored) is SlottedSnapshotV2
+    assert restored.marker == "changed"
+    assert restored.governing_mount_v2("/").mount_id == 1
+    assert boundary.capability_shape_violations(restored) == ()
+
+
+def test_parse_and_observe_subclass_state_survive_pickle() -> None:
+    parsed = StatefulSnapshotV2.parse(
+        "1 1 1:1 / / rw - ext4 /dev/root rw\n"
+    )
+    observed = StatefulSnapshotV2.observe()
+    for subject in (parsed, observed):
+        subject.extra = "changed"
+        subject.counter = 7
+        restored = pickle.loads(pickle.dumps(subject))
+        assert restored.extra == "changed"
+        assert restored.counter == 7
+        assert restored.project_v2("/") == subject.project_v2("/")
+
+
+def test_pickle_state_excludes_base_private_slots_and_forbidden_raw_names() -> None:
+    base = _minimal_capability()
+    reconstruct, arguments = base.__reduce__()
+    assert callable(reconstruct)
+    assert len(arguments) == 3
+    assert arguments[2] == ((), ())
+
+    subclass = StatefulSnapshotV2((
+        MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),
+    ))
+    subclass.__dict__["records"] = ("M_RAW_GRAPH_RESTORED_AS_PUBLIC_FIELD",)
+    subclass.__dict__["children"] = {}
+    subclass.__dict__["by_id"] = {}
+    reconstruct, arguments = subclass.__reduce__()
+    dictionary_state, slot_state = arguments[2]
+    names = {name for name, _value in dictionary_state}
+    assert not names & {"records", "children", "by_id"}
+    assert all("_MountTopologySnapshotV2__" not in name for name in names)
+    assert all("_MountTopologySnapshotV2__" not in name for _, name, _ in slot_state)
+
+    restored = reconstruct(*arguments)
+    assert not hasattr(restored, "records")
+    assert not hasattr(restored, "children")
+    assert not hasattr(restored, "by_id")
+    assert boundary.capability_shape_violations(restored) == ()
 
 
 def test_cross_module_alias_and_reexport_still_yield_the_opaque_capability() -> None:

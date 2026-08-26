@@ -68,6 +68,16 @@
   K-DISJOINT also consume the same canonical path-containment function rather
   than independently copied `_within_v2` bodies.
 
+  The exact-head native review of `6a11425` returned P1=0/P2=1. The valid
+  compatibility finding in `discussion_r3858955407` showed that reconstruction
+  preserved the subclass type but re-ran constructor defaults without restoring
+  post-construction subclass state. This is a different proposition from F28,
+  so it admits no seventh recurrence. The explicit pickle channel now restores
+  supported subclass-owned ordinary `__dict__` and declared slot state after
+  canonical reconstruction while continuing to exclude raw topology state from
+  the ordinary representation. The six admitted recurrences remain unchanged;
+  this is not a `PROVED` or globally-clean claim.
+
   The 400+ line Python semantic frontend is deleted, not retained as a parallel
   authority. Its replacement is a small finite gate that answers only two
   questions: exactly which non-test repository source **paths** contain an
