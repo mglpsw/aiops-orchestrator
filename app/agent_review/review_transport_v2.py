@@ -518,6 +518,24 @@ def agent_router_transport_v2(
             raise ChunkTransportError(CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2) from exc
         except UnicodeDecodeError as exc:
             raise ChunkTransportError(CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2) from exc
+        except http.client.HTTPException as exc:
+            # C5-F1, protocol side. `IncompleteRead` above keeps its own
+            # established semantics; every other HTTPException at this
+            # boundary is likewise a defective *response*.
+            raise ChunkTransportError(
+                CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2
+            ) from exc
+        except OSError as exc:
+            # C5-F1, connection side. `ConnectionResetError` and
+            # `ssl.SSLError` are OSError subclasses but neither `URLError`
+            # nor `TimeoutError`, so they previously escaped this boundary
+            # untyped and aborted the whole multi-chunk review instead of
+            # degrading one chunk. This clause is deliberately last: the
+            # specific handlers above (HTTPError/TimeoutError/URLError, all
+            # OSError subclasses themselves) keep their exact prior reason
+            # codes. `OSError` -- not `Exception` -- because a programmer
+            # error must stay a crash, never a sanitized review verdict.
+            raise ChunkTransportError(CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2) from exc
 
         try:
             decoded = strict_json_loads(raw_text)

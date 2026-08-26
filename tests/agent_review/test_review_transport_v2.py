@@ -4,6 +4,7 @@ import copy
 import hashlib
 import http.client
 import json
+import ssl
 import subprocess
 import sys
 import urllib.error
@@ -31,6 +32,7 @@ from app.agent_review.review_transport_contract_v2 import ChunkReviewTransportEn
 from app.agent_review.review_transport_v2 import (
     CHUNK_TRANSPORT_FAILURE_REASON_V2,
     CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2,
+    CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2,
     ROUTER_DISABLED_REASON_V2,
     ROUTER_MODEL_UNSUPPORTED_REASON_V2,
     ChunkTransportError,
@@ -43,6 +45,7 @@ from app.agent_review.review_transport_v2 import (
 )
 from app.agent_review._router_receipt_v2 import (
     ROUTER_CALLER_BINDING_MISMATCH_REASON_V2,
+    _canonical_messages_bytes_v2,
     ROUTER_FINISH_REASON_INCONCLUSIVE_REASON_V2,
     ROUTER_INPUT_MISMATCH_REASON_V2,
     ROUTER_OUTPUT_MISMATCH_REASON_V2,
@@ -1197,7 +1200,7 @@ def test_agent_router_transport_maps_invalid_utf8_to_invalid_response(
     assert outcome.reason_code == CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2
 
 
-# -- #200-C-WIRE P1 (discussion_r3858955407): the canonical version selector
+# -- #200-C-WIRE P1 (PR #270 comment 3860453638): the canonical version selector
 # -- must gate the Router's semantic response before v2 domain parsing ------
 
 
@@ -1318,3 +1321,267 @@ def test_agent_router_v2_semantic_result_still_passes_the_version_gate(
     assert outcome.state == "bound"
     assert outcome.reason_code is None
     assert outcome.result is not None
+
+
+# -- C5-F1: the Router body-acquisition boundary must be total ------------
+
+
+@pytest.mark.parametrize(
+    "read_error",
+    [
+        pytest.param(ConnectionResetError(104, "Connection reset by peer"), id="connection_reset"),
+        pytest.param(ssl.SSLError(1, "decryption failed or bad record mac"), id="ssl_error"),
+        pytest.param(ConnectionAbortedError(103, "Software caused connection abort"), id="connection_aborted"),
+        pytest.param(OSError(5, "Input/output error"), id="generic_oserror"),
+    ],
+)
+def test_agent_router_transport_types_socket_read_failures(
+    tmp_path: Path, read_error: OSError
+) -> None:
+    """R-C5-1/R-C5-2: a socket/SSL failure raised by ``response.read()``.
+
+    ``ConnectionResetError`` and ``ssl.SSLError`` are ``OSError`` subclasses
+    but neither ``URLError`` nor ``TimeoutError``, so they matched none of the
+    existing handlers and escaped ``execute_chunk_review_v2`` untyped --
+    aborting a whole multi-chunk review instead of degrading one chunk.
+    """
+
+    manifest, content, payload_by_chunk_id = _build_repo_manifest_and_content(tmp_path)
+    payload = payload_by_chunk_id[content.chunks[0].chunk_id]
+    transport = agent_router_transport_v2(
+        base_url="https://router.example",
+        api_key="secret",
+        model="review:code",
+    )
+
+    class _FailingReadResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            raise read_error
+
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        return_value=_FailingReadResponse(),
+    ):
+        outcome = execute_chunk_review_v2(
+            content.chunks[0],
+            run_id=content.run_id,
+            head_sha=manifest.identity.head_sha,
+            payload=payload,
+            transport=transport,
+        )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2
+
+
+def test_agent_router_transport_types_http_protocol_read_failures(
+    tmp_path: Path,
+) -> None:
+    """The same boundary, protocol side: a non-``IncompleteRead``
+    ``HTTPException`` is a defective *response*, keeping ``IncompleteRead``'s
+    established ``transport_invalid_response`` semantics rather than the
+    connection-level ``transport_unavailable``."""
+
+    manifest, content, payload_by_chunk_id = _build_repo_manifest_and_content(tmp_path)
+    payload = payload_by_chunk_id[content.chunks[0].chunk_id]
+    transport = agent_router_transport_v2(
+        base_url="https://router.example",
+        api_key="secret",
+        model="review:code",
+    )
+
+    class _BadStatusLineResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            raise http.client.LineTooLong("header line")
+
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        return_value=_BadStatusLineResponse(),
+    ):
+        outcome = execute_chunk_review_v2(
+            content.chunks[0],
+            run_id=content.run_id,
+            head_sha=manifest.identity.head_sha,
+            payload=payload,
+            transport=transport,
+        )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2
+
+
+@pytest.mark.parametrize(
+    "programmer_error",
+    [
+        pytest.param(TypeError("not an operational failure"), id="type_error"),
+        pytest.param(AttributeError("not an operational failure"), id="attribute_error"),
+        pytest.param(MemoryError(), id="memory_error"),
+    ],
+)
+def test_agent_router_transport_does_not_swallow_programmer_errors(
+    tmp_path: Path, programmer_error: BaseException
+) -> None:
+    """Totalizing the *operational* boundary must not become a blanket
+    ``except Exception``: a programmer error stays a crash, not a sanitized
+    ``manual_required`` that would hide a defect behind a review verdict."""
+
+    manifest, content, payload_by_chunk_id = _build_repo_manifest_and_content(tmp_path)
+    payload = payload_by_chunk_id[content.chunks[0].chunk_id]
+    transport = agent_router_transport_v2(
+        base_url="https://router.example",
+        api_key="secret",
+        model="review:code",
+    )
+
+    class _ProgrammerErrorResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            raise programmer_error
+
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        return_value=_ProgrammerErrorResponse(),
+    ):
+        with pytest.raises(type(programmer_error)):
+            execute_chunk_review_v2(
+                content.chunks[0],
+                run_id=content.run_id,
+                head_sha=manifest.identity.head_sha,
+                payload=payload,
+                transport=transport,
+            )
+
+
+# -- C5-F2: Router-authored conformance oracle for openai-messages-json.v1 --
+
+
+def _router_authored_vector() -> dict:
+    """The committed cross-repository conformance vector.
+
+    Its ``expected_sha256`` was produced by executing the Router authority's
+    own ``canonicalize_openai_messages`` at
+    ``mglpsw/agent-router-api@80e921df`` -- NOT by this repository's
+    ``_canonical_messages_bytes_v2``. Deriving the expectation from the
+    implementation under test is exactly the defect this closes.
+    """
+
+    return json.loads(
+        (_ROUTER_FIXTURE_ROOT / "openai_messages_json_v1_vector.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def test_router_vector_declares_its_authority_and_is_provider_free() -> None:
+    vector = _router_authored_vector()
+    assert vector["authority"] == {
+        "repository": "mglpsw/agent-router-api",
+        "sha": "80e921dfc28436bd4fed8a4e1fa72ffaa168d10c",
+        "function": "canonicalize_openai_messages",
+        "source_path": "app/agent_router/inference_receipt.py",
+        "source_blob_oid": "70071b049640998e1dad0dd0c24aa3dfd0f3e9bb",
+        "canonicalization": "openai-messages-json.v1",
+    }
+    assert vector["generation"]["live_router_call"] is False
+    assert vector["generation"]["provider_call"] is False
+
+
+def test_aiops_messages_canonicalization_matches_the_router_authored_vector() -> None:
+    """R-C5-3: interoperability, not self-consistency.
+
+    ``_canonical_messages_bytes_v2`` must reproduce the Router's frozen
+    ``openai-messages-json.v1`` bytes exactly; otherwise every live chunk
+    fails ``router_input_mismatch`` while this repository's own suite stays
+    green.
+    """
+
+    vector = _router_authored_vector()
+    expected_text: str = vector["expected_canonical_text"]
+    expected_sha256: str = vector["expected_sha256"]
+
+    produced = _canonical_messages_bytes_v2(vector["messages"])
+
+    assert produced == expected_text.encode("utf-8")
+    assert hashlib.sha256(produced).hexdigest() == expected_sha256
+
+
+def test_router_vector_discriminates_the_plausible_canonicalization_variants() -> None:
+    """R-C5-4/5/6 as an oracle-quality proof.
+
+    A vector that hashed identically under ``ensure_ascii=True``,
+    ``sort_keys=False`` or default separators could not detect a regression
+    in the implementation it is supposed to police.
+    """
+
+    vector = _router_authored_vector()
+    messages = vector["messages"]
+    expected_sha256 = vector["expected_sha256"]
+
+    variants = {
+        "ensure_ascii=True": json.dumps(
+            messages, ensure_ascii=True, sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        ),
+        "sort_keys=False": json.dumps(
+            messages, ensure_ascii=False, sort_keys=False,
+            separators=(",", ":"), allow_nan=False,
+        ),
+        "default separators": json.dumps(
+            messages, ensure_ascii=False, sort_keys=True, allow_nan=False,
+        ),
+        "reversed message order": json.dumps(
+            list(reversed(messages)), ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        ),
+    }
+    for label, serialized in variants.items():
+        digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+        assert digest != expected_sha256, f"vector cannot discriminate {label}"
+
+    # a non-UTF-8 codec must also change the digest
+    assert (
+        hashlib.sha256(vector["expected_canonical_text"].encode("utf-16")).hexdigest()
+        != expected_sha256
+    )
+
+
+def test_router_vector_expectation_is_not_derived_from_the_implementation() -> None:
+    """M_C5_TEST_RECOMPUTES_EXPECTED_WITH_AIOPS_IMPLEMENTATION.
+
+    Structural guard: the fixture must carry a literal expected digest. If a
+    future edit replaced it with a value computed from
+    ``_canonical_messages_bytes_v2``, the oracle would silently become a
+    tautology and this file would still pass every other assertion.
+    """
+
+    vector = _router_authored_vector()
+
+    # the expectation is a literal, not a computed value
+    digest = vector["expected_sha256"]
+    assert isinstance(digest, str)
+    assert len(digest) == 64
+    assert all(character in "0123456789abcdef" for character in digest)
+
+    # and it is attributed to the Router, not to this repository. Only the
+    # explanatory `_comment` may name the AgentReview implementation; no
+    # data field may, because that would mean the vector was derived from it.
+    data_fields = {key: value for key, value in vector.items() if key != "_comment"}
+    assert "_canonical_messages_bytes_v2" not in json.dumps(data_fields)
+    assert vector["authority"]["repository"] == "mglpsw/agent-router-api"
