@@ -54,6 +54,11 @@ from app.agent_review.review_content_v2 import (
     CONTENT_PAYLOAD_SHA256_MISMATCH_REASON_V2,
     compute_chunk_content_sha256_v2,
 )
+from app.agent_review.schemas import ChunkResponse
+from app.agent_review.versioning import (
+    MIXED_CONTRACT_VERSIONS_REASON_V2,
+    UNSUPPORTED_CONTRACT_VERSION_REASON_V2,
+)
 from app.agent_review.run_assembly_v2 import assemble_manifest_from_diff_v2
 from app.agent_review.semantic_grouping_policy_v2 import (
     SemanticGroupingPolicyV2,
@@ -1190,3 +1195,126 @@ def test_agent_router_transport_maps_invalid_utf8_to_invalid_response(
 
     assert outcome.state == "manual_required"
     assert outcome.reason_code == CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2
+
+
+# -- #200-C-WIRE P1 (discussion_r3858955407): the canonical version selector
+# -- must gate the Router's semantic response before v2 domain parsing ------
+
+
+def _v1_chunk_response_document() -> dict:
+    """A *valid* v1 ``ChunkResponse`` (app/agent_review/schemas.py).
+
+    v1 never declares ``schema_id``; ``schema_version == 1`` alone is its
+    complete canonical marker. Its field values are deliberately independent
+    of the v2 payload: the version gate must fire on the markers alone,
+    before anything binds this document to a chunk.
+    """
+
+    return {
+        "schema_version": 1,
+        "chunk_id": "chunk-0001",
+        "semantic_group": "primary_backend_logic",
+        "confirmed_findings": [],
+        "risks": [],
+        "limitations": [],
+        "coverage_notes": {
+            "files_reviewed": [],
+            "files_partial": [],
+            "files_not_reviewed": [],
+        },
+    }
+
+
+def test_agent_router_reports_a_valid_v1_semantic_response_as_mixed_versions(
+    tmp_path: Path,
+) -> None:
+    """R-VERSION-1: a *known* v1 document under a v2 request/payload is a
+    version disagreement, not an unparseable v2 document.
+
+    Reporting ``router_result_invalid`` here destroys information the
+    canonical selector already established.
+    """
+
+    v1_document = _v1_chunk_response_document()
+
+    def replace_with_valid_v1(result: dict) -> None:
+        result.clear()
+        result.update(v1_document)
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, result_mutator=replace_with_valid_v1
+    )
+
+    # the document really is a valid v1 ChunkResponse, not merely v1-shaped
+    ChunkResponse.model_validate(v1_document)
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == MIXED_CONTRACT_VERSIONS_REASON_V2
+
+
+def test_agent_router_reports_an_unknown_semantic_response_as_unsupported(
+    tmp_path: Path,
+) -> None:
+    """R-VERSION-4: a foreign/future result marker is *unsupported*, never
+    mixed -- mixed would claim knowledge of a contract we do not have."""
+
+    def replace_with_unknown_version(result: dict) -> None:
+        result["schema_id"] = "agent-review.chunk-response.v9"
+        result["schema_version"] = 9
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, result_mutator=replace_with_unknown_version
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == UNSUPPORTED_CONTRACT_VERSION_REASON_V2
+
+
+def test_agent_router_version_gate_precedes_the_v2_domain_parser(
+    tmp_path: Path,
+) -> None:
+    """R-VERSION-6: mechanical ordering proof.
+
+    For a v1 response the ``ChunkReviewResultV2`` validator must never be
+    reached -- version selection precedes domain interpretation.
+    """
+
+    v1_document = _v1_chunk_response_document()
+
+    def replace_with_valid_v1(result: dict) -> None:
+        result.clear()
+        result.update(v1_document)
+
+    domain_parse_calls: list[object] = []
+    real_validate = ChunkReviewResultV2.model_validate_json
+
+    def _recording_validate(*args: object, **kwargs: object):
+        domain_parse_calls.append(args)
+        return real_validate(*args, **kwargs)
+
+    with mock.patch.object(
+        ChunkReviewResultV2, "model_validate_json", _recording_validate
+    ):
+        outcome, _, _, _ = _run_mocked_router_chunk(
+            tmp_path, result_mutator=replace_with_valid_v1
+        )
+
+    assert outcome.reason_code == MIXED_CONTRACT_VERSIONS_REASON_V2
+    assert domain_parse_calls == []
+
+
+def test_agent_router_v2_semantic_result_still_passes_the_version_gate(
+    tmp_path: Path,
+) -> None:
+    """R-VERSION-2: the gate admits the Router's own v2 result artifact.
+
+    ``agent-review.chunk-response.v2`` is a second legitimate v2 response
+    artifact alongside the historical envelope; recognising it must not
+    require a second, Router-local selector.
+    """
+
+    outcome, _, _, payload = _run_mocked_router_chunk(tmp_path)
+
+    assert outcome.state == "bound"
+    assert outcome.reason_code is None
+    assert outcome.result is not None

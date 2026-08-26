@@ -259,10 +259,13 @@ def execute_chunk_review_v2(
             )
     elif isinstance(transport_response, _RouterTransportResponseV2):
         try:
+            # ResponseBindingError also reaches here: the canonical version
+            # selector runs inside this verification, before any v2 domain
+            # parse, and reports mixed/unsupported in its own taxonomy.
             verified = _verify_router_transport_response_v2(
-                transport_response, request=request
+                transport_response, request=request, payload=fresh_payload
             )
-        except RouterReceiptError as exc:
+        except (RouterReceiptError, ResponseBindingError) as exc:
             return ChunkReviewOutcomeV2(
                 outcome_chunk_id, "manual_required", None, exc.reason_code
             )

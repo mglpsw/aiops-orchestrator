@@ -1,8 +1,9 @@
 # Checkpoint — AgentReview v2 Router receipt-v2 wire binding (`#200-C-WIRE`)
 
-**Status:** review-round-4 corrections qualified locally; a new exact-HEAD forge
-CI and independent review remain the next gates. This is a checkpoint of this
-slice, not a claim about a future live `master`.
+**Status:** review-round-5 correction (canonical version gate) qualified
+locally; a new exact-HEAD forge CI and independent review remain the next
+gates. This is a checkpoint of this slice, not a claim about a future live
+`master`.
 
 ```yaml
 subject:
@@ -24,6 +25,8 @@ state:
   router_receipt_v2_path_implemented: true
   payload_content_prebind_before_messages: true
   common_file_coverage_contract_scope: true
+  canonical_version_gate_before_domain_parse: true
+  router_local_version_selector: false
   live_router_call_made: false
   provider_call_made: false
   target_repository_mutated: false
@@ -149,6 +152,32 @@ material. Candidates against C1-C3 were established out of scope: transport
 body acquisition and redirect credential confinement violate different
 propositions outside the prior JSON/type domains. C4 and both causal probes
 were recorded on PR #270 before this correction.
+
+Independent exact-HEAD review round 5 on
+`57c047f76ef34139cd090807bb341cea901fb6aa` reported that the Router's semantic
+response reached the `ChunkReviewResultV2` validator without passing the
+canonical version selector: a *valid* v1 `ChunkResponse` was reported as
+`router_result_invalid`, destroying version knowledge `versioning.py` already
+holds. Reproduced and classified `VALID` and material.
+
+The correction extends the one existing authority rather than adding a second.
+`versioning.py` now recognises **two** legitimate v2 response artifacts --
+`agent-review.chunk-response-envelope.v2` (offline transport envelope, as
+before) and `agent-review.chunk-response.v2` (`ChunkReviewResultV2`, the Router
+assistant-content document) -- both resolving to `ContractVersionV2.V2`. The
+Router path calls `select_contract_version` after the strict JSON decode of the
+digest-bound assistant content and *before* any v2 domain interpretation; a
+Router-local shape check is explicitly not introduced.
+
+Taxonomy is preserved end to end: a known v1 response under a v2
+request/payload is `mixed_contract_versions`; an unknown/foreign marker is
+`unsupported_contract_version`; `router_result_invalid` retains its exact prior
+meaning -- a *recognised* v2 document whose semantic structure then fails
+`ChunkReviewResultV2`.
+
+The offline envelope path is unchanged: it continues to use
+`verify_transport_echo_v1` and `bind_chunk_response_v2`, and never requires a
+Router receipt.
 
 ## Remaining gates and scope fence
 

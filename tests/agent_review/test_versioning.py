@@ -175,3 +175,93 @@ def test_select_contract_version_rejects_an_explicit_null_schema_id() -> None:
             response_raw={"schema_id": None, "schema_version": 1},
         )
     assert excinfo.value.reason_code == UNSUPPORTED_CONTRACT_VERSION_REASON_V2
+
+
+# -- #200-C-WIRE: the Router semantic result is a second legitimate v2
+# -- response artifact (P1 discussion_r3858955407) -------------------------
+
+
+def _v2_semantic_result_marker() -> dict[str, object]:
+    """``ChunkReviewResultV2``: what the Router returns as assistant content.
+
+    Distinct artifact from the historical ``chunk-response-envelope.v2``,
+    but the same contract *line* -- both are ``ContractVersionV2.V2``.
+    """
+
+    return {"schema_id": "agent-review.chunk-response.v2", "schema_version": 2}
+
+
+def test_select_contract_version_accepts_the_v2_semantic_result_as_v2() -> None:
+    """R-VERSION-2: the Router's own response artifact is recognised v2."""
+
+    version = select_contract_version(
+        requested="v2",
+        payload_raw=_v2_payload_marker(),
+        response_raw=_v2_semantic_result_marker(),
+    )
+    assert version is ContractVersionV2.V2
+
+
+def test_select_contract_version_still_accepts_the_historical_v2_envelope() -> None:
+    """R-VERSION-3: recognising the semantic result must not displace the
+    envelope marker the offline path has always depended on."""
+
+    version = select_contract_version(
+        requested="v2",
+        payload_raw=_v2_payload_marker(),
+        response_raw=_v2_response_marker(),
+    )
+    assert version is ContractVersionV2.V2
+
+
+@pytest.mark.parametrize(
+    "response_raw",
+    [
+        {"schema_id": "agent-review.chunk-response.v9", "schema_version": 9},
+        {"schema_id": "agent-review.chunk-response.v2", "schema_version": 9},
+        {"schema_id": "agent-review.chunk-response.v9", "schema_version": 2},
+        {"schema_id": "foreign.review-result.v2", "schema_version": 2},
+    ],
+)
+def test_select_contract_version_rejects_an_unknown_semantic_result_marker(
+    response_raw: dict[str, object],
+) -> None:
+    """R-VERSION-4: an unknown/foreign result is *unsupported*, never mixed.
+
+    ``mixed`` asserts that both sides are known and disagree; claiming it
+    for an unrecognised document would invent knowledge.
+    """
+
+    with pytest.raises(ResponseBindingError) as excinfo:
+        select_contract_version(
+            requested="v2",
+            payload_raw=_v2_payload_marker(),
+            response_raw=response_raw,
+        )
+    assert excinfo.value.reason_code == UNSUPPORTED_CONTRACT_VERSION_REASON_V2
+
+
+def test_select_contract_version_reports_a_v2_semantic_result_against_v1_as_mixed() -> None:
+    """R-VERSION-5: known-v2 result under a v1 request/payload is mixed."""
+
+    with pytest.raises(ResponseBindingError) as excinfo:
+        select_contract_version(
+            requested="v1",
+            payload_raw=_v1_payload_marker(),
+            response_raw=_v2_semantic_result_marker(),
+        )
+    assert excinfo.value.reason_code == MIXED_CONTRACT_VERSIONS_REASON_V2
+
+
+def test_select_contract_version_reports_a_v1_response_against_v2_as_mixed() -> None:
+    """R-VERSION-1 (authority half): a *known* v1 response under a v2
+    request/payload is mixed -- the information the Router path currently
+    destroys by reporting a generic domain-parse failure."""
+
+    with pytest.raises(ResponseBindingError) as excinfo:
+        select_contract_version(
+            requested="v2",
+            payload_raw=_v2_payload_marker(),
+            response_raw=_v1_response_marker(),
+        )
+    assert excinfo.value.reason_code == MIXED_CONTRACT_VERSIONS_REASON_V2

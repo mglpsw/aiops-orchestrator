@@ -20,8 +20,14 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from app.agent_review.contracts_v2 import ChunkReviewResultV2
+from app.agent_review.contracts_v2 import (
+    PAYLOAD_CONTRACT_INVALID_REASON_V2,
+    ChunkPayloadV2,
+    ChunkReviewResultV2,
+    ResponseBindingError,
+)
 from app.agent_review.review_transport_contract_v2 import ChunkReviewRequestV2
+from app.agent_review.versioning import ContractVersionV2, select_contract_version
 from app.common.strict_json import strict_json_loads
 
 ROUTER_RECEIPT_INVALID_REASON_V2 = "router_receipt_invalid"
@@ -484,8 +490,14 @@ def _verify_router_transport_response_v2(
     exchange: _RouterTransportResponseV2,
     *,
     request: ChunkReviewRequestV2,
+    payload: ChunkPayloadV2,
 ) -> _VerifiedRouterResultV2:
-    """Verify Router input, declarations, execution, output, then domain JSON."""
+    """Verify Router input, declarations, execution, output, version, domain.
+
+    ``payload`` participates only in the canonical version selection that
+    precedes domain parsing; AgentReview payload *scope* remains
+    ``bind_verified_router_result_v2``'s responsibility.
+    """
 
     if not isinstance(exchange, _RouterTransportResponseV2):
         raise RouterReceiptError(ROUTER_RECEIPT_INVALID_REASON_V2)
@@ -550,7 +562,36 @@ def _verify_router_transport_response_v2(
         # The outer Router document and the embedded AgentReview document are
         # independent JSON authorities.  Strictly parsing the former cannot
         # see duplicate keys hidden inside the latter's string scalar.
-        strict_json_loads(assistant_content)
+        assistant_document = strict_json_loads(assistant_content)
+    except (
+        ValidationError,
+        TypeError,
+        ValueError,
+        UnicodeError,
+        RecursionError,
+    ) as exc:
+        raise RouterReceiptError(ROUTER_RESULT_INVALID_REASON_V2) from exc
+    if not isinstance(assistant_document, Mapping):
+        raise RouterReceiptError(ROUTER_RESULT_INVALID_REASON_V2)
+
+    # `#200-C-WIRE` P1: the canonical selector decides v1/v2 *before* the
+    # document is interpreted as v2.  Parsing first would report a known v1
+    # response as an unparseable v2 one, destroying the version knowledge
+    # `versioning.py` already holds.  This module deliberately does not
+    # re-derive a version from the document's shape.
+    try:
+        fresh_payload = ChunkPayloadV2.model_validate_json(
+            payload.model_dump_json(), strict=True
+        )
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise ResponseBindingError(PAYLOAD_CONTRACT_INVALID_REASON_V2) from exc
+    select_contract_version(
+        requested=ContractVersionV2.V2.value,
+        payload_raw=fresh_payload.model_dump(mode="json"),
+        response_raw=assistant_document,
+    )
+
+    try:
         result = ChunkReviewResultV2.model_validate_json(assistant_content, strict=True)
     except (
         ValidationError,

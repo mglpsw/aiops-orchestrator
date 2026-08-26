@@ -10,7 +10,9 @@ markers, and (when supplied) the response's markers all agree exactly.
 
 This module never re-implements payload/response binding.  It only decides,
 before any v2 object is constructed, whether a call site is allowed to
-proceed with the v2 pipeline at all.
+proceed with the v2 pipeline at all.  Every response-bearing call site --
+the offline envelope path, the quality gate CLI and the Agent Router wire --
+consults this one selector; none may re-derive a version locally.
 """
 
 from __future__ import annotations
@@ -21,12 +23,27 @@ from enum import Enum
 from app.agent_review.contracts_v2 import (
     CHUNK_PAYLOAD_SCHEMA_V2,
     CHUNK_RESPONSE_ENVELOPE_SCHEMA_V2,
+    CHUNK_RESPONSE_SCHEMA_V2,
     ResponseBindingError,
 )
 from app.agent_review.schemas import CHUNK_PAYLOAD_SCHEMA as CHUNK_PAYLOAD_SCHEMA_V1
 
 UNSUPPORTED_CONTRACT_VERSION_REASON_V2 = "unsupported_contract_version"
 MIXED_CONTRACT_VERSIONS_REASON_V2 = "mixed_contract_versions"
+
+# The v2 line has two legitimate response artifacts, not one:
+#
+# * ``chunk-response-envelope.v2`` -- the offline/synthetic transport
+#   envelope this module has always recognised;
+# * ``chunk-response.v2`` -- ``ChunkReviewResultV2``, the semantic document
+#   the Agent Router returns as assistant content (`#200-C-WIRE`).
+#
+# They are different artifacts carrying the same contract *version*. Both
+# must resolve to ``ContractVersionV2.V2`` through this one authority; a
+# Router-local shape check would be a second selector.
+_RESPONSE_SCHEMA_IDS_V2 = frozenset(
+    {CHUNK_RESPONSE_ENVELOPE_SCHEMA_V2, CHUNK_RESPONSE_SCHEMA_V2}
+)
 
 _PAYLOAD_SCHEMA_VERSION_V1 = 1
 _PAYLOAD_SCHEMA_VERSION_V2 = 2
@@ -60,7 +77,11 @@ def _payload_contract_version(payload_raw: Mapping[str, object]) -> ContractVers
 def _response_contract_version(response_raw: Mapping[str, object]) -> ContractVersionV2 | None:
     schema_id = response_raw.get("schema_id")
     schema_version = response_raw.get("schema_version")
-    if schema_id == CHUNK_RESPONSE_ENVELOPE_SCHEMA_V2 and schema_version == _RESPONSE_SCHEMA_VERSION_V2:
+    if (
+        isinstance(schema_id, str)
+        and schema_id in _RESPONSE_SCHEMA_IDS_V2
+        and schema_version == _RESPONSE_SCHEMA_VERSION_V2
+    ):
         return ContractVersionV2.V2
     # v1's ChunkResponse (schemas.py) never declares a schema_id field at
     # all; schema_version == 1 alone is its genuine, complete canonical

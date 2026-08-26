@@ -22,6 +22,14 @@
   failures at either JSON boundary become sanitized typed rejections. HTTP
   redirects are refused before urllib constructs another credentialed request,
   and truncated bodies become typed invalid responses.
+  The Router's semantic response passes the canonical
+  `versioning.select_contract_version` authority *before* it is interpreted as
+  `ChunkReviewResultV2`: a valid v1 `ChunkResponse` is reported as
+  `mixed_contract_versions` and an unknown marker as
+  `unsupported_contract_version`, instead of both collapsing into a generic
+  domain-parse failure. That one authority now recognises both legitimate v2
+  response artifacts -- the historical `chunk-response-envelope.v2` and the
+  Router's `chunk-response.v2` -- with no Router-local version selector.
   Offline echo proof and Router receipt proof converge
   only at the common payload-scope validator and one sealed
   `BoundChunkResponseV2` constructor. Payload/content mismatch stops before
