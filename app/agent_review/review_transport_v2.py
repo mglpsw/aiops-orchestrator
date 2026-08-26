@@ -182,10 +182,21 @@ def execute_chunk_review_v2(
     transport: ChunkReviewTransportV2,
 ) -> ChunkReviewOutcomeV2:
     """The single choke point: no finding is reachable from this chunk
-    unless the transport succeeds, the echo verifies, AND the response
-    binds -- in that exact order, matching the #199 execution plan's fixed
-    order of authority. Never raises; every failure mode becomes a typed
-    ``ChunkReviewOutcomeV2(state="manual_required", ...)``."""
+    unless the transport succeeds, the source-specific proof passes, AND the
+    response binds -- in that exact order, matching the #199 execution plan's
+    fixed order of authority.
+
+    The middle step differs by transport, and only by transport: the offline
+    envelope proves an exact echo (``verify_transport_echo_v1``), while the
+    Router proves receipt-v2 input/declaration/execution/output identity and
+    the canonical contract version. Both converge on the same binder.
+
+    Every *operational* failure mode becomes a typed
+    ``ChunkReviewOutcomeV2(state="manual_required", ...)``. This function
+    deliberately does not swallow programmer errors (``TypeError``,
+    ``AttributeError``, ``MemoryError``, ...): a defect in this repository
+    must stay a crash, never a sanitized review verdict.
+    """
 
     outcome_chunk_id = (
         chunk_content.chunk_id
