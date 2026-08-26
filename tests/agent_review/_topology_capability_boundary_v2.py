@@ -1,9 +1,8 @@
 """Finite structural checks for the #262 raw/capability boundary.
 
 This deliberately does not infer receiver types, follow import graphs, resolve
-factories, or model Python semantics. It answers two finite questions only:
-which non-test Python sources statically name the private raw module, and does
-the real consumer object expose forbidden raw representation.
+factories, reconstruct module/package identities, or model Python semantics.
+It answers finite lexical-source and real-object-shape questions only.
 """
 
 from __future__ import annotations
@@ -13,43 +12,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from app.agent_review._target_pack_epoch_contract_v2 import (
+    _TOPOLOGY_CAPABILITY_FORBIDDEN_API_NAMES_V2,
+)
 
-RAW_MODULE = "app.agent_review._mount_topology_raw_v2"
-RAW_MODULE_BASENAME = "_mount_topology_raw_v2"
-EXPECTED_PRODUCT_IMPORTER = "app.agent_review.target_pack_epoch_v2"
 
-FORBIDDEN_API_NAMES = frozenset({
-    "records",
-    "children",
-    "by_id",
-    "raw",
-    "raw_graph",
-    "_raw",
-    "_raw_graph",
-    "_governing_mount_raw_v2",
-    "_is_visible_raw_v2",
-    "_visible_root_v2",
-    "_climb_stack_v2",
-    "validate_relevant_chain_v2",
-    "_semantic_seeds_v2",
-    "_dependency_closure_v2",
-})
-
+RAW_MODULE_LEAF = "_mount_topology_raw_v2"
+EXPECTED_PRODUCT_IMPORTER = Path("app/agent_review/target_pack_epoch_v2.py")
 
 @dataclass(frozen=True)
 class RawImportSite:
-    module: str
     path: Path
     line: int
     form: str
-
-
-def _module_identity(root: Path, path: Path) -> str:
-    relative = path.relative_to(root).with_suffix("")
-    parts = list(relative.parts)
-    if parts[-1] == "__init__":
-        parts.pop()
-    return ".".join(parts)
 
 
 def _is_test_source(root: Path, path: Path) -> bool:
@@ -71,28 +46,17 @@ def product_python_sources(root: Path) -> tuple[Path, ...]:
     ))
 
 
-def _relative_base(module: str, level: int) -> str:
-    package = module.split(".")[:-1]
-    if level > 1:
-        package = package[: -(level - 1)]
-    return ".".join(package)
+def _names_raw_module_leaf(node: ast.Import | ast.ImportFrom) -> bool:
+    """Whether an ordinary static import literally names the unique leaf."""
 
-
-def _named_raw_module(node: ast.Import | ast.ImportFrom, module: str) -> bool:
     if isinstance(node, ast.Import):
         return any(
-            alias.name == RAW_MODULE or alias.name.startswith(RAW_MODULE + ".")
+            RAW_MODULE_LEAF in alias.name.split(".")
             for alias in node.names
         )
-
-    base = node.module or ""
-    if node.level:
-        relative = _relative_base(module, node.level)
-        base = ".".join(part for part in (relative, base) if part)
-    if base == RAW_MODULE or base.startswith(RAW_MODULE + "."):
-        return True
-    return base == "app.agent_review" and any(
-        alias.name == RAW_MODULE_BASENAME for alias in node.names
+    return (
+        RAW_MODULE_LEAF in (node.module or "").split(".")
+        or any(alias.name == RAW_MODULE_LEAF for alias in node.names)
     )
 
 
@@ -101,23 +65,24 @@ def raw_import_sites(
 ) -> tuple[RawImportSite, ...]:
     sites: list[RawImportSite] = []
     for path in product_python_sources(root) if sources is None else sources:
-        module = _module_identity(root, path)
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and _named_raw_module(
-                node, module
+            if (
+                isinstance(node, (ast.Import, ast.ImportFrom))
+                and _names_raw_module_leaf(node)
             ):
                 sites.append(RawImportSite(
-                    module=module,
-                    path=path,
+                    path=path.relative_to(root),
                     line=node.lineno,
                     form=type(node).__name__,
                 ))
     return tuple(sites)
 
 
-def product_raw_importers(root: Path) -> frozenset[str]:
-    return frozenset(site.module for site in raw_import_sites(root))
+def product_raw_importers(root: Path) -> frozenset[Path]:
+    """Distinct product source paths, without module-identity reduction."""
+
+    return frozenset(site.path for site in raw_import_sites(root))
 
 
 def capability_shape_violations(capability: object) -> tuple[str, ...]:
@@ -129,7 +94,16 @@ def capability_shape_violations(capability: object) -> tuple[str, ...]:
         declared = getattr(cls, "__slots__", ())
         slots.update((declared,) if isinstance(declared, str) else declared)
     exposed = names | slots
-    violations = sorted(name for name in FORBIDDEN_API_NAMES if name in exposed)
-    if hasattr(capability, "__dict__"):
-        violations.append("__dict__")
+    violations = sorted(
+        name
+        for name in _TOPOLOGY_CAPABILITY_FORBIDDEN_API_NAMES_V2
+        if name in exposed
+    )
     return tuple(violations)
+
+
+def public_resolution_shape_violations(resolution: object) -> tuple[str, ...]:
+    """Forbid proof/representation inventory in the ordinary typed result."""
+
+    forbidden = ("validated_frontier", "records", "children", "by_id")
+    return tuple(name for name in forbidden if hasattr(resolution, name))

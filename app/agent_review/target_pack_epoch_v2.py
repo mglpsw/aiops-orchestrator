@@ -35,6 +35,8 @@ from app.agent_review._target_pack_epoch_contract_v2 import (
     TARGET_PACK_EPOCH_SUBJECT_CHANGED_REASON_V2,
     TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2,
     TargetPackEpochError,
+    _TOPOLOGY_CAPABILITY_FORBIDDEN_API_NAMES_V2,
+    _within_v2,
 )
 
 
@@ -138,6 +140,14 @@ for _public_topology_contract_v2 in (
     _public_topology_contract_v2.__module__ = __name__
 
 
+def _restore_mount_topology_snapshot_v2(
+    capability_type: type, records: tuple[MountRecordV2, ...]
+) -> object:
+    """Reconstruct the capability through its compatibility constructor."""
+
+    return capability_type(records)
+
+
 def _build_topology_capability_type_v2(
     raw_type: type[_RawMountTopologyRepresentationV2],
 ) -> type:
@@ -149,7 +159,10 @@ def _build_topology_capability_type_v2(
         The object contains only typed callables. It has no instance dictionary
         and exposes no raw graph, record inventory, adjacency map, identity map,
         or raw traversal method. The captured closures are deliberately subject
-        to the documented callable-closure nonclaim.
+        to the documented callable-closure nonclaim. Pickle is a separate,
+        explicit compatibility channel: ``__reduce__`` serializes the record
+        inventory solely as reconstruction data; it is not an ordinary typed
+        query result or consumer field.
         """
 
         __slots__ = (
@@ -158,6 +171,7 @@ def _build_topology_capability_type_v2(
             "__visible_child_mounts",
             "__is_visible",
             "__project",
+            "__pickle_payload",
         )
 
         def __init__(self, records: tuple[MountRecordV2, ...]) -> None:
@@ -165,21 +179,37 @@ def _build_topology_capability_type_v2(
 
         @classmethod
         def observe(cls) -> "MountTopologySnapshotV2":
-            capability = object.__new__(cls)
-            initialize(capability, raw_type.observe())
-            return capability
+            raw = raw_type.observe()
+            return cls(raw.records)
 
         @classmethod
         def parse(cls, text: str) -> "MountTopologySnapshotV2":
-            capability = object.__new__(cls)
-            initialize(capability, raw_type.parse(text))
-            return capability
+            raw = raw_type.parse(text)
+            return cls(raw.records)
 
         def __setattr__(self, name: str, value: object) -> None:
-            raise AttributeError("typed topology capability is immutable")
+            if (
+                type(self) is _MountTopologySnapshotV2
+                or name.startswith("_MountTopologySnapshotV2__")
+                or name in _TOPOLOGY_CAPABILITY_FORBIDDEN_API_NAMES_V2
+            ):
+                raise AttributeError("typed topology capability is immutable")
+            object.__setattr__(self, name, value)
 
         def __delattr__(self, name: str) -> None:
-            raise AttributeError("typed topology capability is immutable")
+            if (
+                type(self) is _MountTopologySnapshotV2
+                or name.startswith("_MountTopologySnapshotV2__")
+                or name in _TOPOLOGY_CAPABILITY_FORBIDDEN_API_NAMES_V2
+            ):
+                raise AttributeError("typed topology capability is immutable")
+            object.__delattr__(self, name)
+
+        def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+            return (
+                _restore_mount_topology_snapshot_v2,
+                (type(self), self.__pickle_payload()),
+            )
 
         def resolve_query_v2(
             self, query: TopologyQueryV2
@@ -205,7 +235,12 @@ def _build_topology_capability_type_v2(
         """Capture raw state in typed closures, never in a consumer field."""
 
         def resolve_query(query: TopologyQueryV2) -> TopologyQueryResolutionV2:
-            return raw.resolve_query_v2(query)
+            internal = raw.resolve_query_v2(query)
+            return TopologyQueryResolutionV2(
+                internal.query,
+                internal.governing_mount,
+                internal.visible_descendants,
+            )
 
         def governing_mount(path: str) -> MountRecordV2:
             return raw.governing_mount_v2(path)
@@ -218,6 +253,9 @@ def _build_topology_capability_type_v2(
 
         def project(path: str) -> tuple[int, str]:
             return raw.project_v2(path)
+
+        def pickle_payload() -> tuple[MountRecordV2, ...]:
+            return raw.records
 
         object.__setattr__(
             capability, "_MountTopologySnapshotV2__resolve_query", resolve_query
@@ -236,6 +274,11 @@ def _build_topology_capability_type_v2(
         object.__setattr__(
             capability, "_MountTopologySnapshotV2__project", project
         )
+        object.__setattr__(
+            capability,
+            "_MountTopologySnapshotV2__pickle_payload",
+            pickle_payload,
+        )
 
     _MountTopologySnapshotV2.__name__ = "MountTopologySnapshotV2"
     _MountTopologySnapshotV2.__qualname__ = "MountTopologySnapshotV2"
@@ -252,14 +295,6 @@ del _RawMountTopologyRepresentationV2
 
 def _normalize_absolute_v2(path: str) -> str:
     return os.path.normpath(path) if path.startswith("/") else os.path.normpath("/" + path)
-
-
-def _within_v2(candidate: str, ancestor: str) -> bool:
-    """Physical containment over two already-normalized internal paths."""
-
-    if candidate == ancestor:
-        return True
-    return candidate.startswith(ancestor.rstrip("/") + "/")
 
 
 def _runtime_filesystem_type_v2(

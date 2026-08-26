@@ -9,6 +9,23 @@ TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2 = (
     "target_pack_epoch_carrier_disjointness_unknown"
 )
 
+_TOPOLOGY_CAPABILITY_FORBIDDEN_API_NAMES_V2 = frozenset({
+    "records",
+    "children",
+    "by_id",
+    "raw",
+    "raw_graph",
+    "_raw",
+    "_raw_graph",
+    "_governing_mount_raw_v2",
+    "_is_visible_raw_v2",
+    "_visible_root_v2",
+    "_climb_stack_v2",
+    "validate_relevant_chain_v2",
+    "_semantic_seeds_v2",
+    "_dependency_closure_v2",
+})
+
 
 class TargetPackEpochError(ValueError):
     """A typed refusal while establishing or consuming a private epoch."""
@@ -16,6 +33,14 @@ class TargetPackEpochError(ValueError):
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
+
+
+def _within_v2(candidate: str, ancestor: str) -> bool:
+    """Canonical containment relation for topology and K-DISJOINT."""
+
+    if candidate == ancestor:
+        return True
+    return candidate.startswith(ancestor.rstrip("/") + "/")
 
 
 # Preserve the established public import/pickle identity while sharing the

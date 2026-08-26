@@ -33,6 +33,7 @@ therefore judges the mutant against a REAL filesystem observation (markers and
 from __future__ import annotations
 
 import os
+import pickle
 import subprocess
 import sys
 from pathlib import Path
@@ -1503,7 +1504,7 @@ def test_mutant_visibility_unknown_becomes_false(
             return _real_resolve(self, query)
         except TargetPackEpochError:
             return epoch_module.TopologyQueryResolutionV2(
-                query, self._visible_root_v2(), (), ())      # UNKNOWN -> HIDDEN
+                query, self._visible_root_v2(), ())          # UNKNOWN -> HIDDEN
 
     _real_resolve = MountTopologySnapshotV2.resolve_query_v2
     monkeypatch.setattr(MountTopologySnapshotV2, "resolve_query_v2", _swallowing_resolver)
@@ -2809,6 +2810,14 @@ def test_raw_module_and_representation_are_not_reexported_by_the_owner() -> None
             "brand_new_package/consumer.py",
             "from app.agent_review._mount_topology_raw_v2 import MountRecordV2\n",
         ),
+        (
+            "app/agent_review/__init__.py",
+            "from . import _mount_topology_raw_v2\n",
+        ),
+        (
+            "app/agent_review/target_pack_epoch_v2/__init__.py",
+            "from app.agent_review import _mount_topology_raw_v2\n",
+        ),
     ],
     ids=[
         "M_SECOND_IMPORTER_OF_RAW_MODULE",
@@ -2816,6 +2825,8 @@ def test_raw_module_and_representation_are_not_reexported_by_the_owner() -> None
         "M_RAW_MODULE_IMPORTED_FROM_SCRIPT",
         "M_RAW_MODULE_IMPORTED_FROM_EVAL",
         "M_RAW_MODULE_IMPORTED_FROM_NEW_PACKAGE",
+        "M_RELATIVE_INIT_SECOND_IMPORTER_UNSEEN",
+        "M_COLLIDING_SOURCE_PATHS_COLLAPSED",
     ],
 )
 def test_raw_import_mutants_die_by_the_finite_boundary(
@@ -2834,7 +2845,43 @@ def test_raw_import_mutants_die_by_the_finite_boundary(
     importers = boundary.product_raw_importers(tmp_path)
     assert boundary.EXPECTED_PRODUCT_IMPORTER in importers
     assert len(importers) == 2
-    assert boundary._module_identity(tmp_path, mutant) in importers
+    assert Path(relative) in importers
+
+
+def test_import_gate_does_not_reconstruct_module_identity() -> None:
+    assert not hasattr(boundary, "_module_identity")
+    assert not hasattr(boundary, "_relative_base")
+    assert tuple(boundary.RawImportSite.__dataclass_fields__) == (
+        "path", "line", "form"
+    )
+
+
+def test_m_import_gate_reconstructs_module_identity_dies(tmp_path: Path) -> None:
+    module = tmp_path / "app/agent_review/target_pack_epoch_v2.py"
+    package = tmp_path / "app/agent_review/target_pack_epoch_v2/__init__.py"
+    module.parent.mkdir(parents=True)
+    package.parent.mkdir(parents=True)
+    body = "from app.agent_review import _mount_topology_raw_v2\n"
+    module.write_text(body, encoding="utf-8")
+    package.write_text(body, encoding="utf-8")
+
+    source_paths = boundary.product_raw_importers(tmp_path)
+    assert source_paths == {
+        Path("app/agent_review/target_pack_epoch_v2.py"),
+        Path("app/agent_review/target_pack_epoch_v2/__init__.py"),
+    }
+
+    # The falsified mechanism: both paths collapse to one logical identity.
+    mutant_identities = {
+        ".".join(
+            path.with_suffix("").parts[:-1]
+            if path.name == "__init__.py"
+            else path.with_suffix("").parts
+        )
+        for path in source_paths
+    }
+    assert mutant_identities == {"app.agent_review.target_pack_epoch_v2"}
+    assert len(source_paths) == 2
 
 
 def test_computed_import_is_an_explicit_nonclaim(tmp_path: Path) -> None:
@@ -2861,6 +2908,26 @@ def test_real_capability_api_shape_contains_no_raw_representation() -> None:
         "resolve_query_v2",
         "visible_child_mounts_v2",
     }
+
+
+def test_public_resolution_carries_no_validated_frontier() -> None:
+    resolution = _minimal_capability().resolve_query_v2(
+        epoch_module.TopologyQueryV2(
+            epoch_module.TopologyQueryKindV2.VISIBLE_SUBTREE, "/"
+        )
+    )
+    assert resolution._fields == (
+        "query", "governing_mount", "visible_descendants"
+    )
+    assert boundary.public_resolution_shape_violations(resolution) == ()
+    assert pickle.loads(pickle.dumps(resolution)) == resolution
+
+
+def test_m_public_result_exposes_frontier_is_rejected() -> None:
+    mutant = type("MPublicResolution", (), {"validated_frontier": ()})()
+    assert boundary.public_resolution_shape_violations(mutant) == (
+        "validated_frontier",
+    )
 
 
 @pytest.mark.parametrize(
@@ -2926,18 +2993,47 @@ def test_capability_matchclass_cannot_extract_raw_state() -> None:
     assert matched is False
 
 
-def test_capability_subclass_and_factory_return_inherit_no_raw_state() -> None:
+def test_capability_subclass_factories_run_subclass_initialization() -> None:
     class ConsumerSubclass(TopologyQueryCapabilityV2):
-        __slots__ = ()
+        def __new__(cls, records):
+            instance = super().__new__(cls)
+            object.__setattr__(instance, "new_marker", "allocated")
+            return instance
+
+        def __init__(self, records):
+            self.marker = "initialized"
+            super().__init__(records)
 
     records = (MountRecordV2(1, 1, os.makedev(1, 1), "/", "/", "ext4"),)
     subclass = ConsumerSubclass(records)
-    factory_result = TopologyQueryCapabilityV2.parse(
+    parsed = ConsumerSubclass.parse(
         "1 1 1:1 / / rw - ext4 /dev/root rw\n"
     )
-    for value in (subclass, factory_result):
+    observed = ConsumerSubclass.observe()
+    for value in (subclass, parsed, observed):
+        assert value.new_marker == "allocated"
+        assert value.marker == "initialized"
         assert boundary.capability_shape_violations(value) == ()
         assert not hasattr(value, "records")
+
+
+def test_capability_pickle_round_trip_preserves_typed_semantics() -> None:
+    subjects = (
+        _minimal_capability(),
+        TopologyQueryCapabilityV2.parse(
+            "1 1 1:1 / / rw - ext4 /dev/root rw\n"
+        ),
+        TopologyQueryCapabilityV2.observe(),
+    )
+    query = epoch_module.TopologyQueryV2(
+        epoch_module.TopologyQueryKindV2.VISIBLE_SUBTREE, "/"
+    )
+    for subject in subjects:
+        restored = pickle.loads(pickle.dumps(subject))
+        assert type(restored) is TopologyQueryCapabilityV2
+        assert restored.resolve_query_v2(query) == subject.resolve_query_v2(query)
+        assert restored.project_v2("/") == subject.project_v2("/")
+        assert boundary.capability_shape_violations(restored) == ()
 
 
 def test_cross_module_alias_and_reexport_still_yield_the_opaque_capability() -> None:
@@ -3026,6 +3122,26 @@ def test_raw_typed_and_k_disjoint_authorities_are_single() -> None:
     assert isinstance(facade_resolver.body[0], ast.Return)
 
 
+def test_raw_and_k_disjoint_share_one_within_authority() -> None:
+    import ast
+    import app.agent_review._mount_topology_raw_v2 as raw_module
+    import app.agent_review._target_pack_epoch_contract_v2 as contract_module
+
+    assert raw_module._within_v2 is contract_module._within_v2
+    assert epoch_module._within_v2 is contract_module._within_v2
+    definitions = []
+    for module in (raw_module, epoch_module, contract_module):
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        definitions.extend(
+            (module.__name__, node.lineno)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_within_v2"
+        )
+    assert [module for module, _line in definitions] == [
+        "app.agent_review._target_pack_epoch_contract_v2"
+    ]
+
+
 def test_custom_semantic_analyzer_is_removed_not_parallel() -> None:
     assert not (
         Path(__file__).resolve().parent / "_topology_static_seal_v2.py"
@@ -3048,7 +3164,14 @@ def test_differential_point_subtree_projection_and_reason_codes() -> None:
             epoch_module.TopologyQueryKindV2.VISIBLE_SUBTREE, "/a"
         ),
     ):
-        assert capability.resolve_query_v2(query) == raw.resolve_query_v2(query)
+        internal = raw.resolve_query_v2(query)
+        public = capability.resolve_query_v2(query)
+        assert public == epoch_module.TopologyQueryResolutionV2(
+            internal.query,
+            internal.governing_mount,
+            internal.visible_descendants,
+        )
+        assert not hasattr(public, "validated_frontier")
     assert capability.governing_mount_v2("/a/b/c") == raw.governing_mount_v2("/a/b/c")
     assert capability.visible_child_mounts_v2("/a") == raw.visible_child_mounts_v2("/a")
     assert capability.project_v2("/a/b/c") == raw.project_v2("/a/b/c")

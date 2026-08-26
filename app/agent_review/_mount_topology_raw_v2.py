@@ -20,6 +20,7 @@ from typing import NamedTuple
 from app.agent_review._target_pack_epoch_contract_v2 import (
     TARGET_PACK_EPOCH_CARRIER_DISJOINTNESS_UNKNOWN_REASON_V2,
     TargetPackEpochError,
+    _within_v2,
 )
 
 
@@ -32,12 +33,6 @@ def _unescape_mountinfo_path_v2(value: str) -> str:
 
 def _normalize_absolute_v2(path: str) -> str:
     return os.path.normpath(path) if path.startswith("/") else os.path.normpath("/" + path)
-
-
-def _within_v2(candidate: str, ancestor: str) -> bool:
-    if candidate == ancestor:
-        return True
-    return candidate.startswith(ancestor.rstrip("/") + "/")
 
 
 class MountRecordV2(NamedTuple):
@@ -60,6 +55,16 @@ class TopologyQueryV2(NamedTuple):
 
 
 class TopologyQueryResolutionV2(NamedTuple):
+    """Ordinary typed result; proof-only frontier state stays internal."""
+
+    query: TopologyQueryV2
+    governing_mount: MountRecordV2
+    visible_descendants: tuple[MountRecordV2, ...]
+
+
+class _RawTopologyQueryResolutionV2(NamedTuple):
+    """Resolver-internal proof result, never projected to product consumers."""
+
     query: TopologyQueryV2
     governing_mount: MountRecordV2
     validated_frontier: tuple[MountRecordV2, ...]
@@ -259,7 +264,9 @@ class RawMountTopologyRepresentationV2:
                     pending.append(child)
         return tuple(closed.values())
 
-    def resolve_query_v2(self, query: TopologyQueryV2) -> TopologyQueryResolutionV2:
+    def resolve_query_v2(
+        self, query: TopologyQueryV2
+    ) -> _RawTopologyQueryResolutionV2:
         frontier = self._dependency_closure_v2(self._semantic_seeds_v2(query))
         for record in frontier:
             self.validate_relevant_chain_v2(record)
@@ -272,7 +279,9 @@ class RawMountTopologyRepresentationV2:
                 for record in frontier
                 if record.mount_point.startswith(prefix) and self._is_visible_raw_v2(record)
             )
-        return TopologyQueryResolutionV2(query, governing, frontier, descendants)
+        return _RawTopologyQueryResolutionV2(
+            query, governing, frontier, descendants
+        )
 
     def governing_mount_v2(self, path: str) -> MountRecordV2:
         return self.resolve_query_v2(

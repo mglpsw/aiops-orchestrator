@@ -54,19 +54,39 @@
   capability exposing only `resolve_query_v2`, `governing_mount_v2`,
   `visible_child_mounts_v2`, `is_visible_v2`, and `project_v2`. The consumer
   representation has no raw graph field, raw traversal method or `__dict__`.
-  K-DISJOINT policy remains in `target_pack_epoch_v2`; it is not duplicated in
-  the raw module.
+  The exact-head native review of `ebff0a2` returned P1=1/P2=6. The P1 found
+  that the ordinary typed result still returned the proof-only
+  `validated_frontier`, allowing consumers to reconstruct the raw inventory;
+  the public `TopologyQueryResolutionV2` now projects only `query`,
+  `governing_mount`, and the legitimately required `visible_descendants`.
+  The internal resolver retains its frontier for validation. A product
+  consumer and positional-use sweep found no dependency on the removed field.
+  Pickle round-tripping is restored through an explicit reconstruction channel
+  without restoring raw ordinary fields, and `parse()`/`observe()` again invoke
+  subclass construction. K-DISJOINT policy remains in
+  `target_pack_epoch_v2`; it is not duplicated in the raw module. Topology and
+  K-DISJOINT also consume the same canonical path-containment function rather
+  than independently copied `_within_v2` bodies.
 
   The 400+ line Python semantic frontend is deleted, not retained as a parallel
   authority. Its replacement is a small finite gate that answers only two
-  questions: exactly which non-test repository sources statically import/name
-  the private raw module, and whether the real capability object's ordinary
-  API/representation exposes forbidden raw state. It deliberately performs no
-  receiver propagation, import-graph inference, union/subclass/factory
-  inference or `MatchClass` semantics. Computed imports, `callable.__closure__`,
-  hostile deliberate reflection into implementation internals, monkeypatching
-  and C-level introspection are explicit NONCLAIMS; this is not a claim of
-  Python privacy.
+  questions: exactly which non-test repository source **paths** contain an
+  ordinary static `Import`/`ImportFrom` site naming the unique
+  `_mount_topology_raw_v2` leaf, whether the canonical owner path is the sole
+  such product source, and whether the real capability/result ordinary shape
+  exposes forbidden raw state. Two further recurrences on `ebff0a2` falsified
+  the first replacement gate before it was corrected: it again lost package
+  identity for a relative import in `__init__.py`, and again collapsed
+  `module.py` with `module/__init__.py`. The gate was redesigned rather than
+  taught those cases. It now counts exact source paths from the lexical leaf
+  and deliberately reconstructs no package graph or module identity. It also
+  performs no receiver propagation, import-graph inference,
+  union/subclass/factory inference or `MatchClass` semantics. Computed imports,
+  `callable.__closure__`, hostile deliberate reflection into implementation
+  internals, monkeypatching and C-level introspection are explicit NONCLAIMS;
+  this is not a claim of Python privacy. The closure-cell P2 was reproduced and
+  retained as `CANDIDATE_OUT_OF_SCOPE` under that preimplementation nonclaim,
+  not called false or fixed.
 
   Topology that cannot be established is refused as
   `target_pack_epoch_carrier_disjointness_unknown`; an established overlap as
@@ -78,7 +98,7 @@
   overlay -- refuse rather than acquire, and a runtime parent reached through a
   subtree bind is refused. Over-refusal is a bounded cost; under-refusal would
   fabricate the property. `PR #267` and `PR #268` remain forensic predecessors.
-  Four recurrences were admitted during this work and remain historical fact:
+  Six recurrences were admitted during this work and remain historical fact:
   the first drove the redesign from positional relevance rules to the typed
   query frontier, the second drove sealing that authority against consumer
   bypass, and the third -- an incomplete production-source inventory, admitted
@@ -88,14 +108,21 @@
   reachability. The fourth is N15 -> N21 (`SAME_PROPOSITION`,
   `Δ15 = ESTABLISHED_INSIDE`): permitted raw-owner identity was incomplete,
   and the successor still collapsed unrelated owners; mechanized replay showed
-  both witnesses suppressed by the same analyzer mechanism. None of the four
-  admissions is erased or downgraded by the successor architecture. No
-  consumer decides disjointness, no schema or external public contract changes,
-  and writer K identity, SH/EX coordination and expected-plan binding are
-  unchanged. The claim remains bounded to one topology snapshot taken
-  immediately before materialization: it makes no claim against a concurrent
-  external remounter, a non-cooperating external actor, distributed
-  coordination or crash atomicity. It is not a `PROVED` or globally-clean claim.
+  both witnesses suppressed by the same analyzer mechanism. The fifth is the
+  repeated loss of package identity for a relative `ImportFrom` originating in
+  `__init__.py`; the sixth is the repeated collapse of distinct `x.py` and
+  `x/__init__.py` source paths. Both are `SAME_PROPOSITION` with their current
+  witnesses `ESTABLISHED_INSIDE` the earlier demonstrated deltas. None of the
+  six admissions is erased or downgraded by the successor architecture. No
+  consumer decides disjointness, no target-facing schema changes, and writer K
+  identity, SH/EX coordination and expected-plan binding are unchanged. The
+  typed topology result intentionally narrows by one proof-only field; explicit
+  pickle reconstruction and subclass construction are compatibility channels,
+  not ordinary raw consumer APIs. The claim remains bounded to one topology
+  snapshot taken immediately before materialization: it makes no claim against
+  a concurrent external remounter, a non-cooperating external actor,
+  distributed coordination or crash atomicity. It is not a `PROVED` or
+  globally-clean claim.
 
 - **Post-merge review debt on the Authority-First Convergence Review
   methodology (`#263`)**: three P2 findings raised after that PR merged, all
