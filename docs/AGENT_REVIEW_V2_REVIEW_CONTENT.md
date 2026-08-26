@@ -250,68 +250,83 @@ binary_file_entirely`); a must-review one blocks the whole manifest
 assembly before extraction is ever reached. This is defense in depth for a
 future change to that upstream exclusion, not dead code removed here.
 
-## `#200-C` — transport and end-to-end synthesis (`app/agent_review/review_transport_v2.py`)
+## `#200-C` / `#200-C-WIRE` — transport, receipt v2, and end-to-end synthesis
 
-Wires the fixed order of authority the #199 execution plan's D2 requires:
+The historical `#200-C` slice proved the offline/synthetic chain through
+`ChunkReviewTransportEnvelopeV1`. `#200-C-WIRE` reconciles that F1-era
+transport with the current Router authority,
+`mglpsw/agent-router-api@80e921dfc28436bd4fed8a4e1fa72ffaa168d10c`, whose
+qualified review response publishes `agent-router.inference-receipt.v2`
+(F2-A). The two source proofs converge only after each has been verified:
 
 ```text
 ReviewContentV2 (#200-A/#200-B)
-  -> ChunkReviewRequestV2                  (#200-A)
-  -> transport                              (#200-C)
-  -> ChunkReviewTransportEnvelopeV1         (#200-A)
-  -> verify_transport_echo_v1               (#200-A)
-  -> consumer_v2.bind_chunk_response_v2     (already existed)
+  -> fresh payload/content cross-binding
+  -> ChunkReviewRequestV2
+  -> transport
+       offline: envelope v1 -> exact echo proof -----┐
+       Router: messages[] -> receipt v2/F2-A --------┤
+                                                     v
+                                           BoundChunkResponseV2
   -> parser_v2.parse_bound_chunk_response_v2
   -> synthesis_v2.synthesize_chunk_results_v2
   -> readiness_decision_v2.compute_readiness_decision_v2
-  -> review_readiness_emission_v2.produce_review_readiness_v2   (#201-C)
+  -> review_readiness_emission_v2.produce_review_readiness_v2
 ```
 
-`execute_chunk_review_v2` is the single choke point: no finding is
-reachable from a chunk unless transport succeeds, the echo verifies, AND
-the response binds, in that exact order. Every failure mode — transport
-error, tampered echo, malformed response — degrades EXACTLY that chunk to
-`ChunkReviewOutcomeV2(state="manual_required", ...)`; it is never raised
-up as a run-wide exception and never fabricates a result. `run_synthetic_
-review_v2` (the orchestrator) hands `synthesize_chunk_results_v2` only the
-chunks that bound; the existing, unmodified coverage/readiness authority
-(`synthesis_v2`/`readiness_decision_v2`) reflects the gap as real missing
-coverage — proven directly: a run with one tampered-echo chunk never
-reaches `ReadinessStateV2.READY`.
+`execute_chunk_review_v2` remains the single choke point: no finding is
+reachable unless the applicable source proof verifies and the result binds.
+Before it builds a request — and therefore before Router messages or HTTP can
+exist — it freshly validates the payload/content pair and requires
+`ChunkContentV2.payload_sha256 == ChunkPayloadV2.payload_sha256`. The reserved
+`content_payload_sha256_mismatch` reason is now active; a focused test proves
+the HTTP opener is called zero times on divergence.
 
-### Transport is an injected callable
+Every failure mode — transport error, tampered echo/receipt, malformed
+response, or scope escape — degrades exactly that chunk to
+`ChunkReviewOutcomeV2(state="manual_required", ...)`; it never fabricates a
+result. `run_synthetic_review_v2` hands synthesis only the chunks that bound,
+so the existing coverage/readiness authority retains the missing coverage.
 
-`ChunkReviewTransportV2` is a `Protocol`. Two implementations ship:
+### Source-specific proof, one domain binder
 
-- `offline_file_transport_v2(responses_dir)` — reads one pre-placed
-  `{chunk_id}.json` transport envelope per chunk. **Default in tests**, and
-  the one this slice's synthetic E2E actually exercises end-to-end,
-  including a real `ReadinessStateV2.READY` outcome from a fully bound,
-  fully covered run;
-- `agent_router_transport_v2(base_url, api_key, model)` — the real Agent
-  Router, locked to EXACTLY `{base_url}/v1/chat/completions` (mirrors
-  `scripts/github_agent_review.py`'s own `call_agent_router_review`
-  discipline — no provider-direct call, no second endpoint). Raises
-  `ChunkTransportError(ROUTER_DISABLED_REASON_V2)` immediately, before any
-  network attempt, if `api_key` is empty — there is no ambient/implicit
-  enablement path. Covered by unit tests against a **mocked** HTTP layer
-  only; this slice never makes a live network call to any Router.
+`ChunkReviewTransportV2` is an injected `Protocol`. Two implementations ship:
+
+- `offline_file_transport_v2(responses_dir)` preserves the historical v1 echo
+  proof and existing corpus; valid offline responses remain accepted;
+- `agent_router_transport_v2(base_url, api_key, model)` is locked to exactly
+  `{base_url}/v1/chat/completions`, with no provider-direct or second endpoint.
+  It sends the exact two-message array, all six caller-binding metadata fields,
+  and `response_format={"type":"json_object"}`. The returned assistant content
+  remains opaque until the private receipt-v2 consumer verifies the exact
+  sent-message digest, requested preset, caller metadata, conclusive finish,
+  route trace, and exact assistant-content digest. Only then is
+  `ChunkReviewResultV2` parsed. Local and provider-fallback Router fixtures are
+  exercised against mocked HTTP only; no live Router/provider call qualifies
+  this slice.
+
+Both paths call the same factored scope authority and the same private
+`_make_bound_chunk_response_v2` constructor with one `_BINDING_SENTINEL`.
+Scope includes the historical file/coverage checks and now also requires
+`finding.contract_ids` to be a subset of the payload's declared contract IDs.
+This hardening applies to offline responses too and reuses
+`response_scope_mismatch`; it introduces no public schema change.
 
 ### Failure taxonomy (never a silent approval)
 
 | Condition | Chunk outcome |
 |---|---|
 | response file missing / unreadable | `manual_required` / `transport_failure` |
-| response body is not valid JSON or does not validate | `manual_required` / `transport_invalid_response` |
-| HTTP 5xx / 429 from the real Router | `manual_required` / `transport_unavailable` |
+| response body is not valid JSON | `manual_required` / `transport_invalid_response` |
+| HTTP 5xx / 429 from Router | `manual_required` / `transport_unavailable` |
 | network timeout | `manual_required` / `transport_timeout` |
-| tampered `content_sha256`/`request_sha256` echo | `manual_required` / `content_echo_mismatch` or `request_echo_mismatch` |
-| response fails `bind_chunk_response_v2` | `manual_required` / that function's own reason code |
-
-A run with any `manual_required` chunk never reaches `READY` — proven
-directly, not assumed, by
-`test_run_synthetic_review_degrades_a_tampered_echo_chunk_to_manual_required`
-and its missing-file/malformed-JSON siblings.
+| tampered offline echo | `manual_required` / `content_echo_mismatch` or `request_echo_mismatch` |
+| payload/content divergence before request construction | `manual_required` / `content_payload_sha256_mismatch`, zero HTTP calls |
+| missing/malformed/extra-field receipt v2 | `manual_required` / `router_receipt_invalid` |
+| receipt input/output/caller declaration mismatch | `manual_required` / typed `router_*_mismatch` |
+| non-conclusive or divergent finish reason | `manual_required` / `router_finish_reason_inconclusive` |
+| exact assistant content is not `ChunkReviewResultV2` | `manual_required` / `router_result_invalid` |
+| result escapes payload file/coverage/contract scope | `manual_required` / `response_scope_mismatch` |
 
 ## Adversarial audit follow-up (post-merge)
 
@@ -370,12 +385,6 @@ this repository's own tests existed yet.
 
 ## What is deliberately not here
 
-- cross-checking `ChunkContentV2.payload_sha256` against a real, built
-  `ChunkPayloadV2` byte-for-byte (the caller — `run_synthetic_review_v2`'s
-  own caller — is responsible for having built `payload_by_chunk_id` from
-  real `payload_builder_v2` output; this module trusts what it is handed,
-  exactly like `bind_review_content_to_manifest_v2` already does for the
-  same field);
 - automatic content-budget-triggered re-planning (see the `#200-B`
   section above);
 - a real out-of-process, host-owned DLP detector (`detector_name`-only

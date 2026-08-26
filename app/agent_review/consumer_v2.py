@@ -1,16 +1,17 @@
 """AgentReview v2 consumer: verified binding before any finding is exposed.
 
-This module never re-implements the identity/scope comparisons already
-frozen in ``contracts_v2.validate_response_binding_v2``. It only:
+This module never gives source-specific proof authority over payload scope.
+It only:
 
 1. obtains freshly revalidated copies of the payload and the response
    envelope through ``contracts_v2``'s own public re-validation entry
    points -- never the caller's original references, so a later mutation
    of the caller's objects cannot retroactively affect an already-bound
    result;
-2. calls ``validate_response_binding_v2`` once, unmodified, as the single
-   authority for identity and scope;
-3. only on success, wraps the result in ``BoundChunkResponseV2``.
+2. routes offline envelopes through ``validate_response_binding_v2`` and
+   Router results through the same factored result-scope authority;
+3. only on success, routes both binders through one private constructor for
+   ``BoundChunkResponseV2`` and the same sentinel.
 
 ``BoundChunkResponseV2``'s sentinel-gated constructor is an internal-API
 guard against accidental misuse, not a cryptographic boundary: code with
@@ -31,16 +32,19 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.agent_review._router_receipt_v2 import _VerifiedRouterResultV2
 from app.agent_review.contracts_v2 import (
     PAYLOAD_CONTRACT_INVALID_REASON_V2,
     RESPONSE_CONTRACT_INVALID_REASON_V2,
     ChunkCoverageV2,
     ChunkFindingV2,
     ChunkPayloadV2,
+    ChunkReviewResultV2,
     ChunkResponseEnvelopeValueV2,
     ChunkResponseErrorEnvelopeV2,
     ChunkResponseSuccessEnvelopeV2,
     ResponseBindingError,
+    _validate_chunk_review_result_scope_v2,
     validate_chunk_response_envelope_v2,
     validate_response_binding_v2,
 )
@@ -53,8 +57,8 @@ _BINDING_SENTINEL = object()
 class BoundChunkResponseV2:
     """Proof that a response envelope was fully bound to its payload.
 
-    Only constructible by ``bind_chunk_response_v2``. Holds fresh,
-    independently-revalidated copies -- never the caller's original
+    Constructible only through one of this module's supported binders. Holds
+    fresh, independently-revalidated copies -- never the caller's original
     objects -- and exposes findings only as an immutable tuple.
     """
 
@@ -84,7 +88,7 @@ class BoundChunkResponseV2:
     ) -> None:
         if sentinel is not _BINDING_SENTINEL:
             raise TypeError(
-                "BoundChunkResponseV2 must be constructed via bind_chunk_response_v2"
+                "BoundChunkResponseV2 must be constructed via a supported consumer_v2 binder"
             )
         self._run_id = run_id
         self._chunk_id = chunk_id
@@ -133,6 +137,29 @@ class BoundChunkResponseV2:
         return self._limitations
 
 
+def _make_bound_chunk_response_v2(
+    *,
+    run_id: str,
+    chunk_id: str,
+    head_sha: str,
+    payload_sha256: str,
+    result: ChunkReviewResultV2,
+) -> BoundChunkResponseV2:
+    """The sole constructor path after a source-specific proof has bound."""
+
+    return BoundChunkResponseV2(
+        sentinel=_BINDING_SENTINEL,
+        run_id=run_id,
+        chunk_id=chunk_id,
+        head_sha=head_sha,
+        payload_sha256=payload_sha256,
+        summary=result.summary,
+        findings=tuple(result.findings),
+        coverage=result.coverage,
+        limitations=tuple(result.limitations),
+    )
+
+
 def bind_chunk_response_v2(
     *,
     envelope: ChunkResponseEnvelopeValueV2 | Mapping[str, Any] | str | bytes,
@@ -167,16 +194,67 @@ def bind_chunk_response_v2(
 
     assert isinstance(fresh_envelope, ChunkResponseSuccessEnvelopeV2)
     result = fresh_envelope.result
-    return BoundChunkResponseV2(
-        sentinel=_BINDING_SENTINEL,
+    return _make_bound_chunk_response_v2(
         run_id=fresh_envelope.run_id,
         chunk_id=fresh_envelope.chunk_id,
         head_sha=fresh_envelope.head_sha,
         payload_sha256=fresh_envelope.payload_sha256,
-        summary=result.summary,
-        findings=tuple(result.findings),
-        coverage=result.coverage,
-        limitations=tuple(result.limitations),
+        result=result,
+    )
+
+
+def bind_verified_router_result_v2(
+    *,
+    verified: _VerifiedRouterResultV2,
+    payload: ChunkPayloadV2,
+) -> BoundChunkResponseV2:
+    """Bind a sealed receipt-verified Router result to its exact payload.
+
+    Receipt verification establishes the Router-side input, execution and
+    output relations.  It does not establish AgentReview payload scope; that
+    remains this consumer's responsibility and is shared with the offline
+    envelope path.
+    """
+
+    if not isinstance(verified, _VerifiedRouterResultV2):
+        raise ResponseBindingError(RESPONSE_CONTRACT_INVALID_REASON_V2)
+    try:
+        fresh_payload = ChunkPayloadV2.model_validate_json(
+            payload.model_dump_json(), strict=True
+        )
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise ResponseBindingError(PAYLOAD_CONTRACT_INVALID_REASON_V2) from exc
+    try:
+        fresh_request = type(verified._request).model_validate_json(
+            verified._request.model_dump_json(), strict=True
+        )
+        fresh_result = ChunkReviewResultV2.model_validate_json(
+            verified._result.model_dump_json(), strict=True
+        )
+    except (ValidationError, TypeError, ValueError) as exc:
+        raise ResponseBindingError(RESPONSE_CONTRACT_INVALID_REASON_V2) from exc
+
+    comparisons = (
+        (fresh_request.run_id, fresh_payload.run_id, "run_id_mismatch"),
+        (fresh_request.chunk_id, fresh_payload.chunk_id, "chunk_id_mismatch"),
+        (
+            fresh_request.payload_sha256,
+            fresh_payload.payload_sha256,
+            "payload_sha256_mismatch",
+        ),
+        (fresh_request.head_sha, fresh_payload.identity.head_sha, "head_sha_mismatch"),
+    )
+    for observed, wanted, reason_code in comparisons:
+        if observed != wanted:
+            raise ResponseBindingError(reason_code)
+
+    _validate_chunk_review_result_scope_v2(fresh_result, fresh_payload)
+    return _make_bound_chunk_response_v2(
+        run_id=fresh_request.run_id,
+        chunk_id=fresh_request.chunk_id,
+        head_sha=fresh_request.head_sha,
+        payload_sha256=fresh_request.payload_sha256,
+        result=fresh_result,
     )
 
 

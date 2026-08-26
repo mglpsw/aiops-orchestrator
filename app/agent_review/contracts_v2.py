@@ -846,6 +846,48 @@ def _coverage_knowledge_by_file_v2(coverage: ChunkCoverageV2) -> dict[str, int]:
     return knowledge
 
 
+def _validate_chunk_review_result_scope_v2(
+    result: ChunkReviewResultV2,
+    payload: ChunkPayloadV2,
+) -> None:
+    """Apply the one common payload-scope authority to a successful result.
+
+    Both the historical offline envelope binder and the Router receipt binder
+    call this helper.  Keeping the check here prevents either source-specific
+    proof from acquiring a different definition of which files, coverage, or
+    contracts a result may claim.
+    """
+
+    payload_coverage = payload.coverage
+    response_coverage = result.coverage
+    payload_files = set(payload_coverage.expected_files)
+    response_files = set(response_coverage.expected_files)
+    finding_files = {finding.file_path for finding in result.findings}
+    payload_contract_ids = {
+        reference.contract_id for reference in payload.contract_references
+    }
+    finding_contract_ids = {
+        contract_id
+        for finding in result.findings
+        for contract_id in finding.contract_ids
+    }
+    payload_knowledge = _coverage_knowledge_by_file_v2(payload_coverage)
+    response_knowledge = _coverage_knowledge_by_file_v2(response_coverage)
+    coverage_promoted = any(
+        response_knowledge[path] > payload_knowledge[path]
+        for path in payload_files & response_files
+    )
+    if (
+        response_files != payload_files
+        or set(response_coverage.must_review_files)
+        != set(payload_coverage.must_review_files)
+        or coverage_promoted
+        or not finding_files <= payload_files
+        or not finding_contract_ids <= payload_contract_ids
+    ):
+        raise ResponseBindingError(RESPONSE_SCOPE_MISMATCH_REASON_V2)
+
+
 def validate_response_binding_v2(
     envelope: ChunkResponseEnvelopeValueV2,
     expected: ResponseBindingV2 | ChunkPayloadV2,
@@ -874,25 +916,7 @@ def validate_response_binding_v2(
             raise ResponseBindingError(reason_code)
 
     if isinstance(envelope, ChunkResponseSuccessEnvelopeV2):
-        payload_coverage = payload.coverage
-        response_coverage = envelope.result.coverage
-        payload_files = set(payload_coverage.expected_files)
-        response_files = set(response_coverage.expected_files)
-        finding_files = {finding.file_path for finding in envelope.result.findings}
-        payload_knowledge = _coverage_knowledge_by_file_v2(payload_coverage)
-        response_knowledge = _coverage_knowledge_by_file_v2(response_coverage)
-        coverage_promoted = any(
-            response_knowledge[path] > payload_knowledge[path]
-            for path in payload_files & response_files
-        )
-        if (
-            response_files != payload_files
-            or set(response_coverage.must_review_files)
-            != set(payload_coverage.must_review_files)
-            or coverage_promoted
-            or not finding_files <= payload_files
-        ):
-            raise ResponseBindingError(RESPONSE_SCOPE_MISMATCH_REASON_V2)
+        _validate_chunk_review_result_scope_v2(envelope.result, payload)
 
 
 class TargetIdentityV2(ContractV2Model):

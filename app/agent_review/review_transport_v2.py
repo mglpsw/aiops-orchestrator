@@ -8,9 +8,9 @@ plan's D2/D-series fixed as the one legal order of authority:
 ReviewContentV2 (#200-A/#200-B)
   -> ChunkReviewRequestV2                 (review_transport_contract_v2, #200-A)
   -> transport                            (THIS module)
-  -> ChunkReviewTransportEnvelopeV1        (review_transport_contract_v2, #200-A)
-  -> verify_transport_echo_v1              (review_transport_contract_v2, #200-A)
-  -> consumer_v2.bind_chunk_response_v2    (already existed)
+  -> source-specific proof                 (offline echo OR Router receipt-v2)
+  -> source-specific binder
+  -> BoundChunkResponseV2                  (one shared private constructor)
   -> parser_v2.parse_bound_chunk_response_v2
   -> synthesis_v2.synthesize_chunk_results_v2
   -> lifecycle_v2 (via synthesis) / readiness_decision_v2.compute_readiness_decision_v2
@@ -18,16 +18,16 @@ ReviewContentV2 (#200-A/#200-B)
        verifies checks/provenance against #201-C0's boundary before emission)
 ```
 
-No finding is EVER reachable before the echo check and the binding both
-succeed -- ``execute_chunk_review_v2`` is the single choke point every
-caller in this module goes through, and it never returns a
-``ParsedChunkResultV2`` without both having passed.
+No finding is EVER reachable before the payload/content pre-bind, the
+applicable source proof (offline echo or Router receipt v2), and the common
+domain binding all succeed. ``execute_chunk_review_v2`` is the single choke
+point every caller in this module goes through.
 
 ## Transport is an injected callable, not a hardcoded HTTP client
 
-``ChunkReviewTransportV2`` is a ``Protocol``: given a request and the
-content it describes, return a ``ChunkReviewTransportEnvelopeV1`` or raise
-``ChunkTransportError``. Two implementations ship in this module:
+``ChunkReviewTransportV2`` is a ``Protocol``: given a request, the content
+it describes, and the already pre-bound payload, return one source-specific
+transport proof or raise ``ChunkTransportError``. Two implementations ship:
 
 - ``offline_file_transport_v2`` -- reads a pre-placed JSON file per
   ``chunk_id`` from a directory. This is the DEFAULT transport in tests
@@ -41,7 +41,7 @@ content it describes, return a ``ChunkReviewTransportEnvelopeV1`` or raise
 
 ## Failure taxonomy: never a silent approval
 
-A transport failure, timeout, malformed response, or a tampered echo
+A transport failure, timeout, malformed response, or tampered source proof
 degrades EXACTLY that chunk to ``manual_required`` -- ``execute_chunk_
 review_v2`` returns ``None`` for it, never raises, and never fabricates a
 ``ParsedChunkResultV2``. ``run_synthetic_review_v2`` (the orchestrator)
@@ -60,13 +60,27 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, Sequence
+from typing import Any, Literal, Mapping, Protocol, Sequence
 
+from pydantic import ValidationError
+
+from app.agent_review._router_receipt_v2 import (
+    RouterReceiptError,
+    _RouterTransportResponseV2,
+    _make_router_transport_response_v2,
+    _verify_router_transport_response_v2,
+)
 from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
 from app.agent_review.chunk_result_scope_v2 import ChunkResultScopeError
-from app.agent_review.consumer_v2 import ResponseBindingError, bind_chunk_response_v2
+from app.agent_review.consumer_v2 import (
+    ResponseBindingError,
+    bind_chunk_response_v2,
+    bind_verified_router_result_v2,
+)
 from app.agent_review.contracts_v2 import (
+    PAYLOAD_CONTRACT_INVALID_REASON_V2,
     ChunkPayloadV2,
+    ChunkReviewResultV2,
     PullRequestStateV2,
     RequiredCheckResultV2,
     ReviewReadinessV2,
@@ -78,7 +92,11 @@ from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.parser_v2 import ParsedChunkResultV2, parse_bound_chunk_response_v2
 from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
 from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanceV2
-from app.agent_review.review_content_v2 import ChunkContentV2, ReviewContentV2
+from app.agent_review.review_content_v2 import (
+    CONTENT_PAYLOAD_SHA256_MISMATCH_REASON_V2,
+    ChunkContentV2,
+    ReviewContentV2,
+)
 from app.agent_review.review_readiness_emission_v2 import produce_review_readiness_v2
 from app.agent_review.review_transport_contract_v2 import (
     ChunkReviewRequestV2,
@@ -94,8 +112,13 @@ CHUNK_TRANSPORT_TIMEOUT_REASON_V2 = "transport_timeout"
 CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2 = "transport_unavailable"
 CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2 = "transport_invalid_response"
 ROUTER_DISABLED_REASON_V2 = "router_disabled"
+ROUTER_MODEL_UNSUPPORTED_REASON_V2 = "router_model_unsupported"
+CHUNK_CONTENT_CONTRACT_INVALID_REASON_V2 = "chunk_content_contract_invalid"
 
 AGENT_ROUTER_CHAT_COMPLETIONS_PATH_V2 = "/v1/chat/completions"
+AGENT_ROUTER_STRUCTURED_REVIEW_PRESETS_V2 = frozenset(
+    {"review:code", "review:code-fast", "review:deep", "review:summary"}
+)
 
 
 class ChunkTransportError(ValueError):
@@ -109,8 +132,11 @@ class ChunkTransportError(ValueError):
 
 class ChunkReviewTransportV2(Protocol):
     def __call__(
-        self, request: ChunkReviewRequestV2, chunk_content: ChunkContentV2
-    ) -> ChunkReviewTransportEnvelopeV1: ...
+        self,
+        request: ChunkReviewRequestV2,
+        chunk_content: ChunkContentV2,
+        payload: ChunkPayloadV2,
+    ) -> ChunkReviewTransportEnvelopeV1 | _RouterTransportResponseV2: ...
 
 
 def build_chunk_review_request_v2(
@@ -157,25 +183,104 @@ def execute_chunk_review_v2(
     order of authority. Never raises; every failure mode becomes a typed
     ``ChunkReviewOutcomeV2(state="manual_required", ...)``."""
 
-    request = build_chunk_review_request_v2(chunk_content, run_id=run_id, head_sha=head_sha)
+    outcome_chunk_id = (
+        chunk_content.chunk_id
+        if isinstance(chunk_content.chunk_id, str)
+        else payload.chunk_id
+    )
+
+    # The cross-object gate precedes request construction, prompt/message
+    # construction, and therefore every possible HTTP call.
+    try:
+        fresh_payload = ChunkPayloadV2.model_validate_json(
+            payload.model_dump_json(), strict=True
+        )
+    except (ValidationError, TypeError, ValueError) as exc:
+        return ChunkReviewOutcomeV2(
+            outcome_chunk_id,
+            "manual_required",
+            None,
+            PAYLOAD_CONTRACT_INVALID_REASON_V2,
+        )
+    try:
+        fresh_content = ChunkContentV2.model_validate_json(
+            chunk_content.model_dump_json(), strict=True
+        )
+    except (ValidationError, TypeError, ValueError) as exc:
+        return ChunkReviewOutcomeV2(
+            outcome_chunk_id,
+            "manual_required",
+            None,
+            CHUNK_CONTENT_CONTRACT_INVALID_REASON_V2,
+        )
+
+    prebind_comparisons = (
+        (
+            fresh_content.payload_sha256,
+            fresh_payload.payload_sha256,
+            CONTENT_PAYLOAD_SHA256_MISMATCH_REASON_V2,
+        ),
+        (fresh_content.chunk_id, fresh_payload.chunk_id, "chunk_id_mismatch"),
+        (run_id, fresh_payload.run_id, "run_id_mismatch"),
+        (head_sha, fresh_payload.identity.head_sha, "head_sha_mismatch"),
+    )
+    for observed, wanted, reason_code in prebind_comparisons:
+        if observed != wanted:
+            return ChunkReviewOutcomeV2(
+                outcome_chunk_id, "manual_required", None, reason_code
+            )
+
+    request = build_chunk_review_request_v2(
+        fresh_content, run_id=run_id, head_sha=head_sha
+    )
 
     try:
-        envelope = transport(request, chunk_content)
+        transport_response = transport(request, fresh_content, fresh_payload)
     except ChunkTransportError as exc:
-        return ChunkReviewOutcomeV2(chunk_content.chunk_id, "manual_required", None, exc.reason_code)
+        return ChunkReviewOutcomeV2(outcome_chunk_id, "manual_required", None, exc.reason_code)
 
-    try:
-        response = verify_transport_echo_v1(envelope, request=request)
-    except TransportEchoError as exc:
-        return ChunkReviewOutcomeV2(chunk_content.chunk_id, "manual_required", None, exc.reason_code)
+    if isinstance(transport_response, ChunkReviewTransportEnvelopeV1):
+        try:
+            response = verify_transport_echo_v1(transport_response, request=request)
+        except TransportEchoError as exc:
+            return ChunkReviewOutcomeV2(
+                outcome_chunk_id, "manual_required", None, exc.reason_code
+            )
 
-    try:
-        bound = bind_chunk_response_v2(envelope=response, payload=payload)
-    except ResponseBindingError as exc:
-        return ChunkReviewOutcomeV2(chunk_content.chunk_id, "manual_required", None, exc.reason_code)
+        try:
+            bound = bind_chunk_response_v2(envelope=response, payload=fresh_payload)
+        except ResponseBindingError as exc:
+            return ChunkReviewOutcomeV2(
+                outcome_chunk_id, "manual_required", None, exc.reason_code
+            )
+    elif isinstance(transport_response, _RouterTransportResponseV2):
+        try:
+            verified = _verify_router_transport_response_v2(
+                transport_response, request=request
+            )
+        except RouterReceiptError as exc:
+            return ChunkReviewOutcomeV2(
+                outcome_chunk_id, "manual_required", None, exc.reason_code
+            )
+
+        try:
+            bound = bind_verified_router_result_v2(
+                verified=verified, payload=fresh_payload
+            )
+        except ResponseBindingError as exc:
+            return ChunkReviewOutcomeV2(
+                outcome_chunk_id, "manual_required", None, exc.reason_code
+            )
+    else:
+        return ChunkReviewOutcomeV2(
+            outcome_chunk_id,
+            "manual_required",
+            None,
+            CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2,
+        )
 
     parsed = parse_bound_chunk_response_v2(bound)
-    return ChunkReviewOutcomeV2(chunk_content.chunk_id, "bound", parsed, None)
+    return ChunkReviewOutcomeV2(outcome_chunk_id, "bound", parsed, None)
 
 
 @dataclass(frozen=True)
@@ -258,7 +363,11 @@ def offline_file_transport_v2(responses_dir: Path) -> ChunkReviewTransportV2:
     JSON/schema is ``transport_failure``/``transport_invalid_response``,
     never a crash, never an approval."""
 
-    def _transport(request: ChunkReviewRequestV2, chunk_content: ChunkContentV2) -> ChunkReviewTransportEnvelopeV1:
+    def _transport(
+        request: ChunkReviewRequestV2,
+        chunk_content: ChunkContentV2,
+        payload: ChunkPayloadV2,
+    ) -> ChunkReviewTransportEnvelopeV1:
         response_path = responses_dir / f"{request.chunk_id}.json"
         try:
             raw_text = response_path.read_text(encoding="utf-8")
@@ -281,6 +390,45 @@ def offline_file_transport_v2(responses_dir: Path) -> ChunkReviewTransportV2:
 # -- real Agent Router transport (explicit flag only, never provider-direct) --
 
 
+_ROUTER_SYSTEM_MESSAGE_V2 = (
+    "You are AgentReview v2. Review only the supplied redacted chunk and "
+    "return exactly one JSON object conforming to the supplied output contract."
+)
+
+
+def _canonical_json_text_v2(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _build_agent_router_messages_v2(
+    *,
+    chunk_content: ChunkContentV2,
+    payload: ChunkPayloadV2,
+) -> list[dict[str, Any]]:
+    user_material = {
+        "semantic_group": payload.semantic_group.value,
+        "coverage": payload.coverage.model_dump(mode="json"),
+        "artifact_references": [
+            item.model_dump(mode="json") for item in payload.artifact_references
+        ],
+        "contract_references": [
+            item.model_dump(mode="json") for item in payload.contract_references
+        ],
+        "chunk_content": chunk_content.model_dump(mode="json"),
+        "output_contract": ChunkReviewResultV2.model_json_schema(mode="validation"),
+    }
+    return [
+        {"role": "system", "content": _ROUTER_SYSTEM_MESSAGE_V2},
+        {"role": "user", "content": _canonical_json_text_v2(user_material)},
+    ]
+
+
 def agent_router_transport_v2(
     *, base_url: str, api_key: str, model: str, timeout_seconds: float = 60.0
 ) -> ChunkReviewTransportV2:
@@ -295,18 +443,37 @@ def agent_router_transport_v2(
 
     if not api_key:
         raise ChunkTransportError(ROUTER_DISABLED_REASON_V2)
+    if model not in AGENT_ROUTER_STRUCTURED_REVIEW_PRESETS_V2:
+        raise ChunkTransportError(ROUTER_MODEL_UNSUPPORTED_REASON_V2)
 
     endpoint = base_url.rstrip("/") + AGENT_ROUTER_CHAT_COMPLETIONS_PATH_V2
 
-    def _transport(request: ChunkReviewRequestV2, chunk_content: ChunkContentV2) -> ChunkReviewTransportEnvelopeV1:
+    def _transport(
+        request: ChunkReviewRequestV2,
+        chunk_content: ChunkContentV2,
+        payload: ChunkPayloadV2,
+    ) -> _RouterTransportResponseV2:
         import urllib.error
         import urllib.request
 
-        body = json.dumps(
+        messages = _build_agent_router_messages_v2(
+            chunk_content=chunk_content,
+            payload=payload,
+        )
+        metadata = {
+            "chunk_id": request.chunk_id,
+            "run_id": request.run_id,
+            "payload_sha256": request.payload_sha256,
+            "head_sha": request.head_sha,
+            "content_sha256": request.content_sha256,
+            "request_sha256": request.request_sha256,
+        }
+        body = _canonical_json_text_v2(
             {
                 "model": model,
-                "aiops_review_request": request.model_dump(mode="json"),
-                "aiops_review_content": chunk_content.model_dump(mode="json"),
+                "messages": messages,
+                "metadata": metadata,
+                "response_format": {"type": "json_object"},
             }
         ).encode("utf-8")
         http_request = urllib.request.Request(
@@ -324,10 +491,24 @@ def agent_router_transport_v2(
             raise ChunkTransportError(CHUNK_TRANSPORT_TIMEOUT_REASON_V2) from exc
         except urllib.error.URLError as exc:
             raise ChunkTransportError(CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2) from exc
+        except UnicodeDecodeError as exc:
+            raise ChunkTransportError(CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2) from exc
 
         try:
-            return ChunkReviewTransportEnvelopeV1.model_validate_json(raw_text)
-        except Exception as exc:  # pydantic.ValidationError, malformed JSON, ...
+            decoded = json.loads(
+                raw_text,
+                parse_constant=lambda _value: (_ for _ in ()).throw(
+                    ValueError("non-finite JSON value")
+                ),
+            )
+            if not isinstance(decoded, Mapping):
+                raise ValueError("Router response must be a JSON object")
+        except (json.JSONDecodeError, TypeError, ValueError, UnicodeError) as exc:
             raise ChunkTransportError(CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2) from exc
+        return _make_router_transport_response_v2(
+            sent_messages=messages,
+            response=decoded,
+            requested_model=model,
+        )
 
     return _transport

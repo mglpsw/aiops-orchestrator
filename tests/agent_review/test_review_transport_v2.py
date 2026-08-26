@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -26,10 +28,25 @@ from app.agent_review.review_transport_v2 import (
     CHUNK_TRANSPORT_FAILURE_REASON_V2,
     CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2,
     ROUTER_DISABLED_REASON_V2,
+    ROUTER_MODEL_UNSUPPORTED_REASON_V2,
     ChunkTransportError,
     agent_router_transport_v2,
+    execute_chunk_review_v2,
     offline_file_transport_v2,
     run_synthetic_review_v2,
+)
+from app.agent_review._router_receipt_v2 import (
+    ROUTER_CALLER_BINDING_MISMATCH_REASON_V2,
+    ROUTER_FINISH_REASON_INCONCLUSIVE_REASON_V2,
+    ROUTER_INPUT_MISMATCH_REASON_V2,
+    ROUTER_OUTPUT_MISMATCH_REASON_V2,
+    ROUTER_RECEIPT_INVALID_REASON_V2,
+    ROUTER_REQUESTED_MODEL_MISMATCH_REASON_V2,
+    ROUTER_RESULT_INVALID_REASON_V2,
+)
+from app.agent_review.review_content_v2 import (
+    CONTENT_PAYLOAD_SHA256_MISMATCH_REASON_V2,
+    compute_chunk_content_sha256_v2,
 )
 from app.agent_review.run_assembly_v2 import assemble_manifest_from_diff_v2
 from app.agent_review.semantic_grouping_policy_v2 import (
@@ -375,7 +392,7 @@ def test_offline_file_transport_raises_typed_error_for_a_missing_file(tmp_path: 
         ),
     )
     with pytest.raises(ChunkTransportError) as excinfo:
-        transport(request, mock.Mock())
+        transport(request, mock.Mock(), mock.Mock())
     assert excinfo.value.reason_code == CHUNK_TRANSPORT_FAILURE_REASON_V2
 
 
@@ -388,31 +405,81 @@ def test_agent_router_transport_refuses_with_no_api_key() -> None:
     assert excinfo.value.reason_code == ROUTER_DISABLED_REASON_V2
 
 
-def test_agent_router_transport_calls_exactly_the_chat_completions_endpoint() -> None:
-    from app.agent_review.review_transport_contract_v2 import ChunkReviewRequestV2, compute_request_sha256_v2
+def test_agent_router_transport_refuses_an_unstructured_review_preset() -> None:
+    with pytest.raises(ChunkTransportError) as excinfo:
+        agent_router_transport_v2(
+            base_url="https://router.example",
+            api_key="present",
+            model="review:critical",
+        )
+    assert excinfo.value.reason_code == ROUTER_MODEL_UNSUPPORTED_REASON_V2
 
-    request = ChunkReviewRequestV2(
-        run_id="1" * 64, chunk_id="chunk-0", head_sha="2" * 40, payload_sha256="3" * 64,
-        content_sha256="4" * 64,
-        request_sha256=compute_request_sha256_v2(
-            run_id="1" * 64, chunk_id="chunk-0", head_sha="2" * 40,
-            payload_sha256="3" * 64, content_sha256="4" * 64,
-        ),
-    )
-    response_body = _success_envelope_dict(
-        run_id="1" * 64, chunk_id="chunk-0", head_sha="2" * 40, payload_sha256="3" * 64,
-    )
-    envelope_json = json.dumps(
-        {
-            "schema_id": "agent-review.review-transport-envelope.v1", "schema_version": 1,
-            "request_sha256": request.request_sha256, "content_sha256": "4" * 64,
-            "response": response_body,
-        }
+
+_ROUTER_FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "router_receipt_v2"
+
+
+def _router_result_document(payload, *, findings: list[dict] | None = None) -> dict:
+    return {
+        "schema_id": "agent-review.chunk-response.v2",
+        "schema_version": 2,
+        "summary": "router review complete",
+        "findings": findings or [],
+        "coverage": payload.coverage.model_dump(mode="json"),
+        "limitations": [],
+    }
+
+
+def _fixture_receipt(
+    fixture_name: str,
+    *,
+    request_body: dict,
+    assistant_content: str,
+) -> dict:
+    receipt = json.loads((_ROUTER_FIXTURE_ROOT / fixture_name).read_text(encoding="utf-8"))
+    messages_bytes = json.dumps(
+        request_body["messages"],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     ).encode("utf-8")
+    receipt["requested"]["model"] = request_body["model"]
+    receipt["received_input"]["sha256"] = hashlib.sha256(messages_bytes).hexdigest()
+    receipt["returned_output"]["sha256"] = hashlib.sha256(
+        assistant_content.encode("utf-8")
+    ).hexdigest()
+    receipt["caller_declared_metadata"] = copy.deepcopy(request_body["metadata"])
+    return receipt
 
-    captured_requests = []
+
+def _run_mocked_router_chunk(
+    tmp_path: Path,
+    *,
+    fixture_name: str = "local-success-f2a.json",
+    receipt_mutator=None,
+    response_mutator=None,
+    result_mutator=None,
+    chunk_content_override=None,
+):
+    manifest, content, payload_by_chunk_id = _build_repo_manifest_and_content(tmp_path)
+    chunk_content = chunk_content_override or content.chunks[0]
+    payload = payload_by_chunk_id[content.chunks[0].chunk_id]
+    result_document = _router_result_document(payload)
+    if result_mutator is not None:
+        result_mutator(result_document)
+    assistant_content = json.dumps(
+        result_document,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    captured: list[tuple[str, dict]] = []
 
     class _FakeResponse:
+        def __init__(self, raw: bytes) -> None:
+            self._raw = raw
+
         def __enter__(self):
             return self
 
@@ -420,42 +487,444 @@ def test_agent_router_transport_calls_exactly_the_chat_completions_endpoint() ->
             return False
 
         def read(self):
-            return envelope_json
+            return self._raw
 
     def _fake_urlopen(http_request, timeout):
-        captured_requests.append(http_request.full_url)
-        return _FakeResponse()
+        request_body = json.loads(http_request.data.decode("utf-8"))
+        captured.append((http_request.full_url, request_body))
+        receipt = _fixture_receipt(
+            fixture_name,
+            request_body=request_body,
+            assistant_content=assistant_content,
+        )
+        if receipt_mutator is not None:
+            receipt_mutator(receipt)
+        response_body = {
+            "id": "chatcmpl-fixture",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "resolved-model-is-not-a-domain-identity",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": assistant_content},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "request_id": "router-public-request",
+            "inference_receipt": receipt,
+        }
+        if response_mutator is not None:
+            response_mutator(response_body)
+        return _FakeResponse(json.dumps(response_body).encode("utf-8"))
 
     transport = agent_router_transport_v2(
-        base_url="https://router.example/", api_key="secret-token", model="test-model"
+        base_url="https://router.example/",
+        api_key="secret-token",
+        model="review:code",
     )
     with mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen):
-        envelope = transport(request, mock.Mock(model_dump=lambda mode: {}))
+        outcome = execute_chunk_review_v2(
+            chunk_content,
+            run_id=content.run_id,
+            head_sha=manifest.identity.head_sha,
+            payload=payload,
+            transport=transport,
+        )
+    return outcome, captured, chunk_content, payload
 
-    assert captured_requests == ["https://router.example/v1/chat/completions"]
-    assert isinstance(envelope, ChunkReviewTransportEnvelopeV1)
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["local-success-f2a.json", "provider-fallback-success-f2a.json"],
+)
+def test_agent_router_receipt_v2_binds_local_and_fallback_f2a_fixtures(
+    tmp_path: Path, fixture_name: str
+) -> None:
+    outcome, captured, _, _ = _run_mocked_router_chunk(
+        tmp_path, fixture_name=fixture_name
+    )
+
+    assert outcome.state == "bound"
+    assert outcome.result is not None
+    assert outcome.result.summary == "router review complete"
+    assert len(captured) == 1
 
 
-def test_agent_router_transport_maps_5xx_to_unavailable_never_approval() -> None:
+def test_agent_router_receipt_v2_accepts_the_frozen_optional_f2b_grammar(
+    tmp_path: Path,
+) -> None:
+    def add_f2b(receipt: dict) -> None:
+        receipt.update(
+            {
+                "routing_policy": {
+                    "schema": "agent-router.routing-policy-binding.v1",
+                    "canonicalization": "agent-router-routing-policy-json.v1",
+                    "version": 1,
+                    "sha256": "6" * 64,
+                    "loader_result": {
+                        "schema": "agent-router.routing-policy-loader-result.v1",
+                        "disposition": "loaded_repository",
+                        "source_kind": "repository_file",
+                        "source_id": "review-policy",
+                        "selected_policy_sha256": "6" * 64,
+                    },
+                    "nominal_provider_order": ["local", "openai"],
+                },
+                "producer": {
+                    "schema": "agent-router.producer.v1",
+                    "service": "agent-router-api",
+                    "version": "1.2.3",
+                    "revision": "7" * 40,
+                },
+                "timing": {
+                    "schema": "agent-router.execution-timing.v1",
+                    "started_at": "2026-08-26T01:02:03.000Z",
+                    "completed_at": "2026-08-26T01:02:03.010Z",
+                    "duration_ms": 10,
+                    "duration_basis": "monotonic.v1",
+                },
+                "usage": {
+                    "schema": "agent-router.token-usage.v1",
+                    "scope": "selected_attempt",
+                    "source": "provider_reported",
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "coverage": {"adapter_invocations": 1, "observations": 1},
+                },
+                "budget": {
+                    "schema": "agent-router.token-budget.v1",
+                    "scope": "each_adapter_invocation",
+                    "source": "router_config",
+                    "max_input_tokens": 100,
+                    "max_output_tokens": 100,
+                },
+                "coverage": {
+                    "schema": "agent-router.input-coverage.v1",
+                    "basis": "router-review-plan.v1",
+                    "mode": "single",
+                    "chunk_count": 1,
+                    "truncated": False,
+                },
+                "limitations": {
+                    "schema": "agent-router.limitations.v1",
+                    "codes": ["routing_policy_unobserved"],
+                },
+            }
+        )
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, receipt_mutator=add_f2b
+    )
+
+    assert outcome.state == "bound"
+
+
+def test_agent_router_receipt_v2_rejects_a_fallback_transition_that_lies(
+    tmp_path: Path,
+) -> None:
+    def corrupt_transition(receipt: dict) -> None:
+        receipt["routing_execution"]["transitions"][0]["kind"] = "model_fallback"
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path,
+        fixture_name="provider-fallback-success-f2a.json",
+        receipt_mutator=corrupt_transition,
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == ROUTER_RECEIPT_INVALID_REASON_V2
+
+
+def test_agent_router_transport_uses_exact_endpoint_messages_metadata_and_json_contract(
+    tmp_path: Path,
+) -> None:
+    outcome, captured, chunk_content, payload = _run_mocked_router_chunk(tmp_path)
+
+    assert outcome.state == "bound"
+    assert [item[0] for item in captured] == [
+        "https://router.example/v1/chat/completions"
+    ]
+    body = captured[0][1]
+    assert set(body) == {"model", "messages", "metadata", "response_format"}
+    assert body["model"] == "review:code"
+    assert body["response_format"] == {"type": "json_object"}
+    assert [message["role"] for message in body["messages"]] == ["system", "user"]
+    assert set(body["metadata"]) == {
+        "chunk_id",
+        "run_id",
+        "payload_sha256",
+        "head_sha",
+        "content_sha256",
+        "request_sha256",
+    }
+    assert body["metadata"]["payload_sha256"] == payload.payload_sha256
+    assert body["metadata"]["content_sha256"] == chunk_content.content_sha256
+    user_material = json.loads(body["messages"][1]["content"])
+    assert set(user_material) == {
+        "semantic_group",
+        "coverage",
+        "artifact_references",
+        "contract_references",
+        "chunk_content",
+        "output_contract",
+    }
+    assert "aiops_review_request" not in body
+    assert "aiops_review_content" not in body
+
+
+def test_agent_router_exact_semantic_finding_reaches_the_agentreview_domain(
+    tmp_path: Path,
+) -> None:
+    def add_in_scope_finding(result: dict) -> None:
+        result["findings"] = [
+            {
+                "finding_id": "router-finding-accepted",
+                "severity": "P2",
+                "title": "accepted semantic finding",
+                "file_path": "app.py",
+                "line_start": 1,
+                "line_end": 1,
+                "evidence": "exact assistant content",
+                "impact": "domain result reached",
+                "confidence": "high",
+                "contract_ids": [],
+                "disposition": "new",
+            }
+        ]
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, result_mutator=add_in_scope_finding
+    )
+
+    assert outcome.state == "bound"
+    assert outcome.result is not None
+    assert [finding.finding_id for finding in outcome.result.findings] == [
+        "router-finding-accepted"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutator", "reason_code"),
+    [
+        (
+            lambda receipt: receipt["received_input"].update({"sha256": "0" * 64}),
+            ROUTER_INPUT_MISMATCH_REASON_V2,
+        ),
+        (
+            lambda receipt: receipt["returned_output"].update({"sha256": "0" * 64}),
+            ROUTER_OUTPUT_MISMATCH_REASON_V2,
+        ),
+        (
+            lambda receipt: receipt["caller_declared_metadata"].update(
+                {"request_sha256": "0" * 64}
+            ),
+            ROUTER_CALLER_BINDING_MISMATCH_REASON_V2,
+        ),
+        (
+            lambda receipt: receipt["requested"].update({"model": "review:deep"}),
+            ROUTER_REQUESTED_MODEL_MISMATCH_REASON_V2,
+        ),
+        (
+            lambda receipt: receipt.update(
+                {"schema": "agent-router.inference-receipt.v1"}
+            ),
+            ROUTER_RECEIPT_INVALID_REASON_V2,
+        ),
+        (
+            lambda receipt: receipt.update({"unexpected": True}),
+            ROUTER_RECEIPT_INVALID_REASON_V2,
+        ),
+        (
+            lambda receipt: receipt.update({"producer": None}),
+            ROUTER_RECEIPT_INVALID_REASON_V2,
+        ),
+        (
+            lambda receipt: receipt["execution"].update({"finish_reason": "length"}),
+            ROUTER_FINISH_REASON_INCONCLUSIVE_REASON_V2,
+        ),
+    ],
+)
+def test_agent_router_receipt_v2_mutations_fail_closed(
+    tmp_path: Path, mutator, reason_code: str
+) -> None:
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, receipt_mutator=mutator
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.result is None
+    assert outcome.reason_code == reason_code
+
+
+def test_agent_router_rejects_old_f1_style_transport_envelope_on_the_http_path(
+    tmp_path: Path,
+) -> None:
+    def replace_with_old_f1_envelope(response_body: dict) -> None:
+        response_body.pop("inference_receipt")
+        response_body["request_sha256"] = "1" * 64
+        response_body["content_sha256"] = "2" * 64
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, response_mutator=replace_with_old_f1_envelope
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == ROUTER_RECEIPT_INVALID_REASON_V2
+
+
+def test_agent_router_verifies_exact_output_before_parsing_the_domain(
+    tmp_path: Path,
+) -> None:
+    def make_domain_invalid(result: dict) -> None:
+        result.pop("coverage")
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, result_mutator=make_domain_invalid
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == ROUTER_RESULT_INVALID_REASON_V2
+
+
+def test_agent_router_output_identity_precedes_domain_parsing_when_both_fail(
+    tmp_path: Path,
+) -> None:
+    def make_domain_invalid(result: dict) -> None:
+        result.pop("coverage")
+
+    def make_output_identity_invalid(receipt: dict) -> None:
+        receipt["returned_output"]["sha256"] = "0" * 64
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path,
+        result_mutator=make_domain_invalid,
+        receipt_mutator=make_output_identity_invalid,
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == ROUTER_OUTPUT_MISMATCH_REASON_V2
+
+
+def test_agent_router_result_uses_the_common_contract_scope_authority(
+    tmp_path: Path,
+) -> None:
+    def add_out_of_scope_contract_finding(result: dict) -> None:
+        result["findings"] = [
+            {
+                "finding_id": "router-finding-1",
+                "severity": "P2",
+                "title": "contract scope violation",
+                "file_path": "app.py",
+                "line_start": 1,
+                "line_end": 1,
+                "evidence": "fixture evidence",
+                "impact": "scope escape",
+                "confidence": "high",
+                "contract_ids": ["contract.not-supplied"],
+                "disposition": "new",
+            }
+        ]
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        tmp_path, result_mutator=add_out_of_scope_contract_finding
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == "response_scope_mismatch"
+
+
+def test_payload_content_mismatch_stops_before_message_builder_and_http(
+    tmp_path: Path,
+) -> None:
+    manifest, content, payload_by_chunk_id = _build_repo_manifest_and_content(tmp_path)
+    payload = payload_by_chunk_id[content.chunks[0].chunk_id]
+    mismatched = content.chunks[0].model_copy(
+        update={"payload_sha256": "f" * 64}
+    )
+    mismatched = mismatched.model_copy(
+        update={"content_sha256": compute_chunk_content_sha256_v2(mismatched)}
+    )
+    transport = agent_router_transport_v2(
+        base_url="https://router.example",
+        api_key="secret-token",
+        model="review:code",
+    )
+    opener = mock.Mock(side_effect=AssertionError("HTTP must not be called"))
+
+    with mock.patch("urllib.request.urlopen", opener):
+        outcome = execute_chunk_review_v2(
+            mismatched,
+            run_id=content.run_id,
+            head_sha=manifest.identity.head_sha,
+            payload=payload,
+            transport=transport,
+        )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == CONTENT_PAYLOAD_SHA256_MISMATCH_REASON_V2
+    assert opener.call_count == 0
+
+
+def test_agent_router_transport_maps_5xx_to_unavailable_never_approval(
+    tmp_path: Path,
+) -> None:
     import urllib.error
 
-    from app.agent_review.review_transport_contract_v2 import ChunkReviewRequestV2, compute_request_sha256_v2
     from app.agent_review.review_transport_v2 import CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2
 
-    request = ChunkReviewRequestV2(
-        run_id="1" * 64, chunk_id="chunk-0", head_sha="2" * 40, payload_sha256="3" * 64,
-        content_sha256="4" * 64,
-        request_sha256=compute_request_sha256_v2(
-            run_id="1" * 64, chunk_id="chunk-0", head_sha="2" * 40,
-            payload_sha256="3" * 64, content_sha256="4" * 64,
-        ),
+    manifest, content, payload_by_chunk_id = _build_repo_manifest_and_content(tmp_path)
+    payload = payload_by_chunk_id[content.chunks[0].chunk_id]
+    transport = agent_router_transport_v2(
+        base_url="https://router.example", api_key="secret", model="review:code"
     )
-    transport = agent_router_transport_v2(base_url="https://router.example", api_key="secret", model="m")
 
     def _raise_503(http_request, timeout):
         raise urllib.error.HTTPError("https://router.example/v1/chat/completions", 503, "unavailable", {}, None)
 
     with mock.patch("urllib.request.urlopen", side_effect=_raise_503):
-        with pytest.raises(ChunkTransportError) as excinfo:
-            transport(request, mock.Mock(model_dump=lambda mode: {}))
-    assert excinfo.value.reason_code == CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2
+        outcome = execute_chunk_review_v2(
+            content.chunks[0],
+            run_id=content.run_id,
+            head_sha=manifest.identity.head_sha,
+            payload=payload,
+            transport=transport,
+        )
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == CHUNK_TRANSPORT_UNAVAILABLE_REASON_V2
+
+
+def test_agent_router_transport_maps_invalid_utf8_to_invalid_response(
+    tmp_path: Path,
+) -> None:
+    manifest, content, payload_by_chunk_id = _build_repo_manifest_and_content(tmp_path)
+    payload = payload_by_chunk_id[content.chunks[0].chunk_id]
+    transport = agent_router_transport_v2(
+        base_url="https://router.example",
+        api_key="secret",
+        model="review:code",
+    )
+
+    class _InvalidUtf8Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b"\xff\xfe"
+
+    with mock.patch("urllib.request.urlopen", return_value=_InvalidUtf8Response()):
+        outcome = execute_chunk_review_v2(
+            content.chunks[0],
+            run_id=content.run_id,
+            head_sha=manifest.identity.head_sha,
+            payload=payload,
+            transport=transport,
+        )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2

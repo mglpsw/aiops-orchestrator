@@ -1,0 +1,60 @@
+{
+  "schema": "agent-router.inference-receipt.v2",
+  "router_request_id": "rreq_fedcba9876543210fedcba9876543210",
+  "requested": {
+    "model": "review:code"
+  },
+  "received_input": {
+    "canonicalization": "openai-messages-json.v1",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "execution": {
+    "status": "completed",
+    "finish_reason": "stop"
+  },
+  "returned_output": {
+    "canonicalization": "assistant-content-utf8.v1",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "caller_declared_metadata": {
+    "chunk_id": "chunk-0",
+    "run_id": "1111111111111111111111111111111111111111111111111111111111111111",
+    "payload_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "head_sha": "3333333333333333333333333333333333333333",
+    "content_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+    "request_sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+  },
+  "routing_execution": {
+    "execution_path": "dynamic_cascade",
+    "selected_attempt_index": 2,
+    "attempts": [
+      {
+        "index": 1,
+        "provider": "local",
+        "model": "codex-mini",
+        "outcome": "failed",
+        "adapter_invocation_count": 1,
+        "failure_code": "model_unavailable",
+        "transport_retry_count": 0,
+        "finish_reason": "error"
+      },
+      {
+        "index": 2,
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "outcome": "selected",
+        "adapter_invocation_count": 1,
+        "transport_retry_count": 0,
+        "finish_reason": "stop"
+      }
+    ],
+    "transitions": [
+      {
+        "from_attempt_index": 1,
+        "to_attempt_index": 2,
+        "kind": "provider_fallback",
+        "reason_code": "model_unavailable"
+      }
+    ]
+  }
+}

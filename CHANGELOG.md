@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **AgentReview v2 Router receipt-v2 wire binding (`#200-C-WIRE`)**:
+  reconciles the historical offline/F1 transport with the current Router
+  F2-A authority. Structured review requests now send exact `messages[]`, the
+  six caller-binding declarations, and JSON-object output mode to the sole
+  `/v1/chat/completions` endpoint. A private strict consumer verifies
+  `agent-router.inference-receipt.v2` input/output digests, declarations,
+  route trace, finish reason, and exact assistant content before parsing the
+  AgentReview domain. Offline echo proof and Router receipt proof converge
+  only at the common payload-scope validator and one sealed
+  `BoundChunkResponseV2` constructor. Payload/content mismatch stops before
+  request/message/HTTP construction, and contract IDs can no longer escape
+  the payload in either source path. Public AgentReview schemas remain
+  byte-identical; no live Router/provider call or canary is part of this slice.
+
 - **K runtime carrier established disjoint from the diagnosed target, or
   refused (`#262`)**: `acquire_target_pack_epoch_v2` chose the carrier location
   from `euid` alone, with no reference to `target_root`, so a target that

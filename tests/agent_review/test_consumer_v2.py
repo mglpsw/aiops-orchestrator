@@ -376,6 +376,20 @@ def test_bind_rejects_a_finding_outside_the_payload_file_universe() -> None:
     assert excinfo.value.reason_code == RESPONSE_SCOPE_MISMATCH_REASON_V2
 
 
+def test_bind_rejects_a_finding_naming_a_contract_absent_from_the_payload() -> None:
+    """The common scope authority applies to the historical offline binder too."""
+
+    payload = _payload()
+    finding = _finding()
+    finding["contract_ids"] = ("contract.not-supplied",)
+    envelope = _success_envelope_raw(payload, findings=[finding])
+
+    with pytest.raises(ResponseBindingError) as excinfo:
+        bind_chunk_response_v2(envelope=envelope, payload=payload)
+
+    assert excinfo.value.reason_code == RESPONSE_SCOPE_MISMATCH_REASON_V2
+
+
 # -- 16. transport failure --------------------------------------------------------
 
 
