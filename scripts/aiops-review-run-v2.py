@@ -43,7 +43,9 @@ from app.agent_review.contracts_v2 import (  # noqa: E402
 from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
     RequiredCheckProvenanceV2,
 )
-from app.agent_review.review_content_v2 import DlpPolicyDeclarationV2  # noqa: E402
+from app.agent_review.review_content_v2 import (  # noqa: E402
+    load_dlp_policy_declaration_v2,
+)
 from app.agent_review.operational_run_v2 import (  # noqa: E402
     OperationalRunError,
     run_operational_review_v2,
@@ -189,13 +191,23 @@ def main(argv: list[str] | None = None) -> int:
                 if args.checks_provenance
                 else []
             )
+            # The canonical loader, not `model_validate`: it owns the
+            # `dlp_policy_not_host_owned` refusal for a policy naming code
+            # inside the target repository. Reporting that as generic
+            # `input_invalid` would hide a security-specific rejection.
             dlp_policy = (
-                DlpPolicyDeclarationV2.model_validate(_read_json(args.dlp_policy))
+                load_dlp_policy_declaration_v2(_read_json(args.dlp_policy))
                 if args.dlp_policy
                 else None
             )
         except (ValidationError, TypeError) as exc:
             raise RunCliError(INPUT_INVALID_REASON_V2) from exc
+        except ValueError as exc:
+            # e.g. `dlp_policy_not_host_owned` -- preserve the specific code.
+            reason_code = getattr(exc, "reason_code", None)
+            if not isinstance(reason_code, str) or not reason_code:
+                raise
+            raise RunCliError(reason_code) from exc
 
         try:
             snapshot = parse_authoritative_ci_snapshot_v2(

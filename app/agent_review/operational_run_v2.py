@@ -123,7 +123,9 @@ __all__ = [
     "OperationalRunError",
     "PAYLOAD_SET_INVALID_REASON_V2",
     "READINESS_INVARIANT_VIOLATION_REASON_V2",
+    "GIT_TOOLCHAIN_UNAVAILABLE_REASON_V2",
     "REPO_ROOT_UNUSABLE_REASON_V2",
+    "RUN_BUDGET_INVALID_REASON_V2",
     "RUN_IDENTITY_INVALID_REASON_V2",
     "PreparedReviewRunV2",
     "prepare_operational_review_v2",
@@ -161,6 +163,13 @@ READINESS_INVARIANT_VIOLATION_REASON_V2 = "readiness_invariant_violation"
 # The checkout under review is missing or not a usable directory. Code only:
 # the underlying OSError stringifies the local path.
 REPO_ROOT_UNUSABLE_REASON_V2 = "operational_repo_root_unusable"
+
+# A caller-supplied run budget that cannot describe a chunk.
+RUN_BUDGET_INVALID_REASON_V2 = "operational_run_budget_invalid"
+
+# Diff acquisition could not run at all -- typically no `git` on PATH. An
+# environment failure, deliberately distinct from an input failure.
+GIT_TOOLCHAIN_UNAVAILABLE_REASON_V2 = "operational_git_toolchain_unavailable"
 
 
 ASSEMBLY_BLOCKED_REASON_V2 = "assembly_blocked"
@@ -232,6 +241,25 @@ def prepare_operational_review_v2(
     repo_root = Path(repo_root)
     target_profile_root = Path(target_profile_root)
 
+    # `max_lines_per_chunk` is caller-supplied and reaches the chunk planner,
+    # which raises a BARE `ValueError` for a non-positive budget -- neither a
+    # `RunAssemblyError` nor a pydantic `ValidationError`, so it escaped every
+    # guard below and every guard in the CLI.
+    #
+    # Three review rounds produced one more "untyped escape" each time because
+    # each guard enumerated the exceptions it had SEEN. Validating the input
+    # where it enters is the fix for the class, not for this instance: a
+    # caller-supplied bound that cannot describe a chunk is refused before any
+    # authority is asked to interpret it.
+    if not isinstance(max_lines_per_chunk, int) or max_lines_per_chunk < 1:
+        raise OperationalRunError(RUN_BUDGET_INVALID_REASON_V2)
+
+    # Likewise the checkout: probing it here means the `OSError` guard below
+    # can stay narrow enough to distinguish "no such checkout" from "no git
+    # binary", which a blanket guard silently conflated.
+    if not repo_root.is_dir():
+        raise OperationalRunError(REPO_ROOT_UNUSABLE_REASON_V2)
+
     try:
         profile = load_target_profile_v2(target_profile_root)
     except TargetProfileLoadErrorV2 as exc:
@@ -250,11 +278,11 @@ def prepare_operational_review_v2(
     except DiffAcquisitionError as exc:
         raise OperationalRunError(exc.reason_code) from exc
     except OSError as exc:
-        # `acquire_authoritative_diff_v2` shells out with `cwd=repo_root`, so a
-        # non-existent root raises `FileNotFoundError` BEFORE the module can
-        # convert it -- and that exception stringifies the local path. Only a
-        # stable code may cross this boundary.
-        raise OperationalRunError(REPO_ROOT_UNUSABLE_REASON_V2) from exc
+        # The checkout was proved to exist above, so a surviving OSError here
+        # is the ENVIRONMENT failing -- most commonly no `git` on PATH -- not
+        # the operator's input. Reporting it as `repo_root_unusable` would send
+        # them to inspect a checkout that is fine.
+        raise OperationalRunError(GIT_TOOLCHAIN_UNAVAILABLE_REASON_V2) from exc
 
     try:
         outcome = assemble_manifest_from_diff_v2(

@@ -146,6 +146,35 @@ a dedicated issue:
 Neither blocks the operational runner or the live canary. Both still warrant
 dedicated issues.
 
+## Upstream follow-up found during review — NOT fixed here
+
+`payload_references_v2.build_payload_contract_references_v2` reads a contract
+file with `path.read_bytes()` and has no `OSError` guard, though the artifact
+branch beside it does. An unreadable-but-present contract file therefore leaks
+a raw traceback carrying the absolute path. Classified `PLAUSIBLE` by review
+(needs a non-root runner or a TOCTOU window) and reproduced only under those
+conditions.
+
+It is NOT fixed here because the defect is in an upstream authority this slice
+only consumes; patching it would put `#200-D` inside a module outside its
+granted surface. Recorded as an upstream follow-up alongside the two carried
+from PR #270.
+
+## Recurrence note — how the refusal-path class was finally closed
+
+Three review rounds each produced one more "untyped escape" at the composition
+boundary, because every guard enumerated the exceptions it had already SEEN:
+`PayloadReferenceError` (a sibling family, not a subclass), a codeless pydantic
+error from readiness emission, a bare `ValueError` from the chunk planner for a
+non-positive budget.
+
+The fourth round's fix is not another `except` clause. Caller-supplied inputs
+are validated where they ENTER -- a non-positive chunk budget and a missing
+checkout are refused before any authority is asked to interpret them -- which
+is what lets the remaining `OSError` guard stay narrow enough to distinguish
+"no such checkout" from "no `git` on PATH", a distinction a blanket guard had
+silently conflated.
+
 ## Scope fence
 
 Included: `operational_run_v2.py`, `aiops-review-run-v2.py`, focused tests,

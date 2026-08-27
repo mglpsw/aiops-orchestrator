@@ -1602,3 +1602,160 @@ def test_cli_forwards_the_dlp_policy(tmp_path: Path, monkeypatch: pytest.MonkeyP
         ]
     )
     assert "dlp_policy" in seen
+
+
+# -- review round 4 (exact head 7f95bc0) ------------------------------------
+
+
+@pytest.mark.parametrize("budget", [0, -1, -1000])
+def test_non_positive_chunk_budget_is_refused_at_the_boundary(
+    tmp_path: Path, budget: int
+) -> None:
+    """R4-F1, and the RECURRENCE this closes.
+
+    The chunk planner raises a BARE ``ValueError`` for a non-positive budget --
+    neither ``RunAssemblyError`` nor pydantic ``ValidationError`` -- so it
+    escaped every downstream guard and the CLI, producing a traceback with
+    local paths.
+
+    Three review rounds each produced one more "untyped escape" because each
+    guard enumerated the exceptions it had already seen. This is validated
+    where the value ENTERS instead, which is what closes the class.
+    """
+
+    from app.agent_review.operational_run_v2 import (
+        RUN_BUDGET_INVALID_REASON_V2,
+        prepare_operational_review_v2,
+    )
+
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    with pytest.raises(OperationalRunError) as excinfo:
+        prepare_operational_review_v2(
+            repo_root=repo, target_profile_root=repo, grouping_policy=_grouping_policy(),
+            base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+            toolrepo_sha="b" * 40, evidence_hash="c" * 64, max_lines_per_chunk=budget,
+        )
+    assert excinfo.value.reason_code == RUN_BUDGET_INVALID_REASON_V2
+
+
+def test_missing_git_is_environment_not_bad_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R4-F2: a blanket ``OSError -> repo_root_unusable`` also caught a missing
+    ``git`` executable, sending the operator to inspect a checkout that is
+    fine. The checkout is proved to exist first, so the two are distinguishable.
+    """
+
+    from app.agent_review.operational_run_v2 import (
+        GIT_TOOLCHAIN_UNAVAILABLE_REASON_V2,
+        prepare_operational_review_v2,
+    )
+
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty_bin"))
+
+    with pytest.raises(OperationalRunError) as excinfo:
+        prepare_operational_review_v2(
+            repo_root=repo, target_profile_root=repo, grouping_policy=_grouping_policy(),
+            base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+            toolrepo_sha="b" * 40, evidence_hash="c" * 64, max_lines_per_chunk=1000,
+        )
+    assert excinfo.value.reason_code == GIT_TOOLCHAIN_UNAVAILABLE_REASON_V2
+
+
+def test_cli_dlp_policy_uses_the_canonical_host_ownership_loader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """R4-F3: a policy naming code inside the target repository must surface
+    the security-specific ``dlp_policy_not_host_owned``, not a generic
+    ``input_invalid`` that hides why it was rejected."""
+
+    module = _run_cli([])
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    policy = tmp_path / "g.json"
+    policy.write_text(_grouping_policy().model_dump_json(), encoding="utf-8")
+    origin = tmp_path / "o.json"
+    origin.write_text(
+        json.dumps({"event_type": "pull_request", "event_action": "synchronize",
+                    "delivery_id": "d1"}),
+        encoding="utf-8",
+    )
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import _snapshot_dict
+
+    snap = tmp_path / "s.json"
+    snap.write_text(json.dumps(_snapshot_dict([])), encoding="utf-8")
+    dlp = tmp_path / "dlp.json"
+    dlp.write_text(json.dumps({"module": "target.evil", "rules": []}), encoding="utf-8")
+
+    rc = module.main(
+        [
+            "--contract-version", "v2", "--repo-root", str(repo),
+            "--target-profile", str(repo), "--grouping-policy", str(policy),
+            "--base-sha", base_sha, "--head-sha", head_sha,
+            "--tested-merge-sha", head_sha, "--pr-number", "1",
+            "--toolrepo-sha", "b" * 40, "--evidence-hash", "c" * 64,
+            "--max-lines-per-chunk", "1000", "--pr-state", "open",
+            "--run-origin", str(origin), "--checks-snapshot", str(snap),
+            "--dlp-policy", str(dlp),
+            "--toolchain-digest", "e" * 64, "--transport", "offline",
+            "--offline-responses-dir", str(tmp_path),
+            "--output", str(tmp_path / "out.json"),
+        ]
+    )
+    assert rc == 2
+    assert capsys.readouterr().err.strip() == "error: dlp_policy_not_host_owned"
+
+
+def test_cli_actually_parses_check_claim_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R4-F5: the previous test asserted only that the kwarg NAMES existed,
+    which two empty lists satisfy. This passes real ``--checks`` /
+    ``--checks-provenance`` files and asserts the parsed claims arrive."""
+
+    module = _run_cli([])
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    policy = tmp_path / "g.json"
+    policy.write_text(_grouping_policy().model_dump_json(), encoding="utf-8")
+    origin = tmp_path / "o.json"
+    origin.write_text(
+        json.dumps({"event_type": "pull_request", "event_action": "synchronize",
+                    "delivery_id": "d1"}),
+        encoding="utf-8",
+    )
+    # Real, self-consistent check + provenance material from the sibling
+    # CLI's own fixture builder -- hand-built provenance would not satisfy its
+    # digest invariants, and a fixture that cannot be parsed would make this
+    # test pass for the wrong reason.
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import _write_fixtures
+
+    fixtures = _write_fixtures(tmp_path / "gate_fixtures", required_checks=["pytest"])
+    snap = fixtures["checks_snapshot"]
+    checks = fixtures["checks"]
+    prov = fixtures["checks_provenance"]
+
+    seen: dict = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        raise module.OperationalRunError("stop_after_capture")
+
+    monkeypatch.setattr(module, "run_operational_review_v2", _capture)
+    module.main(
+        [
+            "--contract-version", "v2", "--repo-root", str(repo),
+            "--target-profile", str(repo), "--grouping-policy", str(policy),
+            "--base-sha", base_sha, "--head-sha", head_sha,
+            "--tested-merge-sha", head_sha, "--pr-number", "1",
+            "--toolrepo-sha", "b" * 40, "--evidence-hash", "c" * 64,
+            "--max-lines-per-chunk", "1000", "--pr-state", "open",
+            "--run-origin", str(origin), "--checks-snapshot", str(snap),
+            "--checks", str(checks), "--checks-provenance", str(prov),
+            "--toolchain-digest", "e" * 64, "--transport", "offline",
+            "--offline-responses-dir", str(tmp_path),
+            "--output", str(tmp_path / "out.json"),
+        ]
+    )
+    assert len(seen["checks"]) == 1
+    assert len(seen["provenance"]) == 1
+    assert seen["checks"][0].check_name == "pytest"
