@@ -348,3 +348,65 @@ def test_readiness_pre_seal_invalid_combination_is_a_typed_refusal(
             checks=[_green_check(manifest.identity.head_sha)] if with_checks else [],
         )
     assert excinfo.value.reason_code
+
+
+# -- review round 1 on the two-epoch model -----------------------------------
+
+
+def test_readiness_pre_seal_sees_blocking_findings_not_just_blockers() -> None:
+    """R1: the pre-seal predicate was NARROWER than the validator's.
+
+    It read `decision.reason_codes or decision.blockers` while the contract
+    counts reason codes, ACTIVE blockers and blocking FINDINGS -- and findings
+    arrive by a separate argument. A blocking finding therefore slipped past
+    the seal and surfaced as a raw `ValidationError` from construction.
+
+    Root cause was the helper taking a pre-computed boolean, which let its two
+    callers derive it differently. The helper now owns the derivation, so this
+    asserts they cannot diverge again.
+    """
+
+    import inspect
+
+    from app.agent_review.contracts_v2 import evaluate_ready_preconditions_v2
+
+    params = set(inspect.signature(evaluate_ready_preconditions_v2).parameters)
+    assert {"reason_codes", "blockers", "findings"} <= params
+    assert "has_reasons_or_blockers" not in params, (
+        "a pre-computed predicate lets the two callers diverge -- that is the bug"
+    )
+
+
+def test_ready_precondition_authority_has_exactly_two_callers() -> None:
+    """One authority, both consumers: the artifact's own validator and the
+    emission owner. A third derivation of these rules anywhere would be the
+    duplication this design exists to prevent."""
+
+    from pathlib import Path as _Path
+
+    from app.agent_review import contracts_v2, review_readiness_emission_v2
+
+    call_sites = [
+        module
+        for module in (contracts_v2, review_readiness_emission_v2)
+        if "evaluate_ready_preconditions_v2(" in _Path(module.__file__).read_text(encoding="utf-8")
+    ]
+    assert len(call_sites) == 2
+
+
+def test_optional_unrepresentable_fragment_degrades_instead_of_aborting(
+    tmp_path: Path,
+) -> None:
+    """R1: the pre-seal representability check raised unconditionally, unlike
+    the five neighbouring branches, so one CRLF byte in an OPTIONAL context
+    fragment killed the whole extraction. Required fragments still block."""
+
+    import inspect
+
+    from app.agent_review import review_content_extraction_v2 as module
+
+    source = inspect.getsource(module._build_fragment_content_v2)
+    marker = source.index("_is_fragment_content_representable_v2")
+    tail = source[marker:]
+    assert "if fragment.coverage_required:" in tail
+    assert "ReviewContentPolicyV2.UNREPRESENTABLE" in tail

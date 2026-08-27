@@ -83,51 +83,12 @@ failure. `PayloadReferenceError`'s `payload_required_artifact_missing`,
 `DiffAcquisitionError` reason reaching extraction survive the conversion rather
 than collapsing into a generic "invalid".
 
-**Where they do not, and why.** A pydantic `ValidationError` carries no reason
-code to preserve, so `run_assembly_contract_invalid`,
-`content_contract_invalid`, `payload_set_contract_invalid` and
-`readiness_emission_contract_invalid` are each a single code covering every
-contract violation at that boundary. For readiness this is a real loss: the
-quality-gate CLI previously printed pydantic's message, which named the failing
-rule, so an operator could tell `ready`+merged-PR from `ready`-without-green-
-checks and now cannot.
-
-Recovering that discrimination would mean either string-matching pydantic
-messages -- fragile, and a re-implementation of contract knowledge this module
-documents that it never does -- or surfacing the message itself, which is
-unsafe in general: round 2 of review on this PR proved a `ValidationError` from
-fragment construction embeds the reviewed diff bytes in `input_value`. Neither
-is acceptable, so the single code stands, and the limitation is recorded here
-rather than papered over. New codes were
-added only where no owner had one:
-
-```text
-diff        git_unavailable, repo_root_unusable, diff_acquisition_io_failed
-assembly    run_assembly_contract_invalid, run_assembly_budget_invalid
-payload     payload_reference_unreadable, payload_contract_invalid
-payload_set payload_set_contract_invalid
-content     content_contract_invalid
-readiness   readiness_emission_contract_invalid
-```
-
-## Evaluated caller change
-
-Two tests in `test_review_readiness_emission_v2.py` deliberately asserted the
-raw `ValidationError`. Their proposition -- `ready` + merged PR fails closed --
-is unchanged and equally strong; only the type moved to the authority's own
-family. Evaluated and updated explicitly, with the reason recorded in the
-tests, rather than silently.
-
-## Acceptance oracle
-
-A test drives the whole front half catching **one family per stage** and
-nothing else -- no `ValidationError`, no `OSError`, no `PayloadReferenceError`,
-no `ReviewContentBindingError`, no `except Exception`, no dynamic
-`getattr(exc, "reason_code")` -- against inputs that make every stage refuse in
-turn. If any surface reopened, the raw exception would escape its narrow
-handler and fail the test.
-
-Every refusal is additionally asserted stable, content-free and path-free.
+**Where a pydantic failure has no reason code to preserve**, the pre-seal
+epoch supplies one instead of collapsing everything into a single opaque code.
+That is how `ready`+merged-PR and `ready`-without-green-checks became distinct
+reasons again -- see the two-epoch section below. An earlier revision of this
+checkpoint recorded that collapse as an accepted loss; it is no longer
+accepted, and no longer true.
 
 ## Ownership, located precisely
 

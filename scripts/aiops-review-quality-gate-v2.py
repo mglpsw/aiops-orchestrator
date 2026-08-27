@@ -130,6 +130,9 @@ from app.common.strict_json import strict_json_loads  # noqa: E402
 
 CONTRACT_VERSION_INVALID_REASON_V2 = "contract_version_required"
 INPUT_INVALID_REASON_V2 = "gate_input_invalid"
+# A pydantic contract failure reached the CLI. Code only: the message embeds
+# `input_value`, which can carry readiness and finding content.
+READINESS_INVARIANT_VIOLATION_REASON_V2 = "readiness_invariant_violation"
 RESPONSE_WITHOUT_PAYLOAD_REASON_V2 = "gate_response_without_payload"
 OUTPUT_OVERWRITES_INPUT_REASON_V2 = "gate_output_overwrites_input"
 
@@ -431,18 +434,19 @@ def main(argv: list[str] | None = None) -> int:
         # controlled exit" defect the guard itself was written to prevent.
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
-    # NOTE (`#200-D` predecessor): a `ValidationError` branch used to sit here
-    # for `produce_review_readiness_v2`, printing pydantic's message. That
-    # authority now raises `ReadinessEmissionError`, caught above, so the
-    # branch became unreachable and was removed rather than left as a handler
-    # that can never run.
-    #
-    # This does cost diagnostics: the message named WHICH state invariant
-    # failed, and `readiness_emission_contract_invalid` does not. Recovering it
-    # would need string-matching pydantic messages -- fragile, and a
-    # re-implementation of contract knowledge -- or printing the message, which
-    # is unsafe in general because a ValidationError can embed reviewed
-    # content. The limitation is recorded in the `#200-D` checkpoint.
+    except ValidationError:
+        # `#200-D` two-epoch model. `produce_review_readiness_v2`'s CALLER-
+        # visible `ready` preconditions are now refused above with a
+        # rule-naming reason, so this branch no longer sees them. It is NOT
+        # unreachable, though: `readiness_decision_v2` also builds pydantic
+        # models from the caller's `--decision` file, and a future gap
+        # anywhere beneath would otherwise become an uncaught traceback.
+        #
+        # A CLI must exit controlled. The pydantic message is deliberately not
+        # printed -- it embeds `input_value`, which can carry readiness and
+        # finding content.
+        print(f"error: {READINESS_INVARIANT_VIOLATION_REASON_V2}", file=sys.stderr)
+        return 1
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -121,22 +121,20 @@ CONTENT_REASON_UNREPRESENTABLE_V2 = "content_unrepresentable"
 _REVIEWABLE_CONTENT_ADAPTER_V2 = TypeAdapter(ReviewableContentTextV2)
 
 
-def _assert_fragment_content_representable_v2(text: str, *, fragment_id: str) -> None:
-    """Pre-seal: prove external content satisfies the reviewable-content
-    contract BEFORE `FragmentContentV2` is constructed from it.
+def _is_fragment_content_representable_v2(text: str) -> bool:
+    """Pre-seal: can the reviewable-content contract represent this text?
 
-    Without this, unrepresentable target bytes surfaced as a raw pydantic
-    `ValidationError` whose message embeds the reviewed diff -- both an open
-    surface and a content leak. The refusal carries the fragment id and a
-    stable code only, never the bytes that caused it.
+    Consults the contract's OWN annotated type, so the rule has exactly one
+    definition. Without this check, unrepresentable target bytes surfaced as a
+    raw pydantic `ValidationError` whose message embeds the reviewed diff --
+    both an open surface and a content leak.
     """
 
     try:
         _REVIEWABLE_CONTENT_ADAPTER_V2.validate_python(text)
-    except ValidationError as exc:
-        raise ExtractionBlockedError(
-            CONTENT_REASON_UNREPRESENTABLE_V2, fragment_id=fragment_id
-        ) from exc
+    except ValidationError:
+        return False
+    return True
 
 _GENERATED_PATH_MARKERS_V2: tuple[str, ...] = (
     "/generated/",
@@ -495,9 +493,23 @@ def _build_fragment_content_v2(
             redaction_applied=redaction_applied, chars=0,
         )
 
-    _assert_fragment_content_representable_v2(
-        redacted, fragment_id=fragment.fragment_id
-    )
+    if not _is_fragment_content_representable_v2(redacted):
+        # Mirrors the five neighbouring branches rather than aborting the run:
+        # a REQUIRED fragment blocks fail-closed, an optional one degrades to
+        # an honest typed omission. An earlier revision raised unconditionally,
+        # so a single CRLF byte in an OPTIONAL context fragment killed the
+        # whole extraction -- a regression this module's own policy forbids.
+        if fragment.coverage_required:
+            raise ExtractionBlockedError(
+                CONTENT_REASON_UNREPRESENTABLE_V2, fragment_id=fragment.fragment_id
+            )
+        return FragmentContentV2(
+            fragment_id=fragment.fragment_id, path=fragment.path,
+            diff_sha256=fragment.diff_sha256,
+            policy=ReviewContentPolicyV2.UNREPRESENTABLE, coverage_required=False,
+            content=None, content_sha256=None, redaction_applied=redaction_applied,
+            chars=0,
+        )
 
     # ------------------------- SEAL -------------------------
     return FragmentContentV2(

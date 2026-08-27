@@ -15,12 +15,11 @@ already enforces. It only assembles the constructor call; the contract's
 own validator is the sole authority on whether the result is well-formed,
 and fails closed if it is not.
 
-That refusal is surfaced as ``ReadinessEmissionError(readiness_emission_
-contract_invalid)``, not as a raw ``pydantic.ValidationError`` (`#200-D`
-predecessor). The validator remains the authority on WHETHER the artifact is
-well-formed; what changed is only that callers no longer have to know this
-module builds a pydantic model in order to catch its refusal. The pydantic
-message also embeds finding content, so it must not cross this boundary.
+Caller-visible ``ready`` preconditions are evaluated BEFORE construction and
+refused as ``ReadinessEmissionError`` with a reason that names the unmet rule.
+The validator remains the authority on whether the artifact is well-formed,
+and its rules are consulted, never restated. A ``ValidationError`` from
+construction after that seal is a derivation defect and escapes raw.
 
 ## The single production constructor path (`#201-C`, R2)
 
@@ -118,7 +117,6 @@ REVIEW_READINESS_SOURCE_V2 = "aiops-review-quality-gate"
 
 READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2 = "readiness_emission_decision_provenance_mismatch"
 # The readiness artifact could not satisfy its own contract.
-READINESS_EMISSION_CONTRACT_INVALID_REASON_V2 = "readiness_emission_contract_invalid"
 
 
 class ReadinessEmissionError(ValueError):
@@ -233,16 +231,16 @@ def _assemble_review_readiness_v2(
     reflects whatever the caller (and, transitively, C1's
     ``stale_reason_codes`` parameter) already decided.
 
-    Raises ``ReadinessEmissionError(READINESS_EMISSION_CONTRACT_INVALID_
-    REASON_V2)`` if the assembled combination does not satisfy
-    ``ReviewReadinessV2.validate_state_invariants``. That validator is still
-    the authority and is never re-implemented here; `#200-D`'s predecessor
-    only converts its refusal into this module's own family, so a caller
-    catching ``ReadinessEmissionError`` sees every expected failure of this
-    function.
+    Raises ``ReadinessEmissionError`` with the rule-naming reason a caller-
+    visible ``ready`` precondition was not met (``ready_requires_open_pr``,
+    ``ready_requires_green_checks``, ...). Those preconditions are evaluated
+    BEFORE the artifact is constructed, by the single authority in
+    ``contracts_v2`` that ``validate_state_invariants`` also consults, so the
+    rules are never restated here.
 
-    A defect in this module (or beneath it) still escapes raw: only the
-    contract's own ``ValidationError`` is converted.
+    After that seal, a ``ValidationError`` from construction means derivation
+    produced an invalid artifact from validated material -- a defect in this
+    repository, and it escapes raw.
 
     Before that, raises ``ReadinessEmissionError`` if ``decision``'s own
     ``run_id``/``manifest_hash`` provenance does not match
@@ -269,11 +267,13 @@ def _assemble_review_readiness_v2(
     # reasons again, without string-matching any validation message.
     if decision.state is ReadinessStateV2.READY:
         unmet = evaluate_ready_preconditions_v2(
-        pr_state=pr_state,
+            pr_state=pr_state,
             checks=checks,
-        coverage=decision.coverage,
-        pipeline=decision.pipeline,
-            has_reasons_or_blockers=bool(decision.reason_codes or decision.blockers),
+            coverage=decision.coverage,
+            pipeline=decision.pipeline,
+            reason_codes=decision.reason_codes,
+            blockers=decision.blockers,
+            findings=findings,
         )
         if unmet is not None:
             raise ReadinessEmissionError(unmet)

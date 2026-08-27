@@ -1145,9 +1145,16 @@ _READY_PRECONDITION_MESSAGES_V2 = {
 
 
 def evaluate_ready_preconditions_v2(
-    *, pr_state, checks, coverage, pipeline, has_reasons_or_blockers: bool
+    *, pr_state, checks, coverage, pipeline, reason_codes, blockers, findings
 ) -> str | None:
     """Return the stable reason a ``ready`` state is not admissible, or None.
+
+    Takes the RAW material and derives the predicate itself. An earlier
+    revision accepted a pre-computed ``has_reasons_or_blockers`` boolean, and
+    its two callers promptly diverged: the emission owner counted every
+    blocker where the validator counts only ACTIVE ones, and omitted blocking
+    findings entirely. One authority means one derivation, not one function
+    two callers feed differently.
 
     Content-free: names a rule, never a value.
     """
@@ -1162,7 +1169,17 @@ def evaluate_ready_preconditions_v2(
         return READY_REQUIRES_COMPLETE_COVERAGE_REASON_V2
     if pipeline.degraded:
         return READY_REQUIRES_UNDEGRADED_PIPELINE_REASON_V2
-    if has_reasons_or_blockers:
+
+    active_blockers = [blocker for blocker in blockers if blocker.active]
+    blocking_findings = [
+        finding
+        for finding in findings
+        if finding.actionable
+        and finding.disposition in {FindingDispositionV2.NEW, FindingDispositionV2.CONFIRMED}
+        and finding.severity
+        in {FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2}
+    ]
+    if set(reason_codes) or active_blockers or blocking_findings:
         return READY_REQUIRES_NO_BLOCKERS_REASON_V2
     return None
 
@@ -1277,9 +1294,9 @@ class ReviewReadinessV2(ContractV2Model):
                 checks=self.checks,
                 coverage=self.coverage,
                 pipeline=self.pipeline,
-                has_reasons_or_blockers=bool(
-                    reasons or active_blockers or blocking_findings
-                ),
+                reason_codes=self.reason_codes,
+                blockers=self.blockers,
+                findings=self.findings,
             )
             if unmet is not None:
                 raise ValueError(_READY_PRECONDITION_MESSAGES_V2[unmet])
