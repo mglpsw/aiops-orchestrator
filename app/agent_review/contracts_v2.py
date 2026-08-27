@@ -1184,6 +1184,99 @@ def evaluate_ready_preconditions_v2(
     return None
 
 
+
+# `#200-D` readiness partition. `validate_state_invariants` owned invariants
+# with two different truth-makers:
+#
+#   DERIVED    run_id, evaluated_run_id, head_sha, evaluated_head_sha -- all
+#              computed by `produce_review_readiness_v2` itself
+#   SUBMITTED  the decision, findings, identities and pr_state handed in
+#
+# One `except ValidationError` around the constructor cannot tell them apart,
+# which is what let a derivation defect surface as an operator-facing refusal.
+# The submitted half is extracted here so the emission owner can establish it
+# BEFORE its transformation/derivation epoch begins. The rules are not
+# restated: `validate_state_invariants` calls this same function, so a
+# document parsed straight from JSON is still fully validated.
+READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2 = "readiness_submitted_material_invalid"
+
+
+def evaluate_readiness_submitted_material_v2(
+    *, decision, findings, checks, identity, evaluated_identity, pr_state
+) -> str | None:
+    """Return the stable reason SUBMITTED readiness material is inadmissible.
+
+    Content-free: names a rule, never a value. Returning None does not promise
+    the resulting artifact is valid -- the transformation and derivation that
+    follow are a different authority's responsibility, and their failures are
+    defects, not caller faults.
+    """
+
+    reason_codes = list(decision.reason_codes)
+    blockers = list(decision.blockers)
+    findings = list(findings)
+    checks = list(checks)
+
+    if len(reason_codes) != len(set(reason_codes)):
+        return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+    if len({blocker.blocker_id for blocker in blockers}) != len(blockers):
+        return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+    if len({finding.finding_id for finding in findings}) != len(findings):
+        return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+    if len({check.check_name for check in checks}) != len(checks):
+        return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+
+    evaluated_head_sha = evaluated_identity.head_sha
+    # `checks` are NOT carried through: the emitter replaces them with
+    # `assessment.checks`. Binding the SUBMITTED ones to the evaluated HEAD
+    # here would be checking material that never reaches the artifact.
+    for finding in findings:
+        if finding.observed_at_head_sha != evaluated_head_sha:
+            return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+        if (
+            finding.disposition is not FindingDispositionV2.NEW
+            and finding.decided_at_head_sha != evaluated_head_sha
+        ):
+            return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+        if any(item.head_sha != evaluated_head_sha for item in finding.evidence):
+            return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+
+    findings_by_id = {finding.finding_id: finding for finding in findings}
+    for blocker in blockers:
+        if blocker.reason_code in {
+            ReadinessReasonV2.CONFIRMED_CODE_FINDING,
+            ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED,
+        }:
+            if blocker.finding_id is None or blocker.finding_id not in findings_by_id:
+                return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+            finding = findings_by_id[blocker.finding_id]
+            if blocker.reason_code is ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED and not (
+                finding.disposition is FindingDispositionV2.NEW
+                and finding.actionable
+                and finding.severity
+                in {FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2}
+            ):
+                return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+        elif blocker.finding_id is not None:
+            return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+
+    # Of the five `ready` preconditions, ONLY the pull-request one is decidable
+    # from submitted material. `checks` are replaced by the assessment,
+    # `pipeline`/`state`/`reason_codes`/`blockers` are adjusted by it, and a
+    # submitted `READY` legitimately degrades to `manual_required` when
+    # required-check authority is not established -- refusing that here would
+    # break the documented shadow-minimal behaviour.
+    #
+    # `pr_state` is never transformed, so a submission claiming `READY` for a
+    # non-open pull request is incoherent whatever the assessment does, and the
+    # caller can act on it. The other four stay enforced by
+    # `validate_state_invariants` against the FINAL material, where a violation
+    # means the transformation produced an incoherent state -- a defect.
+    if decision.state is ReadinessStateV2.READY and pr_state is not PullRequestStateV2.OPEN:
+        return READY_REQUIRES_OPEN_PR_REASON_V2
+    return None
+
+
 class ReviewReadinessV2(ContractV2Model):
     schema_id: Literal["agent-review.review-readiness.v2"]
     schema_version: Literal[2]

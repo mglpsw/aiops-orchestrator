@@ -203,73 +203,83 @@ the control set, and every injection happens with valid caller material,
 strictly after that material has crossed its seal. A test that never crosses
 the seal is not evidence.
 
-## STOP — `STOP_TWO_EPOCH_MODEL_NOT_SUFFICIENT` at one authority
+## Readiness partition — the falsifier is resolved
 
-A* holds at five of the six authorities. Diff, assembly, payload, payload-set
-and content each satisfy both directions under adversarial review: expected
-external/caller invalidity is typed, and a post-seal `ValidationError` escapes
-raw. Those closures survived three review rounds without regression.
-
-**It does not hold at readiness.** Reproduced by execution, not argument:
+Two heads are preserved as history and neither is rewritten as successful:
 
 ```text
-compute_run_id returns a wrong-but-well-formed sha
-  (passes the pre-seal provenance check)
-        -> contract's run_id-vs-identity coherence check fails in the constructor
-        -> ReadinessEmissionError(readiness_material_invalid)
+56b4a874  model B   positive closure achieved, negative closure falsified
+e7e07b83  two-epoch five owners converged, readiness falsified
 ```
 
-A repository defect delivered to an operator as a gate refusal — the exact
-laundering that falsified model B.
+### The partition, by truth-maker
 
-### Why it is not another missing clause
-
-`ReviewReadinessV2.validate_state_invariants` checks two different KINDS of
-thing in one validator:
+The question was never "which validator clause is caller-visible" but "who
+produced this value, relative to `produce_review_readiness_v2`":
 
 ```text
-caller material      pr_state, checks, blocker/finding linkage, uniqueness
-derivation coherence run_id, evaluated_run_id, head_sha, evaluated_head_sha
-                     -- all computed by produce_review_readiness_v2 itself
+C  submitted BY the caller   decision, findings, checks, identity,
+                             evaluated_identity, pr_state
+T  produced INSIDE           the required-check assessment, and the adjusted
+                             decision derived from it
+D  derived INSIDE            run_id, evaluated_run_id, head_sha,
+                             evaluated_head_sha
 ```
 
-A single construction-site conversion cannot separate them: it sees one
-`ValidationError` for both. Enumerating the caller-material invariants
-pre-seal is precisely the recurrence this design exists to end — round 3 tried
-the subset version of that and left the rest escaping raw with `input_value`
-attached.
+**No sealed carrier is required, and the evidence is discriminating.** The
+emitter derives NEITHER decision source: a `--decision` JSON and a
+`compute_readiness_decision_v2` output arrive as the same argument and are
+equally caller-material at this boundary. Provenance beyond that belongs to
+whoever produced the decision — a different authority's epoch. The partition is
+total and disjoint without introducing a token.
 
-The seal is well-defined only where an authority's OUTPUT CONTRACT constrains
-caller material alone. Readiness violates that precondition, and no arrangement
-of try/except inside this module changes it.
+### Where the seal actually is
 
-### The decision the next grant must make
+`_apply_required_check_assessment_v2` runs INSIDE the emitter, so
+`_assemble_review_readiness_v2` receives TRANSFORMATION output on the main
+path, not caller material. The previous round put its pre-seal check there,
+which is why a transformation defect became `ready_requires_green_checks` — the
+laundering had simply moved one step earlier than the `compute_run_id`
+witness.
 
-- **A. Split the validator.** Separate `validate_state_invariants` into a
-  caller-material part and a derivation-coherence part. The emission owner
-  pre-seals the first and lets the second escape. Correct, and a contract
-  change this grant did not scope.
-- **B. Derive before validating.** Have the caller supply `run_id`/`head_sha`
-  rather than computing them here, making every constructor argument caller
-  material. Moves the problem to whoever derives them.
-- **C. Accept it at this one authority** and document that
-  `readiness_material_invalid` may indicate a defect. Cheapest; dishonest in
-  the direction that matters.
+The epoch now sits at `produce_review_readiness_v2`'s entry, on submitted
+material. `_assemble_review_readiness_v2` converts nothing.
 
-### A control that could not fail — twice
+### Only one `ready` precondition is decidable pre-seal
 
-The falsifier is now a working test (`..._STILL_LAUNDERED_falsifier`) that
-pins the wrong behaviour on purpose. Its predecessor mocked `compute_run_id`
-to raise, which fires at the pre-seal provenance check three statements before
-the `try`; it never crossed the seal and stayed green even when the handler was
-widened to `except Exception`.
+`checks` are replaced by the assessment's own, and
+`pipeline`/`state`/`reason_codes`/`blockers` are adjusted by it. A submitted
+`READY` legitimately degrades to `manual_required` when required-check
+authority is not established — refusing it pre-seal would break that
+documented shadow-minimal behaviour, and an earlier attempt in this round did
+exactly that.
 
-That is the second time in this branch a control failed to test what it
-claimed — the first being the defect-control set that omitted
-`ValidationError`, the type that carries most internal defects here. Both were
-found by review, not by the suite. When the next grant splits the validator,
-inverting that assertion to `pytest.raises(ValidationError)` is the acceptance
-criterion.
+`pr_state` is never transformed, so `ready_requires_open_pr` IS decidable from
+submitted material and keeps its precise code. The other four remain
+final-material invariants, where a violation means the transformation produced
+an incoherent state — a defect, correctly raw. `ready_requires_green_checks` is
+therefore no longer a pre-seal refusal, and that is a deliberate, recorded
+narrowing rather than a regression.
+
+### Taxonomy
+
+`readiness_material_invalid` is deleted: it could not be given an honest narrow
+meaning, since it covered derivation defects and caller faults alike. Its
+replacement is `readiness_submitted_material_invalid`, produced by exactly one
+pre-seal authority, plus the precise `ready_requires_*` codes.
+
+### Two more controls that could not fail
+
+`test_published_contract_still_rejects_a_wrong_run_id_on_direct_parse` passed
+while the `run_id` check was deleted, because `model_validate` on a dict trips
+the list-vs-tuple strictness trap first — it was rejecting for the wrong
+reason. And a raising-derivation witness fires at the provenance check's own
+`compute_run_id` call, so it cannot discriminate a catch around the derivation
+lines; that mutant is dropped as unkillable-by-construction rather than left
+looking green.
+
+That is the third and fourth control in this branch to fail this way. The
+pattern is recorded because it matters more than any single instance.
 
 ## Scope fence
 

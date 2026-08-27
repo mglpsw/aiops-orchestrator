@@ -514,22 +514,25 @@ def test_cli_fails_closed_on_a_readiness_invariant_violation(tmp_path: Path) -> 
     """ready requires an open PR -- a merged PR with a ready decision must
     never be silently accepted.
 
-    `ReviewReadinessV2`'s own validator, which is what actually enforces
-    this, is covered directly and unaffected by the round-7 correction: see
-    `test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_
-    validator` in `test_review_readiness_emission_v2.py` -- a file `#201-C0`
-    is forbidden from touching. What THIS test can still prove, through the
-    live CLI, is that a merged PR is refused no matter which stage catches it
-    first: `produce_review_readiness_v2` runs the `#201-C0` required-check
-    verification before `_assemble_review_readiness_v2` (where the readiness
-    invariant itself would fire) is ever reached, so that invariant's own
-    check is not reached via this path today -- but the submission is
-    refused regardless, which is the property that matters end to end."""
+    The property that matters end to end -- and the one this test has always
+    named -- is that a merged PR is refused no matter which stage catches it
+    first. Which stage that is HAS changed.
+
+    `#200-D`'s readiness partition establishes caller-visible `ready`
+    preconditions BEFORE the `#201-C0` required-check verification, because
+    `pr_state` is submitted material and is never transformed. The refusal is
+    therefore both earlier and more precise than the judge-gate message it
+    used to produce: an operator is told the rule they violated rather than
+    the next gate that happened to trip."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path, pr_state="merged"))
+    assert result.returncode != 0
+    assert "ready_requires_open_pr" in result.stderr, result.stderr
+    assert not output_path.exists()
+    return
 
     _assert_reached_the_independent_judge_gate(result)
     assert not output_path.exists()

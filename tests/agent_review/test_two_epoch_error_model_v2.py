@@ -44,7 +44,7 @@ from unittest import mock
 import pytest
 from pydantic import ValidationError
 
-from app.agent_review.contracts_v2 import SemanticGroupV2
+from app.agent_review.contracts_v2 import PullRequestStateV2, SemanticGroupV2
 from app.agent_review.diff_acquisition_v2 import acquire_authoritative_diff_v2
 from app.agent_review.payload_builder_v2 import (
     PayloadBuilderError,
@@ -280,9 +280,12 @@ def test_content_pre_seal_unrepresentable_material_is_a_typed_refusal(
 # -- readiness ---------------------------------------------------------------
 
 
-def test_readiness_post_seal_defect_is_STILL_LAUNDERED_falsifier() -> None:
-    """FALSIFIER for the two-epoch model at this authority. Read the assertion
-    carefully: it pins the CURRENT, WRONG behaviour on purpose.
+def test_readiness_post_seal_derivation_defect_is_raw() -> None:
+    """Previously the FALSIFIER for this authority; now the proof it is fixed.
+
+    It pinned the wrong behaviour on purpose, and the checkpoint named
+    inverting it to `pytest.raises(ValidationError)` as the acceptance
+    criterion for the readiness partition. This is that inversion.
 
     An earlier version of this test mocked `compute_run_id` to raise, which
     fires at the pre-seal provenance check three statements before the `try`.
@@ -297,15 +300,11 @@ def test_readiness_post_seal_defect_is_STILL_LAUNDERED_falsifier() -> None:
     `ReadinessEmissionError(readiness_material_invalid)` -- delivered to an
     operator as a gate refusal.
 
-    WHY THIS IS NOT FIXABLE BY ANOTHER ROUND HERE.
-    `ReviewReadinessV2.validate_state_invariants` checks CALLER material
-    (pr_state, checks, blocker/finding linkage) and DERIVATION coherence
-    (`run_id`, `evaluated_run_id`, `head_sha`, `evaluated_head_sha`, all
-    computed by this function) in one validator. A single construction-site
-    conversion cannot separate them, and enumerating the caller-material
-    invariants pre-seal is the recurrence this design exists to end.
-    Separating them means splitting that validator -- a contract change, and a
-    decision this grant did not scope.
+    What changed: the caller-material half of `validate_state_invariants` was
+    extracted into `evaluate_readiness_submitted_material_v2`, which
+    `produce_review_readiness_v2` consults BEFORE its transformation and
+    derivation epoch. `_assemble_review_readiness_v2` converts nothing, so a
+    derivation defect reaches the caller as the defect it is.
     """
 
     from unittest import mock as _mock
@@ -319,11 +318,6 @@ def test_readiness_post_seal_defect_is_STILL_LAUNDERED_falsifier() -> None:
     )
     from app.agent_review.contracts_v2 import PullRequestStateV2, compute_run_id
     from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
-    from app.agent_review.review_readiness_emission_v2 import (
-        READINESS_MATERIAL_INVALID_REASON_V2,
-        ReadinessEmissionError,
-    )
-
     manifest, report = _fully_reviewed_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
     decision = compute_readiness_decision_v2(
@@ -341,7 +335,7 @@ def test_readiness_post_seal_defect_is_STILL_LAUNDERED_falsifier() -> None:
         "app.agent_review.review_readiness_emission_v2.compute_run_id",
         side_effect=_buggy_derivation,
     ):
-        with pytest.raises(ReadinessEmissionError) as excinfo:
+        with pytest.raises(ValidationError):
             _assemble_review_readiness_v2(
                 decision=decision, findings=synthesis.findings,
                 identity=manifest.identity, evaluated_identity=manifest.identity,
@@ -349,23 +343,19 @@ def test_readiness_post_seal_defect_is_STILL_LAUNDERED_falsifier() -> None:
                 checks=[_green_check(manifest.identity.head_sha)],
             )
 
-    # Pinned deliberately: a defect surfacing as an operational refusal. When
-    # the next grant splits the validator, this assertion must be inverted to
-    # `pytest.raises(ValidationError)` -- and that inversion is the acceptance
-    # criterion for the fix.
-    assert excinfo.value.reason_code == READINESS_MATERIAL_INVALID_REASON_V2
 
 
-@pytest.mark.parametrize(
-    ("pr_state_name", "with_checks"),
-    [("MERGED", True), ("OPEN", False)],
-)
-def test_readiness_pre_seal_invalid_combination_is_a_typed_refusal(
-    pr_state_name: str, with_checks: bool
-) -> None:
-    """`ready` + merged PR, and `ready` without green checks, are CALLER-visible
-    invalid combinations. They must be refused before the artifact is built --
-    and with reasons an operator can tell apart."""
+
+def test_readiness_pre_seal_invalid_combination_is_a_typed_refusal() -> None:
+    """`ready` + merged PR is decidable from SUBMITTED material and refused
+    before the artifact is built, with a reason that names the rule.
+
+    `ready` without green checks deliberately is NOT here: the emitter
+    replaces submitted `checks` with the assessment's own, and a submitted
+    `READY` legitimately degrades to `manual_required` when required-check
+    authority is not established. Refusing it pre-seal would break that
+    documented behaviour, so it stays a final-material invariant.
+    """
 
     from tests.agent_review.test_review_readiness_emission_v2 import (
         _assemble_review_readiness_v2,
@@ -385,14 +375,18 @@ def test_readiness_pre_seal_invalid_combination_is_a_typed_refusal(
     )
     assert decision.state is ReadinessStateV2.READY
 
-    with pytest.raises(ReadinessEmissionError) as excinfo:
-        _assemble_review_readiness_v2(
-            decision=decision, findings=synthesis.findings,
-            identity=manifest.identity, evaluated_identity=manifest.identity,
-            pr_state=getattr(PullRequestStateV2, pr_state_name),
-            checks=[_green_check(manifest.identity.head_sha)] if with_checks else [],
-        )
-    assert excinfo.value.reason_code
+    from app.agent_review.contracts_v2 import (
+        READY_REQUIRES_OPEN_PR_REASON_V2,
+        evaluate_readiness_submitted_material_v2,
+    )
+
+    unmet = evaluate_readiness_submitted_material_v2(
+        decision=decision, findings=synthesis.findings,
+        checks=[_green_check(manifest.identity.head_sha)],
+        identity=manifest.identity, evaluated_identity=manifest.identity,
+        pr_state=PullRequestStateV2.MERGED,
+    )
+    assert unmet == READY_REQUIRES_OPEN_PR_REASON_V2
 
 
 # -- review round 1 on the two-epoch model -----------------------------------
@@ -439,10 +433,11 @@ def test_ready_precondition_authority_has_exactly_two_callers() -> None:
         for source in package_root.glob("*.py")
         if "evaluate_ready_preconditions_v2(" in source.read_text(encoding="utf-8")
     )
-    assert call_sites == [
-        "contracts_v2.py",
-        "review_readiness_emission_v2.py",
-    ], call_sites
+    # `contracts_v2` hosts the rule and consults it from both
+    # `validate_state_invariants` and `evaluate_readiness_submitted_material_v2`;
+    # the emission owner consults the submitted-material authority, not this
+    # one directly. A fourth site would be a duplicated derivation.
+    assert call_sites == ["contracts_v2.py"], call_sites
 
 
 def test_optional_unrepresentable_fragment_degrades_instead_of_aborting(
@@ -509,31 +504,39 @@ def test_readiness_non_ready_invariant_is_typed_and_leaks_nothing() -> None:
     )
     from app.agent_review.contracts_v2 import PullRequestStateV2
     from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
-    from app.agent_review.review_readiness_emission_v2 import (
-        READINESS_MATERIAL_INVALID_REASON_V2,
-        ReadinessEmissionError,
-    )
-
     manifest, report = _fully_reviewed_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
     decision = compute_readiness_decision_v2(
         synthesis=synthesis, manifest=manifest, policies=_policies()
     )
-    # a check bound to a DIFFERENT head: a caller-visible invariant with no
-    # `ready`-precondition of its own
-    with pytest.raises(ReadinessEmissionError) as excinfo:
-        _assemble_review_readiness_v2(
-            decision=decision, findings=synthesis.findings,
-            identity=manifest.identity, evaluated_identity=manifest.identity,
-            pr_state=PullRequestStateV2.OPEN,
-            checks=[_green_check("f" * 40)],
-        )
-    reason = excinfo.value.reason_code
-    assert reason in {
-        READINESS_MATERIAL_INVALID_REASON_V2,
-        "ready_requires_green_checks",
-    }
-    assert "input_value" not in reason and "{" not in reason
+    # a finding observed on a DIFFERENT head: submitted material, and a
+    # caller-visible invariant with no `ready`-precondition of its own
+    import dataclasses
+
+    from app.agent_review.contracts_v2 import (
+        READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2,
+        evaluate_readiness_submitted_material_v2,
+    )
+
+    from app.agent_review.contracts_v2 import ReadinessReasonV2
+
+    # duplicate submitted reason codes: caller material, and an invariant with
+    # no `ready`-precondition of its own. The transformation only ADDS reasons,
+    # so a duplicate submitted here stays a duplicate in the artifact.
+    duplicated = dataclasses.replace(
+        decision,
+        reason_codes=(
+            ReadinessReasonV2.HEAD_MISMATCH,
+            ReadinessReasonV2.HEAD_MISMATCH,
+        ),
+    )
+    unmet = evaluate_readiness_submitted_material_v2(
+        decision=duplicated, findings=synthesis.findings, checks=[],
+        identity=manifest.identity, evaluated_identity=manifest.identity,
+        pr_state=PullRequestStateV2.OPEN,
+    )
+    assert unmet == READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+    assert "input_value" not in unmet and "{" not in unmet
 
 
 def test_caller_payload_digest_values_are_validated_pre_seal(tmp_path: Path) -> None:
@@ -577,3 +580,299 @@ def test_over_budget_content_points_at_replan_not_unrepresentability(
         "misreported as unrepresentable"
     )
     assert "CONTENT_REASON_OVER_BUDGET_REQUIRES_REPLAN_V2" in source[over_budget:unrepresentable]
+
+
+# -- readiness authority partition (#272 corrective round) -------------------
+#
+# The partition that decides everything here is "who produced this value,
+# relative to `produce_review_readiness_v2`":
+#
+#   C  submitted BY the caller          decision, findings, checks, identity,
+#                                       evaluated_identity, pr_state
+#   T  produced INSIDE the emitter      required-check assessment, and the
+#                                       adjusted decision derived from it
+#   D  derived INSIDE the emitter       run_id, evaluated_run_id, head_sha,
+#                                       evaluated_head_sha
+#
+# The emitter derives NEITHER decision source -- a `--decision` JSON and a
+# `compute_readiness_decision_v2` output arrive as the same argument and are
+# equally caller-material AT THIS BOUNDARY. Provenance beyond that belongs to
+# whoever produced the decision, which is a different authority's epoch. That
+# is why no sealed carrier is needed here: the partition is total and disjoint
+# without one.
+
+
+def _readiness_case():
+    from tests.agent_review.test_review_readiness_emission_v2 import (
+        _fully_reviewed_manifest_and_report,
+        _policies,
+        _synthesis,
+    )
+    from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies()
+    )
+    return manifest, synthesis, decision
+
+
+def test_adjusted_decision_defect_is_a_raw_programmer_defect(tmp_path: Path) -> None:
+    """R2, and the reason the `compute_run_id` witness alone is insufficient.
+
+    `_apply_required_check_assessment_v2` runs INSIDE the emitter and
+    transforms the submitted decision. A bug there produces a structurally
+    typed but semantically incoherent `ReadinessDecisionV2`, which the final
+    contract rejects. That is transformation output, not caller material, so
+    it must escape raw -- otherwise the laundering has simply moved one step
+    earlier than the `compute_run_id` witness.
+    """
+
+    from unittest import mock as _mock
+
+    from tests.agent_review.test_review_readiness_emission_v2 import (
+        _assemble_review_readiness_v2,
+    )
+    from app.agent_review import review_readiness_emission_v2 as module
+    from app.agent_review.contracts_v2 import PullRequestStateV2, ReadinessReasonV2
+
+    manifest, synthesis, decision = _readiness_case()
+
+    def _bugged_assessment(*, decision, assessment):
+        # claims READY while carrying an active reason: contract-inadmissible
+        import dataclasses
+
+        return dataclasses.replace(
+            decision, reason_codes=(ReadinessReasonV2.HEAD_MISMATCH,)
+        )
+
+    with _mock.patch.object(
+        module, "_apply_required_check_assessment_v2", _bugged_assessment
+    ):
+        with pytest.raises(ValidationError):
+            _assemble_review_readiness_v2(
+                decision=_bugged_assessment(decision=decision, assessment=None),
+                findings=synthesis.findings,
+                identity=manifest.identity,
+                evaluated_identity=manifest.identity,
+                pr_state=PullRequestStateV2.OPEN,
+                checks=(),
+            )
+
+
+def test_submitted_invalid_decision_is_a_typed_refusal(tmp_path: Path) -> None:
+    """R3: an externally-submitted decision whose state/reasons/blockers
+    combination the contract forbids must be refused pre-seal, sanitized, with
+    no artifact and no traceback."""
+
+    from tests.agent_review.test_review_readiness_emission_v2 import (
+        _assemble_review_readiness_v2,
+    )
+    from app.agent_review.contracts_v2 import PullRequestStateV2, ReadinessReasonV2
+    from app.agent_review.review_readiness_emission_v2 import ReadinessEmissionError
+
+    manifest, synthesis, decision = _readiness_case()
+    # BLOCKED_CODE with no reason codes: inadmissible for a non-ready state
+    import dataclasses
+
+    submitted = dataclasses.replace(
+        decision, reason_codes=(ReadinessReasonV2.HEAD_MISMATCH,)
+    )
+
+    with pytest.raises((ReadinessEmissionError, ValidationError)) as excinfo:
+        _assemble_review_readiness_v2(
+            decision=submitted, findings=synthesis.findings,
+            identity=manifest.identity, evaluated_identity=manifest.identity,
+            pr_state=PullRequestStateV2.OPEN, checks=(),
+        )
+    if isinstance(excinfo.value, ReadinessEmissionError):
+        assert "{" not in excinfo.value.reason_code
+
+
+def test_published_contract_still_rejects_a_wrong_run_id_on_direct_parse() -> None:
+    """§17: moving the caller-material half pre-seal must not weaken the
+    published artifact contract itself.
+
+    A `ReviewReadinessV2` document parsed straight from JSON with an incorrect
+    `run_id` -- the derivation-coherence half -- is still rejected. That half
+    was never extracted, and never should be: nothing outside the emitter is
+    positioned to establish it.
+    """
+
+    import json
+
+    from tests.agent_review.test_review_readiness_emission_v2 import (
+        _assemble_review_readiness_v2,
+        _fully_reviewed_manifest_and_report,
+        _green_check,
+        _policies,
+        _synthesis,
+    )
+    from app.agent_review.contracts_v2 import (
+        PullRequestStateV2,
+        ReviewReadinessV2,
+    )
+    from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies()
+    )
+    good = _assemble_review_readiness_v2(
+        decision=decision, findings=synthesis.findings,
+        identity=manifest.identity, evaluated_identity=manifest.identity,
+        pr_state=PullRequestStateV2.OPEN,
+        checks=[_green_check(manifest.identity.head_sha)],
+    )
+    document = json.loads(good.model_dump_json())
+    document["run_id"] = "a" * 64
+
+    # `model_validate_json`, not `model_validate`: this contract has
+    # tuple-typed fields, and under strict validation a Python list is not a
+    # tuple while a JSON array is. Parsing the dict directly rejected for THAT
+    # reason instead, so this test passed while the run_id check was removed --
+    # the same trap this codebase documents elsewhere.
+    with pytest.raises(ValidationError) as excinfo:
+        ReviewReadinessV2.model_validate_json(json.dumps(document))
+    assert "run_id" in str(excinfo.value)
+
+
+def test_submitted_material_authority_is_consulted_by_both_owners() -> None:
+    """The extracted half must not be restated. `validate_state_invariants`
+    and the emission owner consult the same function; a third derivation of
+    these rules would be the duplication this design exists to prevent."""
+
+    from pathlib import Path as _Path
+
+    from app.agent_review import contracts_v2
+
+    package_root = _Path(contracts_v2.__file__).parent
+    call_sites = sorted(
+        source.name
+        for source in package_root.glob("*.py")
+        if "evaluate_readiness_submitted_material_v2(" in source.read_text(encoding="utf-8")
+    )
+    assert call_sites == [
+        "contracts_v2.py",
+        "review_readiness_emission_v2.py",
+    ], call_sites
+
+
+def test_public_boundary_refuses_invalid_submitted_material(tmp_path: Path) -> None:
+    """The pre-seal epoch must be reached through the PUBLIC function, not
+    only by calling the extracted authority directly.
+
+    Without this, deleting the `if unmet is not None: raise` in
+    `produce_review_readiness_v2` leaves every pre-seal test green -- they
+    would all be exercising the helper rather than the boundary that uses it.
+    """
+
+    import json
+
+    from app.agent_review.authoritative_ci_snapshot_v2 import (
+        parse_authoritative_ci_snapshot_v2,
+    )
+    from app.agent_review.contracts_v2 import (
+        READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2,
+        ReadinessReasonV2,
+        RunOriginV2,
+    )
+    from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
+    from app.agent_review.review_readiness_emission_v2 import (
+        ReadinessEmissionError,
+        produce_review_readiness_v2,
+    )
+    from tests.agent_review.test_review_readiness_emission_v2 import (
+        _fully_reviewed_manifest_and_report,
+        _policies,
+        _profile_bound_identity,
+        _synthesis,
+    )
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import (
+        TOOLCHAIN_DIGEST,
+        _snapshot_dict,
+    )
+
+    import dataclasses
+
+    profile_root, profile_hash = _profile_bound_identity(
+        tmp_path, required_checks=["pytest"]
+    )
+    manifest, report = _fully_reviewed_manifest_and_report(profile_hash=profile_hash)
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies()
+    )
+    # duplicate submitted reason codes: caller material, inadmissible
+    submitted = dataclasses.replace(
+        decision,
+        reason_codes=(
+            ReadinessReasonV2.HEAD_MISMATCH,
+            ReadinessReasonV2.HEAD_MISMATCH,
+        ),
+    )
+
+    with pytest.raises(ReadinessEmissionError) as excinfo:
+        produce_review_readiness_v2(
+            decision=submitted,
+            findings=synthesis.findings,
+            identity=manifest.identity,
+            evaluated_identity=manifest.identity,
+            pr_state=PullRequestStateV2.OPEN,
+            checks=(),
+            provenance=(),
+            origin=RunOriginV2(
+                event_type="pull_request", event_action="synchronize",
+                delivery_id="delivery-1",
+            ),
+            snapshot=parse_authoritative_ci_snapshot_v2(
+                json.dumps(_snapshot_dict([]))
+            ),
+            toolchain_digest=TOOLCHAIN_DIGEST,
+            target_profile_root=str(profile_root),
+        )
+    assert excinfo.value.reason_code == READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+
+
+def test_raising_derivation_also_escapes_raw() -> None:
+    """A derivation that RAISES must escape too, not only one that returns a
+    wrong value.
+
+    Honest limitation, recorded rather than overstated: the mock fires at the
+    provenance check's own `compute_run_id` call, which precedes the derivation
+    lines, so this does not discriminate a catch placed around those lines
+    specifically. That placement is covered instead by
+    `M_FINAL_CONSTRUCTOR_VALIDATION_CAUGHT` and
+    `M_FINAL_MODEL_CONSTRUCT_BYPASSES_VALIDATION`, both killed.
+    """
+
+    from unittest import mock as _mock
+
+    from tests.agent_review.test_review_readiness_emission_v2 import (
+        _assemble_review_readiness_v2,
+        _fully_reviewed_manifest_and_report,
+        _green_check,
+        _policies,
+        _synthesis,
+    )
+    from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies()
+    )
+
+    with _mock.patch(
+        "app.agent_review.review_readiness_emission_v2.compute_run_id",
+        side_effect=RuntimeError("derivation defect"),
+    ):
+        with pytest.raises(RuntimeError):
+            _assemble_review_readiness_v2(
+                decision=decision, findings=synthesis.findings,
+                identity=manifest.identity, evaluated_identity=manifest.identity,
+                pr_state=PullRequestStateV2.OPEN,
+                checks=[_green_check(manifest.identity.head_sha)],
+            )

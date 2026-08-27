@@ -104,6 +104,7 @@ from app.agent_review.contracts_v2 import (
     RequiredCheckResultV2,
     ReviewReadinessV2,
     RunIdentityV2,
+    evaluate_readiness_submitted_material_v2,
     evaluate_ready_preconditions_v2,
     RunOriginV2,
     compute_run_id,
@@ -115,10 +116,6 @@ from app.agent_review.required_check_readiness_v2 import _verify_and_assess_requ
 REVIEW_READINESS_SOURCE_V2 = "aiops-review-quality-gate"
 
 READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2 = "readiness_emission_decision_provenance_mismatch"
-# The caller's readiness material does not satisfy the artifact contract, for
-# an invariant with no more specific pre-seal reason. Code only: the pydantic
-# message embeds the full readiness dict, finding text included.
-READINESS_MATERIAL_INVALID_REASON_V2 = "readiness_material_invalid"
 
 
 class ReadinessEmissionError(ValueError):
@@ -175,13 +172,37 @@ def produce_review_readiness_v2(
     to verify it against.
     """
 
+    # ---------------- EPOCH 1: caller material ----------------
+    #
+    # `decision`, `findings`, `checks`, `identity`, `evaluated_identity` and
+    # `pr_state` were all SUBMITTED to this function; it derived none of them.
+    # A `--decision` JSON and a `compute_readiness_decision_v2` output arrive
+    # as the same argument and are equally caller-material AT THIS BOUNDARY --
+    # which is why no sealed carrier is needed to tell them apart. Provenance
+    # beyond this point belongs to whoever produced the decision.
+    unmet = evaluate_readiness_submitted_material_v2(
+        decision=decision,
+        findings=findings,
+        checks=checks,
+        identity=identity,
+        evaluated_identity=evaluated_identity,
+        pr_state=pr_state,
+    )
+    if unmet is not None:
+        raise ReadinessEmissionError(unmet)
+
+    # ------------------------- SEAL -------------------------
+    #
+    # Below, the required-check assessment and its adjusted decision are
+    # TRANSFORMATION output, and run/head identity fields are DERIVED. A
+    # `ValidationError` from either is a defect in this repository and escapes.
     if decision.state is ReadinessStateV2.STALE:
         return _assemble_review_readiness_v2(
             decision=decision,
             findings=findings,
-            identity=identity,
-            evaluated_identity=evaluated_identity,
-            pr_state=pr_state,
+        identity=identity,
+        evaluated_identity=evaluated_identity,
+        pr_state=pr_state,
             checks=(),
         )
 
@@ -259,75 +280,37 @@ def _assemble_review_readiness_v2(
     if decision.run_id != compute_run_id(evaluated_identity) or decision.manifest_hash != evaluated_identity.manifest_hash:
         raise ReadinessEmissionError(READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2)
 
-    # ---------------- EPOCH 1: caller material ----------------
-    #
-    # The `ready` preconditions are caller-visible, so they are established
-    # here BY NAME, using the single authority in `contracts_v2` that the
-    # artifact's own validator also consults. This is what recovers the
-    # operator discrimination the previous outer-catch design destroyed:
-    # `ready`+merged-PR and `ready`-without-green-checks are different
-    # reasons again, without string-matching any validation message.
-    if decision.state is ReadinessStateV2.READY:
-        unmet = evaluate_ready_preconditions_v2(
-            pr_state=pr_state,
-            checks=checks,
-            coverage=decision.coverage,
-            pipeline=decision.pipeline,
-            reason_codes=decision.reason_codes,
-            blockers=decision.blockers,
-            findings=findings,
-        )
-        if unmet is not None:
-            raise ReadinessEmissionError(unmet)
-
     # Derivation happens HERE, before the seal, so a defect in it cannot be
     # mistaken for a caller problem: `compute_run_id` is this module's only
     # computation, and a failure in it escapes raw.
     run_id = compute_run_id(identity)
     evaluated_run_id = compute_run_id(evaluated_identity)
 
-    # ------------------------- SEAL -------------------------
+    # This assembler is entirely POST-SEAL. On the main path its `decision`
+    # and `checks` are TRANSFORMATION output -- `_apply_required_check_
+    # assessment_v2`'s adjusted decision and the assessment's own verified
+    # checks -- not caller material. Converting a `ValidationError` here would
+    # therefore report a transformation defect as an operator's fault, which
+    # is the laundering that falsified the previous two designs.
     #
-    # Every remaining argument is CALLER material -- this authority assembles,
-    # it does not derive. `validate_state_invariants` is therefore a
-    # caller-material check in its entirety, not a derivation check, so
-    # converting it here is pre-seal in substance even though it is the last
-    # statement.
-    #
-    # Deliberately scoped to the CONSTRUCTOR CALL alone. An earlier revision
-    # pre-sealed only the five `ready` preconditions and left the contract's
-    # other caller-visible invariants -- identity coherence, blocker/finding
-    # linkage, per-HEAD binding -- to escape raw, carrying `input_value` (the
-    # whole readiness dict, finding text included) onto stderr. Enumerating
-    # them one at a time would have repeated the recurrence this design exists
-    # to end; scoping the conversion to the single construction site closes
-    # all of them at once without widening to derivation.
-    #
-    # The `ready` preconditions are still evaluated above, because those are
-    # the ones an operator can act on and they deserve reasons that name the
-    # rule rather than one generic code.
-    try:
-        return ReviewReadinessV2(
-            schema_id="agent-review.review-readiness.v2",
-            schema_version=2,
-            source=REVIEW_READINESS_SOURCE_V2,
-            run_id=run_id,
-            identity=identity,
-            evaluated_run_id=evaluated_run_id,
-            evaluated_identity=evaluated_identity,
-            head_sha=identity.head_sha,
-            evaluated_head_sha=evaluated_identity.head_sha,
-            pr_state=pr_state,
-            checks=list(checks),
-            coverage=decision.coverage,
-            pipeline=decision.pipeline,
-            state=decision.state,
-            reason_codes=list(decision.reason_codes),
-            blockers=list(decision.blockers),
-            findings=list(findings),
-        )
-    except ValidationError as exc:
-        # Code only: the pydantic message embeds the readiness material.
-        raise ReadinessEmissionError(
-            READINESS_MATERIAL_INVALID_REASON_V2
-        ) from exc
+    # Caller material is validated in `produce_review_readiness_v2`, before
+    # the assessment runs. Nothing is converted below.
+    return ReviewReadinessV2(
+        schema_id="agent-review.review-readiness.v2",
+        schema_version=2,
+        source=REVIEW_READINESS_SOURCE_V2,
+        run_id=run_id,
+        identity=identity,
+        evaluated_run_id=evaluated_run_id,
+        evaluated_identity=evaluated_identity,
+        head_sha=identity.head_sha,
+        evaluated_head_sha=evaluated_identity.head_sha,
+        pr_state=pr_state,
+        checks=list(checks),
+        coverage=decision.coverage,
+        pipeline=decision.pipeline,
+        state=decision.state,
+        reason_codes=list(decision.reason_codes),
+        blockers=list(decision.blockers),
+        findings=list(findings),
+    )

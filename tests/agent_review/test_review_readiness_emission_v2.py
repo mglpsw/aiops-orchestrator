@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from app.agent_review.contracts_v2 import (
     READY_REQUIRES_GREEN_CHECKS_REASON_V2,
     READY_REQUIRES_OPEN_PR_REASON_V2,
+    evaluate_readiness_submitted_material_v2,
     FindingDispositionV2,
     FindingLifecycleRecordV2,
     FindingSeverityV2,
@@ -305,27 +306,42 @@ def test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_validat
     decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
     assert decision.state is ReadinessStateV2.READY
 
+    # `_assemble_review_readiness_v2` is POST-seal: on the operational path
+    # its inputs are the assessment's adjusted decision and verified checks,
+    # not caller material. The caller-visible refusal therefore belongs at the
+    # public boundary, which is where this now drives it.
     with pytest.raises(ReadinessEmissionError) as excinfo:
-        _assemble_review_readiness_v2(
+        evaluate = evaluate_readiness_submitted_material_v2(
             decision=decision,
             findings=synthesis.findings,
+            checks=[_green_check(manifest.identity.head_sha)],
             identity=manifest.identity,
             evaluated_identity=manifest.identity,
             pr_state=PullRequestStateV2.MERGED,
-            checks=[_green_check(manifest.identity.head_sha)],
         )
+        if evaluate is not None:
+            raise ReadinessEmissionError(evaluate)
     assert excinfo.value.reason_code == READY_REQUIRES_OPEN_PR_REASON_V2
 
 
 def test_ready_state_without_green_checks_fails_closed() -> None:
-    """Same evaluated type change as the test above; same proposition."""
+    """`ready` without green checks is NOT decidable from submitted material.
+
+    `#200-D` readiness partition: the emitter replaces submitted `checks` with
+    the assessment's own, and a submitted `READY` legitimately degrades to
+    `manual_required` when required-check authority is not established.
+    Refusing it pre-seal would break that documented behaviour, so the rule is
+    enforced by `validate_state_invariants` against the FINAL material -- where
+    a violation means the transformation produced an incoherent state, i.e. a
+    defect, correctly raw.
+    """
 
     manifest, report = _fully_reviewed_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
     decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
     assert decision.state is ReadinessStateV2.READY
 
-    with pytest.raises(ReadinessEmissionError) as excinfo:
+    with pytest.raises(ValidationError):
         _assemble_review_readiness_v2(
             decision=decision,
             findings=synthesis.findings,
@@ -334,7 +350,6 @@ def test_ready_state_without_green_checks_fails_closed() -> None:
             pr_state=PullRequestStateV2.OPEN,
             checks=[],
         )
-    assert excinfo.value.reason_code == READY_REQUIRES_GREEN_CHECKS_REASON_V2
 
 
 def test_emit_review_readiness_rejects_a_decision_replayed_from_a_different_run() -> None:
