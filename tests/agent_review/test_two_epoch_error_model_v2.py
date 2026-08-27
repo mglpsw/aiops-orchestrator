@@ -280,7 +280,36 @@ def test_content_pre_seal_unrepresentable_material_is_a_typed_refusal(
 # -- readiness ---------------------------------------------------------------
 
 
-def test_readiness_post_seal_validation_error_is_a_raw_defect() -> None:
+def test_readiness_post_seal_defect_is_STILL_LAUNDERED_falsifier() -> None:
+    """FALSIFIER for the two-epoch model at this authority. Read the assertion
+    carefully: it pins the CURRENT, WRONG behaviour on purpose.
+
+    An earlier version of this test mocked `compute_run_id` to raise, which
+    fires at the pre-seal provenance check three statements before the `try`.
+    It therefore never crossed the seal and stayed green even when the
+    constructor handler was widened to `except Exception` -- the second time
+    in this branch that a control failed to test what it claimed.
+
+    Driven properly, `compute_run_id` returns a wrong-but-well-formed sha so
+    the provenance check passes and the CONTRACT's derivation-coherence check
+    (`run_id` vs `identity`) fails inside the constructor. That is a
+    repository defect, and it comes back as
+    `ReadinessEmissionError(readiness_material_invalid)` -- delivered to an
+    operator as a gate refusal.
+
+    WHY THIS IS NOT FIXABLE BY ANOTHER ROUND HERE.
+    `ReviewReadinessV2.validate_state_invariants` checks CALLER material
+    (pr_state, checks, blocker/finding linkage) and DERIVATION coherence
+    (`run_id`, `evaluated_run_id`, `head_sha`, `evaluated_head_sha`, all
+    computed by this function) in one validator. A single construction-site
+    conversion cannot separate them, and enumerating the caller-material
+    invariants pre-seal is the recurrence this design exists to end.
+    Separating them means splitting that validator -- a contract change, and a
+    decision this grant did not scope.
+    """
+
+    from unittest import mock as _mock
+
     from tests.agent_review.test_review_readiness_emission_v2 import (
         _assemble_review_readiness_v2,
         _fully_reviewed_manifest_and_report,
@@ -288,8 +317,12 @@ def test_readiness_post_seal_validation_error_is_a_raw_defect() -> None:
         _policies,
         _synthesis,
     )
-    from app.agent_review.contracts_v2 import PullRequestStateV2
+    from app.agent_review.contracts_v2 import PullRequestStateV2, compute_run_id
     from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
+    from app.agent_review.review_readiness_emission_v2 import (
+        READINESS_MATERIAL_INVALID_REASON_V2,
+        ReadinessEmissionError,
+    )
 
     manifest, report = _fully_reviewed_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
@@ -297,18 +330,30 @@ def test_readiness_post_seal_validation_error_is_a_raw_defect() -> None:
         synthesis=synthesis, manifest=manifest, policies=_policies()
     )
 
-    # a VALID combination -- so any failure is derivation, not caller material
-    with mock.patch(
+    real = compute_run_id
+    calls = {"n": 0}
+
+    def _buggy_derivation(identity):
+        calls["n"] += 1
+        return real(identity) if calls["n"] <= 1 else "a" * 64
+
+    with _mock.patch(
         "app.agent_review.review_readiness_emission_v2.compute_run_id",
-        side_effect=_defect(),
+        side_effect=_buggy_derivation,
     ):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ReadinessEmissionError) as excinfo:
             _assemble_review_readiness_v2(
                 decision=decision, findings=synthesis.findings,
                 identity=manifest.identity, evaluated_identity=manifest.identity,
                 pr_state=PullRequestStateV2.OPEN,
                 checks=[_green_check(manifest.identity.head_sha)],
             )
+
+    # Pinned deliberately: a defect surfacing as an operational refusal. When
+    # the next grant splits the validator, this assertion must be inverted to
+    # `pytest.raises(ValidationError)` -- and that inversion is the acceptance
+    # criterion for the fix.
+    assert excinfo.value.reason_code == READINESS_MATERIAL_INVALID_REASON_V2
 
 
 @pytest.mark.parametrize(

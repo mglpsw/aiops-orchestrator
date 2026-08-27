@@ -762,7 +762,7 @@ def _extract_review_content_v2(
         # `_build_fragment_content_v2` derives `FragmentContentV2` from
         # already-acquired, already-redacted, already-DLP-checked material.
         # External unrepresentability is established by
-        # `_assert_fragment_content_representable_v2` INSIDE that helper,
+        # `_is_fragment_content_representable_v2` INSIDE that helper,
         # before construction, so a `ValidationError` escaping here means
         # derivation produced an invalid object from valid material.
         fragment_contents = [

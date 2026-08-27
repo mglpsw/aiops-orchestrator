@@ -102,7 +102,15 @@ def build_payload_artifact_references_v2(
             limitations.append(f"{OPTIONAL_ARTIFACT_MISSING_LIMITATION_PREFIX_V2}:{artifact.artifact_id}")
             continue
 
-        size = path.stat().st_size
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            # `is_file()` above swallows `OSError`; `stat()` does not. On a
+            # TOCTOU between them a raw `FileNotFoundError`/`PermissionError`
+            # escaped this authority -- and `build_chunk_payloads_from_profile_v2`
+            # deliberately declines to catch `OSError`, so it reached the
+            # caller despite that wrapper promising only `PayloadBuilderError`.
+            raise PayloadReferenceError(PAYLOAD_ARTIFACT_UNREADABLE_REASON_V2) from exc
         if size > artifact.max_bytes:
             raise PayloadReferenceError(PAYLOAD_ARTIFACT_EXCEEDS_MAX_BYTES_REASON_V2)
 

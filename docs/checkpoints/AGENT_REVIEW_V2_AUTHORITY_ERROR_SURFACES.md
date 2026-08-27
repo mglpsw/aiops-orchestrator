@@ -203,6 +203,74 @@ the control set, and every injection happens with valid caller material,
 strictly after that material has crossed its seal. A test that never crosses
 the seal is not evidence.
 
+## STOP — `STOP_TWO_EPOCH_MODEL_NOT_SUFFICIENT` at one authority
+
+A* holds at five of the six authorities. Diff, assembly, payload, payload-set
+and content each satisfy both directions under adversarial review: expected
+external/caller invalidity is typed, and a post-seal `ValidationError` escapes
+raw. Those closures survived three review rounds without regression.
+
+**It does not hold at readiness.** Reproduced by execution, not argument:
+
+```text
+compute_run_id returns a wrong-but-well-formed sha
+  (passes the pre-seal provenance check)
+        -> contract's run_id-vs-identity coherence check fails in the constructor
+        -> ReadinessEmissionError(readiness_material_invalid)
+```
+
+A repository defect delivered to an operator as a gate refusal — the exact
+laundering that falsified model B.
+
+### Why it is not another missing clause
+
+`ReviewReadinessV2.validate_state_invariants` checks two different KINDS of
+thing in one validator:
+
+```text
+caller material      pr_state, checks, blocker/finding linkage, uniqueness
+derivation coherence run_id, evaluated_run_id, head_sha, evaluated_head_sha
+                     -- all computed by produce_review_readiness_v2 itself
+```
+
+A single construction-site conversion cannot separate them: it sees one
+`ValidationError` for both. Enumerating the caller-material invariants
+pre-seal is precisely the recurrence this design exists to end — round 3 tried
+the subset version of that and left the rest escaping raw with `input_value`
+attached.
+
+The seal is well-defined only where an authority's OUTPUT CONTRACT constrains
+caller material alone. Readiness violates that precondition, and no arrangement
+of try/except inside this module changes it.
+
+### The decision the next grant must make
+
+- **A. Split the validator.** Separate `validate_state_invariants` into a
+  caller-material part and a derivation-coherence part. The emission owner
+  pre-seals the first and lets the second escape. Correct, and a contract
+  change this grant did not scope.
+- **B. Derive before validating.** Have the caller supply `run_id`/`head_sha`
+  rather than computing them here, making every constructor argument caller
+  material. Moves the problem to whoever derives them.
+- **C. Accept it at this one authority** and document that
+  `readiness_material_invalid` may indicate a defect. Cheapest; dishonest in
+  the direction that matters.
+
+### A control that could not fail — twice
+
+The falsifier is now a working test (`..._STILL_LAUNDERED_falsifier`) that
+pins the wrong behaviour on purpose. Its predecessor mocked `compute_run_id`
+to raise, which fires at the pre-seal provenance check three statements before
+the `try`; it never crossed the seal and stayed green even when the handler was
+widened to `except Exception`.
+
+That is the second time in this branch a control failed to test what it
+claimed — the first being the defect-control set that omitted
+`ValidationError`, the type that carries most internal defects here. Both were
+found by review, not by the suite. When the next grant splits the validator,
+inverting that assertion to `pytest.raises(ValidationError)` is the acceptance
+criterion.
+
 ## Scope fence
 
 `operational_run_v2.py` and `aiops-review-run-v2.py` are deliberately **not**
