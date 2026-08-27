@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.agent_review.chunk_result_parser import ChunkResultParserError, parse_chunk_results
-from app.agent_review.schemas import SemanticChunk, SemanticChunkPlan
+from app.agent_review.schemas import ChunkResults, SemanticChunk, SemanticChunkPlan
 
 
 FIXTURE_SECRET = "AGENTESCALA_PHASE3_FIXTURE_SECRET"
@@ -86,6 +86,26 @@ def _finding(**overrides: object) -> dict[str, object]:
     }
     finding.update(overrides)
     return finding
+
+
+def _assert_total_coverage_partition(
+    results: ChunkResults,
+    *,
+    expected: list[str],
+    reviewed: list[str],
+    partial: list[str],
+    not_reviewed: list[str],
+) -> None:
+    assert results.coverage.files_reviewed == reviewed
+    assert results.coverage.files_partial == partial
+    assert results.coverage.files_not_reviewed == not_reviewed
+    reported = [
+        *results.coverage.files_reviewed,
+        *results.coverage.files_partial,
+        *results.coverage.files_not_reviewed,
+    ]
+    assert sorted(reported) == sorted(expected)
+    assert len(reported) == len(set(reported))
 
 
 def test_parse_valid_response_keeps_confirmed_p2_finding(tmp_path: Path) -> None:
@@ -369,6 +389,278 @@ def test_coverage_notes_filter_out_files_not_assigned_to_chunk(tmp_path: Path) -
     assert results.coverage.files_not_reviewed == []
     assert "frontend/src/other.jsx" not in results.model_dump_json()
     assert f"coverage_file_not_in_chunk:{chunk.chunk_id}" in results.limitations
+    assert "coverage_expected_files_missing" not in results.limitations
+    assert results.status == "partial"
+
+
+def test_u2_all_noncritical_files_not_reviewed_are_total_and_partial(tmp_path: Path) -> None:
+    files = ["src/a.py", "src/b.py"]
+    chunk = _chunk(files=files)
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        coverage_notes={"files_not_reviewed": files},
+    )
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=files,
+        reviewed=[],
+        partial=[],
+        not_reviewed=files,
+    )
+    assert results.status == "partial"
+
+
+def test_u2_noncritical_partial_file_makes_results_partial(tmp_path: Path) -> None:
+    files = ["src/reviewed.py", "src/partial.py"]
+    chunk = _chunk(files=files)
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        coverage_notes={
+            "files_reviewed": [files[0]],
+            "files_partial": [files[1]],
+        },
+    )
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=files,
+        reviewed=[files[0]],
+        partial=[files[1]],
+        not_reviewed=[],
+    )
+    assert results.status == "partial"
+
+
+def test_u2_reviewed_and_not_reviewed_files_remain_disjoint_and_partial(tmp_path: Path) -> None:
+    files = ["src/reviewed.py", "src/not_reviewed.py"]
+    chunk = _chunk(files=files)
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        coverage_notes={
+            "files_reviewed": [files[0]],
+            "files_not_reviewed": [files[1]],
+        },
+    )
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=files,
+        reviewed=[files[0]],
+        partial=[],
+        not_reviewed=[files[1]],
+    )
+    assert results.status == "partial"
+
+
+def test_u2_omitted_expected_file_is_pessimized_to_not_reviewed(tmp_path: Path) -> None:
+    files = ["src/reviewed.py", "src/omitted.py"]
+    chunk = _chunk(files=files)
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        coverage_notes={"files_reviewed": [files[0]]},
+    )
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=files,
+        reviewed=[files[0]],
+        partial=[],
+        not_reviewed=[files[1]],
+    )
+    assert results.status == "partial"
+    assert results.limitations.count("coverage_expected_files_missing") == 1
+
+
+@pytest.mark.parametrize(
+    ("reported", "reviewed", "partial", "not_reviewed"),
+    [
+        pytest.param(
+            {"files_reviewed": ["src/a.py"], "files_partial": ["src/a.py"]},
+            [],
+            ["src/a.py"],
+            [],
+            id="reviewed-plus-partial",
+        ),
+        pytest.param(
+            {"files_reviewed": ["src/a.py"], "files_not_reviewed": ["src/a.py"]},
+            [],
+            [],
+            ["src/a.py"],
+            id="reviewed-plus-not-reviewed",
+        ),
+        pytest.param(
+            {"files_partial": ["src/a.py"], "files_not_reviewed": ["src/a.py"]},
+            [],
+            [],
+            ["src/a.py"],
+            id="partial-plus-not-reviewed",
+        ),
+        pytest.param(
+            {
+                "files_reviewed": ["src/a.py"],
+                "files_partial": ["src/a.py"],
+                "files_not_reviewed": ["src/a.py"],
+            },
+            [],
+            [],
+            ["src/a.py"],
+            id="all-three-states",
+        ),
+    ],
+)
+def test_u2_overlaps_use_worst_state_and_make_results_partial(
+    tmp_path: Path,
+    reported: dict[str, object],
+    reviewed: list[str],
+    partial: list[str],
+    not_reviewed: list[str],
+) -> None:
+    chunk = _chunk(files=["src/a.py"])
+    responses = _responses_dir(tmp_path)
+    _write_response(responses, chunk=chunk, coverage_notes=reported)
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=chunk.files,
+        reviewed=reviewed,
+        partial=partial,
+        not_reviewed=not_reviewed,
+    )
+    assert results.status == "partial"
+    assert results.limitations.count("coverage_file_in_multiple_states") == 1
+
+
+def test_u2_cross_chunk_overlap_uses_worst_state_in_global_union(tmp_path: Path) -> None:
+    shared = "src/shared.py"
+    first = _chunk(
+        chunk_id="chunk-01-primary_backend_logic",
+        files=[shared],
+    )
+    second = _chunk(
+        chunk_id="chunk-02-api_schema_contract",
+        group="api_schema_contract",
+        files=[shared],
+    )
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=first,
+        coverage_notes={"files_reviewed": [shared]},
+    )
+    _write_response(
+        responses,
+        chunk=second,
+        coverage_notes={"files_partial": [shared]},
+    )
+
+    results = parse_chunk_results(_plan([first, second]), responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=[shared],
+        reviewed=[],
+        partial=[shared],
+        not_reviewed=[],
+    )
+    assert results.status == "partial"
+    assert results.limitations.count("coverage_file_in_multiple_states") == 1
+
+
+def test_u2_foreign_path_cannot_replace_an_omitted_expected_file(tmp_path: Path) -> None:
+    files = ["src/reviewed.py", "src/omitted.py"]
+    foreign = "src/foreign.py"
+    chunk = _chunk(files=files)
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        coverage_notes={"files_reviewed": [files[0], foreign]},
+    )
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=files,
+        reviewed=[files[0]],
+        partial=[],
+        not_reviewed=[files[1]],
+    )
+    assert foreign not in results.model_dump_json()
+    assert results.status == "partial"
+    assert results.limitations.count(f"coverage_file_not_in_chunk:{chunk.chunk_id}") == 1
+    assert results.limitations.count("coverage_expected_files_missing") == 1
+
+
+def test_u2_multiple_chunks_form_one_total_disjoint_partition(tmp_path: Path) -> None:
+    first = _chunk(
+        chunk_id="chunk-01-primary_backend_logic",
+        files=["src/a.py", "src/b.py"],
+    )
+    second = _chunk(
+        chunk_id="chunk-02-api_schema_contract",
+        group="api_schema_contract",
+        files=["src/c.py"],
+    )
+    responses = _responses_dir(tmp_path)
+    _write_response(responses, chunk=first)
+    _write_response(
+        responses,
+        chunk=second,
+        coverage_notes={"files_partial": second.files},
+    )
+
+    results = parse_chunk_results(_plan([first, second]), responses_dir=responses)
+
+    expected = [*first.files, *second.files]
+    _assert_total_coverage_partition(
+        results,
+        expected=expected,
+        reviewed=first.files,
+        partial=second.files,
+        not_reviewed=[],
+    )
+    assert results.status == "partial"
+    assert "coverage_expected_files_missing" not in results.limitations
+    assert "coverage_file_in_multiple_states" not in results.limitations
+
+
+def test_u2_all_expected_files_exactly_reviewed_remains_complete(tmp_path: Path) -> None:
+    files = ["src/a.py", "src/b.py"]
+    chunk = _chunk(files=files)
+    responses = _responses_dir(tmp_path)
+    _write_response(responses, chunk=chunk, coverage_notes={"files_reviewed": files})
+
+    results = parse_chunk_results(_plan([chunk]), responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=files,
+        reviewed=files,
+        partial=[],
+        not_reviewed=[],
+    )
+    assert results.status == "complete"
+    assert not any(limitation.startswith("coverage_") for limitation in results.limitations)
 
 
 @pytest.mark.parametrize(

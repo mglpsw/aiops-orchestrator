@@ -133,6 +133,45 @@ def _gate(final_review: dict[str, object], chunk_results: ChunkResults | None = 
     )
 
 
+def _coverage(
+    *,
+    reviewed: list[str] | None = None,
+    partial: list[str] | None = None,
+    not_reviewed: list[str] | None = None,
+) -> dict[str, object]:
+    reviewed = reviewed if reviewed is not None else []
+    partial = partial if partial is not None else []
+    not_reviewed = not_reviewed if not_reviewed is not None else []
+    return {
+        "files_reviewed": reviewed,
+        "files_partial": partial,
+        "files_not_reviewed": not_reviewed,
+        "expected_files": [*reviewed, *partial, *not_reviewed],
+        "missing_expected_files": [],
+        "extra_reported_files": [],
+        "comparison_available": True,
+    }
+
+
+def _intake_with_must_review(file_path: str) -> ReviewIntake:
+    return ReviewIntake(
+        target_repo="mglpsw/AgentEscala",
+        target_profile={},
+        artifacts={
+            "file-diff-context": {
+                "content": {
+                    "coverage_requirements": {
+                        "must_review_files": [file_path],
+                    }
+                }
+            }
+        },
+        artifact_status=[],
+        redaction_summary={"schema_version": "agent-review.redaction-report.v1"},
+        status="complete",
+    )
+
+
 def test_unknown_final_verdict_generates_failed_gate_not_validation_error() -> None:
     gate = _gate(_final_review(verdict="surprising_verdict"))
 
@@ -246,6 +285,93 @@ def test_critical_coverage_gap_requires_manual_review() -> None:
     assert gate.status == "manual_review_required"
     assert gate.normalized_verdict == "manual_review_required"
     assert "critical_expected_files_missing" in gate.limitations
+
+
+@pytest.mark.parametrize(
+    ("coverage_payload", "critical_pr", "must_review"),
+    [
+        pytest.param(
+            _coverage(not_reviewed=["src/a.py", "src/b.py"]),
+            False,
+            None,
+            id="all-not-reviewed-noncritical",
+        ),
+        pytest.param(
+            _coverage(reviewed=["src/a.py"], partial=["src/b.py"]),
+            False,
+            None,
+            id="partial-noncritical",
+        ),
+        pytest.param(
+            _coverage(reviewed=["src/a.py"], partial=["src/b.py"]),
+            True,
+            "src/b.py",
+            id="partial-critical-must-review",
+        ),
+    ],
+)
+def test_u2_incomplete_coverage_cannot_bypass_gate_with_mutated_complete_claims(
+    coverage_payload: dict[str, object],
+    critical_pr: bool,
+    must_review: str | None,
+) -> None:
+    final_review = _final_review(
+        status="partial",
+        verdict="manual_review_required",
+        coverage=coverage_payload,
+    )
+    final_review["status"] = "complete"
+    final_review["verdict"] = "approved"
+    chunk_coverage = ChunkResultsCoverage(
+        files_reviewed=list(coverage_payload["files_reviewed"]),
+        files_partial=list(coverage_payload["files_partial"]),
+        files_not_reviewed=list(coverage_payload["files_not_reviewed"]),
+    )
+    chunk_results = _chunk_results(status="partial", coverage=chunk_coverage)
+    chunk_results.status = "complete"
+    intake = _intake_with_must_review(must_review) if must_review is not None else None
+
+    gate = _gate(
+        final_review,
+        chunk_results,
+        intake=intake,
+        critical_pr=critical_pr,
+    )
+
+    assert gate.inputs["final_review"]["status"] == "complete"
+    assert gate.inputs["chunk_results"]["status"] == "complete"
+    assert gate.inputs["critical_pr"] is critical_pr
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+    assert gate.blocked_reasons == []
+    assert gate.warnings == []
+    assert "review_material_missing" not in gate.limitations
+    if must_review is not None:
+        assert "critical_must_review_files_not_covered" in gate.limitations
+    else:
+        assert not any(reason.startswith("critical_") for reason in gate.limitations)
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_exactly_reviewed_coverage_remains_a_positive_gate_control(critical_pr: bool) -> None:
+    coverage_payload = _coverage(reviewed=["src/a.py", "src/b.py"])
+    chunk_results = _chunk_results(
+        coverage=ChunkResultsCoverage(files_reviewed=["src/a.py", "src/b.py"])
+    )
+    intake = _intake_with_must_review("src/b.py") if critical_pr else None
+
+    gate = _gate(
+        _final_review(coverage=coverage_payload),
+        chunk_results,
+        intake=intake,
+        critical_pr=critical_pr,
+    )
+
+    assert gate.status == "passed"
+    assert gate.normalized_verdict == "approved"
+    assert gate.manual_review_required is False
+    assert not any(reason.startswith("critical_") for reason in gate.limitations)
 
 
 def test_must_review_files_are_best_effort_from_intake() -> None:

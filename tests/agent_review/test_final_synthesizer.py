@@ -96,6 +96,9 @@ def test_synthesizer_generates_approved_for_complete_review_without_findings_or_
 
     assert review.status == "complete"
     assert review.verdict == "approved"
+    assert review.coverage.files_reviewed == ["backend/services/schedule.py"]
+    assert review.coverage.files_partial == []
+    assert review.coverage.files_not_reviewed == []
     assert review.confirmed_findings == []
     assert review.risks == []
 
@@ -153,6 +156,80 @@ def test_risks_generate_followup_or_manual_review_based_on_status() -> None:
 
     assert complete_review.verdict == "approve_with_required_followup"
     assert partial_review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize(
+    ("coverage", "incomplete_field", "expected_path"),
+    [
+        pytest.param(
+            ChunkResultsCoverage(
+                files_reviewed=["src/reviewed.py"],
+                files_partial=["src/partial.py"],
+            ),
+            "files_partial",
+            "src/partial.py",
+            id="partial",
+        ),
+        pytest.param(
+            ChunkResultsCoverage(
+                files_reviewed=["src/reviewed.py"],
+                files_not_reviewed=["src/not_reviewed.py"],
+            ),
+            "files_not_reviewed",
+            "src/not_reviewed.py",
+            id="not-reviewed",
+        ),
+    ],
+)
+def test_u2_normalized_incomplete_coverage_overrides_mutated_complete_status(
+    coverage: ChunkResultsCoverage,
+    incomplete_field: str,
+    expected_path: str,
+) -> None:
+    chunk_results = _chunk_results(status="partial", coverage=coverage)
+    chunk_results.status = "complete"
+
+    review = synthesize_final_review(chunk_results)
+
+    assert getattr(review.coverage, incomplete_field) == [expected_path]
+    assert review.inputs["chunk_results"]["status"] == "complete"
+    assert review.status == "partial"
+    assert review.verdict == "manual_review_required"
+    assert review.confirmed_findings == []
+    assert review.risks == []
+
+
+@pytest.mark.parametrize(
+    ("reason", "coverage"),
+    [
+        pytest.param(
+            "coverage_expected_files_missing",
+            ChunkResultsCoverage(files_not_reviewed=["src/omitted.py"]),
+            id="omitted-expected",
+        ),
+        pytest.param(
+            "coverage_file_in_multiple_states",
+            ChunkResultsCoverage(files_partial=["src/overlap.py"]),
+            id="normalized-overlap",
+        ),
+        pytest.param(
+            "coverage_file_not_in_chunk:chunk-01-primary_backend_logic",
+            ChunkResultsCoverage(files_reviewed=["src/reviewed.py"]),
+            id="foreign-path",
+        ),
+    ],
+)
+def test_u2_recoverable_coverage_errors_stay_partial_and_manual(
+    reason: str,
+    coverage: ChunkResultsCoverage,
+) -> None:
+    review = synthesize_final_review(
+        _chunk_results(status="partial", limitations=[reason], coverage=coverage)
+    )
+
+    assert reason in review.limitations
+    assert review.status == "partial"
+    assert review.verdict == "manual_review_required"
 
 
 def test_degraded_chunk_results_keeps_explicit_limitation() -> None:
@@ -313,7 +390,7 @@ def test_optional_chunk_plan_adds_limitation_for_missing_expected_coverage() -> 
     )
     review = synthesize_final_review(_chunk_results(), chunk_plan=chunk_plan)
 
-    assert review.status == "degraded"
+    assert review.status == "partial"
     assert review.verdict == "manual_review_required"
     assert "coverage_expected_files_missing" in review.limitations
     assert review.coverage.missing_expected_files == ["backend/services/doctor.py"]
