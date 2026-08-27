@@ -165,12 +165,19 @@ def bind_payload_set_to_payloads_v2(
         payload = payloads_by_chunk_id[entry.chunk_id]
         try:
             verify_payload_sha256_v2(payload)
-        except (ValidationError, ValueError) as exc:
+        except ValueError as exc:
             # `#200-D` predecessor, the OTHER direction: this was
-            # `except Exception`, so a `TypeError` from a defect INSIDE the
-            # verifier would have been reported to an operator as a tampered
-            # payload. Tampering surfaces as a contract/serialization failure;
-            # a programmer defect must stay a crash.
+            # `except Exception`, so a `TypeError`/`AttributeError` from a
+            # defect INSIDE the verifier would have been reported to an
+            # operator as a tampered payload. Those now crash.
+            #
+            # Stated precisely, because the pair `(ValidationError,
+            # ValueError)` read like a narrowing it was not: pydantic's
+            # `ValidationError` and `PydanticSerializationError` both subclass
+            # `ValueError`, so this IS `except ValueError`. It therefore still
+            # cannot distinguish a caller's tampered payload from a defect
+            # that happens to raise `ValueError` -- see the "not converging"
+            # section of the `#200-D` checkpoint.
             raise PayloadSetBindingError(PAYLOAD_SET_PAYLOAD_TAMPERED_REASON_V2) from exc
         if payload.payload_sha256 != entry.payload_sha256:
             raise PayloadSetBindingError(PAYLOAD_SET_ENTRY_PAYLOAD_HASH_MISMATCH_REASON_V2)
@@ -183,8 +190,9 @@ def bind_payload_set_to_payloads_v2(
 
     try:
         verify_payload_set_sha256_v2(payload_set)
-    except (ValidationError, ValueError) as exc:
-        # narrowed for the same reason as the per-payload verifier above
+    except ValueError as exc:
+        # same reason, and the same unresolved limitation, as the per-payload
+        # verifier above
         raise PayloadSetBindingError(PAYLOAD_SET_HASH_TAMPERED_REASON_V2) from exc
 
 

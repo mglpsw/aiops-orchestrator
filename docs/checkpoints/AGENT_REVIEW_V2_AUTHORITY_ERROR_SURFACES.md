@@ -152,6 +152,69 @@ removed rather than kept "just in case": a consumer re-catching what its
 authority already owns is the enumeration habit this change exists to end, and
 it masks which authority actually failed.
 
+## STOP — the model does not converge on one proposition
+### `STOP_AUTHORITY_ERROR_MODEL_NOT_CONVERGING`
+
+The positive direction is achieved and stable across four review rounds: every
+expected operational failure now leaves its authority as that authority's own
+documented family, originating reasons survive where an owner supplies one, and
+the acceptance oracle drives the whole front half catching one family per
+stage.
+
+The **negative** direction does not hold, and cannot be made to hold by
+continuing along this path. Verified by direct execution at head `c76f43e`:
+
+```text
+internal defect raised as ValidationError, inside assembly
+        -> RunAssemblyError(run_assembly_contract_invalid)
+```
+
+A defect was reported to the operator as an operational refusal. The same is
+true at `payload_builder_v2`, `payload_set_emission_v2` and
+`review_content_extraction_v2`, and — because pydantic's `ValidationError` and
+`PydanticSerializationError` both subclass `ValueError` — at the payload-set
+tamper guards, where `except (ValidationError, ValueError)` is simply
+`except ValueError`.
+
+This is not a coverage gap that one more clause fixes. Converting
+`ValidationError` at an authority's outer boundary **cannot** distinguish
+
+```text
+the caller's material violates this contract     (operational refusal)
+our own code constructed a malformed object      (defect, must crash)
+```
+
+because both arrive as the same type from the same call. The programmer-defect
+controls in this PR cover `TypeError`, `AttributeError`, `AssertionError`,
+`KeyError` and `IndexError` — deliberately excluding the one type that carries
+most internal defects in this codebase, which is exactly why they stayed green
+while the property was false.
+
+Three correction attempts (rounds 1–3) each closed real surfaces and each left
+this same proposition failing. Per the grant's own stop rule, that is where
+this stops.
+
+### The decision the next grant must make
+
+- **A. Validate caller material at entry.** Then any `ValidationError` deeper
+  in is by construction a defect and must not be converted. Most faithful to
+  model B; costs an explicit input-validation layer per authority.
+- **B. Convert at construction sites, not at the outer boundary.** Wrap the
+  specific `Model(...)` calls whose inputs are caller-derived, leaving every
+  other `ValidationError` to crash. Precise; more invasive and easy to miss a
+  site — round 2 of this PR failed exactly that way.
+- **C. Accept the conflation** and document that a contract-invalid refusal may
+  also indicate a defect. Cheapest, and dishonest in the direction that matters.
+
+### What is safe to keep regardless
+
+Diff acquisition's `OSError` closure and its `git_unavailable` /
+`repo_root_unusable` distinction; the sibling-family conversions
+(`PayloadReferenceError`, `ReviewContentBindingError`) which preserve precise
+reasons; `payload_references_v2`'s contract-read guard; the removal of the two
+pre-existing `except Exception` blocks; and the AST guard. None of those depend
+on the unresolved question.
+
 ## Scope fence
 
 `operational_run_v2.py` and `aiops-review-run-v2.py` are deliberately **not**

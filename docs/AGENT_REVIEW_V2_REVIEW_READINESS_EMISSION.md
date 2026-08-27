@@ -22,8 +22,12 @@ document) therefore does exactly one thing: assemble the
 `ReviewReadinessV2` constructor call from a C1 `ReadinessDecisionV2` plus
 identity/`pr_state`/`checks`/`findings`, and let
 `ReviewReadinessV2.validate_state_invariants` (`contracts_v2.py`) decide —
-raising `pydantic.ValidationError`, unwrapped, if the combination does not
-satisfy it. Nothing in this module re-checks what that validator already
+refusing if the combination does not satisfy it. That refusal surfaces as
+`ReadinessEmissionError(readiness_emission_contract_invalid)`, not as a raw
+`pydantic.ValidationError` (`#200-D` predecessor): the validator is still the
+sole authority on whether the artifact is well-formed, but callers no longer
+have to know this module builds a pydantic model in order to catch its
+refusal. Nothing in this module re-checks what that validator already
 owns (e.g. "ready requires an open PR and every check green" — verified
 directly: feeding a `MERGED` `pr_state` alongside a `ready` decision, or an
 empty `checks` list, both fail closed via the contract's own validator, not
