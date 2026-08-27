@@ -37,6 +37,22 @@ and ``pr_state`` are caller-owned facts that must have already crossed their
 own canonical parser boundary (`#201-C0`). Nothing here fabricates a snapshot,
 an origin, or a digest to make a run succeed.
 
+## Reference-source bound (`#200-D`, recorded)
+
+Identity and the diff come from git OBJECTS (``base_sha``/``head_sha``), while
+``build_chunk_payloads_from_profile_v2`` reads artifact and contract
+references from ``repo_root``'s WORKING TREE -- that is the existing payload
+authority's own contract, not something this module chooses. Nothing here
+proves the checkout is at ``head_sha``, so the same arguments can yield
+different payload references depending only on which commit the worktree sits
+on.
+
+This module does not silently pick a semantic for that. Callers must ensure
+``repo_root`` is checked out at the tree whose references they intend to bind;
+settling it properly (verify-the-checkout, or read references from git objects)
+is an identity decision that belongs with the live-canary grant, alongside
+independent head observation.
+
 ## Staleness bound (`#200-D`, deliberate)
 
 ``run_synthetic_review_v2`` uses ``manifest.identity`` for BOTH ``identity``
@@ -107,6 +123,7 @@ __all__ = [
     "OperationalRunError",
     "PAYLOAD_SET_INVALID_REASON_V2",
     "READINESS_INVARIANT_VIOLATION_REASON_V2",
+    "REPO_ROOT_UNUSABLE_REASON_V2",
     "RUN_IDENTITY_INVALID_REASON_V2",
     "PreparedReviewRunV2",
     "prepare_operational_review_v2",
@@ -140,6 +157,10 @@ PAYLOAD_SET_INVALID_REASON_V2 = "operational_payload_set_invalid"
 # The readiness artifact violated its own contract. Code only, deliberately:
 # the pydantic message embeds finding content.
 READINESS_INVARIANT_VIOLATION_REASON_V2 = "readiness_invariant_violation"
+
+# The checkout under review is missing or not a usable directory. Code only:
+# the underlying OSError stringifies the local path.
+REPO_ROOT_UNUSABLE_REASON_V2 = "operational_repo_root_unusable"
 
 
 ASSEMBLY_BLOCKED_REASON_V2 = "assembly_blocked"
@@ -228,6 +249,12 @@ def prepare_operational_review_v2(
         )
     except DiffAcquisitionError as exc:
         raise OperationalRunError(exc.reason_code) from exc
+    except OSError as exc:
+        # `acquire_authoritative_diff_v2` shells out with `cwd=repo_root`, so a
+        # non-existent root raises `FileNotFoundError` BEFORE the module can
+        # convert it -- and that exception stringifies the local path. Only a
+        # stable code may cross this boundary.
+        raise OperationalRunError(REPO_ROOT_UNUSABLE_REASON_V2) from exc
 
     try:
         outcome = assemble_manifest_from_diff_v2(
@@ -277,8 +304,12 @@ def prepare_operational_review_v2(
     payload_by_chunk_id = {item.chunk_id: item.payload for item in built}
     # The builder contracts that optional-artifact limitations are never
     # silently absorbed. Carry them so a caller can surface them.
+    # De-duplicated deliberately: `build_chunk_payloads_from_profile_v2` reads
+    # the reference set ONCE and reuses it for every chunk, so an
+    # `optional_artifact_missing` limitation is repeated per chunk. It is one
+    # fact about the run, not N facts.
     payload_limitations = tuple(
-        limitation for item in built for limitation in item.limitations
+        sorted({limitation for item in built for limitation in item.limitations})
     )
 
     # Manifest <-> payload closure is an authority that already exists: reuse

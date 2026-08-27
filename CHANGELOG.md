@@ -21,7 +21,7 @@
   arrive through `parse_authoritative_ci_snapshot_v2`. Contract-invalid run
   identity, which surfaces from assembly as a pydantic `ValidationError` rather
   than a `RunAssemblyError`, is converted to a typed
-  `operational_run_identity_invalid` instead of escaping as a traceback.
+  `operational_assembly_contract_invalid` instead of escaping as a traceback.
   `scripts/aiops-review-run-v2.py` is a thin CLI over that authority with
   `offline` and `router` transport modes; the Router credential is read from the
   environment only, never argv, and the only persisted artifact is the existing

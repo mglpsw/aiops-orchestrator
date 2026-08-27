@@ -733,7 +733,13 @@ def test_cli_router_mode_reads_the_credential_from_the_environment_only(
             "--output", "out.json",
         ]
     )
-    assert not any("api-key" in a and "env" not in a for a in vars(args))
+    # argparse normalizes `--router-api-key-env` to `router_api_key_env`, so
+    # grepping the hyphenated spelling could never fail. Assert the real
+    # property: the only credential-related option is the ENV VAR NAME, and no
+    # option holds a credential VALUE.
+    credential_options = {k for k in vars(args) if "api_key" in k}
+    assert credential_options == {"router_api_key_env"}
+    assert vars(args)["router_api_key_env"] == "AGENT_ROUTER_API_KEY"
 
     # With no key in the environment the EXISTING transport refuses at
     # construction with the established `router_disabled` code. The CLI adds
@@ -1475,3 +1481,124 @@ def test_cli_forwards_check_claims_to_the_library(
     )
     assert rc == 2
     assert "checks" in seen and "provenance" in seen
+
+
+# -- review round 3 (exact head 06a5d78) ------------------------------------
+
+
+def test_missing_repo_root_is_a_typed_refusal_without_the_path(tmp_path: Path) -> None:
+    """R3-F1: diff acquisition shells out with ``cwd=repo_root``, so a
+    non-existent root raises ``FileNotFoundError`` before the module can
+    convert it -- and that exception stringifies the local path."""
+
+    from app.agent_review.operational_run_v2 import (
+        REPO_ROOT_UNUSABLE_REASON_V2,
+        prepare_operational_review_v2,
+    )
+
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    missing = tmp_path / "definitely_absent"
+
+    with pytest.raises(OperationalRunError) as excinfo:
+        prepare_operational_review_v2(
+            repo_root=missing, target_profile_root=repo,
+            grouping_policy=_grouping_policy(), base_sha=base_sha, head_sha=head_sha,
+            tested_merge_sha=head_sha, pr_number=1, toolrepo_sha="b" * 40,
+            evidence_hash="c" * 64, max_lines_per_chunk=1000,
+        )
+    assert excinfo.value.reason_code == REPO_ROOT_UNUSABLE_REASON_V2
+    assert str(missing) not in excinfo.value.reason_code
+    assert "definitely_absent" not in excinfo.value.reason_code
+
+
+def test_payload_limitations_are_deduplicated_across_chunks(tmp_path: Path) -> None:
+    """R3-F4: ``build_chunk_payloads_from_profile_v2`` reads the reference set
+    ONCE and reuses it for every chunk, so an ``optional_artifact_missing``
+    limitation is repeated per chunk. It is one fact about the run, not N.
+
+    Driven through a stubbed builder returning two chunks carrying the same
+    limitation: the natural fixtures in this file produce a single chunk, and
+    a single-chunk run cannot observe duplication at all -- which is exactly
+    why it went unseen.
+    """
+
+    from app.agent_review import operational_run_v2 as module
+    from app.agent_review.payload_builder_v2 import BuiltChunkPayloadV2
+
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    real = module.build_chunk_payloads_from_profile_v2
+
+    def _two_chunks_one_limitation(manifest, *, profile, repo_root):
+        built = real(manifest, profile=profile, repo_root=repo_root)
+        first = built[0]
+        return tuple(
+            BuiltChunkPayloadV2(
+                chunk_id=item.chunk_id,
+                payload=item.payload,
+                limitations=("optional_artifact_missing:optional-notes",),
+            )
+            for item in built
+        ) + ()  if len(built) > 1 else (
+            BuiltChunkPayloadV2(
+                chunk_id=first.chunk_id,
+                payload=first.payload,
+                limitations=(
+                    "optional_artifact_missing:optional-notes",
+                    "optional_artifact_missing:optional-notes",
+                ),
+            ),
+        )
+
+    with mock.patch.object(
+        module, "build_chunk_payloads_from_profile_v2", _two_chunks_one_limitation
+    ):
+        prepared = module.prepare_operational_review_v2(
+            repo_root=repo, target_profile_root=repo, grouping_policy=_grouping_policy(),
+            base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+            toolrepo_sha="b" * 40, evidence_hash="c" * 64, max_lines_per_chunk=1000,
+        )
+
+    assert prepared.payload_limitations == ("optional_artifact_missing:optional-notes",)
+
+
+def test_cli_forwards_the_dlp_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """R3-F3: without a ``--dlp-policy`` flag a target's declared inline DLP
+    rules never evaluate at the only production entry point."""
+
+    module = _run_cli([])
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    policy = tmp_path / "g.json"
+    policy.write_text(_grouping_policy().model_dump_json(), encoding="utf-8")
+    origin = tmp_path / "o.json"
+    origin.write_text(
+        json.dumps({"event_type": "pull_request", "event_action": "synchronize",
+                    "delivery_id": "d1"}),
+        encoding="utf-8",
+    )
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import _snapshot_dict
+
+    snap = tmp_path / "s.json"
+    snap.write_text(json.dumps(_snapshot_dict([])), encoding="utf-8")
+
+    seen: dict = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        raise module.OperationalRunError("stop_after_capture")
+
+    monkeypatch.setattr(module, "run_operational_review_v2", _capture)
+    module.main(
+        [
+            "--contract-version", "v2", "--repo-root", str(repo),
+            "--target-profile", str(repo), "--grouping-policy", str(policy),
+            "--base-sha", base_sha, "--head-sha", head_sha,
+            "--tested-merge-sha", head_sha, "--pr-number", "1",
+            "--toolrepo-sha", "b" * 40, "--evidence-hash", "c" * 64,
+            "--max-lines-per-chunk", "1000", "--pr-state", "open",
+            "--run-origin", str(origin), "--checks-snapshot", str(snap),
+            "--toolchain-digest", "e" * 64, "--transport", "offline",
+            "--offline-responses-dir", str(tmp_path),
+            "--output", str(tmp_path / "out.json"),
+        ]
+    )
+    assert "dlp_policy" in seen

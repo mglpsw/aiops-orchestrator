@@ -43,6 +43,7 @@ from app.agent_review.contracts_v2 import (  # noqa: E402
 from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
     RequiredCheckProvenanceV2,
 )
+from app.agent_review.review_content_v2 import DlpPolicyDeclarationV2  # noqa: E402
 from app.agent_review.operational_run_v2 import (  # noqa: E402
     OperationalRunError,
     run_operational_review_v2,
@@ -103,6 +104,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--checks-provenance",
         help="optional JSON array of RequiredCheckProvenanceV2, one per --checks entry",
+    )
+    parser.add_argument(
+        "--dlp-policy",
+        help=(
+            "optional JSON DlpPolicyDeclarationV2; without it a target's "
+            "declared inline DLP rules never evaluate"
+        ),
     )
     parser.add_argument("--transport", required=True, choices=["offline", "router"])
     parser.add_argument("--offline-responses-dir", help="offline mode: transport envelope directory")
@@ -181,6 +189,11 @@ def main(argv: list[str] | None = None) -> int:
                 if args.checks_provenance
                 else []
             )
+            dlp_policy = (
+                DlpPolicyDeclarationV2.model_validate(_read_json(args.dlp_policy))
+                if args.dlp_policy
+                else None
+            )
         except (ValidationError, TypeError) as exc:
             raise RunCliError(INPUT_INVALID_REASON_V2) from exc
 
@@ -220,6 +233,7 @@ def main(argv: list[str] | None = None) -> int:
             max_lines_per_chunk=args.max_lines_per_chunk,
             checks=checks,
             provenance=provenance,
+            dlp_policy=dlp_policy,
         )
 
     except (RunCliError, OperationalRunError, ChunkTransportError) as exc:
@@ -242,7 +256,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {OUTPUT_UNWRITABLE_REASON_V2}", file=sys.stderr)
         return 2
 
-    # stdout carries the decision only, never review material.
+    # stdout carries the decision and any run-level limitations -- both are
+    # already-sanitized identifiers, never review material. Dropping the
+    # limitations here would re-create the "silently absorbed" condition the
+    # payload builder explicitly contracts against.
+    for limitation in outcome.prepared.payload_limitations:
+        print(f"limitation: {limitation}", file=sys.stderr)
     print(outcome.review.readiness.state.value)
     return 0
 

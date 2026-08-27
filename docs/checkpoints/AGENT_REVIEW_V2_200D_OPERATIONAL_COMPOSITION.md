@@ -87,17 +87,23 @@ Nothing fabricates a snapshot, an origin or a digest to make a run succeed.
 
 ## Reason-code taxonomy
 
-Every refusal reuses the originating authority's own `reason_code`. Two codes
-are new because no upstream authority owns the condition, both namespaced so
-they cannot be mistaken for an upstream code:
+Every refusal reuses the originating authority's own `reason_code`. Five codes
+are new because no upstream authority owns the condition, each namespaced so it
+cannot be mistaken for an upstream code:
 
 - `operational_preparation_chunk_set_mismatch` — manifest, payloads and
   content each validated, but they do not describe the same chunk set;
-- `operational_run_identity_invalid` — `RunIdentityV2` is constructed inside
-  assembly, so contract-invalid identity material arrives as a raw pydantic
-  `ValidationError` rather than a `RunAssemblyError`. It is now converted to a
-  typed refusal: a traceback must never be what tells a caller their identity
-  material was malformed. **This was found by a failing test, not by review.**
+- `operational_assembly_contract_invalid` — assembly constructs `RunIdentityV2`
+  and `ManifestV2`, so a contract violation there arrives as a raw pydantic
+  `ValidationError` rather than a `RunAssemblyError`. Named for the whole
+  assembly contract, not identity alone, because manifest/fragment invariants
+  surface here too. **Found by a failing test, not by review.**
+- `operational_payload_set_invalid` — the emitted payload set failed its own
+  contract for a reason `PayloadSetBindingError` does not name;
+- `operational_repo_root_unusable` — the checkout is missing or unusable; the
+  underlying `OSError` stringifies the local path, so only the code crosses;
+- `readiness_invariant_violation` — the readiness artifact violated its own
+  contract; its pydantic message embeds finding content.
 
 ## Earliest-authority precedence, proved by discrimination
 
