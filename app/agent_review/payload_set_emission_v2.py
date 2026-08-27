@@ -224,10 +224,14 @@ def emit_payload_set_v2(manifest: ManifestV2, payloads: Sequence[ChunkPayloadV2]
 
     # ------------------------- SEAL -------------------------
     #
-    # `_emit_payload_set_v2` ends in `bind_payload_set_to_payloads_v2`, which
-    # already owns every cross-object disagreement as a typed refusal. A
-    # `ValidationError` from construction after that means derivation is
-    # broken, and escapes.
+    # Ordering note, corrected after review: `_emit_payload_set_v2` CONSTRUCTS
+    # `PayloadSetEntryV2`/`PayloadSetV2` and only then runs
+    # `bind_payload_set_to_payloads_v2`. So a caller-tampered `payload_sha256`
+    # that violates the entry contract fails at construction, as a
+    # `ValidationError`, before the binder can name it. That is a known
+    # narrowing of this boundary rather than a claim it does not exist; the
+    # payload owner validates digests before a set is ever emitted on the
+    # operational path.
     return _emit_payload_set_v2(manifest, payloads)
 
 

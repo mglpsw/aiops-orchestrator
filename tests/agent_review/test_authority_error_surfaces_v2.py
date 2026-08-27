@@ -614,19 +614,16 @@ def test_readiness_contract_failure_is_an_emission_error_through_the_public_path
     # `_assemble_review_readiness_v2` is POST-seal after `#200-D`'s readiness
     # partition; the caller-visible refusal is established by the submitted-
     # material authority, which the public boundary consults.
-    from app.agent_review.contracts_v2 import evaluate_readiness_submitted_material_v2
 
     with pytest.raises(ReadinessEmissionError) as excinfo:
-        unmet = evaluate_readiness_submitted_material_v2(
+        _assemble_review_readiness_v2(
             decision=decision,
             findings=synthesis.findings,
-            checks=[_green_check(manifest.identity.head_sha)],
             identity=manifest.identity,
             evaluated_identity=manifest.identity,
             pr_state=PullRequestStateV2.MERGED,
+            checks=[_green_check(manifest.identity.head_sha)],
         )
-        if unmet is not None:
-            raise ReadinessEmissionError(unmet)
     # Under the two-epoch model this names the rule that was not met, rather
     # than collapsing every contract failure into one opaque code -- the
     # operator discrimination the outer-catch design had destroyed.

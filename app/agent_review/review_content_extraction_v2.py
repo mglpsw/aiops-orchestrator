@@ -86,7 +86,7 @@ from app.agent_review.diff_acquisition_v2 import (
 )
 from app.agent_review.manifest_v2 import FragmentV2, LineRangeV2, ManifestV2
 from app.agent_review.profile_loader_v2 import compute_profile_hash_v2
-from app.agent_review.redaction import _redact_local_paths, redact_text
+from app.agent_review.redaction import _redact_local_paths, redact_text, sanitize_artifact_value
 from app.agent_review.review_content_v2 import (
     ChunkContentV2,
     DlpPolicyDeclarationV2,
@@ -123,6 +123,19 @@ CONTENT_REASON_PAYLOAD_SHA256_INVALID_V2 = "chunk_payload_sha256_invalid"
 # check and `FragmentContentV2` consult it.
 _REVIEWABLE_CONTENT_ADAPTER_V2 = TypeAdapter(ReviewableContentTextV2)
 _SHA256_ADAPTER_V2 = TypeAdapter(Sha256)
+
+
+def _redaction_escaped_v2(text: str) -> bool:
+    """Did OUR redaction miss something the sanitizer would still touch?
+
+    `ReviewableContentTextV2`'s last clause is a defence-in-depth guard whose
+    contract says this extractor must redact BEFORE constructing. Tripping it
+    is therefore a defect in this module, not a property of the target's
+    bytes -- so it must not be degraded to `UNREPRESENTABLE`, which would
+    silently ship a fragment whose redaction failed.
+    """
+
+    return sanitize_artifact_value(text) != text
 
 
 def _is_fragment_content_representable_v2(text: str) -> bool:
@@ -511,6 +524,14 @@ def _build_fragment_content_v2(
             policy=ReviewContentPolicyV2.OMITTED_OVER_BUDGET, coverage_required=False,
             content=None, content_sha256=None, redaction_applied=redaction_applied,
             chars=0,
+        )
+
+    if _redaction_escaped_v2(redacted):
+        # Not a target property: our own two-pass redaction left something the
+        # sanitizer would still touch. Degrading it to `UNREPRESENTABLE` would
+        # report our bug as the target's, so it escapes as the defect it is.
+        raise AssertionError(
+            "redaction escaped: fragment content still requires sanitization"
         )
 
     if not _is_fragment_content_representable_v2(redacted):

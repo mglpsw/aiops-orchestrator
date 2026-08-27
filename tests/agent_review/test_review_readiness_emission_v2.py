@@ -9,7 +9,6 @@ from pydantic import ValidationError
 from app.agent_review.contracts_v2 import (
     READY_REQUIRES_GREEN_CHECKS_REASON_V2,
     READY_REQUIRES_OPEN_PR_REASON_V2,
-    evaluate_readiness_submitted_material_v2,
     FindingDispositionV2,
     FindingLifecycleRecordV2,
     FindingSeverityV2,
@@ -311,16 +310,14 @@ def test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_validat
     # not caller material. The caller-visible refusal therefore belongs at the
     # public boundary, which is where this now drives it.
     with pytest.raises(ReadinessEmissionError) as excinfo:
-        evaluate = evaluate_readiness_submitted_material_v2(
+        _assemble_review_readiness_v2(
             decision=decision,
             findings=synthesis.findings,
-            checks=[_green_check(manifest.identity.head_sha)],
             identity=manifest.identity,
             evaluated_identity=manifest.identity,
             pr_state=PullRequestStateV2.MERGED,
+            checks=[_green_check(manifest.identity.head_sha)],
         )
-        if evaluate is not None:
-            raise ReadinessEmissionError(evaluate)
     assert excinfo.value.reason_code == READY_REQUIRES_OPEN_PR_REASON_V2
 
 

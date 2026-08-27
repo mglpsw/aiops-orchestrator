@@ -104,8 +104,8 @@ from app.agent_review.contracts_v2 import (
     RequiredCheckResultV2,
     ReviewReadinessV2,
     RunIdentityV2,
-    evaluate_readiness_submitted_material_v2,
-    evaluate_ready_preconditions_v2,
+    READY_REQUIRES_OPEN_PR_REASON_V2,
+    evaluate_readiness_common_material_v2,
     RunOriginV2,
     compute_run_id,
 )
@@ -180,13 +180,11 @@ def produce_review_readiness_v2(
     # as the same argument and are equally caller-material AT THIS BOUNDARY --
     # which is why no sealed carrier is needed to tell them apart. Provenance
     # beyond this point belongs to whoever produced the decision.
-    unmet = evaluate_readiness_submitted_material_v2(
-        decision=decision,
+    unmet = evaluate_readiness_common_material_v2(
+        reason_codes=decision.reason_codes,
+        blockers=decision.blockers,
         findings=findings,
-        checks=checks,
-        identity=identity,
-        evaluated_identity=evaluated_identity,
-        pr_state=pr_state,
+        evaluated_head_sha=evaluated_identity.head_sha,
     )
     if unmet is not None:
         raise ReadinessEmissionError(unmet)
@@ -200,9 +198,9 @@ def produce_review_readiness_v2(
         return _assemble_review_readiness_v2(
             decision=decision,
             findings=findings,
-        identity=identity,
-        evaluated_identity=evaluated_identity,
-        pr_state=pr_state,
+            identity=identity,
+            evaluated_identity=evaluated_identity,
+            pr_state=pr_state,
             checks=(),
         )
 
@@ -254,16 +252,16 @@ def _assemble_review_readiness_v2(
     reflects whatever the caller (and, transitively, C1's
     ``stale_reason_codes`` parameter) already decided.
 
-    Raises ``ReadinessEmissionError`` with the rule-naming reason a caller-
-    visible ``ready`` precondition was not met (``ready_requires_open_pr``,
-    ``ready_requires_green_checks``, ...). Those preconditions are evaluated
-    BEFORE the artifact is constructed, by the single authority in
-    ``contracts_v2`` that ``validate_state_invariants`` also consults, so the
-    rules are never restated here.
+    Raises ``ReadinessEmissionError(ready_requires_open_pr)`` when the decision
+    is still ``READY`` here and the pull request is not open -- ``pr_state`` is
+    caller material and is never transformed, so that conjunction is a caller
+    fault. The other four ``ready`` preconditions are NOT checked here: the
+    assessment legitimately downgrades a ``READY`` submission, and refusing it
+    would destroy a valid artifact. They remain contract invariants over the
+    final material.
 
-    After that seal, a ``ValidationError`` from construction means derivation
-    produced an invalid artifact from validated material -- a defect in this
-    repository, and it escapes raw.
+    A ``ValidationError`` from construction means derivation produced an
+    invalid artifact from validated material -- a defect, and it escapes raw.
 
     Before that, raises ``ReadinessEmissionError`` if ``decision``'s own
     ``run_id``/``manifest_hash`` provenance does not match
@@ -279,6 +277,17 @@ def _assemble_review_readiness_v2(
 
     if decision.run_id != compute_run_id(evaluated_identity) or decision.manifest_hash != evaluated_identity.manifest_hash:
         raise ReadinessEmissionError(READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2)
+
+    # `pr_state` is CALLER material and is never transformed, so a decision
+    # that is STILL `READY` here -- after the assessment has had its say --
+    # combined with a non-open pull request is a caller fault, not a defect.
+    # It is checked on the FINAL decision deliberately: checking the SUBMITTED
+    # one would hard-refuse a run whose `READY` the assessment legitimately
+    # downgrades to `manual_required`, destroying a valid artifact. That is the
+    # same reasoning that keeps the other four preconditions out of the
+    # pre-seal epoch, and an earlier revision applied it inconsistently.
+    if decision.state is ReadinessStateV2.READY and pr_state is not PullRequestStateV2.OPEN:
+        raise ReadinessEmissionError(READY_REQUIRES_OPEN_PR_REASON_V2)
 
     # Derivation happens HERE, before the seal, so a defect in it cannot be
     # mistaken for a caller problem: `compute_run_id` is this module's only

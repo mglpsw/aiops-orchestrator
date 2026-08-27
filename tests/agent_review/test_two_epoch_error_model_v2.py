@@ -377,16 +377,21 @@ def test_readiness_pre_seal_invalid_combination_is_a_typed_refusal() -> None:
 
     from app.agent_review.contracts_v2 import (
         READY_REQUIRES_OPEN_PR_REASON_V2,
-        evaluate_readiness_submitted_material_v2,
+        )
+
+    from app.agent_review.review_readiness_emission_v2 import (
+        ReadinessEmissionError,
+        _assemble_review_readiness_v2,
     )
 
-    unmet = evaluate_readiness_submitted_material_v2(
-        decision=decision, findings=synthesis.findings,
-        checks=[_green_check(manifest.identity.head_sha)],
-        identity=manifest.identity, evaluated_identity=manifest.identity,
-        pr_state=PullRequestStateV2.MERGED,
-    )
-    assert unmet == READY_REQUIRES_OPEN_PR_REASON_V2
+    with pytest.raises(ReadinessEmissionError) as excinfo:
+        _assemble_review_readiness_v2(
+            decision=decision, findings=synthesis.findings,
+            identity=manifest.identity, evaluated_identity=manifest.identity,
+            pr_state=PullRequestStateV2.MERGED,
+            checks=[_green_check(manifest.identity.head_sha)],
+        )
+    assert excinfo.value.reason_code == READY_REQUIRES_OPEN_PR_REASON_V2
 
 
 # -- review round 1 on the two-epoch model -----------------------------------
@@ -515,8 +520,7 @@ def test_readiness_non_ready_invariant_is_typed_and_leaks_nothing() -> None:
 
     from app.agent_review.contracts_v2 import (
         READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2,
-        evaluate_readiness_submitted_material_v2,
-    )
+        )
 
     from app.agent_review.contracts_v2 import ReadinessReasonV2
 
@@ -530,10 +534,12 @@ def test_readiness_non_ready_invariant_is_typed_and_leaks_nothing() -> None:
             ReadinessReasonV2.HEAD_MISMATCH,
         ),
     )
-    unmet = evaluate_readiness_submitted_material_v2(
-        decision=duplicated, findings=synthesis.findings, checks=[],
-        identity=manifest.identity, evaluated_identity=manifest.identity,
-        pr_state=PullRequestStateV2.OPEN,
+    from app.agent_review.contracts_v2 import evaluate_readiness_common_material_v2
+
+    unmet = evaluate_readiness_common_material_v2(
+        reason_codes=duplicated.reason_codes, blockers=duplicated.blockers,
+        findings=synthesis.findings,
+        evaluated_head_sha=manifest.identity.head_sha,
     )
     assert unmet == READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
     assert "input_value" not in unmet and "{" not in unmet
@@ -739,25 +745,39 @@ def test_published_contract_still_rejects_a_wrong_run_id_on_direct_parse() -> No
     assert "run_id" in str(excinfo.value)
 
 
-def test_submitted_material_authority_is_consulted_by_both_owners() -> None:
-    """The extracted half must not be restated. `validate_state_invariants`
-    and the emission owner consult the same function; a third derivation of
-    these rules would be the duplication this design exists to prevent."""
+def test_common_material_authority_is_actually_called_by_both_owners() -> None:
+    """The extracted half must be CALLED, not restated.
 
+    The previous version of this test grepped for the function name followed
+    by "(", which also matches its own `def` line -- so `contracts_v2.py`
+    counted as a call site while containing zero calls, and the test passed on
+    a property that was false. Review caught it. Counting `ast.Call` nodes is
+    what makes the assertion capable of failing.
+    """
+
+    import ast
     from pathlib import Path as _Path
 
     from app.agent_review import contracts_v2
 
     package_root = _Path(contracts_v2.__file__).parent
-    call_sites = sorted(
-        source.name
-        for source in package_root.glob("*.py")
-        if "evaluate_readiness_submitted_material_v2(" in source.read_text(encoding="utf-8")
-    )
-    assert call_sites == [
-        "contracts_v2.py",
-        "review_readiness_emission_v2.py",
-    ], call_sites
+    callers = {}
+    for source in package_root.glob("*.py"):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        calls = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "evaluate_readiness_common_material_v2"
+        )
+        if calls:
+            callers[source.name] = calls
+
+    assert callers == {
+        "contracts_v2.py": 1,
+        "review_readiness_emission_v2.py": 1,
+    }, callers
 
 
 def test_public_boundary_refuses_invalid_submitted_material(tmp_path: Path) -> None:

@@ -1194,28 +1194,32 @@ def evaluate_ready_preconditions_v2(
 #
 # One `except ValidationError` around the constructor cannot tell them apart,
 # which is what let a derivation defect surface as an operator-facing refusal.
-# The submitted half is extracted here so the emission owner can establish it
-# BEFORE its transformation/derivation epoch begins. The rules are not
-# restated: `validate_state_invariants` calls this same function, so a
-# document parsed straight from JSON is still fully validated.
+#
+# The rules below hold IDENTICALLY for submitted material and for the final
+# artifact, so they live here once and BOTH owners call them: the emission
+# owner before its transformation epoch, and `validate_state_invariants` on the
+# constructed artifact. An earlier revision of this file restated them inline
+# in the validator while a comment claimed they were shared -- review caught
+# that the claim was false, which is exactly the silent divergence this
+# arrangement exists to prevent.
 READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2 = "readiness_submitted_material_invalid"
 
 
-def evaluate_readiness_submitted_material_v2(
-    *, decision, findings, checks, identity, evaluated_identity, pr_state
+def evaluate_readiness_common_material_v2(
+    *, reason_codes, blockers, findings, evaluated_head_sha
 ) -> str | None:
-    """Return the stable reason SUBMITTED readiness material is inadmissible.
+    """Rules true of readiness material whether submitted or final.
 
-    Content-free: names a rule, never a value. Returning None does not promise
-    the resulting artifact is valid -- the transformation and derivation that
-    follow are a different authority's responsibility, and their failures are
-    defects, not caller faults.
+    Deliberately excludes anything the emitter replaces or adjusts:
+    `checks` become the assessment's own, and `state`/`pipeline` are adjusted
+    by it, so those are final-material invariants only.
+
+    Content-free: names a rule, never a value.
     """
 
-    reason_codes = list(decision.reason_codes)
-    blockers = list(decision.blockers)
+    reason_codes = list(reason_codes)
+    blockers = list(blockers)
     findings = list(findings)
-    checks = list(checks)
 
     if len(reason_codes) != len(set(reason_codes)):
         return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
@@ -1223,13 +1227,7 @@ def evaluate_readiness_submitted_material_v2(
         return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
     if len({finding.finding_id for finding in findings}) != len(findings):
         return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
-    if len({check.check_name for check in checks}) != len(checks):
-        return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
 
-    evaluated_head_sha = evaluated_identity.head_sha
-    # `checks` are NOT carried through: the emitter replaces them with
-    # `assessment.checks`. Binding the SUBMITTED ones to the evaluated HEAD
-    # here would be checking material that never reaches the artifact.
     for finding in findings:
         if finding.observed_at_head_sha != evaluated_head_sha:
             return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
@@ -1259,21 +1257,6 @@ def evaluate_readiness_submitted_material_v2(
                 return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
         elif blocker.finding_id is not None:
             return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
-
-    # Of the five `ready` preconditions, ONLY the pull-request one is decidable
-    # from submitted material. `checks` are replaced by the assessment,
-    # `pipeline`/`state`/`reason_codes`/`blockers` are adjusted by it, and a
-    # submitted `READY` legitimately degrades to `manual_required` when
-    # required-check authority is not established -- refusing that here would
-    # break the documented shadow-minimal behaviour.
-    #
-    # `pr_state` is never transformed, so a submission claiming `READY` for a
-    # non-open pull request is incoherent whatever the assessment does, and the
-    # caller can act on it. The other four stay enforced by
-    # `validate_state_invariants` against the FINAL material, where a violation
-    # means the transformation produced an incoherent state -- a defect.
-    if decision.state is ReadinessStateV2.READY and pr_state is not PullRequestStateV2.OPEN:
-        return READY_REQUIRES_OPEN_PR_REASON_V2
     return None
 
 
@@ -1306,50 +1289,20 @@ class ReviewReadinessV2(ContractV2Model):
             raise ValueError("readiness head_sha must match the expected run identity HEAD")
         if self.evaluated_head_sha != self.evaluated_identity.head_sha:
             raise ValueError("evaluated_head_sha must match evaluated_identity")
-        if len(self.reason_codes) != len(set(self.reason_codes)):
-            raise ValueError("reason_codes must be unique")
-        blocker_ids = [blocker.blocker_id for blocker in self.blockers]
-        finding_ids = [finding.finding_id for finding in self.findings]
+        # Shared with `produce_review_readiness_v2`'s pre-seal epoch: one
+        # definition, two callers. Not restated here.
+        if evaluate_readiness_common_material_v2(
+            reason_codes=self.reason_codes,
+            blockers=self.blockers,
+            findings=self.findings,
+            evaluated_head_sha=self.evaluated_head_sha,
+        ) is not None:
+            raise ValueError("readiness material violates a common invariant")
         check_names = [check.check_name for check in self.checks]
-        if len(blocker_ids) != len(set(blocker_ids)):
-            raise ValueError("blocker IDs must be unique")
-        if len(finding_ids) != len(set(finding_ids)):
-            raise ValueError("finding IDs must be unique")
         if len(check_names) != len(set(check_names)):
             raise ValueError("required check names must be unique")
         if any(check.head_sha != self.evaluated_head_sha for check in self.checks):
             raise ValueError("check results must be bound to the evaluated HEAD")
-        for finding in self.findings:
-            if finding.observed_at_head_sha != self.evaluated_head_sha:
-                raise ValueError("findings must be observed on the evaluated HEAD")
-            if (
-                finding.disposition is not FindingDispositionV2.NEW
-                and finding.decided_at_head_sha != self.evaluated_head_sha
-            ):
-                raise ValueError("finding decisions must be revalidated on the evaluated HEAD")
-            if any(item.head_sha != self.evaluated_head_sha for item in finding.evidence):
-                raise ValueError("disposition evidence must be revalidated on the evaluated HEAD")
-
-        findings_by_id = {finding.finding_id: finding for finding in self.findings}
-        for blocker in self.blockers:
-            if blocker.reason_code in {
-                ReadinessReasonV2.CONFIRMED_CODE_FINDING,
-                ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED,
-            }:
-                if blocker.finding_id is None or blocker.finding_id not in findings_by_id:
-                    raise ValueError("finding blockers require a valid finding_id")
-                finding = findings_by_id[blocker.finding_id]
-                if blocker.reason_code is ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED and not (
-                    finding.disposition is FindingDispositionV2.NEW
-                    and finding.actionable
-                    and finding.severity
-                    in {FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2}
-                ):
-                    raise ValueError(
-                        "finding_confirmation_required requires an actionable new P0/P1/P2 finding"
-                    )
-            elif blocker.finding_id is not None:
-                raise ValueError("pipeline, manual, and stale blockers cannot point to findings")
 
         active_blockers = [blocker for blocker in self.blockers if blocker.active]
         active_reasons = {blocker.reason_code for blocker in active_blockers}

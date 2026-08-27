@@ -514,26 +514,22 @@ def test_cli_fails_closed_on_a_readiness_invariant_violation(tmp_path: Path) -> 
     """ready requires an open PR -- a merged PR with a ready decision must
     never be silently accepted.
 
-    The property that matters end to end -- and the one this test has always
-    named -- is that a merged PR is refused no matter which stage catches it
-    first. Which stage that is HAS changed.
+    The property that matters end to end is that a merged PR is refused no
+    matter which stage catches it first, and that is unchanged by `#200-D`'s
+    readiness partition.
 
-    `#200-D`'s readiness partition establishes caller-visible `ready`
-    preconditions BEFORE the `#201-C0` required-check verification, because
-    `pr_state` is submitted material and is never transformed. The refusal is
-    therefore both earlier and more precise than the judge-gate message it
-    used to produce: an operator is told the rule they violated rather than
-    the next gate that happened to trip."""
+    An intermediate revision of that partition checked `ready_requires_open_pr`
+    against the SUBMITTED decision, which moved this refusal earlier -- and
+    would also have hard-refused a run whose `READY` the assessment
+    legitimately downgrades to `manual_required`. The rule now runs on the
+    FINAL decision instead, so the `#201-C0` verification is reached first
+    again, exactly as before."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path, pr_state="merged"))
     assert result.returncode != 0
-    assert "ready_requires_open_pr" in result.stderr, result.stderr
-    assert not output_path.exists()
-    return
-
     _assert_reached_the_independent_judge_gate(result)
     assert not output_path.exists()
 
