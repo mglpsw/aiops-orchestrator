@@ -27,6 +27,7 @@ from app.agent_review.readiness_decision_v2 import (
 from app.agent_review.required_check_readiness_v2 import _assess_required_checks_v2
 from app.agent_review.review_readiness_emission_v2 import (
     READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2,
+    READINESS_EMISSION_CONTRACT_INVALID_REASON_V2,
     ReadinessEmissionError,
     _assemble_review_readiness_v2,
 )
@@ -288,14 +289,22 @@ def test_emits_a_real_blocked_code_artifact_with_findings() -> None:
 
 def test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_validator() -> None:
     """Ready requires an open PR -- ReviewReadinessV2.validate_state_invariants
-    is the authority, never re-checked here."""
+    is the authority, never re-checked here.
+
+    `#200-D` predecessor: the refusal is unchanged, its TYPE is not. This
+    authority now owns its artifact's contract, so the contract's own
+    rejection surfaces as `ReadinessEmissionError` instead of a raw pydantic
+    `ValidationError`. The proposition this test protects -- ready + merged PR
+    fails closed -- is exactly as strong; a caller no longer has to know that
+    this module builds a pydantic model to learn that emission refused.
+    """
 
     manifest, report = _fully_reviewed_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
     decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
     assert decision.state is ReadinessStateV2.READY
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ReadinessEmissionError) as excinfo:
         _assemble_review_readiness_v2(
             decision=decision,
             findings=synthesis.findings,
@@ -304,15 +313,18 @@ def test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_validat
             pr_state=PullRequestStateV2.MERGED,
             checks=[_green_check(manifest.identity.head_sha)],
         )
+    assert excinfo.value.reason_code == READINESS_EMISSION_CONTRACT_INVALID_REASON_V2
 
 
 def test_ready_state_without_green_checks_fails_closed() -> None:
+    """Same evaluated type change as the test above; same proposition."""
+
     manifest, report = _fully_reviewed_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
     decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
     assert decision.state is ReadinessStateV2.READY
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ReadinessEmissionError) as excinfo:
         _assemble_review_readiness_v2(
             decision=decision,
             findings=synthesis.findings,
@@ -321,6 +333,7 @@ def test_ready_state_without_green_checks_fails_closed() -> None:
             pr_state=PullRequestStateV2.OPEN,
             checks=[],
         )
+    assert excinfo.value.reason_code == READINESS_EMISSION_CONTRACT_INVALID_REASON_V2
 
 
 def test_emit_review_readiness_rejects_a_decision_replayed_from_a_different_run() -> None:

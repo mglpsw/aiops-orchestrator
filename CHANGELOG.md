@@ -424,6 +424,29 @@
     `docs/AGENTESCALA_TOOL_REPO_INTEGRATION.md` for the full reason-code
     reference AgentEscala should expect.
 
+### Changed
+
+- **Closed authority error surfaces (`#200-D` predecessor)**: six independent
+  reviews of PR #271 showed the operational composer could not enumerate the
+  exception surfaces of the authorities beneath it, because those surfaces were
+  open -- a sibling error family here, a pydantic `ValidationError` there, an
+  unguarded file read elsewhere. Each is now closed at its OWNER, so a caller
+  catches exactly one documented family per authority:
+  `DiffAcquisitionError`, `RunAssemblyError`, `PayloadBuilderError`,
+  `PayloadSetBindingError`, `ExtractionBlockedError`, `ReadinessEmissionError`.
+  Diff acquisition additionally distinguishes "no such checkout" from "no `git`
+  on PATH", which previously arrived as the same `FileNotFoundError` and so
+  could not be told apart by any consumer. Originating reasons are preserved
+  through conversion rather than flattened. Closure is bidirectional:
+  programmer defects (`TypeError`, `AttributeError`, `AssertionError`,
+  `KeyError`, `IndexError`) are proved to still escape raw, and a structural
+  test fails if any of these modules ever reaches for `except Exception` --
+  which immediately caught two pre-existing broad catches in payload-set
+  emission that would have reported a defect inside a digest verifier as a
+  tampered payload. Two readiness tests that deliberately asserted the raw
+  `ValidationError` were evaluated and updated; their fail-closed proposition
+  is unchanged. No published schema changed.
+
 ### Added
 
 - **`agentreview-v2-target-pack` — installable target pack, first slice

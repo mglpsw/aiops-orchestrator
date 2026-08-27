@@ -64,6 +64,12 @@ class DiffAcquisitionError(ValueError):
 DIFF_UNREADABLE_REASON_V2 = "diff_unreadable"
 DIFF_TRUNCATED_REASON_V2 = "diff_truncated"
 INVALID_REF_REASON_V2 = "invalid_git_ref"
+# `#200-D` predecessor: acquisition shells out, so the OS can fail the call
+# before git ever runs. A consumer cannot tell these apart -- both arrive as
+# `FileNotFoundError` -- but this authority can, and therefore must.
+GIT_UNAVAILABLE_REASON_V2 = "git_unavailable"
+REPO_ROOT_UNUSABLE_REASON_V2 = "repo_root_unusable"
+DIFF_ACQUISITION_IO_FAILED_REASON_V2 = "diff_acquisition_io_failed"
 RAW_DIFF_CARDINALITY_MISMATCH_REASON_V2 = "raw_diff_cardinality_mismatch"
 RAW_DIFF_STATUS_MISMATCH_REASON_V2 = "raw_diff_status_mismatch"
 RAW_DIFF_PATH_MISMATCH_REASON_V2 = "raw_diff_path_mismatch"
@@ -788,6 +794,38 @@ _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _RENAME_COPY_DETECTION_ARGS_V2: tuple[str, ...] = ("--find-renames=50%", "--find-copies=50%", "-l1000")
 
 
+
+def _run_git_v2(argv: list[str], *, repo_root: Path) -> subprocess.CompletedProcess:
+    """Run git for acquisition, converting OS-level failures to this
+    authority's own family.
+
+    `#200-D` predecessor (model B): a caller may know THAT acquisition failed;
+    it must not have to interpret `FileNotFoundError` to find out why. The
+    checkout is probed first precisely so "no such checkout" and "no git on
+    PATH" -- which are the SAME `FileNotFoundError` from ``subprocess`` -- stay
+    distinguishable here, where the distinction is knowable.
+
+    Only ``OSError`` is converted. A defect in this module still raises: a bug
+    must never be laundered into an acquisition refusal.
+    """
+
+    import subprocess  # module-local, matching this file's existing convention
+
+    if not Path(repo_root).is_dir():
+        raise DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2)
+    try:
+        return subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
+            argv, cwd=repo_root, capture_output=True, text=False, check=False
+        )
+    except FileNotFoundError as exc:
+        # The checkout existed a moment ago, so the missing file is the
+        # executable itself.
+        raise DiffAcquisitionError(GIT_UNAVAILABLE_REASON_V2) from exc
+    except OSError as exc:
+        # permissions, ENOTDIR after a race, fork/exec exhaustion, ...
+        raise DiffAcquisitionError(DIFF_ACQUISITION_IO_FAILED_REASON_V2) from exc
+
+
 def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     """Run the canonical, fixed, allowlisted diff command:
     ``git diff --no-ext-diff --no-textconv --binary --find-renames=50%
@@ -815,8 +853,6 @@ def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     with ``-``).
     """
 
-    import subprocess
-
     if not _GIT_SHA_RE.match(base_sha) or not _GIT_SHA_RE.match(head_sha):
         raise DiffAcquisitionError(INVALID_REF_REASON_V2)
 
@@ -829,7 +865,7 @@ def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     # same replacement character before the hunk body is hashed, so
     # genuinely different content could collide on the same diff_sha256/
     # fragment_id. Undecodable output fails closed instead.
-    result = subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
+    result = _run_git_v2(
         [
             "git", "diff", "--no-ext-diff", "--no-textconv", "--binary",
             # A Codex review found that an ambient diff.noprefix=true
@@ -845,10 +881,7 @@ def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
             "--src-prefix=a/", "--dst-prefix=b/",
             *_RENAME_COPY_DETECTION_ARGS_V2, f"{base_sha}...{head_sha}",
         ],
-        cwd=repo_root,
-        capture_output=True,
-        text=False,
-        check=False,
+        repo_root=repo_root,
     )
     if result.returncode != 0:
         raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
@@ -1192,20 +1225,15 @@ def acquire_raw_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str
     applies to its own output.
     """
 
-    import subprocess
-
     if not _GIT_SHA_RE.match(base_sha) or not _GIT_SHA_RE.match(head_sha):
         raise DiffAcquisitionError(INVALID_REF_REASON_V2)
 
-    result = subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
+    result = _run_git_v2(
         [
             "git", "diff", "--no-ext-diff", "--raw", "-z",
             *_RENAME_COPY_DETECTION_ARGS_V2, f"{base_sha}...{head_sha}",
         ],
-        cwd=repo_root,
-        capture_output=True,
-        text=False,
-        check=False,
+        repo_root=repo_root,
     )
     if result.returncode != 0:
         raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)

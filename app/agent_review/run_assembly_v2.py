@@ -74,6 +74,8 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
+from pydantic import ValidationError
+
 from app.agent_review.contracts_v2 import RunIdentityV2, TargetProfileV2, compute_run_id
 from app.agent_review.diff_acquisition_v2 import ParsedFileDiffV2, validate_diff_completeness_v2
 from app.agent_review.manifest_v2 import (
@@ -91,6 +93,13 @@ from app.agent_review.semantic_grouping_policy_v2 import (
     classify_semantic_group_v2,
     compute_effective_policy_hash_v2,
 )
+
+# `#200-D` predecessor: this authority CONSTRUCTS `RunIdentityV2`/`ManifestV2`
+# and drives the planner, so contract violations and caller-supplied budget
+# violations surfaced as raw pydantic/builtin errors. A consumer cannot name
+# those; this owner can.
+RUN_ASSEMBLY_CONTRACT_INVALID_REASON_V2 = "run_assembly_contract_invalid"
+RUN_ASSEMBLY_BUDGET_INVALID_REASON_V2 = "run_assembly_budget_invalid"
 
 RUN_ASSEMBLY_UNKNOWN_MUST_REVIEW_ARTIFACT_REASON_V2 = "run_assembly_unknown_must_review_artifact"
 RUN_ASSEMBLY_REQUIRED_PATH_MISSING_REASON_V2 = "run_assembly_required_path_missing"
@@ -166,6 +175,65 @@ def _is_must_review_path(path: str, *, explicit_paths: frozenset[str], patterns:
 
 
 def assemble_manifest_from_diff_v2(
+    file_diffs: Sequence[ParsedFileDiffV2],
+    *,
+    profile: TargetProfileV2,
+    grouping_policy: SemanticGroupingPolicyV2,
+    repo: str,
+    pr_number: int,
+    base_sha: str,
+    head_sha: str,
+    tested_merge_sha: str,
+    toolrepo_sha: str,
+    evidence_hash: str,
+    max_lines_per_chunk: int,
+    expected_paths: frozenset[str] | None = None,
+) -> ManifestAssemblyOutcomeV2:
+    """Public boundary: every EXPECTED assembly failure is a
+    ``RunAssemblyError`` carrying a stable reason code.
+
+    `#200-D` predecessor (model B). This authority builds `RunIdentityV2` and
+    `ManifestV2` and drives the planner, so before closure a caller had to
+    catch pydantic's ``ValidationError`` and a bare ``ValueError`` to find out
+    that assembly refused -- knowledge of HOW this module is implemented, not
+    THAT it refused.
+
+    A caller-supplied budget that cannot describe a chunk is validated here,
+    where it is this authority's own parameter. The planner's OTHER
+    ``ValueError``s (duplicate fragment_id, a hunk with no real lines) report
+    inconsistent acquisition output, not operator input, so they are
+    deliberately NOT converted: they are defects and must stay raw.
+    """
+
+    if not isinstance(max_lines_per_chunk, int) or max_lines_per_chunk < 1:
+        raise RunAssemblyError(RUN_ASSEMBLY_BUDGET_INVALID_REASON_V2)
+    if profile.budgets.max_chunks < 1:
+        raise RunAssemblyError(RUN_ASSEMBLY_BUDGET_INVALID_REASON_V2)
+
+    try:
+        return _assemble_manifest_from_diff_v2(
+            file_diffs,
+            profile=profile,
+            grouping_policy=grouping_policy,
+            repo=repo,
+            pr_number=pr_number,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            tested_merge_sha=tested_merge_sha,
+            toolrepo_sha=toolrepo_sha,
+            evidence_hash=evidence_hash,
+            max_lines_per_chunk=max_lines_per_chunk,
+            expected_paths=expected_paths,
+        )
+    except RunAssemblyError:
+        raise
+    except ValidationError as exc:
+        # identity/manifest/fragment contract violation built from caller
+        # material -- never the pydantic message, which carries content.
+        raise RunAssemblyError(RUN_ASSEMBLY_CONTRACT_INVALID_REASON_V2) from exc
+
+
+def _assemble_manifest_from_diff_v2(
     file_diffs: Sequence[ParsedFileDiffV2],
     *,
     profile: TargetProfileV2,

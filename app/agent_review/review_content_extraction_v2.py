@@ -72,6 +72,8 @@ import re
 import hashlib
 from typing import Mapping, Sequence
 
+from pydantic import ValidationError
+
 from app.agent_review.contracts_v2 import TargetProfileV2
 from app.agent_review.diff_acquisition_v2 import (
     DiffAcquisitionError,
@@ -91,6 +93,7 @@ from app.agent_review.review_content_v2 import (
     FragmentContentV2,
     ReviewContentPolicyV2,
     ReviewContentV2,
+    ReviewContentBindingError,
     bind_review_content_to_manifest_v2,
     compute_chunk_content_sha256_v2,
     compute_dlp_policy_digest_v2,
@@ -115,6 +118,9 @@ _GENERATED_PATH_MARKERS_V2: tuple[str, ...] = (
     ".lock.json",
 )
 _MINIFIED_PATH_MARKERS_V2: tuple[str, ...] = (".min.js", ".min.css")
+
+
+CONTENT_REASON_CONTRACT_INVALID_V2 = "content_contract_invalid"
 
 
 class ExtractionBlockedError(ValueError):
@@ -678,18 +684,32 @@ def extract_review_content_v2(
 
     dlp_digest = compute_dlp_policy_digest_v2(dlp_policy) if dlp_policy is not None else None
     material = ReviewContentV2.model_construct(
-        schema_id="agent-review.review-content.v2", schema_version=2,
-        source="aiops-review-build-review-content", run_id=manifest.run_id,
-        manifest_hash=manifest.identity.manifest_hash, dlp_policy_digest=dlp_digest,
+            schema_id="agent-review.review-content.v2", schema_version=2,
+            source="aiops-review-build-review-content", run_id=manifest.run_id,
+            manifest_hash=manifest.identity.manifest_hash, dlp_policy_digest=dlp_digest,
         chunks=chunks, limitations=[], content_set_sha256="0" * 64,
     )
     content_set_sha256 = compute_review_content_sha256_v2(material)
-    content = ReviewContentV2(
-        schema_id="agent-review.review-content.v2", schema_version=2,
-        source="aiops-review-build-review-content", run_id=manifest.run_id,
-        manifest_hash=manifest.identity.manifest_hash, dlp_policy_digest=dlp_digest,
-        chunks=chunks, limitations=[], content_set_sha256=content_set_sha256,
-    )
+    try:
+        content = ReviewContentV2(
+            schema_id="agent-review.review-content.v2", schema_version=2,
+            source="aiops-review-build-review-content", run_id=manifest.run_id,
+            manifest_hash=manifest.identity.manifest_hash, dlp_policy_digest=dlp_digest,
+            chunks=chunks, limitations=[], content_set_sha256=content_set_sha256,
+        )
+    except ValidationError as exc:
+        raise ExtractionBlockedError(
+            CONTENT_REASON_CONTRACT_INVALID_V2, fragment_id=None
+        ) from exc
 
-    bind_review_content_to_manifest_v2(content, manifest)
+    # `#200-D` predecessor (model B): `bind_review_content_to_manifest_v2`
+    # raises `ReviewContentBindingError` -- a SIBLING family of this module's
+    # own -- and `ReviewContentV2` construction above can fail its contract as
+    # a pydantic error. Both used to escape this authority's declared surface,
+    # so a caller had to know two foreign types to learn that extraction
+    # refused. The binder's precise reason is preserved.
+    try:
+        bind_review_content_to_manifest_v2(content, manifest)
+    except ReviewContentBindingError as exc:
+        raise ExtractionBlockedError(exc.reason_code, fragment_id=None) from exc
     return content

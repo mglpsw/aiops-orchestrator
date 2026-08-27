@@ -37,6 +37,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from app.agent_review.contracts_v2 import (
     ChunkCoverageV2,
     ChunkPayloadV2,
@@ -47,6 +49,7 @@ from app.agent_review.contracts_v2 import (
 )
 from app.agent_review.manifest_v2 import ManifestChunkV2, ManifestV2
 from app.agent_review.payload_references_v2 import (
+    PayloadReferenceError,
     build_payload_artifact_references_v2,
     build_payload_contract_references_v2,
 )
@@ -62,6 +65,10 @@ class PayloadBuilderError(ValueError):
 
 
 CHUNK_NOT_IN_MANIFEST_REASON_V2 = "chunk_not_in_manifest"
+# `#200-D` predecessor: a declared artifact/contract exists but cannot be read.
+PAYLOAD_REFERENCE_UNREADABLE_REASON_V2 = "payload_reference_unreadable"
+# A payload could not satisfy its own contract from otherwise-valid material.
+PAYLOAD_CONTRACT_INVALID_REASON_V2 = "payload_contract_invalid"
 
 
 @dataclass(frozen=True)
@@ -225,7 +232,37 @@ def build_chunk_payloads_from_profile_v2(
     """Build a ``ChunkPayloadV2`` with real profile-derived references for
     every chunk in a planned manifest. Reads artifact/contract content from
     ``repo_root`` exactly once, reused across every chunk -- the reference
-    set does not vary per chunk (see ``build_chunk_payload_from_profile_v2``)."""
+    set does not vary per chunk (see ``build_chunk_payload_from_profile_v2``).
+
+    Public boundary: every EXPECTED failure is a ``PayloadBuilderError``.
+
+    `#200-D` predecessor (model B). Before closure a caller had to catch three
+    types for this one boundary -- ``PayloadBuilderError``,
+    ``PayloadReferenceError`` (a SIBLING family, not a subclass) and a raw
+    ``OSError`` from the contract-reference read, which had no guard although
+    the artifact branch beside it did. The originating semantic reason is
+    preserved through the conversion, so a caller still learns WHICH reference
+    failed, without knowing that a second error family exists.
+    """
+
+    try:
+        return _build_chunk_payloads_from_profile_v2(
+            manifest, profile=profile, repo_root=repo_root
+        )
+    except PayloadBuilderError:
+        raise
+    except PayloadReferenceError as exc:
+        # preserve the reference authority's own precise reason
+        raise PayloadBuilderError(exc.reason_code) from exc
+    except OSError as exc:
+        raise PayloadBuilderError(PAYLOAD_REFERENCE_UNREADABLE_REASON_V2) from exc
+    except ValidationError as exc:
+        raise PayloadBuilderError(PAYLOAD_CONTRACT_INVALID_REASON_V2) from exc
+
+
+def _build_chunk_payloads_from_profile_v2(
+    manifest: ManifestV2, *, profile: TargetProfileV2, repo_root: Path
+) -> tuple[BuiltChunkPayloadV2, ...]:
 
     artifact_references, limitations = build_payload_artifact_references_v2(profile, repo_root)
     contract_references = build_payload_contract_references_v2(profile, repo_root)

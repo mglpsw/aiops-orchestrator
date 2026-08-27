@@ -88,6 +88,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from pydantic import ValidationError
+
 from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
 from app.agent_review.contracts_v2 import (
     FindingLifecycleRecordV2,
@@ -106,6 +108,8 @@ from app.agent_review.required_check_readiness_v2 import _verify_and_assess_requ
 REVIEW_READINESS_SOURCE_V2 = "aiops-review-quality-gate"
 
 READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2 = "readiness_emission_decision_provenance_mismatch"
+# The readiness artifact could not satisfy its own contract.
+READINESS_EMISSION_CONTRACT_INVALID_REASON_V2 = "readiness_emission_contract_invalid"
 
 
 class ReadinessEmissionError(ValueError):
@@ -240,22 +244,34 @@ def _assemble_review_readiness_v2(
     if decision.run_id != compute_run_id(evaluated_identity) or decision.manifest_hash != evaluated_identity.manifest_hash:
         raise ReadinessEmissionError(READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2)
 
-    return ReviewReadinessV2(
-        schema_id="agent-review.review-readiness.v2",
-        schema_version=2,
-        source=REVIEW_READINESS_SOURCE_V2,
-        run_id=compute_run_id(identity),
-        identity=identity,
-        evaluated_run_id=compute_run_id(evaluated_identity),
-        evaluated_identity=evaluated_identity,
-        head_sha=identity.head_sha,
-        evaluated_head_sha=evaluated_identity.head_sha,
-        pr_state=pr_state,
-        checks=list(checks),
-        coverage=decision.coverage,
-        pipeline=decision.pipeline,
-        state=decision.state,
-        reason_codes=list(decision.reason_codes),
-        blockers=list(decision.blockers),
-        findings=list(findings),
-    )
+    try:
+        return ReviewReadinessV2(
+            schema_id="agent-review.review-readiness.v2",
+            schema_version=2,
+            source=REVIEW_READINESS_SOURCE_V2,
+            run_id=compute_run_id(identity),
+            identity=identity,
+            evaluated_run_id=compute_run_id(evaluated_identity),
+            evaluated_identity=evaluated_identity,
+            head_sha=identity.head_sha,
+            evaluated_head_sha=evaluated_identity.head_sha,
+            pr_state=pr_state,
+            checks=list(checks),
+            coverage=decision.coverage,
+            pipeline=decision.pipeline,
+            state=decision.state,
+            reason_codes=list(decision.reason_codes),
+            blockers=list(decision.blockers),
+            findings=list(findings),
+        )
+    except ValidationError as exc:
+        # `#200-D` predecessor (model B): this is the ONLY construction site
+        # for the readiness artifact, so this authority owns its contract.
+        # Leaving it raw forced the consumer to keep a rule of the shape
+        # "any ValidationError in the back half means a readiness invariant
+        # failed" -- which would misclassify an unrelated pydantic failure
+        # from anywhere else beneath it. The pydantic message also embeds
+        # finding content, so only the code crosses.
+        raise ReadinessEmissionError(
+            READINESS_EMISSION_CONTRACT_INVALID_REASON_V2
+        ) from exc

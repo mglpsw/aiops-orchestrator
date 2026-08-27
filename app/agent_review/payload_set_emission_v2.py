@@ -81,8 +81,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from pydantic import ValidationError
+
 from app.agent_review.contracts_v2 import ChunkPayloadV2, verify_payload_sha256_v2
 from app.agent_review.manifest_v2 import ManifestV2
+PAYLOAD_SET_CONTRACT_INVALID_REASON_V2 = "payload_set_contract_invalid"
+
 from app.agent_review.payload_set_v2 import (
     PAYLOAD_SET_SCHEMA_V2,
     PayloadSetBindingError,
@@ -158,7 +162,12 @@ def bind_payload_set_to_payloads_v2(
         payload = payloads_by_chunk_id[entry.chunk_id]
         try:
             verify_payload_sha256_v2(payload)
-        except Exception as exc:
+        except (ValidationError, ValueError) as exc:
+            # `#200-D` predecessor, the OTHER direction: this was
+            # `except Exception`, so a `TypeError` from a defect INSIDE the
+            # verifier would have been reported to an operator as a tampered
+            # payload. Tampering surfaces as a contract/serialization failure;
+            # a programmer defect must stay a crash.
             raise PayloadSetBindingError(PAYLOAD_SET_PAYLOAD_TAMPERED_REASON_V2) from exc
         if payload.payload_sha256 != entry.payload_sha256:
             raise PayloadSetBindingError(PAYLOAD_SET_ENTRY_PAYLOAD_HASH_MISMATCH_REASON_V2)
@@ -171,7 +180,8 @@ def bind_payload_set_to_payloads_v2(
 
     try:
         verify_payload_set_sha256_v2(payload_set)
-    except Exception as exc:
+    except (ValidationError, ValueError) as exc:
+        # narrowed for the same reason as the per-payload verifier above
         raise PayloadSetBindingError(PAYLOAD_SET_HASH_TAMPERED_REASON_V2) from exc
 
 
@@ -189,8 +199,26 @@ def emit_payload_set_v2(manifest: ManifestV2, payloads: Sequence[ChunkPayloadV2]
     Runs the full ``bind_payload_set_to_payloads_v2`` cross-validation
     before returning: a producer that (through a bug) built a tampered or
     incoherent payload must not silently mint a set that certifies it.
+
+    Public boundary (`#200-D` predecessor): every EXPECTED failure is a
+    ``PayloadSetBindingError``. Callers do not need to know that this
+    authority constructs a pydantic model to do its work.
     """
 
+    try:
+        return _emit_payload_set_v2(manifest, payloads)
+    except PayloadSetBindingError:
+        raise
+    except ValidationError as exc:
+        # `PayloadSetV2` has its own contract (at least one entry, canonical
+        # digests). Constructing it from otherwise-valid caller material can
+        # therefore fail pydantic, which a consumer cannot name.
+        raise PayloadSetBindingError(PAYLOAD_SET_CONTRACT_INVALID_REASON_V2) from exc
+
+
+def _emit_payload_set_v2(
+    manifest: ManifestV2, payloads: Sequence[ChunkPayloadV2]
+) -> PayloadSetV2:
     payloads_by_chunk_id = _payloads_by_chunk_id(payloads)
     entries = [
         PayloadSetEntryV2(chunk_id=chunk_id, payload_sha256=payload.payload_sha256)
