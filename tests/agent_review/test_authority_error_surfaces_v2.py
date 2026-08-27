@@ -716,18 +716,13 @@ def test_a_composer_needs_only_owner_families(tmp_path: Path) -> None:
     except PayloadSetBindingError as exc:
         refusals["payload_set"] = exc.reason_code
 
-    # 6. content
-    built = build_chunk_payloads_from_profile_v2(
-        manifest, profile=profile, repo_root=repo
-    )
+    # 6. content -- the refusal must come from INSIDE the body. A nonexistent
+    # repo_root would be refused at the first statement, leaving the body
+    # unexecuted and the stage unable to prove anything about it.
     try:
         extract_review_content_v2(
-            repo_root=tmp_path / "no_such_root", base_sha=base_sha, head_sha=head_sha,
-            manifest=manifest,
-            payload_sha256_by_chunk_id={
-                item.chunk_id: item.payload.payload_sha256 for item in built
-            },
-            target_profile=profile,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            payload_sha256_by_chunk_id={}, target_profile=profile,
         )
     except ExtractionBlockedError as exc:
         refusals["content"] = exc.reason_code
@@ -771,8 +766,6 @@ def test_closure_composes_across_authorities(tmp_path: Path) -> None:
             target_profile=profile,
         )
 
-    real_is_dir = Path.is_dir
-
     def _git_absent(argv, **kwargs):
         raise FileNotFoundError(2, "No such file or directory", "git")
 
@@ -786,3 +779,80 @@ def test_closure_composes_across_authorities(tmp_path: Path) -> None:
 
     assert missing_root.value.reason_code == REPO_ROOT_UNUSABLE_REASON_V2
     assert absent_git.value.reason_code == GIT_UNAVAILABLE_REASON_V2
+
+
+def test_fragment_contract_failure_does_not_leak_diff_content(tmp_path: Path) -> None:
+    """Review round 2 on this PR, REPRODUCED end-to-end.
+
+    The first closure attempt guarded only the terminal ``ReviewContentV2``
+    construction. ``FragmentContentV2`` and ``ChunkContentV2`` are built
+    EARLIER in the same body, so a raw pydantic ``ValidationError`` still
+    escaped -- and its message embeds the fragment's own diff content in
+    ``input_value``. That made the gap a content leak, not only an open
+    surface.
+
+    A CRLF file is the natural witness: the carriage return is a forbidden
+    control character for the fragment contract. No mocking -- the real public
+    function, real git, real content.
+    """
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet", "-b", "main", ".")
+    _git(repo, "config", "user.email", "t@t.com")
+    _git(repo, "config", "user.name", "t")
+    (repo / ".aiops").mkdir()
+    (repo / ".aiops" / "target-profile.v2.yaml").write_text(_PROFILE, encoding="utf-8")
+    # deliberately CRLF, and marked binary=false so git keeps the bytes as-is
+    (repo / ".gitattributes").write_text("* -text\n", encoding="utf-8")
+    (repo / "app.py").write_bytes(b"a = 1\r\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    (repo / "app.py").write_bytes(b"a = 2\r\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "head")
+    head_sha = _git(repo, "rev-parse", "HEAD")
+
+    profile, manifest = _assembled(repo, base_sha, head_sha)
+    built = build_chunk_payloads_from_profile_v2(
+        manifest, profile=profile, repo_root=repo
+    )
+
+    with pytest.raises(ExtractionBlockedError) as excinfo:
+        extract_review_content_v2(
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            payload_sha256_by_chunk_id={
+                item.chunk_id: item.payload.payload_sha256 for item in built
+            },
+            target_profile=profile,
+        )
+    reason = excinfo.value.reason_code
+    assert reason
+    # the refusal must not carry the reviewed bytes
+    assert "a = 1" not in reason and "a = 2" not in reason
+    assert "\r" not in reason and str(repo) not in reason
+
+
+def test_acceptance_oracle_content_stage_executes_the_real_body(
+    tmp_path: Path,
+) -> None:
+    """Review round 2: the oracle's content stage passed a nonexistent
+    ``repo_root``, so extraction refused at its FIRST statement and the body
+    never ran -- the oracle structurally could not have caught the leak above.
+
+    This drives a refusal from INSIDE the body instead, so the stage proves
+    what it claims to.
+    """
+
+    repo, base_sha, head_sha = _repo(tmp_path)
+    profile, manifest = _assembled(repo, base_sha, head_sha)
+
+    # a payload map missing the manifest's chunk: reached well inside the body,
+    # after acquisition and fragment planning have really run
+    with pytest.raises(ExtractionBlockedError) as excinfo:
+        extract_review_content_v2(
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            payload_sha256_by_chunk_id={}, target_profile=profile,
+        )
+    assert excinfo.value.reason_code == "chunk_payload_sha256_unavailable"

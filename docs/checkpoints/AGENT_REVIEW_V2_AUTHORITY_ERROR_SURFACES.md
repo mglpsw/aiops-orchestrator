@@ -75,12 +75,30 @@ defect inside a verifier would have been reported as a *tampered payload*.
 Narrowed to the contract/serialization failures that genuine tampering
 produces.
 
-## Precision, not flattening
+## Precision where an originating reason exists — and where it does not
 
 Reason codes stay owned by the earliest authority that can correctly name the
-failure. `PayloadReferenceError`'s own `payload_required_artifact_missing` and
-`ReviewContentBindingError`'s own `content_run_identity_mismatch` survive the
-conversion rather than collapsing into a generic "invalid". New codes were
+failure. `PayloadReferenceError`'s `payload_required_artifact_missing`,
+`ReviewContentBindingError`'s `content_run_identity_mismatch` and every
+`DiffAcquisitionError` reason reaching extraction survive the conversion rather
+than collapsing into a generic "invalid".
+
+**Where they do not, and why.** A pydantic `ValidationError` carries no reason
+code to preserve, so `run_assembly_contract_invalid`,
+`content_contract_invalid`, `payload_set_contract_invalid` and
+`readiness_emission_contract_invalid` are each a single code covering every
+contract violation at that boundary. For readiness this is a real loss: the
+quality-gate CLI previously printed pydantic's message, which named the failing
+rule, so an operator could tell `ready`+merged-PR from `ready`-without-green-
+checks and now cannot.
+
+Recovering that discrimination would mean either string-matching pydantic
+messages -- fragile, and a re-implementation of contract knowledge this module
+documents that it never does -- or surfacing the message itself, which is
+unsafe in general: round 2 of review on this PR proved a `ValidationError` from
+fragment construction embeds the reviewed diff bytes in `input_value`. Neither
+is acceptable, so the single code stands, and the limitation is recorded here
+rather than papered over. New codes were
 added only where no owner had one:
 
 ```text

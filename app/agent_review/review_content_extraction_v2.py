@@ -588,6 +588,43 @@ def extract_review_content_v2(
     slice).
     """
 
+    try:
+        return _extract_review_content_v2(
+            repo_root=repo_root,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            manifest=manifest,
+            payload_sha256_by_chunk_id=payload_sha256_by_chunk_id,
+            target_profile=target_profile,
+            dlp_policy=dlp_policy,
+        )
+    except ExtractionBlockedError:
+        raise
+    except ReviewContentBindingError as exc:
+        # SIBLING family from the terminal binder; its precise reason survives.
+        raise ExtractionBlockedError(exc.reason_code, fragment_id=None) from exc
+    except ValidationError as exc:
+        # `#200-D` predecessor, round 2: the FIRST attempt guarded only the
+        # final `ReviewContentV2` construction, leaving `FragmentContentV2`
+        # and `ChunkContentV2` -- built earlier in this body -- to escape raw.
+        # Their pydantic message embeds the fragment's own diff content, so
+        # that escape was a content leak as well as an open surface. Closing
+        # the whole body is what the other authorities in this PR already do.
+        raise ExtractionBlockedError(
+            CONTENT_REASON_CONTRACT_INVALID_V2, fragment_id=None
+        ) from exc
+
+
+def _extract_review_content_v2(
+    *,
+    repo_root,
+    base_sha: str,
+    head_sha: str,
+    manifest: ManifestV2,
+    payload_sha256_by_chunk_id: Mapping[str, str],
+    target_profile: TargetProfileV2,
+    dlp_policy: DlpPolicyDeclarationV2 | None = None,
+) -> ReviewContentV2:
     if compute_profile_hash_v2(target_profile) != manifest.identity.profile_hash:
         raise ExtractionBlockedError(CONTENT_REASON_PROFILE_HASH_MISMATCH_V2, fragment_id=None)
 
@@ -693,17 +730,12 @@ def extract_review_content_v2(
         chunks=chunks, limitations=[], content_set_sha256="0" * 64,
     )
     content_set_sha256 = compute_review_content_sha256_v2(material)
-    try:
-        content = ReviewContentV2(
-            schema_id="agent-review.review-content.v2", schema_version=2,
-            source="aiops-review-build-review-content", run_id=manifest.run_id,
-            manifest_hash=manifest.identity.manifest_hash, dlp_policy_digest=dlp_digest,
-            chunks=chunks, limitations=[], content_set_sha256=content_set_sha256,
-        )
-    except ValidationError as exc:
-        raise ExtractionBlockedError(
-            CONTENT_REASON_CONTRACT_INVALID_V2, fragment_id=None
-        ) from exc
+    content = ReviewContentV2(
+        schema_id="agent-review.review-content.v2", schema_version=2,
+        source="aiops-review-build-review-content", run_id=manifest.run_id,
+        manifest_hash=manifest.identity.manifest_hash, dlp_policy_digest=dlp_digest,
+        chunks=chunks, limitations=[], content_set_sha256=content_set_sha256,
+    )
 
     # `#200-D` predecessor (model B): `bind_review_content_to_manifest_v2`
     # raises `ReviewContentBindingError` -- a SIBLING family of this module's
@@ -711,8 +743,5 @@ def extract_review_content_v2(
     # a pydantic error. Both used to escape this authority's declared surface,
     # so a caller had to know two foreign types to learn that extraction
     # refused. The binder's precise reason is preserved.
-    try:
-        bind_review_content_to_manifest_v2(content, manifest)
-    except ReviewContentBindingError as exc:
-        raise ExtractionBlockedError(exc.reason_code, fragment_id=None) from exc
+    bind_review_content_to_manifest_v2(content, manifest)
     return content
