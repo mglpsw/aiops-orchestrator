@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -817,9 +818,14 @@ def _run_git_v2(argv: list[str], *, repo_root: Path) -> subprocess.CompletedProc
             argv, cwd=repo_root, capture_output=True, text=False, check=False
         )
     except FileNotFoundError as exc:
-        # The checkout existed a moment ago, so the missing file is the
-        # executable itself.
-        raise DiffAcquisitionError(GIT_UNAVAILABLE_REASON_V2) from exc
+        # Ask which file was missing rather than infer it. The earlier version
+        # reasoned "the checkout existed a moment ago, so it must be the
+        # executable" -- but the probe and the exec are not atomic, so a
+        # checkout that vanished in between was reported as `git_unavailable`:
+        # exactly the confusion this authority exists to eliminate.
+        if shutil.which(argv[0]) is None:
+            raise DiffAcquisitionError(GIT_UNAVAILABLE_REASON_V2) from exc
+        raise DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2) from exc
     except OSError as exc:
         # permissions, ENOTDIR after a race, fork/exec exhaustion, ...
         raise DiffAcquisitionError(DIFF_ACQUISITION_IO_FAILED_REASON_V2) from exc

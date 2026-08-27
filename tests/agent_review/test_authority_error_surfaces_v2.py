@@ -758,7 +758,9 @@ def test_a_composer_needs_only_owner_families(tmp_path: Path) -> None:
         assert "/" not in reason and "\\" not in reason
 
 
-def test_closure_composes_across_authorities(tmp_path: Path) -> None:
+def test_closure_composes_across_authorities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Review round 1 on this PR: closure must COMPOSE, not just terminate.
 
     Extraction converts `DiffAcquisitionError` into its own family. Flattening
@@ -787,10 +789,16 @@ def test_closure_composes_across_authorities(tmp_path: Path) -> None:
             target_profile=profile,
         )
 
-    def _git_absent(argv, **kwargs):
-        raise FileNotFoundError(2, "No such file or directory", "git")
+    # Simulate git absence the way it actually happens -- an empty PATH --
+    # rather than by patching `subprocess.run` while git is still installed.
+    # The authority no longer INFERS which file was missing, it asks, so a
+    # simulation that leaves git on PATH is simply not the condition under
+    # test.
+    empty_bin = tmp_path / "empty_bin"
+    empty_bin.mkdir(exist_ok=True)
+    monkeypatch.setenv("PATH", str(empty_bin))
 
-    with mock.patch("subprocess.run", side_effect=_git_absent):
+    if True:
         with pytest.raises(ExtractionBlockedError) as absent_git:
             extract_review_content_v2(
                 repo_root=repo, base_sha=base_sha, head_sha=head_sha,

@@ -145,9 +145,6 @@ _GENERATED_PATH_MARKERS_V2: tuple[str, ...] = (
 _MINIFIED_PATH_MARKERS_V2: tuple[str, ...] = (".min.js", ".min.css")
 
 
-CONTENT_REASON_CONTRACT_INVALID_V2 = "content_contract_invalid"
-
-
 class ExtractionBlockedError(ValueError):
     """Raised by ``extract_review_content_v2`` when the WHOLE extraction
     must be refused fail-closed (a ``must_review`` fragment cannot be

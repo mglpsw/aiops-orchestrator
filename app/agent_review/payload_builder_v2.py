@@ -37,8 +37,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from app.agent_review.contracts_v2 import (
     ChunkCoverageV2,
     ChunkPayloadV2,

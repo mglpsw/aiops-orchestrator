@@ -81,8 +81,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydantic import ValidationError
-
 from app.agent_review.contracts_v2 import ChunkPayloadV2, verify_payload_sha256_v2
 from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.payload_set_v2 import (

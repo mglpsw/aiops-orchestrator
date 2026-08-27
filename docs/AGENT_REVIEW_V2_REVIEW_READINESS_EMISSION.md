@@ -29,11 +29,18 @@ before the artifact is constructed by the single authority in `contracts_v2`
 that `validate_state_invariants` also consults (`#200-D` two-epoch model). The
 validator remains the sole authority on whether the artifact is well-formed,
 and its rules are never restated. A `ValidationError` from construction after
-that point is a derivation defect and escapes raw. Nothing in this module re-checks what that validator already
-owns (e.g. "ready requires an open PR and every check green" — verified
-directly: feeding a `MERGED` `pr_state` alongside a `ready` decision, or an
-empty `checks` list, both fail closed via the contract's own validator, not
-a copy of its logic).
+that point is a derivation defect and escapes raw.
+
+Nothing here re-implements what the validator owns. "Ready requires an open PR
+and every check green" is defined once, in
+`contracts_v2.evaluate_ready_preconditions_v2`, and both this module's
+pre-seal check and `validate_state_invariants` call it. Verified directly:
+feeding a `MERGED` `pr_state` alongside a `ready` decision, or an empty
+`checks` list, each fails closed at the pre-seal check with the reason that
+NAMES the unmet rule — `ready_requires_open_pr` and
+`ready_requires_green_checks` — rather than at the constructor with an
+undifferentiated pydantic failure. The constructor still enforces the same
+rules for any other caller, through the same shared authority.
 
 ## `pr_state`/`checks` are caller-supplied, not acquired here
 

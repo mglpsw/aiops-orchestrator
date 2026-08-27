@@ -94,18 +94,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydantic import ValidationError
-
 from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
 from app.agent_review.contracts_v2 import (
-    ReadinessStateV2,
-    evaluate_ready_preconditions_v2,
     FindingLifecycleRecordV2,
     PullRequestStateV2,
     ReadinessStateV2,
     RequiredCheckResultV2,
     ReviewReadinessV2,
     RunIdentityV2,
+    evaluate_ready_preconditions_v2,
     RunOriginV2,
     compute_run_id,
 )
@@ -116,7 +113,6 @@ from app.agent_review.required_check_readiness_v2 import _verify_and_assess_requ
 REVIEW_READINESS_SOURCE_V2 = "aiops-review-quality-gate"
 
 READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2 = "readiness_emission_decision_provenance_mismatch"
-# The readiness artifact could not satisfy its own contract.
 
 
 class ReadinessEmissionError(ValueError):
@@ -177,9 +173,9 @@ def produce_review_readiness_v2(
         return _assemble_review_readiness_v2(
             decision=decision,
             findings=findings,
-        identity=identity,
-        evaluated_identity=evaluated_identity,
-        pr_state=pr_state,
+            identity=identity,
+            evaluated_identity=evaluated_identity,
+            pr_state=pr_state,
             checks=(),
         )
 
@@ -283,7 +279,7 @@ def _assemble_review_readiness_v2(
     # A `ValidationError` from construction now means derivation produced an
     # invalid artifact from validated material: our defect, and it escapes.
     return ReviewReadinessV2(
-            schema_id="agent-review.review-readiness.v2",
+        schema_id="agent-review.review-readiness.v2",
         schema_version=2,
         source=REVIEW_READINESS_SOURCE_V2,
         run_id=compute_run_id(identity),

@@ -410,3 +410,29 @@ def test_optional_unrepresentable_fragment_degrades_instead_of_aborting(
     tail = source[marker:]
     assert "if fragment.coverage_required:" in tail
     assert "ReviewContentPolicyV2.UNREPRESENTABLE" in tail
+
+
+def test_repo_root_that_is_a_file_is_named_precisely(tmp_path: Path) -> None:
+    """The `is_dir()` pre-probe earns its place here, not by inference.
+
+    Once `shutil.which` decides "git missing" vs "checkout missing" directly,
+    the probe is no longer needed for THAT distinction. It still is for a root
+    that exists but is not a directory: `subprocess` raises
+    `NotADirectoryError`, which is an `OSError` but not a `FileNotFoundError`,
+    so without the probe it would degrade to the generic acquisition-I/O
+    reason instead of naming the checkout.
+    """
+
+    from app.agent_review.diff_acquisition_v2 import (
+        REPO_ROOT_UNUSABLE_REASON_V2,
+        DiffAcquisitionError,
+    )
+
+    not_a_dir = tmp_path / "not_a_dir"
+    not_a_dir.write_text("i am a file", encoding="utf-8")
+
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        acquire_authoritative_diff_v2(
+            not_a_dir, base_sha="a" * 40, head_sha="b" * 40
+        )
+    assert excinfo.value.reason_code == REPO_ROOT_UNUSABLE_REASON_V2
