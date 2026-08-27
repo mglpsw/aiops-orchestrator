@@ -431,9 +431,18 @@ def main(argv: list[str] | None = None) -> int:
         # controlled exit" defect the guard itself was written to prevent.
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
-    except ValidationError as exc:
-        print(f"error: readiness_invariant_violation\n{exc}", file=sys.stderr)
-        return 1
+    # NOTE (`#200-D` predecessor): a `ValidationError` branch used to sit here
+    # for `produce_review_readiness_v2`, printing pydantic's message. That
+    # authority now raises `ReadinessEmissionError`, caught above, so the
+    # branch became unreachable and was removed rather than left as a handler
+    # that can never run.
+    #
+    # This does cost diagnostics: the message named WHICH state invariant
+    # failed, and `readiness_emission_contract_invalid` does not. Recovering it
+    # would need string-matching pydantic messages -- fragile, and a
+    # re-implementation of contract knowledge -- or printing the message, which
+    # is unsafe in general because a ValidationError can embed reviewed
+    # content. The limitation is recorded in the `#200-D` checkpoint.
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -129,6 +129,29 @@ handler and fail the test.
 
 Every refusal is additionally asserted stable, content-free and path-free.
 
+## Ownership, located precisely
+
+Review round 3 made the boundary sharper in two ways.
+
+**Closing one entry point is not closing the authority.**
+`build_chunk_payloads_from_profile_v2` was closed while its singular public
+sibling `build_chunk_payload_from_profile_v2` was not, and the very same
+witness still escaped it raw. The inventory that drove round 1 covered only
+what PR #271 happened to call; it has since been rebuilt from every public
+function in these modules.
+
+**The owner was one level deeper than first assumed.**
+The unreadable-contract escape was originally converted in the payload
+builder. Its true owner is `payload_references_v2`, whose artifact branch had
+guarded its read all along while the contract branch beside it did not.
+Closing it there fixes every caller at once and names the failure precisely
+(`payload_contract_unreadable`) instead of a generic fallback.
+
+That in turn made the builders' own `OSError` clauses redundant, and they were
+removed rather than kept "just in case": a consumer re-catching what its
+authority already owns is the enumeration habit this change exists to end, and
+it masks which authority actually failed.
+
 ## Scope fence
 
 `operational_run_v2.py` and `aiops-review-run-v2.py` are deliberately **not**

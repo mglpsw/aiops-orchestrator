@@ -477,15 +477,22 @@ def test_content_does_not_launder_programmer_defects(
 # -- conformance matrix ------------------------------------------------------
 
 
-_CLOSED_AUTHORITIES = {
-    "acquire_authoritative_diff_v2": "DiffAcquisitionError",
-    "assemble_manifest_from_diff_v2": "RunAssemblyError",
-    "build_chunk_payloads_from_profile_v2": "PayloadBuilderError",
-    "emit_payload_set_v2": "PayloadSetBindingError",
-    "extract_review_content_v2": "ExtractionBlockedError",
-    "produce_review_readiness_v2": "ReadinessEmissionError",
-    "load_target_profile_v2": "TargetProfileLoadErrorV2",
-}
+# The authorities this PR closed, and therefore the exact module set the
+# structural guard below must cover. Review round 3: this table was previously
+# declared and never used -- a table nothing reads cannot keep anything
+# honest, and it had already drifted (it named `produce_review_readiness_v2`,
+# which deliberately lets other families through, and `profile_loader_v2`,
+# which this PR does not touch). It now DRIVES the guard, so the two cannot
+# disagree.
+_CLOSED_AUTHORITY_MODULES = (
+    "diff_acquisition_v2",
+    "run_assembly_v2",
+    "payload_builder_v2",
+    "payload_references_v2",
+    "payload_set_emission_v2",
+    "review_content_extraction_v2",
+    "review_readiness_emission_v2",
+)
 
 
 def test_no_closed_authority_catches_bare_exception() -> None:
@@ -499,22 +506,15 @@ def test_no_closed_authority_catches_bare_exception() -> None:
     """
 
     import ast
-
-    from app.agent_review import (
-        diff_acquisition_v2,
-        payload_builder_v2,
-        payload_set_emission_v2,
-        review_content_extraction_v2,
-        review_readiness_emission_v2,
-        run_assembly_v2,
-    )
+    import importlib
 
     offenders: list[str] = []
-    for module in (
-        diff_acquisition_v2, run_assembly_v2, payload_builder_v2,
-        payload_set_emission_v2, review_content_extraction_v2,
-        review_readiness_emission_v2,
-    ):
+    modules = [
+        importlib.import_module(f"app.agent_review.{name}")
+        for name in _CLOSED_AUTHORITY_MODULES
+    ]
+    assert len(modules) == len(_CLOSED_AUTHORITY_MODULES)
+    for module in modules:
         tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.ExceptHandler):
@@ -856,3 +856,122 @@ def test_acceptance_oracle_content_stage_executes_the_real_body(
             payload_sha256_by_chunk_id={}, target_profile=profile,
         )
     assert excinfo.value.reason_code == "chunk_payload_sha256_unavailable"
+
+
+# -- review round 3 on this PR ----------------------------------------------
+
+
+def test_singular_payload_builder_is_closed_like_its_plural_sibling(
+    tmp_path: Path,
+) -> None:
+    """R3: closing ONE entry point of an authority is not closing the
+    authority. ``build_chunk_payload_from_profile_v2`` -- the singular public
+    sibling -- was still open after the plural form was closed, and the very
+    same witness escaped it raw, carrying the checkout path."""
+
+    from app.agent_review.payload_builder_v2 import (
+        build_chunk_payload_from_profile_v2,
+    )
+
+    repo, base_sha, head_sha = _repo(tmp_path)
+    contract = repo / ".aiops" / "contracts.yaml"
+    contract.write_text("k: v\n", encoding="utf-8")
+    digest = hashlib.sha256(contract.read_bytes()).hexdigest()
+    (repo / ".aiops" / "target-profile.v2.yaml").write_text(
+        _PROFILE.replace(
+            "contracts: []",
+            "contracts:\n  - contract_id: contract.api\n"
+            '    contract_version: "1"\n    path: .aiops/contracts.yaml\n'
+            f'    sha256: "{digest}"\n    scope: repository\n    required: true',
+        ),
+        encoding="utf-8",
+    )
+    profile, manifest = _assembled(repo, base_sha, head_sha)
+
+    real_read_bytes = Path.read_bytes
+
+    def _unreadable(self, *args, **kwargs):
+        if self.name == "contracts.yaml":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self, *args, **kwargs)
+
+    with mock.patch.object(Path, "read_bytes", _unreadable):
+        with pytest.raises(PayloadBuilderError) as excinfo:
+            build_chunk_payload_from_profile_v2(
+                manifest, manifest.chunks[0], profile=profile, repo_root=repo
+            )
+    # the TRUE owner now names it precisely, rather than the generic fallback
+    assert excinfo.value.reason_code == "payload_contract_unreadable"
+    assert str(repo) not in excinfo.value.reason_code
+
+
+def test_unreadable_contract_is_named_by_the_reference_authority(
+    tmp_path: Path,
+) -> None:
+    """R3: the fix belongs in `payload_references_v2`, whose artifact branch
+    already guarded its read while the contract branch beside it did not.
+    Closing it there gives a precise reason instead of the payload builder's
+    generic `payload_reference_unreadable` fallback -- and fixes every caller
+    at once."""
+
+    from app.agent_review.payload_references_v2 import (
+        PAYLOAD_CONTRACT_UNREADABLE_REASON_V2,
+        PayloadReferenceError,
+        build_payload_contract_references_v2,
+    )
+
+    repo, base_sha, head_sha = _repo(tmp_path)
+    contract = repo / ".aiops" / "contracts.yaml"
+    contract.write_text("k: v\n", encoding="utf-8")
+    digest = hashlib.sha256(contract.read_bytes()).hexdigest()
+    (repo / ".aiops" / "target-profile.v2.yaml").write_text(
+        _PROFILE.replace(
+            "contracts: []",
+            "contracts:\n  - contract_id: contract.api\n"
+            '    contract_version: "1"\n    path: .aiops/contracts.yaml\n'
+            f'    sha256: "{digest}"\n    scope: repository\n    required: true',
+        ),
+        encoding="utf-8",
+    )
+    profile = load_target_profile_v2(repo)
+
+    real_read_bytes = Path.read_bytes
+
+    def _unreadable(self, *args, **kwargs):
+        if self.name == "contracts.yaml":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self, *args, **kwargs)
+
+    with mock.patch.object(Path, "read_bytes", _unreadable):
+        with pytest.raises(PayloadReferenceError) as excinfo:
+            build_payload_contract_references_v2(profile, repo)
+    assert excinfo.value.reason_code == PAYLOAD_CONTRACT_UNREADABLE_REASON_V2
+
+
+@pytest.mark.parametrize(
+    "bad_budget", [pytest.param("500", id="str"), pytest.param(2.0, id="float"),
+                   pytest.param(True, id="bool")],
+)
+def test_wrong_budget_type_is_a_defect_not_an_operational_refusal(
+    tmp_path: Path, bad_budget: object
+) -> None:
+    """R3, the laundering direction.
+
+    `isinstance(x, int)` accepted `True` (bool subclasses int) and assembled
+    with an effective 1-line budget, while `"500"` and `2.0` were reported to
+    the OPERATOR as a bad budget when they are a CALLER type defect. A wrong
+    type is a bug and must crash; a well-typed budget that cannot describe a
+    chunk is the operational refusal.
+    """
+
+    repo, base_sha, head_sha = _repo(tmp_path)
+    profile = load_target_profile_v2(repo)
+    diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+
+    with pytest.raises(TypeError):
+        assemble_manifest_from_diff_v2(
+            diffs, profile=profile, grouping_policy=_grouping_policy(),
+            repo="example/repo", pr_number=1, base_sha=base_sha, head_sha=head_sha,
+            tested_merge_sha=head_sha, toolrepo_sha="b" * 40, evidence_hash="c" * 64,
+            max_lines_per_chunk=bad_budget,
+        )

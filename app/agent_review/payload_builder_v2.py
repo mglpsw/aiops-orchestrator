@@ -65,8 +65,6 @@ class PayloadBuilderError(ValueError):
 
 
 CHUNK_NOT_IN_MANIFEST_REASON_V2 = "chunk_not_in_manifest"
-# `#200-D` predecessor: a declared artifact/contract exists but cannot be read.
-PAYLOAD_REFERENCE_UNREADABLE_REASON_V2 = "payload_reference_unreadable"
 # A payload could not satisfy its own contract from otherwise-valid material.
 PAYLOAD_CONTRACT_INVALID_REASON_V2 = "payload_contract_invalid"
 
@@ -201,6 +199,34 @@ def build_chunk_payloads_v2(manifest: ManifestV2) -> tuple[BuiltChunkPayloadV2, 
 def build_chunk_payload_from_profile_v2(
     manifest: ManifestV2, chunk: ManifestChunkV2, *, profile: TargetProfileV2, repo_root: Path
 ) -> BuiltChunkPayloadV2:
+    """Public boundary: every EXPECTED failure is a ``PayloadBuilderError``.
+
+    The singular sibling of ``build_chunk_payloads_from_profile_v2`` and
+    closed identically. Review round 3 found it still open after the plural
+    form was closed -- the same witness (an unreadable required contract)
+    escaped it raw. Closing one entry point of an authority is not closing
+    the authority.
+    """
+
+    try:
+        return _build_chunk_payload_from_profile_v2(manifest=manifest, chunk=chunk, profile=profile, repo_root=repo_root)
+    except PayloadBuilderError:
+        raise
+    except PayloadReferenceError as exc:
+        # Sibling family, not a subclass -- convert, preserving its reason.
+        # There is deliberately no `except OSError` here: file reads belong to
+        # `payload_references_v2`, which now guards them itself. Catching them
+        # again in this consumer would be the very enumeration habit this
+        # change exists to end, and would mask which authority actually owns
+        # the failure.
+        raise PayloadBuilderError(exc.reason_code) from exc
+    except ValidationError as exc:
+        raise PayloadBuilderError(PAYLOAD_CONTRACT_INVALID_REASON_V2) from exc
+
+
+def _build_chunk_payload_from_profile_v2(
+    manifest: ManifestV2, chunk: ManifestChunkV2, *, profile: TargetProfileV2, repo_root: Path
+) -> BuiltChunkPayloadV2:
     """Build a single ``ChunkPayloadV2`` with REAL, profile-derived
     ``artifact_references``/``contract_references`` (#131), read from
     ``repo_root`` per ``profile.artifacts``/``profile.contracts``.
@@ -254,8 +280,6 @@ def build_chunk_payloads_from_profile_v2(
     except PayloadReferenceError as exc:
         # preserve the reference authority's own precise reason
         raise PayloadBuilderError(exc.reason_code) from exc
-    except OSError as exc:
-        raise PayloadBuilderError(PAYLOAD_REFERENCE_UNREADABLE_REASON_V2) from exc
     except ValidationError as exc:
         raise PayloadBuilderError(PAYLOAD_CONTRACT_INVALID_REASON_V2) from exc
 

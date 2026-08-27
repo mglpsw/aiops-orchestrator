@@ -209,7 +209,16 @@ def assemble_manifest_from_diff_v2(
     # this function. `profile.budgets.max_chunks` is a `PositiveInt` on the
     # profile contract, so an equivalent guard for it would be unreachable --
     # and unreachable code that looks like a guard is worse than none.
-    if not isinstance(max_lines_per_chunk, int) or max_lines_per_chunk < 1:
+    # `type(...) is not int`, deliberately, and a TypeError rather than a
+    # refusal. Review round 3: `isinstance` accepted `True` (bool subclasses
+    # int) and assembled with a 1-line budget, while `"500"` and `2.0` were
+    # reported to the OPERATOR as a bad budget when they are a CALLER type
+    # defect -- laundering in the direction this PR exists to forbid. A wrong
+    # type is a bug and crashes; a well-typed budget that cannot describe a
+    # chunk is the operational refusal.
+    if type(max_lines_per_chunk) is not int:
+        raise TypeError("max_lines_per_chunk must be an int")
+    if max_lines_per_chunk < 1:
         raise RunAssemblyError(RUN_ASSEMBLY_BUDGET_INVALID_REASON_V2)
 
     try:

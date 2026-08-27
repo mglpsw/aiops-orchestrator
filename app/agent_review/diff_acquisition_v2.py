@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -808,8 +809,6 @@ def _run_git_v2(argv: list[str], *, repo_root: Path) -> subprocess.CompletedProc
     Only ``OSError`` is converted. A defect in this module still raises: a bug
     must never be laundered into an acquisition refusal.
     """
-
-    import subprocess  # module-local, matching this file's existing convention
 
     if not Path(repo_root).is_dir():
         raise DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2)
