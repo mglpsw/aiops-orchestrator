@@ -85,8 +85,6 @@ from pydantic import ValidationError
 
 from app.agent_review.contracts_v2 import ChunkPayloadV2, verify_payload_sha256_v2
 from app.agent_review.manifest_v2 import ManifestV2
-PAYLOAD_SET_CONTRACT_INVALID_REASON_V2 = "payload_set_contract_invalid"
-
 from app.agent_review.payload_set_v2 import (
     PAYLOAD_SET_SCHEMA_V2,
     PayloadSetBindingError,
@@ -108,6 +106,11 @@ PAYLOAD_SET_PAYLOAD_CHUNK_ID_INCOHERENT_REASON_V2 = "payload_set_payload_chunk_i
 PAYLOAD_SET_PAYLOAD_MANIFEST_HASH_INCOHERENT_REASON_V2 = "payload_set_payload_manifest_hash_incoherent"
 
 _PAYLOAD_SET_SOURCE_V2 = "aiops-review-build-payload-set-v2"
+
+
+# The payload set could not satisfy its own contract from otherwise-valid
+# caller material.
+PAYLOAD_SET_CONTRACT_INVALID_REASON_V2 = "payload_set_contract_invalid"
 
 
 def _payloads_by_chunk_id(payloads: Sequence[ChunkPayloadV2]) -> dict[str, ChunkPayloadV2]:

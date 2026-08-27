@@ -596,9 +596,12 @@ def extract_review_content_v2(
         diff_text = acquire_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
         hunk_bodies = extract_hunk_bodies_v2(diff_text)
     except DiffAcquisitionError as exc:
-        raise ExtractionBlockedError(
-            CONTENT_REASON_DIFF_ACQUISITION_FAILED_V2, fragment_id=None
-        ) from exc
+        # Preserve the acquisition authority's own reason. Flattening every
+        # cause to one code would undo, on this path, the exact distinction
+        # this change exists to create: "no such checkout" and "no git on
+        # PATH" would again be indistinguishable to an operator. Closure has
+        # to COMPOSE, not just terminate.
+        raise ExtractionBlockedError(exc.reason_code, fragment_id=None) from exc
 
     if not manifest.chunks:
         # A diff whose every file was excluded as non-must-review binary/
@@ -684,9 +687,9 @@ def extract_review_content_v2(
 
     dlp_digest = compute_dlp_policy_digest_v2(dlp_policy) if dlp_policy is not None else None
     material = ReviewContentV2.model_construct(
-            schema_id="agent-review.review-content.v2", schema_version=2,
-            source="aiops-review-build-review-content", run_id=manifest.run_id,
-            manifest_hash=manifest.identity.manifest_hash, dlp_policy_digest=dlp_digest,
+        schema_id="agent-review.review-content.v2", schema_version=2,
+        source="aiops-review-build-review-content", run_id=manifest.run_id,
+        manifest_hash=manifest.identity.manifest_hash, dlp_policy_digest=dlp_digest,
         chunks=chunks, limitations=[], content_set_sha256="0" * 64,
     )
     content_set_sha256 = compute_review_content_sha256_v2(material)

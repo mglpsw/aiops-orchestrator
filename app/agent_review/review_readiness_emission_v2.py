@@ -13,7 +13,14 @@ do contrato" -- nothing in this module re-checks anything
 ``ReviewReadinessV2.validate_state_invariants`` (``contracts_v2.py``)
 already enforces. It only assembles the constructor call; the contract's
 own validator is the sole authority on whether the result is well-formed,
-and raises ``pydantic.ValidationError`` fail-closed if it is not.
+and fails closed if it is not.
+
+That refusal is surfaced as ``ReadinessEmissionError(readiness_emission_
+contract_invalid)``, not as a raw ``pydantic.ValidationError`` (`#200-D`
+predecessor). The validator remains the authority on WHETHER the artifact is
+well-formed; what changed is only that callers no longer have to know this
+module builds a pydantic model in order to catch its refusal. The pydantic
+message also embeds finding content, so it must not cross this boundary.
 
 ## The single production constructor path (`#201-C`, R2)
 
@@ -224,10 +231,16 @@ def _assemble_review_readiness_v2(
     reflects whatever the caller (and, transitively, C1's
     ``stale_reason_codes`` parameter) already decided.
 
-    Raises ``pydantic.ValidationError`` -- never wrapped, never
-    re-implemented -- if the assembled combination does not satisfy
-    ``ReviewReadinessV2.validate_state_invariants``. That validator is the
-    authority; this function is not.
+    Raises ``ReadinessEmissionError(READINESS_EMISSION_CONTRACT_INVALID_
+    REASON_V2)`` if the assembled combination does not satisfy
+    ``ReviewReadinessV2.validate_state_invariants``. That validator is still
+    the authority and is never re-implemented here; `#200-D`'s predecessor
+    only converts its refusal into this module's own family, so a caller
+    catching ``ReadinessEmissionError`` sees every expected failure of this
+    function.
+
+    A defect in this module (or beneath it) still escapes raw: only the
+    contract's own ``ValidationError`` is converted.
 
     Before that, raises ``ReadinessEmissionError`` if ``decision``'s own
     ``run_id``/``manifest_hash`` provenance does not match

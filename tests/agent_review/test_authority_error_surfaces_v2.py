@@ -740,3 +740,49 @@ def test_a_composer_needs_only_owner_families(tmp_path: Path) -> None:
         assert reason and reason.replace("_", "").isalnum(), (stage, reason)
         assert str(tmp_path) not in reason
         assert "/" not in reason and "\\" not in reason
+
+
+def test_closure_composes_across_authorities(tmp_path: Path) -> None:
+    """Review round 1 on this PR: closure must COMPOSE, not just terminate.
+
+    Extraction converts `DiffAcquisitionError` into its own family. Flattening
+    every acquisition cause to a single ``content_diff_acquisition_failed``
+    would undo, on this path, the exact distinction this change exists to
+    create -- "no such checkout" and "no git on PATH" would once again be
+    indistinguishable to an operator, this time one layer up.
+    """
+
+    from app.agent_review.diff_acquisition_v2 import (
+        GIT_UNAVAILABLE_REASON_V2,
+        REPO_ROOT_UNUSABLE_REASON_V2,
+    )
+
+    repo, base_sha, head_sha = _repo(tmp_path)
+    profile, manifest = _assembled(repo, base_sha, head_sha)
+    built = build_chunk_payloads_from_profile_v2(
+        manifest, profile=profile, repo_root=repo
+    )
+    payload_map = {item.chunk_id: item.payload.payload_sha256 for item in built}
+
+    with pytest.raises(ExtractionBlockedError) as missing_root:
+        extract_review_content_v2(
+            repo_root=tmp_path / "absent", base_sha=base_sha, head_sha=head_sha,
+            manifest=manifest, payload_sha256_by_chunk_id=payload_map,
+            target_profile=profile,
+        )
+
+    real_is_dir = Path.is_dir
+
+    def _git_absent(argv, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "git")
+
+    with mock.patch("subprocess.run", side_effect=_git_absent):
+        with pytest.raises(ExtractionBlockedError) as absent_git:
+            extract_review_content_v2(
+                repo_root=repo, base_sha=base_sha, head_sha=head_sha,
+                manifest=manifest, payload_sha256_by_chunk_id=payload_map,
+                target_profile=profile,
+            )
+
+    assert missing_root.value.reason_code == REPO_ROOT_UNUSABLE_REASON_V2
+    assert absent_git.value.reason_code == GIT_UNAVAILABLE_REASON_V2

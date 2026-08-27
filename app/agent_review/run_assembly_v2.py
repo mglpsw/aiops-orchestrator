@@ -205,9 +205,11 @@ def assemble_manifest_from_diff_v2(
     deliberately NOT converted: they are defects and must stay raw.
     """
 
+    # Only `max_lines_per_chunk` needs this: it is a bare `int` parameter of
+    # this function. `profile.budgets.max_chunks` is a `PositiveInt` on the
+    # profile contract, so an equivalent guard for it would be unreachable --
+    # and unreachable code that looks like a guard is worse than none.
     if not isinstance(max_lines_per_chunk, int) or max_lines_per_chunk < 1:
-        raise RunAssemblyError(RUN_ASSEMBLY_BUDGET_INVALID_REASON_V2)
-    if profile.budgets.max_chunks < 1:
         raise RunAssemblyError(RUN_ASSEMBLY_BUDGET_INVALID_REASON_V2)
 
     try:
