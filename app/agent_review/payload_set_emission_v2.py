@@ -108,9 +108,9 @@ PAYLOAD_SET_PAYLOAD_MANIFEST_HASH_INCOHERENT_REASON_V2 = "payload_set_payload_ma
 _PAYLOAD_SET_SOURCE_V2 = "aiops-review-build-payload-set-v2"
 
 
-# The payload set could not satisfy its own contract from otherwise-valid
-# caller material.
-PAYLOAD_SET_CONTRACT_INVALID_REASON_V2 = "payload_set_contract_invalid"
+# A caller-visible precondition of `PayloadSetV2`, named here instead of
+# being discovered as a pydantic failure after derivation.
+PAYLOAD_SET_EMPTY_REASON_V2 = "payload_set_empty"
 
 
 def _payloads_by_chunk_id(payloads: Sequence[ChunkPayloadV2]) -> dict[str, ChunkPayloadV2]:
@@ -216,15 +216,21 @@ def emit_payload_set_v2(manifest: ManifestV2, payloads: Sequence[ChunkPayloadV2]
     authority constructs a pydantic model to do its work.
     """
 
-    try:
-        return _emit_payload_set_v2(manifest, payloads)
-    except PayloadSetBindingError:
-        raise
-    except ValidationError as exc:
-        # `PayloadSetV2` has its own contract (at least one entry, canonical
-        # digests). Constructing it from otherwise-valid caller material can
-        # therefore fail pydantic, which a consumer cannot name.
-        raise PayloadSetBindingError(PAYLOAD_SET_CONTRACT_INVALID_REASON_V2) from exc
+    # ---------------- EPOCH 1: caller material ----------------
+    #
+    # `PayloadSetV2` requires at least one entry. That is a CALLER-visible
+    # precondition, so it is established here by name rather than discovered
+    # later as a pydantic failure indistinguishable from a derivation bug.
+    if not payloads:
+        raise PayloadSetBindingError(PAYLOAD_SET_EMPTY_REASON_V2)
+
+    # ------------------------- SEAL -------------------------
+    #
+    # `_emit_payload_set_v2` ends in `bind_payload_set_to_payloads_v2`, which
+    # already owns every cross-object disagreement as a typed refusal. A
+    # `ValidationError` from construction after that means derivation is
+    # broken, and escapes.
+    return _emit_payload_set_v2(manifest, payloads)
 
 
 def _emit_payload_set_v2(

@@ -65,8 +65,6 @@ class PayloadBuilderError(ValueError):
 
 
 CHUNK_NOT_IN_MANIFEST_REASON_V2 = "chunk_not_in_manifest"
-# A payload could not satisfy its own contract from otherwise-valid material.
-PAYLOAD_CONTRACT_INVALID_REASON_V2 = "payload_contract_invalid"
 
 
 @dataclass(frozen=True)
@@ -220,8 +218,6 @@ def build_chunk_payload_from_profile_v2(
         # change exists to end, and would mask which authority actually owns
         # the failure.
         raise PayloadBuilderError(exc.reason_code) from exc
-    except ValidationError as exc:
-        raise PayloadBuilderError(PAYLOAD_CONTRACT_INVALID_REASON_V2) from exc
 
 
 def _build_chunk_payload_from_profile_v2(
@@ -280,8 +276,6 @@ def build_chunk_payloads_from_profile_v2(
     except PayloadReferenceError as exc:
         # preserve the reference authority's own precise reason
         raise PayloadBuilderError(exc.reason_code) from exc
-    except ValidationError as exc:
-        raise PayloadBuilderError(PAYLOAD_CONTRACT_INVALID_REASON_V2) from exc
 
 
 def _build_chunk_payloads_from_profile_v2(

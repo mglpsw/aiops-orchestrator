@@ -152,68 +152,95 @@ removed rather than kept "just in case": a consumer re-catching what its
 authority already owns is the enumeration habit this change exists to end, and
 it masks which authority actually failed.
 
-## STOP — the model does not converge on one proposition
-### `STOP_AUTHORITY_ERROR_MODEL_NOT_CONVERGING`
+## Model B was attempted, and falsified — preserved as history
 
-The positive direction is achieved and stable across four review rounds: every
-expected operational failure now leaves its authority as that authority's own
-documented family, originating reasons survive where an owner supplies one, and
-the acceptance oracle drives the whole front half catching one family per
-stage.
-
-The **negative** direction does not hold, and cannot be made to hold by
-continuing along this path. Verified by direct execution at head `c76f43e`:
+Head `56b4a874` is the falsified subject and is deliberately kept in this
+branch's history. Under model B each authority converted `ValidationError` at
+its OUTER boundary. That closed the positive direction and made the negative
+direction impossible, proved by execution:
 
 ```text
 internal defect raised as ValidationError, inside assembly
         -> RunAssemblyError(run_assembly_contract_invalid)
 ```
 
-A defect was reported to the operator as an operational refusal. The same is
-true at `payload_builder_v2`, `payload_set_emission_v2` and
-`review_content_extraction_v2`, and — because pydantic's `ValidationError` and
-`PydanticSerializationError` both subclass `ValueError` — at the payload-set
-tamper guards, where `except (ValidationError, ValueError)` is simply
-`except ValueError`.
+The outer boundary cannot distinguish "the caller's material violates this
+contract" from "our derivation built a malformed object", because both arrive
+as the same type from the same call. Three correction rounds each closed real
+surfaces and each left that proposition failing. B is not rewritten here as
+though it had succeeded.
 
-This is not a coverage gap that one more clause fixes. Converting
-`ValidationError` at an authority's outer boundary **cannot** distinguish
+## Model A* — two-epoch owner validation (selected)
 
 ```text
-the caller's material violates this contract     (operational refusal)
-our own code constructed a malformed object      (defect, must crash)
+G0 = caller / external / environment material
+   -> owner validation, parsing, acquisition classification
+   -> V = validated owner material
+   ------------------------- SEAL -------------------------
+   -> internal derivation
+   -> output
 ```
 
-because both arrive as the same type from the same call. The programmer-defect
-controls in this PR cover `TypeError`, `AttributeError`, `AssertionError`,
-`KeyError` and `IndexError` — deliberately excluding the one type that carries
-most internal defects in this codebase, which is exactly why they stayed green
-while the property was false.
+Only failures BEFORE the seal may be converted from generic parsing,
+validation or I/O mechanics into an owner refusal. After it,
+`ValidationError`, `ValueError`, `TypeError`, `AttributeError`, `KeyError`,
+`IndexError` and unexpected `OSError` are repository defects and escape.
 
-Three correction attempts (rounds 1–3) each closed real surfaces and each left
-this same proposition failing. Per the grant's own stop rule, that is where
-this stops.
+| authority | external ground | seal | pre-seal refusal |
+|---|---|---|---|
+| diff | `subprocess` + checkout | after acquisition returns bytes | `DiffAcquisitionError` |
+| assembly | caller identity + budget | after `_ValidatedAssemblyIdentityInputV2` | `RunAssemblyError` |
+| payload | declared artifact/contract files | after references validated | `PayloadBuilderError` |
+| payload-set | caller payload collection | after non-empty + binding checks | `PayloadSetBindingError` |
+| content | git bytes, hunks, redaction, DLP | after representability check | `ExtractionBlockedError` |
+| readiness | decision + identity + checks | after `ready` preconditions | `ReadinessEmissionError` |
 
-### The decision the next grant must make
+Note where the seals are NOT at function entry. Content acquires its external
+material *inside* the call, so "validate at entry" would have been wrong; its
+seal is after redaction and DLP. Assembly's is early, because its external
+material is the caller's own arguments.
 
-- **A. Validate caller material at entry.** Then any `ValidationError` deeper
-  in is by construction a defect and must not be converted. Most faithful to
-  model B; costs an explicit input-validation layer per authority.
-- **B. Convert at construction sites, not at the outer boundary.** Wrap the
-  specific `Model(...)` calls whose inputs are caller-derived, leaving every
-  other `ValidationError` to crash. Precise; more invasive and easy to miss a
-  site — round 2 of this PR failed exactly that way.
-- **C. Accept the conflation** and document that a contract-invalid refusal may
-  also indicate a defect. Cheapest, and dishonest in the direction that matters.
+### One rule, one definition
 
-### What is safe to keep regardless
+No rule is restated to make a seal possible.
+`_ValidatedAssemblyIdentityInputV2` imports the contract's own `GitSha`,
+`Sha256`, `Repository` and `PositiveInt`. The content check validates against
+`ReviewableContentTextV2` itself via a `TypeAdapter`. The `ready`
+preconditions moved into `evaluate_ready_preconditions_v2` in `contracts_v2`,
+consulted by BOTH the artifact's validator and the emission owner. Nothing
+string-matches a validation message.
 
-Diff acquisition's `OSError` closure and its `git_unavailable` /
-`repo_root_unusable` distinction; the sibling-family conversions
-(`PayloadReferenceError`, `ReviewContentBindingError`) which preserve precise
-reasons; `payload_references_v2`'s contract-read guard; the removal of the two
-pre-existing `except Exception` blocks; and the AST guard. None of those depend
-on the unresolved question.
+### Discrimination recovered
+
+Model B collapsed every readiness contract failure into one opaque
+`readiness_emission_contract_invalid`, which the previous checkpoint recorded
+as an accepted loss. It is no longer accepted: `ready`+merged-PR and
+`ready`-without-green-checks are distinct, rule-naming reasons again, obtained
+without re-implementing the contract.
+
+### Taxonomy removed
+
+Codes that existed only to launder post-seal `ValidationError` are deleted —
+this branch is unmerged, so no compatibility argument preserves a falsified
+meaning:
+
+```text
+run_assembly_contract_invalid    -> run_assembly_identity_invalid (pre-seal)
+payload_contract_invalid         -> deleted (derivation defects escape)
+payload_set_contract_invalid     -> payload_set_empty (pre-seal)
+content_contract_invalid         -> content_unrepresentable (pre-seal)
+readiness_emission_contract_invalid -> ready_requires_* (pre-seal, plural)
+```
+
+### The control that had been missing
+
+The earlier defect controls covered `TypeError`, `AttributeError`,
+`AssertionError`, `KeyError` and `IndexError` — and omitted `ValidationError`,
+the type that carries most internal defects here. That omission is why they
+stayed green while the property was false. `ValidationError` is now first in
+the control set, and every injection happens with valid caller material,
+strictly after that material has crossed its seal. A test that never crosses
+the seal is not evidence.
 
 ## Scope fence
 

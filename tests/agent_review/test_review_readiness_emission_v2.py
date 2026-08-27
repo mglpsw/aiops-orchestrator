@@ -7,6 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.agent_review.contracts_v2 import (
+    READY_REQUIRES_GREEN_CHECKS_REASON_V2,
+    READY_REQUIRES_OPEN_PR_REASON_V2,
     FindingDispositionV2,
     FindingLifecycleRecordV2,
     FindingSeverityV2,
@@ -27,7 +29,6 @@ from app.agent_review.readiness_decision_v2 import (
 from app.agent_review.required_check_readiness_v2 import _assess_required_checks_v2
 from app.agent_review.review_readiness_emission_v2 import (
     READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2,
-    READINESS_EMISSION_CONTRACT_INVALID_REASON_V2,
     ReadinessEmissionError,
     _assemble_review_readiness_v2,
 )
@@ -291,12 +292,12 @@ def test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_validat
     """Ready requires an open PR -- ReviewReadinessV2.validate_state_invariants
     is the authority, never re-checked here.
 
-    `#200-D` predecessor: the refusal is unchanged, its TYPE is not. This
-    authority now owns its artifact's contract, so the contract's own
-    rejection surfaces as `ReadinessEmissionError` instead of a raw pydantic
-    `ValidationError`. The proposition this test protects -- ready + merged PR
-    fails closed -- is exactly as strong; a caller no longer has to know that
-    this module builds a pydantic model to learn that emission refused.
+    `#200-D` two-epoch model: the refusal is unchanged, its TYPE and PRECISION
+    are not. `ready` preconditions are caller-visible, so they are established
+    before the artifact is built, and the reason NAMES the unmet rule --
+    recovering the discrimination a single `..._contract_invalid` code had
+    destroyed. The rules live once in `contracts_v2` and are consulted by both
+    this path and the artifact's own validator.
     """
 
     manifest, report = _fully_reviewed_manifest_and_report()
@@ -313,7 +314,7 @@ def test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_validat
             pr_state=PullRequestStateV2.MERGED,
             checks=[_green_check(manifest.identity.head_sha)],
         )
-    assert excinfo.value.reason_code == READINESS_EMISSION_CONTRACT_INVALID_REASON_V2
+    assert excinfo.value.reason_code == READY_REQUIRES_OPEN_PR_REASON_V2
 
 
 def test_ready_state_without_green_checks_fails_closed() -> None:
@@ -333,7 +334,7 @@ def test_ready_state_without_green_checks_fails_closed() -> None:
             pr_state=PullRequestStateV2.OPEN,
             checks=[],
         )
-    assert excinfo.value.reason_code == READINESS_EMISSION_CONTRACT_INVALID_REASON_V2
+    assert excinfo.value.reason_code == READY_REQUIRES_GREEN_CHECKS_REASON_V2
 
 
 def test_emit_review_readiness_rejects_a_decision_replayed_from_a_different_run() -> None:

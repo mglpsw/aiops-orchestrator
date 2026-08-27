@@ -99,6 +99,8 @@ from pydantic import ValidationError
 
 from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
 from app.agent_review.contracts_v2 import (
+    ReadinessStateV2,
+    evaluate_ready_preconditions_v2,
     FindingLifecycleRecordV2,
     PullRequestStateV2,
     ReadinessStateV2,
@@ -177,9 +179,9 @@ def produce_review_readiness_v2(
         return _assemble_review_readiness_v2(
             decision=decision,
             findings=findings,
-            identity=identity,
-            evaluated_identity=evaluated_identity,
-            pr_state=pr_state,
+        identity=identity,
+        evaluated_identity=evaluated_identity,
+        pr_state=pr_state,
             checks=(),
         )
 
@@ -257,34 +259,45 @@ def _assemble_review_readiness_v2(
     if decision.run_id != compute_run_id(evaluated_identity) or decision.manifest_hash != evaluated_identity.manifest_hash:
         raise ReadinessEmissionError(READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2)
 
-    try:
-        return ReviewReadinessV2(
-            schema_id="agent-review.review-readiness.v2",
-            schema_version=2,
-            source=REVIEW_READINESS_SOURCE_V2,
-            run_id=compute_run_id(identity),
-            identity=identity,
-            evaluated_run_id=compute_run_id(evaluated_identity),
-            evaluated_identity=evaluated_identity,
-            head_sha=identity.head_sha,
-            evaluated_head_sha=evaluated_identity.head_sha,
-            pr_state=pr_state,
-            checks=list(checks),
-            coverage=decision.coverage,
-            pipeline=decision.pipeline,
-            state=decision.state,
-            reason_codes=list(decision.reason_codes),
-            blockers=list(decision.blockers),
-            findings=list(findings),
+    # ---------------- EPOCH 1: caller material ----------------
+    #
+    # The `ready` preconditions are caller-visible, so they are established
+    # here BY NAME, using the single authority in `contracts_v2` that the
+    # artifact's own validator also consults. This is what recovers the
+    # operator discrimination the previous outer-catch design destroyed:
+    # `ready`+merged-PR and `ready`-without-green-checks are different
+    # reasons again, without string-matching any validation message.
+    if decision.state is ReadinessStateV2.READY:
+        unmet = evaluate_ready_preconditions_v2(
+        pr_state=pr_state,
+            checks=checks,
+        coverage=decision.coverage,
+        pipeline=decision.pipeline,
+            has_reasons_or_blockers=bool(decision.reason_codes or decision.blockers),
         )
-    except ValidationError as exc:
-        # `#200-D` predecessor (model B): this is the ONLY construction site
-        # for the readiness artifact, so this authority owns its contract.
-        # Leaving it raw forced the consumer to keep a rule of the shape
-        # "any ValidationError in the back half means a readiness invariant
-        # failed" -- which would misclassify an unrelated pydantic failure
-        # from anywhere else beneath it. The pydantic message also embeds
-        # finding content, so only the code crosses.
-        raise ReadinessEmissionError(
-            READINESS_EMISSION_CONTRACT_INVALID_REASON_V2
-        ) from exc
+        if unmet is not None:
+            raise ReadinessEmissionError(unmet)
+
+    # ------------------------- SEAL -------------------------
+    #
+    # A `ValidationError` from construction now means derivation produced an
+    # invalid artifact from validated material: our defect, and it escapes.
+    return ReviewReadinessV2(
+            schema_id="agent-review.review-readiness.v2",
+        schema_version=2,
+        source=REVIEW_READINESS_SOURCE_V2,
+        run_id=compute_run_id(identity),
+        identity=identity,
+        evaluated_run_id=compute_run_id(evaluated_identity),
+        evaluated_identity=evaluated_identity,
+        head_sha=identity.head_sha,
+        evaluated_head_sha=evaluated_identity.head_sha,
+        pr_state=pr_state,
+        checks=list(checks),
+        coverage=decision.coverage,
+        pipeline=decision.pipeline,
+        state=decision.state,
+        reason_codes=list(decision.reason_codes),
+        blockers=list(decision.blockers),
+        findings=list(findings),
+    )

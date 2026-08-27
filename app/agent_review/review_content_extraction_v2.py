@@ -72,7 +72,7 @@ import re
 import hashlib
 from typing import Mapping, Sequence
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from app.agent_review.contracts_v2 import TargetProfileV2
 from app.agent_review.diff_acquisition_v2 import (
@@ -93,6 +93,7 @@ from app.agent_review.review_content_v2 import (
     FragmentContentV2,
     ReviewContentPolicyV2,
     ReviewContentV2,
+    ReviewableContentTextV2,
     ReviewContentBindingError,
     bind_review_content_to_manifest_v2,
     compute_chunk_content_sha256_v2,
@@ -109,6 +110,33 @@ CONTENT_REASON_WINDOW_OWNS_NO_LINES_V2 = "window_owns_no_real_lines"
 CONTENT_REASON_DLP_DETECTOR_NOT_EXECUTED_V2 = "dlp_detector_not_executed"
 CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2 = "chunk_content_over_budget_requires_replan"
 CONTENT_REASON_PROFILE_HASH_MISMATCH_V2 = "target_profile_hash_mismatch"
+# External diff content the reviewable-content contract cannot represent --
+# e.g. a CRLF carriage return, which is a forbidden control character. This is
+# a property of the TARGET's bytes, so it is established before the seal.
+CONTENT_REASON_UNREPRESENTABLE_V2 = "content_unrepresentable"
+
+# The contract's own annotated type, reused rather than restated: there is one
+# definition of what reviewable content may contain, and both the pre-seal
+# check and `FragmentContentV2` consult it.
+_REVIEWABLE_CONTENT_ADAPTER_V2 = TypeAdapter(ReviewableContentTextV2)
+
+
+def _assert_fragment_content_representable_v2(text: str, *, fragment_id: str) -> None:
+    """Pre-seal: prove external content satisfies the reviewable-content
+    contract BEFORE `FragmentContentV2` is constructed from it.
+
+    Without this, unrepresentable target bytes surfaced as a raw pydantic
+    `ValidationError` whose message embeds the reviewed diff -- both an open
+    surface and a content leak. The refusal carries the fragment id and a
+    stable code only, never the bytes that caused it.
+    """
+
+    try:
+        _REVIEWABLE_CONTENT_ADAPTER_V2.validate_python(text)
+    except ValidationError as exc:
+        raise ExtractionBlockedError(
+            CONTENT_REASON_UNREPRESENTABLE_V2, fragment_id=fragment_id
+        ) from exc
 
 _GENERATED_PATH_MARKERS_V2: tuple[str, ...] = (
     "/generated/",
@@ -467,6 +495,11 @@ def _build_fragment_content_v2(
             redaction_applied=redaction_applied, chars=0,
         )
 
+    _assert_fragment_content_representable_v2(
+        redacted, fragment_id=fragment.fragment_id
+    )
+
+    # ------------------------- SEAL -------------------------
     return FragmentContentV2(
         fragment_id=fragment.fragment_id, path=fragment.path, diff_sha256=fragment.diff_sha256,
         policy=ReviewContentPolicyV2.INCLUDED, coverage_required=fragment.coverage_required,
@@ -601,17 +634,10 @@ def extract_review_content_v2(
         raise
     except ReviewContentBindingError as exc:
         # SIBLING family from the terminal binder; its precise reason survives.
+        # Legitimate for the same reason as `PayloadReferenceError`: the
+        # exception already carries semantic meaning from its own authority.
+        # This is NOT equivalent to converting a generic `ValidationError`.
         raise ExtractionBlockedError(exc.reason_code, fragment_id=None) from exc
-    except ValidationError as exc:
-        # `#200-D` predecessor, round 2: the FIRST attempt guarded only the
-        # final `ReviewContentV2` construction, leaving `FragmentContentV2`
-        # and `ChunkContentV2` -- built earlier in this body -- to escape raw.
-        # Their pydantic message embeds the fragment's own diff content, so
-        # that escape was a content leak as well as an open surface. Closing
-        # the whole body is what the other authorities in this PR already do.
-        raise ExtractionBlockedError(
-            CONTENT_REASON_CONTRACT_INVALID_V2, fragment_id=None
-        ) from exc
 
 
 def _extract_review_content_v2(
@@ -688,6 +714,14 @@ def _extract_review_content_v2(
                 "chunk_payload_sha256_unavailable", fragment_id=None
             )
         payload_sha256 = payload_sha256_by_chunk_id[manifest_chunk.chunk_id]
+        # ------------------------- SEAL -------------------------
+        #
+        # `_build_fragment_content_v2` derives `FragmentContentV2` from
+        # already-acquired, already-redacted, already-DLP-checked material.
+        # External unrepresentability is established by
+        # `_assert_fragment_content_representable_v2` INSIDE that helper,
+        # before construction, so a `ValidationError` escaping here means
+        # derivation produced an invalid object from valid material.
         fragment_contents = [
             _build_fragment_content_v2(
                 fragment_by_id[fragment_id],

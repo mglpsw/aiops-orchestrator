@@ -35,6 +35,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from pydantic import ValidationError
 
 from app.agent_review.contracts_v2 import SemanticGroupV2
 from app.agent_review.diff_acquisition_v2 import (
@@ -350,19 +351,22 @@ def test_content_missing_repo_root_is_an_extraction_blocked_error(
 def test_readiness_contract_violation_is_a_readiness_emission_error(
     tmp_path: Path,
 ) -> None:
-    """WITNESS: `produce_review_readiness_v2` is the ONLY construction site for
-    the readiness artifact, so its contract failures escaped as raw pydantic
-    errors -- forcing the consumer to keep a rule of the shape "any
-    ValidationError in the back half means a readiness invariant failed",
-    which would misclassify an unrelated pydantic failure from anywhere
-    beneath it."""
+    """The emission family exists and its reasons NAME rules.
 
-    from app.agent_review.review_readiness_emission_v2 import (
-        READINESS_EMISSION_CONTRACT_INVALID_REASON_V2,
-        ReadinessEmissionError,
+    Under model B this authority produced one collapsed
+    `readiness_emission_contract_invalid` for every contract failure. Under
+    the two-epoch model the caller-visible `ready` preconditions are
+    established before construction and each names the rule it violates, so an
+    operator can again tell them apart.
+    """
+
+    from app.agent_review.contracts_v2 import (
+        READY_REQUIRES_GREEN_CHECKS_REASON_V2,
+        READY_REQUIRES_OPEN_PR_REASON_V2,
     )
+    from app.agent_review.review_readiness_emission_v2 import ReadinessEmissionError
 
-    assert READINESS_EMISSION_CONTRACT_INVALID_REASON_V2 == "readiness_emission_contract_invalid"
+    assert READY_REQUIRES_OPEN_PR_REASON_V2 != READY_REQUIRES_GREEN_CHECKS_REASON_V2
     assert issubclass(ReadinessEmissionError, ValueError)
 
 
@@ -374,6 +378,13 @@ def test_readiness_contract_violation_is_a_readiness_emission_error(
 
 
 _PROGRAMMER_DEFECTS = [
+    # `ValidationError` FIRST and deliberately: the previous control set
+    # omitted it, and it is how internal defects most often manifest here.
+    # That omission is exactly why these controls stayed green while the
+    # property they exist to protect was false under model B. Every injection
+    # below happens with valid caller material, strictly after its seal --
+    # see `test_two_epoch_error_model_v2` for the seal-crossing witnesses.
+    pytest.param(ValidationError.from_exception_data("Defect", []), id="ValidationError"),
     pytest.param(TypeError("programmer defect"), id="TypeError"),
     pytest.param(AttributeError("programmer defect"), id="AttributeError"),
     pytest.param(AssertionError("programmer defect"), id="AssertionError"),
@@ -533,12 +544,20 @@ def test_no_closed_authority_catches_bare_exception() -> None:
     assert not offenders, offenders
 
 
-def test_content_contract_failure_is_an_extraction_blocked_error(tmp_path: Path) -> None:
-    """WITNESS: ``ReviewContentV2`` is constructed inside extraction, so its
-    own contract failure escaped as a raw pydantic ``ValidationError``.
+def test_content_internal_digest_perturbation_is_now_a_raw_defect(
+    tmp_path: Path,
+) -> None:
+    """Re-targeted by the two-epoch redesign, and worth keeping as history.
 
-    Driven through the real public function with one narrow dependency
-    perturbed -- the content-set digest -- which the contract self-validates.
+    This witness perturbs `compute_review_content_sha256_v2` -- an INTERNAL
+    derivation step, reached only after acquisition, redaction and DLP have
+    already accepted the external material. Under model B it produced
+    `content_contract_invalid`; that was precisely the laundering that
+    falsified model B, because the same code was also produced by genuine
+    caller/external problems.
+
+    Under model A* it is a repository defect and escapes raw. External
+    unrepresentability keeps its own typed refusal -- see the CRLF witness.
     """
 
     repo, base_sha, head_sha = _repo(tmp_path)
@@ -547,11 +566,13 @@ def test_content_contract_failure_is_an_extraction_blocked_error(tmp_path: Path)
         manifest, profile=profile, repo_root=repo
     )
 
+    from pydantic import ValidationError
+
     with mock.patch(
         "app.agent_review.review_content_extraction_v2.compute_review_content_sha256_v2",
         return_value="f" * 64,
     ):
-        with pytest.raises(ExtractionBlockedError) as excinfo:
+        with pytest.raises(ValidationError):
             extract_review_content_v2(
                 repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
                 payload_sha256_by_chunk_id={
@@ -559,7 +580,6 @@ def test_content_contract_failure_is_an_extraction_blocked_error(tmp_path: Path)
                 },
                 target_profile=profile,
             )
-    assert excinfo.value.reason_code == "content_contract_invalid"
 
 
 def test_readiness_contract_failure_is_an_emission_error_through_the_public_path(
@@ -581,10 +601,8 @@ def test_readiness_contract_failure_is_an_emission_error_through_the_public_path
     )
     from app.agent_review.contracts_v2 import PullRequestStateV2, ReadinessStateV2
     from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
-    from app.agent_review.review_readiness_emission_v2 import (
-        READINESS_EMISSION_CONTRACT_INVALID_REASON_V2,
-        ReadinessEmissionError,
-    )
+    from app.agent_review.contracts_v2 import READY_REQUIRES_OPEN_PR_REASON_V2
+    from app.agent_review.review_readiness_emission_v2 import ReadinessEmissionError
 
     manifest, report = _fully_reviewed_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
@@ -602,7 +620,10 @@ def test_readiness_contract_failure_is_an_emission_error_through_the_public_path
             pr_state=PullRequestStateV2.MERGED,
             checks=[_green_check(manifest.identity.head_sha)],
         )
-    assert excinfo.value.reason_code == READINESS_EMISSION_CONTRACT_INVALID_REASON_V2
+    # Under the two-epoch model this names the rule that was not met, rather
+    # than collapsing every contract failure into one opaque code -- the
+    # operator discrimination the outer-catch design had destroyed.
+    assert excinfo.value.reason_code == READY_REQUIRES_OPEN_PR_REASON_V2
 
 
 def test_content_binding_family_is_converted_at_the_extraction_boundary(

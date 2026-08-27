@@ -426,6 +426,21 @@
 
 ### Changed
 
+- **Two-epoch authority error model (`#200-D` predecessor)**: caller/external
+  material is validated by its owner, then SEALED; after the seal a
+  `ValidationError` is a repository defect and escapes rather than being
+  reported to an operator as their review outcome. An earlier attempt
+  converted `ValidationError` at each authority's outer boundary, which closed
+  expected failures but could not distinguish them from derivation bugs; that
+  head is preserved in the branch history as the falsified subject. Rules are
+  not restated to make a seal possible: the assembly token imports the
+  contract's own `GitSha`/`Sha256` types, the content check validates against
+  `ReviewableContentTextV2` itself, and the `ready` preconditions live once in
+  `contracts_v2` where both the artifact's validator and the emission owner
+  consult them. That also restores operator discrimination — `ready`+merged-PR
+  and `ready`-without-green-checks are distinct reasons again. Reason codes
+  whose only purpose was laundering are deleted.
+
 - **Closed authority error surfaces (`#200-D` predecessor)**: six independent
   reviews of PR #271 showed the operational composer could not enumerate the
   exception surfaces of the authorities beneath it, because those surfaces were

@@ -1119,6 +1119,54 @@ class PipelineAssessmentV2(ContractV2Model):
         return self
 
 
+
+# `#200-D` two-epoch model: the `ready` preconditions are CALLER-visible, so
+# `review_readiness_emission_v2` must be able to establish them BEFORE the
+# artifact is constructed -- otherwise the only signal is a pydantic failure
+# indistinguishable from a derivation bug, and every cause collapses to one
+# opaque code.
+#
+# The rules live here ONCE and are consulted by both: this function is the
+# authority, `validate_state_invariants` calls it, and the emission owner calls
+# it pre-seal. Nothing string-matches a validation message.
+READY_REQUIRES_OPEN_PR_REASON_V2 = "ready_requires_open_pr"
+READY_REQUIRES_GREEN_CHECKS_REASON_V2 = "ready_requires_green_checks"
+READY_REQUIRES_COMPLETE_COVERAGE_REASON_V2 = "ready_requires_complete_coverage"
+READY_REQUIRES_UNDEGRADED_PIPELINE_REASON_V2 = "ready_requires_undegraded_pipeline"
+READY_REQUIRES_NO_BLOCKERS_REASON_V2 = "ready_requires_no_blockers"
+
+_READY_PRECONDITION_MESSAGES_V2 = {
+    READY_REQUIRES_OPEN_PR_REASON_V2: "ready requires an open, non-merged pull request",
+    READY_REQUIRES_GREEN_CHECKS_REASON_V2: "ready requires every deterministic required check to be green",
+    READY_REQUIRES_COMPLETE_COVERAGE_REASON_V2: "ready requires complete total and must-review coverage",
+    READY_REQUIRES_UNDEGRADED_PIPELINE_REASON_V2: "ready cannot use a degraded pipeline result",
+    READY_REQUIRES_NO_BLOCKERS_REASON_V2: "ready cannot contain reasons, active blockers, or blocking findings",
+}
+
+
+def evaluate_ready_preconditions_v2(
+    *, pr_state, checks, coverage, pipeline, has_reasons_or_blockers: bool
+) -> str | None:
+    """Return the stable reason a ``ready`` state is not admissible, or None.
+
+    Content-free: names a rule, never a value.
+    """
+
+    if pr_state is not PullRequestStateV2.OPEN:
+        return READY_REQUIRES_OPEN_PR_REASON_V2
+    if not checks or any(
+        check.conclusion is not RequiredCheckConclusionV2.SUCCESS for check in checks
+    ):
+        return READY_REQUIRES_GREEN_CHECKS_REASON_V2
+    if coverage.status is not CoverageStateV2.COMPLETE or coverage.missing_must_review_files:
+        return READY_REQUIRES_COMPLETE_COVERAGE_REASON_V2
+    if pipeline.degraded:
+        return READY_REQUIRES_UNDEGRADED_PIPELINE_REASON_V2
+    if has_reasons_or_blockers:
+        return READY_REQUIRES_NO_BLOCKERS_REASON_V2
+    return None
+
+
 class ReviewReadinessV2(ContractV2Model):
     schema_id: Literal["agent-review.review-readiness.v2"]
     schema_version: Literal[2]
@@ -1221,18 +1269,20 @@ class ReviewReadinessV2(ContractV2Model):
             and finding.severity in {FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2}
         ]
         if self.state is ReadinessStateV2.READY:
-            if self.pr_state is not PullRequestStateV2.OPEN:
-                raise ValueError("ready requires an open, non-merged pull request")
-            if not self.checks or any(
-                check.conclusion is not RequiredCheckConclusionV2.SUCCESS for check in self.checks
-            ):
-                raise ValueError("ready requires every deterministic required check to be green")
-            if self.coverage.status is not CoverageStateV2.COMPLETE or self.coverage.missing_must_review_files:
-                raise ValueError("ready requires complete total and must-review coverage")
-            if self.pipeline.degraded:
-                raise ValueError("ready cannot use a degraded pipeline result")
-            if reasons or active_blockers or blocking_findings:
-                raise ValueError("ready cannot contain reasons, active blockers, or blocking findings")
+            # One authority, two callers: this validator and
+            # `review_readiness_emission_v2`'s pre-seal check. The rules are
+            # not restated in either place.
+            unmet = evaluate_ready_preconditions_v2(
+                pr_state=self.pr_state,
+                checks=self.checks,
+                coverage=self.coverage,
+                pipeline=self.pipeline,
+                has_reasons_or_blockers=bool(
+                    reasons or active_blockers or blocking_findings
+                ),
+            )
+            if unmet is not None:
+                raise ValueError(_READY_PRECONDITION_MESSAGES_V2[unmet])
             return self
 
         if not reasons or reasons != active_reasons:
