@@ -961,3 +961,280 @@ def test_policies_are_not_self_issued(tmp_path: Path) -> None:
         outcome, _, _, _ = _run(tmp_path, captured=captured)
 
     assert seen[0] is outcome.prepared.profile.policies
+
+
+# -- review round 1 (PR #271, exact head fffedb6): refusal-path defects -----
+
+
+def test_assembly_block_never_leaks_target_paths_into_the_reason_code(
+    tmp_path: Path,
+) -> None:
+    """F1: ``AssemblyBlockedReasonV2`` is a DATACLASS carrying
+    ``affected_paths`` and a human ``detail``. Passing it whole where a
+    ``reason_code: str`` is contracted put target file paths onto stderr."""
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet", "-b", "main", ".")
+    _git(repo, "config", "user.email", "t@t.com")
+    _git(repo, "config", "user.name", "t")
+    _write_profile_root(repo)
+    (repo / "app.py").write_text("a = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    # a must-review path that becomes binary blocks assembly with affected_paths
+    (repo / "app.py").write_bytes(b"\x00\x01\x02\x03")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "head")
+    head_sha = _git(repo, "rev-parse", "HEAD")
+
+    from app.agent_review.operational_run_v2 import prepare_operational_review_v2
+
+    with pytest.raises(OperationalRunError) as excinfo:
+        prepare_operational_review_v2(
+            repo_root=repo, target_profile_root=repo, grouping_policy=_grouping_policy(),
+            base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+            toolrepo_sha="b" * 40, evidence_hash="c" * 64, max_lines_per_chunk=1000,
+        )
+    reason = excinfo.value.reason_code
+    assert isinstance(reason, str)
+    assert "app.py" not in reason
+    assert "affected_paths" not in reason
+    assert reason == "run_assembly_required_path_unrepresentable"
+
+
+def test_empty_but_assembled_manifest_is_a_typed_refusal(tmp_path: Path) -> None:
+    """F2: ``PayloadSetV2`` requires >= 1 entry, so an empty-but-assembled
+    manifest raised a raw pydantic ``ValidationError`` and masked the
+    authority that actually owns 'nothing to review'."""
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet", "-b", "main", ".")
+    _git(repo, "config", "user.email", "t@t.com")
+    _git(repo, "config", "user.name", "t")
+    _write_profile_root(repo)
+    (repo / "app.py").write_text("a = 1\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "base")
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    (repo / "blob.bin").write_bytes(b"\x00\x01\x02")     # non-must-review binary only
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "--quiet", "-m", "head")
+    head_sha = _git(repo, "rev-parse", "HEAD")
+
+    from app.agent_review.operational_run_v2 import prepare_operational_review_v2
+
+    with pytest.raises(OperationalRunError) as excinfo:
+        prepare_operational_review_v2(
+            repo_root=repo, target_profile_root=repo, grouping_policy=_grouping_policy(),
+            base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+            toolrepo_sha="b" * 40, evidence_hash="c" * 64, max_lines_per_chunk=1000,
+        )
+    # The authority that owns "nothing to review" is extraction, not the
+    # payload set. Asserting the EXACT code is what pins the ordering: if
+    # `emit_payload_set_v2` ran first it would report a payload-set failure
+    # instead, and the caller would learn the wrong thing about their run.
+    assert excinfo.value.reason_code == "no_reviewable_chunks"
+
+
+def test_back_half_typed_refusal_does_not_escape_the_composition(
+    tmp_path: Path,
+) -> None:
+    """F5: authorities in the back half (check policy, provenance, readiness
+    emission) carry their own ``reason_code``. None may leave this
+    composition as a traceback -- least of all after the Router was paid."""
+
+    from app.agent_review import operational_run_v2 as module
+
+    class _Refusal(ValueError):
+        def __init__(self) -> None:
+            super().__init__("authoritative_check_policy_invalid")
+            self.reason_code = "authoritative_check_policy_invalid"
+
+    captured: list = []
+    with mock.patch.object(module, "run_synthetic_review_v2", side_effect=_Refusal()):
+        with pytest.raises(OperationalRunError) as excinfo:
+            _run(tmp_path, captured=captured)
+    assert excinfo.value.reason_code == "authoritative_check_policy_invalid"
+
+
+def test_back_half_programmer_error_still_crashes(tmp_path: Path) -> None:
+    """The converse of F5, and the rule PR #270 established: an exception with
+    no stable reason code is a defect in this repository, not a review
+    verdict. It must stay a crash."""
+
+    from app.agent_review import operational_run_v2 as module
+
+    captured: list = []
+    with mock.patch.object(
+        module, "run_synthetic_review_v2", side_effect=TypeError("defect")
+    ):
+        with pytest.raises(TypeError):
+            _run(tmp_path, captured=captured)
+
+
+def test_cli_main_degrades_when_the_router_credential_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """F3: ``main()`` -- not just ``_build_transport`` -- must degrade to a
+    sanitized reason code and rc 2, never a traceback."""
+
+    module = _run_cli([])
+    monkeypatch.delenv("AGENT_ROUTER_API_KEY", raising=False)
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    policy = tmp_path / "g.json"
+    policy.write_text(_grouping_policy().model_dump_json(), encoding="utf-8")
+    origin = tmp_path / "o.json"
+    origin.write_text(
+        json.dumps(
+            {"event_type": "pull_request", "event_action": "synchronize",
+             "delivery_id": "d1"}
+        ),
+        encoding="utf-8",
+    )
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import _snapshot_dict
+
+    snap = tmp_path / "s.json"
+    snap.write_text(json.dumps(_snapshot_dict([])), encoding="utf-8")
+
+    rc = module.main(
+        [
+            "--contract-version", "v2", "--repo-root", str(repo),
+            "--target-profile", str(repo), "--grouping-policy", str(policy),
+            "--base-sha", base_sha, "--head-sha", head_sha,
+            "--tested-merge-sha", head_sha, "--pr-number", "1",
+            "--toolrepo-sha", "b" * 40, "--evidence-hash", "c" * 64,
+            "--max-lines-per-chunk", "1000", "--pr-state", "open",
+            "--run-origin", str(origin), "--checks-snapshot", str(snap),
+            "--toolchain-digest", "e" * 64, "--transport", "router",
+            "--router-base-url", "https://router.example",
+            "--router-model", "review:code",
+            "--output", str(tmp_path / "out.json"),
+        ]
+    )
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert err.strip() == "error: router_disabled"
+    assert "Traceback" not in err
+
+
+def test_cli_main_refuses_a_malformed_checks_snapshot(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    """F4: the snapshot parser refuses through its OWN typed family, not
+    ``OSError``, so a malformed snapshot used to escape as a traceback."""
+
+    module = _run_cli([])
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    policy = tmp_path / "g.json"
+    policy.write_text(_grouping_policy().model_dump_json(), encoding="utf-8")
+    origin = tmp_path / "o.json"
+    origin.write_text(
+        json.dumps(
+            {"event_type": "pull_request", "event_action": "synchronize",
+             "delivery_id": "d1"}
+        ),
+        encoding="utf-8",
+    )
+    snap = tmp_path / "s.json"
+    snap.write_text('{"schema_id": "not-a-snapshot"}', encoding="utf-8")
+
+    rc = module.main(
+        [
+            "--contract-version", "v2", "--repo-root", str(repo),
+            "--target-profile", str(repo), "--grouping-policy", str(policy),
+            "--base-sha", base_sha, "--head-sha", head_sha,
+            "--tested-merge-sha", head_sha, "--pr-number", "1",
+            "--toolrepo-sha", "b" * 40, "--evidence-hash", "c" * 64,
+            "--max-lines-per-chunk", "1000", "--pr-state", "open",
+            "--run-origin", str(origin), "--checks-snapshot", str(snap),
+            "--toolchain-digest", "e" * 64, "--transport", "offline",
+            "--offline-responses-dir", str(tmp_path),
+            "--output", str(tmp_path / "out.json"),
+        ]
+    )
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert err.startswith("error: ")
+    assert "Traceback" not in err
+    assert str(repo) not in err
+
+
+def test_cli_rejects_duplicate_keys_in_its_json_inputs(tmp_path: Path) -> None:
+    """F6: plain ``json.loads`` is last-wins, and a policy's own
+    ``policy_sha256`` self-check would happily validate whichever key
+    survived. Strict parsing is the existing repository authority."""
+
+    module = _run_cli([])
+    dup = tmp_path / "dup.json"
+    dup.write_text('{"event_type": "pull_request", "event_type": "push"}', encoding="utf-8")
+    with pytest.raises(module.RunCliError) as excinfo:
+        module._read_json(str(dup))
+    assert excinfo.value.reason_code == module.INPUT_INVALID_REASON_V2
+
+
+def test_cli_unwritable_output_is_a_typed_refusal_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F7: the output write sat outside the guarded block, so an unwritable
+    path discarded a fully completed review behind a traceback."""
+
+    module = _run_cli([])
+    monkeypatch.setenv("AGENT_ROUTER_API_KEY", "env-only-secret")
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    policy = tmp_path / "g.json"
+    policy.write_text(_grouping_policy().model_dump_json(), encoding="utf-8")
+    origin = tmp_path / "o.json"
+    origin.write_text(
+        json.dumps(
+            {"event_type": "pull_request", "event_action": "synchronize",
+             "delivery_id": "d1"}
+        ),
+        encoding="utf-8",
+    )
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import _snapshot_dict
+
+    snap = tmp_path / "s.json"
+    snap.write_text(json.dumps(_snapshot_dict([])), encoding="utf-8")
+
+    captured: list = []
+
+    # a completed run whose output path is inside a directory that does not exist
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        side_effect=_mocked_router(captured),
+    ):
+        from app.agent_review.operational_run_v2 import prepare_operational_review_v2
+
+        prepared = prepare_operational_review_v2(
+            repo_root=repo, target_profile_root=repo, grouping_policy=_grouping_policy(),
+            base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+            toolrepo_sha="b" * 40, evidence_hash="c" * 64, max_lines_per_chunk=1000,
+        )
+        _CAPTURED_RESULT_DOCUMENT[0] = json.dumps(
+            _router_result_document(
+                prepared.payload_by_chunk_id[prepared.content.chunks[0].chunk_id]
+            )
+        )
+        rc = module.main(
+            [
+                "--contract-version", "v2", "--repo-root", str(repo),
+                "--target-profile", str(repo), "--grouping-policy", str(policy),
+                "--base-sha", base_sha, "--head-sha", head_sha,
+                "--tested-merge-sha", head_sha, "--pr-number", "1",
+                "--toolrepo-sha", "b" * 40, "--evidence-hash", "c" * 64,
+                "--max-lines-per-chunk", "1000", "--pr-state", "open",
+                "--run-origin", str(origin), "--checks-snapshot", str(snap),
+                "--toolchain-digest", "e" * 64, "--transport", "router",
+                "--router-base-url", "https://router.example",
+                "--router-model", "review:code",
+                "--output", str(tmp_path / "missing_dir" / "out.json"),
+            ]
+        )
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert err.strip() == "error: output_unwritable"
+    assert "Traceback" not in err

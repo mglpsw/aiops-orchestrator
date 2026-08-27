@@ -41,16 +41,19 @@ from app.agent_review.operational_run_v2 import (  # noqa: E402
     run_operational_review_v2,
 )
 from app.agent_review.review_transport_v2 import (  # noqa: E402
+    ChunkTransportError,
     agent_router_transport_v2,
     offline_file_transport_v2,
 )
 from app.agent_review.semantic_grouping_policy_v2 import (  # noqa: E402
     SemanticGroupingPolicyV2,
 )
+from app.common.strict_json import strict_json_loads  # noqa: E402
 
 CONTRACT_VERSION_INVALID_REASON_V2 = "contract_version_invalid"
 INPUT_INVALID_REASON_V2 = "input_invalid"
 TRANSPORT_MODE_INVALID_REASON_V2 = "transport_mode_invalid"
+OUTPUT_UNWRITABLE_REASON_V2 = "output_unwritable"
 
 DEFAULT_ROUTER_API_KEY_ENV = "AGENT_ROUTER_API_KEY"
 
@@ -99,10 +102,31 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _reason_code_of(exc: BaseException) -> str:
+    """The exception's own stable code, or a generic input refusal.
+
+    Never the exception's message: these CLIs must emit reason codes only.
+    """
+
+    reason_code = getattr(exc, "reason_code", None)
+    if isinstance(reason_code, str) and reason_code:
+        return reason_code
+    return INPUT_INVALID_REASON_V2
+
+
 def _read_json(path: str) -> object:
+    """Strict: duplicate keys and non-finite numbers are refused.
+
+    Plain ``json.loads`` is last-wins, so a policy document carrying two
+    ``rules`` keys would validate against whichever survived -- and its own
+    ``policy_sha256`` self-check would agree, because it hashes the surviving
+    material. The repository's ``strict_json_loads`` is the existing authority
+    for exactly this.
+    """
+
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return strict_json_loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, TypeError, RecursionError) as exc:
         raise RunCliError(INPUT_INVALID_REASON_V2) from exc
 
 
@@ -146,6 +170,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         except OSError as exc:
             raise RunCliError(INPUT_INVALID_REASON_V2) from exc
+        except Exception as exc:
+            # `parse_authoritative_ci_snapshot_v2` refuses through its own
+            # typed family (`RequiredCheckProvenanceErrorV2`), not `OSError`.
+            # Preserve its code; never let a malformed snapshot become a
+            # traceback.
+            raise RunCliError(_reason_code_of(exc)) from exc
 
         outcome = run_operational_review_v2(
             repo_root=Path(args.repo_root),
@@ -164,15 +194,19 @@ def main(argv: list[str] | None = None) -> int:
             toolchain_digest=args.toolchain_digest,
             max_lines_per_chunk=args.max_lines_per_chunk,
         )
-    except (RunCliError, OperationalRunError) as exc:
-        # Bounded, sanitized: a stable reason code only. Never the diff, the
-        # content, the messages, the Router body or the credential.
+
+        # Inside the guarded block: a missing output directory must not
+        # discard a fully completed review behind a traceback.
+        Path(args.output).write_text(
+            outcome.review.readiness.model_dump_json(indent=2) + "\n", encoding="utf-8"
+        )
+    except (RunCliError, OperationalRunError, ChunkTransportError) as exc:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 2
+    except OSError as exc:
+        print(f"error: {OUTPUT_UNWRITABLE_REASON_V2}", file=sys.stderr)
+        return 2
 
-    Path(args.output).write_text(
-        outcome.review.readiness.model_dump_json(indent=2) + "\n", encoding="utf-8"
-    )
     # stdout carries the decision only, never review material.
     print(outcome.review.readiness.state.value)
     return 0

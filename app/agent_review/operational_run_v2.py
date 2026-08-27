@@ -104,6 +104,7 @@ from app.agent_review.semantic_grouping_policy_v2 import (
 __all__ = [
     "OperationalReviewOutcomeV2",
     "OperationalRunError",
+    "PAYLOAD_SET_INVALID_REASON_V2",
     "RUN_IDENTITY_INVALID_REASON_V2",
     "PreparedReviewRunV2",
     "prepare_operational_review_v2",
@@ -124,6 +125,12 @@ PREPARATION_CHUNK_SET_MISMATCH_REASON_V2 = "operational_preparation_chunk_set_mi
 # owns a code for it, so this module names it -- namespaced, so it can never be
 # mistaken for an upstream authority's own reason.
 RUN_IDENTITY_INVALID_REASON_V2 = "operational_run_identity_invalid"
+
+# The emitted payload set failed its own contract for a reason `PayloadSetBindingError`
+# does not name (it surfaces as a pydantic `ValidationError`). Namespaced for
+# the same reason as the codes above.
+PAYLOAD_SET_INVALID_REASON_V2 = "operational_payload_set_invalid"
+
 
 ASSEMBLY_BLOCKED_REASON_V2 = "assembly_blocked"
 
@@ -231,8 +238,13 @@ def prepare_operational_review_v2(
         raise OperationalRunError(RUN_IDENTITY_INVALID_REASON_V2) from exc
 
     if outcome.state != "assembled" or outcome.manifest is None:
+        # `blocked_reason` is an `AssemblyBlockedReasonV2` DATACLASS carrying
+        # `affected_paths` and a human `detail`. Passing it whole would put
+        # target file paths into `reason_code` and therefore onto stderr --
+        # only its stable code may cross this boundary.
+        blocked = outcome.blocked_reason
         raise OperationalRunError(
-            outcome.blocked_reason or ASSEMBLY_BLOCKED_REASON_V2
+            blocked.reason_code if blocked is not None else ASSEMBLY_BLOCKED_REASON_V2
         )
     manifest = outcome.manifest
 
@@ -246,10 +258,19 @@ def prepare_operational_review_v2(
 
     # Manifest <-> payload closure is an authority that already exists: reuse
     # it rather than re-deriving run_id/manifest_hash/chunk-set agreement.
-    try:
-        emit_payload_set_v2(manifest, [item.payload for item in built])
-    except PayloadSetBindingError as exc:
-        raise OperationalRunError(exc.reason_code) from exc
+    #
+    # Only when there IS a payload. `PayloadSetV2` contractually requires at
+    # least one entry, so a legitimately empty-but-assembled manifest (say,
+    # only non-must-review binaries changed) would raise a raw pydantic
+    # `ValidationError` here and mask the authority that actually owns
+    # "nothing to review": extraction's own typed refusal, below.
+    if built:
+        try:
+            emit_payload_set_v2(manifest, [item.payload for item in built])
+        except PayloadSetBindingError as exc:
+            raise OperationalRunError(exc.reason_code) from exc
+        except ValidationError as exc:
+            raise OperationalRunError(PAYLOAD_SET_INVALID_REASON_V2) from exc
 
     try:
         content = extract_review_content_v2(
@@ -363,19 +384,37 @@ def run_operational_review_v2(
         dlp_policy=dlp_policy,
     )
 
-    review = run_synthetic_review_v2(
-        content=prepared.content,
-        manifest=prepared.manifest,
-        payload_by_chunk_id=dict(prepared.payload_by_chunk_id),
-        transport=transport,
-        policies=prepared.profile.policies,
-        pr_state=pr_state,
-        origin=origin,
-        snapshot=snapshot,
-        toolchain_digest=toolchain_digest,
-        target_profile_root=str(Path(target_profile_root)),
-        checks=checks,
-        provenance=provenance,
-        prior_lifecycle=prior_lifecycle,
-    )
+    # The back half reaches authorities with their own typed error families
+    # (check policy, provenance, readiness emission, content binding). Each
+    # already carries a stable `reason_code`; none may escape this
+    # composition as a raw traceback -- especially not after the Router call
+    # has already been made and paid for.
+    try:
+        review = run_synthetic_review_v2(
+            content=prepared.content,
+            manifest=prepared.manifest,
+            payload_by_chunk_id=dict(prepared.payload_by_chunk_id),
+            transport=transport,
+            policies=prepared.profile.policies,
+            pr_state=pr_state,
+            origin=origin,
+            snapshot=snapshot,
+            toolchain_digest=toolchain_digest,
+            target_profile_root=str(Path(target_profile_root)),
+            checks=checks,
+            provenance=provenance,
+            prior_lifecycle=prior_lifecycle,
+        )
+    except OperationalRunError:
+        raise
+    except Exception as exc:
+        # Only a failure that already carries a stable `reason_code` is a
+        # typed authority refusal. Anything else is a defect in this
+        # repository and must stay a crash -- never be laundered into a
+        # sanitized review verdict (the same rule PR #270 established for
+        # the Router HTTP boundary).
+        reason_code = getattr(exc, "reason_code", None)
+        if not isinstance(reason_code, str) or not reason_code:
+            raise
+        raise OperationalRunError(reason_code) from exc
     return OperationalReviewOutcomeV2(prepared=prepared, review=review)
