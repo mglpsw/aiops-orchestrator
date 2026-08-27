@@ -176,3 +176,25 @@ table), `test_review_readiness_emission_v2.py` (`_assemble_review_
 readiness_v2` unaffected pure-assembly tests, plus new
 `produce_review_readiness_v2` Class A tests), `test_required_check_
 readiness_arch_v2.py` (AST proof of the single path).
+
+## `#200-D` update — the pre-seal epoch also owns staleness
+
+`produce_review_readiness_v2` validates caller material before the seal. Two
+shared authorities in `contracts_v2.py` decide that material, and both are
+called by the artifact contract's own model validator as well, so a document
+that never meets this emitter gets the identical verdict:
+
+| Authority | Question | Refusal code |
+|---|---|---|
+| `evaluate_readiness_common_material_v2` | reason/blocker/finding material well-formed? | `readiness_submitted_material_invalid` |
+| `evaluate_readiness_staleness_material_v2` | does the claimed state agree with the two identities? | `readiness_staleness_material_invalid` |
+
+Order inside the pre-seal epoch is deliberate: `#145`'s decision-provenance
+guard runs first because a decision replayed from a different run is a more
+specific fault, then common material, then staleness. Staleness is checked
+before the `stale` short-circuit, because that path returns without ever
+running the required-check assessment.
+
+Both identities are caller-submitted and never transformed here, so no sealed
+carrier is needed to tell derived material apart from submitted material. Past
+the seal, a `ValidationError` is a defect in this repository and escapes raw.

@@ -289,6 +289,64 @@ looking green.
 That is the third and fourth control in this branch to fail this way. The
 pattern is recorded because it matters more than any single instance.
 
+## The Draft → Ready gate found one more, and it was real
+
+Promoting this PR to Ready was run as an independent last gate, exactly as on
+#270. It produced a P2 (thread `PRRT_kwDOSM6MSM6c91Qv`, comment
+`3875520739`): staleness/identity coherence is caller-owned material, but was
+established only *inside* the artifact contract — that is, after the seal. A
+library caller who submitted a decision claiming `stale` while both identities
+agreed received a raw `ValidationError` whose `input_value` carried the entire
+readiness material.
+
+The finding named two halves. Only the first had been reproduced; the second
+was reported as non-reproducing, and that report was wrong. The witness used
+for it bound the decision's provenance to the *expected* identity, so `#145`'s
+provenance guard refused first and masked the gap. Re-run with provenance bound
+to the **evaluated** identity, the non-stale half reproduces exactly as the
+review claimed:
+
+```text
+state: READY | provenance bound to evaluated: True
+RESULT: RAW ValidationError -> "Value error, only stale may refer to a
+        different evaluated HEAD or run identity ... input_value={...}"
+        carries material: True
+```
+
+### Where it belongs, and why
+
+The `stale` path short-circuits before the required-check assessment runs at
+all, and neither `identity` nor `evaluated_identity` is ever transformed. Both
+are `C`-class under the partition above. So this is not a borderline case
+needing a sealed carrier: it is pre-seal material in full, and it is checked
+immediately after `#145`'s provenance guard — whose proposition is strictly
+more specific — and before the `stale` short-circuit.
+
+`evaluate_readiness_staleness_material_v2` joins the shared-authority set: one
+definition in `contracts_v2.py`, called by the model validator and by
+`produce_review_readiness_v2`, verified by `ast.Call` counting rather than by
+grep. Documents that never meet an emitter — read off disk, off a wire, from
+another tool — are still decided by the contract, which is what §11's
+direct-parse controls hold in place. Post-seal `ValidationError` still escapes
+raw; `M_POSTSEAL_VALIDATION_CAUGHT_AGAIN` proves a catch there is killed.
+
+### A fifth and sixth control that could not fail
+
+The first `R5` written for precedence never exercised precedence: its material
+was staleness-*valid*, so the two rules never competed, and deleting the public
+provenance guard did not change the answer. Mutation caught it. The replacement
+is invalid under both rules at once.
+
+The first anti-leak assertion checked that a fixed reason-code constant did not
+contain a sha — something it could never do. It now asserts against the whole
+rendered exception.
+
+Separately, the mutation harness itself was found scoring against a red tree: a
+timed-out run had left a mutation applied, so a later batch reported `KILLED`
+for free. Every harness now proves its own baseline green before mutating and
+verifies the restore afterwards. The 31 preserved mutants and the 10 new ones
+were re-run under that guard.
+
 ## Scope fence
 
 `operational_run_v2.py` and `aiops-review-run-v2.py` are deliberately **not**

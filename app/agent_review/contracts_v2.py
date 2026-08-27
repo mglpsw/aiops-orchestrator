@@ -1220,6 +1220,52 @@ def evaluate_ready_preconditions_v2(
 READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2 = "readiness_submitted_material_invalid"
 
 
+# Ready-triggered P2 (comment 3875520739). Staleness/identity coherence is
+# CALLER-owned in full: the `STALE` path short-circuits before the
+# required-check assessment runs at all, and both identities are arguments the
+# emitter never transforms. So the emitter can and must establish it pre-seal,
+# and the contract must keep enforcing it for any document parsed from JSON.
+#
+# One predicate, two callers -- the emitter does NOT restate these rules, and
+# it passes RAW typed material rather than pre-computed booleans, which is what
+# let the earlier `ready` predicates drift apart.
+READINESS_STALENESS_MATERIAL_INVALID_REASON_V2 = "readiness_staleness_material_invalid"
+
+
+def evaluate_readiness_staleness_material_v2(
+    *, state, identity, evaluated_identity, reason_codes, blockers
+) -> str | None:
+    """Is the submitted staleness/identity material coherent?
+
+    Derives the divergence itself from the two identities. Content-free: names
+    a rule, never a sha or an identity value.
+    """
+
+    heads_differ = identity.head_sha != evaluated_identity.head_sha
+    expected_context = identity.model_dump(mode="json", exclude={"head_sha"})
+    evaluated_context = evaluated_identity.model_dump(mode="json", exclude={"head_sha"})
+    contexts_differ = expected_context != evaluated_context
+
+    if state is ReadinessStateV2.STALE:
+        expected_reasons: set[ReadinessReasonV2] = set()
+        if heads_differ:
+            expected_reasons.add(ReadinessReasonV2.HEAD_MISMATCH)
+        if contexts_differ:
+            expected_reasons.add(ReadinessReasonV2.IDENTITY_MISMATCH)
+        active_blockers = [blocker for blocker in blockers if blocker.active]
+        if (
+            not expected_reasons
+            or set(reason_codes) != expected_reasons
+            or active_blockers
+        ):
+            return READINESS_STALENESS_MATERIAL_INVALID_REASON_V2
+        return None
+
+    if heads_differ or contexts_differ:
+        return READINESS_STALENESS_MATERIAL_INVALID_REASON_V2
+    return None
+
+
 def evaluate_readiness_common_material_v2(
     *, reason_codes, blockers, findings, evaluated_head_sha
 ) -> str | None:
@@ -1322,22 +1368,21 @@ class ReviewReadinessV2(ContractV2Model):
         active_blockers = [blocker for blocker in self.blockers if blocker.active]
         active_reasons = {blocker.reason_code for blocker in active_blockers}
         reasons = set(self.reason_codes)
-        heads_differ = self.head_sha != self.evaluated_head_sha
-        expected_context = self.identity.model_dump(mode="json", exclude={"head_sha"})
-        evaluated_context = self.evaluated_identity.model_dump(mode="json", exclude={"head_sha"})
-        identities_differ = expected_context != evaluated_context
 
+        # Shared with `produce_review_readiness_v2`'s pre-seal epoch: one
+        # definition of what staleness/identity coherence means, two callers.
+        if evaluate_readiness_staleness_material_v2(
+            state=self.state,
+            identity=self.identity,
+            evaluated_identity=self.evaluated_identity,
+            reason_codes=self.reason_codes,
+            blockers=self.blockers,
+        ) is not None:
+            raise ValueError(
+                "readiness staleness/identity material is incoherent"
+            )
         if self.state is ReadinessStateV2.STALE:
-            expected_reasons: set[ReadinessReasonV2] = set()
-            if heads_differ:
-                expected_reasons.add(ReadinessReasonV2.HEAD_MISMATCH)
-            if identities_differ:
-                expected_reasons.add(ReadinessReasonV2.IDENTITY_MISMATCH)
-            if not expected_reasons or reasons != expected_reasons or active_blockers:
-                raise ValueError("stale requires explicit HEAD or identity divergence reasons")
             return self
-        if heads_differ or identities_differ:
-            raise ValueError("only stale may refer to a different evaluated HEAD or run identity")
 
         blocking_findings = [
             finding

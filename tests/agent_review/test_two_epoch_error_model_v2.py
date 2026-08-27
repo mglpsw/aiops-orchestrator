@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import textwrap
 from pathlib import Path
 from unittest import mock
 
@@ -896,3 +897,516 @@ def test_raising_derivation_also_escapes_raw() -> None:
                 pr_state=PullRequestStateV2.OPEN,
                 checks=[_green_check(manifest.identity.head_sha)],
             )
+
+
+# -- Ready-triggered P2 (comment 3875520739): caller-owned staleness ---------
+#
+# BOTH halves of that finding reproduce. An earlier assessment of mine claimed
+# the non-STALE half was refuted; it was not -- the witness I used bound the
+# decision's provenance to `identity`, so `#145`'s gate caught it first and
+# masked the real gap. Bound to `evaluated_identity` instead, the gate passes
+# and the raw error escapes. The lesson is recorded, not just the fix.
+
+
+def _produce_readiness(*, decision, findings, identity, evaluated_identity,
+                       pr_state, tmp_path, checks=(), provenance=()):
+    """Drive the REAL public boundary, where the pre-seal epoch lives.
+
+    The private assembler is post-seal on the main path, so a witness that
+    calls it directly cannot exercise this correction.
+    """
+
+    import json
+
+    from app.agent_review.authoritative_ci_snapshot_v2 import (
+        parse_authoritative_ci_snapshot_v2,
+    )
+    from app.agent_review.contracts_v2 import RunOriginV2
+    from app.agent_review.review_readiness_emission_v2 import (
+        produce_review_readiness_v2,
+    )
+    from tests.agent_review.test_review_readiness_emission_v2 import (
+        _profile_bound_identity,
+    )
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import (
+        TOOLCHAIN_DIGEST,
+        _snapshot_dict,
+    )
+
+    profile_root, _ = _profile_bound_identity(tmp_path, required_checks=["pytest"])
+    return produce_review_readiness_v2(
+        decision=decision,
+        findings=findings,
+        identity=identity,
+        evaluated_identity=evaluated_identity,
+        pr_state=pr_state,
+        checks=checks,
+        provenance=provenance,
+        origin=RunOriginV2(
+            event_type="pull_request", event_action="synchronize",
+            delivery_id="delivery-1",
+        ),
+        snapshot=parse_authoritative_ci_snapshot_v2(json.dumps(_snapshot_dict([]))),
+        toolchain_digest=TOOLCHAIN_DIGEST,
+        target_profile_root=str(profile_root),
+    )
+
+
+def _staleness_case():
+    from tests.agent_review.test_review_readiness_emission_v2 import (
+        _fully_reviewed_manifest_and_report,
+        _policies,
+        _synthesis,
+    )
+    from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies()
+    )
+    return manifest, synthesis, decision
+
+
+def test_stale_without_real_divergence_is_a_typed_refusal(tmp_path: Path) -> None:
+    """R1: the reproduced Ready finding. `STALE` with identical identities is
+    caller material that no transformation can rescue -- the STALE path
+    short-circuits before the assessment runs at all."""
+
+    import dataclasses
+
+    from app.agent_review.contracts_v2 import (
+        READINESS_STALENESS_MATERIAL_INVALID_REASON_V2,
+        ReadinessReasonV2,
+        ReadinessStateV2,
+    )
+    from app.agent_review.review_readiness_emission_v2 import ReadinessEmissionError
+
+    manifest, synthesis, decision = _staleness_case()
+    stale = dataclasses.replace(
+        decision,
+        state=ReadinessStateV2.STALE,
+        reason_codes=(ReadinessReasonV2.HEAD_MISMATCH,),
+        blockers=(),
+    )
+
+    with pytest.raises(ReadinessEmissionError) as excinfo:
+        _produce_readiness(
+            decision=stale, findings=synthesis.findings,
+            identity=manifest.identity, evaluated_identity=manifest.identity,
+            pr_state=PullRequestStateV2.OPEN, tmp_path=tmp_path,
+        )
+    assert excinfo.value.reason_code == READINESS_STALENESS_MATERIAL_INVALID_REASON_V2
+    # Anti-leak asserted against the WHOLE rendered error, not the constant
+    # reason code -- the code alone could never carry material, so asserting
+    # on it is a control that could not fail.
+    rendered = f"{excinfo.value!s} {excinfo.value!r} {excinfo.value.args!r}"
+    for secret in (manifest.identity.head_sha, manifest.identity.base_sha,
+                   manifest.identity.manifest_hash, "input_value",
+                   "Value error", "validation error"):
+        assert secret not in rendered, rendered
+
+
+def test_non_stale_with_divergent_identities_is_a_typed_refusal(tmp_path: Path) -> None:
+    """R4: the finding's second half, with the STRONG witness.
+
+    The decision's provenance is bound to `evaluated_identity`, so `#145`'s
+    gate passes and cannot mask the gap. A non-STALE state carrying divergent
+    expected/evaluated identities is caller material the contract forbids.
+    """
+
+    import dataclasses
+
+    from app.agent_review.contracts_v2 import (
+        READINESS_STALENESS_MATERIAL_INVALID_REASON_V2,
+        ReadinessStateV2,
+        compute_run_id,
+    )
+    from app.agent_review.review_readiness_emission_v2 import ReadinessEmissionError
+
+    manifest, synthesis, decision = _staleness_case()
+    evaluated = manifest.identity.model_copy(update={"head_sha": "f" * 40})
+    bound = dataclasses.replace(
+        decision,
+        run_id=compute_run_id(evaluated),
+        manifest_hash=evaluated.manifest_hash,
+    )
+    assert bound.state is not ReadinessStateV2.STALE
+
+    with pytest.raises(ReadinessEmissionError) as excinfo:
+        _produce_readiness(
+            decision=bound, findings=synthesis.findings,
+            identity=manifest.identity, evaluated_identity=evaluated,
+            pr_state=PullRequestStateV2.OPEN, tmp_path=tmp_path,
+        )
+    assert excinfo.value.reason_code == READINESS_STALENESS_MATERIAL_INVALID_REASON_V2
+
+
+def test_stale_with_the_wrong_mismatch_reason_set_is_a_typed_refusal(tmp_path: Path) -> None:
+    """R2: divergence exists, but the submitted reasons do not describe it."""
+
+    import dataclasses
+
+    from app.agent_review.contracts_v2 import (
+        READINESS_STALENESS_MATERIAL_INVALID_REASON_V2,
+        ReadinessReasonV2,
+        ReadinessStateV2,
+        compute_run_id,
+    )
+    from app.agent_review.review_readiness_emission_v2 import ReadinessEmissionError
+
+    manifest, synthesis, decision = _staleness_case()
+    evaluated = manifest.identity.model_copy(update={"head_sha": "f" * 40})
+    # only the HEAD diverges, but IDENTITY_MISMATCH is claimed as well
+    stale = dataclasses.replace(
+        decision,
+        state=ReadinessStateV2.STALE,
+        reason_codes=(
+            ReadinessReasonV2.HEAD_MISMATCH,
+            ReadinessReasonV2.IDENTITY_MISMATCH,
+        ),
+        blockers=(),
+        run_id=compute_run_id(evaluated),
+        manifest_hash=evaluated.manifest_hash,
+    )
+
+    with pytest.raises(ReadinessEmissionError) as excinfo:
+        _produce_readiness(
+            decision=stale, findings=synthesis.findings,
+            identity=manifest.identity, evaluated_identity=evaluated,
+            pr_state=PullRequestStateV2.OPEN, tmp_path=tmp_path,
+        )
+    assert excinfo.value.reason_code == READINESS_STALENESS_MATERIAL_INVALID_REASON_V2
+
+
+def test_valid_stale_still_emits_and_never_reaches_the_assessment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R3: the positive control the three refusals need.
+
+    A genuinely stale submission must still produce an artifact, AND must
+    still short-circuit before the required-check assessment. Without this,
+    a pre-seal check that simply refused every STALE input would pass R1/R2
+    and silently destroy the documented STALE path.
+    """
+
+    import dataclasses
+
+    from app.agent_review.contracts_v2 import (
+        ReadinessReasonV2,
+        ReadinessStateV2,
+        compute_run_id,
+    )
+    from app.agent_review import review_readiness_emission_v2 as emission
+
+    manifest, synthesis, decision = _staleness_case()
+    evaluated = manifest.identity.model_copy(update={"head_sha": "f" * 40})
+    stale = dataclasses.replace(
+        decision,
+        state=ReadinessStateV2.STALE,
+        reason_codes=(ReadinessReasonV2.HEAD_MISMATCH,),
+        blockers=(),
+        run_id=compute_run_id(evaluated),
+        manifest_hash=evaluated.manifest_hash,
+    )
+
+    def _must_not_run(**_kwargs):  # pragma: no cover - the assertion is that it never runs
+        raise AssertionError("STALE must short-circuit before the assessment")
+
+    monkeypatch.setattr(emission, "_verify_and_assess_required_checks_v2", _must_not_run)
+
+    readiness = _produce_readiness(
+        decision=stale, findings=synthesis.findings,
+        identity=manifest.identity, evaluated_identity=evaluated,
+        pr_state=PullRequestStateV2.OPEN, tmp_path=tmp_path,
+    )
+    assert readiness.state is ReadinessStateV2.STALE
+    assert list(readiness.checks) == []
+    assert set(readiness.reason_codes) == {ReadinessReasonV2.HEAD_MISMATCH}
+
+
+def test_provenance_mismatch_still_wins_over_the_staleness_refusal(
+    tmp_path: Path,
+) -> None:
+    """R5: `#145`'s proposition is the more specific one and keeps precedence.
+
+    The submitted material is invalid on BOTH counts. The emitter must still
+    answer with the provenance code, so the ordering added by this correction
+    cannot silently reclassify an existing refusal.
+    """
+
+    import dataclasses
+
+    from app.agent_review.contracts_v2 import (
+        ReadinessReasonV2,
+        ReadinessStateV2,
+        evaluate_readiness_staleness_material_v2,
+    )
+    from app.agent_review.review_readiness_emission_v2 import (
+        READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2,
+        ReadinessEmissionError,
+    )
+
+    manifest, synthesis, decision = _staleness_case()
+    # The first draft of this test diverged the identities and left provenance
+    # on the expected one -- but that material is staleness-VALID, so the two
+    # rules never actually competed and removing the public provenance guard
+    # did not change the answer. Mutation caught it. The case below is invalid
+    # under BOTH rules at once: identical identities claiming STALE, and a
+    # run_id that matches neither identity.
+    stale = dataclasses.replace(
+        decision,
+        state=ReadinessStateV2.STALE,
+        reason_codes=(ReadinessReasonV2.HEAD_MISMATCH,),
+        blockers=(),
+        run_id="a" * 64,
+    )
+    assert (
+        evaluate_readiness_staleness_material_v2(
+            state=stale.state, identity=manifest.identity,
+            evaluated_identity=manifest.identity,
+            reason_codes=stale.reason_codes, blockers=stale.blockers,
+        )
+        is not None
+    ), "the case must be staleness-invalid, or precedence is never exercised"
+
+    with pytest.raises(ReadinessEmissionError) as excinfo:
+        _produce_readiness(
+            decision=stale, findings=synthesis.findings,
+            identity=manifest.identity, evaluated_identity=manifest.identity,
+            pr_state=PullRequestStateV2.OPEN, tmp_path=tmp_path,
+        )
+    assert (
+        excinfo.value.reason_code
+        == READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2
+    )
+
+
+def test_staleness_authority_is_actually_called_by_both_owners() -> None:
+    """The staleness rule must have ONE definition and TWO call sites.
+
+    Mirrors the common-material guard: `ast.Call` counting, so the helper's
+    own `def` line cannot masquerade as a call site.
+    """
+
+    import ast
+    from pathlib import Path as _Path
+
+    from app.agent_review import contracts_v2
+
+    package_root = _Path(contracts_v2.__file__).parent
+    callers = {}
+    for source in package_root.glob("*.py"):
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        calls = sum(
+            1
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "evaluate_readiness_staleness_material_v2"
+        )
+        if calls:
+            callers[source.name] = calls
+
+    assert callers == {
+        "contracts_v2.py": 1,
+        "review_readiness_emission_v2.py": 1,
+    }, callers
+
+
+def test_staleness_authority_reads_only_caller_owned_material() -> None:
+    """The pre-seal helper must not inspect transformation output.
+
+    The two-epoch model only holds if the pre-seal epoch decides using
+    material the CALLER submitted. If this helper ever consulted the
+    required-check assessment -- a `T`-class value produced inside -- a
+    repository defect could be reported as a caller refusal, which is the
+    exact confusion that falsified model B.
+    """
+
+    import ast
+    import inspect
+
+    from app.agent_review import contracts_v2
+
+    signature = inspect.signature(
+        contracts_v2.evaluate_readiness_staleness_material_v2
+    )
+    assert set(signature.parameters) == {
+        "state",
+        "identity",
+        "evaluated_identity",
+        "reason_codes",
+        "blockers",
+    }
+    assert all(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        for parameter in signature.parameters.values()
+    )
+
+    source = inspect.getsource(contracts_v2.evaluate_readiness_staleness_material_v2)
+    tree = ast.parse(textwrap.dedent(source))
+    referenced = {
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
+    } | {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    forbidden = {
+        "checks",
+        "assessment",
+        "_verify_and_assess_required_checks_v2",
+        "_apply_required_check_assessment_v2",
+        "coverage",
+        "pipeline",
+        "findings",
+    }
+    assert not (referenced & forbidden), sorted(referenced & forbidden)
+
+
+@pytest.mark.parametrize(
+    "corruption, label",
+    [
+        ({"evaluated_run_id": None}, "stale_without_divergence"),
+        ({"reason_codes": ["identity_mismatch"]}, "stale_wrong_reason_set"),
+        ({"reason_codes": []}, "stale_no_reason_at_all"),
+    ],
+)
+def test_published_contract_still_rejects_invalid_stale_on_direct_parse(
+    corruption: dict, label: str
+) -> None:
+    """§11: the contract keeps deciding for documents that never met an emitter.
+
+    Extracting the staleness rule into a shared predicate and calling it
+    pre-seal must not remove it from the artifact contract. A stale document
+    that arrives by direct parse -- read off disk, over a wire, from another
+    tool -- is still rejected, because `validate_state_invariants` calls the
+    very same predicate.
+    """
+
+    import json
+
+    from app.agent_review.contracts_v2 import (
+        PullRequestStateV2,
+        ReadinessReasonV2,
+        ReadinessStateV2,
+        ReviewReadinessV2,
+        compute_run_id,
+    )
+    from tests.agent_review.test_review_readiness_emission_v2 import (
+        _assemble_review_readiness_v2,
+    )
+    import dataclasses
+
+    manifest, synthesis, decision = _staleness_case()
+    evaluated = manifest.identity.model_copy(update={"head_sha": "f" * 40})
+    stale = dataclasses.replace(
+        decision,
+        state=ReadinessStateV2.STALE,
+        reason_codes=(ReadinessReasonV2.HEAD_MISMATCH,),
+        blockers=(),
+        run_id=compute_run_id(evaluated),
+        manifest_hash=evaluated.manifest_hash,
+    )
+    good = _assemble_review_readiness_v2(
+        decision=stale, findings=synthesis.findings,
+        identity=manifest.identity, evaluated_identity=evaluated,
+        pr_state=PullRequestStateV2.OPEN, checks=(),
+    )
+    document = json.loads(good.model_dump_json())
+
+    # Positive control: the untouched document parses. Without it, a
+    # corruption that rejected for an unrelated reason would look like proof.
+    ReviewReadinessV2.model_validate_json(json.dumps(document))
+
+    if corruption.get("evaluated_run_id", "") is None:
+        # Collapse the divergence: identical identities, still claiming STALE.
+        # `evaluated_head_sha` is a separate top-level field with its own
+        # invariant; leaving it divergent made the document reject for THAT
+        # reason instead, so the control was passing on the wrong proposition.
+        document["evaluated_identity"] = document["identity"]
+        document["evaluated_run_id"] = document["run_id"]
+        document["evaluated_head_sha"] = document["identity"]["head_sha"]
+    else:
+        document.update(corruption)
+
+    with pytest.raises(ValidationError) as excinfo:
+        ReviewReadinessV2.model_validate_json(json.dumps(document))
+    assert "staleness/identity material is incoherent" in str(excinfo.value), label
+
+
+def test_stale_claimed_with_no_reason_at_all_is_a_typed_refusal(tmp_path: Path) -> None:
+    """R6: `STALE` with identical identities AND an empty reason set.
+
+    Mutation showed the `not expected_reasons` clause survived R1, because
+    R1 submits a non-empty reason set that already differs from the empty
+    expected set. This input is the one that separates them, and the common
+    material authority does NOT pre-empt it -- an empty reason tuple is legal
+    there.
+    """
+
+    import dataclasses
+
+    from app.agent_review.contracts_v2 import (
+        READINESS_STALENESS_MATERIAL_INVALID_REASON_V2,
+        ReadinessStateV2,
+    )
+    from app.agent_review.review_readiness_emission_v2 import ReadinessEmissionError
+
+    manifest, synthesis, decision = _staleness_case()
+    stale = dataclasses.replace(
+        decision, state=ReadinessStateV2.STALE, reason_codes=(), blockers=()
+    )
+
+    with pytest.raises(ReadinessEmissionError) as excinfo:
+        _produce_readiness(
+            decision=stale, findings=synthesis.findings,
+            identity=manifest.identity, evaluated_identity=manifest.identity,
+            pr_state=PullRequestStateV2.OPEN, tmp_path=tmp_path,
+        )
+    assert excinfo.value.reason_code == READINESS_STALENESS_MATERIAL_INVALID_REASON_V2
+
+
+def test_stale_carrying_an_active_blocker_is_a_typed_refusal(tmp_path: Path) -> None:
+    """R7: a stale artifact cannot also assert an active blocker.
+
+    Staleness means the evaluation no longer describes the submitted head, so
+    it is not positioned to block anything. Mutation showed the
+    `active_blockers` clause was unwitnessed.
+    """
+
+    import dataclasses
+
+    from app.agent_review.contracts_v2 import (
+        READINESS_STALENESS_MATERIAL_INVALID_REASON_V2,
+        ReadinessBlockerV2,
+        ReadinessReasonV2,
+        ReadinessStateV2,
+        compute_run_id,
+    )
+    from app.agent_review.review_readiness_emission_v2 import ReadinessEmissionError
+
+    manifest, synthesis, decision = _staleness_case()
+    evaluated = manifest.identity.model_copy(update={"head_sha": "f" * 40})
+    stale = dataclasses.replace(
+        decision,
+        state=ReadinessStateV2.STALE,
+        reason_codes=(ReadinessReasonV2.HEAD_MISMATCH,),
+        blockers=(
+            ReadinessBlockerV2(
+                blocker_id="blocker-1",
+                reason_code=ReadinessReasonV2.HEAD_MISMATCH,
+                active=True,
+                finding_id=None,
+            ),
+        ),
+        run_id=compute_run_id(evaluated),
+        manifest_hash=evaluated.manifest_hash,
+    )
+
+    with pytest.raises(ReadinessEmissionError) as excinfo:
+        _produce_readiness(
+            decision=stale, findings=synthesis.findings,
+            identity=manifest.identity, evaluated_identity=evaluated,
+            pr_state=PullRequestStateV2.OPEN, tmp_path=tmp_path,
+        )
+    assert excinfo.value.reason_code == READINESS_STALENESS_MATERIAL_INVALID_REASON_V2

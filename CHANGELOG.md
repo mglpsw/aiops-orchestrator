@@ -466,6 +466,21 @@
   tampered payload. Two readiness tests that deliberately asserted the raw
   `ValidationError` were evaluated and updated; their fail-closed proposition
   is unchanged. No published schema changed.
+  Promotion to Ready was run as an independent last gate and found a real P2:
+  staleness/identity coherence is caller-owned material but was established
+  only inside the artifact contract, so a caller submitting a decision that
+  claimed `stale` while both identities agreed received a raw
+  `ValidationError` whose `input_value` carried the whole readiness material.
+  A single shared authority, `evaluate_readiness_staleness_material_v2`, now
+  decides that question for both the model validator and
+  `produce_review_readiness_v2`, which calls it pre-seal -- after `#145`'s
+  strictly more specific provenance guard and before the `stale`
+  short-circuit -- and refuses with `readiness_staleness_material_invalid`.
+  The review's second half, initially reported as non-reproducing, in fact
+  reproduces once the witness binds decision provenance to the evaluated
+  identity rather than the expected one; the earlier report was wrong.
+  Documents parsed directly still get the same verdict from the contract, and
+  post-seal `ValidationError` still escapes raw.
 
 ### Added
 

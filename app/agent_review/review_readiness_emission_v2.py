@@ -105,6 +105,7 @@ from app.agent_review.contracts_v2 import (
     READY_REQUIRES_OPEN_PR_REASON_V2,
     ready_state_allows_pull_request_v2,
     evaluate_readiness_common_material_v2,
+    evaluate_readiness_staleness_material_v2,
     RunOriginV2,
     compute_run_id,
 )
@@ -209,6 +210,26 @@ def produce_review_readiness_v2(
         blockers=decision.blockers,
         findings=findings,
         evaluated_head_sha=evaluated_identity.head_sha,
+    )
+    if unmet is not None:
+        raise ReadinessEmissionError(unmet)
+
+    # Ready-triggered P2 (comment 3875520739). Staleness/identity coherence is
+    # caller-owned in full -- the `STALE` path below short-circuits before the
+    # required-check assessment runs at all, and neither identity is ever
+    # transformed. Establishing it here keeps the raw contract error, whose
+    # `input_value` carries the readiness material, from reaching a library
+    # caller.
+    #
+    # Deliberately AFTER `#145`'s provenance check, whose proposition is more
+    # specific, and BEFORE the STALE short-circuit. Raw typed material is
+    # passed to the one contract-owned predicate; no rule is restated here.
+    unmet = evaluate_readiness_staleness_material_v2(
+        state=decision.state,
+        identity=identity,
+        evaluated_identity=evaluated_identity,
+        reason_codes=decision.reason_codes,
+        blockers=decision.blockers,
     )
     if unmet is not None:
         raise ReadinessEmissionError(unmet)
