@@ -61,6 +61,7 @@ PAYLOAD_ARTIFACT_EXCEEDS_MAX_BYTES_REASON_V2 = "payload_artifact_exceeds_max_byt
 PAYLOAD_ARTIFACT_UNREADABLE_REASON_V2 = "payload_artifact_unreadable"
 PAYLOAD_REQUIRED_CONTRACT_MISSING_REASON_V2 = "payload_required_contract_missing"
 PAYLOAD_CONTRACT_SHA256_MISMATCH_REASON_V2 = "payload_contract_sha256_mismatch"
+PAYLOAD_CONTRACT_UNREADABLE_REASON_V2 = "payload_contract_unreadable"
 
 OPTIONAL_ARTIFACT_MISSING_LIMITATION_PREFIX_V2 = "optional_artifact_missing"
 
@@ -101,7 +102,15 @@ def build_payload_artifact_references_v2(
             limitations.append(f"{OPTIONAL_ARTIFACT_MISSING_LIMITATION_PREFIX_V2}:{artifact.artifact_id}")
             continue
 
-        size = path.stat().st_size
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            # `is_file()` above swallows `OSError`; `stat()` does not. On a
+            # TOCTOU between them a raw `FileNotFoundError`/`PermissionError`
+            # escaped this authority -- and `build_chunk_payloads_from_profile_v2`
+            # deliberately declines to catch `OSError`, so it reached the
+            # caller despite that wrapper promising only `PayloadBuilderError`.
+            raise PayloadReferenceError(PAYLOAD_ARTIFACT_UNREADABLE_REASON_V2) from exc
         if size > artifact.max_bytes:
             raise PayloadReferenceError(PAYLOAD_ARTIFACT_EXCEEDS_MAX_BYTES_REASON_V2)
 
@@ -150,7 +159,16 @@ def build_payload_contract_references_v2(
                 raise PayloadReferenceError(PAYLOAD_REQUIRED_CONTRACT_MISSING_REASON_V2)
             continue
 
-        raw_bytes = path.read_bytes()
+        try:
+            raw_bytes = path.read_bytes()
+        except OSError as exc:
+            # The artifact branch above has always guarded its read; this one
+            # did not, so an unreadable-but-present contract escaped as a raw
+            # `PermissionError` carrying the checkout path. Same owner, same
+            # discipline, and a reason as precise as the artifact one.
+            raise PayloadReferenceError(
+                PAYLOAD_CONTRACT_UNREADABLE_REASON_V2
+            ) from exc
         sha256 = hashlib.sha256(raw_bytes).hexdigest()
         if sha256 != contract.sha256:
             raise PayloadReferenceError(PAYLOAD_CONTRACT_SHA256_MISMATCH_REASON_V2)

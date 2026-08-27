@@ -13,7 +13,13 @@ do contrato" -- nothing in this module re-checks anything
 ``ReviewReadinessV2.validate_state_invariants`` (``contracts_v2.py``)
 already enforces. It only assembles the constructor call; the contract's
 own validator is the sole authority on whether the result is well-formed,
-and raises ``pydantic.ValidationError`` fail-closed if it is not.
+and fails closed if it is not.
+
+Caller-visible ``ready`` preconditions are evaluated BEFORE construction and
+refused as ``ReadinessEmissionError`` with a reason that names the unmet rule.
+The validator remains the authority on whether the artifact is well-formed,
+and its rules are consulted, never restated. A ``ValidationError`` from
+construction after that seal is a derivation defect and escapes raw.
 
 ## The single production constructor path (`#201-C`, R2)
 
@@ -96,6 +102,10 @@ from app.agent_review.contracts_v2 import (
     RequiredCheckResultV2,
     ReviewReadinessV2,
     RunIdentityV2,
+    READY_REQUIRES_OPEN_PR_REASON_V2,
+    ready_state_allows_pull_request_v2,
+    evaluate_readiness_common_material_v2,
+    evaluate_readiness_staleness_material_v2,
     RunOriginV2,
     compute_run_id,
 )
@@ -116,6 +126,20 @@ class ReadinessEmissionError(ValueError):
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
+
+
+
+def _decision_provenance_matches_v2(*, decision, evaluated_identity) -> bool:
+    """`#145`: is this decision the one computed for THIS run?
+
+    Defined once and called from both the public entry and the assembler, so
+    the two cannot disagree about what a replay is.
+    """
+
+    return (
+        decision.run_id == compute_run_id(evaluated_identity)
+        and decision.manifest_hash == evaluated_identity.manifest_hash
+    )
 
 
 def produce_review_readiness_v2(
@@ -162,6 +186,59 @@ def produce_review_readiness_v2(
     to verify it against.
     """
 
+    # `#145`'s decision-provenance check runs FIRST: a decision replayed from a
+    # different run is a more specific fault than a generic material violation,
+    # and letting the material check preempt it silently downgraded that
+    # diagnosis.
+    if not _decision_provenance_matches_v2(
+        decision=decision, evaluated_identity=evaluated_identity
+    ):
+        raise ReadinessEmissionError(
+            READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2
+        )
+
+    # ---------------- EPOCH 1: caller material ----------------
+    #
+    # `decision`, `findings`, `checks`, `identity`, `evaluated_identity` and
+    # `pr_state` were all SUBMITTED to this function; it derived none of them.
+    # A `--decision` JSON and a `compute_readiness_decision_v2` output arrive
+    # as the same argument and are equally caller-material AT THIS BOUNDARY --
+    # which is why no sealed carrier is needed to tell them apart. Provenance
+    # beyond this point belongs to whoever produced the decision.
+    unmet = evaluate_readiness_common_material_v2(
+        reason_codes=decision.reason_codes,
+        blockers=decision.blockers,
+        findings=findings,
+        evaluated_head_sha=evaluated_identity.head_sha,
+    )
+    if unmet is not None:
+        raise ReadinessEmissionError(unmet)
+
+    # Ready-triggered P2 (comment 3875520739). Staleness/identity coherence is
+    # caller-owned in full -- the `STALE` path below short-circuits before the
+    # required-check assessment runs at all, and neither identity is ever
+    # transformed. Establishing it here keeps the raw contract error, whose
+    # `input_value` carries the readiness material, from reaching a library
+    # caller.
+    #
+    # Deliberately AFTER `#145`'s provenance check, whose proposition is more
+    # specific, and BEFORE the STALE short-circuit. Raw typed material is
+    # passed to the one contract-owned predicate; no rule is restated here.
+    unmet = evaluate_readiness_staleness_material_v2(
+        state=decision.state,
+        identity=identity,
+        evaluated_identity=evaluated_identity,
+        reason_codes=decision.reason_codes,
+        blockers=decision.blockers,
+    )
+    if unmet is not None:
+        raise ReadinessEmissionError(unmet)
+
+    # ------------------------- SEAL -------------------------
+    #
+    # Below, the required-check assessment and its adjusted decision are
+    # TRANSFORMATION output, and run/head identity fields are DERIVED. A
+    # `ValidationError` from either is a defect in this repository and escapes.
     if decision.state is ReadinessStateV2.STALE:
         return _assemble_review_readiness_v2(
             decision=decision,
@@ -220,10 +297,16 @@ def _assemble_review_readiness_v2(
     reflects whatever the caller (and, transitively, C1's
     ``stale_reason_codes`` parameter) already decided.
 
-    Raises ``pydantic.ValidationError`` -- never wrapped, never
-    re-implemented -- if the assembled combination does not satisfy
-    ``ReviewReadinessV2.validate_state_invariants``. That validator is the
-    authority; this function is not.
+    Raises ``ReadinessEmissionError(ready_requires_open_pr)`` when the decision
+    is still ``READY`` here and the pull request is not open -- ``pr_state`` is
+    caller material and is never transformed, so that conjunction is a caller
+    fault. The other four ``ready`` preconditions are NOT checked here: the
+    assessment legitimately downgrades a ``READY`` submission, and refusing it
+    would destroy a valid artifact. They remain contract invariants over the
+    final material.
+
+    A ``ValidationError`` from construction means derivation produced an
+    invalid artifact from validated material -- a defect, and it escapes raw.
 
     Before that, raises ``ReadinessEmissionError`` if ``decision``'s own
     ``run_id``/``manifest_hash`` provenance does not match
@@ -237,16 +320,50 @@ def _assemble_review_readiness_v2(
     a real gap a Codex review of #145 found.
     """
 
-    if decision.run_id != compute_run_id(evaluated_identity) or decision.manifest_hash != evaluated_identity.manifest_hash:
-        raise ReadinessEmissionError(READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2)
+    # `#145`: the assembler keeps its own provenance guard as well as the
+    # public entry's. They call the SAME predicate, so they cannot disagree,
+    # and a direct caller of this private assembler is still protected.
+    if not _decision_provenance_matches_v2(
+        decision=decision, evaluated_identity=evaluated_identity
+    ):
+        raise ReadinessEmissionError(
+            READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2
+        )
 
+
+    # `pr_state` is CALLER material and is never transformed, so a decision
+    # that is STILL `READY` here -- after the assessment has had its say --
+    # combined with a non-open pull request is a caller fault, not a defect.
+    # It is checked on the FINAL decision deliberately: checking the SUBMITTED
+    # one would hard-refuse a run whose `READY` the assessment legitimately
+    # downgrades to `manual_required`, destroying a valid artifact. That is the
+    # same reasoning that keeps the other four preconditions out of the
+    # pre-seal epoch, and an earlier revision applied it inconsistently.
+    if not ready_state_allows_pull_request_v2(state=decision.state, pr_state=pr_state):
+        raise ReadinessEmissionError(READY_REQUIRES_OPEN_PR_REASON_V2)
+
+    # Derivation happens HERE, before the seal, so a defect in it cannot be
+    # mistaken for a caller problem: `compute_run_id` is this module's only
+    # computation, and a failure in it escapes raw.
+    run_id = compute_run_id(identity)
+    evaluated_run_id = compute_run_id(evaluated_identity)
+
+    # This assembler is entirely POST-SEAL. On the main path its `decision`
+    # and `checks` are TRANSFORMATION output -- `_apply_required_check_
+    # assessment_v2`'s adjusted decision and the assessment's own verified
+    # checks -- not caller material. Converting a `ValidationError` here would
+    # therefore report a transformation defect as an operator's fault, which
+    # is the laundering that falsified the previous two designs.
+    #
+    # Caller material is validated in `produce_review_readiness_v2`, before
+    # the assessment runs. Nothing is converted below.
     return ReviewReadinessV2(
         schema_id="agent-review.review-readiness.v2",
         schema_version=2,
         source=REVIEW_READINESS_SOURCE_V2,
-        run_id=compute_run_id(identity),
+        run_id=run_id,
         identity=identity,
-        evaluated_run_id=compute_run_id(evaluated_identity),
+        evaluated_run_id=evaluated_run_id,
         evaluated_identity=evaluated_identity,
         head_sha=identity.head_sha,
         evaluated_head_sha=evaluated_identity.head_sha,

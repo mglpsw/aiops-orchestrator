@@ -514,23 +514,22 @@ def test_cli_fails_closed_on_a_readiness_invariant_violation(tmp_path: Path) -> 
     """ready requires an open PR -- a merged PR with a ready decision must
     never be silently accepted.
 
-    `ReviewReadinessV2`'s own validator, which is what actually enforces
-    this, is covered directly and unaffected by the round-7 correction: see
-    `test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_
-    validator` in `test_review_readiness_emission_v2.py` -- a file `#201-C0`
-    is forbidden from touching. What THIS test can still prove, through the
-    live CLI, is that a merged PR is refused no matter which stage catches it
-    first: `produce_review_readiness_v2` runs the `#201-C0` required-check
-    verification before `_assemble_review_readiness_v2` (where the readiness
-    invariant itself would fire) is ever reached, so that invariant's own
-    check is not reached via this path today -- but the submission is
-    refused regardless, which is the property that matters end to end."""
+    The property that matters end to end is that a merged PR is refused no
+    matter which stage catches it first, and that is unchanged by `#200-D`'s
+    readiness partition.
+
+    An intermediate revision of that partition checked `ready_requires_open_pr`
+    against the SUBMITTED decision, which moved this refusal earlier -- and
+    would also have hard-refused a run whose `READY` the assessment
+    legitimately downgrades to `manual_required`. The rule now runs on the
+    FINAL decision instead, so the `#201-C0` verification is reached first
+    again, exactly as before."""
 
     paths = _write_fixtures(tmp_path)
     output_path = tmp_path / "out" / "readiness.json"
 
     result = _run(_base_args(paths, output_path, pr_state="merged"))
-
+    assert result.returncode != 0
     _assert_reached_the_independent_judge_gate(result)
     assert not output_path.exists()
 
@@ -607,7 +606,12 @@ def test_cli_rejects_a_decision_replayed_from_a_different_run(tmp_path: Path) ->
 
     result = _run(_base_args(paths, output_path))
 
-    _assert_reached_the_independent_judge_gate(result)
+    # `#200-D`: the `#145` provenance check now runs at the public entry,
+    # BEFORE the material epoch and therefore before the `#201-C0`
+    # verification. The replay is still refused -- the property this test
+    # protects -- and with the specific reason `#145` introduced rather than
+    # whichever later gate happened to trip first.
+    assert "readiness_emission_decision_provenance_mismatch" in result.stderr, result.stderr
     assert not output_path.exists()
 
 
@@ -626,7 +630,12 @@ def test_cli_rejects_a_decision_with_matching_run_id_but_divergent_manifest_hash
 
     result = _run(_base_args(paths, output_path))
 
-    _assert_reached_the_independent_judge_gate(result)
+    # `#200-D`: the `#145` provenance check now runs at the public entry,
+    # BEFORE the material epoch and therefore before the `#201-C0`
+    # verification. The replay is still refused -- the property this test
+    # protects -- and with the specific reason `#145` introduced rather than
+    # whichever later gate happened to trip first.
+    assert "readiness_emission_decision_provenance_mismatch" in result.stderr, result.stderr
     assert not output_path.exists()
 
 

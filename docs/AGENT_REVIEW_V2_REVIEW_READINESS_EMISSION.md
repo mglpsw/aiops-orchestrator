@@ -22,12 +22,26 @@ document) therefore does exactly one thing: assemble the
 `ReviewReadinessV2` constructor call from a C1 `ReadinessDecisionV2` plus
 identity/`pr_state`/`checks`/`findings`, and let
 `ReviewReadinessV2.validate_state_invariants` (`contracts_v2.py`) decide —
-raising `pydantic.ValidationError`, unwrapped, if the combination does not
-satisfy it. Nothing in this module re-checks what that validator already
-owns (e.g. "ready requires an open PR and every check green" — verified
-directly: feeding a `MERGED` `pr_state` alongside a `ready` decision, or an
-empty `checks` list, both fail closed via the contract's own validator, not
-a copy of its logic).
+refusing if the combination does not satisfy it. That refusal surfaces as
+`ReadinessEmissionError` with a reason that NAMES the unmet rule
+(`ready_requires_open_pr`, `ready_requires_green_checks`, ...), evaluated
+before the artifact is constructed by the single authority in `contracts_v2`
+that `validate_state_invariants` also consults (`#200-D` two-epoch model). The
+validator remains the sole authority on whether the artifact is well-formed,
+and its rules are never restated. A `ValidationError` from construction after
+that point is a derivation defect and escapes raw.
+
+Nothing here re-implements what the validator owns. "Ready requires an open PR
+and every check green" is defined once, in
+`contracts_v2.evaluate_ready_preconditions_v2`, and both this module's
+pre-seal check and `validate_state_invariants` call it. Verified directly:
+feeding a `MERGED` `pr_state` alongside a decision that is still `ready` after
+the required-check assessment fails closed as `ready_requires_open_pr`, which
+names the rule. An empty `checks` list does NOT: the assessment legitimately
+downgrades such a run to `manual_required`, and refusing it would destroy a
+valid artifact — so `ready_requires_green_checks` is enforced by the contract
+against the final material, where a violation means the transformation
+produced an incoherent state.
 
 ## `pr_state`/`checks` are caller-supplied, not acquired here
 
@@ -162,3 +176,25 @@ table), `test_review_readiness_emission_v2.py` (`_assemble_review_
 readiness_v2` unaffected pure-assembly tests, plus new
 `produce_review_readiness_v2` Class A tests), `test_required_check_
 readiness_arch_v2.py` (AST proof of the single path).
+
+## `#200-D` update — the pre-seal epoch also owns staleness
+
+`produce_review_readiness_v2` validates caller material before the seal. Two
+shared authorities in `contracts_v2.py` decide that material, and both are
+called by the artifact contract's own model validator as well, so a document
+that never meets this emitter gets the identical verdict:
+
+| Authority | Question | Refusal code |
+|---|---|---|
+| `evaluate_readiness_common_material_v2` | reason/blocker/finding material well-formed? | `readiness_submitted_material_invalid` |
+| `evaluate_readiness_staleness_material_v2` | does the claimed state agree with the two identities? | `readiness_staleness_material_invalid` |
+
+Order inside the pre-seal epoch is deliberate: `#145`'s decision-provenance
+guard runs first because a decision replayed from a different run is a more
+specific fault, then common material, then staleness. Staleness is checked
+before the `stale` short-circuit, because that path returns without ever
+running the required-check assessment.
+
+Both identities are caller-submitted and never transformed here, so no sealed
+carrier is needed to tell derived material apart from submitted material. Past
+the seal, a `ValidationError` is a defect in this repository and escapes raw.

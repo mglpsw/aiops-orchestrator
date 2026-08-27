@@ -106,6 +106,11 @@ PAYLOAD_SET_PAYLOAD_MANIFEST_HASH_INCOHERENT_REASON_V2 = "payload_set_payload_ma
 _PAYLOAD_SET_SOURCE_V2 = "aiops-review-build-payload-set-v2"
 
 
+# A caller-visible precondition of `PayloadSetV2`, named here instead of
+# being discovered as a pydantic failure after derivation.
+PAYLOAD_SET_EMPTY_REASON_V2 = "payload_set_empty"
+
+
 def _payloads_by_chunk_id(payloads: Sequence[ChunkPayloadV2]) -> dict[str, ChunkPayloadV2]:
     by_chunk_id: dict[str, ChunkPayloadV2] = {}
     for payload in payloads:
@@ -158,7 +163,19 @@ def bind_payload_set_to_payloads_v2(
         payload = payloads_by_chunk_id[entry.chunk_id]
         try:
             verify_payload_sha256_v2(payload)
-        except Exception as exc:
+        except ValueError as exc:
+            # `#200-D` predecessor, the OTHER direction: this was
+            # `except Exception`, so a `TypeError`/`AttributeError` from a
+            # defect INSIDE the verifier would have been reported to an
+            # operator as a tampered payload. Those now crash.
+            #
+            # Stated precisely, because the pair `(ValidationError,
+            # ValueError)` read like a narrowing it was not: pydantic's
+            # `ValidationError` and `PydanticSerializationError` both subclass
+            # `ValueError`, so this IS `except ValueError`. It therefore still
+            # cannot distinguish a caller's tampered payload from a defect
+            # that happens to raise `ValueError` -- see the "not converging"
+            # section of the `#200-D` checkpoint.
             raise PayloadSetBindingError(PAYLOAD_SET_PAYLOAD_TAMPERED_REASON_V2) from exc
         if payload.payload_sha256 != entry.payload_sha256:
             raise PayloadSetBindingError(PAYLOAD_SET_ENTRY_PAYLOAD_HASH_MISMATCH_REASON_V2)
@@ -171,7 +188,9 @@ def bind_payload_set_to_payloads_v2(
 
     try:
         verify_payload_set_sha256_v2(payload_set)
-    except Exception as exc:
+    except ValueError as exc:
+        # same reason, and the same unresolved limitation, as the per-payload
+        # verifier above
         raise PayloadSetBindingError(PAYLOAD_SET_HASH_TAMPERED_REASON_V2) from exc
 
 
@@ -189,8 +208,42 @@ def emit_payload_set_v2(manifest: ManifestV2, payloads: Sequence[ChunkPayloadV2]
     Runs the full ``bind_payload_set_to_payloads_v2`` cross-validation
     before returning: a producer that (through a bug) built a tampered or
     incoherent payload must not silently mint a set that certifies it.
+
+    Public boundary (`#200-D` predecessor): an empty submission and every
+    cross-object disagreement are ``PayloadSetBindingError``.
+
+    One narrowing, stated rather than implied: entries are CONSTRUCTED before
+    ``bind_payload_set_to_payloads_v2`` runs, so a caller-tampered
+    ``payload_sha256`` that violates the entry contract fails at construction
+    as a ``ValidationError``. On the operational path the payload owner
+    validates digests before a set is ever emitted, so this is reachable only
+    by calling here with hand-built payloads.
     """
 
+    # ---------------- EPOCH 1: caller material ----------------
+    #
+    # `PayloadSetV2` requires at least one entry. That is a CALLER-visible
+    # precondition, so it is established here by name rather than discovered
+    # later as a pydantic failure indistinguishable from a derivation bug.
+    if not payloads:
+        raise PayloadSetBindingError(PAYLOAD_SET_EMPTY_REASON_V2)
+
+    # ------------------------- SEAL -------------------------
+    #
+    # Ordering note, corrected after review: `_emit_payload_set_v2` CONSTRUCTS
+    # `PayloadSetEntryV2`/`PayloadSetV2` and only then runs
+    # `bind_payload_set_to_payloads_v2`. So a caller-tampered `payload_sha256`
+    # that violates the entry contract fails at construction, as a
+    # `ValidationError`, before the binder can name it. That is a known
+    # narrowing of this boundary rather than a claim it does not exist; the
+    # payload owner validates digests before a set is ever emitted on the
+    # operational path.
+    return _emit_payload_set_v2(manifest, payloads)
+
+
+def _emit_payload_set_v2(
+    manifest: ManifestV2, payloads: Sequence[ChunkPayloadV2]
+) -> PayloadSetV2:
     payloads_by_chunk_id = _payloads_by_chunk_id(payloads)
     entries = [
         PayloadSetEntryV2(chunk_id=chunk_id, payload_sha256=payload.payload_sha256)

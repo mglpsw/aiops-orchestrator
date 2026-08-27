@@ -74,7 +74,18 @@ import fnmatch
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
-from app.agent_review.contracts_v2 import RunIdentityV2, TargetProfileV2, compute_run_id
+from pydantic import ValidationError
+
+from app.agent_review.contracts_v2 import (
+    ContractV2Model,
+    GitSha,
+    PositiveInt,
+    Repository,
+    RunIdentityV2,
+    Sha256,
+    TargetProfileV2,
+    compute_run_id,
+)
 from app.agent_review.diff_acquisition_v2 import ParsedFileDiffV2, validate_diff_completeness_v2
 from app.agent_review.manifest_v2 import (
     ManifestChunkV2,
@@ -91,6 +102,18 @@ from app.agent_review.semantic_grouping_policy_v2 import (
     classify_semantic_group_v2,
     compute_effective_policy_hash_v2,
 )
+
+# `#200-D` predecessor: this authority CONSTRUCTS `RunIdentityV2`/`ManifestV2`
+# and drives the planner, so contract violations and caller-supplied budget
+# violations surfaced as raw pydantic/builtin errors. A consumer cannot name
+# those; this owner can.
+# Precise, and produced by exactly ONE pre-seal validator: the caller's own
+# identity material is not contract-valid. This replaces an earlier
+# `run_assembly_contract_invalid`, which existed only to launder any post-seal
+# `ValidationError` and whose semantics review falsified. The branch is
+# unmerged, so there is no compatibility reason to keep the ambiguous name.
+RUN_ASSEMBLY_IDENTITY_INVALID_REASON_V2 = "run_assembly_identity_invalid"
+RUN_ASSEMBLY_BUDGET_INVALID_REASON_V2 = "run_assembly_budget_invalid"
 
 RUN_ASSEMBLY_UNKNOWN_MUST_REVIEW_ARTIFACT_REASON_V2 = "run_assembly_unknown_must_review_artifact"
 RUN_ASSEMBLY_REQUIRED_PATH_MISSING_REASON_V2 = "run_assembly_required_path_missing"
@@ -123,6 +146,32 @@ class AssemblyBlockedReasonV2:
     reason_code: str
     affected_paths: tuple[str, ...]
     detail: str
+
+
+
+
+class _ValidatedAssemblyIdentityInputV2(ContractV2Model):
+    """The caller-controlled half of `RunIdentityV2`, validated BEFORE any
+    derivation runs (`#200-D` two-epoch model A*).
+
+    `RunIdentityV2` is constructed at the END of assembly, after the planner
+    and every manifest object, because three of its ten fields are derived
+    here. That ordering is why invalid CALLER material used to surface as a
+    late `ValidationError` indistinguishable from a derivation bug -- and why
+    converting at the outer boundary could not tell the two apart.
+
+    The field types are IMPORTED from the contract, not restated: there is one
+    definition of what a `GitSha` or a `Sha256` is, and this token reuses it.
+    Private, non-persisted, no schema, never on the wire.
+    """
+
+    repo: Repository
+    pr_number: PositiveInt
+    base_sha: GitSha
+    head_sha: GitSha
+    tested_merge_sha: GitSha
+    toolrepo_sha: GitSha
+    evidence_hash: Sha256
 
 
 @dataclass(frozen=True)
@@ -166,6 +215,90 @@ def _is_must_review_path(path: str, *, explicit_paths: frozenset[str], patterns:
 
 
 def assemble_manifest_from_diff_v2(
+    file_diffs: Sequence[ParsedFileDiffV2],
+    *,
+    profile: TargetProfileV2,
+    grouping_policy: SemanticGroupingPolicyV2,
+    repo: str,
+    pr_number: int,
+    base_sha: str,
+    head_sha: str,
+    tested_merge_sha: str,
+    toolrepo_sha: str,
+    evidence_hash: str,
+    max_lines_per_chunk: int,
+    expected_paths: frozenset[str] | None = None,
+) -> ManifestAssemblyOutcomeV2:
+    """Public boundary: every EXPECTED assembly failure is a
+    ``RunAssemblyError`` carrying a stable reason code.
+
+    `#200-D` predecessor (model B). This authority builds `RunIdentityV2` and
+    `ManifestV2` and drives the planner, so before closure a caller had to
+    catch pydantic's ``ValidationError`` and a bare ``ValueError`` to find out
+    that assembly refused -- knowledge of HOW this module is implemented, not
+    THAT it refused.
+
+    A caller-supplied budget that cannot describe a chunk is validated here,
+    where it is this authority's own parameter. The planner's OTHER
+    ``ValueError``s (duplicate fragment_id, a hunk with no real lines) report
+    inconsistent acquisition output, not operator input, so they are
+    deliberately NOT converted: they are defects and must stay raw.
+    """
+
+    # Only `max_lines_per_chunk` needs this: it is a bare `int` parameter of
+    # this function. `profile.budgets.max_chunks` is a `PositiveInt` on the
+    # profile contract, so an equivalent guard for it would be unreachable --
+    # and unreachable code that looks like a guard is worse than none.
+    # ---------------- EPOCH 1: caller material ----------------
+    #
+    # `type(...) is not int`, deliberately: `isinstance` accepts `True` (bool
+    # subclasses int) and would assemble with a 1-line budget. A wrong TYPE is
+    # a caller bug and crashes; a well-typed budget that cannot describe a
+    # chunk is the operational refusal.
+    if type(max_lines_per_chunk) is not int:
+        raise TypeError("max_lines_per_chunk must be an int")
+    if max_lines_per_chunk < 1:
+        raise RunAssemblyError(RUN_ASSEMBLY_BUDGET_INVALID_REASON_V2)
+
+    try:
+        _ValidatedAssemblyIdentityInputV2(
+            repo=repo,
+            pr_number=pr_number,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            tested_merge_sha=tested_merge_sha,
+            toolrepo_sha=toolrepo_sha,
+            evidence_hash=evidence_hash,
+        )
+    except ValidationError as exc:
+        # The ONLY `ValidationError` this authority converts, and it wraps
+        # exactly the caller's own identity material -- nothing derived.
+        raise RunAssemblyError(RUN_ASSEMBLY_IDENTITY_INVALID_REASON_V2) from exc
+
+    # ------------------------- SEAL -------------------------
+    #
+    # Past this point every input is validated. A `ValidationError` from the
+    # planner or from `ManifestV2`/`RunIdentityV2` construction means code
+    # that already accepted valid inputs derived an invalid object: a defect
+    # in this repository, which must escape rather than be reported to an
+    # operator as their review outcome.
+    return _assemble_manifest_from_diff_v2(
+        file_diffs,
+        profile=profile,
+        grouping_policy=grouping_policy,
+        repo=repo,
+        pr_number=pr_number,
+        base_sha=base_sha,
+        head_sha=head_sha,
+        tested_merge_sha=tested_merge_sha,
+        toolrepo_sha=toolrepo_sha,
+        evidence_hash=evidence_hash,
+        max_lines_per_chunk=max_lines_per_chunk,
+        expected_paths=expected_paths,
+    )
+
+
+def _assemble_manifest_from_diff_v2(
     file_diffs: Sequence[ParsedFileDiffV2],
     *,
     profile: TargetProfileV2,

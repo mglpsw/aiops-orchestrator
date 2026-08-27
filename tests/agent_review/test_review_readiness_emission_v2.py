@@ -7,6 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.agent_review.contracts_v2 import (
+    READY_REQUIRES_GREEN_CHECKS_REASON_V2,
+    READY_REQUIRES_OPEN_PR_REASON_V2,
     FindingDispositionV2,
     FindingLifecycleRecordV2,
     FindingSeverityV2,
@@ -288,14 +290,26 @@ def test_emits_a_real_blocked_code_artifact_with_findings() -> None:
 
 def test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_validator() -> None:
     """Ready requires an open PR -- ReviewReadinessV2.validate_state_invariants
-    is the authority, never re-checked here."""
+    is the authority, never re-checked here.
+
+    `#200-D` two-epoch model: the refusal is unchanged, its TYPE and PRECISION
+    are not. `ready` preconditions are caller-visible, so they are established
+    before the artifact is built, and the reason NAMES the unmet rule --
+    recovering the discrimination a single `..._contract_invalid` code had
+    destroyed. The rules live once in `contracts_v2` and are consulted by both
+    this path and the artifact's own validator.
+    """
 
     manifest, report = _fully_reviewed_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
     decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())
     assert decision.state is ReadinessStateV2.READY
 
-    with pytest.raises(ValidationError):
+    # `_assemble_review_readiness_v2` is POST-seal: on the operational path
+    # its inputs are the assessment's adjusted decision and verified checks,
+    # not caller material. The caller-visible refusal therefore belongs at the
+    # public boundary, which is where this now drives it.
+    with pytest.raises(ReadinessEmissionError) as excinfo:
         _assemble_review_readiness_v2(
             decision=decision,
             findings=synthesis.findings,
@@ -304,9 +318,21 @@ def test_ready_state_with_a_merged_pr_fails_closed_via_the_contracts_own_validat
             pr_state=PullRequestStateV2.MERGED,
             checks=[_green_check(manifest.identity.head_sha)],
         )
+    assert excinfo.value.reason_code == READY_REQUIRES_OPEN_PR_REASON_V2
 
 
 def test_ready_state_without_green_checks_fails_closed() -> None:
+    """`ready` without green checks is NOT decidable from submitted material.
+
+    `#200-D` readiness partition: the emitter replaces submitted `checks` with
+    the assessment's own, and a submitted `READY` legitimately degrades to
+    `manual_required` when required-check authority is not established.
+    Refusing it pre-seal would break that documented behaviour, so the rule is
+    enforced by `validate_state_invariants` against the FINAL material -- where
+    a violation means the transformation produced an incoherent state, i.e. a
+    defect, correctly raw.
+    """
+
     manifest, report = _fully_reviewed_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
     decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=_policies())

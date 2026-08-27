@@ -424,6 +424,64 @@
     `docs/AGENTESCALA_TOOL_REPO_INTEGRATION.md` for the full reason-code
     reference AgentEscala should expect.
 
+### Changed
+
+- **Two-epoch authority error model (`#200-D` predecessor)**: caller/external
+  material is validated by its owner, then SEALED; after the seal a
+  `ValidationError` is a repository defect and escapes rather than being
+  reported to an operator as their review outcome. An earlier attempt
+  converted `ValidationError` at each authority's outer boundary, which closed
+  expected failures but could not distinguish them from derivation bugs; that
+  head is preserved in the branch history as the falsified subject. Rules are
+  not restated to make a seal possible: the assembly token imports the
+  contract's own `GitSha`/`Sha256` types, the content check validates against
+  `ReviewableContentTextV2` itself, and the `ready` preconditions live once in
+  `contracts_v2` where both the artifact's validator and the emission owner
+  consult them. Operator discrimination is restored for the one `ready`
+  precondition decidable outside the contract — `ready_requires_open_pr`,
+  since `pr_state` is caller material and never transformed. The other four
+  depend on values the required-check assessment replaces or adjusts, so they
+  remain contract invariants and reach a CLI operator as a single
+  `readiness_invariant_violation`. That is a narrowing of the earlier claim,
+  not a restoration of it. Reason codes
+  whose only purpose was laundering are deleted.
+
+- **Closed authority error surfaces (`#200-D` predecessor)**: six independent
+  reviews of PR #271 showed the operational composer could not enumerate the
+  exception surfaces of the authorities beneath it, because those surfaces were
+  open -- a sibling error family here, a pydantic `ValidationError` there, an
+  unguarded file read elsewhere. Each is now closed at its OWNER, so a caller
+  catches exactly one documented family per authority:
+  `DiffAcquisitionError`, `RunAssemblyError`, `PayloadBuilderError`,
+  `PayloadSetBindingError`, `ExtractionBlockedError`, `ReadinessEmissionError`.
+  Diff acquisition additionally distinguishes "no such checkout" from "no `git`
+  on PATH", which previously arrived as the same `FileNotFoundError` and so
+  could not be told apart by any consumer. Originating reasons are preserved
+  through conversion rather than flattened. Closure is bidirectional:
+  programmer defects (`TypeError`, `AttributeError`, `AssertionError`,
+  `KeyError`, `IndexError`) are proved to still escape raw, and a structural
+  test fails if any of these modules ever reaches for `except Exception` --
+  which immediately caught two pre-existing broad catches in payload-set
+  emission that would have reported a defect inside a digest verifier as a
+  tampered payload. Two readiness tests that deliberately asserted the raw
+  `ValidationError` were evaluated and updated; their fail-closed proposition
+  is unchanged. No published schema changed.
+  Promotion to Ready was run as an independent last gate and found a real P2:
+  staleness/identity coherence is caller-owned material but was established
+  only inside the artifact contract, so a caller submitting a decision that
+  claimed `stale` while both identities agreed received a raw
+  `ValidationError` whose `input_value` carried the whole readiness material.
+  A single shared authority, `evaluate_readiness_staleness_material_v2`, now
+  decides that question for both the model validator and
+  `produce_review_readiness_v2`, which calls it pre-seal -- after `#145`'s
+  strictly more specific provenance guard and before the `stale`
+  short-circuit -- and refuses with `readiness_staleness_material_invalid`.
+  The review's second half, initially reported as non-reproducing, in fact
+  reproduces once the witness binds decision provenance to the evaluated
+  identity rather than the expected one; the earlier report was wrong.
+  Documents parsed directly still get the same verdict from the contract, and
+  post-seal `ValidationError` still escapes raw.
+
 ### Added
 
 - **`agentreview-v2-target-pack` — installable target pack, first slice

@@ -1119,6 +1119,208 @@ class PipelineAssessmentV2(ContractV2Model):
         return self
 
 
+
+# `#200-D` two-epoch model: the `ready` preconditions are CALLER-visible, so
+# `review_readiness_emission_v2` must be able to establish them BEFORE the
+# artifact is constructed -- otherwise the only signal is a pydantic failure
+# indistinguishable from a derivation bug, and every cause collapses to one
+# opaque code.
+#
+# The rules live here ONCE and are consulted by both: this function is the
+# authority, `validate_state_invariants` calls it, and the emission owner calls
+# it pre-seal. Nothing string-matches a validation message.
+READY_REQUIRES_OPEN_PR_REASON_V2 = "ready_requires_open_pr"
+READY_REQUIRES_GREEN_CHECKS_REASON_V2 = "ready_requires_green_checks"
+READY_REQUIRES_COMPLETE_COVERAGE_REASON_V2 = "ready_requires_complete_coverage"
+READY_REQUIRES_UNDEGRADED_PIPELINE_REASON_V2 = "ready_requires_undegraded_pipeline"
+READY_REQUIRES_NO_BLOCKERS_REASON_V2 = "ready_requires_no_blockers"
+
+_READY_PRECONDITION_MESSAGES_V2 = {
+    READY_REQUIRES_OPEN_PR_REASON_V2: "ready requires an open, non-merged pull request",
+    READY_REQUIRES_GREEN_CHECKS_REASON_V2: "ready requires every deterministic required check to be green",
+    READY_REQUIRES_COMPLETE_COVERAGE_REASON_V2: "ready requires complete total and must-review coverage",
+    READY_REQUIRES_UNDEGRADED_PIPELINE_REASON_V2: "ready cannot use a degraded pipeline result",
+    READY_REQUIRES_NO_BLOCKERS_REASON_V2: "ready cannot contain reasons, active blockers, or blocking findings",
+}
+
+
+def ready_state_allows_pull_request_v2(*, state, pr_state) -> bool:
+    """The one `ready` precondition decidable outside this contract.
+
+    `pr_state` is caller material and is never transformed, so the emission
+    owner can establish this before constructing the artifact. It is defined
+    HERE and called from both places rather than restated there -- an earlier
+    revision inlined the predicate in the emitter while a comment claimed it
+    was shared.
+    """
+
+    return not (state is ReadinessStateV2.READY and pr_state is not PullRequestStateV2.OPEN)
+
+
+def evaluate_ready_preconditions_v2(
+    *, pr_state, checks, coverage, pipeline, reason_codes, blockers, findings
+) -> str | None:
+    """Return the stable reason a ``ready`` state is not admissible, or None.
+
+    Takes the RAW material and derives the predicate itself. An earlier
+    revision accepted a pre-computed ``has_reasons_or_blockers`` boolean, and
+    its two callers promptly diverged: the emission owner counted every
+    blocker where the validator counts only ACTIVE ones, and omitted blocking
+    findings entirely. One authority means one derivation, not one function
+    two callers feed differently.
+
+    Content-free: names a rule, never a value.
+    """
+
+    if not ready_state_allows_pull_request_v2(
+        state=ReadinessStateV2.READY, pr_state=pr_state
+    ):
+        return READY_REQUIRES_OPEN_PR_REASON_V2
+    if not checks or any(
+        check.conclusion is not RequiredCheckConclusionV2.SUCCESS for check in checks
+    ):
+        return READY_REQUIRES_GREEN_CHECKS_REASON_V2
+    if coverage.status is not CoverageStateV2.COMPLETE or coverage.missing_must_review_files:
+        return READY_REQUIRES_COMPLETE_COVERAGE_REASON_V2
+    if pipeline.degraded:
+        return READY_REQUIRES_UNDEGRADED_PIPELINE_REASON_V2
+
+    active_blockers = [blocker for blocker in blockers if blocker.active]
+    blocking_findings = [
+        finding
+        for finding in findings
+        if finding.actionable
+        and finding.disposition in {FindingDispositionV2.NEW, FindingDispositionV2.CONFIRMED}
+        and finding.severity
+        in {FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2}
+    ]
+    if set(reason_codes) or active_blockers or blocking_findings:
+        return READY_REQUIRES_NO_BLOCKERS_REASON_V2
+    return None
+
+
+
+# `#200-D` readiness partition. `validate_state_invariants` owned invariants
+# with two different truth-makers:
+#
+#   DERIVED    run_id, evaluated_run_id, head_sha, evaluated_head_sha -- all
+#              computed by `produce_review_readiness_v2` itself
+#   SUBMITTED  the decision, findings, identities and pr_state handed in
+#
+# One `except ValidationError` around the constructor cannot tell them apart,
+# which is what let a derivation defect surface as an operator-facing refusal.
+#
+# The rules below hold IDENTICALLY for submitted material and for the final
+# artifact, so they live here once and BOTH owners call them: the emission
+# owner before its transformation epoch, and `validate_state_invariants` on the
+# constructed artifact. An earlier revision of this file restated them inline
+# in the validator while a comment claimed they were shared -- review caught
+# that the claim was false, which is exactly the silent divergence this
+# arrangement exists to prevent.
+READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2 = "readiness_submitted_material_invalid"
+
+
+# Ready-triggered P2 (comment 3875520739). Staleness/identity coherence is
+# CALLER-owned in full: the `STALE` path short-circuits before the
+# required-check assessment runs at all, and both identities are arguments the
+# emitter never transforms. So the emitter can and must establish it pre-seal,
+# and the contract must keep enforcing it for any document parsed from JSON.
+#
+# One predicate, two callers -- the emitter does NOT restate these rules, and
+# it passes RAW typed material rather than pre-computed booleans, which is what
+# let the earlier `ready` predicates drift apart.
+READINESS_STALENESS_MATERIAL_INVALID_REASON_V2 = "readiness_staleness_material_invalid"
+
+
+def evaluate_readiness_staleness_material_v2(
+    *, state, identity, evaluated_identity, reason_codes, blockers
+) -> str | None:
+    """Is the submitted staleness/identity material coherent?
+
+    Derives the divergence itself from the two identities. Content-free: names
+    a rule, never a sha or an identity value.
+    """
+
+    heads_differ = identity.head_sha != evaluated_identity.head_sha
+    expected_context = identity.model_dump(mode="json", exclude={"head_sha"})
+    evaluated_context = evaluated_identity.model_dump(mode="json", exclude={"head_sha"})
+    contexts_differ = expected_context != evaluated_context
+
+    if state is ReadinessStateV2.STALE:
+        expected_reasons: set[ReadinessReasonV2] = set()
+        if heads_differ:
+            expected_reasons.add(ReadinessReasonV2.HEAD_MISMATCH)
+        if contexts_differ:
+            expected_reasons.add(ReadinessReasonV2.IDENTITY_MISMATCH)
+        active_blockers = [blocker for blocker in blockers if blocker.active]
+        if (
+            not expected_reasons
+            or set(reason_codes) != expected_reasons
+            or active_blockers
+        ):
+            return READINESS_STALENESS_MATERIAL_INVALID_REASON_V2
+        return None
+
+    if heads_differ or contexts_differ:
+        return READINESS_STALENESS_MATERIAL_INVALID_REASON_V2
+    return None
+
+
+def evaluate_readiness_common_material_v2(
+    *, reason_codes, blockers, findings, evaluated_head_sha
+) -> str | None:
+    """Rules true of readiness material whether submitted or final.
+
+    Deliberately excludes anything the emitter replaces or adjusts:
+    `checks` become the assessment's own, and `state`/`pipeline` are adjusted
+    by it, so those are final-material invariants only.
+
+    Content-free: names a rule, never a value.
+    """
+
+    reason_codes = list(reason_codes)
+    blockers = list(blockers)
+    findings = list(findings)
+
+    if len(reason_codes) != len(set(reason_codes)):
+        return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+    if len({blocker.blocker_id for blocker in blockers}) != len(blockers):
+        return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+    if len({finding.finding_id for finding in findings}) != len(findings):
+        return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+
+    for finding in findings:
+        if finding.observed_at_head_sha != evaluated_head_sha:
+            return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+        if (
+            finding.disposition is not FindingDispositionV2.NEW
+            and finding.decided_at_head_sha != evaluated_head_sha
+        ):
+            return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+        if any(item.head_sha != evaluated_head_sha for item in finding.evidence):
+            return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+
+    findings_by_id = {finding.finding_id: finding for finding in findings}
+    for blocker in blockers:
+        if blocker.reason_code in {
+            ReadinessReasonV2.CONFIRMED_CODE_FINDING,
+            ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED,
+        }:
+            if blocker.finding_id is None or blocker.finding_id not in findings_by_id:
+                return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+            finding = findings_by_id[blocker.finding_id]
+            if blocker.reason_code is ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED and not (
+                finding.disposition is FindingDispositionV2.NEW
+                and finding.actionable
+                and finding.severity
+                in {FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2}
+            ):
+                return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+        elif blocker.finding_id is not None:
+            return READINESS_SUBMITTED_MATERIAL_INVALID_REASON_V2
+    return None
+
+
 class ReviewReadinessV2(ContractV2Model):
     schema_id: Literal["agent-review.review-readiness.v2"]
     schema_version: Literal[2]
@@ -1148,70 +1350,39 @@ class ReviewReadinessV2(ContractV2Model):
             raise ValueError("readiness head_sha must match the expected run identity HEAD")
         if self.evaluated_head_sha != self.evaluated_identity.head_sha:
             raise ValueError("evaluated_head_sha must match evaluated_identity")
-        if len(self.reason_codes) != len(set(self.reason_codes)):
-            raise ValueError("reason_codes must be unique")
-        blocker_ids = [blocker.blocker_id for blocker in self.blockers]
-        finding_ids = [finding.finding_id for finding in self.findings]
+        # Shared with `produce_review_readiness_v2`'s pre-seal epoch: one
+        # definition, two callers. Not restated here.
+        if evaluate_readiness_common_material_v2(
+            reason_codes=self.reason_codes,
+            blockers=self.blockers,
+            findings=self.findings,
+            evaluated_head_sha=self.evaluated_head_sha,
+        ) is not None:
+            raise ValueError("readiness material violates a common invariant")
         check_names = [check.check_name for check in self.checks]
-        if len(blocker_ids) != len(set(blocker_ids)):
-            raise ValueError("blocker IDs must be unique")
-        if len(finding_ids) != len(set(finding_ids)):
-            raise ValueError("finding IDs must be unique")
         if len(check_names) != len(set(check_names)):
             raise ValueError("required check names must be unique")
         if any(check.head_sha != self.evaluated_head_sha for check in self.checks):
             raise ValueError("check results must be bound to the evaluated HEAD")
-        for finding in self.findings:
-            if finding.observed_at_head_sha != self.evaluated_head_sha:
-                raise ValueError("findings must be observed on the evaluated HEAD")
-            if (
-                finding.disposition is not FindingDispositionV2.NEW
-                and finding.decided_at_head_sha != self.evaluated_head_sha
-            ):
-                raise ValueError("finding decisions must be revalidated on the evaluated HEAD")
-            if any(item.head_sha != self.evaluated_head_sha for item in finding.evidence):
-                raise ValueError("disposition evidence must be revalidated on the evaluated HEAD")
-
-        findings_by_id = {finding.finding_id: finding for finding in self.findings}
-        for blocker in self.blockers:
-            if blocker.reason_code in {
-                ReadinessReasonV2.CONFIRMED_CODE_FINDING,
-                ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED,
-            }:
-                if blocker.finding_id is None or blocker.finding_id not in findings_by_id:
-                    raise ValueError("finding blockers require a valid finding_id")
-                finding = findings_by_id[blocker.finding_id]
-                if blocker.reason_code is ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED and not (
-                    finding.disposition is FindingDispositionV2.NEW
-                    and finding.actionable
-                    and finding.severity
-                    in {FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2}
-                ):
-                    raise ValueError(
-                        "finding_confirmation_required requires an actionable new P0/P1/P2 finding"
-                    )
-            elif blocker.finding_id is not None:
-                raise ValueError("pipeline, manual, and stale blockers cannot point to findings")
 
         active_blockers = [blocker for blocker in self.blockers if blocker.active]
         active_reasons = {blocker.reason_code for blocker in active_blockers}
         reasons = set(self.reason_codes)
-        heads_differ = self.head_sha != self.evaluated_head_sha
-        expected_context = self.identity.model_dump(mode="json", exclude={"head_sha"})
-        evaluated_context = self.evaluated_identity.model_dump(mode="json", exclude={"head_sha"})
-        identities_differ = expected_context != evaluated_context
 
+        # Shared with `produce_review_readiness_v2`'s pre-seal epoch: one
+        # definition of what staleness/identity coherence means, two callers.
+        if evaluate_readiness_staleness_material_v2(
+            state=self.state,
+            identity=self.identity,
+            evaluated_identity=self.evaluated_identity,
+            reason_codes=self.reason_codes,
+            blockers=self.blockers,
+        ) is not None:
+            raise ValueError(
+                "readiness staleness/identity material is incoherent"
+            )
         if self.state is ReadinessStateV2.STALE:
-            expected_reasons: set[ReadinessReasonV2] = set()
-            if heads_differ:
-                expected_reasons.add(ReadinessReasonV2.HEAD_MISMATCH)
-            if identities_differ:
-                expected_reasons.add(ReadinessReasonV2.IDENTITY_MISMATCH)
-            if not expected_reasons or reasons != expected_reasons or active_blockers:
-                raise ValueError("stale requires explicit HEAD or identity divergence reasons")
             return self
-        if heads_differ or identities_differ:
-            raise ValueError("only stale may refer to a different evaluated HEAD or run identity")
 
         blocking_findings = [
             finding
@@ -1221,18 +1392,20 @@ class ReviewReadinessV2(ContractV2Model):
             and finding.severity in {FindingSeverityV2.P0, FindingSeverityV2.P1, FindingSeverityV2.P2}
         ]
         if self.state is ReadinessStateV2.READY:
-            if self.pr_state is not PullRequestStateV2.OPEN:
-                raise ValueError("ready requires an open, non-merged pull request")
-            if not self.checks or any(
-                check.conclusion is not RequiredCheckConclusionV2.SUCCESS for check in self.checks
-            ):
-                raise ValueError("ready requires every deterministic required check to be green")
-            if self.coverage.status is not CoverageStateV2.COMPLETE or self.coverage.missing_must_review_files:
-                raise ValueError("ready requires complete total and must-review coverage")
-            if self.pipeline.degraded:
-                raise ValueError("ready cannot use a degraded pipeline result")
-            if reasons or active_blockers or blocking_findings:
-                raise ValueError("ready cannot contain reasons, active blockers, or blocking findings")
+            # One authority, two callers: this validator and
+            # `review_readiness_emission_v2`'s pre-seal check. The rules are
+            # not restated in either place.
+            unmet = evaluate_ready_preconditions_v2(
+                pr_state=self.pr_state,
+                checks=self.checks,
+                coverage=self.coverage,
+                pipeline=self.pipeline,
+                reason_codes=self.reason_codes,
+                blockers=self.blockers,
+                findings=self.findings,
+            )
+            if unmet is not None:
+                raise ValueError(_READY_PRECONDITION_MESSAGES_V2[unmet])
             return self
 
         if not reasons or reasons != active_reasons:

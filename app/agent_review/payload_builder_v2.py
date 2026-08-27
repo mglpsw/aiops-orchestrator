@@ -47,6 +47,7 @@ from app.agent_review.contracts_v2 import (
 )
 from app.agent_review.manifest_v2 import ManifestChunkV2, ManifestV2
 from app.agent_review.payload_references_v2 import (
+    PayloadReferenceError,
     build_payload_artifact_references_v2,
     build_payload_contract_references_v2,
 )
@@ -194,6 +195,32 @@ def build_chunk_payloads_v2(manifest: ManifestV2) -> tuple[BuiltChunkPayloadV2, 
 def build_chunk_payload_from_profile_v2(
     manifest: ManifestV2, chunk: ManifestChunkV2, *, profile: TargetProfileV2, repo_root: Path
 ) -> BuiltChunkPayloadV2:
+    """Public boundary: every EXPECTED failure is a ``PayloadBuilderError``.
+
+    The singular sibling of ``build_chunk_payloads_from_profile_v2`` and
+    closed identically. Review round 3 found it still open after the plural
+    form was closed -- the same witness (an unreadable required contract)
+    escaped it raw. Closing one entry point of an authority is not closing
+    the authority.
+    """
+
+    try:
+        return _build_chunk_payload_from_profile_v2(manifest=manifest, chunk=chunk, profile=profile, repo_root=repo_root)
+    except PayloadBuilderError:
+        raise
+    except PayloadReferenceError as exc:
+        # Sibling family, not a subclass -- convert, preserving its reason.
+        # There is deliberately no `except OSError` here: file reads belong to
+        # `payload_references_v2`, which now guards them itself. Catching them
+        # again in this consumer would be the very enumeration habit this
+        # change exists to end, and would mask which authority actually owns
+        # the failure.
+        raise PayloadBuilderError(exc.reason_code) from exc
+
+
+def _build_chunk_payload_from_profile_v2(
+    manifest: ManifestV2, chunk: ManifestChunkV2, *, profile: TargetProfileV2, repo_root: Path
+) -> BuiltChunkPayloadV2:
     """Build a single ``ChunkPayloadV2`` with REAL, profile-derived
     ``artifact_references``/``contract_references`` (#131), read from
     ``repo_root`` per ``profile.artifacts``/``profile.contracts``.
@@ -225,7 +252,33 @@ def build_chunk_payloads_from_profile_v2(
     """Build a ``ChunkPayloadV2`` with real profile-derived references for
     every chunk in a planned manifest. Reads artifact/contract content from
     ``repo_root`` exactly once, reused across every chunk -- the reference
-    set does not vary per chunk (see ``build_chunk_payload_from_profile_v2``)."""
+    set does not vary per chunk (see ``build_chunk_payload_from_profile_v2``).
+
+    Public boundary: every EXPECTED failure is a ``PayloadBuilderError``.
+
+    `#200-D` predecessor (model B). Before closure a caller had to catch three
+    types for this one boundary -- ``PayloadBuilderError``,
+    ``PayloadReferenceError`` (a SIBLING family, not a subclass) and a raw
+    ``OSError`` from the contract-reference read, which had no guard although
+    the artifact branch beside it did. The originating semantic reason is
+    preserved through the conversion, so a caller still learns WHICH reference
+    failed, without knowing that a second error family exists.
+    """
+
+    try:
+        return _build_chunk_payloads_from_profile_v2(
+            manifest, profile=profile, repo_root=repo_root
+        )
+    except PayloadBuilderError:
+        raise
+    except PayloadReferenceError as exc:
+        # preserve the reference authority's own precise reason
+        raise PayloadBuilderError(exc.reason_code) from exc
+
+
+def _build_chunk_payloads_from_profile_v2(
+    manifest: ManifestV2, *, profile: TargetProfileV2, repo_root: Path
+) -> tuple[BuiltChunkPayloadV2, ...]:
 
     artifact_references, limitations = build_payload_artifact_references_v2(profile, repo_root)
     contract_references = build_payload_contract_references_v2(profile, repo_root)

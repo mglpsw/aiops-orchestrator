@@ -72,7 +72,9 @@ import re
 import hashlib
 from typing import Mapping, Sequence
 
-from app.agent_review.contracts_v2 import TargetProfileV2
+from pydantic import TypeAdapter, ValidationError
+
+from app.agent_review.contracts_v2 import Sha256, TargetProfileV2
 from app.agent_review.diff_acquisition_v2 import (
     DiffAcquisitionError,
     HunkBodyV2,
@@ -84,13 +86,16 @@ from app.agent_review.diff_acquisition_v2 import (
 )
 from app.agent_review.manifest_v2 import FragmentV2, LineRangeV2, ManifestV2
 from app.agent_review.profile_loader_v2 import compute_profile_hash_v2
-from app.agent_review.redaction import _redact_local_paths, redact_text
+from app.agent_review.redaction import _redact_local_paths, redact_text, sanitize_artifact_value
 from app.agent_review.review_content_v2 import (
     ChunkContentV2,
     DlpPolicyDeclarationV2,
     FragmentContentV2,
     ReviewContentPolicyV2,
     ReviewContentV2,
+    _MAX_FRAGMENT_CONTENT_CHARS_V2,
+    ReviewableContentTextV2,
+    ReviewContentBindingError,
     bind_review_content_to_manifest_v2,
     compute_chunk_content_sha256_v2,
     compute_dlp_policy_digest_v2,
@@ -102,11 +107,51 @@ CONTENT_REASON_NO_REVIEWABLE_CHUNKS_V2 = "no_reviewable_chunks"
 CONTENT_REASON_HUNK_BODY_UNAVAILABLE_V2 = "hunk_body_unavailable"
 CONTENT_REASON_HUNK_RECOMPOSITION_FAILED_V2 = "hunk_recomposition_failed"
 CONTENT_REASON_OVER_BUDGET_REQUIRES_REPLAN_V2 = "content_over_budget_requires_replan"
-CONTENT_REASON_DIFF_ACQUISITION_FAILED_V2 = "diff_acquisition_failed"
 CONTENT_REASON_WINDOW_OWNS_NO_LINES_V2 = "window_owns_no_real_lines"
 CONTENT_REASON_DLP_DETECTOR_NOT_EXECUTED_V2 = "dlp_detector_not_executed"
 CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2 = "chunk_content_over_budget_requires_replan"
 CONTENT_REASON_PROFILE_HASH_MISMATCH_V2 = "target_profile_hash_mismatch"
+# External diff content the reviewable-content contract cannot represent --
+# e.g. a CRLF carriage return, which is a forbidden control character. This is
+# a property of the TARGET's bytes, so it is established before the seal.
+CONTENT_REASON_UNREPRESENTABLE_V2 = "content_unrepresentable"
+# A caller-supplied payload digest that is not a `Sha256`.
+CONTENT_REASON_PAYLOAD_SHA256_INVALID_V2 = "chunk_payload_sha256_invalid"
+
+# The contract's own annotated type, reused rather than restated: there is one
+# definition of what reviewable content may contain, and both the pre-seal
+# check and `FragmentContentV2` consult it.
+_REVIEWABLE_CONTENT_ADAPTER_V2 = TypeAdapter(ReviewableContentTextV2)
+_SHA256_ADAPTER_V2 = TypeAdapter(Sha256)
+
+
+def _redaction_escaped_v2(text: str) -> bool:
+    """Did OUR redaction miss something the sanitizer would still touch?
+
+    `ReviewableContentTextV2`'s last clause is a defence-in-depth guard whose
+    contract says this extractor must redact BEFORE constructing. Tripping it
+    is therefore a defect in this module, not a property of the target's
+    bytes -- so it must not be degraded to `UNREPRESENTABLE`, which would
+    silently ship a fragment whose redaction failed.
+    """
+
+    return sanitize_artifact_value(text) != text
+
+
+def _is_fragment_content_representable_v2(text: str) -> bool:
+    """Pre-seal: can the reviewable-content contract represent this text?
+
+    Consults the contract's OWN annotated type, so the rule has exactly one
+    definition. Without this check, unrepresentable target bytes surfaced as a
+    raw pydantic `ValidationError` whose message embeds the reviewed diff --
+    both an open surface and a content leak.
+    """
+
+    try:
+        _REVIEWABLE_CONTENT_ADAPTER_V2.validate_python(text)
+    except ValidationError:
+        return False
+    return True
 
 _GENERATED_PATH_MARKERS_V2: tuple[str, ...] = (
     "/generated/",
@@ -462,6 +507,52 @@ def _build_fragment_content_v2(
             redaction_applied=redaction_applied, chars=0,
         )
 
+    if len(redacted) > _MAX_FRAGMENT_CONTENT_CHARS_V2:
+        # Distinguished from unrepresentability on purpose: the operator's
+        # remedy is a replan, and `content_unrepresentable` would point them
+        # at the target's bytes instead. Reachable because a profile's
+        # `max_chars_per_chunk` is unbounded in both the contract and the
+        # published schema, so it can exceed the contract's own content cap.
+        if fragment.coverage_required:
+            raise ExtractionBlockedError(
+                CONTENT_REASON_OVER_BUDGET_REQUIRES_REPLAN_V2,
+                fragment_id=fragment.fragment_id,
+            )
+        return FragmentContentV2(
+            fragment_id=fragment.fragment_id, path=fragment.path,
+            diff_sha256=fragment.diff_sha256,
+            policy=ReviewContentPolicyV2.OMITTED_OVER_BUDGET, coverage_required=False,
+            content=None, content_sha256=None, redaction_applied=redaction_applied,
+            chars=0,
+        )
+
+    if _redaction_escaped_v2(redacted):
+        # Not a target property: our own two-pass redaction left something the
+        # sanitizer would still touch. Degrading it to `UNREPRESENTABLE` would
+        # report our bug as the target's, so it escapes as the defect it is.
+        raise AssertionError(
+            "redaction escaped: fragment content still requires sanitization"
+        )
+
+    if not _is_fragment_content_representable_v2(redacted):
+        # Mirrors the five neighbouring branches rather than aborting the run:
+        # a REQUIRED fragment blocks fail-closed, an optional one degrades to
+        # an honest typed omission. An earlier revision raised unconditionally,
+        # so a single CRLF byte in an OPTIONAL context fragment killed the
+        # whole extraction -- a regression this module's own policy forbids.
+        if fragment.coverage_required:
+            raise ExtractionBlockedError(
+                CONTENT_REASON_UNREPRESENTABLE_V2, fragment_id=fragment.fragment_id
+            )
+        return FragmentContentV2(
+            fragment_id=fragment.fragment_id, path=fragment.path,
+            diff_sha256=fragment.diff_sha256,
+            policy=ReviewContentPolicyV2.UNREPRESENTABLE, coverage_required=False,
+            content=None, content_sha256=None, redaction_applied=redaction_applied,
+            chars=0,
+        )
+
+    # ------------------------- SEAL -------------------------
     return FragmentContentV2(
         fragment_id=fragment.fragment_id, path=fragment.path, diff_sha256=fragment.diff_sha256,
         policy=ReviewContentPolicyV2.INCLUDED, coverage_required=fragment.coverage_required,
@@ -582,6 +673,36 @@ def extract_review_content_v2(
     slice).
     """
 
+    try:
+        return _extract_review_content_v2(
+            repo_root=repo_root,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            manifest=manifest,
+            payload_sha256_by_chunk_id=payload_sha256_by_chunk_id,
+            target_profile=target_profile,
+            dlp_policy=dlp_policy,
+        )
+    except ExtractionBlockedError:
+        raise
+    except ReviewContentBindingError as exc:
+        # SIBLING family from the terminal binder; its precise reason survives.
+        # Legitimate for the same reason as `PayloadReferenceError`: the
+        # exception already carries semantic meaning from its own authority.
+        # This is NOT equivalent to converting a generic `ValidationError`.
+        raise ExtractionBlockedError(exc.reason_code, fragment_id=None) from exc
+
+
+def _extract_review_content_v2(
+    *,
+    repo_root,
+    base_sha: str,
+    head_sha: str,
+    manifest: ManifestV2,
+    payload_sha256_by_chunk_id: Mapping[str, str],
+    target_profile: TargetProfileV2,
+    dlp_policy: DlpPolicyDeclarationV2 | None = None,
+) -> ReviewContentV2:
     if compute_profile_hash_v2(target_profile) != manifest.identity.profile_hash:
         raise ExtractionBlockedError(CONTENT_REASON_PROFILE_HASH_MISMATCH_V2, fragment_id=None)
 
@@ -590,9 +711,12 @@ def extract_review_content_v2(
         diff_text = acquire_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
         hunk_bodies = extract_hunk_bodies_v2(diff_text)
     except DiffAcquisitionError as exc:
-        raise ExtractionBlockedError(
-            CONTENT_REASON_DIFF_ACQUISITION_FAILED_V2, fragment_id=None
-        ) from exc
+        # Preserve the acquisition authority's own reason. Flattening every
+        # cause to one code would undo, on this path, the exact distinction
+        # this change exists to create: "no such checkout" and "no git on
+        # PATH" would again be indistinguishable to an operator. Closure has
+        # to COMPOSE, not just terminate.
+        raise ExtractionBlockedError(exc.reason_code, fragment_id=None) from exc
 
     if not manifest.chunks:
         # A diff whose every file was excluded as non-must-review binary/
@@ -643,6 +767,25 @@ def extract_review_content_v2(
                 "chunk_payload_sha256_unavailable", fragment_id=None
             )
         payload_sha256 = payload_sha256_by_chunk_id[manifest_chunk.chunk_id]
+        # Only key PRESENCE was checked before, so a malformed VALUE reached
+        # `ChunkContentV2` and escaped as a raw `ValidationError` past this
+        # authority's own epoch-1 boundary. The contract's `Sha256` type is
+        # consulted, not restated.
+        try:
+            _SHA256_ADAPTER_V2.validate_python(payload_sha256)
+        except ValidationError as exc:
+            raise ExtractionBlockedError(
+                CONTENT_REASON_PAYLOAD_SHA256_INVALID_V2,
+                fragment_id=None,
+            ) from exc
+        # ------------------------- SEAL -------------------------
+        #
+        # `_build_fragment_content_v2` derives `FragmentContentV2` from
+        # already-acquired, already-redacted, already-DLP-checked material.
+        # External unrepresentability is established by
+        # `_is_fragment_content_representable_v2` INSIDE that helper,
+        # before construction, so a `ValidationError` escaping here means
+        # derivation produced an invalid object from valid material.
         fragment_contents = [
             _build_fragment_content_v2(
                 fragment_by_id[fragment_id],
@@ -691,5 +834,11 @@ def extract_review_content_v2(
         chunks=chunks, limitations=[], content_set_sha256=content_set_sha256,
     )
 
+    # `#200-D` predecessor (model B): `bind_review_content_to_manifest_v2`
+    # raises `ReviewContentBindingError` -- a SIBLING family of this module's
+    # own -- and `ReviewContentV2` construction above can fail its contract as
+    # a pydantic error. Both used to escape this authority's declared surface,
+    # so a caller had to know two foreign types to learn that extraction
+    # refused. The binder's precise reason is preserved.
     bind_review_content_to_manifest_v2(content, manifest)
     return content
