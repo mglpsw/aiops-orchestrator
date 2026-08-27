@@ -71,6 +71,7 @@ from app.agent_review.payload_builder_v2 import (
     PayloadBuilderError,
     build_chunk_payloads_from_profile_v2,
 )
+from app.agent_review.payload_references_v2 import PayloadReferenceError
 from app.agent_review.payload_set_emission_v2 import emit_payload_set_v2
 from app.agent_review.payload_set_v2 import PayloadSetBindingError
 from app.agent_review.profile_loader_v2 import (
@@ -105,6 +106,7 @@ __all__ = [
     "OperationalReviewOutcomeV2",
     "OperationalRunError",
     "PAYLOAD_SET_INVALID_REASON_V2",
+    "READINESS_INVARIANT_VIOLATION_REASON_V2",
     "RUN_IDENTITY_INVALID_REASON_V2",
     "PreparedReviewRunV2",
     "prepare_operational_review_v2",
@@ -118,18 +120,26 @@ __all__ = [
 # the exact `reason_code` its owning authority already raised.
 PREPARATION_CHUNK_SET_MISMATCH_REASON_V2 = "operational_preparation_chunk_set_mismatch"
 
-# `assemble_manifest_from_diff_v2` constructs `RunIdentityV2` from the caller's
-# identity material, so contract-invalid material surfaces as a raw pydantic
+# Assembly constructs `RunIdentityV2` and `ManifestV2` from the caller's run
+# material, so a contract violation there surfaces as a raw pydantic
 # `ValidationError` rather than a `RunAssemblyError`. That must not escape as a
 # traceback: it is a caller-input refusal like any other. No upstream authority
 # owns a code for it, so this module names it -- namespaced, so it can never be
 # mistaken for an upstream authority's own reason.
-RUN_IDENTITY_INVALID_REASON_V2 = "operational_run_identity_invalid"
+#
+# Named for the whole assembly contract, not for identity alone: identity is
+# the common case but `ManifestV2`/fragment invariants surface here too, and a
+# code must not claim more precision than it has.
+RUN_IDENTITY_INVALID_REASON_V2 = "operational_assembly_contract_invalid"
 
 # The emitted payload set failed its own contract for a reason `PayloadSetBindingError`
 # does not name (it surfaces as a pydantic `ValidationError`). Namespaced for
 # the same reason as the codes above.
 PAYLOAD_SET_INVALID_REASON_V2 = "operational_payload_set_invalid"
+
+# The readiness artifact violated its own contract. Code only, deliberately:
+# the pydantic message embeds finding content.
+READINESS_INVARIANT_VIOLATION_REASON_V2 = "readiness_invariant_violation"
 
 
 ASSEMBLY_BLOCKED_REASON_V2 = "assembly_blocked"
@@ -161,6 +171,10 @@ class PreparedReviewRunV2:
     manifest: ManifestV2
     payload_by_chunk_id: Mapping[str, ChunkPayloadV2]
     content: ReviewContentV2
+    # e.g. ``optional_artifact_missing:<id>`` -- the payload builder declares
+    # these are never silently absorbed, so they are carried rather than
+    # dropped on the floor between the front and back halves.
+    payload_limitations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -234,7 +248,8 @@ def prepare_operational_review_v2(
     except RunAssemblyError as exc:
         raise OperationalRunError(exc.reason_code) from exc
     except ValidationError as exc:
-        # contract-invalid run identity material (bad sha/hash/pr identity)
+        # contract-invalid assembly material (identity sha/hash/pr, or a
+        # manifest/fragment invariant)
         raise OperationalRunError(RUN_IDENTITY_INVALID_REASON_V2) from exc
 
     if outcome.state != "assembled" or outcome.manifest is None:
@@ -252,9 +267,19 @@ def prepare_operational_review_v2(
         built = build_chunk_payloads_from_profile_v2(
             manifest, profile=profile, repo_root=repo_root
         )
-    except PayloadBuilderError as exc:
+    except (PayloadBuilderError, PayloadReferenceError) as exc:
+        # `PayloadReferenceError` is a SIBLING family, not a subclass: the
+        # builder reaches `payload_references_v2`, which refuses a missing
+        # required artifact or a mismatched contract sha with its own code.
+        # Every shipped target profile declares such references, so omitting
+        # this family would make the first real run crash with a traceback.
         raise OperationalRunError(exc.reason_code) from exc
     payload_by_chunk_id = {item.chunk_id: item.payload for item in built}
+    # The builder contracts that optional-artifact limitations are never
+    # silently absorbed. Carry them so a caller can surface them.
+    payload_limitations = tuple(
+        limitation for item in built for limitation in item.limitations
+    )
 
     # Manifest <-> payload closure is an authority that already exists: reuse
     # it rather than re-deriving run_id/manifest_hash/chunk-set agreement.
@@ -296,6 +321,7 @@ def prepare_operational_review_v2(
         manifest=manifest,
         payload_by_chunk_id=payload_by_chunk_id,
         content=content,
+        payload_limitations=payload_limitations,
     )
 
 
@@ -414,7 +440,13 @@ def run_operational_review_v2(
         # sanitized review verdict (the same rule PR #270 established for
         # the Router HTTP boundary).
         reason_code = getattr(exc, "reason_code", None)
-        if not isinstance(reason_code, str) or not reason_code:
-            raise
-        raise OperationalRunError(reason_code) from exc
+        if isinstance(reason_code, str) and reason_code:
+            raise OperationalRunError(reason_code) from exc
+        if isinstance(exc, ValidationError):
+            # `produce_review_readiness_v2` is documented as never wrapping
+            # its own contract failures, so they arrive as pydantic errors
+            # with no code. Their MESSAGE embeds finding content, so it must
+            # never reach stderr: only the code crosses this boundary.
+            raise OperationalRunError(READINESS_INVARIANT_VIOLATION_REASON_V2) from exc
+        raise
     return OperationalReviewOutcomeV2(prepared=prepared, review=review)

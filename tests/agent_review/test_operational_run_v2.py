@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from pydantic import ValidationError
 
 from app.agent_review.authoritative_ci_snapshot_v2 import parse_authoritative_ci_snapshot_v2
 from app.agent_review.contracts_v2 import (
@@ -1178,8 +1179,13 @@ def test_cli_rejects_duplicate_keys_in_its_json_inputs(tmp_path: Path) -> None:
 def test_cli_unwritable_output_is_a_typed_refusal_not_a_traceback(
     tmp_path: Path, capsys: pytest.CaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F7: the output write sat outside the guarded block, so an unwritable
-    path discarded a fully completed review behind a traceback."""
+    """F7 / R2-F3: an unwritable output must be a typed refusal.
+
+    A merely-missing parent directory is NOT unwritable -- it is created, as
+    the sibling `aiops-review-quality-gate-v2` does, so a completed and
+    already-billed review is not thrown away. Genuinely unwritable here means
+    the parent path exists as a FILE, so ``mkdir`` cannot succeed.
+    """
 
     module = _run_cli([])
     monkeypatch.setenv("AGENT_ROUTER_API_KEY", "env-only-secret")
@@ -1200,8 +1206,10 @@ def test_cli_unwritable_output_is_a_typed_refusal_not_a_traceback(
     snap.write_text(json.dumps(_snapshot_dict([])), encoding="utf-8")
 
     captured: list = []
+    blocking_file = tmp_path / "not_a_dir"
+    blocking_file.write_text("i am a file", encoding="utf-8")
 
-    # a completed run whose output path is inside a directory that does not exist
+    # a completed run whose output parent exists as a FILE, so mkdir cannot win
     with mock.patch(
         "app.agent_review.review_transport_v2._open_agent_router_request_v2",
         side_effect=_mocked_router(captured),
@@ -1230,7 +1238,7 @@ def test_cli_unwritable_output_is_a_typed_refusal_not_a_traceback(
                 "--toolchain-digest", "e" * 64, "--transport", "router",
                 "--router-base-url", "https://router.example",
                 "--router-model", "review:code",
-                "--output", str(tmp_path / "missing_dir" / "out.json"),
+                "--output", str(blocking_file / "out.json"),
             ]
         )
 
@@ -1238,3 +1246,232 @@ def test_cli_unwritable_output_is_a_typed_refusal_not_a_traceback(
     err = capsys.readouterr().err
     assert err.strip() == "error: output_unwritable"
     assert "Traceback" not in err
+
+
+def test_cli_creates_a_missing_output_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2-F3: a review that ran (and was paid for) must not be discarded just
+    because ``artifacts/`` did not exist yet."""
+
+    module = _run_cli([])
+    monkeypatch.setenv("AGENT_ROUTER_API_KEY", "env-only-secret")
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    policy = tmp_path / "g.json"
+    policy.write_text(_grouping_policy().model_dump_json(), encoding="utf-8")
+    origin = tmp_path / "o.json"
+    origin.write_text(
+        json.dumps({"event_type": "pull_request", "event_action": "synchronize",
+                    "delivery_id": "d1"}),
+        encoding="utf-8",
+    )
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import _snapshot_dict
+
+    snap = tmp_path / "s.json"
+    snap.write_text(json.dumps(_snapshot_dict([])), encoding="utf-8")
+
+    captured: list = []
+    out = tmp_path / "artifacts" / "nested" / "readiness.json"
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        side_effect=_mocked_router(captured),
+    ):
+        from app.agent_review.operational_run_v2 import prepare_operational_review_v2
+
+        prepared = prepare_operational_review_v2(
+            repo_root=repo, target_profile_root=repo, grouping_policy=_grouping_policy(),
+            base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+            toolrepo_sha="b" * 40, evidence_hash="c" * 64, max_lines_per_chunk=1000,
+        )
+        _CAPTURED_RESULT_DOCUMENT[0] = json.dumps(
+            _router_result_document(
+                prepared.payload_by_chunk_id[prepared.content.chunks[0].chunk_id]
+            )
+        )
+        rc = module.main(
+            [
+                "--contract-version", "v2", "--repo-root", str(repo),
+                "--target-profile", str(repo), "--grouping-policy", str(policy),
+                "--base-sha", base_sha, "--head-sha", head_sha,
+                "--tested-merge-sha", head_sha, "--pr-number", "1",
+                "--toolrepo-sha", "b" * 40, "--evidence-hash", "c" * 64,
+                "--max-lines-per-chunk", "1000", "--pr-state", "open",
+                "--run-origin", str(origin), "--checks-snapshot", str(snap),
+                "--toolchain-digest", "e" * 64, "--transport", "router",
+                "--router-base-url", "https://router.example",
+                "--router-model", "review:code", "--output", str(out),
+            ]
+        )
+    assert rc == 0
+    assert out.is_file()
+    assert json.loads(out.read_text(encoding="utf-8"))["schema_id"] == (
+        "agent-review.review-readiness.v2"
+    )
+
+
+def test_required_payload_reference_failure_is_a_typed_refusal(tmp_path: Path) -> None:
+    """R2-F1: `build_chunk_payloads_from_profile_v2` reaches
+    ``payload_references_v2``, whose ``PayloadReferenceError`` is a SIBLING
+    family of ``PayloadBuilderError``, not a subclass.
+
+    Every shipped target profile declares a required artifact and a sha-pinned
+    required contract, so omitting that family would make the first real run
+    crash with a traceback rather than refuse.
+    """
+
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    # a profile demanding a required artifact the repository does not contain
+    demanding = _profile_yaml().replace(
+        "artifacts: []",
+        "artifacts:\n"
+        "  - artifact_id: full-diff\n"
+        "    path: artifacts/full.diff\n"
+        "    kind: diff\n"
+        "    required: true\n"
+        "    max_bytes: 1000000",
+    )
+    (repo / ".aiops" / "target-profile.v2.yaml").write_text(demanding, encoding="utf-8")
+
+    from app.agent_review.operational_run_v2 import prepare_operational_review_v2
+
+    with pytest.raises(OperationalRunError) as excinfo:
+        prepare_operational_review_v2(
+            repo_root=repo, target_profile_root=repo, grouping_policy=_grouping_policy(),
+            base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+            toolrepo_sha="b" * 40, evidence_hash="c" * 64, max_lines_per_chunk=1000,
+        )
+    assert excinfo.value.reason_code == "payload_required_artifact_missing"
+
+
+def test_readiness_contract_violation_never_puts_findings_on_stderr(
+    tmp_path: Path,
+) -> None:
+    """R2-F4: ``produce_review_readiness_v2`` is documented as never wrapping
+    its own contract failures, so they arrive as pydantic errors with no
+    ``reason_code`` -- and their message embeds finding content."""
+
+    from app.agent_review import operational_run_v2 as module
+
+    captured: list = []
+    with mock.patch.object(
+        module,
+        "run_synthetic_review_v2",
+        side_effect=ValidationError.from_exception_data("ReviewReadinessV2", []),
+    ):
+        with pytest.raises(OperationalRunError) as excinfo:
+            _run(tmp_path, captured=captured)
+    assert excinfo.value.reason_code == module.READINESS_INVARIANT_VIOLATION_REASON_V2
+
+
+def test_payload_limitations_are_carried_not_dropped(tmp_path: Path) -> None:
+    """R2-F7: the payload builder contracts that optional-artifact
+    limitations are never silently absorbed."""
+
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    optional = _profile_yaml().replace(
+        "artifacts: []",
+        "artifacts:\n"
+        "  - artifact_id: optional-notes\n"
+        "    path: artifacts/notes.md\n"
+        "    kind: markdown\n"
+        "    required: false\n"
+        "    max_bytes: 1000",
+    )
+    (repo / ".aiops" / "target-profile.v2.yaml").write_text(optional, encoding="utf-8")
+
+    from app.agent_review.operational_run_v2 import prepare_operational_review_v2
+
+    prepared = prepare_operational_review_v2(
+        repo_root=repo, target_profile_root=repo, grouping_policy=_grouping_policy(),
+        base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+        toolrepo_sha="b" * 40, evidence_hash="c" * 64, max_lines_per_chunk=1000,
+    )
+    assert any("optional_artifact_missing" in lim for lim in prepared.payload_limitations)
+
+
+def test_cli_does_not_launder_a_tool_defect_into_input_invalid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2-F8: blaming the operator's file for our bug inverts the rule the
+    library states. A codeless failure at the snapshot boundary must crash,
+    not be reported as ``input_invalid``."""
+
+    module = _run_cli([])
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    policy = tmp_path / "g.json"
+    policy.write_text(_grouping_policy().model_dump_json(), encoding="utf-8")
+    origin = tmp_path / "o.json"
+    origin.write_text(
+        json.dumps({"event_type": "pull_request", "event_action": "synchronize",
+                    "delivery_id": "d1"}),
+        encoding="utf-8",
+    )
+    snap = tmp_path / "s.json"
+    snap.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        module, "parse_authoritative_ci_snapshot_v2",
+        mock.Mock(side_effect=AttributeError("defect in this repository")),
+    )
+    with pytest.raises(AttributeError):
+        module.main(
+            [
+                "--contract-version", "v2", "--repo-root", str(repo),
+                "--target-profile", str(repo), "--grouping-policy", str(policy),
+                "--base-sha", base_sha, "--head-sha", head_sha,
+                "--tested-merge-sha", head_sha, "--pr-number", "1",
+                "--toolrepo-sha", "b" * 40, "--evidence-hash", "c" * 64,
+                "--max-lines-per-chunk", "1000", "--pr-state", "open",
+                "--run-origin", str(origin), "--checks-snapshot", str(snap),
+                "--toolchain-digest", "e" * 64, "--transport", "offline",
+                "--offline-responses-dir", str(tmp_path),
+                "--output", str(tmp_path / "out.json"),
+            ]
+        )
+
+
+def test_cli_forwards_check_claims_to_the_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2-F5: ``--checks-snapshot`` is required, but without ``--checks`` its
+    authority is unusable -- the run could never reach ``ready``. The claims
+    must actually reach the library (where `#201-C0` re-verifies them)."""
+
+    module = _run_cli([])
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    policy = tmp_path / "g.json"
+    policy.write_text(_grouping_policy().model_dump_json(), encoding="utf-8")
+    origin = tmp_path / "o.json"
+    origin.write_text(
+        json.dumps({"event_type": "pull_request", "event_action": "synchronize",
+                    "delivery_id": "d1"}),
+        encoding="utf-8",
+    )
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import _snapshot_dict
+
+    snap = tmp_path / "s.json"
+    snap.write_text(json.dumps(_snapshot_dict([])), encoding="utf-8")
+
+    seen: dict = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        raise module.OperationalRunError("stop_after_capture")
+
+    monkeypatch.setattr(module, "run_operational_review_v2", _capture)
+    rc = module.main(
+        [
+            "--contract-version", "v2", "--repo-root", str(repo),
+            "--target-profile", str(repo), "--grouping-policy", str(policy),
+            "--base-sha", base_sha, "--head-sha", head_sha,
+            "--tested-merge-sha", head_sha, "--pr-number", "1",
+            "--toolrepo-sha", "b" * 40, "--evidence-hash", "c" * 64,
+            "--max-lines-per-chunk", "1000", "--pr-state", "open",
+            "--run-origin", str(origin), "--checks-snapshot", str(snap),
+            "--toolchain-digest", "e" * 64, "--transport", "offline",
+            "--offline-responses-dir", str(tmp_path),
+            "--output", str(tmp_path / "out.json"),
+        ]
+    )
+    assert rc == 2
+    assert "checks" in seen and "provenance" in seen

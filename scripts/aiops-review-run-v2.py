@@ -35,7 +35,14 @@ from pydantic import ValidationError  # noqa: E402
 from app.agent_review.authoritative_ci_snapshot_v2 import (  # noqa: E402
     parse_authoritative_ci_snapshot_v2,
 )
-from app.agent_review.contracts_v2 import PullRequestStateV2, RunOriginV2  # noqa: E402
+from app.agent_review.contracts_v2 import (  # noqa: E402
+    PullRequestStateV2,
+    RequiredCheckResultV2,
+    RunOriginV2,
+)
+from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
+    RequiredCheckProvenanceV2,
+)
 from app.agent_review.operational_run_v2 import (  # noqa: E402
     OperationalRunError,
     run_operational_review_v2,
@@ -89,6 +96,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="AuthoritativeCheckSnapshotV2 JSON, parsed by its canonical parser",
     )
     parser.add_argument("--toolchain-digest", required=True)
+    parser.add_argument(
+        "--checks",
+        help="optional JSON array of RequiredCheckResultV2 CLAIMS; re-verified by `#201-C0`",
+    )
+    parser.add_argument(
+        "--checks-provenance",
+        help="optional JSON array of RequiredCheckProvenanceV2, one per --checks entry",
+    )
     parser.add_argument("--transport", required=True, choices=["offline", "router"])
     parser.add_argument("--offline-responses-dir", help="offline mode: transport envelope directory")
     parser.add_argument("--router-base-url", help="router mode: Agent Router base URL")
@@ -100,18 +115,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--output", required=True, help="path to write the ReviewReadinessV2 JSON")
     return parser.parse_args(argv)
-
-
-def _reason_code_of(exc: BaseException) -> str:
-    """The exception's own stable code, or a generic input refusal.
-
-    Never the exception's message: these CLIs must emit reason codes only.
-    """
-
-    reason_code = getattr(exc, "reason_code", None)
-    if isinstance(reason_code, str) and reason_code:
-        return reason_code
-    return INPUT_INVALID_REASON_V2
 
 
 def _read_json(path: str) -> object:
@@ -165,6 +168,23 @@ def main(argv: list[str] | None = None) -> int:
             raise RunCliError(INPUT_INVALID_REASON_V2) from exc
 
         try:
+            checks = (
+                [RequiredCheckResultV2.model_validate(item) for item in _read_json(args.checks)]
+                if args.checks
+                else []
+            )
+            provenance = (
+                [
+                    RequiredCheckProvenanceV2.model_validate(item)
+                    for item in _read_json(args.checks_provenance)
+                ]
+                if args.checks_provenance
+                else []
+            )
+        except (ValidationError, TypeError) as exc:
+            raise RunCliError(INPUT_INVALID_REASON_V2) from exc
+
+        try:
             snapshot = parse_authoritative_ci_snapshot_v2(
                 Path(args.checks_snapshot).read_bytes()
             )
@@ -173,9 +193,14 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             # `parse_authoritative_ci_snapshot_v2` refuses through its own
             # typed family (`RequiredCheckProvenanceErrorV2`), not `OSError`.
-            # Preserve its code; never let a malformed snapshot become a
-            # traceback.
-            raise RunCliError(_reason_code_of(exc)) from exc
+            # Preserve its code -- but only if it HAS one: laundering a
+            # genuine tool defect into `input_invalid` would blame the
+            # operator's file for our bug, inverting the rule this CLI's
+            # library states.
+            reason_code = getattr(exc, "reason_code", None)
+            if not isinstance(reason_code, str) or not reason_code:
+                raise
+            raise RunCliError(reason_code) from exc
 
         outcome = run_operational_review_v2(
             repo_root=Path(args.repo_root),
@@ -193,17 +218,27 @@ def main(argv: list[str] | None = None) -> int:
             snapshot=snapshot,
             toolchain_digest=args.toolchain_digest,
             max_lines_per_chunk=args.max_lines_per_chunk,
+            checks=checks,
+            provenance=provenance,
         )
 
-        # Inside the guarded block: a missing output directory must not
-        # discard a fully completed review behind a traceback.
-        Path(args.output).write_text(
-            outcome.review.readiness.model_dump_json(indent=2) + "\n", encoding="utf-8"
-        )
     except (RunCliError, OperationalRunError, ChunkTransportError) as exc:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 2
-    except OSError as exc:
+
+    # Outside the refusal block, and narrowed to the write itself: a blanket
+    # `except OSError` around the whole run would report `output_unwritable`
+    # for, say, a bad `--repo-root` reaching git, misdirecting the operator.
+    # The directory is created first, matching `aiops-review-quality-gate-v2`,
+    # so a completed and already-billed review is not discarded merely
+    # because `artifacts/` did not exist yet.
+    try:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            outcome.review.readiness.model_dump_json(indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError:
         print(f"error: {OUTPUT_UNWRITABLE_REASON_V2}", file=sys.stderr)
         return 2
 
