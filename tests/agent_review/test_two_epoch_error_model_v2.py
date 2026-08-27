@@ -384,14 +384,20 @@ def test_ready_precondition_authority_has_exactly_two_callers() -> None:
 
     from pathlib import Path as _Path
 
-    from app.agent_review import contracts_v2, review_readiness_emission_v2
+    from app.agent_review import contracts_v2
 
-    call_sites = [
-        module
-        for module in (contracts_v2, review_readiness_emission_v2)
-        if "evaluate_ready_preconditions_v2(" in _Path(module.__file__).read_text(encoding="utf-8")
-    ]
-    assert len(call_sites) == 2
+    # Scan the whole package. Filtering a hard-coded two-module tuple could
+    # never have found the third call site this test claims to guard against.
+    package_root = _Path(contracts_v2.__file__).parent
+    call_sites = sorted(
+        source.name
+        for source in package_root.glob("*.py")
+        if "evaluate_ready_preconditions_v2(" in source.read_text(encoding="utf-8")
+    )
+    assert call_sites == [
+        "contracts_v2.py",
+        "review_readiness_emission_v2.py",
+    ], call_sites
 
 
 def test_optional_unrepresentable_fragment_degrades_instead_of_aborting(
@@ -436,3 +442,93 @@ def test_repo_root_that_is_a_file_is_named_precisely(tmp_path: Path) -> None:
             not_a_dir, base_sha="a" * 40, head_sha="b" * 40
         )
     assert excinfo.value.reason_code == REPO_ROOT_UNUSABLE_REASON_V2
+
+
+def test_readiness_non_ready_invariant_is_typed_and_leaks_nothing() -> None:
+    """R3: only the five `ready` preconditions were pre-sealed, so the
+    contract's OTHER caller-visible invariants escaped raw -- carrying
+    `input_value`, i.e. the whole readiness dict including finding text.
+
+    Enumerating those invariants one at a time would have repeated the
+    recurrence. Scoping the conversion to the construction site closes them
+    together, while `compute_run_id` stays outside so derivation defects
+    still escape.
+    """
+
+    from tests.agent_review.test_review_readiness_emission_v2 import (
+        _assemble_review_readiness_v2,
+        _fully_reviewed_manifest_and_report,
+        _green_check,
+        _policies,
+        _synthesis,
+    )
+    from app.agent_review.contracts_v2 import PullRequestStateV2
+    from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
+    from app.agent_review.review_readiness_emission_v2 import (
+        READINESS_MATERIAL_INVALID_REASON_V2,
+        ReadinessEmissionError,
+    )
+
+    manifest, report = _fully_reviewed_manifest_and_report()
+    synthesis = _synthesis(manifest=manifest, coverage_report=report)
+    decision = compute_readiness_decision_v2(
+        synthesis=synthesis, manifest=manifest, policies=_policies()
+    )
+    # a check bound to a DIFFERENT head: a caller-visible invariant with no
+    # `ready`-precondition of its own
+    with pytest.raises(ReadinessEmissionError) as excinfo:
+        _assemble_review_readiness_v2(
+            decision=decision, findings=synthesis.findings,
+            identity=manifest.identity, evaluated_identity=manifest.identity,
+            pr_state=PullRequestStateV2.OPEN,
+            checks=[_green_check("f" * 40)],
+        )
+    reason = excinfo.value.reason_code
+    assert reason in {
+        READINESS_MATERIAL_INVALID_REASON_V2,
+        "ready_requires_green_checks",
+    }
+    assert "input_value" not in reason and "{" not in reason
+
+
+def test_caller_payload_digest_values_are_validated_pre_seal(tmp_path: Path) -> None:
+    """R3: only the map's KEYS were checked, so a malformed VALUE reached
+    `ChunkContentV2` and escaped past this authority's own epoch-1 boundary."""
+
+    repo, base_sha, head_sha = _repo(tmp_path)
+    profile, manifest = _assembled(repo, base_sha, head_sha)
+
+    with pytest.raises(ExtractionBlockedError) as excinfo:
+        extract_review_content_v2(
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            payload_sha256_by_chunk_id={
+                chunk.chunk_id: "NOT-A-SHA" for chunk in manifest.chunks
+            },
+            target_profile=profile,
+        )
+    assert excinfo.value.reason_code == "chunk_payload_sha256_invalid"
+
+
+def test_over_budget_content_points_at_replan_not_unrepresentability(
+    tmp_path: Path,
+) -> None:
+    """R3: the representability check also trips on the contract's 256 KiB
+    cap, so an over-budget fragment was labelled `content_unrepresentable` --
+    pointing the operator at the target's bytes instead of the replan remedy.
+
+    Reachable because a profile's `max_chars_per_chunk` is unbounded in both
+    the contract and the published schema, so it can exceed that cap.
+    """
+
+    import inspect
+
+    from app.agent_review import review_content_extraction_v2 as module
+
+    source = inspect.getsource(module._build_fragment_content_v2)
+    over_budget = source.index("_MAX_FRAGMENT_CONTENT_CHARS_V2")
+    unrepresentable = source.index("_is_fragment_content_representable_v2")
+    assert over_budget < unrepresentable, (
+        "the length check must run first, or over-budget content is "
+        "misreported as unrepresentable"
+    )
+    assert "CONTENT_REASON_OVER_BUDGET_REQUIRES_REPLAN_V2" in source[over_budget:unrepresentable]

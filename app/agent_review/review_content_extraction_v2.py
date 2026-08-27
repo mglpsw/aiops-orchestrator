@@ -74,7 +74,7 @@ from typing import Mapping, Sequence
 
 from pydantic import TypeAdapter, ValidationError
 
-from app.agent_review.contracts_v2 import TargetProfileV2
+from app.agent_review.contracts_v2 import Sha256, TargetProfileV2
 from app.agent_review.diff_acquisition_v2 import (
     DiffAcquisitionError,
     HunkBodyV2,
@@ -93,6 +93,7 @@ from app.agent_review.review_content_v2 import (
     FragmentContentV2,
     ReviewContentPolicyV2,
     ReviewContentV2,
+    _MAX_FRAGMENT_CONTENT_CHARS_V2,
     ReviewableContentTextV2,
     ReviewContentBindingError,
     bind_review_content_to_manifest_v2,
@@ -114,11 +115,14 @@ CONTENT_REASON_PROFILE_HASH_MISMATCH_V2 = "target_profile_hash_mismatch"
 # e.g. a CRLF carriage return, which is a forbidden control character. This is
 # a property of the TARGET's bytes, so it is established before the seal.
 CONTENT_REASON_UNREPRESENTABLE_V2 = "content_unrepresentable"
+# A caller-supplied payload digest that is not a `Sha256`.
+CONTENT_REASON_PAYLOAD_SHA256_INVALID_V2 = "chunk_payload_sha256_invalid"
 
 # The contract's own annotated type, reused rather than restated: there is one
 # definition of what reviewable content may contain, and both the pre-seal
 # check and `FragmentContentV2` consult it.
 _REVIEWABLE_CONTENT_ADAPTER_V2 = TypeAdapter(ReviewableContentTextV2)
+_SHA256_ADAPTER_V2 = TypeAdapter(Sha256)
 
 
 def _is_fragment_content_representable_v2(text: str) -> bool:
@@ -490,6 +494,25 @@ def _build_fragment_content_v2(
             redaction_applied=redaction_applied, chars=0,
         )
 
+    if len(redacted) > _MAX_FRAGMENT_CONTENT_CHARS_V2:
+        # Distinguished from unrepresentability on purpose: the operator's
+        # remedy is a replan, and `content_unrepresentable` would point them
+        # at the target's bytes instead. Reachable because a profile's
+        # `max_chars_per_chunk` is unbounded in both the contract and the
+        # published schema, so it can exceed the contract's own content cap.
+        if fragment.coverage_required:
+            raise ExtractionBlockedError(
+                CONTENT_REASON_OVER_BUDGET_REQUIRES_REPLAN_V2,
+                fragment_id=fragment.fragment_id,
+            )
+        return FragmentContentV2(
+            fragment_id=fragment.fragment_id, path=fragment.path,
+            diff_sha256=fragment.diff_sha256,
+            policy=ReviewContentPolicyV2.OMITTED_OVER_BUDGET, coverage_required=False,
+            content=None, content_sha256=None, redaction_applied=redaction_applied,
+            chars=0,
+        )
+
     if not _is_fragment_content_representable_v2(redacted):
         # Mirrors the five neighbouring branches rather than aborting the run:
         # a REQUIRED fragment blocks fail-closed, an optional one degrades to
@@ -723,6 +746,17 @@ def _extract_review_content_v2(
                 "chunk_payload_sha256_unavailable", fragment_id=None
             )
         payload_sha256 = payload_sha256_by_chunk_id[manifest_chunk.chunk_id]
+        # Only key PRESENCE was checked before, so a malformed VALUE reached
+        # `ChunkContentV2` and escaped as a raw `ValidationError` past this
+        # authority's own epoch-1 boundary. The contract's `Sha256` type is
+        # consulted, not restated.
+        try:
+            _SHA256_ADAPTER_V2.validate_python(payload_sha256)
+        except ValidationError as exc:
+            raise ExtractionBlockedError(
+                CONTENT_REASON_PAYLOAD_SHA256_INVALID_V2,
+                fragment_id=None,
+            ) from exc
         # ------------------------- SEAL -------------------------
         #
         # `_build_fragment_content_v2` derives `FragmentContentV2` from

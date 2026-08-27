@@ -798,13 +798,12 @@ def test_closure_composes_across_authorities(
     empty_bin.mkdir(exist_ok=True)
     monkeypatch.setenv("PATH", str(empty_bin))
 
-    if True:
-        with pytest.raises(ExtractionBlockedError) as absent_git:
-            extract_review_content_v2(
-                repo_root=repo, base_sha=base_sha, head_sha=head_sha,
-                manifest=manifest, payload_sha256_by_chunk_id=payload_map,
-                target_profile=profile,
-            )
+    with pytest.raises(ExtractionBlockedError) as absent_git:
+        extract_review_content_v2(
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha,
+            manifest=manifest, payload_sha256_by_chunk_id=payload_map,
+            target_profile=profile,
+        )
 
     assert missing_root.value.reason_code == REPO_ROOT_UNUSABLE_REASON_V2
     assert absent_git.value.reason_code == GIT_UNAVAILABLE_REASON_V2

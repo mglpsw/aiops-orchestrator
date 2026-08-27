@@ -94,6 +94,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from pydantic import ValidationError
+
 from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
 from app.agent_review.contracts_v2 import (
     FindingLifecycleRecordV2,
@@ -113,6 +115,10 @@ from app.agent_review.required_check_readiness_v2 import _verify_and_assess_requ
 REVIEW_READINESS_SOURCE_V2 = "aiops-review-quality-gate"
 
 READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2 = "readiness_emission_decision_provenance_mismatch"
+# The caller's readiness material does not satisfy the artifact contract, for
+# an invariant with no more specific pre-seal reason. Code only: the pydantic
+# message embeds the full readiness dict, finding text included.
+READINESS_MATERIAL_INVALID_REASON_V2 = "readiness_material_invalid"
 
 
 class ReadinessEmissionError(ValueError):
@@ -274,26 +280,54 @@ def _assemble_review_readiness_v2(
         if unmet is not None:
             raise ReadinessEmissionError(unmet)
 
+    # Derivation happens HERE, before the seal, so a defect in it cannot be
+    # mistaken for a caller problem: `compute_run_id` is this module's only
+    # computation, and a failure in it escapes raw.
+    run_id = compute_run_id(identity)
+    evaluated_run_id = compute_run_id(evaluated_identity)
+
     # ------------------------- SEAL -------------------------
     #
-    # A `ValidationError` from construction now means derivation produced an
-    # invalid artifact from validated material: our defect, and it escapes.
-    return ReviewReadinessV2(
-        schema_id="agent-review.review-readiness.v2",
-        schema_version=2,
-        source=REVIEW_READINESS_SOURCE_V2,
-        run_id=compute_run_id(identity),
-        identity=identity,
-        evaluated_run_id=compute_run_id(evaluated_identity),
-        evaluated_identity=evaluated_identity,
-        head_sha=identity.head_sha,
-        evaluated_head_sha=evaluated_identity.head_sha,
-        pr_state=pr_state,
-        checks=list(checks),
-        coverage=decision.coverage,
-        pipeline=decision.pipeline,
-        state=decision.state,
-        reason_codes=list(decision.reason_codes),
-        blockers=list(decision.blockers),
-        findings=list(findings),
-    )
+    # Every remaining argument is CALLER material -- this authority assembles,
+    # it does not derive. `validate_state_invariants` is therefore a
+    # caller-material check in its entirety, not a derivation check, so
+    # converting it here is pre-seal in substance even though it is the last
+    # statement.
+    #
+    # Deliberately scoped to the CONSTRUCTOR CALL alone. An earlier revision
+    # pre-sealed only the five `ready` preconditions and left the contract's
+    # other caller-visible invariants -- identity coherence, blocker/finding
+    # linkage, per-HEAD binding -- to escape raw, carrying `input_value` (the
+    # whole readiness dict, finding text included) onto stderr. Enumerating
+    # them one at a time would have repeated the recurrence this design exists
+    # to end; scoping the conversion to the single construction site closes
+    # all of them at once without widening to derivation.
+    #
+    # The `ready` preconditions are still evaluated above, because those are
+    # the ones an operator can act on and they deserve reasons that name the
+    # rule rather than one generic code.
+    try:
+        return ReviewReadinessV2(
+            schema_id="agent-review.review-readiness.v2",
+            schema_version=2,
+            source=REVIEW_READINESS_SOURCE_V2,
+            run_id=run_id,
+            identity=identity,
+            evaluated_run_id=evaluated_run_id,
+            evaluated_identity=evaluated_identity,
+            head_sha=identity.head_sha,
+            evaluated_head_sha=evaluated_identity.head_sha,
+            pr_state=pr_state,
+            checks=list(checks),
+            coverage=decision.coverage,
+            pipeline=decision.pipeline,
+            state=decision.state,
+            reason_codes=list(decision.reason_codes),
+            blockers=list(decision.blockers),
+            findings=list(findings),
+        )
+    except ValidationError as exc:
+        # Code only: the pydantic message embeds the readiness material.
+        raise ReadinessEmissionError(
+            READINESS_MATERIAL_INVALID_REASON_V2
+        ) from exc
