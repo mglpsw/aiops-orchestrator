@@ -1144,6 +1144,19 @@ _READY_PRECONDITION_MESSAGES_V2 = {
 }
 
 
+def ready_state_allows_pull_request_v2(*, state, pr_state) -> bool:
+    """The one `ready` precondition decidable outside this contract.
+
+    `pr_state` is caller material and is never transformed, so the emission
+    owner can establish this before constructing the artifact. It is defined
+    HERE and called from both places rather than restated there -- an earlier
+    revision inlined the predicate in the emitter while a comment claimed it
+    was shared.
+    """
+
+    return not (state is ReadinessStateV2.READY and pr_state is not PullRequestStateV2.OPEN)
+
+
 def evaluate_ready_preconditions_v2(
     *, pr_state, checks, coverage, pipeline, reason_codes, blockers, findings
 ) -> str | None:
@@ -1159,7 +1172,9 @@ def evaluate_ready_preconditions_v2(
     Content-free: names a rule, never a value.
     """
 
-    if pr_state is not PullRequestStateV2.OPEN:
+    if not ready_state_allows_pull_request_v2(
+        state=ReadinessStateV2.READY, pr_state=pr_state
+    ):
         return READY_REQUIRES_OPEN_PR_REASON_V2
     if not checks or any(
         check.conclusion is not RequiredCheckConclusionV2.SUCCESS for check in checks

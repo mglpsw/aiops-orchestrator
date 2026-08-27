@@ -502,6 +502,10 @@ _CLOSED_AUTHORITY_MODULES = (
     "payload_references_v2",
     "payload_set_emission_v2",
     "review_content_extraction_v2",
+    # added after review: `review_content_v2` is reachable through the
+    # extraction wrapper's `ReviewContentBindingError` conversion, so a broad
+    # catch there is operator-facing too. The guard could not see it before.
+    "review_content_v2",
     "review_readiness_emission_v2",
 )
 

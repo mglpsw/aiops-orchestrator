@@ -460,7 +460,12 @@ def bind_review_content_to_manifest_v2(content: ReviewContentV2, manifest: Manif
 
     try:
         verify_review_content_sha256_v2(content)
-    except Exception as exc:
+    except ValueError as exc:
+        # Narrowed from `except Exception` for the same reason as the digest
+        # verifiers in `payload_set_emission_v2`: a `TypeError` from a defect
+        # INSIDE the verifier would have been reported to an operator as a
+        # content-set hash mismatch. Tampering surfaces as a contract or
+        # serialization failure, both `ValueError`; a defect must stay a crash.
         raise ReviewContentBindingError(CONTENT_SET_HASH_MISMATCH_REASON_V2) from exc
 
 

@@ -606,7 +606,12 @@ def test_cli_rejects_a_decision_replayed_from_a_different_run(tmp_path: Path) ->
 
     result = _run(_base_args(paths, output_path))
 
-    _assert_reached_the_independent_judge_gate(result)
+    # `#200-D`: the `#145` provenance check now runs at the public entry,
+    # BEFORE the material epoch and therefore before the `#201-C0`
+    # verification. The replay is still refused -- the property this test
+    # protects -- and with the specific reason `#145` introduced rather than
+    # whichever later gate happened to trip first.
+    assert "readiness_emission_decision_provenance_mismatch" in result.stderr, result.stderr
     assert not output_path.exists()
 
 
@@ -625,7 +630,12 @@ def test_cli_rejects_a_decision_with_matching_run_id_but_divergent_manifest_hash
 
     result = _run(_base_args(paths, output_path))
 
-    _assert_reached_the_independent_judge_gate(result)
+    # `#200-D`: the `#145` provenance check now runs at the public entry,
+    # BEFORE the material epoch and therefore before the `#201-C0`
+    # verification. The replay is still refused -- the property this test
+    # protects -- and with the specific reason `#145` introduced rather than
+    # whichever later gate happened to trip first.
+    assert "readiness_emission_decision_provenance_mismatch" in result.stderr, result.stderr
     assert not output_path.exists()
 
 

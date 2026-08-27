@@ -94,8 +94,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from pydantic import ValidationError
-
 from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
 from app.agent_review.contracts_v2 import (
     FindingLifecycleRecordV2,
@@ -105,6 +103,7 @@ from app.agent_review.contracts_v2 import (
     ReviewReadinessV2,
     RunIdentityV2,
     READY_REQUIRES_OPEN_PR_REASON_V2,
+    ready_state_allows_pull_request_v2,
     evaluate_readiness_common_material_v2,
     RunOriginV2,
     compute_run_id,
@@ -126,6 +125,20 @@ class ReadinessEmissionError(ValueError):
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
+
+
+
+def _decision_provenance_matches_v2(*, decision, evaluated_identity) -> bool:
+    """`#145`: is this decision the one computed for THIS run?
+
+    Defined once and called from both the public entry and the assembler, so
+    the two cannot disagree about what a replay is.
+    """
+
+    return (
+        decision.run_id == compute_run_id(evaluated_identity)
+        and decision.manifest_hash == evaluated_identity.manifest_hash
+    )
 
 
 def produce_review_readiness_v2(
@@ -171,6 +184,17 @@ def produce_review_readiness_v2(
     any required-check claim non-current, so there is nothing legitimate
     to verify it against.
     """
+
+    # `#145`'s decision-provenance check runs FIRST: a decision replayed from a
+    # different run is a more specific fault than a generic material violation,
+    # and letting the material check preempt it silently downgraded that
+    # diagnosis.
+    if not _decision_provenance_matches_v2(
+        decision=decision, evaluated_identity=evaluated_identity
+    ):
+        raise ReadinessEmissionError(
+            READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2
+        )
 
     # ---------------- EPOCH 1: caller material ----------------
     #
@@ -275,8 +299,16 @@ def _assemble_review_readiness_v2(
     a real gap a Codex review of #145 found.
     """
 
-    if decision.run_id != compute_run_id(evaluated_identity) or decision.manifest_hash != evaluated_identity.manifest_hash:
-        raise ReadinessEmissionError(READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2)
+    # `#145`: the assembler keeps its own provenance guard as well as the
+    # public entry's. They call the SAME predicate, so they cannot disagree,
+    # and a direct caller of this private assembler is still protected.
+    if not _decision_provenance_matches_v2(
+        decision=decision, evaluated_identity=evaluated_identity
+    ):
+        raise ReadinessEmissionError(
+            READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2
+        )
+
 
     # `pr_state` is CALLER material and is never transformed, so a decision
     # that is STILL `READY` here -- after the assessment has had its say --
@@ -286,7 +318,7 @@ def _assemble_review_readiness_v2(
     # downgrades to `manual_required`, destroying a valid artifact. That is the
     # same reasoning that keeps the other four preconditions out of the
     # pre-seal epoch, and an earlier revision applied it inconsistently.
-    if decision.state is ReadinessStateV2.READY and pr_state is not PullRequestStateV2.OPEN:
+    if not ready_state_allows_pull_request_v2(state=decision.state, pr_state=pr_state):
         raise ReadinessEmissionError(READY_REQUIRES_OPEN_PR_REASON_V2)
 
     # Derivation happens HERE, before the seal, so a defect in it cannot be

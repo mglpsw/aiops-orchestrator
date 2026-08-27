@@ -438,10 +438,10 @@ def test_ready_precondition_authority_has_exactly_two_callers() -> None:
         for source in package_root.glob("*.py")
         if "evaluate_ready_preconditions_v2(" in source.read_text(encoding="utf-8")
     )
-    # `contracts_v2` hosts the rule and consults it from both
-    # `validate_state_invariants` and `evaluate_readiness_submitted_material_v2`;
-    # the emission owner consults the submitted-material authority, not this
-    # one directly. A fourth site would be a duplicated derivation.
+    # `contracts_v2` hosts the rule; the emission owner reaches the one
+    # precondition it can decide through `ready_state_allows_pull_request_v2`,
+    # not by calling this function. A second site here would be a duplicated
+    # derivation of the full five-rule set.
     assert call_sites == ["contracts_v2.py"], call_sites
 
 

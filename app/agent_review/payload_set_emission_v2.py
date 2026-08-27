@@ -209,9 +209,15 @@ def emit_payload_set_v2(manifest: ManifestV2, payloads: Sequence[ChunkPayloadV2]
     before returning: a producer that (through a bug) built a tampered or
     incoherent payload must not silently mint a set that certifies it.
 
-    Public boundary (`#200-D` predecessor): every EXPECTED failure is a
-    ``PayloadSetBindingError``. Callers do not need to know that this
-    authority constructs a pydantic model to do its work.
+    Public boundary (`#200-D` predecessor): an empty submission and every
+    cross-object disagreement are ``PayloadSetBindingError``.
+
+    One narrowing, stated rather than implied: entries are CONSTRUCTED before
+    ``bind_payload_set_to_payloads_v2`` runs, so a caller-tampered
+    ``payload_sha256`` that violates the entry contract fails at construction
+    as a ``ValidationError``. On the operational path the payload owner
+    validates digests before a set is ever emitted, so this is reachable only
+    by calling here with hand-built payloads.
     """
 
     # ---------------- EPOCH 1: caller material ----------------

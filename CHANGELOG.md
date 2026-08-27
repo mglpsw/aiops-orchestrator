@@ -437,8 +437,13 @@
   contract's own `GitSha`/`Sha256` types, the content check validates against
   `ReviewableContentTextV2` itself, and the `ready` preconditions live once in
   `contracts_v2` where both the artifact's validator and the emission owner
-  consult them. That also restores operator discrimination — `ready`+merged-PR
-  and `ready`-without-green-checks are distinct reasons again. Reason codes
+  consult them. Operator discrimination is restored for the one `ready`
+  precondition decidable outside the contract — `ready_requires_open_pr`,
+  since `pr_state` is caller material and never transformed. The other four
+  depend on values the required-check assessment replaces or adjusts, so they
+  remain contract invariants and reach a CLI operator as a single
+  `readiness_invariant_violation`. That is a narrowing of the earlier claim,
+  not a restoration of it. Reason codes
   whose only purpose was laundering are deleted.
 
 - **Closed authority error surfaces (`#200-D` predecessor)**: six independent

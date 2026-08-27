@@ -261,6 +261,14 @@ an incoherent state — a defect, correctly raw. `ready_requires_green_checks` i
 therefore no longer a pre-seal refusal, and that is a deliberate, recorded
 narrowing rather than a regression.
 
+Stated plainly, because an earlier draft of this checkpoint overclaimed it:
+**one** of the five `ready` codes reaches an operator as a named reason. The
+other four are the contract validator's internal vocabulary and surface
+through the quality-gate CLI as a single `readiness_invariant_violation`.
+Recovering more would require either string-matching pydantic messages or
+re-implementing contract knowledge in the emitter, both of which this design
+rejects.
+
 ### Taxonomy
 
 `readiness_material_invalid` is deleted: it could not be given an honest narrow
