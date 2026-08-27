@@ -87,7 +87,7 @@ Nothing fabricates a snapshot, an origin or a digest to make a run succeed.
 
 ## Reason-code taxonomy
 
-Every refusal reuses the originating authority's own `reason_code`. Five codes
+Every refusal reuses the originating authority's own `reason_code`. Eight codes
 are new because no upstream authority owns the condition, each namespaced so it
 cannot be mistaken for an upstream code:
 
@@ -103,7 +103,19 @@ cannot be mistaken for an upstream code:
 - `operational_repo_root_unusable` — the checkout is missing or unusable; the
   underlying `OSError` stringifies the local path, so only the code crosses;
 - `readiness_invariant_violation` — the readiness artifact violated its own
-  contract; its pydantic message embeds finding content.
+  contract; its pydantic message embeds finding content;
+- `operational_run_budget_invalid` — a caller-supplied chunk budget that cannot
+  describe a chunk; the planner raises a bare `ValueError` for it;
+- `operational_git_toolchain_unavailable` — diff acquisition could not run at
+  all, typically no `git` on PATH. An environment failure, deliberately
+  distinct from an input failure;
+- `operational_payload_reference_unreadable` — a declared artifact/contract
+  reference exists but could not be read;
+- `assembly_blocked` — fallback when assembly reports a block with no reason
+  object of its own.
+
+(That is nine names for eight new conditions: `assembly_blocked` is a fallback,
+not a distinct condition.)
 
 ## Earliest-authority precedence, proved by discrimination
 
@@ -201,6 +213,46 @@ checkout are refused before any authority is asked to interpret them -- which
 is what lets the remaining `OSError` guard stay narrow enough to distinguish
 "no such checkout" from "no `git` on PATH", a distinction a blanket guard had
 silently conflated.
+
+## STOP — the error model needs a design decision (`STOP_ARCHITECTURAL_BOUNDARY`)
+
+Six independent exact-HEAD review rounds each surfaced the same class: a stage's
+`except` list is narrower than the exception surface beneath it. Two structural
+attempts reduced but did not close it — validating caller inputs where they
+enter (round 4), then separating input-parsing from authority-delegation rules
+(round 5). Round 6 still found three more:
+
+```text
+extraction stage   catches ExtractionBlockedError, but not the sibling
+                   ReviewContentBindingError nor pydantic ValidationError
+payload stage      lacks the ValidationError clause assembly and payload-set
+                   both have
+git OSError        every OSError reads as "no git on PATH", so a
+                   PermissionError on repo_root misdirects the operator
+```
+
+The root cause is not any of these three. It is that this module converts
+errors by **enumerating, per stage, the exception types it has seen** — while
+each upstream v2 authority has an *open* exception surface: a sibling error
+family, a pydantic `ValidationError`, an `OSError` from a file read it does not
+guard. None of those surfaces is documented or closed, so no amount of
+inspection enumerates them correctly; each review round finds one more.
+
+Closing it properly means choosing an error model, which is a design decision
+this slice was not granted:
+
+- **A. Single conversion wrapper.** One `_delegate(...)` around every authority
+  call, converting anything carrying a `reason_code`, and allow-listing only
+  what may crash (programmer errors). Removes the per-stage lists entirely.
+- **B. Close the upstream surfaces.** Make each v2 authority raise only its own
+  typed family. Correct, but edits ~8 modules outside this slice's grant.
+- **C. Accept enumeration** and add a conformance test asserting every
+  delegation is guarded. Cheapest; does not prevent the next omission.
+
+The composition itself is not in question — six rounds have confirmed stage
+order, non-duplication, profile-derived authority, the preparation closure and
+the provider-free proof. What is unresolved is only how this module converts
+other modules' failures. Recorded rather than patched a seventh time.
 
 ## Scope fence
 

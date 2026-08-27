@@ -283,10 +283,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {OUTPUT_UNWRITABLE_REASON_V2}", file=sys.stderr)
         return REFUSAL_EXIT_CODE
 
-    # stdout carries the decision and any run-level limitations -- both are
-    # already-sanitized identifiers, never review material. Dropping the
-    # limitations here would re-create the "silently absorbed" condition the
-    # payload builder explicitly contracts against.
+    # stdout carries the DECISION only, so it stays machine-parseable.
+    # Limitations go to stderr alongside any `error:` line -- they are
+    # already-sanitized identifiers, never review material. Dropping them
+    # would re-create the "silently absorbed" condition the payload builder
+    # explicitly contracts against.
     for limitation in outcome.prepared.payload_limitations:
         print(f"limitation: {limitation}", file=sys.stderr)
     print(outcome.review.readiness.state.value)
