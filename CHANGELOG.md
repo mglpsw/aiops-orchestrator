@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Added
+
+- **AgentReview v2 operational composition (`#200-D`)**: the v2 core becomes
+  invokable from a real repository checkout. `run_synthetic_review_v2` already
+  owned the entire back half and already accepted either transport, but had no
+  caller anywhere in `app/` or `scripts/` because its three inputs had no
+  producer; that wiring existed only inside tests. `operational_run_v2` is that
+  producer and nothing more -- profile load, grouping-policy binding,
+  authoritative git diff acquisition, manifest assembly, profile-derived
+  payloads, manifest/payload closure via the existing `emit_payload_set_v2`,
+  redacted content extraction, then a content/payload chunk-set closure that
+  turns what would otherwise be a raw `KeyError` inside the back half into a
+  typed refusal before any transport exists to be called. No stage is
+  re-implemented and `run_synthetic_review_v2` is unmodified. `policies` and the
+  repository identity are derived from the loaded profile; `origin`,
+  `pr_state`, `toolchain_digest` are caller-owned; the CI snapshot may only
+  arrive through `parse_authoritative_ci_snapshot_v2`. Contract-invalid run
+  identity, which surfaces from assembly as a pydantic `ValidationError` rather
+  than a `RunAssemblyError`, is converted to a typed
+  `operational_run_identity_invalid` instead of escaping as a traceback.
+  `scripts/aiops-review-run-v2.py` is a thin CLI over that authority with
+  `offline` and `router` transport modes; the Router credential is read from the
+  environment only, never argv, and the only persisted artifact is the existing
+  `ReviewReadinessV2`. Proved provider-free end to end against a real temporary
+  git repository with real commits: only the network seam is mocked, a
+  token-shaped literal in the diff is proved redacted in the actual outgoing
+  request bytes, and a semantic result with no trusted check authority
+  degrades honestly to a non-`ready` readiness rather than being weakened to
+  pass. No public schema changed; no workflow, target pack, live Router or
+  provider call is part of this slice.
+
 ### Fixed
 
 - **AgentReview v2 Router receipt-v2 wire binding (`#200-C-WIRE`)**:

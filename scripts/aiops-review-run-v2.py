@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Execute one AgentReview v2 operational review from a real checkout (`#200-D`).
+
+Thin wiring around ``operational_run_v2.run_operational_review_v2`` -- this
+CLI holds no pipeline semantics. It parses explicit inputs, loads canonical
+artifacts through the parsers that already own them, selects an existing
+transport, calls the library, and writes the existing ``ReviewReadinessV2``
+artifact. It interprets no profile, acquires no diff, extracts no content,
+parses no Router response and computes no readiness.
+
+Transport modes:
+
+* ``offline`` -- ``offline_file_transport_v2`` over a directory of
+  pre-placed ``ChunkReviewTransportEnvelopeV1`` documents;
+* ``router``  -- ``agent_router_transport_v2``. The credential is read from
+  the environment (default ``AGENT_ROUTER_API_KEY``), never from argv, and
+  is never printed or persisted. A missing key fails through the transport's
+  own ``router_disabled`` semantics.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from pydantic import ValidationError  # noqa: E402
+
+from app.agent_review.authoritative_ci_snapshot_v2 import (  # noqa: E402
+    parse_authoritative_ci_snapshot_v2,
+)
+from app.agent_review.contracts_v2 import PullRequestStateV2, RunOriginV2  # noqa: E402
+from app.agent_review.operational_run_v2 import (  # noqa: E402
+    OperationalRunError,
+    run_operational_review_v2,
+)
+from app.agent_review.review_transport_v2 import (  # noqa: E402
+    agent_router_transport_v2,
+    offline_file_transport_v2,
+)
+from app.agent_review.semantic_grouping_policy_v2 import (  # noqa: E402
+    SemanticGroupingPolicyV2,
+)
+
+CONTRACT_VERSION_INVALID_REASON_V2 = "contract_version_invalid"
+INPUT_INVALID_REASON_V2 = "input_invalid"
+TRANSPORT_MODE_INVALID_REASON_V2 = "transport_mode_invalid"
+
+DEFAULT_ROUTER_API_KEY_ENV = "AGENT_ROUTER_API_KEY"
+
+
+class RunCliError(ValueError):
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="run one AgentReview v2 operational review")
+    parser.add_argument("--contract-version", required=True, help="must be exactly 'v2'")
+    parser.add_argument("--repo-root", required=True, help="checkout under review")
+    parser.add_argument(
+        "--target-profile",
+        required=True,
+        help="TRUSTED base/default checkout containing .aiops/target-profile.v2.yaml",
+    )
+    parser.add_argument("--grouping-policy", required=True, help="JSON: SemanticGroupingPolicyV2")
+    parser.add_argument("--base-sha", required=True)
+    parser.add_argument("--head-sha", required=True)
+    parser.add_argument("--tested-merge-sha", required=True)
+    parser.add_argument("--pr-number", required=True, type=int)
+    parser.add_argument("--toolrepo-sha", required=True)
+    parser.add_argument("--evidence-hash", required=True)
+    parser.add_argument("--max-lines-per-chunk", required=True, type=int)
+    parser.add_argument("--pr-state", required=True, choices=["open", "closed", "merged"])
+    parser.add_argument("--run-origin", required=True, help="JSON: RunOriginV2")
+    parser.add_argument(
+        "--checks-snapshot",
+        required=True,
+        help="AuthoritativeCheckSnapshotV2 JSON, parsed by its canonical parser",
+    )
+    parser.add_argument("--toolchain-digest", required=True)
+    parser.add_argument("--transport", required=True, choices=["offline", "router"])
+    parser.add_argument("--offline-responses-dir", help="offline mode: transport envelope directory")
+    parser.add_argument("--router-base-url", help="router mode: Agent Router base URL")
+    parser.add_argument("--router-model", help="router mode: logical review preset")
+    parser.add_argument(
+        "--router-api-key-env",
+        default=DEFAULT_ROUTER_API_KEY_ENV,
+        help=f"env var holding the Router credential (default {DEFAULT_ROUTER_API_KEY_ENV})",
+    )
+    parser.add_argument("--output", required=True, help="path to write the ReviewReadinessV2 JSON")
+    return parser.parse_args(argv)
+
+
+def _read_json(path: str) -> object:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RunCliError(INPUT_INVALID_REASON_V2) from exc
+
+
+def _build_transport(args: argparse.Namespace):
+    """Select an EXISTING transport. This CLI never implements one."""
+
+    if args.transport == "offline":
+        if not args.offline_responses_dir:
+            raise RunCliError(TRANSPORT_MODE_INVALID_REASON_V2)
+        return offline_file_transport_v2(Path(args.offline_responses_dir))
+
+    if not args.router_base_url or not args.router_model:
+        raise RunCliError(TRANSPORT_MODE_INVALID_REASON_V2)
+    # Credential from the environment only: never argv, never echoed, never
+    # written. An absent key is not an error here -- the transport itself
+    # refuses with `router_disabled`, which is the established semantics.
+    return agent_router_transport_v2(
+        base_url=args.router_base_url,
+        api_key=os.environ.get(args.router_api_key_env),
+        model=args.router_model,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    try:
+        if args.contract_version != "v2":
+            raise RunCliError(CONTRACT_VERSION_INVALID_REASON_V2)
+
+        try:
+            grouping_policy = SemanticGroupingPolicyV2.model_validate(
+                _read_json(args.grouping_policy)
+            )
+            origin = RunOriginV2.model_validate(_read_json(args.run_origin))
+        except ValidationError as exc:
+            raise RunCliError(INPUT_INVALID_REASON_V2) from exc
+
+        try:
+            snapshot = parse_authoritative_ci_snapshot_v2(
+                Path(args.checks_snapshot).read_bytes()
+            )
+        except OSError as exc:
+            raise RunCliError(INPUT_INVALID_REASON_V2) from exc
+
+        outcome = run_operational_review_v2(
+            repo_root=Path(args.repo_root),
+            target_profile_root=Path(args.target_profile),
+            grouping_policy=grouping_policy,
+            base_sha=args.base_sha,
+            head_sha=args.head_sha,
+            tested_merge_sha=args.tested_merge_sha,
+            pr_number=args.pr_number,
+            toolrepo_sha=args.toolrepo_sha,
+            evidence_hash=args.evidence_hash,
+            transport=_build_transport(args),
+            pr_state=PullRequestStateV2(args.pr_state),
+            origin=origin,
+            snapshot=snapshot,
+            toolchain_digest=args.toolchain_digest,
+            max_lines_per_chunk=args.max_lines_per_chunk,
+        )
+    except (RunCliError, OperationalRunError) as exc:
+        # Bounded, sanitized: a stable reason code only. Never the diff, the
+        # content, the messages, the Router body or the credential.
+        print(f"error: {exc.reason_code}", file=sys.stderr)
+        return 2
+
+    Path(args.output).write_text(
+        outcome.review.readiness.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    # stdout carries the decision only, never review material.
+    print(outcome.review.readiness.state.value)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
