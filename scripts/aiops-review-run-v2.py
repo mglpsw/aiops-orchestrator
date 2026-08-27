@@ -65,6 +65,11 @@ INPUT_INVALID_REASON_V2 = "input_invalid"
 TRANSPORT_MODE_INVALID_REASON_V2 = "transport_mode_invalid"
 OUTPUT_UNWRITABLE_REASON_V2 = "output_unwritable"
 
+# 1, matching both sibling v2 CLIs. 2 is argparse's usage-error code, so
+# reusing it would make "you passed the wrong flags" indistinguishable from
+# "the review refused".
+REFUSAL_EXIT_CODE = 1
+
 DEFAULT_ROUTER_API_KEY_ENV = "AGENT_ROUTER_API_KEY"
 
 
@@ -200,14 +205,24 @@ def main(argv: list[str] | None = None) -> int:
                 if args.dlp_policy
                 else None
             )
-        except (ValidationError, TypeError) as exc:
-            raise RunCliError(INPUT_INVALID_REASON_V2) from exc
-        except ValueError as exc:
-            # e.g. `dlp_policy_not_host_owned` -- preserve the specific code.
+        except (ValidationError, TypeError, ValueError) as exc:
+            # TWO BOUNDARIES, TWO RULES -- conflating them is what kept
+            # producing untyped escapes:
+            #
+            #   input parsing (here)   -- the operator handed us a file. ANY
+            #       parse failure is their input, so it is always a typed
+            #       refusal. A codeless `ValueError` (e.g. a bare JSON string
+            #       reaching `dict(raw)`) is bad input, not a defect.
+            #   authority delegation   -- a v2 module refused. Preserve ITS
+            #       code; a codeless failure there really is our defect and
+            #       must stay a crash.
+            #
+            # A specific code is still preferred when the authority supplied
+            # one, so `dlp_policy_not_host_owned` is not flattened away.
             reason_code = getattr(exc, "reason_code", None)
-            if not isinstance(reason_code, str) or not reason_code:
-                raise
-            raise RunCliError(reason_code) from exc
+            if isinstance(reason_code, str) and reason_code:
+                raise RunCliError(reason_code) from exc
+            raise RunCliError(INPUT_INVALID_REASON_V2) from exc
 
         try:
             snapshot = parse_authoritative_ci_snapshot_v2(
@@ -250,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
 
     except (RunCliError, OperationalRunError, ChunkTransportError) as exc:
         print(f"error: {exc.reason_code}", file=sys.stderr)
-        return 2
+        return REFUSAL_EXIT_CODE
 
     # Outside the refusal block, and narrowed to the write itself: a blanket
     # `except OSError` around the whole run would report `output_unwritable`
@@ -266,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except OSError:
         print(f"error: {OUTPUT_UNWRITABLE_REASON_V2}", file=sys.stderr)
-        return 2
+        return REFUSAL_EXIT_CODE
 
     # stdout carries the decision and any run-level limitations -- both are
     # already-sanitized identifiers, never review material. Dropping the

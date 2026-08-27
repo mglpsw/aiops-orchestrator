@@ -119,8 +119,11 @@ from app.agent_review.semantic_grouping_policy_v2 import (
 )
 
 __all__ = [
+    "ASSEMBLY_BLOCKED_REASON_V2",
     "OperationalReviewOutcomeV2",
     "OperationalRunError",
+    "PAYLOAD_REFERENCE_UNREADABLE_REASON_V2",
+    "PREPARATION_CHUNK_SET_MISMATCH_REASON_V2",
     "PAYLOAD_SET_INVALID_REASON_V2",
     "READINESS_INVARIANT_VIOLATION_REASON_V2",
     "GIT_TOOLCHAIN_UNAVAILABLE_REASON_V2",
@@ -166,6 +169,9 @@ REPO_ROOT_UNUSABLE_REASON_V2 = "operational_repo_root_unusable"
 
 # A caller-supplied run budget that cannot describe a chunk.
 RUN_BUDGET_INVALID_REASON_V2 = "operational_run_budget_invalid"
+
+# A declared artifact/contract reference exists but could not be read.
+PAYLOAD_REFERENCE_UNREADABLE_REASON_V2 = "operational_payload_reference_unreadable"
 
 # Diff acquisition could not run at all -- typically no `git` on PATH. An
 # environment failure, deliberately distinct from an input failure.
@@ -322,6 +328,13 @@ def prepare_operational_review_v2(
         built = build_chunk_payloads_from_profile_v2(
             manifest, profile=profile, repo_root=repo_root
         )
+    except OSError as exc:
+        # `build_payload_contract_references_v2` reads a contract file without
+        # its own `OSError` guard (the artifact branch beside it has one).
+        # That upstream asymmetry is recorded as a follow-up, but the missing
+        # clause HERE is this module's: an unreadable contract file must not
+        # leak a traceback carrying the absolute path through this boundary.
+        raise OperationalRunError(PAYLOAD_REFERENCE_UNREADABLE_REASON_V2) from exc
     except (PayloadBuilderError, PayloadReferenceError) as exc:
         # `PayloadReferenceError` is a SIBLING family, not a subclass: the
         # builder reaches `payload_references_v2`, which refuses a missing

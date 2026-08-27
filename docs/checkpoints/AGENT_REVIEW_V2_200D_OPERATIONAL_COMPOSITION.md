@@ -155,10 +155,37 @@ a raw traceback carrying the absolute path. Classified `PLAUSIBLE` by review
 (needs a non-root runner or a TOCTOU window) and reproduced only under those
 conditions.
 
-It is NOT fixed here because the defect is in an upstream authority this slice
-only consumes; patching it would put `#200-D` inside a module outside its
-granted surface. Recorded as an upstream follow-up alongside the two carried
-from PR #270.
+The upstream asymmetry is NOT fixed here: patching it would put `#200-D` inside
+a module outside its granted surface. But recording it did not excuse the
+missing clause at *this* module's own call site, which review correctly
+separated — an unreadable contract file now refuses as
+`operational_payload_reference_unreadable` instead of leaking a traceback with
+the absolute path. The upstream gap remains a follow-up alongside the two
+carried from PR #270.
+
+## The rule that finally closed it — two boundaries, two rules
+
+Four rounds produced an untyped escape each time, and rounds 3–4's fixes were
+still instance-shaped. The reason was a single rule applied to two different
+boundaries:
+
+```text
+INPUT PARSING          the operator handed us a file or a value.
+(CLI reading argv,     ANY failure is their input -> always a typed refusal.
+ files, JSON)          A codeless ValueError here is bad input, not our bug.
+
+AUTHORITY DELEGATION   a v2 module refused. Preserve ITS reason_code; a
+(calling into          codeless failure really is a defect in this
+ app/agent_review)     repository and must stay a crash.
+```
+
+Treating a codeless failure as "our defect, re-raise" is correct only at the
+second boundary. Applied at the first it turned a malformed operator file into
+a traceback -- which is exactly how `--dlp-policy '"a string"'` escaped after
+round 4 claimed the class was closed.
+
+Recording the boundaries, not just the patches, is what stops the next slice
+re-deriving this.
 
 ## Recurrence note — how the refusal-path class was finally closed
 

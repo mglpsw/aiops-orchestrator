@@ -1121,7 +1121,7 @@ def test_cli_main_degrades_when_the_router_credential_is_absent(
             "--output", str(tmp_path / "out.json"),
         ]
     )
-    assert rc == 2
+    assert rc == module.REFUSAL_EXIT_CODE
     err = capsys.readouterr().err
     assert err.strip() == "error: router_disabled"
     assert "Traceback" not in err
@@ -1162,7 +1162,7 @@ def test_cli_main_refuses_a_malformed_checks_snapshot(
             "--output", str(tmp_path / "out.json"),
         ]
     )
-    assert rc == 2
+    assert rc == module.REFUSAL_EXIT_CODE
     err = capsys.readouterr().err
     assert err.startswith("error: ")
     assert "Traceback" not in err
@@ -1248,7 +1248,7 @@ def test_cli_unwritable_output_is_a_typed_refusal_not_a_traceback(
             ]
         )
 
-    assert rc == 2
+    assert rc == module.REFUSAL_EXIT_CODE
     err = capsys.readouterr().err
     assert err.strip() == "error: output_unwritable"
     assert "Traceback" not in err
@@ -1479,7 +1479,7 @@ def test_cli_forwards_check_claims_to_the_library(
             "--output", str(tmp_path / "out.json"),
         ]
     )
-    assert rc == 2
+    assert rc == module.REFUSAL_EXIT_CODE
     assert "checks" in seen and "provenance" in seen
 
 
@@ -1702,7 +1702,7 @@ def test_cli_dlp_policy_uses_the_canonical_host_ownership_loader(
             "--output", str(tmp_path / "out.json"),
         ]
     )
-    assert rc == 2
+    assert rc == module.REFUSAL_EXIT_CODE
     assert capsys.readouterr().err.strip() == "error: dlp_policy_not_host_owned"
 
 
@@ -1759,3 +1759,147 @@ def test_cli_actually_parses_check_claim_files(
     assert len(seen["checks"]) == 1
     assert len(seen["provenance"]) == 1
     assert seen["checks"][0].check_name == "pytest"
+
+
+# -- review round 5 (exact head ad312df) ------------------------------------
+
+
+def test_cli_refusal_exit_code_does_not_collide_with_argparse(tmp_path: Path) -> None:
+    """R5-F3: refusals exited 2, which is argparse's usage-error code, making
+    "you passed the wrong flags" indistinguishable from "the review refused".
+    Both sibling v2 CLIs use 1."""
+
+    module = _run_cli([])
+    assert module.REFUSAL_EXIT_CODE == 1
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param('"just a string"', id="bare_string"),
+        pytest.param("[1, 2, 3]", id="array"),
+        pytest.param("42", id="number"),
+        pytest.param("null", id="null"),
+    ],
+)
+def test_cli_non_object_dlp_policy_is_a_typed_refusal(
+    tmp_path: Path, capsys: pytest.CaptureFixture, document: str
+) -> None:
+    """R5-F1, and the rule this corrects.
+
+    ``load_dlp_policy_declaration_v2`` raises a CODELESS ``ValueError`` from
+    ``dict(raw)`` for a non-object document. The previous rule -- "codeless
+    means our defect, so re-raise" -- was right for authority delegation and
+    wrong here: at an INPUT-PARSING boundary the operator handed us the file,
+    so any parse failure is their input, not our bug.
+    """
+
+    module = _run_cli([])
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    policy = tmp_path / "g.json"
+    policy.write_text(_grouping_policy().model_dump_json(), encoding="utf-8")
+    origin = tmp_path / "o.json"
+    origin.write_text(
+        json.dumps({"event_type": "pull_request", "event_action": "synchronize",
+                    "delivery_id": "d1"}),
+        encoding="utf-8",
+    )
+    from tests.agent_review.test_aiops_review_quality_gate_v2_cli import _snapshot_dict
+
+    snap = tmp_path / "s.json"
+    snap.write_text(json.dumps(_snapshot_dict([])), encoding="utf-8")
+    dlp = tmp_path / "dlp.json"
+    dlp.write_text(document, encoding="utf-8")
+
+    rc = module.main(
+        [
+            "--contract-version", "v2", "--repo-root", str(repo),
+            "--target-profile", str(repo), "--grouping-policy", str(policy),
+            "--base-sha", base_sha, "--head-sha", head_sha,
+            "--tested-merge-sha", head_sha, "--pr-number", "1",
+            "--toolrepo-sha", "b" * 40, "--evidence-hash", "c" * 64,
+            "--max-lines-per-chunk", "1000", "--pr-state", "open",
+            "--run-origin", str(origin), "--checks-snapshot", str(snap),
+            "--dlp-policy", str(dlp),
+            "--toolchain-digest", "e" * 64, "--transport", "offline",
+            "--offline-responses-dir", str(tmp_path),
+            "--output", str(tmp_path / "out.json"),
+        ]
+    )
+    err = capsys.readouterr().err
+    assert rc == module.REFUSAL_EXIT_CODE
+    assert err.startswith("error: ")
+    assert "Traceback" not in err
+    assert str(repo) not in err
+
+
+def test_unreadable_contract_reference_is_a_typed_refusal_without_the_path(
+    tmp_path: Path,
+) -> None:
+    """R5-F2: recording the upstream asymmetry did not excuse the missing
+    clause at THIS call site. An unreadable-but-present contract file must not
+    leak a traceback carrying the absolute local path."""
+
+    from app.agent_review.operational_run_v2 import (
+        PAYLOAD_REFERENCE_UNREADABLE_REASON_V2,
+        prepare_operational_review_v2,
+    )
+
+    repo, base_sha, head_sha = _build_real_repo(tmp_path)
+    contract_path = repo / ".aiops" / "domain-contracts.yaml"
+    contract_path.write_text("contract: body\n", encoding="utf-8")
+    digest = hashlib.sha256(contract_path.read_bytes()).hexdigest()
+    (repo / ".aiops" / "target-profile.v2.yaml").write_text(
+        _profile_yaml().replace(
+            "contracts: []",
+            "contracts:\n"
+            "  - contract_id: contract.api\n"
+            '    contract_version: "1"\n'
+            "    path: .aiops/domain-contracts.yaml\n"
+            f'    sha256: "{digest}"\n'
+            "    scope: repository\n"
+            "    required: true",
+        ),
+        encoding="utf-8",
+    )
+
+    real_read_bytes = Path.read_bytes
+
+    def _unreadable(self, *args, **kwargs):
+        if self.name == "domain-contracts.yaml":
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read_bytes(self, *args, **kwargs)
+
+    with mock.patch.object(Path, "read_bytes", _unreadable):
+        with pytest.raises(OperationalRunError) as excinfo:
+            prepare_operational_review_v2(
+                repo_root=repo, target_profile_root=repo,
+                grouping_policy=_grouping_policy(), base_sha=base_sha,
+                head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+                toolrepo_sha="b" * 40, evidence_hash="c" * 64,
+                max_lines_per_chunk=1000,
+            )
+    assert excinfo.value.reason_code == PAYLOAD_REFERENCE_UNREADABLE_REASON_V2
+    assert str(repo) not in excinfo.value.reason_code
+
+
+def test_module_exports_every_reason_code_it_owns() -> None:
+    """R5-F4: ``__all__`` omitted the one code the module documents as its
+    own, while exporting the other five."""
+
+    import ast
+
+    from app.agent_review import operational_run_v2 as module
+
+    # DEFINED here, not imported: codes this module merely reuses from
+    # `review_content_v2` belong to that module's export surface, not ours.
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    owned = {
+        target.id
+        for node in ast.parse(source).body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name) and target.id.endswith("_REASON_V2")
+    }
+    assert owned, "no reason codes found -- the check would be vacuous"
+    assert owned <= set(module.__all__), sorted(owned - set(module.__all__))
