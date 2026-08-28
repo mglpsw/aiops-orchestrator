@@ -160,7 +160,21 @@ def test_extract_review_content_never_receives_the_original_target_root(tmp_path
 
 # ---- §10: trusted profile TOCTOU ----------------------------------------
 
-def test_profile_is_loaded_exactly_once_and_reused(tmp_path: Path):
+def test_composers_own_profile_call_site_reads_once(tmp_path: Path):
+    """NOTE (correction, found by independent review lane B): this only
+    proves THIS composer's own call site (`operational_run_v2.
+    load_target_profile_v2`) reads once. It is NOT proof the profile is
+    read from disk exactly once across the whole run -- it is not:
+    `produce_review_readiness_v2` -> `_verify_and_assess_required_checks_v2`
+    (`required_check_readiness_v2.py:307`, an unmodified pre-existing owner)
+    does its OWN separate `load_target_profile_v2` read, using its own
+    imported reference, invisible to a mock on this module's reference. The
+    real safety net against that second read observing a DIFFERENT profile
+    than this composer bound `manifest.identity.profile_hash` to is hash
+    binding (`compute_profile_hash_v2(profile) != identity.profile_hash`),
+    not single-read discipline -- see
+    `test_second_profile_read_divergence_is_caught_by_hash_binding` below,
+    which proves that net actually catches a divergence."""
     repo, base_sha, head_sha = _build_real_target(tmp_path)
     responses_dir = tmp_path / "responses"
     responses_dir.mkdir()
@@ -179,7 +193,53 @@ def test_profile_is_loaded_exactly_once_and_reused(tmp_path: Path):
     with mock.patch.object(mod, "load_target_profile_v2", side_effect=_wrapped):
         run_operational_review_v2(inputs)
 
-    assert len(calls) == 1, "the trusted profile must be captured once and reused, not re-read"
+    assert len(calls) == 1, (
+        "this composer's own load_target_profile_v2 call site must be captured once and reused, "
+        "not re-read -- see this test's docstring for what this does NOT prove"
+    )
+
+
+def test_second_profile_read_divergence_is_caught_by_hash_binding(tmp_path: Path):
+    """The real TOCTOU safety net: `required_check_readiness_v2.py`'s own,
+    separate `load_target_profile_v2` read binds its result to
+    `identity.profile_hash` (computed from THIS composer's earlier read,
+    baked into `manifest.identity` by `assemble_manifest_from_diff_v2`) via
+    `compute_profile_hash_v2`, and refuses on mismatch -- not by reading
+    only once. Proven here by making the composer's OWN read return a
+    profile that differs (one extra, otherwise-harmless required_checks
+    entry) from what is actually on disk, so the two reads genuinely
+    diverge; the on-disk file itself is never touched, so this is not a
+    race, only a controlled divergence standing in for one."""
+    repo, base_sha, head_sha = _build_real_target(tmp_path)
+    responses_dir = tmp_path / "responses"
+    responses_dir.mkdir()
+    inputs = _inputs(repo, base_sha, head_sha, responses_dir, "auth-10")
+
+    import app.agent_review.operational_run_v2 as mod
+    from app.agent_review.required_check_readiness_v2 import (
+        ASSESSMENT_PROFILE_IDENTITY_MISMATCH_REASON_V2,
+        RequiredCheckReadinessErrorV2,
+    )
+
+    original = mod.load_target_profile_v2
+
+    def _diverging(*args, **kwargs):
+        real_profile = original(*args, **kwargs)
+        mutated_policies = real_profile.policies.model_copy(
+            update={
+                "required_checks": [
+                    *real_profile.policies.required_checks,
+                    "synthetic-toctou-divergence-check",
+                ]
+            }
+        )
+        return real_profile.model_copy(update={"policies": mutated_policies})
+
+    with mock.patch.object(mod, "load_target_profile_v2", side_effect=_diverging):
+        with pytest.raises(RequiredCheckReadinessErrorV2) as excinfo:
+            run_operational_review_v2(inputs)
+
+    assert excinfo.value.reason_code == ASSESSMENT_PROFILE_IDENTITY_MISMATCH_REASON_V2
 
 
 # ---- §11: preparation closure negatives ---------------------------------

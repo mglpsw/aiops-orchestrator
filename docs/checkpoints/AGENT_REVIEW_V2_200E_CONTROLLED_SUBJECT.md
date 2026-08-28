@@ -1373,9 +1373,35 @@ distinct fields (`fd3dc50`).
 - **§9** (product level) — tampering the target's declared
   artifact/contract files in the working tree after commit, through the
   real CLI, produces an identical result to a clean run.
-- **§10** — `load_target_profile_v2` proven called exactly once per run
-  (wrapped call counter), the captured object reused throughout -- closes
-  the profile-authority TOCTOU class without a new profile authority.
+- **§10** — `load_target_profile_v2` proven called exactly once *at this
+  composer's own call site* (wrapped call counter), the captured object
+  reused throughout it.
+
+  **Correction, found by independent review lane B, confirmed directly:**
+  the original claim here ("closes the profile-authority TOCTOU class
+  without a new profile authority") overclaimed. `produce_review_readiness_v2`
+  unconditionally calls `_verify_and_assess_required_checks_v2`
+  (`required_check_readiness_v2.py:307`, a pre-existing, unmodified owner),
+  which does its OWN separate `load_target_profile_v2` read from a
+  different imported reference, invisible to a mock on this composer's
+  reference -- the profile IS read from disk twice per run, not once. The
+  real safety net is hash binding, not single-read discipline:
+  `required_check_readiness_v2.py`'s second read is checked with
+  `compute_profile_hash_v2(profile) != identity.profile_hash` and raises
+  `RequiredCheckReadinessErrorV2(ASSESSMENT_PROFILE_IDENTITY_MISMATCH_REASON_V2)`
+  on divergence, where `identity.profile_hash` is bound, inside
+  `assemble_manifest_from_diff_v2`, to THIS composer's own (first) read.
+  Proven directly by `test_second_profile_read_divergence_is_caught_by_hash_binding`:
+  making the composer's own read return a profile that differs from the
+  real on-disk file by one otherwise-harmless `required_checks` entry
+  reliably raises that exact typed error. The TOCTOU class is closed by
+  this hash-binding net, not by the call-count property -- the call-count
+  test is retained (renamed
+  `test_composers_own_profile_call_site_reads_once`) because it is still
+  true and still useful (a regression there would mean the composer binds
+  `manifest.identity.profile_hash` to one profile while diff/chunk
+  assembly used a different one), but its docstring no longer claims more
+  than it proves.
 - **§11** — direct unit tests of the preparation-closure verifier for
   every required negative (missing/extra payload, missing/extra content,
   digest mismatch), plus a control proving the failure is a typed
@@ -1476,4 +1502,156 @@ qualification_phase3:
   benchmark_report_check: "byte-identical"
   benchmark_corpus_manifest_check: "byte-identical"
   benchmark_corpus_safety_gate: "ok, no secrets/paths/identifiers"
+```
+
+## Correction loop — three independent adversarial review lanes, this round
+
+Per the Phase 3 finalization grant's §20, three independent lanes were
+dispatched against the exact head qualified above, each instructed to
+falsify (not confirm) the design: **Lane A** (process/subject security),
+**Lane B** (composition/authority), **Lane C** (model/proof/result). Every
+finding below was independently reproduced before being trusted, and every
+fix was mutation-checked (the fix reverted, the regression test confirmed
+RED, the fix restored, confirmed GREEN again) before being trusted -- no
+finding was accepted or fixed on the reviewing agent's word alone.
+
+### Lane A — fixed (P1)
+
+1. **Target checkout had no symlink/gitlink audit.** A committed symlink
+   checked out as a live filesystem symlink, readable outside the
+   controlled subject's declared tree -- the toolrepo-subject side of this
+   exact class was already closed in Phase 2, but the TARGET-subject side
+   (`controlled_subject_v2.py`) was not. Fixed by porting the toolrepo
+   module's `ls-tree` mode-audit pattern
+   (`_audit_checkout_tree_for_symlinks_and_gitlinks_v2`, refusing
+   `120000`/`160000` modes anywhere in the tree) into
+   `checkout_head_into_subject_v2`, called before the checkout itself.
+   Regression: `test_checkout_refuses_a_committed_symlink_anywhere_in_the_tree`.
+   Commit `1711498`.
+2. **`--_controlled-inner` was reachable directly, unverified.** Invoking
+   the CLI's inner mode directly (bypassing the outer bootstrap entirely)
+   fabricated a `toolrepo_sha` in the emitted artifact instead of refusing.
+   Fixed by `_verify_running_from_a_real_materialized_subject_v2`, checked
+   first inside `_run_inner_semantic_child` -- refuses unless the running
+   toolrepo root carries the real materialization marker AND the caller's
+   declared `--_inner-subject-root` resolves to that same root. Explicitly
+   scoped in its own docstring: this closes the accidental/misconfigured-
+   caller and confused-deputy case, not a fully privileged local attacker
+   who can fabricate both signals. Regression:
+   `test_direct_inner_mode_invocation_is_refused`. Commit `1711498`.
+
+### Lane A — documented, not fixed (P2, accepted bounded trade-off)
+
+3. **Outer tempdir staging is unsealed against ambient `TMPDIR`.** The
+   outer bootstrap's own staging directory is created via `mkdtemp`
+   (process-owned, mode `0700`), but the choice of parent directory still
+   comes from the ambient `TMPDIR` (or `/tmp` default) rather than a
+   value pinned before any environment read. Not fixed this round: the
+   practical exposure is bounded by `mkdtemp`'s own ownership/mode
+   guarantee (no other unprivileged user can read or write inside the
+   created directory regardless of which parent it lands in), and Lane A's
+   own finding framed the impact as bounded, not a live compromise of the
+   sealed boundary itself. Accepted as a documented limitation rather than
+   risked as a same-round fix under time pressure; a genuine fix would pin
+   a trusted staging root before the outer process reads any ambient
+   environment, which is a larger, riskier change to the bootstrap's very
+   first lines than this correction loop's budget covers.
+
+### Lane B — fixed (P1)
+
+4. **CLI exception tuple gap.** `scripts/aiops-review-run-v2.py`'s
+   `_run_inner_semantic_child` except tuple was missing
+   `PayloadSetBindingError`, `ReadinessEmissionError`,
+   `RequiredCheckReadinessErrorV2`, and `RequiredCheckProvenanceErrorV2` --
+   all reachable through legitimate-shaped conditions (confirmed via
+   `required_check_readiness_v2.py`'s own module comment: `
+   RequiredCheckProvenanceErrorV2` is documented as "THE FRONTIER... never
+   caught here", i.e. intentionally left for a higher caller, which is
+   exactly this CLI). An uncaught instance would have produced a raw
+   Python traceback on stderr instead of the CLI's structured
+   `{"error_class": ...}` refusal. Fixed by adding all four to the except
+   tuple. Commit `1711498`.
+
+   **`ReadinessDecisionError` was deliberately NOT added**, after tracing
+   all 7 of its raise sites in `readiness_decision_v2.py`: each is either
+   unreachable given this composer's exact calling convention (e.g. the
+   `stale_reason_codes`-driven raise sites -- this composer never passes
+   `stale_reason_codes`, so those branches are dead code from this call
+   site) or an internal "cannot happen if synthesis and manifest agree"
+   consistency check, consistent with `compute_readiness_decision_v2`'s
+   own documented post-seal, escapes-raw design (the same convention this
+   composer's own tail already follows for synthesis/decision/emission).
+   Adding a catch for an unreachable class would be a fail-open shape: dead
+   `except` clauses look like coverage without being coverage.
+
+5. **"Same synthesis object feeds readiness" was false for `findings`.**
+   See the dedicated fix above (module `operational_run_v2.py`, commit
+   `939316a`): a separate `aggregate_finding_lifecycle_v2` call sourced
+   `findings=`, agreeing with `synthesis.findings` only by construction
+   (same private core), not by identity -- Lane B's mutation (injecting a
+   divergent finding into the second call) reached the emitted artifact
+   silently. Fixed by sourcing `findings=synthesis.findings` directly,
+   matching `test_v2_dual_target_e2e.py`'s established precedent.
+
+### Lane B — corrected documentation (P2, no code defect)
+
+6. **"Profile loaded exactly once" was an overclaim.** See the corrected
+   §10 bullet above: the real TOCTOU closure is hash binding
+   (`required_check_readiness_v2.py`'s own `compute_profile_hash_v2`
+   check against `identity.profile_hash`), not single-read discipline --
+   there are genuinely two reads. Documentation and test naming corrected;
+   no code change, since the hash-binding net was already there and
+   already sufficient. New test:
+   `test_second_profile_read_divergence_is_caught_by_hash_binding`.
+
+7. **A pre-existing, unconsolidated "second orchestrator" exists.**
+   `run_synthetic_review_v2` in `review_transport_v2.py` performs a
+   similar composition to `run_operational_review_v2` but is not part of
+   this slice's diff, has zero non-test callers, and is not reachable from
+   the product CLI. Not a defect introduced by this slice and not wired
+   into the product path -- noted here so a future consolidation or
+   deliberate removal has a recorded starting point, not attempted in this
+   correction loop (out of scope: this slice owns `operational_run_v2.py`
+   and the product CLI, not a cleanup of `review_transport_v2.py`'s
+   pre-existing surface).
+
+### Lane B — not addressed (P3, low priority)
+
+8. `emit_payload_set_v2`'s exception (`PayloadSetBindingError`) is not
+   mentioned in this composer's own inline "propagates unmodified"
+   comments alongside its sibling owners, even though it is already
+   correctly left to propagate raw and already correctly caught by the
+   CLI (item 4 above). Cosmetic; left for a future doc pass.
+9. A `payload_set` local variable in `run_operational_review_v2` is bound
+   only for `emit_payload_set_v2`'s validation side effect and never read
+   again. Correct as written (the side effect is the point), but the name
+   invites a reader to look for a later use that does not exist. Cosmetic;
+   left for a future cleanup pass.
+
+### Lane C — confirmed pre-existing findings, already recorded
+
+Lane C's findings were already folded into this document as it worked:
+the §16 redaction-scope limitation (AWS/Slack/Stripe secret shapes not
+caught by `redact_text`, a pre-existing, unmodified authority) and the
+M3-14 black-box mutation-check methodology note (`git archive` reads the
+committed tree, not the working tree). No further action from Lane C this
+round.
+
+### Correction-loop qualification
+
+```yaml
+correction_loop_qualification:
+  focused_new_tests: "53 passed, 1 skipped -- test_operational_run_authority_v2.py,
+    test_controlled_subject_v2.py, test_operational_run_blackbox_e2e_v2.py"
+  adjacent_suites: "test_operational_run_router_v2.py, test_operational_run_toolrepo_tampering_v2.py,
+    test_v2_dual_target_e2e.py, test_lifecycle_v2.py -- all passing, 64 passed combined"
+  combined_total: "117 passed, 1 skipped"
+  mutation_checks_this_round:
+    - {finding: "lane-a-symlink-audit", killed: true}
+    - {finding: "lane-a-direct-inner-bypass", killed: true}
+    - {finding: "lane-b-cli-exception-tuple", killed: "by construction (added classes now caught; no separate regression needed beyond existing CLI blackbox coverage)"}
+    - {finding: "lane-b-findings-identity", killed: true, note: "empty-tuple interning false-negative caught and corrected before trusting the kill; see test docstring"}
+    - {finding: "lane-b-profile-toctou-hash-binding", killed: true}
+  full_repository_suite: pending, run after this section is committed
+  ci_on_final_head: pending, requires push
 ```
