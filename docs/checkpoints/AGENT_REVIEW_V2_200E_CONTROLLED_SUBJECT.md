@@ -1310,3 +1310,147 @@ substantially larger in scope than Phase 1 or Phase 2 individually, and
 what's captured above is real, tested, committed progress on the
 architecturally decisive pieces -- the process boundary and the composer
 actually working end to end -- not the full 28-section grant.
+
+## Phase 3 — completion record
+
+Grant continuation (2026-08-28), "Phase 3 finalization." Revalidated
+before starting: PR #276 OPEN/Draft/unmerged at exactly `68c6fae`, CI
+green on that exact head, `#200` OPEN, `#274` CLOSED/unmerged, no
+competing v2 implementation.
+
+### The two-process product CLI
+
+`scripts/aiops-review-run-v2.py` implements the frozen architecture from
+§3: outer bootstrap materializes `ToolrepoExecutionSubjectV2` at this
+toolrepo's own declared HEAD and launches the SAME script -- the copy now
+living inside that materialized subject -- as the inner semantic child
+under `python -I -B` with a bounded environment; inner runs
+`run_operational_review_v2` and prints only the canonical
+`ReviewReadinessV2` JSON to stdout. `--_controlled-inner` is a private
+marker, never a public wire contract. There is no `--output` flag at all
+(argparse itself refuses it, verified structurally).
+
+### Two real defects found and fixed while wiring the CLI, not hidden
+
+1. **The outer bootstrap's own `git rev-parse HEAD` probe was unbounded.**
+   `test_product_level_hostile_outer_environment_has_zero_semantic_effect`
+   found this on the first run: a hostile ambient `GIT_DIR` in the calling
+   shell redirected the OUTER process's OWN identity probe before the
+   already-sealed toolrepo materializer was ever reached, failing the
+   whole bootstrap. Fixed by sealing that probe the same way
+   `materialize_toolrepo_execution_subject_v2` already seals its own
+   internal calls (`9c744df`).
+2. **The outer script's own plain invocation was shadow-vulnerable.**
+   `test_scripts_directory_shadow_module` found that an ORDINARY, realistic
+   invocation (`python scripts/aiops-review-run-v2.py ...`, not `-I`,
+   which is a private internal detail no caller should need to know)
+   crashed on the outer script's own `import argparse`, captured by a
+   hostile `scripts/argparse.py` in the toolrepo's own checkout -- before
+   Phase 2's toolrepo isolation was ever reached. Fixed by having the
+   outer entrypoint re-exec itself into `-I -B` as the literal first
+   action, using only `os`/`sys` (verified directly to resolve safely
+   even pre-isolation on this host, unlike `argparse`/`json`/`subprocess`,
+   which the shadow DID capture) (`1861787`).
+
+Also fixed while wiring: `toolrepo_sha` (project source identity) had
+been passed as `toolchain_digest` (interpreter/dependency identity) to
+`produce_review_readiness_v2` -- exactly the conflation Phase 2's own docs
+warned against. `OperationalReviewInputsV2` now carries both as genuinely
+distinct fields (`fd3dc50`).
+
+### Product-level proofs (§§5, 7-19)
+
+- **§5** — a private, stderr-only, inner-mode-only diagnostic
+  (`--_diagnose-source-origin`) proves at runtime that
+  `operational_run_v2`/`controlled_subject_v2`/`review_transport_v2` all
+  loaded from the materialized subject, never this checkout.
+- **§7** (product level) — the hostile-ambient-environment proof, now run
+  through the real two-process CLI subprocess rather than the lower-level
+  spike.
+- **§8** — `acquire_diff_v2`, `materialize_controlled_reference_root_v2`,
+  and `extract_review_content_v2` are each wrapped and asserted to never
+  receive the original target root, for every call the composer makes.
+- **§9** (product level) — tampering the target's declared
+  artifact/contract files in the working tree after commit, through the
+  real CLI, produces an identical result to a clean run.
+- **§10** — `load_target_profile_v2` proven called exactly once per run
+  (wrapped call counter), the captured object reused throughout -- closes
+  the profile-authority TOCTOU class without a new profile authority.
+- **§11** — direct unit tests of the preparation-closure verifier for
+  every required negative (missing/extra payload, missing/extra content,
+  digest mismatch), plus a control proving the failure is a typed
+  `OperationalRunError`, never a raw `KeyError`.
+- **§12** — `synthesize_chunk_results_v2` and
+  `compute_readiness_decision_v2` both wrapped; exactly one synthesis
+  call, readiness derived from that SAME object by identity (`is`), with
+  a companion test proving the oracle itself is non-vacuous.
+- **§13** — both a raw `TypeError` and a genuine `pydantic.ValidationError`
+  raised post-seal (inside `synthesize_chunk_results_v2` or
+  `produce_review_readiness_v2`) escape `run_operational_review_v2`
+  completely unmodified.
+- **§15** — real outer subprocess -> real inner subprocess -> real
+  controlled target subject -> real diff/manifest/payload/content ->
+  offline transport -> stdout JSON, exit 0, honest non-ready (zero
+  authoritative checks submitted, never forced to `ready`).
+- **§16** — provider-free Router receipt-v2 product E2E: the real
+  composer with the real `agent_router_transport_v2`, HTTP boundary
+  mocked at the same seam `test_review_transport_v2.py` established,
+  driven dynamically from whatever chunk the real diff actually produces.
+  A planted `ghp_...`-shaped secret confirmed absent from every captured
+  outbound request while a redaction placeholder survives; two tamper
+  non-vacuity controls (`returned_output.sha256`,
+  `caller_declared_metadata`) each degrade to zero bound findings.
+- **§17** — recursive before/after snapshot (worktree + `.git` + ignored
+  + untracked) around the real product subprocess; a read-only target
+  fixture (worktree and `.git` both `chmod`-restricted) still succeeds,
+  proving no target write is required. Mutation-verified at product level
+  (not just Phase 2's unit level): a real `.git`-write injected into the
+  composer is caught by this exact oracle, reverted clean.
+- **§18** — the decisive product proof that Phase 2 is actually wired,
+  not merely implemented beside the old path: the real outer CLI run from
+  a hostile DEVELOPMENT CHECKOUT (disposable toolrepo clone, tampered) --
+  tracked-file-tampered-with-`assume-unchanged`, root-level shadow,
+  scripts-directory shadow, untracked project Python, malicious `.pyc`,
+  and hostile caller `PYTHONPATH` with a real planted module -- produces
+  an identical result to a clean checkout in every case.
+
+### Mutation matrix (§19) — all 15 items
+
+```yaml
+mutation_matrix_phase3:
+  M3_01: {status: killed, oracle: "AST-inspection structural test (top-level imports)"}
+  M3_02: {status: killed, oracle: "toolrepo-tampering product corpus"}
+  M3_03: {status: killed, oracle: "process-boundary + blackbox hostile-env + tampering PYTHONPATH"}
+  M3_04: {status: killed, oracle: "blackbox hostile-env product test (real acquire_diff_v2)"}
+  M3_05: {status: killed, oracle: "test_diff_acquisition_never_receives_the_original_target_root"}
+  M3_06: {status: killed, oracle: "test_reference_material_never_reads_the_original_target_root + product tamper witness"}
+  M3_07: {status: killed, oracle: "5 preparation-closure negative unit tests"}
+  M3_08: {status: killed, oracle: "call-count wrapper + non-vacuity companion"}
+  M3_09: {status: killed, oracle: "object-identity (`is`) check between synthesis and what feeds readiness"}
+  M3_10: {status: killed, oracle: "post-seal TypeError AND ValidationError, composer level; CLI-level portion explicitly deferred with reasoning recorded inline"}
+  M3_11: {status: killed, oracle: "post-bind TypeError, composer level"}
+  M3_12: {status: killed, oracle: "tampered returned_output.sha256 -> zero bound findings"}
+  M3_13: {status: killed, oracle: "planted ghp_ secret absent from every captured outbound request"}
+  M3_14: {status: killed, oracle: "recursive nonmutation snapshot, mutation-verified at PRODUCT level (real .git write injected and caught)"}
+  M3_15: {status: killed, oracle: "structural: --output is not a recognized argparse flag at all"}
+survivors: 0
+non_vacuity_audited: true
+```
+
+### Qualification
+
+```yaml
+qualification_phase3:
+  focused_new_tests: "81 passed, 1 skipped (documented CLI/composer boundary decision) -- 8 test files"
+  adjacent_existing_suites: "471 passed (diff acquisition, run assembly, payload builder, payload-set,
+    review-content extraction, review-transport/receipt-v2, parser, synthesis, lifecycle, readiness
+    decision/emission, dual-target synthetic E2E, authority error surfaces, two-epoch error model)"
+  compileall: pass
+  git_diff_check: pass
+  schema_export_check: "byte-identical"
+  v2_eval_check: "byte-identical to a fresh, deterministic recomputation"
+  caem_f0_pin: "ok, single consistent generated-view identity"
+  benchmark_report_check: "byte-identical"
+  benchmark_corpus_manifest_check: "byte-identical"
+  benchmark_corpus_safety_gate: "ok, no secrets/paths/identifiers"
+```
