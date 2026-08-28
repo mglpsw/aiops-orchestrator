@@ -350,3 +350,31 @@ def test_post_bind_readiness_defect_escapes_raw(tmp_path: Path):
     with mock.patch.object(mod, "produce_review_readiness_v2", side_effect=_boom):
         with pytest.raises(TypeError):
             run_operational_review_v2(inputs)
+
+
+def test_post_seal_validation_error_escapes_raw(tmp_path: Path):
+    """M3-10's precise form: a genuine pydantic ValidationError (not
+    merely TypeError) raised post-seal must also escape unmodified."""
+    from pydantic import ValidationError
+    from app.agent_review.contracts_v2 import RunOriginV2
+
+    repo, base_sha, head_sha = _build_real_target(tmp_path)
+    responses_dir = tmp_path / "responses"
+    responses_dir.mkdir()
+    inputs = _inputs(repo, base_sha, head_sha, responses_dir, "auth-9")
+
+    import app.agent_review.operational_run_v2 as mod
+
+    captured: list[Exception] = []
+    try:
+        RunOriginV2(event_type="not-a-real-type", event_action="x", delivery_id="y")
+        pytest.fail("expected the fixture construction itself to raise ValidationError")
+    except ValidationError as exc:
+        captured.append(exc)  # `except ... as name` deletes `name` at block exit; capture it
+
+    def _boom(**kwargs):
+        raise captured[0]
+
+    with mock.patch.object(mod, "synthesize_chunk_results_v2", side_effect=_boom):
+        with pytest.raises(ValidationError):
+            run_operational_review_v2(inputs)
