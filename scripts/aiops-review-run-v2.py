@@ -31,11 +31,29 @@ result was emitted -- readiness itself may be `manual_required`,
 
 from __future__ import annotations
 
+# Deliberately only `os`/`sys` before the isolation re-exec below: both
+# verified directly to resolve from the interpreter's own built-in/early-
+# bootstrap machinery even under a PLAIN (non -I) invocation, never from
+# `sys.path[0]` (the script's own directory) -- unlike `argparse`,
+# `json`, `subprocess`, etc., which a hostile `scripts/argparse.py` DID
+# shadow and execute in a plain invocation, reproduced directly
+# (test_scripts_directory_shadow_module). A caller who launches this
+# script as ordinary `python scripts/aiops-review-run-v2.py ...` (not
+# `-I`, which is a private product-CLI-internal detail, not something a
+# caller should be expected to know to pass) must not be able to trigger
+# that shadow merely by having a tampered `scripts/` directory alongside
+# it -- so this outer entrypoint re-execs itself into `-I -B` as the very
+# first action, before importing anything shadowable.
+import os
+import sys
+
+if not sys.flags.isolated:
+    os.execv(sys.executable, [sys.executable, "-I", "-B", os.path.abspath(__file__), *sys.argv[1:]])
+
 import argparse
 import json
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
