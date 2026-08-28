@@ -225,7 +225,6 @@ def real_toolrepo_sha() -> str:
 
 
 def test_cli_process_reaches_honest_readiness_from_a_separate_target_repo(tmp_path, real_toolrepo_sha):
-    assert REPO_ROOT not in (tmp_path / "unused").resolve().parents or True  # tmp_path is always outside REPO_ROOT
     repo, base_sha, head_sha = _make_target_repo(tmp_path)
     assert REPO_ROOT != repo and REPO_ROOT not in repo.resolve().parents, "target must be outside the toolrepo tree"
     profile_root = _make_trusted_profile_root(tmp_path)
