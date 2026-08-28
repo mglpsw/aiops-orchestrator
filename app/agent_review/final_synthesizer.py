@@ -718,7 +718,11 @@ def _optional_input_ref(document: Any | None) -> dict[str, Any]:
 
 
 def _target_repo(chunk_results: ChunkResults, intake: ReviewIntake | None) -> str:
-    if intake is not None and intake.target_repo:
+    if (
+        intake is not None
+        and isinstance(intake.target_repo, str)
+        and intake.target_repo
+    ):
         return intake.target_repo
     return chunk_results.target_repo
 
