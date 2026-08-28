@@ -279,6 +279,40 @@ def test_replace_deleted_tracked_file_with_untracked_same_spelling_is_refused(fi
         subprocess.run(["git", "checkout", "--", "app/agent_review/mod.py"], cwd=root, check=True)
 
 
+def test_commit_replacement_of_toolrepo_head_does_not_fool_identity(fixture_toolrepo, tmp_path):
+    """M2, end-to-end through the real authority: a `git replace` of the
+    toolrepo's own HEAD commit with one pointing at different bounded-path
+    content must not be able to make identity describe the replacement, and
+    must not spuriously report dirtiness (or spuriously report cleanliness)
+    based on the replacement's tree instead of the real one."""
+
+    root, head_sha = fixture_toolrepo
+
+    fake_root = tmp_path / "fake-source"
+    fake_root.mkdir()
+    subprocess.run(["git", "init", "--quiet", "-b", "main", "."], cwd=fake_root, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=fake_root, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=fake_root, check=True)
+    (fake_root / "app").mkdir()
+    (fake_root / "agent_review_placeholder.txt").write_text("unrelated\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=fake_root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "fake"], cwd=fake_root, check=True)
+    fake_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=fake_root, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    bundle = tmp_path / "fake.bundle"
+    subprocess.run(["git", "bundle", "create", str(bundle), "HEAD"], cwd=fake_root, check=True)
+    subprocess.run(["git", "fetch", "--quiet", str(bundle), "HEAD:refs/fake-import"], cwd=root, check=True)
+    subprocess.run(["git", "replace", head_sha, fake_head], cwd=root, check=True)
+
+    try:
+        identity = establish_toolrepo_source_identity_v2(declared_toolrepo_sha=head_sha)
+        assert identity.toolrepo_sha == head_sha
+    finally:
+        subprocess.run(["git", "replace", "-d", head_sha], cwd=root, check=True)
+
+
 def test_gitless_toolrepo_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path / "gitless-toolrepo"
     (root / "app" / "agent_review").mkdir(parents=True)
