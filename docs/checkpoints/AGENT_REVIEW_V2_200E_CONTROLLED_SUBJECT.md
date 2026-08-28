@@ -1,7 +1,12 @@
 # Checkpoint — `#200-E` controlled subject materialization + executed-source identity
 
-**Status:** planning — counterexample ledger and architecture spike, no
-production code yet. Terminal state target: Draft PR, not Ready, not merged.
+**Status:** Phase 2 in progress. Counterexample ledger, both architecture
+spikes (target + toolrepo), and both production subject authorities
+(`controlled_subject_v2.py`, `toolrepo_execution_subject_v2.py`) are
+complete and qualified. Operational composition, the CLI product path, and
+the Router black-box E2E are explicitly **NOT started** — out of scope for
+this phase per the grant. Terminal state target: Draft PR, not Ready, not
+merged.
 
 ```yaml
 subject:
@@ -904,3 +909,185 @@ Forbidden statement not made: this does not claim "no unverified code
 executed before review" — the outer launcher (whatever invokes
 materialization) necessarily runs first, and its own trust is a
 distribution/installer question owned by `#203`→`#205`, not by `#200-E`.
+
+## Phase 2 — production authorities
+
+Implemented: `app/agent_review/_bounded_git_child_env_v2.py` (shared
+allowlist child environment, not a blacklist, not a resurrection of
+`_sealed_git_execution_v2`), `app/agent_review/controlled_subject_v2.py`
+(TARGET), `app/agent_review/toolrepo_execution_subject_v2.py` (TOOLREPO).
+Two distinct error families (`ControlledSubjectError`,
+`ToolrepoExecutionSubjectError`), never flattened into one.
+
+### Forensic witness mapping (§19)
+
+```yaml
+forensic_witness_mapping:
+  - id: CE-01
+    source: "PR274/independent-verification/README.md, target replace-object finding"
+    old_result: "git ls-tree/rev-parse kept reporting the original SHA while cat-file
+      returned malicious bytes for the target's own git process"
+    successor_result: "test_replacement_object_ignored_ce01 -- scratch reads the
+      ORIGINAL blob via the bounded object-closure import, no refs/replace/*
+      ever resolved from the source"
+    architectural_reason: "bounded rev-list --objects closure never touches
+      refs/replace/*; GIT_NO_REPLACE_OBJECTS=1 in the bounded env regardless"
+  - id: CE-02/CE-03
+    source: "PR274 evidence/independent-verification/02"
+    old_result: "GIT_CONFIG_PARAMETERS survived #274's env-stripping blacklist"
+    successor_result: "test_ambient_env_has_no_effect_ce02_ce03 -- GIT_DIR,
+      GIT_OBJECT_DIRECTORY, GIT_CONFIG_PARAMETERS all set in the calling
+      process's environment, zero effect"
+    architectural_reason: "allowlist child env: nothing from the caller's
+      os.environ reaches the child unless bounded_child_env_v2 named it"
+  - id: CE-08
+    source: "PR274 evidence/independent-verification/01"
+    old_result: "git worktree add ran the target's post-checkout hook"
+    successor_result: "test_hostile_hook_never_executes_ce08 -- checkout inside
+      scratch never touches the target's .git/hooks at all"
+    architectural_reason: "scratch's own .git/hooks is freshly initialized by
+      `git init`, never populated from the target"
+  - id: CE-09/CE-11
+    source: "PR274 round 3, toolrepo identity filter.clean/.process finding"
+    old_result: "filter.clean executed during the toolrepo cleanliness check and
+      hid materially dirty tracked source"
+    successor_result: "test_filter_clean_has_no_effect_ce09 -- git archive
+      ignores repository-local filter config entirely, verified directly"
+    architectural_reason: "git archive reads the commit tree object, not a
+      filtered checkout; no filter command is ever invoked"
+  - id: CE-10
+    source: "PR274 M14 (round 2), filter.smudge on checkout"
+    old_result: "filter.smudge executed during git worktree add"
+    successor_result: "test_hostile_smudge_filter_never_executes_ce10 -- scratch
+      checkout never consults the target's filter config"
+    architectural_reason: "target filter config is never copied into scratch (§8
+      of the grant); a committed .gitattributes assignment is semantic input,
+      the DRIVER COMMAND is not imported"
+  - id: CE-13
+    source: "PR274 evidence/independent-verification/01, the sharpest finding"
+    old_result: "includeIf.gitdir:<repo>/.git/worktrees/** bypassed the round-2
+      filter detector and executed during git worktree add"
+    successor_result: "test_includeif_worktree_pattern_never_matches_ce13 --
+      the exact same includeIf pattern configured, zero effect"
+    architectural_reason: "the scratch .git path was never derived from or
+      nested under the source's .git at all -- there is no target-owned
+      includeIf.gitdir condition that can ever match it, by construction of
+      the path, not by detecting and refusing a config key"
+  - id: CE-14/CE-15
+    source: "PR274 evidence/independent-verification/04, lane B Q6"
+    old_result: "assume-unchanged/skip-worktree made git diff HEAD omit a
+      modified/tampered tracked file; establish_toolrepo_source_identity_v2
+      PASSED with tampered bytes on disk"
+    successor_result: "test_index_flags_have_no_effect_ce14_ce15 -- both index
+      flags set, materialized subject still contains the COMMITTED bytes"
+    architectural_reason: "git archive reads the commit tree directly and
+      never consults the index at all"
+  - id: CE-16
+    source: "PR274 lane C Q7, the P0 -- lazy fetch executing an ext:: helper
+      and persisting a pack into the target on a declared success path"
+    old_result: "a full CLI run exited 0 while executing a hostile transport
+      helper and persisting a new promisor pack into the reviewed repository"
+    successor_result: "test_genuinely_missing_object_fails_closed_ce16 and
+      test_lazy_fetch_helper_never_executes_ce16 -- typed refusal at the
+      object-closure step, zero helper execution, zero pack import"
+    architectural_reason: "GIT_NO_LAZY_FETCH=1 is part of the bounded
+      environment for the closure computation itself, not just later
+      operations; a missing object fails the closure step before any
+      pack/import work begins"
+  - id: CE-17
+    source: "PR274 evidence/independent-verification/06"
+    old_result: "test_target_checkout_is_never_mutated /
+      test_cli_has_no_filesystem_output_authority only observed
+      `git status --porcelain`, never .git contents; a scratch-copy mutant
+      writing .git/agent-review-mutant-marker passed both unmodified"
+    successor_result: "test_target_nonmutation_oracle_catches_a_git_admin_write --
+      a recursive before/after filesystem snapshot (worktree + .git + ignored
+      + untracked) catches the same mutant"
+    architectural_reason: "the oracle itself changed shape (recursive
+      filesystem snapshot, not git status), independent of what
+      materialization does or does not write"
+  - id: CE-18/CE-19/CE-20/CE-21/CE-23
+    source: "PR274 lane B Q6, root/scripts shadow, untracked source, .pyc,
+      nested repo"
+    old_result: "untracked scripts/argparse.py, root pydantic.py, .pyc,
+      .gitignore-hidden files all entered the executed-source universe"
+    successor_result: "test_untracked_root_and_scripts_shadow_absent_ce18_ce19_ce20,
+      test_pyc_shadow_absent_ce21, test_real_subprocess_isolated_mode_
+      imports_from_subject_not_devrepo -- none present in the materialized
+      subject; -I mode additionally proves the real subprocess cannot resolve
+      them even if they existed alongside"
+    architectural_reason: "git archive extracts only tracked, committed blobs
+      -- there is no untracked-file universe in the subject to hide content
+      in; -I removes the interpreter's automatic script-directory sys.path
+      insertion and ignores PYTHONPATH/user-site"
+  - id: CE-22
+    source: "PR274 lane B Q6, tracked symlink"
+    old_result: "a tracked symlink's external referent could change without
+      changing HEAD, the symlink blob, or git status"
+    successor_result: "test_committed_symlink_is_refused_ce22 -- refused at the
+      ls-tree mode-audit step, before archive ever runs"
+    architectural_reason: "NEW finding this phase, not merely ported: git
+      archive alone does not close this (reproduced in the spike, extracting
+      a live symlink readable outside the subject) -- required an explicit
+      pre-check the spike surfaced, not assumed safe from #274's own closure"
+```
+
+### Mutation non-vacuity (§20), all executed and killed
+
+```yaml
+mutation_matrix_phase2:
+  - id: M2E-01
+    target: controlled_subject_v2
+    mutation: "remove the objects/info/alternates refusal check"
+    killed_by: test_source_alternates_present_is_refused
+  - id: M2E-02
+    target: _bounded_git_child_env_v2
+    mutation: "drop GIT_NO_LAZY_FETCH from the bounded environment"
+    killed_by: test_lazy_fetch_helper_never_executes_ce16
+    note: "the hostile ext:: helper ACTUALLY EXECUTED under this mutation,
+      confirmed by the marker file existing -- not merely a changed return code"
+  - id: M2E-03
+    target: controlled_subject_v2
+    mutation: "copy the source's .git/config into the scratch repo after init"
+    killed_by: test_hostile_smudge_filter_never_executes_ce10
+    note: "test_hostile_hook_never_executes_ce08 and the includeIf test
+      correctly stayed green under this specific mutation (config alone does
+      not reintroduce a hooks directory or a matching includeIf.gitdir
+      condition) -- recorded as an honest collateral result, not hidden"
+  - id: M2E-04
+    target: controlled_subject_v2 (nonmutation oracle)
+    mutation: "inject a .git/agent-review-mutant-marker write"
+    killed_by: test_target_nonmutation_oracle_catches_a_git_admin_write
+    note: "self-contained: the test injects and asserts detection, then
+      cleans up and asserts silence on the clean case, in the same test"
+  - id: M2E-05
+    target: toolrepo_execution_subject_v2
+    mutation: "yield the mutable dev checkout root instead of the materialized subject"
+    killed_by: [test_index_flags_have_no_effect_ce14_ce15, test_real_subprocess_isolated_mode_imports_from_subject_not_devrepo]
+    note: "covers both 'execute original dev checkout' and 'add original repo
+      root to sys.path' from the grant's mandatory list -- no separate
+      operational composer exists yet to have an independent sys.path bug"
+  - id: M2E-06
+    target: toolrepo_execution_subject_v2 test's own subprocess invocation
+    mutation: "drop -I from the real-subprocess test's own argv"
+    killed_by: test_real_subprocess_isolated_mode_imports_from_subject_not_devrepo (against itself)
+    note: "found and fixed a real vacuity bug first: the original PYTHONPATH
+      assertion pointed at a nonexistent directory and stayed green even with
+      -I dropped. Fixed by planting a real hostile module at the PYTHONPATH
+      location before re-running this mutation -- see e6abff7"
+  - id: M2E-07
+    target: toolrepo_execution_subject_v2 (byte-identity oracle)
+    mutation: "monkeypatch extraction to write different bytes than the archive produced"
+    killed_by: test_tampered_bounded_source_refused_by_byte_identity_oracle
+  - id: M2E-08
+    target: N/A -- architectural, no mutable logic to mutate
+    mutation: "'prefer pyc over exact source' has no corresponding code path:
+      git archive extracts only tracked blobs, and .pyc is never tracked in
+      the fixtures used"
+    killed_by: test_pyc_shadow_absent_ce21 (direct architectural proof, not a
+      mutation kill)
+```
+
+Every mutant: baseline green -> mutation applied -> confirmed to produce the
+intended failure -> reverted -> baseline reconfirmed green, the same
+discipline `#274` established.
