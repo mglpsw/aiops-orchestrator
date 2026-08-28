@@ -204,6 +204,81 @@ def test_dirty_file_outside_bounded_source_set_does_not_block(fixture_toolrepo):
     assert identity.toolrepo_sha == head_sha_2
 
 
+def test_gitignore_evasion_of_untracked_check_is_closed(fixture_toolrepo):
+    """M6: `#200-D` correction. A stray importable source file matched by a
+    `.gitignore` entry must still be refused -- `--exclude-standard`
+    (removed from the untracked-source check) would have made it
+    completely invisible here, reproduced directly before the fix
+    existed."""
+
+    root, head_sha = fixture_toolrepo
+    (root / ".gitignore").write_text("app/agent_review/_stray*.py\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "add gitignore"], cwd=root, check=True)
+    head_sha_2 = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    stray = root / "app" / "agent_review" / "_stray_evil.py"
+    stray.write_text("malicious = True\n", encoding="utf-8")
+    try:
+        with pytest.raises(ToolrepoIdentityError) as excinfo:
+            establish_toolrepo_source_identity_v2(declared_toolrepo_sha=head_sha_2)
+        assert excinfo.value.reason_code == TOOLREPO_IDENTITY_UNVERIFIABLE_REASON_V2
+    finally:
+        stray.unlink()
+
+
+def test_deleted_cli_script_is_refused_not_silently_dropped(fixture_toolrepo):
+    """M7: `#200-D` correction. Deleting the exact runner CLI path must be
+    detected -- a `.exists()` filesystem prefilter (removed) would have
+    silently excluded the deleted path from the pathspec `git diff` was
+    even asked about, reproduced directly before the fix existed."""
+
+    root, head_sha = fixture_toolrepo
+    cli = root / "scripts" / "aiops-review-run-v2.py"
+    cli.unlink()
+    try:
+        with pytest.raises(ToolrepoIdentityError) as excinfo:
+            establish_toolrepo_source_identity_v2(declared_toolrepo_sha=head_sha)
+        assert excinfo.value.reason_code == TOOLREPO_WORKTREE_DIRTY_REASON_V2
+    finally:
+        subprocess.run(["git", "checkout", "--", "scripts/aiops-review-run-v2.py"], cwd=root, check=True)
+
+
+def test_deleted_tracked_app_source_is_refused(fixture_toolrepo):
+    """M8: the same deletion-visibility property for a tracked file under
+    the bounded `app/` tree, not just the CLI script."""
+
+    root, head_sha = fixture_toolrepo
+    mod = root / "app" / "agent_review" / "mod.py"
+    mod.unlink()
+    try:
+        with pytest.raises(ToolrepoIdentityError) as excinfo:
+            establish_toolrepo_source_identity_v2(declared_toolrepo_sha=head_sha)
+        assert excinfo.value.reason_code == TOOLREPO_WORKTREE_DIRTY_REASON_V2
+    finally:
+        subprocess.run(["git", "checkout", "--", "app/agent_review/mod.py"], cwd=root, check=True)
+
+
+def test_replace_deleted_tracked_file_with_untracked_same_spelling_is_refused(fixture_toolrepo):
+    """A deleted tracked file replaced by an untracked file of the identical
+    path must still be refused: the deletion itself is dirty (staged or
+    not), independent of whatever untracked content now occupies that
+    path."""
+
+    root, head_sha = fixture_toolrepo
+    mod = root / "app" / "agent_review" / "mod.py"
+    mod.unlink()
+    mod.write_text("# untracked replacement, same path\n", encoding="utf-8")
+    try:
+        with pytest.raises(ToolrepoIdentityError) as excinfo:
+            establish_toolrepo_source_identity_v2(declared_toolrepo_sha=head_sha)
+        assert excinfo.value.reason_code == TOOLREPO_WORKTREE_DIRTY_REASON_V2
+    finally:
+        subprocess.run(["git", "checkout", "--", "app/agent_review/mod.py"], cwd=root, check=True)
+
+
 def test_gitless_toolrepo_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path / "gitless-toolrepo"
     (root / "app" / "agent_review").mkdir(parents=True)
