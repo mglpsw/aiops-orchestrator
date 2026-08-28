@@ -78,6 +78,19 @@
   docstring) and proving the target tree byte-identical before/after. No
   published schema changed.
 
+  Independent review of the Draft PR's exact head found and closed two real
+  gaps before Ready: (1) toolrepo source identity was bounded to
+  `app/agent_review` only, while the composed review path imports across
+  that package boundary (`app.common.strict_json`, reached from
+  `review_transport_v2.py` and several sibling modules) — widened to the
+  whole `app/` package, matching this feature's own original design intent.
+  (2) The Router-format provider-free proof had been reduced during
+  implementation to the outbound-redaction half only, discarding the
+  response side with a bare `except Exception: pass` against an
+  intentionally invalid fake response — rewritten to complete a genuine
+  `agent-router.inference-receipt.v2` verification and Router-result
+  binding through the real, unpatched `execute_chunk_review_v2`.
+
 ### Fixed
 
 - **AgentReview v2 Router receipt-v2 wire binding (`#200-C-WIRE`)**:

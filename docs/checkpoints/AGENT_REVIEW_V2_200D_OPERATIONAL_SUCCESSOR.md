@@ -185,10 +185,25 @@ executed byte (interpreter, dependencies, site-packages, `.pyc`, native
 extensions) — that is `toolchain_digest`'s subject, unchanged by this slice.
 
 **Bounded executable source set**, defined structurally, not by heuristic:
-`app/` (the package tree actually imported) and
-`scripts/aiops-review-run-v2.py` (this CLI only). A dirty, unrelated file
-elsewhere in the toolrepo (a doc, an eval fixture) does not block a run —
-verified by `test_dirty_file_outside_bounded_source_set_does_not_block`.
+the WHOLE `app/` package tree and `scripts/aiops-review-run-v2.py` (this CLI
+only). A dirty, unrelated *toolrepo* file (a doc, an eval fixture, another
+script) does not block a run — verified by
+`test_dirty_file_outside_bounded_source_set_does_not_block`.
+
+**Correction, found on independent review of the exact head this checkpoint
+first described.** The implementation had narrowed this to `app/agent_review`
+only — a real divergence from this very paragraph's own stated intent, never
+re-verified against the composed call graph. It does import across that
+boundary: `review_transport_v2.py`, `required_check_provenance_v2.py`,
+`authoritative_ci_snapshot_v2.py`, `authoritative_check_policy_v2.py`,
+`authoritative_producer_evidence_v2.py`, `required_check_assembly_v2.py`,
+`_router_receipt_v2.py` and `target_pack_receipt_v2.py` all import
+`app.common.strict_json`. A dirty `app/common/strict_json.py` could have
+executed as part of a review while toolrepo identity still reported clean.
+Corrected to the whole `app/` package, with three new discriminating
+controls (`test_dirty_tracked_file_outside_agent_review_but_inside_app_is_
+refused`, its staged and untracked siblings) mutation-proven: narrowing the
+bound back to `app/agent_review` makes exactly those three tests fail.
 
 ```text
 .git absent / no identity mechanism   -> toolrepo_identity_unavailable
@@ -343,7 +358,21 @@ Router-format provider-free proof (offline HTTP seam
 plants a token-shaped literal in a REAL target diff, drives it through real
 acquisition/redaction, and asserts the raw token is absent from the actual
 outbound request bytes while the sanitized line survives (non-vacuous:
-redaction, not deletion).
+redaction, not deletion) -- AND completes the full response side through the
+real, unpatched `execute_chunk_review_v2`: the mocked HTTP response carries a
+genuine `agent-router.inference-receipt.v2` (reusing `test_review_transport_
+v2._fixture_receipt`) built from the real outbound request, and the test
+asserts `outcome.state == "bound"` with a real `ParsedChunkResultV2` --
+receipt verification and Router-result binding, not merely outbound bytes.
+
+**Correction, found on independent review of the exact head this checkpoint
+first described.** An earlier version of this test proved the outbound-
+redaction half only, then discarded the response side with
+`except Exception: pass` against an intentionally invalid fake response, so
+`receipt_v2_verified`/`bound_result` were claimed but never actually
+exercised. Rewritten as above; proven non-vacuous separately -- a tampered
+receipt (wrong `returned_output.sha256`) correctly degrades to
+`manual_required`/`router_output_mismatch` rather than silently binding.
 
 Negative oracle: `test_engine_never_branches_on_target_name`
 (pre-existing, `test_v2_dual_target_e2e.py`) continues to hold; no new
