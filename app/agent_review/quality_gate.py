@@ -12,10 +12,11 @@ from pydantic import ValidationError
 
 from app.agent_review import payload_cost_model
 from app.agent_review.chunk_result_parser import (
+    _chunk_execution_limitations,
     _compose_coverage_partitions,
     _coverage_universe_partition,
     _normalize_coverage_against_partition,
-    _normalize_plan_coverage_partition,
+    _normalize_plan_run_coverage_partition,
 )
 from app.agent_review.redaction import RedactionState, redact_value
 from app.agent_review.schemas import (
@@ -221,6 +222,12 @@ def evaluate_review_quality_gate(
     final_status = _clean(raw.get("status"))
     final_verdict = _clean(raw.get("verdict"))
     limitations = _initial_limitations(raw, chunk_results)
+    execution_limitations = _chunk_execution_limitations(
+        chunks_parsed=chunk_results.chunks_parsed,
+        chunks_failed=chunk_results.chunks_failed,
+        chunk_plan=chunk_plan,
+    )
+    limitations.extend(execution_limitations)
     warnings = _initial_warnings(chunk_results)
     blocked_reasons: list[str] = []
 
@@ -257,6 +264,7 @@ def evaluate_review_quality_gate(
         final_status in {"partial", "degraded", "failed"}
         or chunk_results.status in {"partial", "degraded", "failed"}
         or coverage_requires_manual_review
+        or bool(execution_limitations)
     )
     has_critical_gap = bool(coverage_gaps)
     has_untrusted_blocker_candidate = any(warning.startswith("untrusted_blocker:") for warning in warnings)
@@ -557,8 +565,17 @@ def _coverage_requires_manual_review(
         validation_limitations.append("coverage_missing")
 
     if chunk_plan is not None:
-        authority = _normalize_plan_coverage_partition(chunk_plan)
+        authority = _normalize_plan_run_coverage_partition(
+            chunk_plan,
+            chunks_parsed=chunk_results.chunks_parsed,
+            chunks_failed=chunk_results.chunks_failed,
+        )
         validation_limitations.extend(authority.limitations)
+        if any(
+            _is_blocking_coverage_limitation(limitation)
+            for limitation in authority.limitations
+        ):
+            requires_manual_review = True
         if chunk_plan.status != "complete":
             requires_manual_review = True
             validation_limitations.append(f"chunk_plan_status_{chunk_plan.status}")
@@ -613,13 +630,27 @@ def _coverage_requires_manual_review(
         *chunk_results.limitations,
     ]
     if any(
-        limitation in BLOCKING_COVERAGE_LIMITATIONS
-        or limitation.startswith("coverage_file_not_in_chunk:")
+        _is_blocking_coverage_limitation(limitation)
         for limitation in deterministic_limitations
     ):
         requires_manual_review = True
 
     return requires_manual_review, _dedupe(validation_limitations)
+
+
+def _is_blocking_coverage_limitation(limitation: str) -> bool:
+    return (
+        limitation in BLOCKING_COVERAGE_LIMITATIONS
+        or limitation in {
+            "chunks_failed_present",
+            "chunks_parsed_missing",
+            "file_context_fallback_used",
+            "file_context_missing",
+        }
+        or limitation.startswith("coverage_file_not_in_chunk:")
+        or limitation.startswith("chunk_execution_")
+        or limitation.startswith("chunk_plan_status_")
+    )
 
 
 def _must_review_files(intake: ReviewIntake | None) -> set[str]:

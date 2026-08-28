@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,11 @@ def parse_chunk_results(
     *,
     responses_dir: Path | str,
 ) -> ChunkResults:
+    if chunk_plan.status == "failed":
+        raise ChunkResultParserError(
+            "chunk_plan_invalid",
+            "semantic chunk plan status is failed",
+        )
     _validate_chunk_plan_ids(chunk_plan)
     response_root = Path(responses_dir).resolve()
     if not response_root.exists() or not response_root.is_dir():
@@ -124,16 +130,12 @@ def parse_chunk_results(
     rejected_findings = []
     coverage = ChunkResultsCoverage()
     limitations = list(chunk_plan.limitations)
-    plan_coverage = _normalize_plan_coverage_partition(chunk_plan)
-    limitations.extend(plan_coverage.limitations)
     # Kept strictly apart from `limitations` (AgentEscala#675, Fix A). Every
     # append to `limitations` below is engine-authored; the only model-authored
     # strings in this function land in `model_reported_limitations`.
     model_reported_limitations: list[str] = []
     dedupe_state = DedupeState()
 
-    if chunk_plan.status == "degraded":
-        limitations.append("chunk_plan_status_degraded")
     if not chunk_plan.chunks:
         limitations.append("chunk_plan_has_no_chunks")
 
@@ -178,13 +180,19 @@ def parse_chunk_results(
     response_universe = [
         file_path for chunk in chunk_plan.chunks for file_path in chunk.files
     ]
+    plan_run_coverage = _normalize_plan_run_coverage_partition(
+        chunk_plan,
+        chunks_parsed=chunks_parsed,
+        chunks_failed=chunks_failed,
+    )
+    limitations.extend(plan_run_coverage.limitations)
     reported_coverage = _build_normalized_coverage_partition(
         coverage,
         expected_files=response_universe,
     )
     limitations.extend(reported_coverage.limitations)
     coverage = _compose_coverage_partitions(
-        plan_coverage,
+        plan_run_coverage,
         reported_coverage,
     ).as_chunk_results_coverage()
     results = ChunkResults(
@@ -200,7 +208,7 @@ def parse_chunk_results(
         coverage=coverage,
         status=_result_status(
             chunk_plan=chunk_plan,
-            plan_coverage=plan_coverage,
+            plan_coverage=plan_run_coverage,
             parsed_count=len(chunks_parsed),
             failed_count=len(chunks_failed),
             coverage=coverage,
@@ -266,7 +274,20 @@ def _result_status(
     coverage: ChunkResultsCoverage,
     limitations: list[str],
 ) -> str:
-    if chunk_plan.status == "degraded":
+    if chunk_plan.status in {"degraded", "failed"}:
+        return "degraded"
+    if any(
+        _reason_matches(limitation, reason)
+        for limitation in limitations
+        for reason in (
+            "chunk_plan_status_degraded",
+            "chunk_plan_status_failed",
+            "chunk_execution_expected_missing",
+            "chunk_execution_foreign_id",
+            "chunk_execution_duplicate_id",
+            "chunk_execution_state_overlap",
+        )
+    ):
         return "degraded"
     if not chunk_plan.chunks:
         return "degraded"
@@ -280,7 +301,7 @@ def _result_status(
     # chunk that was actually produced happened to parse cleanly --
     # final_synthesizer and quality_gate already treat "partial" as
     # blocking wherever they read `chunk_results.status`.
-    if chunk_plan.status == "partial":
+    if chunk_plan.status == "partial" or "chunk_plan_status_partial" in limitations:
         return "partial"
     normalized_plan_coverage = plan_coverage.as_chunk_results_coverage()
     if (
@@ -368,26 +389,177 @@ def _normalize_plan_coverage_partition(
         ),
         expected_files=expected_files,
     )
+    effective = normalized.states
     chunk_file_set = set(chunk_files)
+    derived_plan_status: str | None = None
+
+    for chunk in chunk_plan.chunks:
+        if chunk.coverage == "complete":
+            cap = "reviewed"
+        elif chunk.coverage == "partial":
+            cap = "partial"
+            if derived_plan_status is None:
+                derived_plan_status = "partial"
+        else:
+            # `degraded` is the only other schema-valid value. Treat an
+            # assignment-mutated unknown value the same way: it must never
+            # restore a reviewed claim.
+            cap = "not_reviewed"
+            derived_plan_status = "degraded"
+        for file_path in _dedupe(chunk.files):
+            if (
+                file_path in effective
+                and COVERAGE_STATE_PRIORITY[cap]
+                > COVERAGE_STATE_PRIORITY[effective[file_path]]
+            ):
+                effective[file_path] = cap
+
+    if "file_context_missing" in chunk_plan.limitations:
+        derived_plan_status = "degraded"
+        effective = {file_path: "not_reviewed" for file_path in effective}
+    elif (
+        "file_context_fallback_used" in chunk_plan.limitations
+        and derived_plan_status is None
+    ):
+        derived_plan_status = "partial"
+
     unassigned_reviewed = {
         file_path
-        for file_path, state in normalized.assignments
+        for file_path, state in effective.items()
         if state == "reviewed" and file_path not in chunk_file_set
     }
-    if not unassigned_reviewed:
-        return normalized
+    for file_path in unassigned_reviewed:
+        effective[file_path] = "not_reviewed"
+
+    limitations = list(normalized.limitations)
+    for root_reason in ("file_context_missing", "file_context_fallback_used"):
+        if root_reason in chunk_plan.limitations:
+            limitations.append(root_reason)
+    if chunk_plan.status != "complete":
+        limitations.append(f"chunk_plan_status_{chunk_plan.status}")
+    if derived_plan_status is not None:
+        limitations.append(f"chunk_plan_status_{derived_plan_status}")
+    if unassigned_reviewed:
+        limitations.append("coverage_expected_files_missing")
+
     return _NormalizedCoveragePartition(
         assignments=tuple(
+            (file_path, effective[file_path])
+            for file_path in normalized.expected_files
+        ),
+        limitations=tuple(_dedupe(limitations)),
+        foreign_files=normalized.foreign_files,
+    )
+
+
+def _chunk_execution_limitations(
+    *,
+    chunks_parsed: list[str],
+    chunks_failed: list[ChunkParseFailure],
+    chunk_plan: SemanticChunkPlan | None,
+) -> list[str]:
+    """Validate the observable chunk execution ledger without trusting status.
+
+    Reason codes deliberately do not interpolate reported IDs. A foreign ID
+    is freely mutable input at the downstream boundaries and must not acquire
+    a deterministic namespace merely by being echoed into one.
+    """
+    parsed_ids = [value for value in chunks_parsed if isinstance(value, str)]
+    failed_ids = [
+        failure.chunk_id
+        for failure in chunks_failed
+        if isinstance(getattr(failure, "chunk_id", None), str)
+    ]
+    invalid_reported_id = (
+        len(parsed_ids) != len(chunks_parsed)
+        or len(failed_ids) != len(chunks_failed)
+    )
+    parsed_counts = Counter(parsed_ids)
+    failed_counts = Counter(failed_ids)
+    parsed_set = set(parsed_ids)
+    failed_set = set(failed_ids)
+    limitations: list[str] = []
+
+    expected_ids = (
+        [chunk.chunk_id for chunk in chunk_plan.chunks]
+        if chunk_plan is not None
+        else []
+    )
+    expected_counts = Counter(expected_ids)
+    expected_set = set(expected_ids)
+    valid_parsed = parsed_set & expected_set if chunk_plan is not None else parsed_set
+    if not valid_parsed:
+        limitations.append("chunks_parsed_missing")
+    if any(
+        count > 1
+        for counts in (parsed_counts, failed_counts, expected_counts)
+        for count in counts.values()
+    ):
+        limitations.append("chunk_execution_duplicate_id")
+    if parsed_set & failed_set:
+        limitations.append("chunk_execution_state_overlap")
+    if chunks_failed:
+        limitations.append("chunks_failed_present")
+
+    if chunk_plan is not None:
+        accounted_ids = parsed_set | failed_set
+        if expected_set - accounted_ids:
+            limitations.append("chunk_execution_expected_missing")
+        if invalid_reported_id or (parsed_set | failed_set) - expected_set:
+            limitations.append("chunk_execution_foreign_id")
+    elif invalid_reported_id:
+        limitations.append("chunk_execution_foreign_id")
+
+    return _dedupe(limitations)
+
+
+def _normalize_plan_run_coverage_partition(
+    chunk_plan: SemanticChunkPlan,
+    *,
+    chunks_parsed: list[str],
+    chunks_failed: list[ChunkParseFailure],
+) -> _NormalizedCoveragePartition:
+    """Bind plan coverage to one coherent parsed/failed execution ledger."""
+    plan_coverage = _normalize_plan_coverage_partition(chunk_plan)
+    parsed_ids = {value for value in chunks_parsed if isinstance(value, str)}
+    failed_ids = {
+        failure.chunk_id
+        for failure in chunks_failed
+        if isinstance(getattr(failure, "chunk_id", None), str)
+    }
+    assigned_chunk_ids: dict[str, list[str]] = {
+        file_path: [] for file_path in plan_coverage.expected_files
+    }
+    for chunk in chunk_plan.chunks:
+        for file_path in _dedupe(chunk.files):
+            if file_path in assigned_chunk_ids:
+                assigned_chunk_ids[file_path].append(chunk.chunk_id)
+
+    assignments: list[tuple[str, str]] = []
+    for file_path, state in plan_coverage.assignments:
+        required_ids = assigned_chunk_ids[file_path]
+        execution_backed = all(
+            chunk_id in parsed_ids and chunk_id not in failed_ids
+            for chunk_id in required_ids
+        )
+        assignments.append(
             (
                 file_path,
-                "not_reviewed" if file_path in unassigned_reviewed else state,
+                state if not required_ids or execution_backed else "not_reviewed",
             )
-            for file_path, state in normalized.assignments
-        ),
+        )
+
+    execution_limitations = _chunk_execution_limitations(
+        chunks_parsed=chunks_parsed,
+        chunks_failed=chunks_failed,
+        chunk_plan=chunk_plan,
+    )
+    return _NormalizedCoveragePartition(
+        assignments=tuple(assignments),
         limitations=tuple(
-            _dedupe([*normalized.limitations, "coverage_expected_files_missing"])
+            _dedupe([*plan_coverage.limitations, *execution_limitations])
         ),
-        foreign_files=normalized.foreign_files,
+        foreign_files=plan_coverage.foreign_files,
     )
 
 
@@ -532,6 +704,10 @@ def _dedupe(values: list[str]) -> list[str]:
         if value not in deduped:
             deduped.append(value)
     return deduped
+
+
+def _reason_matches(limitation: str, reason: str) -> bool:
+    return limitation == reason or limitation.startswith(f"{reason}:")
 
 
 def _clean(value: str | None) -> str | None:

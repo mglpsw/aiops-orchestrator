@@ -12,9 +12,10 @@ from pydantic import ValidationError
 
 from app.agent_review.chunk_result_parser import (
     _build_normalized_coverage_partition,
+    _chunk_execution_limitations,
     _compose_coverage_partitions,
     _normalize_coverage_against_partition,
-    _normalize_plan_coverage_partition,
+    _normalize_plan_run_coverage_partition,
 )
 from app.agent_review.redaction import RedactionState, redact_text, redact_value
 from app.agent_review.schemas import (
@@ -44,6 +45,7 @@ LIMITATION_MD_LIMIT = 10
 
 CRITICAL_LIMITATIONS = {
     "chunk_results_status_failed",
+    "chunks_parsed_missing",
     "coverage_missing",
     "redaction_report_not_safe_for_llm",
 }
@@ -356,7 +358,11 @@ def _coverage(
     reported = _dedupe(
         [*reported_files_reviewed, *reported_files_partial, *reported_files_not_reviewed]
     )
-    limitations: list[str] = []
+    limitations = _chunk_execution_limitations(
+        chunks_parsed=chunk_results.chunks_parsed,
+        chunks_failed=chunk_results.chunks_failed,
+        chunk_plan=chunk_plan,
+    )
 
     expected_files: list[str] = []
     missing_expected_files: list[str] = []
@@ -367,7 +373,12 @@ def _coverage(
         comparison_available = True
         if chunk_plan.status != "complete":
             limitations.append(f"chunk_plan_status_{chunk_plan.status}")
-        plan_coverage = _normalize_plan_coverage_partition(chunk_plan)
+        plan_coverage = _normalize_plan_run_coverage_partition(
+            chunk_plan,
+            chunks_parsed=chunk_results.chunks_parsed,
+            chunks_failed=chunk_results.chunks_failed,
+        )
+        limitations.extend(plan_coverage.limitations)
         expected_files = plan_coverage.expected_files
         missing_expected_files = [file_path for file_path in expected_files if file_path not in reported]
         extra_reported_files = [file_path for file_path in reported if file_path not in expected_files]
@@ -508,8 +519,12 @@ def _coverage_requires_manual_review(
         return True
     return any(
         limitation in RECOVERABLE_COVERAGE_LIMITATIONS
+        or limitation == "chunks_failed_present"
+        or limitation == "chunks_parsed_missing"
         or limitation.startswith("coverage_file_not_in_chunk:")
+        or limitation.startswith("chunk_execution_")
         or limitation.startswith("chunk_plan_status_")
+        or limitation in {"file_context_fallback_used", "file_context_missing"}
         for limitation in limitations
     )
 
@@ -676,7 +691,11 @@ def _is_absolute_path(value: str) -> bool:
 
 
 def _has_critical_limitation(limitations: list[str]) -> bool:
-    return any(limitation in CRITICAL_LIMITATIONS for limitation in limitations)
+    return any(
+        limitation in CRITICAL_LIMITATIONS
+        or limitation.startswith("chunk_execution_")
+        for limitation in limitations
+    )
 
 
 def _append_unique(values: list[Any], value: Any) -> None:
