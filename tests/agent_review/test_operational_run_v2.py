@@ -489,6 +489,29 @@ def test_back_half_programmer_defect_escapes_raw(tmp_path, real_toolrepo_sha, mo
         )
 
 
+def test_missing_required_artifact_is_a_typed_refusal_not_raw(tmp_path, real_toolrepo_sha):
+    """A required artifact absent from head_sha's Git tree must surface as
+    the payload owner's own typed refusal through this composer -- never as
+    a raw `PayloadReferenceError` (the sibling family the owner already
+    converts) and never as a traceback. This exercises the REAL composed
+    path, not just the structural (AST-level) oracle."""
+
+    repo, base_sha, head_sha = _make_target_repo(tmp_path)
+    # Remove the required artifact from the tree entirely at a new head.
+    (repo / "artifacts" / "full.diff").unlink()
+    head_sha_missing = _commit_all(repo, "remove required artifact")
+    profile_root = _make_trusted_profile_root(tmp_path)
+
+    with pytest.raises(OperationalRunError) as excinfo:
+        run_operational_review_v2(
+            **_run_kwargs(
+                repo_root=repo, profile_root=profile_root, base_sha=base_sha, head_sha=head_sha_missing,
+                transport=offline_file_transport_v2(tmp_path / "responses"), toolrepo_sha=real_toolrepo_sha,
+            )
+        )
+    assert excinfo.value.reason_code == "payload_required_artifact_missing"
+
+
 # -- structural oracles --------------------------------------------------------
 
 
