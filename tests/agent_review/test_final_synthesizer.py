@@ -498,6 +498,194 @@ def test_u2_synthesis_target_mismatch_cannot_authorize_p1_finding() -> None:
 
 
 @pytest.mark.parametrize(
+    ("carrier", "malformed"),
+    [
+        pytest.param("chunks_parsed", {EXECUTION_CHUNK_IDS[0]: []}, id="parsed-dict"),
+        pytest.param("chunks_parsed", (EXECUTION_CHUNK_IDS[0],), id="parsed-tuple"),
+        pytest.param("chunks_parsed", {EXECUTION_CHUNK_IDS[0]}, id="parsed-set"),
+        pytest.param("chunks_parsed", 1, id="parsed-scalar"),
+        pytest.param("chunks_failed", None, id="failed-none"),
+        pytest.param("files_reviewed", {EXECUTION_FILES[0]: []}, id="reviewed-dict"),
+        pytest.param("files_partial", (), id="partial-tuple"),
+        pytest.param("files_not_reviewed", set(), id="not-reviewed-set"),
+    ],
+)
+def test_u2_synthesis_rejects_malformed_result_coverage_carriers(
+    carrier: str,
+    malformed: object,
+) -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    if carrier in {"chunks_parsed", "chunks_failed"}:
+        setattr(results, carrier, malformed)
+    else:
+        setattr(results.coverage, carrier, malformed)
+
+    review = synthesize_final_review(results)
+
+    assert "chunk_results_structure_invalid" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize(
+    ("carrier", "malformed"),
+    [
+        pytest.param("chunks", (), id="chunks-tuple"),
+        pytest.param("chunks", None, id="chunks-none"),
+        pytest.param("files_covered", (EXECUTION_FILES[0],), id="covered-tuple"),
+        pytest.param("files_partially_covered", set(), id="partial-set"),
+        pytest.param("files_not_covered", {}, id="not-covered-dict"),
+        pytest.param("chunk_files", {EXECUTION_FILES[0]: []}, id="chunk-files-dict"),
+        pytest.param("chunk_files", (EXECUTION_FILES[0],), id="chunk-files-tuple"),
+    ],
+)
+def test_u2_synthesis_rejects_malformed_plan_universe_carriers(
+    carrier: str,
+    malformed: object,
+) -> None:
+    plan = _execution_plan()
+    if carrier == "chunk_files":
+        plan.chunks[0].files = malformed  # type: ignore[assignment]
+    else:
+        setattr(plan, carrier, malformed)
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert "chunk_plan_structure_invalid" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize(
+    ("authority", "field", "mutated"),
+    [
+        pytest.param("results", "schema_id", "agent-review.not-chunk-results.v1", id="result-schema-id"),
+        pytest.param("results", "schema_version", 99, id="result-schema-version"),
+        pytest.param("results", "schema_version", True, id="result-schema-version-bool"),
+        pytest.param("plan", "schema_id", "agent-review.not-plan.v1", id="plan-schema-id"),
+        pytest.param("plan", "schema_version", 99, id="plan-schema-version"),
+        pytest.param("plan", "schema_version", True, id="plan-schema-version-bool"),
+    ],
+)
+def test_u2_synthesis_revalidates_direct_authority_envelopes(
+    authority: str,
+    field: str,
+    mutated: object,
+) -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref = {}
+    target = results if authority == "results" else plan
+    setattr(target, field, mutated)
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    expected_reason = (
+        "chunk_results_identity_mismatch"
+        if authority == "results"
+        else "chunk_plan_ref_mismatch"
+    )
+    assert expected_reason in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize("with_plan", [False, True], ids=["no-plan", "supplied-plan"])
+def test_u2_synthesis_binds_present_plan_ref_target_repo(with_plan: bool) -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref["target_repo"] = "mglpsw/OtherRepo"
+
+    review = synthesize_final_review(
+        results,
+        chunk_plan=plan if with_plan else None,
+    )
+
+    assert "chunk_plan_ref_mismatch" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize(
+    ("field", "mutated"),
+    [
+        pytest.param("schema_version", True, id="schema-bool"),
+        pytest.param("schema_version", 1.0, id="schema-float"),
+        pytest.param("chunk_count", True, id="count-bool"),
+        pytest.param("chunk_count", 1.0, id="count-float"),
+    ],
+)
+def test_u2_synthesis_rejects_plan_ref_integer_type_confusion(
+    field: str,
+    mutated: object,
+) -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref[field] = mutated
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert "chunk_plan_ref_mismatch" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+def test_u2_synthesis_plan_foreign_p1_cannot_authorize_changes_requested() -> None:
+    foreign_id = "chunk-99-primary_backend_logic"
+    plan = _execution_plan()
+    results = _chunk_results(
+        findings=[_finding(chunk_id=foreign_id, severity="P1")],
+        chunks_parsed=[foreign_id],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert "chunk_execution_foreign_id" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+def test_u2_synthesis_exact_list_and_integer_authorities_remain_positive() -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref.update(
+        {
+            "target_repo": results.target_repo,
+            "chunk_count": 1,
+        }
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert "chunk_results_structure_invalid" not in review.limitations
+    assert "chunk_plan_structure_invalid" not in review.limitations
+    assert "chunk_results_identity_mismatch" not in review.limitations
+    assert "chunk_plan_ref_mismatch" not in review.limitations
+    assert review.status == "complete"
+    assert review.verdict == "approved"
+
+
+@pytest.mark.parametrize(
     (
         "plan_status",
         "chunk_coverage",
