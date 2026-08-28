@@ -384,3 +384,39 @@ def test_post_seal_validation_error_escapes_the_product_cli_raw(tmp_path: Path):
         "(test_operational_run_authority_v2.py); the CLI's own grouping-policy "
         "parse step legitimately converts ValidationError as CALLER input, not a leak"
     )
+
+
+def test_direct_inner_mode_invocation_is_refused(tmp_path: Path):
+    """Independent review lane A's finding: --_controlled-inner was
+    reachable directly, skipping the entire outer bootstrap/materialization/
+    bounded-env, with a self-declared, unverified --_inner-declared-
+    toolrepo-sha flowing straight into the canonical output. Closed:
+    the inner child now refuses unless its own resolved path genuinely
+    sits inside a real materialize_toolrepo_execution_subject_v2 output
+    directory matching --_inner-subject-root."""
+    target_repo, base_sha, head_sha = _build_real_target(tmp_path)
+    responses_dir = tmp_path / "responses"
+    responses_dir.mkdir()
+    policy_path = tmp_path / "policy.json"
+    _write_grouping_policy(policy_path)
+
+    result = subprocess.run(
+        [
+            sys.executable, str(CLI_SCRIPT),
+            "--_controlled-inner",
+            "--_inner-subject-root", "/totally/bogus/never/checked",
+            "--_inner-declared-toolrepo-sha", "d" * 40,
+            "--target-root", str(target_repo), "--base-sha", base_sha, "--head-sha", head_sha,
+            "--tested-merge-sha", _TESTED_MERGE_SHA, "--toolchain-digest", _TOOLCHAIN_DIGEST,
+            "--repo", "mglpsw/AgentEscala", "--pr-number", "101",
+            "--trusted-profile-root", str(FIXTURES_ROOT),
+            "--grouping-policy", str(policy_path), "--responses-dir", str(responses_dir),
+            "--pr-state", "open", "--event-type", "manual", "--event-action", "manual",
+            "--delivery-id", "bypass-attempt",
+        ],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert result.stdout == ""
+    error = json.loads(result.stderr)
+    assert error["error_class"] == "cli_inner_materialization_unverified"

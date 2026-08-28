@@ -19,6 +19,7 @@ from app.agent_review.controlled_subject_v2 import (
     CONTROLLED_SUBJECT_OBJECT_CLOSURE_INCOMPLETE_REASON_V2,
     CONTROLLED_SUBJECT_REFERENCE_PATH_UNSUPPORTED_REASON_V2,
     CONTROLLED_SUBJECT_SOURCE_LAYOUT_UNSUPPORTED_REASON_V2,
+    CONTROLLED_SUBJECT_SYMLINK_OR_GITLINK_PRESENT_REASON_V2,
     ControlledSubjectError,
     checkout_head_into_subject_v2,
     materialize_controlled_reference_root_v2,
@@ -385,6 +386,12 @@ def test_reference_root_materializes_declared_regular_files(tmp_path: Path):
 
 
 def test_reference_root_refuses_symlink_declared_path(tmp_path: Path):
+    """The reference-material adapter's OWN independent symlink refusal --
+    reachable without a prior checkout, since it reads via ls-tree/cat-file
+    against the object database directly, not the working tree. (A
+    checkout would ALSO refuse first now, per
+    test_checkout_refuses_a_committed_symlink_anywhere_in_the_tree below --
+    this test proves the reference adapter doesn't rely on that.)"""
     repo = tmp_path / "source"
     _init_repo(repo)
     (repo / ".aiops").mkdir()
@@ -394,12 +401,33 @@ def test_reference_root_refuses_symlink_declared_path(tmp_path: Path):
     head = base
 
     with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
-        checkout_head_into_subject_v2(subj)
         with pytest.raises(ControlledSubjectError) as excinfo:
             materialize_controlled_reference_root_v2(subj, declared_paths=(".aiops/evil_link.yaml",))
         assert (
             excinfo.value.reason_code == CONTROLLED_SUBJECT_REFERENCE_PATH_UNSUPPORTED_REASON_V2
         )
+
+
+def test_checkout_refuses_a_committed_symlink_anywhere_in_the_tree(tmp_path: Path):
+    """§ independent review lane A's finding: a committed symlink escaping
+    the subject must be refused by checkout itself, not merely by the
+    reference-material adapter for paths a profile happens to declare."""
+    repo = tmp_path / "source"
+    _init_repo(repo)
+    (repo / "backend").mkdir()
+    outside = tmp_path / "host_secret.txt"
+    outside.write_text("SECRET_HOST_CONTENT\n", encoding="utf-8")
+    (repo / "backend" / "evil_link.py").symlink_to(outside)
+    base = _commit_all(repo, "with symlink")
+    head = base
+
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        with pytest.raises(ControlledSubjectError) as excinfo:
+            checkout_head_into_subject_v2(subj)
+        assert (
+            excinfo.value.reason_code == CONTROLLED_SUBJECT_SYMLINK_OR_GITLINK_PRESENT_REASON_V2
+        )
+        assert not (subj.root / "backend" / "evil_link.py").exists()
 
 
 def test_reference_root_refuses_directory_declared_path(tmp_path: Path):
