@@ -55,7 +55,6 @@ from app.agent_review.authoritative_ci_snapshot_v2 import (  # noqa: E402
 )
 from app.agent_review.contracts_v2 import (  # noqa: E402
     PullRequestStateV2,
-    RequiredCheckProvenanceV2,
     RequiredCheckResultV2,
     RunOriginV2,
 )
@@ -65,6 +64,7 @@ from app.agent_review.operational_run_v2 import (  # noqa: E402
 )
 from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
     RequiredCheckProvenanceErrorV2,
+    RequiredCheckProvenanceV2,
 )
 from app.agent_review.review_transport_v2 import (  # noqa: E402
     ChunkTransportError,
