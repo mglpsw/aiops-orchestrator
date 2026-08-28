@@ -44,6 +44,35 @@ def _commit_all(repo: Path, message: str) -> str:
     ).stdout.strip()
 
 
+# Deterministic commit for `test_working_tree_presence_is_irrelevant_to_
+# reference_material`: a Git commit SHA is a function of tree + parent(s) +
+# author/committer identity + author/committer TIMESTAMP + message. Two
+# independently-created repos with identical content only hash identically
+# if every one of those fields matches -- the wall-clock timestamp does not,
+# by construction, across two sequential `git commit` invocations. A prior
+# version of this test omitted the fixed timestamp and happened to pass
+# locally (both commits landing in the same wall-clock second) while failing
+# in CI (they did not) -- a control that could pass by coincidence is not
+# evidence.
+_DETERMINISTIC_COMMIT_ENV = {
+    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
+    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com",
+    "GIT_AUTHOR_DATE": "2020-01-01T00:00:00+00:00",
+    "GIT_COMMITTER_DATE": "2020-01-01T00:00:00+00:00",
+}
+
+
+def _commit_all_deterministic(repo: Path, message: str) -> str:
+    import os
+
+    env = {**os.environ, **_DETERMINISTIC_COMMIT_ENV}
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, env=env)
+    subprocess.run(["git", "commit", "--quiet", "-m", message], cwd=repo, check=True, env=env)
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
 _PROFILE_TEXT_TEMPLATE = """schema_id: agent-review.target-profile.v2
 schema_version: 2
 source: repo-profile
@@ -276,7 +305,7 @@ def test_working_tree_presence_is_irrelevant_to_reference_material(tmp_path: Pat
     (repo_a / "contracts" / "domain-contracts.yaml").write_bytes(b"rules: []\n")
     contract_sha256 = hashlib.sha256((repo_a / "contracts" / "domain-contracts.yaml").read_bytes()).hexdigest()
     _write_profile(repo_a, contract_sha256=contract_sha256)
-    head_sha = _commit_all(repo_a, "init")
+    head_sha = _commit_all_deterministic(repo_a, "init")
     profile_a = load_target_profile_v2(repo_a)
 
     # run B: identical commit content, but the optional path additionally
@@ -289,7 +318,7 @@ def test_working_tree_presence_is_irrelevant_to_reference_material(tmp_path: Pat
     (repo_b / "artifacts" / "full.diff").write_bytes(b"diff --git a/x b/x\n")
     (repo_b / "contracts" / "domain-contracts.yaml").write_bytes(b"rules: []\n")
     _write_profile(repo_b, contract_sha256=contract_sha256)
-    head_sha_b = _commit_all(repo_b, "init")
+    head_sha_b = _commit_all_deterministic(repo_b, "init")
     assert head_sha_b == head_sha, "both repos must reach byte-identical commits to compare"
     (repo_b / "artifacts" / "optional.txt").write_text("generated after checkout\n", encoding="utf-8")
 
