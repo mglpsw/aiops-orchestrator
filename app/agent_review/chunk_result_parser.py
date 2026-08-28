@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,12 +20,16 @@ from app.agent_review.chunk_artifact_ids import (
 from app.agent_review.finding_normalizer import DedupeState, normalize_chunk_response
 from app.agent_review.redaction import RedactionState, redact_value
 from app.agent_review.schemas import (
+    CHUNK_RESULTS_SCHEMA,
     SEMANTIC_CHUNK_PLAN_SCHEMA,
     ChunkCoverageNotes,
     ChunkParseFailure,
     ChunkResponse,
     ChunkResults,
     ChunkResultsCoverage,
+    NormalizedFinding,
+    NormalizedRisk,
+    RejectedFinding,
     SemanticChunk,
     SemanticChunkPlan,
 )
@@ -49,9 +54,17 @@ _RESULT_IDENTITY_TRUST_LIMITATIONS = frozenset(
     {
         "target_repo_mismatch",
         "chunk_plan_ref_mismatch",
+        "chunk_results_schema_mismatch",
+        "chunk_plan_schema_mismatch",
+        "chunk_results_structure_invalid",
+        "chunk_plan_structure_invalid",
         "chunk_results_status_invalid",
+        "chunk_execution_duplicate_id",
+        "chunk_execution_foreign_id",
+        "chunk_execution_state_overlap",
     }
 )
+_EXACT_INTEGER_REFERENCE_FIELDS = frozenset({"schema_version", "chunk_count"})
 
 
 @dataclass(frozen=True)
@@ -91,6 +104,287 @@ class _NormalizedCoveragePartition:
         )
 
 
+def _snapshot_chunk_results(
+    chunk_results: ChunkResults,
+) -> tuple[ChunkResults, list[str]]:
+    """Take a safe value snapshot of the freely mutable v1 result model.
+
+    Pydantic validates construction, not later assignment. Downstream code
+    must therefore reject non-wire container shapes before iterating them;
+    dict keys, tuple values, or sets must never manufacture parsed chunks or
+    reviewed files merely because they happen to be iterable.
+    """
+    limitations: list[str] = []
+
+    chunks_parsed, parsed_valid = _snapshot_string_list(
+        getattr(chunk_results, "chunks_parsed", None)
+    )
+    if not parsed_valid:
+        limitations.extend(
+            ["chunk_results_structure_invalid", "chunk_execution_foreign_id"]
+        )
+
+    raw_failed = getattr(chunk_results, "chunks_failed", None)
+    chunks_failed, failed_valid = _snapshot_model_list(raw_failed, ChunkParseFailure)
+    if not failed_valid:
+        limitations.append("chunk_results_structure_invalid")
+        if raw_failed:
+            limitations.extend(
+                ["chunks_failed_present", "chunk_execution_foreign_id"]
+            )
+
+    confirmed_findings, findings_valid = _snapshot_model_list(
+        getattr(chunk_results, "confirmed_findings", None),
+        NormalizedFinding,
+    )
+    risks, risks_valid = _snapshot_model_list(
+        getattr(chunk_results, "risks", None),
+        NormalizedRisk,
+    )
+    rejected_findings, rejected_valid = _snapshot_model_list(
+        getattr(chunk_results, "rejected_findings", None),
+        RejectedFinding,
+    )
+    if not all((findings_valid, risks_valid, rejected_valid)):
+        limitations.append("chunk_results_structure_invalid")
+
+    deterministic_limitations, deterministic_valid = _snapshot_string_list(
+        getattr(chunk_results, "limitations", None)
+    )
+    model_limitations, model_limitations_valid = _snapshot_string_list(
+        getattr(chunk_results, "model_reported_limitations", None)
+    )
+    if not deterministic_valid or not model_limitations_valid:
+        limitations.append("chunk_results_structure_invalid")
+
+    coverage, coverage_valid = _snapshot_results_coverage(
+        getattr(chunk_results, "coverage", None)
+    )
+    if not coverage_valid:
+        limitations.append("chunk_results_structure_invalid")
+
+    target_repo = getattr(chunk_results, "target_repo", None)
+    if not isinstance(target_repo, str) or not target_repo:
+        target_repo = "unknown"
+        limitations.extend(
+            ["chunk_results_structure_invalid", "target_repo_mismatch"]
+        )
+
+    plan_ref = getattr(chunk_results, "chunk_plan_ref", None)
+    if not isinstance(plan_ref, dict):
+        plan_ref = {}
+        limitations.append("chunk_results_structure_invalid")
+    else:
+        plan_ref = deepcopy(plan_ref)
+
+    source = getattr(chunk_results, "source", None)
+    if not isinstance(source, str) or not source:
+        source = "aiops-review-parse-chunks"
+        limitations.append("chunk_results_structure_invalid")
+    created_at = getattr(chunk_results, "created_at", None)
+    if not isinstance(created_at, str) or not created_at:
+        created_at = "1970-01-01T00:00:00Z"
+        limitations.append("chunk_results_structure_invalid")
+    status = getattr(chunk_results, "status", None)
+    if not isinstance(status, str):
+        status = "degraded"
+        limitations.extend(
+            ["chunk_results_structure_invalid", "chunk_results_status_invalid"]
+        )
+
+    snapshot = ChunkResults.model_construct(
+        schema_version=getattr(chunk_results, "schema_version", None),
+        schema_id=getattr(chunk_results, "schema_id", None),
+        source=source,
+        target_repo=target_repo,
+        chunk_plan_ref=plan_ref,
+        chunks_parsed=chunks_parsed,
+        chunks_failed=chunks_failed,
+        confirmed_findings=confirmed_findings,
+        risks=risks,
+        limitations=deterministic_limitations,
+        model_reported_limitations=model_limitations,
+        rejected_findings=rejected_findings,
+        coverage=coverage,
+        status=status,
+        created_at=created_at,
+    )
+    return snapshot, _dedupe(limitations)
+
+
+def _snapshot_semantic_chunk_plan(
+    chunk_plan: SemanticChunkPlan | None,
+) -> tuple[SemanticChunkPlan | None, list[str]]:
+    """Snapshot the v1 expected-file authority without iterable coercion."""
+    if chunk_plan is None:
+        return None, []
+
+    limitations: list[str] = []
+    chunks, chunks_valid = _snapshot_semantic_chunks(
+        getattr(chunk_plan, "chunks", None)
+    )
+    files_covered, covered_valid = _snapshot_string_list(
+        getattr(chunk_plan, "files_covered", None)
+    )
+    files_partial, partial_valid = _snapshot_string_list(
+        getattr(chunk_plan, "files_partially_covered", None)
+    )
+    files_not_covered, not_covered_valid = _snapshot_string_list(
+        getattr(chunk_plan, "files_not_covered", None)
+    )
+    plan_limitations, limitations_valid = _snapshot_string_list(
+        getattr(chunk_plan, "limitations", None)
+    )
+    if not all(
+        (
+            chunks_valid,
+            covered_valid,
+            partial_valid,
+            not_covered_valid,
+            limitations_valid,
+        )
+    ):
+        limitations.append("chunk_plan_structure_invalid")
+
+    target_repo = getattr(chunk_plan, "target_repo", None)
+    if not isinstance(target_repo, str) or not target_repo:
+        target_repo = "unknown"
+        limitations.append("chunk_plan_structure_invalid")
+    source = getattr(chunk_plan, "source", None)
+    if not isinstance(source, str) or not source:
+        source = "aiops-semantic-chunk-planner"
+        limitations.append("chunk_plan_structure_invalid")
+    created_at = getattr(chunk_plan, "created_at", None)
+    if not isinstance(created_at, str) or not created_at:
+        created_at = "1970-01-01T00:00:00Z"
+        limitations.append("chunk_plan_structure_invalid")
+    max_parallel_blocks = getattr(chunk_plan, "max_parallel_blocks", None)
+    if type(max_parallel_blocks) is not int:
+        max_parallel_blocks = 0
+        limitations.append("chunk_plan_structure_invalid")
+    status = getattr(chunk_plan, "status", None)
+    if not isinstance(status, str):
+        status = "failed"
+        limitations.append("chunk_plan_structure_invalid")
+
+    snapshot = SemanticChunkPlan.model_construct(
+        schema_version=getattr(chunk_plan, "schema_version", None),
+        schema_id=getattr(chunk_plan, "schema_id", None),
+        source=source,
+        target_repo=target_repo,
+        max_parallel_blocks=max_parallel_blocks,
+        chunks=chunks,
+        files_covered=files_covered,
+        files_partially_covered=files_partial,
+        files_not_covered=files_not_covered,
+        limitations=plan_limitations,
+        status=status,
+        created_at=created_at,
+    )
+    return snapshot, _dedupe(limitations)
+
+
+def _snapshot_results_coverage(
+    coverage: object,
+) -> tuple[ChunkResultsCoverage, bool]:
+    if not isinstance(coverage, ChunkResultsCoverage):
+        return ChunkResultsCoverage(), False
+    reviewed, reviewed_valid = _snapshot_string_list(coverage.files_reviewed)
+    partial, partial_valid = _snapshot_string_list(coverage.files_partial)
+    not_reviewed, not_reviewed_valid = _snapshot_string_list(
+        coverage.files_not_reviewed
+    )
+    return (
+        ChunkResultsCoverage(
+            files_reviewed=reviewed,
+            files_partial=partial,
+            files_not_reviewed=not_reviewed,
+        ),
+        reviewed_valid and partial_valid and not_reviewed_valid,
+    )
+
+
+def _snapshot_semantic_chunks(
+    value: object,
+) -> tuple[list[SemanticChunk], bool]:
+    if type(value) is not list:
+        return [], False
+    snapshots: list[SemanticChunk] = []
+    valid = True
+    for item in value:
+        if not isinstance(item, SemanticChunk):
+            valid = False
+            continue
+        files, files_valid = _snapshot_string_list(item.files)
+        artifacts, artifacts_valid = _snapshot_string_list(item.artifacts)
+        contracts, contracts_valid = _snapshot_string_list(item.contracts)
+        depends_on, depends_valid = _snapshot_string_list(item.depends_on)
+        item_limitations, item_limitations_valid = _snapshot_string_list(
+            item.limitations
+        )
+        valid = valid and all(
+            (
+                files_valid,
+                artifacts_valid,
+                contracts_valid,
+                depends_valid,
+                item_limitations_valid,
+            )
+        )
+        snapshots.append(
+            SemanticChunk.model_construct(
+                chunk_id=item.chunk_id,
+                semantic_group=item.semantic_group,
+                order_index=item.order_index,
+                files=files,
+                artifacts=artifacts,
+                contracts=contracts,
+                depends_on=depends_on,
+                coverage=item.coverage,
+                prompt_budget_chars=item.prompt_budget_chars,
+                estimated_chars=item.estimated_chars,
+                limitations=item_limitations,
+            )
+        )
+    return snapshots, valid
+
+
+def _snapshot_model_list(value: object, model_type: Any) -> tuple[list[Any], bool]:
+    if type(value) is not list:
+        return [], False
+    snapshots: list[Any] = []
+    valid = True
+    for item in value:
+        if not isinstance(item, model_type):
+            valid = False
+            continue
+        try:
+            snapshots.append(
+                model_type.model_validate(
+                    item.model_dump(mode="python", warnings=False)
+                )
+            )
+        except (AttributeError, TypeError, ValueError, ValidationError):
+            valid = False
+    return snapshots, valid
+
+
+def _snapshot_string_list(value: object) -> tuple[list[str], bool]:
+    if type(value) is not list or any(not isinstance(item, str) for item in value):
+        return [], False
+    return list(value), True
+
+
+def _reference_field_matches(field: str, reported: object, expected: object) -> bool:
+    if field in _EXACT_INTEGER_REFERENCE_FIELDS:
+        return (
+            type(reported) is int
+            and type(expected) is int
+            and reported == expected
+        )
+    return reported == expected
+
+
 def load_json_object(path: Path | str, *, error_class: str) -> dict[str, Any]:
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -107,7 +401,11 @@ def load_chunk_plan(path: Path | str) -> SemanticChunkPlan:
     raw = load_json_object(path, error_class="chunk_plan_invalid")
     schema_id = raw.get("schema_id")
     schema_version = raw.get("schema_version")
-    if schema_id != SEMANTIC_CHUNK_PLAN_SCHEMA or schema_version != 1:
+    if (
+        schema_id != SEMANTIC_CHUNK_PLAN_SCHEMA
+        or type(schema_version) is not int
+        or schema_version != 1
+    ):
         raise ChunkResultParserError("chunk_plan_invalid", "semantic chunk plan schema is invalid")
     try:
         plan = SemanticChunkPlan.model_validate(raw)
@@ -236,7 +534,7 @@ def _load_chunk_response(response_path: Path, chunk: SemanticChunk) -> ChunkResp
         return _failure(chunk, "chunk_response_json_invalid", "chunk response JSON is invalid")
     if not isinstance(raw, dict):
         return _failure(chunk, "chunk_response_schema_invalid", "chunk response must be a JSON object")
-    if raw.get("schema_version") != 1:
+    if type(raw.get("schema_version")) is not int or raw.get("schema_version") != 1:
         return _failure(chunk, "chunk_response_schema_invalid", "chunk response schema_version must be 1")
 
     try:
@@ -539,6 +837,20 @@ def _chunk_result_integrity_limitations(
     limitations: list[str] = []
 
     if (
+        chunk_results.schema_id != CHUNK_RESULTS_SCHEMA
+        or type(chunk_results.schema_version) is not int
+        or chunk_results.schema_version != 1
+    ):
+        limitations.append("chunk_results_schema_mismatch")
+
+    if chunk_plan is not None and (
+        chunk_plan.schema_id != SEMANTIC_CHUNK_PLAN_SCHEMA
+        or type(chunk_plan.schema_version) is not int
+        or chunk_plan.schema_version != 1
+    ):
+        limitations.append("chunk_plan_schema_mismatch")
+
+    if (
         not isinstance(chunk_results.status, str)
         or chunk_results.status not in _CHUNK_RESULT_STATUSES
     ):
@@ -563,7 +875,17 @@ def _chunk_result_integrity_limitations(
         and plan_ref["schema_id"] != SEMANTIC_CHUNK_PLAN_SCHEMA
     ) or (
         "schema_version" in plan_ref
-        and plan_ref["schema_version"] != 1
+        and not _reference_field_matches(
+            "schema_version",
+            plan_ref["schema_version"],
+            1,
+        )
+    ):
+        limitations.append("chunk_plan_ref_mismatch")
+
+    if (
+        "target_repo" in plan_ref
+        and plan_ref["target_repo"] != chunk_results.target_repo
     ):
         limitations.append("chunk_plan_ref_mismatch")
 
@@ -581,10 +903,12 @@ def _chunk_result_integrity_limitations(
             "source": chunk_plan.source,
             "status": chunk_plan.status,
             "created_at": chunk_plan.created_at,
+            "target_repo": chunk_plan.target_repo,
             "chunk_count": len(chunk_plan.chunks),
         }
         if any(
-            field in plan_ref and plan_ref[field] != expected
+            field in plan_ref
+            and not _reference_field_matches(field, plan_ref[field], expected)
             for field, expected in expected_ref.items()
         ):
             limitations.append("chunk_plan_ref_mismatch")

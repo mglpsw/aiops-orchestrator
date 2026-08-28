@@ -18,6 +18,8 @@ from app.agent_review.chunk_result_parser import (
     _normalize_coverage_against_partition,
     _normalize_plan_run_coverage_partition,
     _result_identity_trustworthy,
+    _snapshot_chunk_results,
+    _snapshot_semantic_chunk_plan,
     _validated_chunk_ids,
 )
 from app.agent_review.redaction import RedactionState, redact_text, redact_value
@@ -48,6 +50,10 @@ LIMITATION_MD_LIMIT = 10
 
 CRITICAL_LIMITATIONS = {
     "chunk_plan_ref_mismatch",
+    "chunk_plan_structure_invalid",
+    "chunk_results_schema_mismatch",
+    "chunk_plan_schema_mismatch",
+    "chunk_results_structure_invalid",
     "chunk_results_status_failed",
     "chunk_results_status_invalid",
     "chunks_parsed_missing",
@@ -90,7 +96,11 @@ def load_chunk_results(path: Path | str) -> ChunkResults:
 
 
 def validate_chunk_results(raw: dict[str, Any]) -> ChunkResults:
-    if raw.get("schema_id") != CHUNK_RESULTS_SCHEMA or raw.get("schema_version") != 1:
+    if (
+        raw.get("schema_id") != CHUNK_RESULTS_SCHEMA
+        or type(raw.get("schema_version")) is not int
+        or raw.get("schema_version") != 1
+    ):
         raise FinalSynthesizerError("chunk_results_invalid", "chunk results schema is invalid")
     try:
         return ChunkResults.model_validate(raw)
@@ -112,7 +122,11 @@ def load_intake(path: Path | str) -> ReviewIntake:
 
 def load_semantic_chunk_plan(path: Path | str) -> SemanticChunkPlan:
     raw = load_json_object(path, error_class="chunk_plan_invalid")
-    if raw.get("schema_id") != SEMANTIC_CHUNK_PLAN_SCHEMA or raw.get("schema_version") != 1:
+    if (
+        raw.get("schema_id") != SEMANTIC_CHUNK_PLAN_SCHEMA
+        or type(raw.get("schema_version")) is not int
+        or raw.get("schema_version") != 1
+    ):
         raise FinalSynthesizerError("chunk_plan_invalid", "semantic chunk plan schema is invalid")
     try:
         return SemanticChunkPlan.model_validate(raw)
@@ -137,6 +151,12 @@ def synthesize_final_review(
     chunk_plan: SemanticChunkPlan | None = None,
     redaction_report: RedactionReport | None = None,
 ) -> FinalReview:
+    chunk_results, result_structure_limitations = _snapshot_chunk_results(
+        chunk_results
+    )
+    chunk_plan, plan_structure_limitations = _snapshot_semantic_chunk_plan(
+        chunk_plan
+    )
     findings = _dedupe_findings(chunk_results.confirmed_findings)
     risks = _dedupe_risks(chunk_results.risks)
     rejected_summary = _rejected_summary(chunk_results)
@@ -146,9 +166,19 @@ def synthesize_final_review(
         chunk_plan=chunk_plan,
         target_repos=(intake.target_repo,) if intake is not None else (),
     )
+    finding_binding_limitations = _finding_plan_binding_limitations(
+        findings,
+        chunk_plan,
+    )
     limitations = _limitations(
         chunk_results,
-        [*coverage_limitations, *integrity_limitations],
+        [
+            *coverage_limitations,
+            *integrity_limitations,
+            *finding_binding_limitations,
+            *result_structure_limitations,
+            *plan_structure_limitations,
+        ],
         redaction_report=redaction_report,
     )
     status = _review_status(chunk_results, limitations, coverage)
@@ -166,6 +196,7 @@ def synthesize_final_review(
         limitations=limitations,
         coverage=coverage,
         rejected_summary=rejected_summary,
+        chunk_plan=chunk_plan,
     )
     summary = _summary(verdict=verdict, status=status, counts=counts)
 
@@ -507,13 +538,19 @@ def _verdict(
     limitations: list[str],
     coverage: FinalReviewCoverage,
     rejected_summary: FinalReviewRejectedSummary,
+    chunk_plan: SemanticChunkPlan | None,
 ) -> str:
     if chunk_results.status == "failed" or not _has_minimum_material(chunk_results, findings, risks, limitations, coverage):
         return "review_unavailable"
 
     p0_p1 = [finding for finding in findings if finding.severity in {"P0", "P1"}]
     if p0_p1 and any(
-        _finding_is_trustworthy(finding, chunk_results, limitations)
+        _finding_is_trustworthy(
+            finding,
+            chunk_results,
+            limitations,
+            chunk_plan=chunk_plan,
+        )
         for finding in p0_p1
     ):
         return "changes_requested"
@@ -581,6 +618,8 @@ def _finding_is_trustworthy(
     finding: FinalReviewFinding,
     chunk_results: ChunkResults,
     limitations: list[str],
+    *,
+    chunk_plan: SemanticChunkPlan | None,
 ) -> bool:
     parsed_chunks = set(_validated_chunk_ids(chunk_results.chunks_parsed)[0])
     return (
@@ -589,7 +628,48 @@ def _finding_is_trustworthy(
         and bool(finding.evidence)
         and bool(finding.source_artifact or finding.line_or_hunk)
         and any(chunk_id in parsed_chunks for chunk_id in finding.source_chunks)
+        and not _finding_plan_binding_reasons(finding, chunk_plan)
     )
+
+
+def _finding_plan_binding_limitations(
+    findings: list[FinalReviewFinding],
+    chunk_plan: SemanticChunkPlan | None,
+) -> list[str]:
+    return _dedupe(
+        [
+            reason
+            for finding in findings
+            if finding.severity in {"P0", "P1"}
+            for reason in _finding_plan_binding_reasons(finding, chunk_plan)
+        ]
+    )
+
+
+def _finding_plan_binding_reasons(
+    finding: FinalReviewFinding,
+    chunk_plan: SemanticChunkPlan | None,
+) -> list[str]:
+    if chunk_plan is None:
+        return []
+    chunk_files: dict[str, set[str]] = {}
+    for chunk in chunk_plan.chunks:
+        validated_ids = _validated_chunk_ids([chunk.chunk_id])[0]
+        if validated_ids:
+            chunk_files[validated_ids[0]] = set(chunk.files)
+    source_chunks = _validated_chunk_ids(finding.source_chunks)[0]
+    reasons: list[str] = []
+    if (
+        len(source_chunks) != len(finding.source_chunks)
+        or any(chunk_id not in chunk_files for chunk_id in source_chunks)
+    ):
+        reasons.append("source_chunk_not_in_plan")
+    if finding.file_path and not any(
+        finding.file_path in chunk_files.get(chunk_id, set())
+        for chunk_id in source_chunks
+    ):
+        reasons.append("source_chunk_not_assigned_to_file")
+    return reasons
 
 
 def _summary(*, verdict: str, status: str, counts: FinalReviewCounts) -> str:
@@ -627,14 +707,13 @@ def _inputs(
 def _optional_input_ref(document: Any | None) -> dict[str, Any]:
     if document is None:
         return {"provided": False}
-    payload = document.model_dump(mode="json")
     return {
         "provided": True,
-        "schema_id": payload.get("schema_id"),
-        "schema_version": payload.get("schema_version"),
-        "source": payload.get("source"),
-        "status": payload.get("status"),
-        "created_at": payload.get("created_at"),
+        "schema_id": getattr(document, "schema_id", None),
+        "schema_version": getattr(document, "schema_version", None),
+        "source": getattr(document, "source", None),
+        "status": getattr(document, "status", None),
+        "created_at": getattr(document, "created_at", None),
     }
 
 
