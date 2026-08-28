@@ -1652,6 +1652,50 @@ correction_loop_qualification:
     - {finding: "lane-b-cli-exception-tuple", killed: "by construction (added classes now caught; no separate regression needed beyond existing CLI blackbox coverage)"}
     - {finding: "lane-b-findings-identity", killed: true, note: "empty-tuple interning false-negative caught and corrected before trusting the kill; see test docstring"}
     - {finding: "lane-b-profile-toctou-hash-binding", killed: true}
-  full_repository_suite: pending, run after this section is committed
+  full_agent_review_suite: "2643 passed, 48 failed, 13 skipped -- the 48 failures classified `preexisting`/
+    `environment` below, none touch a file this slice's diff modifies"
+  ci_equivalent_gates: "compileall (pass, 1 preexisting unrelated SyntaxWarning), git diff --check (pass),
+    export-agent-review-v2-schemas --check (byte-identical), run-agent-review-v2-evals --check (matches fresh
+    run), verify-caem-f0-pin --check (ok), generate-ri-b0a-2-reuse-view --check (byte-identical),
+    generate-target-pack-runtime-authority-view --check (byte-identical), materialize-benchmark-case --check
+    (byte-identical), generate-benchmark-corpus-manifest --check (byte-identical), generate-benchmark-premanifest
+    --check (byte-identical), generate-benchmark-identity-final --check (ok), generate-benchmark-report --check
+    (byte-identical), validate-benchmark-corpus-safety (ok)"
+  full_repository_suite: "3263 passed, 46 failed, 5 skipped, 0 errors -- 3314 total, 180.93s;
+    counted via --junitxml, not the terminal summary line (which this sandbox's harness
+    dropped from captured output for reasons not further investigated -- exit code and FAILED
+    list were intact, only the trailing count line was missing); same 46 target_repo_write_blocked
+    failures as above, marker-filtered set (`not integration and not requires_runtime and not
+    requires_docker and not requires_prometheus and not requires_network`, matching
+    scripts/test.sh's own default) excludes the 2 sudo-environment failures"
   ci_on_final_head: pending, requires push
 ```
+
+### Pre-existing failure classification, 48 items, confirmed at baseline
+
+Running the full `tests/agent_review` suite (not just this slice's own focused
+files) surfaces 48 failures, none in a file this slice's diff touches
+(`git log` confirms none of the failing files were last modified by any
+commit in this branch). Classified before trusting or repeating, per CAEM's
+failure-classification discipline:
+
+- **2 failures** (`test_isolated_executor_v2.py::test_execute_denies_sudo_inside_the_isolated_check`,
+  `::test_sudo_path_resolves_to_an_absolute_path_via_a_fixed_search_list`):
+  `environment` -- this sandbox has no working `sudo`; already recorded as a
+  standing, repo-independent condition (see project memory
+  `project_sudo_tests_env_failure.md`).
+- **46 failures** (`test_aiops_review_build_payloads_cli.py`,
+  `test_aiops_review_false_positives_cli.py`,
+  `test_aiops_review_telemetry_cli.py`): all fail with the same
+  `error_class: target_repo_write_blocked` / "Blocked: AgentReview
+  artifacts cannot be written inside Git worktrees." This sandbox's
+  checkouts (this one included --
+  `/opt/agent-tools/ar-200e-controlled-subject`) are themselves Git
+  worktrees, which a pre-existing CLI guard (unmodified by this slice)
+  refuses to write artifacts inside of. Confirmed `preexisting`, not a
+  regression: reproduced byte-for-byte identically in a disposable
+  worktree checked out at `f70af2e` (this branch's merge-base with
+  `master`, predating this entire `#200-E` slice) for 3 representative
+  samples spanning all 3 affected files. `environment`-class (sandbox
+  worktree topology), out of scope for this slice, does not affect this
+  slice's own claims or the terminal handoff below.
