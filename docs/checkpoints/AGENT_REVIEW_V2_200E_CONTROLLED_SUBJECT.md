@@ -1450,6 +1450,16 @@ survivors: 0
 non_vacuity_audited: true
 ```
 
+**Methodology note for future reviewers of M3-14 (and any black-box
+product-level mutant), found by independent review lane C while
+re-verifying the kill:** the outer CLI materializes the toolrepo subject
+via `git archive <declared_sha>`, which reads the COMMIT tree, not the
+working tree -- a mutation applied as an uncommitted edit to this checkout
+is invisible to the black-box subprocess tests by design (this is the
+tamper-defense working correctly, not a test gap). To re-verify a
+black-box mutant, commit it in a scratch clone first, exactly as this
+checkpoint's own mutation-check commits (e.g. `2bf9735`/`71a2d06`) did.
+
 ### Qualification
 
 ```yaml
