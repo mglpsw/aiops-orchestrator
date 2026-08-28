@@ -91,6 +91,45 @@
   `agent-router.inference-receipt.v2` verification and Router-result
   binding through the real, unpatched `execute_chunk_review_v2`.
 
+  A further, fully independent exact-head review reconciled these as one
+  root cause rather than four patches: `DeclaredGitObjectIdentity !=
+  GitCommandSemanticResult`, because Git's result for a declared
+  `base_sha`/`head_sha`/`toolrepo_sha` can still depend on ambient state
+  outside all three. New `app/agent_review/_sealed_git_execution_v2.py`
+  closes it for every Git subprocess this feature runs: **replacement
+  objects** (`git replace` substitutes content while `git ls-tree`/`rev-
+  parse` keep reporting the original SHA — reproduced directly, closed via
+  `GIT_NO_REPLACE_OBJECTS=1`); **ambient environment redirection** (an
+  ambient `GIT_DIR` silently redirects every Git command regardless of
+  `cwd` — reproduced directly, closed by stripping `GIT_DIR`/`GIT_WORK_TREE`/
+  `GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY`/`GIT_ALTERNATE_OBJECT_DIRECTORIES`/
+  `GIT_COMMON_DIR`/`GIT_NAMESPACE`/`GIT_EXTERNAL_DIFF`/`GIT_DIFF_OPTS`/
+  `GIT_ATTR_SOURCE`/`GIT_CONFIG_*` and pointing `GIT_CONFIG_GLOBAL`/
+  `GIT_CONFIG_SYSTEM` at `/dev/null`); and **working-tree attributes**
+  (an untracked `.gitattributes` changed `acquire_diff_v2`'s output for an
+  identical `base_sha...head_sha` range from text to binary — reproduced
+  directly; Git's native fix, `--attr-source`, needs Git ≥ 2.40, which this
+  host's Git 2.39.5/Debian 12 does not have, verified directly, so both
+  diff-acquisition functions instead run inside a disposable `git worktree`
+  checked out exactly at `head_sha`; `$GIT_DIR/info/attributes`, which is
+  *not* closed by that worktree isolation, is separately detected and fails
+  closed). Two further gaps: `--exclude-standard` let a `.gitignore` entry
+  hide a stray importable `.py` file from the toolrepo untracked-source
+  check entirely — the check now enumerates all untracked paths and applies
+  its own `.py`-file/`__pycache__`-exclusion filter instead of trusting
+  ignore configuration; and a `.exists()` filesystem prefilter let a
+  *deleted* bounded path (e.g. the CLI script) silently drop out of the
+  `git diff` pathspec — the full declared set is now always passed
+  unconditionally. The CLI's `--output <path>` (which could point inside
+  the target checkout, mutating it in a way the prior `HEAD^{tree}`-only
+  oracle could not detect) is removed entirely in favor of stdout-only
+  output; the black-box oracle now compares `git status --ignored=matching
+  -uall` before/after, which does detect a new file an ignore rule would
+  otherwise hide. Eleven adversarial conditions (Git replacement, ambient
+  environment injection, attribute/ignore/deletion evasion, target
+  mutation, post-seal defect sanitization) are each proven as a real
+  falsifier against this host's actual Git.
+
 ### Fixed
 
 - **AgentReview v2 Router receipt-v2 wire binding (`#200-C-WIRE`)**:

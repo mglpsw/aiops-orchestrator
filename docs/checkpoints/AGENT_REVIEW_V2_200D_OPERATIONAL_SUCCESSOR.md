@@ -387,6 +387,151 @@ acceptance oracle's terminal state is therefore
 + no authoritative green required-check evidence ⇒ NOT ready**. Forcing a
 positive state would have been a weaker test, not a stronger one.
 
+## Git semantic execution closure (correction round, `db00334` onward)
+
+A final exact-head independent review of `2fdedbf` found that `#5`/`#18`'s
+own invariants -- reference material and toolrepo identity being functions
+of a *declared Git object identity* -- were incomplete in one dimension
+neither had addressed: **the Git interpretation environment itself was
+unbound**.
+
+```text
+ObjectIdentity != InterpretationEnvironment
+
+ClosedGitSubject = ObjectIdentity + DeterministicGitExecutionPolicy
+```
+
+`GitSHAIdentity + UnboundGitInterpretationEnvironment` is not a closed
+subject: `base_sha`/`head_sha`/`toolrepo_sha` name an object, but Git's
+result for a given SHA can still depend on replacement refs, ambient
+`GIT_*` environment variables, global/system config, and working-tree
+attribute files that are outside any of those three declared identities.
+
+**P0 — replacement objects, reproduced directly.** `git ls-tree <head_sha>
+-- path` continues to report the ORIGINAL blob SHA after
+`git replace <original> <malicious>`, while `git cat-file -p <original>`
+returns the malicious bytes. The identical class affects a commit-level
+replacement of a toolrepo's own HEAD. New
+`app/agent_review/_sealed_git_execution_v2.py` sets
+`GIT_NO_REPLACE_OBJECTS=1` unconditionally for every Git subprocess this
+package runs for semantic acquisition or toolrepo identity.
+
+**P0 hardening — ambient environment, reproduced directly.** An ambient
+`GIT_DIR` pointing at an unrelated repository silently redirects every Git
+command run in the process regardless of `cwd`/`-C`; `GIT_OBJECT_DIRECTORY`
+injection broke resolution of the real repository's own HEAD entirely. The
+sealed child environment strips `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`/
+`GIT_OBJECT_DIRECTORY`/`GIT_ALTERNATE_OBJECT_DIRECTORIES`/`GIT_COMMON_DIR`/
+`GIT_NAMESPACE`/`GIT_EXTERNAL_DIFF`/`GIT_DIFF_OPTS`/`GIT_ATTR_SOURCE`/
+`GIT_CONFIG_COUNT`+`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*`, and points
+`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` at `os.devnull` (supported since
+Git 2.32, verified on this host's Git 2.39.5). Repository-local
+`.git/config` is deliberately left reachable -- it is part of the checkout
+under review, not ambient caller/machine state.
+
+**P1-A — attributes must be subject-bound, reproduced directly.** An
+UNTRACKED `.gitattributes` planted in the target's own working tree changed
+`acquire_diff_v2`'s output for the identical `base_sha...head_sha` range
+from a text hunk to a binary patch. Git's native fix,
+`--attr-source=<tree-ish>`, requires Git >= 2.40; **this host's Git (2.39.5,
+Debian 12/bookworm stable) does not have it** -- verified directly, the
+flag fails with a usage error, not merely absent from `--help`. Both
+`acquire_diff_v2` and `acquire_raw_diff_v2` now run inside a disposable,
+detached `git worktree` checked out exactly at `head_sha`, so attribute
+resolution walks that checkout's own `.gitattributes` -- verified directly
+in both directions: an untracked/modified attributes file in the original
+checkout has zero effect, while one actually committed at `head_sha` is
+correctly applied, and the target's own current checkout HEAD is
+irrelevant. `$GIT_DIR/info/attributes` is **not** closed by this (shared by
+every worktree, including the disposable one -- reproduced directly) and
+is instead explicitly checked and refused
+(`diff_info_attributes_active`) before the worktree is even created, since
+no supported Git mechanism on this host excludes it.
+
+**P1-B — ignore rules are not a source-identity authority, reproduced
+directly.** `--exclude-standard` hid a stray `app/common/_stray_evil.py`
+from the untracked-source check the moment a matching `.gitignore` line
+existed. The check now enumerates all untracked paths (no
+`--exclude-standard`) and applies its own explicit SOURCE_IDENTITY filter
+(`.py` files, excluding `__pycache__` directory components --
+TOOLCHAIN/EXECUTION_ENVIRONMENT, `toolchain_digest`'s subject) rather than
+letting ignore configuration decide.
+
+**P1-C — a deleted bounded path must not disappear from the proof,
+reproduced directly.** A `.exists()` filesystem prefilter excluded a
+bounded path deleted from disk (e.g. the CLI script itself) from the
+pathspec `git diff` was even asked about. The full declared
+`BOUNDED_SOURCE_RELATIVE_PATHS_V2` is now always passed unconditionally; a
+genuinely wrong/empty `TOOLREPO_ROOT` is detected via `git ls-tree` against
+HEAD, never filesystem existence.
+
+**P1-D — CLI output must not mutate the target.** `--output <path>`
+accepted an arbitrary destination and wrote there directly, so a caller
+could request `--output <repo_root>/review.json` -- a mutation the prior
+`HEAD^{tree}`-only oracle could not even detect. Removed entirely: the
+canonical `ReviewReadinessV2` JSON now goes to **stdout only**; this CLI
+never receives or interprets a destination path, so it cannot be pointed at
+the target checkout. The black-box oracle itself is corrected to compare
+`git status --porcelain=v1 -z -uall --ignored=matching` before/after,
+which detects tracked modification, tracked deletion, a new untracked
+file, and a new file a `.gitignore` entry would otherwise hide from
+`git status` entirely -- proven to actually discriminate what
+`HEAD^{tree}` alone would have missed.
+
+**P2 — post-seal defect pinned at the composition boundary.** A genuine
+pydantic `ValidationError` forced into `run_assembly_v2`'s post-seal
+`ManifestV2` construction is proven to still escape `prepare_operational_
+review_v2` raw, verified as a real falsifier (an isolated mutant adding
+`except ValidationError` around the assembly call was applied, confirmed to
+turn the raw error into `OperationalRunError(run_assembly_identity_
+invalid)`, then reverted).
+
+### Mutation/adversarial matrix (M1–M11), all executed and killed
+
+| # | Condition | Killed by |
+|---|---|---|
+| M1 | blob replacement | `test_sealed_git_execution_v2`, `test_diff_acquisition_v2` |
+| M2 | commit replacement | `test_sealed_git_execution_v2`, `test_toolrepo_identity_v2` |
+| M3 | `GIT_DIR`/`GIT_OBJECT_DIRECTORY` injection | `test_sealed_git_execution_v2` |
+| M4 | worktree `.gitattributes` add/modify | `test_diff_acquisition_v2` |
+| M5 | `.git/info/attributes` active | `test_diff_acquisition_v2`, `test_sealed_git_execution_v2` |
+| M6 | `.gitignore` hiding stray source | `test_toolrepo_identity_v2` |
+| M7 | delete exact runner CLI path | `test_toolrepo_identity_v2` |
+| M8 | delete bounded tracked `app/` source | `test_toolrepo_identity_v2` |
+| M9 | CLI result path inside target | `test_operational_run_blackbox_e2e_v2` |
+| M10 | ignored untracked file mutation | `test_operational_run_blackbox_e2e_v2` |
+| M11 | sanitize post-seal `ValidationError` | `test_operational_run_v2` |
+
+Every mutant: baseline green → mutation applied in an isolated commit →
+confirmed to produce the intended failure → reverted → baseline
+reconfirmed green. `M2`/`M3`/`M9` used Git-level or process-level
+adversarial conditions rather than source mutations, since the property
+under test is resistance to an external/ambient condition, not resilience
+to a code change -- the discriminating requirement (baseline passes without
+the condition, fails or is provably immune with it) is identical.
+
+### CAEM alignment — recorded, not overclaimed
+
+```yaml
+caem_alignment:
+  git_object_identity_bound: true
+  git_interpretation_environment_bound: true
+  replacement_objects_disabled: true
+  attributes_source_bound: true
+  ignored_source_not_authoritative: true
+  target_mutation_oracle_complete: true
+
+  formal_caem_f0_f2_conformance:
+    established_by_this_slice: false
+```
+
+This does **not** claim Git itself is universally deterministic -- only
+that the specific Git operations AgentReview's operational composer and
+toolrepo identity authority depend on now execute under the bounded policy
+this slice proves, on this host's actual Git (2.39.5). The `--attr-source`
+gap is recorded as a known, deliberately-unclosed channel with a working
+substitute (the disposable worktree), not hidden.
+
 ## What is established, and what is not
 
 ```yaml
@@ -397,11 +542,14 @@ established:
   real_diff: true
   immutable_head_bound_reference_material: true
   toolrepo_source_identity: true
+  git_semantic_execution_closure: true
   content_redaction: true
+  router_receipt_verification_and_binding: true
   payload_content_binding: true
   semantic_response_binding: true
   synthesis: true
   readiness: true
+  cli_no_filesystem_output_authority: true
 
 not_established:
   live_router: true
