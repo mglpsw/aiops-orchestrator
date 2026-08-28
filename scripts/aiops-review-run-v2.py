@@ -47,7 +47,8 @@ from __future__ import annotations
 import os
 import sys
 
-pass  # MUTATION: re-exec disabled
+if not sys.flags.isolated:
+    os.execv(sys.executable, [sys.executable, "-I", "-B", os.path.abspath(__file__), *sys.argv[1:]])
 
 import argparse
 import json
