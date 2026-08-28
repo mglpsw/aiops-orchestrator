@@ -33,8 +33,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 _THIS_SCRIPT = Path(__file__).resolve()
@@ -93,9 +95,21 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 
 def _run_outer_bootstrap(argv: list[str]) -> int:
-    toolrepo_sha_probe = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=_TOOLREPO_ROOT, capture_output=True, text=True, check=False
-    )
+    # The outer process's OWN git probe is just as reachable by hostile
+    # ambient GIT_* state as any other bare subprocess.run call -- proven
+    # directly (test_product_level_hostile_outer_environment_has_zero_
+    # semantic_effect): an ambient GIT_DIR redirected THIS probe before
+    # the toolrepo subject materializer (which already builds its own
+    # bounded env internally) was ever reached. Sealed the same way.
+    probe_home = Path(tempfile.mkdtemp(prefix="aiops-review-run-v2-outer-probe-"))
+    try:
+        toolrepo_sha_probe = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=_TOOLREPO_ROOT,
+            env=bounded_child_env_v2(isolated_home=probe_home),
+            capture_output=True, text=True, check=False,
+        )
+    finally:
+        shutil.rmtree(probe_home, ignore_errors=True)
     if toolrepo_sha_probe.returncode != 0:
         print(json.dumps({"error_class": CLI_BOOTSTRAP_INPUT_INVALID_REASON_V2}), file=sys.stderr)
         return 1
