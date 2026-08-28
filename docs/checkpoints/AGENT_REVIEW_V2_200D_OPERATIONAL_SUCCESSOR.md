@@ -1,7 +1,125 @@
-# Checkpoint — `#200-D` operational composition successor
+# Checkpoint — `#200-D` / PR #274 frozen forensic predecessor
 
-**Status:** implemented and locally qualified; exact-HEAD CI and independent
-review are the next gates. Terminal state is Draft — not Ready, not merged.
+> **STOP — FROZEN FORENSIC PREDECESSOR**
+>
+> PR #274 is not an integration candidate. Its operational-composition work
+> generated reusable knowledge and counterexamples, but the Git authority
+> model underneath target acquisition and toolrepo source identity did not
+> converge under adversarial review. No qualification from this PR transfers
+> to its successor.
+
+**Terminal status:** `STOP_GIT_AUTHORITY_MODEL_NOT_CONVERGING`. PR #274 stays
+Draft, not Ready and not merged. The terminal recommendation is to close it
+unmerged as `FROZEN_FORENSIC`; closure requires a separate explicit grant.
+
+## Terminal forensic reconciliation — authoritative
+
+This section supersedes every contrary conclusion later in this document.
+The later sections are retained as a historical implementation and
+counterexample record; they do not establish authority or integration
+readiness.
+
+```yaml
+subject:
+  repository: mglpsw/aiops-orchestrator
+  pr: 274
+  base_sha: f70af2e635643d1ee96ba431857002ae079b502b
+  head_sha_before_reconciliation: c68a8b9a6b4d57383918f7fc1fa6a85536e331c6
+  head_tree_before_reconciliation: d2995de5eb3b64e5636c847eddb0fb5bbc3cfa95
+  state: OPEN_DRAFT
+verdict: STOP_GIT_AUTHORITY_MODEL_NOT_CONVERGING
+incremental_git_sealing:
+  disposition: ABANDONED
+  reason: >-
+    repeated adversarial rounds continue to reveal new semantic and
+    execution channels below the supposed closure boundary
+target_subject_acquisition:
+  current_model: REFUTED
+  successor_direction: CONTROLLED_SCRATCH_REPOSITORY
+  principle: >-
+    semantic Git operations execute against reviewer-controlled scratch
+    state, not by attempting to sanitize the target-controlled repository
+toolrepo_source_identity:
+  current_model: REFUTED
+  successor_direction: DIRECT_BLOB_TO_FILESYSTEM_EQUIVALENCE
+  principle: >-
+    compare raw executable filesystem bytes against exact blobs from the
+    declared toolrepo commit; never infer byte equality from git diff/index
+    cleanliness
+target_nonmutation:
+  current_oracle: REFUTED
+  reason: >-
+    Git-status/tree projections do not observe writes under .git
+  successor_direction: >-
+    structurally read-only target + reviewer-owned scratch execution
+ready: false
+merge: false
+release: false
+deploy: false
+```
+
+### False claims retracted
+
+The following claims are **REFUTED**, not merely incomplete or awaiting more
+qualification:
+
+```yaml
+git_semantic_execution_closure: REFUTED
+exhaustive_git_execution_surface: REFUTED
+target_nonmutation_proven_by_current_oracle: REFUTED
+GIT_SEMANTIC_SUBJECT_NON_REFUTED: REFUTED
+```
+
+### Independently reproduced counterexamples
+
+- `includeIf.gitdir`: the detector returns false, acquisition succeeds and
+  configured code executes.
+- `GIT_CONFIG_PARAMETERS`: the setting survives the current sealed
+  environment and Git honors it.
+- `filter.*.clean`: the configured command executes during toolrepo identity
+  observation and can hide dirty executable source.
+- `assume-unchanged`: identity can pass while the actual filesystem bytes are
+  tampered.
+- lazy fetch / promisor object: a semantic read can execute a
+  target-controlled `ext::` transport and persist the fetched pack under the
+  target `.git`; `GIT_NO_LAZY_FETCH=1` is only a local causal mitigation, not
+  the successor architecture.
+- target `.git` mutation: the current non-mutation oracle remains green;
+  `git status` is not a complete target-mutation observation.
+
+These counterexamples, their fixtures, tests and commit history are preserved
+as forensic evidence and must be ported as red tests where applicable. No new
+Git-semantic implementation correction is authorized in this predecessor.
+
+### Port classification
+
+| Current material | Successor disposition |
+|---|---|
+| operational composition order | `PORT_AS_CONCEPT` |
+| canonical synthesis preservation | `PORT_WITH_REVALIDATION` |
+| preparation closure | `PORT_WITH_REVALIDATION` |
+| provider-free Router receipt/binding corpus | `PORT_AS_TEST_CORPUS` |
+| reference-source goal | `PORT_REQUIREMENT`; `DO_NOT_PORT_CURRENT_IMPLEMENTATION` |
+| toolrepo identity goal | `PORT_REQUIREMENT`; `DO_NOT_PORT_CURRENT_IMPLEMENTATION` |
+| `_sealed_git_execution_v2` | `FORENSIC_COUNTEREXAMPLE_CORPUS`; `DO_NOT_PORT_AS_AUTHORITY` |
+| disposable target worktree model | `DO_NOT_PORT` |
+| Git config/execution-surface enumeration | `DO_NOT_PORT_AS_COMPLETENESS_AUTHORITY` |
+| all reproduced adversarial fixtures | `PORT_AS_RED_TESTS` |
+
+```yaml
+terminal_recommendation:
+  action: CLOSE_PR_274_UNMERGED
+  authorized_in_this_reconciliation: false
+  classification: FROZEN_FORENSIC
+  knowledge_port_required: true
+successor_required: true
+successor_architecture:
+  target_acquisition: reviewer_controlled_scratch_repository
+  toolrepo_identity: raw_worktree_bytes_vs_exact_commit_blobs
+  target_mutation: structural_read_only_target
+```
+
+## Historical implementation record — non-authoritative
 
 ```yaml
 subject:
@@ -29,7 +147,7 @@ state:
   release: not_established
 ```
 
-## Why this PR exists
+### Why this PR existed
 
 `run_synthetic_review_v2` (`review_transport_v2.py`) already owned the
 entire back half — transport, source-specific proof, binding, parsing,
@@ -387,7 +505,7 @@ acceptance oracle's terminal state is therefore
 + no authoritative green required-check evidence ⇒ NOT ready**. Forcing a
 positive state would have been a weaker test, not a stronger one.
 
-## Git semantic execution closure (correction round, `db00334` onward)
+## Historical Git semantic execution closure attempt (refuted)
 
 A final exact-head independent review of `2fdedbf` found that `#5`/`#18`'s
 own invariants -- reference material and toolrepo identity being functions
@@ -532,18 +650,14 @@ includes while -- under the sealed environment, where global and system
 config are already `os.devnull` -- still reporting only repository-local
 content plus this module's own `-c` values.
 
-**Convergence check, not just more findings.** After these, the remaining
-config-driven execution surface was enumerated and probed directly rather
-than assumed: `core.pager`, `core.alternateRefsCommand`, `core.sshCommand`,
-`credential.helper`, `diff.external`, `core.gitProxy` (during both
-`git worktree add` and the acquisition `git diff`), and `diff.<driver>.
-textconv` driven by a committed `.gitattributes`. None executed. The
-execution surface is therefore: hooks and `core.fsmonitor` (closed by
-`-c`), filter drivers (refused, no `-c` closure exists), and
-external-diff/textconv (already closed by `--no-ext-diff`/`--no-textconv`).
-The attribute-resolution surface is: in-tree `.gitattributes` (bound by the
-worktree), `$GIT_DIR/info/attributes` (refused) and `core.attributesFile`
-(closed by `-c`).
+**Historical convergence claim — REFUTED.** At this point the remaining
+config-driven execution surface was treated as exhaustively enumerated after
+probing `core.pager`, `core.alternateRefsCommand`, `core.sshCommand`,
+`credential.helper`, `diff.external`, `core.gitProxy`, and textconv. The later
+`includeIf.gitdir`, `GIT_CONFIG_PARAMETERS`, `filter.*.clean`,
+`assume-unchanged`, and lazy-fetch/promisor counterexamples disprove that
+completeness claim. This enumeration remains useful only as forensic evidence;
+it is not an authority boundary and must not be ported as one.
 
 **P1-B — ignore rules are not a source-identity authority, reproduced
 directly.** `--exclude-standard` hid a stray `app/common/_stray_evil.py`
@@ -572,8 +686,9 @@ the target checkout. The black-box oracle itself is corrected to compare
 `git status --porcelain=v1 -z -uall --ignored=matching` before/after,
 which detects tracked modification, tracked deletion, a new untracked
 file, and a new file a `.gitignore` entry would otherwise hide from
-`git status` entirely -- proven to actually discriminate what
-`HEAD^{tree}` alone would have missed.
+`git status` entirely. That narrower observation remains useful, but the
+oracle is **REFUTED as a target non-mutation proof** because it does not
+observe writes under the target `.git`.
 
 **P2 — post-seal defect pinned at the composition boundary.** A genuine
 pydantic `ValidationError` forced into `run_assembly_v2`'s post-seal
@@ -614,62 +729,39 @@ under test is resistance to an external/ambient condition, not resilience
 to a code change -- the discriminating requirement (baseline passes without
 the condition, fails or is provably immune with it) is identical.
 
-### CAEM alignment — recorded, not overclaimed
+### Historical CAEM alignment claim — terminally retracted
 
 ```yaml
 caem_alignment:
-  git_object_identity_bound: true
-  git_interpretation_environment_bound: true
-  replacement_objects_disabled: true
-  attributes_source_bound: true
-  ignored_source_not_authoritative: true
-  target_mutation_oracle_complete: true
-  target_hook_execution_closed: true
-  target_filter_driver_execution_refused: true
-  target_fsmonitor_execution_closed: true
-  foreign_owned_checkout_supported: true
-  out_of_tree_attributes_redirect_closed: true
-  config_include_resolution_complete: true
+  git_semantic_execution_closure: REFUTED
+  exhaustive_git_execution_surface: REFUTED
+  target_mutation_oracle_complete: REFUTED
+  toolrepo_source_identity_current_model: REFUTED
+  reference_source_current_model: REFUTED
 
   formal_caem_f0_f2_conformance:
     established_by_this_slice: false
 ```
 
-This does **not** claim Git itself is universally deterministic -- only
-that the specific Git operations AgentReview's operational composer and
-toolrepo identity authority depend on now execute under the bounded policy
-this slice proves, on this host's actual Git (2.39.5). The `--attr-source`
-gap is recorded as a known, deliberately-unclosed channel with a working
-substitute (the disposable worktree), not hidden.
+The earlier bounded-policy conclusion is retracted. The disposable worktree
+is not a successor authority: it still makes semantic Git operations depend on
+target-controlled repository state and creates target `.git` mutation paths.
 
-## What is established, and what is not
+## Terminal classification of what may survive
 
 ```yaml
-established:
-  toolrepo_as_product: true
-  provider_free_operational_composition: true
-  real_target_checkout: true
-  real_diff: true
-  immutable_head_bound_reference_material: true
-  toolrepo_source_identity: true
-  git_semantic_execution_closure: true
-  content_redaction: true
-  router_receipt_verification_and_binding: true
-  payload_content_binding: true
-  semantic_response_binding: true
-  synthesis: true
-  readiness: true
-  cli_no_filesystem_output_authority: true
-
-not_established:
-  live_router: true
-  provider: true
-  live_pr_staleness_observation: true
-  production_workflow: true
-  agentescala_canary: true
-  interleitos_canary: true
-  target_pack_install: true
-  release: true
+portable_knowledge:
+  operational_composition_order: PORT_AS_CONCEPT
+  canonical_synthesis_preservation: PORT_WITH_REVALIDATION
+  preparation_closure: PORT_WITH_REVALIDATION
+  provider_free_router_receipt_binding: PORT_AS_TEST_CORPUS
+refuted_current_implementations:
+  reference_source: DO_NOT_PORT_CURRENT_IMPLEMENTATION
+  toolrepo_source_identity: DO_NOT_PORT_CURRENT_IMPLEMENTATION
+  sealed_git_execution: DO_NOT_PORT_AS_AUTHORITY
+  disposable_target_worktree: DO_NOT_PORT
+qualification_transfer: false
+integration_candidate: false
 ```
 
 `#19` — this slice operates on explicit immutable `base_sha`/`head_sha`

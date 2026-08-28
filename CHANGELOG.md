@@ -4,7 +4,19 @@
 
 ### Added
 
-- **AgentReview v2 operational composition successor (`#200-D`)**: makes the
+- **STOP — AgentReview v2 PR #274 frozen forensic predecessor (`#200-D`)**:
+  this work is not an integration candidate. Its operational-composition
+  work generated reusable knowledge and counterexamples, but the Git
+  authority model underneath target acquisition and toolrepo source identity
+  did not converge under adversarial review. The incremental Git-sealing
+  model is `ABANDONED`; current reference-source identity, toolrepo source
+  identity, Git execution-surface completeness and target non-mutation claims
+  are `REFUTED`. No qualification transfers to a successor. Terminal
+  recommendation: close PR #274 unmerged as `FROZEN_FORENSIC` after separate
+  authorization; preserve its fixtures, tests and history as red-test and
+  forensic material.
+
+  Historical implementation record: the PR attempted to make the
   v2 engine invocable from the toolrepo, as a product, against a separate
   real target checkout. `run_synthetic_review_v2` already owned the entire
   back half but had zero production callers in `app/`/`scripts/` -- this adds
@@ -14,13 +26,15 @@
   assembly, payload building, payload-set emission, content extraction,
   preparation closure) onto the unchanged back half, re-implementing none of
   them. Terminal state: Draft, provider-free, offline-transport-only in this
-  slice -- no live Router call, no provider, no target mutation.
+  slice -- no live Router call or provider. Its former no-target-mutation
+  conclusion is retracted because Git status/tree projections do not observe
+  writes under `.git`.
 
-  Two new authorities close gaps neither `#271` (the closed, unmerged
+  Two mechanisms attempted to close gaps neither `#271` (the closed, unmerged
   forensic predecessor) nor `#272` (the merged architectural predecessor)
   addressed:
 
-  - `app/agent_review/reference_source_v2.py` closes a TOCTOU:
+  - `app/agent_review/reference_source_v2.py` attempted to close a TOCTOU:
     `payload_references_v2` reads artifact/contract bytes from the target's
     mutable WORKING TREE while diff/content come from Git OBJECTS at
     `base_sha`/`head_sha`, so identical SHA inputs could bind different
@@ -31,7 +45,7 @@
     NOWHERE, proven by a determinism control asserting byte-identical
     materialized reference sets whether a declared-but-absent path is
     missing or present as an untracked/generated working-tree file.
-  - `app/agent_review/toolrepo_identity_v2.py` proves the EXECUTING
+  - `app/agent_review/toolrepo_identity_v2.py` attempted to prove the EXECUTING
     toolrepo's own source checkout matches its declared `toolrepo_sha`
     before any semantic review runs -- a caller's declaration is never
     treated as proof of what actually executed. Bounded to the package tree
@@ -75,8 +89,8 @@
   toolrepo tree, reaching honest `manual_required`/`policy_failure`
   readiness (no fabricated required-check authority is reachable in
   production today -- see `required_check_readiness_v2`'s own module
-  docstring) and proving the target tree byte-identical before/after. No
-  published schema changed.
+  docstring). Its before/after target-tree observation is retained as test
+  history, not as proof of non-mutation. No published schema changed.
 
   Independent review of the Draft PR's exact head found and closed two real
   gaps before Ready: (1) toolrepo source identity was bounded to
@@ -96,7 +110,8 @@
   GitCommandSemanticResult`, because Git's result for a declared
   `base_sha`/`head_sha`/`toolrepo_sha` can still depend on ambient state
   outside all three. New `app/agent_review/_sealed_git_execution_v2.py`
-  closes it for every Git subprocess this feature runs: **replacement
+  attempted to close it for every Git subprocess this feature runs:
+  **replacement
   objects** (`git replace` substitutes content while `git ls-tree`/`rev-
   parse` keep reporting the original SHA — reproduced directly, closed via
   `GIT_NO_REPLACE_OBJECTS=1`); **ambient environment redirection** (an
@@ -146,10 +161,13 @@
   leaving a *committed* `.gitattributes` effective), and fixed the filter
   detector itself, which `include.path` bypassed because
   `git config --local --list` does not resolve includes while Git's filter
-  lookup does. The remaining config-driven execution surface
+  lookup does. The then-claimed remaining config-driven execution surface
   (`core.pager`, `core.alternateRefsCommand`, `core.sshCommand`,
   `credential.helper`, `diff.external`, `core.gitProxy`, textconv) was then
-  probed directly and none executed.
+  probed directly and none executed. That completeness conclusion is now
+  `REFUTED` by the preserved `includeIf.gitdir`, `GIT_CONFIG_PARAMETERS`,
+  `filter.*.clean`, `assume-unchanged`, lazy-fetch/promisor, and target
+  `.git`-mutation counterexamples.
 
   Two further gaps: `--exclude-standard` let a `.gitignore` entry
   hide a stray importable `.py` file from the toolrepo untracked-source
