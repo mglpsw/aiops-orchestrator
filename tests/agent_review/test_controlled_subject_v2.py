@@ -290,3 +290,52 @@ def test_target_nonmutation_normal_materialization_leaves_no_trace(tmp_path: Pat
 
     after = _recursive_snapshot(repo)
     assert before == after
+
+
+def test_source_untracked_gitattributes_has_no_effect_ce04(tmp_path: Path):
+    repo, base, head = _two_commit_repo(tmp_path)
+    (repo / ".gitattributes").write_text("f.txt -diff\n", encoding="utf-8")  # untracked
+
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        result = run_semantic_git_in_subject_v2(subj, ["git", "diff", "--binary", f"{base}...{head}"])
+    assert b"GIT binary patch" not in result.stdout
+    assert b"+world" in result.stdout
+
+
+def test_source_core_attributesfile_redirect_has_no_effect_ce05(tmp_path: Path):
+    repo, base, head = _two_commit_repo(tmp_path)
+    redirect = tmp_path / "outside.attributes"
+    redirect.write_text("f.txt -diff\n", encoding="utf-8")
+    subprocess.run(["git", "config", "core.attributesFile", str(redirect)], cwd=repo, check=True)
+
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        result = run_semantic_git_in_subject_v2(subj, ["git", "diff", "--binary", f"{base}...{head}"])
+    assert b"GIT binary patch" not in result.stdout
+    assert b"+world" in result.stdout
+
+
+def test_source_info_attributes_has_no_effect_ce06_ce07(tmp_path: Path):
+    """CE-06/CE-07: an active $GIT_DIR/info/attributes on the source (with
+    an NBSP prefix or as a FIFO, per #274's specific bypasses) must have no
+    effect -- the scratch's own info/attributes is never populated from the
+    source, so there is no detector to fool in the first place."""
+    repo, base, head = _two_commit_repo(tmp_path)
+    (repo / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (repo / ".git" / "info" / "attributes").write_text("f.txt -diff\n", encoding="utf-8")
+
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        result = run_semantic_git_in_subject_v2(subj, ["git", "diff", "--binary", f"{base}...{head}"])
+    assert b"GIT binary patch" not in result.stdout
+    assert b"+world" in result.stdout
+
+
+def test_source_fsmonitor_never_executes_ce12(tmp_path: Path):
+    repo, base, head = _two_commit_repo(tmp_path)
+    marker = tmp_path / "fsmonitor-ran"
+    subprocess.run(
+        ["git", "config", "core.fsmonitor", f"sh -c 'touch {marker}; echo'"], cwd=repo, check=True
+    )
+
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        run_semantic_git_in_subject_v2(subj, ["git", "status", "--short"])
+    assert not marker.exists()

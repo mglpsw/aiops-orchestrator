@@ -10,6 +10,7 @@ import pytest
 
 from app.agent_review.toolrepo_execution_subject_v2 import (
     TOOLREPO_EXECUTION_SUBJECT_BYTE_IDENTITY_MISMATCH_REASON_V2,
+    TOOLREPO_EXECUTION_SUBJECT_EXECUTABLE_FILTER_CONFIG_PRESENT_REASON_V2,
     TOOLREPO_EXECUTION_SUBJECT_INVALID_SHA_REASON_V2,
     TOOLREPO_EXECUTION_SUBJECT_ROOT_UNUSABLE_REASON_V2,
     TOOLREPO_EXECUTION_SUBJECT_SYMLINK_OR_GITLINK_PRESENT_REASON_V2,
@@ -267,3 +268,83 @@ def test_tampered_bounded_source_refused_by_byte_identity_oracle(tmp_path: Path,
         ):
             pass
     assert excinfo.value.reason_code == TOOLREPO_EXECUTION_SUBJECT_BYTE_IDENTITY_MISMATCH_REASON_V2
+
+
+def test_filter_process_is_refused_ce11(tmp_path: Path):
+    """CE-11: unlike `filter.*.clean`/`.smudge`, `git archive` DOES invoke
+    a repository-local `filter.*.process` -- found empirically while
+    writing this test, not assumed safe by analogy to `.clean`/`.smudge`.
+    Refused outright (same fail-closed shape as CE-22's symlink refusal),
+    because the driver name is attacker-chosen and there is no `-c`
+    override that closes an arbitrary name the way there is for a fixed
+    Git built-in setting."""
+    repo = tmp_path / "devrepo"
+    _init_repo(repo)
+    (repo / "app").mkdir()
+    (repo / "app" / "victim.py").write_text('MARKER = "LEGITIMATE"\n', encoding="utf-8")
+    (repo / "app" / ".gitattributes").write_text("victim.py filter=evil\n", encoding="utf-8")
+    sha = _commit_all(repo, "base")
+
+    marker = tmp_path / "process-ran"
+    subprocess.run(
+        ["git", "config", "filter.evil.process", f"sh -c 'touch {marker}; cat'"], cwd=repo, check=True
+    )
+
+    with pytest.raises(ToolrepoExecutionSubjectError) as excinfo:
+        with materialize_toolrepo_execution_subject_v2(
+            repo, declared_toolrepo_sha=sha, bounded_paths=("app",)
+        ):
+            pass
+    assert (
+        excinfo.value.reason_code
+        == TOOLREPO_EXECUTION_SUBJECT_EXECUTABLE_FILTER_CONFIG_PRESENT_REASON_V2
+    )
+    assert not marker.exists()
+
+
+def test_no_executable_filter_config_still_materializes(tmp_path: Path):
+    """The refusal above must be conditional, not a blanket failure."""
+    repo, sha = _package_repo(tmp_path)
+    with materialize_toolrepo_execution_subject_v2(
+        repo, declared_toolrepo_sha=sha, bounded_paths=("app",)
+    ) as subj:
+        assert (subj.root / "app" / "agent_review" / "probe_target.py").is_file()
+
+
+def test_deleted_bounded_path_is_transparently_absent_ce24(tmp_path: Path):
+    """CE-24: a bounded path that does not exist at the declared SHA must
+    not be silently treated as covered -- ls-tree enumeration (not a
+    `.exists()` filesystem prefilter) means it simply contributes zero
+    entries, visible to the caller via `subj.entries`, never hidden."""
+    repo, sha = _package_repo(tmp_path)
+
+    with materialize_toolrepo_execution_subject_v2(
+        repo, declared_toolrepo_sha=sha, bounded_paths=("app", "does_not_exist_at_this_sha")
+    ) as subj:
+        paths = {e.path for e in subj.entries}
+        assert any(p.startswith("app/") for p in paths)
+        assert not any(p.startswith("does_not_exist_at_this_sha") for p in paths)
+        assert not (subj.root / "does_not_exist_at_this_sha").exists()
+
+
+def test_commit_replacement_on_declared_sha_ignored_ce25(tmp_path: Path):
+    repo, sha = _package_repo(tmp_path)
+    (repo / "app" / "agent_review" / "probe_target.py").write_text(
+        'MARKER = "MALICIOUS_REPLACEMENT"\n', encoding="utf-8"
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    tree_sha = subprocess.run(
+        ["git", "write-tree"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    malicious_sha = subprocess.run(
+        ["git", "commit-tree", tree_sha, "-p", sha, "-m", "malicious"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "replace", sha, malicious_sha], cwd=repo, check=True)
+
+    with materialize_toolrepo_execution_subject_v2(
+        repo, declared_toolrepo_sha=sha, bounded_paths=("app",)
+    ) as subj:
+        assert (subj.root / "app" / "agent_review" / "probe_target.py").read_text() == (
+            'MARKER = "LEGITIMATE"\n'
+        )

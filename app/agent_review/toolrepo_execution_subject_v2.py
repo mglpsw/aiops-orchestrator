@@ -38,14 +38,22 @@ there is no untracked-file universe (stray `.py`, `.pyc`, a shadow
 `scripts/argparse.py`, a root-level shadow module) for a hostile checkout
 to hide content in.
 
-`git archive` alone is NOT sufficient, though: a committed SYMLINK blob
-(tree mode `120000`) is extracted as a real filesystem symlink and reading
-through it resolves wherever the target points on the actual filesystem --
-reproduced directly with an absolute-path symlink escaping the subject
-entirely. This module therefore audits the tree (`git ls-tree -r`) BEFORE
-archiving and refuses on any `120000` (symlink) or `160000`
-(gitlink/submodule) entry under the bounded paths, rather than resolving or
-silently skipping it.
+`git archive` alone is NOT sufficient in two ways, each found by testing
+the mechanism rather than assumed safe by analogy to `.clean`/`.smudge`:
+
+- A committed SYMLINK blob (tree mode `120000`) is extracted as a real
+  filesystem symlink and reading through it resolves wherever the target
+  points on the actual filesystem -- reproduced directly with an
+  absolute-path symlink escaping the subject entirely. This module audits
+  the tree (`git ls-tree -r`) BEFORE archiving and refuses on any `120000`
+  (symlink) or `160000` (gitlink/submodule) entry under the bounded paths,
+  rather than resolving or silently skipping it.
+- Unlike `.clean`/`.smudge`, `git archive` DOES invoke a repository-local
+  `filter.*.process` -- found while writing this module's own test suite,
+  confirmed with an isolated fixture (`.clean`/`.smudge` silent,
+  `.process` fires). Refused outright, the same fail-closed shape as the
+  symlink case: the driver NAME is attacker-chosen, so unlike a fixed Git
+  setting there is no single `-c` override that closes an arbitrary name.
 
 A byte-identity oracle (`cat-file` blob bytes vs. raw materialized
 filesystem bytes, per enumerated regular-file entry) runs as defense in
@@ -89,6 +97,9 @@ TOOLREPO_EXECUTION_SUBJECT_MATERIALIZATION_FAILED_REASON_V2 = (
 TOOLREPO_EXECUTION_SUBJECT_BYTE_IDENTITY_MISMATCH_REASON_V2 = (
     "toolrepo_execution_subject_byte_identity_mismatch"
 )
+TOOLREPO_EXECUTION_SUBJECT_EXECUTABLE_FILTER_CONFIG_PRESENT_REASON_V2 = (
+    "toolrepo_execution_subject_executable_filter_config_present"
+)
 
 
 class ToolrepoExecutionSubjectError(ValueError):
@@ -115,6 +126,27 @@ class ToolrepoExecutionSubjectV2:
     root: Path
     declared_toolrepo_sha: str
     entries: tuple[MaterializedEntryV2, ...]
+
+
+def _has_executable_process_filter_v2(toolrepo_root: Path, *, env: dict[str, str]) -> bool:
+    """`git archive` does NOT invoke a repository-local `filter.*.clean`/
+    `.smudge` (verified directly) -- but DOES invoke `filter.*.process`,
+    found empirically while adding the CE-11 test for this module, not
+    assumed safe from the `.clean`/`.smudge` result. Deliberately
+    unscoped (`git config --list`, not `--local`): a target-side
+    detector in `#274` that used `--local` was bypassed by
+    `include.path`-indirected config, the same lesson applies here.
+    """
+    result = run_bounded_git_v2(
+        ["git", "config", "--list", "--name-only", "-z"], cwd=toolrepo_root, env=env
+    )
+    if result.returncode != 0:
+        return False
+    for key in result.stdout.split(b"\x00"):
+        key_text = key.decode("utf-8", errors="replace").strip().lower()
+        if key_text.startswith("filter.") and key_text.endswith(".process"):
+            return True
+    return False
 
 
 def _parse_ls_tree_z_v2(raw: bytes) -> list[MaterializedEntryV2]:
@@ -174,17 +206,27 @@ def materialize_toolrepo_execution_subject_v2(
                     TOOLREPO_EXECUTION_SUBJECT_SYMLINK_OR_GITLINK_PRESENT_REASON_V2
                 )
 
+        if _has_executable_process_filter_v2(toolrepo_root, env=env):
+            raise ToolrepoExecutionSubjectError(
+                TOOLREPO_EXECUTION_SUBJECT_EXECUTABLE_FILTER_CONFIG_PRESENT_REASON_V2
+            )
+
+        present_paths = tuple(
+            p for p in bounded_paths
+            if any(e.path == p or e.path.startswith(p + "/") for e in entries)
+        )
         subject_root = holder / "subject"
         subject_root.mkdir(parents=True)
-        archive = run_bounded_git_v2(
-            ["git", "archive", declared_toolrepo_sha, "--", *bounded_paths],
-            cwd=toolrepo_root, env=env,
-        )
-        if archive.returncode != 0:
-            raise ToolrepoExecutionSubjectError(
-                TOOLREPO_EXECUTION_SUBJECT_MATERIALIZATION_FAILED_REASON_V2
+        if present_paths:
+            archive = run_bounded_git_v2(
+                ["git", "archive", declared_toolrepo_sha, "--", *present_paths],
+                cwd=toolrepo_root, env=env,
             )
-        _extract_tar_bytes_v2(archive.stdout, into=subject_root)
+            if archive.returncode != 0:
+                raise ToolrepoExecutionSubjectError(
+                    TOOLREPO_EXECUTION_SUBJECT_MATERIALIZATION_FAILED_REASON_V2
+                )
+            _extract_tar_bytes_v2(archive.stdout, into=subject_root)
 
         for entry in entries:
             expected = run_bounded_git_v2(
