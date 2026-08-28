@@ -109,7 +109,7 @@ from app.agent_review.review_transport_contract_v2 import (
     compute_request_sha256_v2,
     verify_transport_echo_v1,
 )
-from app.agent_review.synthesis_v2 import synthesize_chunk_results_v2
+from app.agent_review.synthesis_v2 import SynthesisResultV2, synthesize_chunk_results_v2
 
 CHUNK_TRANSPORT_FAILURE_REASON_V2 = "transport_failure"
 CHUNK_TRANSPORT_TIMEOUT_REASON_V2 = "transport_timeout"
@@ -303,6 +303,17 @@ def execute_chunk_review_v2(
 
 @dataclass(frozen=True)
 class SyntheticReviewOutcomeV2:
+    """`#200-D` successor: `synthesis` is the exact `SynthesisResultV2`
+    object this function already computes internally before deriving
+    `readiness` from it -- previously discarded, now preserved so a caller
+    (and, eventually, persistence) never needs a second synthesis execution
+    to recover it. Private/internal: no schema, no hash, never wire-carried,
+    never persisted by this module. `ONE_OPERATIONAL_SYNTHESIS_INVARIANT`:
+    one operational run computes synthesis exactly once, and `readiness` is
+    always derived from this SAME object, never a separately recomputed
+    one."""
+
+    synthesis: SynthesisResultV2
     readiness: ReviewReadinessV2
     chunk_outcomes: tuple[ChunkReviewOutcomeV2, ...]
 
@@ -368,7 +379,7 @@ def run_synthetic_review_v2(
         checks=checks, provenance=provenance, origin=origin, snapshot=snapshot,
         toolchain_digest=toolchain_digest, target_profile_root=target_profile_root,
     )
-    return SyntheticReviewOutcomeV2(readiness=readiness, chunk_outcomes=outcomes)
+    return SyntheticReviewOutcomeV2(synthesis=synthesis, readiness=readiness, chunk_outcomes=outcomes)
 
 
 # -- offline file transport (default in tests) -------------------------------

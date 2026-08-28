@@ -1270,3 +1270,85 @@ def acquire_authoritative_diff_v2(
     raw_records = parse_raw_diff_z(raw_text)
     correlate_raw_and_unified_v2(raw_records, file_diffs)
     return file_diffs
+
+
+# `#200-D` successor: the ONLY primitive `reference_source_v2` needs to
+# materialize profile-declared artifact/contract references from the
+# immutable Git tree at `head_sha`, instead of the mutable working tree.
+# Mirrors `target_pack_build_v2._git_show_bytes_v2`'s own precedent (pack
+# material is read from `git show <toolrepo_sha>:<path>`, never the working
+# tree) -- this is the same lesson applied to a review-run subject instead of
+# a toolrepo subject.
+TREE_ENTRY_UNREADABLE_REASON_V2 = "tree_entry_unreadable"
+
+
+@dataclass(frozen=True)
+class GitTreeEntryV2:
+    """One entry as recorded in the immutable Git tree at a commit. `kind`
+    is a closed, TYPED classification of the tree metadata alone --
+    `content` is populated only for `kind == "blob"`; every other kind
+    carries no bytes, so a caller cannot accidentally consume content that
+    was never actually read."""
+
+    kind: Literal["blob", "unsupported"]
+    mode: str
+    content: bytes | None = None
+
+
+# Git tree entry modes: regular file (100644), executable file (100755),
+# symlink (120000), gitlink/submodule (160000), tree/directory (040000).
+_REGULAR_FILE_MODES_V2 = frozenset({"100644", "100755"})
+
+
+def read_head_tree_entry_v2(
+    repo_root: Path, *, head_sha: str, relative_path: str
+) -> GitTreeEntryV2 | None:
+    """The tree entry for `relative_path` as recorded in the immutable Git
+    tree at `head_sha` -- never `Path.read_bytes()`/`Path.is_file()` against
+    the working tree, which can disagree with `head_sha` on staged,
+    untracked or modified bytes with no observable difference in the SHA
+    inputs alone.
+
+    Returns ``None`` when no tree entry exists at that path -- a caller must
+    treat that identically to an existing authority's own "reference not
+    present" case (`build_payload_artifact_references_v2` / `build_payload_
+    contract_references_v2`), never as `unsupported`. A regular file
+    (`100644`/`100755`) returns its literal blob bytes. A symlink (`120000`),
+    a gitlink/submodule (`160000`) or a directory (`040000`, tree) returns
+    `kind="unsupported"` with no content -- consuming any of those as
+    reference material would let the read leave the declared blob's bytes
+    entirely (a symlink can point anywhere on the filesystem the process can
+    reach), which is exactly the escape this primitive exists to prevent.
+
+    `head_sha` must already be a validated full commit SHA -- this function
+    does not itself re-validate ref shape, mirroring `acquire_diff_v2`'s own
+    division of labor with its caller.
+    """
+
+    ls_tree = _run_git_v2(["git", "ls-tree", head_sha, "--", relative_path], repo_root=repo_root)
+    if ls_tree.returncode != 0:
+        # `head_sha` was already proven resolvable by diff acquisition
+        # earlier in the composed run (gate precedence), so a failure here
+        # is the object database itself, not a bad caller input.
+        raise DiffAcquisitionError(TREE_ENTRY_UNREADABLE_REASON_V2)
+    try:
+        stdout = ls_tree.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DiffAcquisitionError(TREE_ENTRY_UNREADABLE_REASON_V2) from exc
+    line = stdout.strip("\n")
+    if not line:
+        return None
+
+    meta, _, _ = line.partition("\t")
+    fields = meta.split()
+    if len(fields) != 3:
+        raise DiffAcquisitionError(TREE_ENTRY_UNREADABLE_REASON_V2)
+    mode, object_type, object_sha = fields
+
+    if object_type != "blob" or mode not in _REGULAR_FILE_MODES_V2:
+        return GitTreeEntryV2(kind="unsupported", mode=mode)
+
+    cat_file = _run_git_v2(["git", "cat-file", "-p", object_sha], repo_root=repo_root)
+    if cat_file.returncode != 0:
+        raise DiffAcquisitionError(TREE_ENTRY_UNREADABLE_REASON_V2)
+    return GitTreeEntryV2(kind="blob", mode=mode, content=cat_file.stdout)
