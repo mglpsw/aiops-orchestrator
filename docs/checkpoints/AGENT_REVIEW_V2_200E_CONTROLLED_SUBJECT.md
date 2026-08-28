@@ -736,3 +736,172 @@ discovery boundary, before any object work begins.
 - No production module exists yet. This section is evidence for the design
   decision the next section commits to, not a substitute for the module,
   its typed refusals, or its formal test suite.
+
+## Toolrepo execution-subject spike — empirical, Phase 2
+
+Run against a real fixture dev checkout (`git init`, committed baseline,
+then untracked/tampered mutations layered on top), never against this
+toolrepo's own checkout.
+
+### Import topology, observed directly (not guessed)
+
+```yaml
+plain_invocation:  # python3 scripts/probe.py, cwd=repo root
+  sys_path_0: "<repo root>/scripts"       # the SCRIPT'S OWN DIRECTORY, auto-inserted by the interpreter
+  pythonpath_honored: true
+  user_site_enabled: true
+isolated_mode:      # python3 -I scripts/probe.py
+  sys_path_0: "/usr/lib/python311.zip"    # stdlib zip -- script directory is NOT auto-inserted at all
+  pythonpath_honored: false               # confirmed: PYTHONPATH=/some/injected/evil had zero effect
+  user_site_enabled: false
+```
+
+`-I` is a materially stronger primitive than expected: it does not merely
+disable a couple of settings, it removes the automatic script-directory
+`sys.path[0]` insertion entirely. The forensic `#274` CLI's own
+`sys.path.insert(0, str(REPO_ROOT))` (`scripts/aiops-review-run-v2.py:67-69`,
+read via `git show c37d5b5:...`) is what actually made root-level shadowing
+possible — `-I` alone does not add a repo root back; only an explicit,
+authority-controlled insertion does, and that insertion point is exactly
+what the new architecture controls.
+
+### RED baseline (naive/vulnerable model), reproduced directly
+
+A tampered dev checkout (mutated tracked file, untracked `scripts/argparse.py`,
+untracked root `pydantic.py`, untracked `.pyc` with different content than
+the committed source, `assume-unchanged`/`skip-worktree` set) run as plain
+`python3 scripts/probe_entry.py` from the checkout:
+
+```text
+SCRIPTS_ARGPARSE_SHADOW_EXECUTED
+Traceback ...
+AttributeError: module 'app.agent_review.probe_target' has no attribute 'report'
+```
+
+The hostile `scripts/argparse.py` executed on `import argparse`, and the
+imported `probe_target` module was the TAMPERED on-disk file, not the
+committed one — RED, confirming the naive model is vulnerable exactly as
+the forensic corpus predicted.
+
+### GREEN result, `git archive` from the declared commit
+
+Materializing via `git archive <declared_sha> | tar -x` into a scratch
+directory (never touching the dirty working tree), then running
+`python3 -I scripts/probe_entry.py` from inside that scratch directory,
+with the subject's own root explicitly inserted at `sys.path[0]` by the
+script itself (not auto-inserted):
+
+```text
+app.agent_review.probe_target imported from: <subject>/app/agent_review/probe_target.py
+MARKER: LEGITIMATE
+argparse module file: /usr/lib/python3.11/argparse.py
+pydantic import failed: No module named 'pydantic'
+```
+
+`MARKER: LEGITIMATE` (not `TAMPERED`, not `PYC_TAMPERED`) confirms the
+committed byte content executed, not the tampered/pyc-shadowed on-disk
+state. `argparse` resolved to the real stdlib module, not the shadow —
+`-I` alone closed it, before any application-level defense. The `.pyc`
+in `__pycache__`, the untracked `scripts/argparse.py`, and the untracked
+root `pydantic.py` are all simply ABSENT from the materialized subject
+(confirmed by direct directory listing), because `git archive` only
+extracts tracked, committed blobs — there is no untracked-file universe to
+enumerate or hide within.
+
+### Two properties verified directly, not assumed from `git archive`'s
+### documentation
+
+```yaml
+archive_ignores_index_flags: true    # assume-unchanged + skip-worktree set on the source files;
+                                       # archive output still shows the COMMITTED bytes -- archive
+                                       # reads the commit tree object directly, never the index
+archive_ignores_repo_local_filters: true  # filter.evil.clean/smudge configured repository-locally;
+                                       # archived content is the plain committed bytes, no filter
+                                       # command executed (confirmed no smudge marker output)
+```
+
+This directly and simultaneously eliminates CE-09 (`filter.clean`), CE-11
+(`filter.process`), CE-14 (`assume-unchanged`), CE-15 (`skip-worktree`),
+CE-18 (ignored/untracked source), CE-19 (root shadowing), CE-20
+(scripts-directory shadowing), CE-21 (`.pyc`), CE-23 (untracked nested
+repository) for the toolrepo side.
+
+### One counterexample `git archive` alone does NOT close — found here, not assumed safe
+
+```text
+$ git ls-tree -r <sha> | grep symlink
+120000 blob <sha>  app/agent_review/symlinked_module.py
+
+$ git archive <sha> | tar -x -C <subject>
+$ ls -la <subject>/app/agent_review/symlinked_module.py
+lrwxrwxrwx ... symlinked_module.py -> /tmp/.../outside_target/real_module.py
+
+$ cat <subject>/app/agent_review/symlinked_module.py
+MALICIOUS_EXTERNAL=1
+```
+
+A committed symlink blob (mode `120000`) is extracted by `git archive` as a
+REAL filesystem symlink, and reading through it resolves to whatever the
+target points at on the actual filesystem — which can be an absolute path
+outside the subject entirely, exactly CE-22's finding. `git archive` is
+therefore **not sufficient by itself**; the production materializer must
+audit the tree first (`git ls-tree -r`, checking the mode column for every
+entry under the bounded project-owned path) and **refuse** on any symlink
+(`120000`) or gitlink/submodule (`160000`) entry, before calling archive at
+all — enumerable cheaply from the same `ls-tree` output already needed for
+the byte-identity oracle (§8) and for detecting a deleted bounded path
+(CE-24).
+
+### Architecture decision
+
+```yaml
+toolrepo_architecture_decision:
+  hypotheses_tested:
+    - CONTROLLED_EXECUTION_SUBJECT (git archive from declared commit + -I execution)
+    - implicit baseline: RAW_WORKTREE_EQUIVALENCE (plain execution + git-diff-clean proof) -- already
+      refuted by #274's own forensic corpus (CE-09, CE-14, CE-15, CE-18..CE-21, CE-23)
+  selected: CONTROLLED_EXECUTION_SUBJECT
+  rejected: RAW_WORKTREE_EQUIVALENCE, HYBRID (no evidence found requiring a hybrid --
+    the pure controlled-subject form closed every tested class except the symlink
+    case, which gets a targeted pre-check rather than a partial fallback to
+    worktree execution)
+  mechanism:
+    materialization: "git archive <declared_sha> -- <bounded pathspec>, from a bounded
+      object-closure import (reusing the target-side allowlist-env primitive), never
+      the mutable development checkout"
+    pre_check: "git ls-tree -r <declared_sha> -- <bounded pathspec>, refuse on any
+      mode 120000 (symlink) or 160000 (gitlink/submodule) entry"
+    byte_identity_oracle: "cat-file blob bytes at declared_sha vs. raw filesystem
+      bytes in the materialized subject, for every enumerated regular-file entry --
+      defense in depth layered on top of, not instead of, the archive mechanism"
+    execution: "python -I, cwd = subject root, explicit sys.path.insert(0, subject_root),
+      no PYTHONPATH, no user site, no bytecode write (-B) where practical"
+  reasoning: >-
+    Every element above is backed by a reproduced experiment in this
+    section, not merely preferred on principle. RAW_WORKTREE_EQUIVALENCE
+    was not re-spiked from zero because #274's own forensic corpus already
+    falsified it across 7 of the 25 ledger classes; re-running that
+    falsification here would not have added evidence, only repeated it.
+```
+
+### Bootstrap honesty
+
+```yaml
+bootstrap:
+  remotely_attested: false
+  project_source_identity_after_seal: established   # for the materialized subject's
+    # own content, once the symlink/gitlink pre-check and byte-identity oracle both
+    # pass -- NOT for the outer launcher that invokes materialization itself
+  interpreter_dependency_identity_owner: toolchain_digest  # NOT this authority; a
+    # materialized subject deliberately does not carry or vendor third-party
+    # dependencies (confirmed: `pydantic` import failed inside the archived subject
+    # using the system interpreter with no site-packages access wired in this spike
+    # -- the real production execution will use the toolchain's own interpreter/
+    # site-packages, a separate, already-existing authority, not something this
+    # slice re-derives or collapses into source identity)
+```
+
+Forbidden statement not made: this does not claim "no unverified code
+executed before review" — the outer launcher (whatever invokes
+materialization) necessarily runs first, and its own trust is a
+distribution/installer question owned by `#203`→`#205`, not by `#200-E`.
