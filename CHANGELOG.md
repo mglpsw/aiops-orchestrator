@@ -140,7 +140,16 @@
   global config also discarded the operator's `safe.directory`, which made
   Git refuse any checkout owned by another uid — the ordinary container/CI
   case — so the declared subject is now named via `-c safe.directory=<root>`,
-  verified to admit that path only.
+  verified to admit that path only. A third pass closed a repository-local
+  `core.attributesFile`, which redirects attribute resolution out of tree
+  and which the worktree never covered (verified to stop the redirect while
+  leaving a *committed* `.gitattributes` effective), and fixed the filter
+  detector itself, which `include.path` bypassed because
+  `git config --local --list` does not resolve includes while Git's filter
+  lookup does. The remaining config-driven execution surface
+  (`core.pager`, `core.alternateRefsCommand`, `core.sshCommand`,
+  `credential.helper`, `diff.external`, `core.gitProxy`, textconv) was then
+  probed directly and none executed.
 
   Two further gaps: `--exclude-standard` let a `.gitignore` entry
   hide a stray importable `.py` file from the toolrepo untracked-source

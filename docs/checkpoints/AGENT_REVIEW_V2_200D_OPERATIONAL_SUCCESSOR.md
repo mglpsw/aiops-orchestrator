@@ -513,6 +513,38 @@ that path while still refusing a DIFFERENT foreign-owned repository, so it
 is not a blanket grant, and not a content-trust decision (the subject's
 content stays hostile, which is what the rest of the policy is for).
 
+**P0 — `core.attributesFile`, the worktree does not close it at all.**
+Repository-local `core.attributesFile` points attribute resolution at an
+arbitrary out-of-tree path; reproduced directly, it flipped an ordinary
+text diff to a binary one -- precisely the corruption the disposable
+worktree was introduced to prevent, reached by a route the worktree never
+touched. Closed with `-c core.attributesFile=<os.devnull>`, verified in
+both directions: the redirect stops taking effect, while a genuinely
+COMMITTED `.gitattributes` at the subject commit stays fully effective,
+because that IS part of the declared subject.
+
+**P0 — the filter detector was itself bypassable.** `git config --local
+--list` does not follow `include.path`/`includeIf`, but Git's real filter
+lookup does: reproduced directly, a driver moved into an included file was
+invisible to the detector and still executed during `git worktree add`.
+The detector now reads the unscoped `git config --list`, which resolves
+includes while -- under the sealed environment, where global and system
+config are already `os.devnull` -- still reporting only repository-local
+content plus this module's own `-c` values.
+
+**Convergence check, not just more findings.** After these, the remaining
+config-driven execution surface was enumerated and probed directly rather
+than assumed: `core.pager`, `core.alternateRefsCommand`, `core.sshCommand`,
+`credential.helper`, `diff.external`, `core.gitProxy` (during both
+`git worktree add` and the acquisition `git diff`), and `diff.<driver>.
+textconv` driven by a committed `.gitattributes`. None executed. The
+execution surface is therefore: hooks and `core.fsmonitor` (closed by
+`-c`), filter drivers (refused, no `-c` closure exists), and
+external-diff/textconv (already closed by `--no-ext-diff`/`--no-textconv`).
+The attribute-resolution surface is: in-tree `.gitattributes` (bound by the
+worktree), `$GIT_DIR/info/attributes` (refused) and `core.attributesFile`
+(closed by `-c`).
+
 **P1-B — ignore rules are not a source-identity authority, reproduced
 directly.** `--exclude-standard` hid a stray `app/common/_stray_evil.py`
 from the untracked-source check the moment a matching `.gitignore` line
@@ -551,7 +583,7 @@ review_v2` raw, verified as a real falsifier (an isolated mutant adding
 turn the raw error into `OperationalRunError(run_assembly_identity_
 invalid)`, then reverted).
 
-### Mutation/adversarial matrix (M1–M16), all executed and killed
+### Mutation/adversarial matrix (M1–M18), all executed and killed
 
 | # | Condition | Killed by |
 |---|---|---|
@@ -571,6 +603,8 @@ invalid)`, then reverted).
 | M14 | repository-local `filter.*.smudge` on checkout | `test_sealed_git_execution_v2`, `test_diff_acquisition_v2` |
 | M15 | repository-local `core.fsmonitor` | `test_sealed_git_execution_v2` |
 | M16 | foreign-owned checkout refused by the seal | `test_sealed_git_execution_v2` |
+| M17 | repository-local `core.attributesFile` redirect | `test_diff_acquisition_v2` |
+| M18 | filter driver hidden behind `include.path` | `test_sealed_git_execution_v2` |
 
 Every mutant: baseline green → mutation applied in an isolated commit →
 confirmed to produce the intended failure → reverted → baseline
@@ -594,6 +628,8 @@ caem_alignment:
   target_filter_driver_execution_refused: true
   target_fsmonitor_execution_closed: true
   foreign_owned_checkout_supported: true
+  out_of_tree_attributes_redirect_closed: true
+  config_include_resolution_complete: true
 
   formal_caem_f0_f2_conformance:
     established_by_this_slice: false
