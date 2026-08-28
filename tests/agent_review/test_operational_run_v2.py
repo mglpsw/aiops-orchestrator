@@ -512,6 +512,80 @@ def test_missing_required_artifact_is_a_typed_refusal_not_raw(tmp_path, real_too
     assert excinfo.value.reason_code == "payload_required_artifact_missing"
 
 
+def test_preparation_closure_refuses_content_payload_sha256_mismatch(tmp_path, real_toolrepo_sha):
+    """`_establish_preparation_closure_v2` closes the ONE cross-edge no
+    existing authority spans: content<->payload agreement (manifest<->payload
+    is `emit_payload_set_v2`'s job; content<->manifest is `extract_review_
+    content_v2`'s own binding). This is the one control that had NEVER been
+    exercised by a negative test -- added on independent exact-HEAD review
+    of this same PR, per its own plan's §15 requirement."""
+
+    from app.agent_review.operational_run_v2 import (
+        CONTENT_PAYLOAD_SHA256_MISMATCH_REASON_V2,
+        _establish_preparation_closure_v2,
+        prepare_operational_review_v2,
+    )
+
+    repo, base_sha, head_sha = _make_target_repo(tmp_path)
+    profile_root = _make_trusted_profile_root(tmp_path)
+
+    prepared = prepare_operational_review_v2(
+        repo_root=repo, target_profile_root=profile_root, grouping_policy=_grouping_policy(),
+        base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+        toolrepo_sha=real_toolrepo_sha, evidence_hash="d" * 64, max_lines_per_chunk=1000,
+    )
+    assert len(prepared.manifest.chunks) >= 1
+
+    chunk_id = prepared.manifest.chunks[0].chunk_id
+    real_payload = prepared.payload_by_chunk_id[chunk_id]
+    # `model_construct` bypasses `ChunkPayloadV2.validate_payload_hash` --
+    # deliberately, since we need a STRUCTURALLY well-typed payload whose
+    # `payload_sha256` disagrees with what `content` was bound against,
+    # isolating the content<->payload edge from every other invariant.
+    tampered_payload = real_payload.model_construct(
+        **{**real_payload.model_dump(), "payload_sha256": "0" * 64}
+    )
+    tampered_payload_by_chunk_id = {**prepared.payload_by_chunk_id, chunk_id: tampered_payload}
+
+    with pytest.raises(OperationalRunError) as excinfo:
+        _establish_preparation_closure_v2(
+            manifest=prepared.manifest,
+            payload_by_chunk_id=tampered_payload_by_chunk_id,
+            content=prepared.content,
+        )
+    assert excinfo.value.reason_code == CONTENT_PAYLOAD_SHA256_MISMATCH_REASON_V2
+
+
+def test_preparation_closure_refuses_chunk_set_mismatch(tmp_path, real_toolrepo_sha):
+    """The three-way chunk-id-set equality is this module's OWN taxonomy
+    (`operational_preparation_chunk_set_mismatch`) -- no upstream authority
+    names this condition, since none of the three sees all three sets."""
+
+    from app.agent_review.operational_run_v2 import (
+        PREPARATION_CHUNK_SET_MISMATCH_REASON_V2,
+        _establish_preparation_closure_v2,
+        prepare_operational_review_v2,
+    )
+
+    repo, base_sha, head_sha = _make_target_repo(tmp_path)
+    profile_root = _make_trusted_profile_root(tmp_path)
+
+    prepared = prepare_operational_review_v2(
+        repo_root=repo, target_profile_root=profile_root, grouping_policy=_grouping_policy(),
+        base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+        toolrepo_sha=real_toolrepo_sha, evidence_hash="d" * 64, max_lines_per_chunk=1000,
+    )
+    truncated_payload_by_chunk_id = {}  # drop every payload -> sets can never agree
+
+    with pytest.raises(OperationalRunError) as excinfo:
+        _establish_preparation_closure_v2(
+            manifest=prepared.manifest,
+            payload_by_chunk_id=truncated_payload_by_chunk_id,
+            content=prepared.content,
+        )
+    assert excinfo.value.reason_code == PREPARATION_CHUNK_SET_MISMATCH_REASON_V2
+
+
 # -- structural oracles --------------------------------------------------------
 
 
