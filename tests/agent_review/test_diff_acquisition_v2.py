@@ -8,6 +8,7 @@ import pytest
 
 from app.agent_review.diff_acquisition_v2 import (
     DIFF_INFO_ATTRIBUTES_ACTIVE_REASON_V2,
+    DIFF_LOCAL_FILTER_CONFIG_ACTIVE_REASON_V2,
     DIFF_UNREADABLE_REASON_V2,
     INVALID_REF_REASON_V2,
     RAW_DIFF_CARDINALITY_MISMATCH_REASON_V2,
@@ -2005,3 +2006,49 @@ def test_acquisition_does_not_execute_a_redirected_target_hook(tmp_path: Path):
 
     assert "world" in diff, "acquisition must still return the real diff"
     assert not marker.exists(), "redirected target hook executed during acquisition"
+
+
+def test_acquisition_refuses_a_target_with_an_executable_filter_driver(tmp_path: Path):
+    """`#200-D` correction, second round. `git worktree add` checks files
+    out, so a repository-local `filter.<driver>.smudge` executes -- verified
+    directly against this host's Git. The driver name is chosen by whoever
+    wrote the config, so unlike `core.hooksPath`/`core.fsmonitor` there is
+    no `-c` override to enumerate, and `--no-checkout` is not an
+    alternative (it leaves the worktree empty, so attribute resolution --
+    the worktree's entire purpose -- stops working). Refused instead, the
+    same fail-closed shape as `$GIT_DIR/info/attributes`.
+    """
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    base = _commit_all(repo, "base")
+    (repo / "f.txt").write_text("hello\nworld\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text("f.txt filter=evil\n", encoding="utf-8")
+    head = _commit_all(repo, "head")
+
+    marker = tmp_path / "smudge-ran"
+    subprocess.run(
+        ["git", "config", "filter.evil.smudge", f"sh -c 'touch {marker}; cat'"],
+        cwd=repo, check=True,
+    )
+    subprocess.run(["git", "config", "filter.evil.required", "false"], cwd=repo, check=True)
+
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        acquire_diff_v2(repo, base_sha=base, head_sha=head)
+
+    assert excinfo.value.reason_code == DIFF_LOCAL_FILTER_CONFIG_ACTIVE_REASON_V2
+    assert not marker.exists(), "the filter executed before the refusal"
+
+
+def test_acquisition_still_works_for_a_repository_with_no_filter_config(tmp_path: Path):
+    """The refusal above must be conditional, not a blanket failure."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    base = _commit_all(repo, "base")
+    (repo / "f.txt").write_text("hello\nworld\n", encoding="utf-8")
+    head = _commit_all(repo, "head")
+
+    assert "world" in acquire_diff_v2(repo, base_sha=base, head_sha=head)

@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from app.agent_review._sealed_git_execution_v2 import (
+    has_executable_local_filter_config_v2,
     has_semantically_active_info_attributes_v2,
     sealed_git_argv_v2,
     sealed_git_child_env_v2,
@@ -247,12 +248,17 @@ def test_sealed_argv_splices_hook_neutralization_after_the_executable():
     """`-c` options are only honoured between `git` and the subcommand, so
     placement is part of the contract, not a formatting detail."""
 
-    argv = sealed_git_argv_v2(["git", "diff", "--binary", "abc...def"])
+    argv = sealed_git_argv_v2(
+        ["git", "diff", "--binary", "abc...def"], trusted_repo_root=Path("/srv/checkout")
+    )
 
-    assert argv[0] == "git"
-    assert argv[1] == "-c"
-    assert argv[2] == f"core.hooksPath={os.devnull}"
-    assert argv[3:] == ["diff", "--binary", "abc...def"]
+    assert argv == [
+        "git",
+        "-c", f"core.hooksPath={os.devnull}",
+        "-c", "core.fsmonitor=false",
+        "-c", "safe.directory=/srv/checkout",
+        "diff", "--binary", "abc...def",
+    ]
 
 
 def test_sealed_argv_rejects_an_argv_that_is_not_git():
@@ -260,9 +266,9 @@ def test_sealed_argv_rejects_an_argv_that_is_not_git():
     this package, so it raises rather than becoming a subject refusal."""
 
     with pytest.raises(ValueError):
-        sealed_git_argv_v2(["not-git", "diff"])
+        sealed_git_argv_v2(["not-git", "diff"], trusted_repo_root=Path("/srv/checkout"))
     with pytest.raises(ValueError):
-        sealed_git_argv_v2([])
+        sealed_git_argv_v2([], trusted_repo_root=Path("/srv/checkout"))
 
 
 def test_sealed_argv_suppresses_a_planted_post_checkout_hook(tmp_path: Path):
@@ -285,7 +291,8 @@ def test_sealed_argv_suppresses_a_planted_post_checkout_hook(tmp_path: Path):
     worktree = tmp_path / "wt"
     subprocess.run(
         sealed_git_argv_v2(
-            ["git", "worktree", "add", "--quiet", "--detach", str(worktree), head]
+            ["git", "worktree", "add", "--quiet", "--detach", str(worktree), head],
+            trusted_repo_root=repo,
         ),
         cwd=repo, env=env, capture_output=True, check=True,
     )
@@ -317,10 +324,133 @@ def test_sealed_argv_overrides_a_repository_local_hooks_path_redirect(tmp_path: 
     worktree = tmp_path / "wt"
     subprocess.run(
         sealed_git_argv_v2(
-            ["git", "worktree", "add", "--quiet", "--detach", str(worktree), head]
+            ["git", "worktree", "add", "--quiet", "--detach", str(worktree), head],
+            trusted_repo_root=repo,
         ),
         cwd=repo, env=env, capture_output=True, check=True,
     )
 
     assert (worktree / "f.txt").is_file(), "the worktree must still materialize"
     assert not marker.exists(), "repository-local core.hooksPath redirect executed"
+
+
+def test_sealed_argv_suppresses_a_target_controlled_fsmonitor(tmp_path: Path):
+    """`core.fsmonitor` holds a command Git executes to enumerate
+    working-tree changes. Reproduced directly running during `git status`."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    _commit_all(repo, "base")
+
+    marker = tmp_path / "fsmonitor-ran"
+    subprocess.run(
+        ["git", "config", "core.fsmonitor", f"sh -c 'touch {marker}; echo'"],
+        cwd=repo, check=True,
+    )
+
+    subprocess.run(
+        sealed_git_argv_v2(["git", "status", "--short"], trusted_repo_root=repo),
+        cwd=repo, env=sealed_git_child_env_v2(), capture_output=True, check=True,
+    )
+
+    assert not marker.exists(), "target-controlled core.fsmonitor executed"
+
+
+def test_sealed_argv_admits_a_foreign_owned_checkout(tmp_path: Path):
+    """`GIT_CONFIG_GLOBAL=/dev/null` also discards the operator's
+    `safe.directory`, and Git then refuses any checkout owned by another
+    uid outright. That is the ordinary container/CI case, so the declared
+    subject is named on the command line instead."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    _commit_all(repo, "base")
+
+    try:
+        os.chown(repo, 65534, 65534)
+        for path in repo.rglob("*"):
+            os.chown(path, 65534, 65534)
+    except (PermissionError, OSError):
+        pytest.skip("cannot change ownership in this environment")
+    if os.geteuid() == 65534:
+        pytest.skip("process already runs as the owning uid")
+
+    unsealed = subprocess.run(
+        ["git", "status", "--short"], cwd=repo,
+        env={**sealed_git_child_env_v2()}, capture_output=True, text=True, check=False,
+    )
+    assert unsealed.returncode != 0 and "dubious ownership" in unsealed.stderr, (
+        "the precondition this guards against no longer reproduces"
+    )
+
+    sealed = subprocess.run(
+        sealed_git_argv_v2(["git", "status", "--short"], trusted_repo_root=repo),
+        cwd=repo, env=sealed_git_child_env_v2(), capture_output=True, text=True, check=False,
+    )
+    assert sealed.returncode == 0, f"sealed git refused a declared subject: {sealed.stderr}"
+
+
+def test_sealed_argv_safe_directory_does_not_admit_other_repositories(tmp_path: Path):
+    """Naming the declared subject must not become a blanket grant."""
+
+    subject = tmp_path / "subject"
+    _init_repo(subject)
+    (subject / "f.txt").write_text("hello\n", encoding="utf-8")
+    _commit_all(subject, "base")
+
+    other = tmp_path / "other"
+    _init_repo(other)
+    (other / "f.txt").write_text("hello\n", encoding="utf-8")
+    _commit_all(other, "base")
+
+    try:
+        os.chown(other, 65534, 65534)
+        for path in other.rglob("*"):
+            os.chown(path, 65534, 65534)
+    except (PermissionError, OSError):
+        pytest.skip("cannot change ownership in this environment")
+    if os.geteuid() == 65534:
+        pytest.skip("process already runs as the owning uid")
+
+    result = subprocess.run(
+        sealed_git_argv_v2(["git", "status", "--short"], trusted_repo_root=subject),
+        cwd=other, env=sealed_git_child_env_v2(), capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode != 0, "safe.directory for one repo admitted another"
+    assert "dubious ownership" in result.stderr
+
+
+def test_executable_local_filter_config_is_detected(tmp_path: Path):
+    """A repository-local filter driver executes on checkout and has no
+    command-line closure, so it is detected and refused instead."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    _commit_all(repo, "base")
+    env = sealed_git_child_env_v2()
+
+    assert has_executable_local_filter_config_v2(repo, env=env) is False
+
+    subprocess.run(
+        ["git", "config", "filter.evil.smudge", "sh -c 'touch /tmp/x; cat'"],
+        cwd=repo, check=True,
+    )
+    assert has_executable_local_filter_config_v2(repo, env=env) is True
+
+
+def test_non_executable_filter_config_is_not_treated_as_executable(tmp_path: Path):
+    """`filter.<driver>.required` carries no command, so it must not by
+    itself make a repository unreviewable."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    _commit_all(repo, "base")
+
+    subprocess.run(["git", "config", "filter.lfs.required", "false"], cwd=repo, check=True)
+
+    assert has_executable_local_filter_config_v2(repo, env=sealed_git_child_env_v2()) is False

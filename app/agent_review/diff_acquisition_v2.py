@@ -44,6 +44,7 @@ from pydantic import TypeAdapter, ValidationError
 from app.agent_review._sealed_git_execution_v2 import (
     has_semantically_active_info_attributes_v2,
     sealed_git_child_env_v2,
+    has_executable_local_filter_config_v2,
     sealed_git_argv_v2,
 )
 from app.agent_review.contracts_v2 import RelativePath
@@ -836,7 +837,8 @@ def _run_git_v2(
         raise DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2)
     try:
         return subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
-            sealed_git_argv_v2(argv), cwd=(cwd or repo_root), env=sealed_git_child_env_v2(),
+            sealed_git_argv_v2(argv, trusted_repo_root=repo_root),
+            cwd=(cwd or repo_root), env=sealed_git_child_env_v2(),
             capture_output=True, text=False, check=False,
         )
     except FileNotFoundError as exc:
@@ -854,6 +856,7 @@ def _run_git_v2(
 
 
 DIFF_INFO_ATTRIBUTES_ACTIVE_REASON_V2 = "diff_info_attributes_active"
+DIFF_LOCAL_FILTER_CONFIG_ACTIVE_REASON_V2 = "diff_local_filter_config_active"
 
 
 def _convert_worktree_step_oserror_v2(exc: OSError) -> DiffAcquisitionError:
@@ -932,13 +935,24 @@ def _attribute_bound_diff_worktree_v2(repo_root: Path, head_sha: str) -> Iterato
     if info_attributes_active:
         raise DiffAcquisitionError(DIFF_INFO_ATTRIBUTES_ACTIVE_REASON_V2)
 
+    # Checked BEFORE the worktree is created, for the same reason
+    # `info/attributes` is: `git worktree add` checks files out, and a
+    # repository-local filter driver would execute at that moment.
+    try:
+        local_filter_active = has_executable_local_filter_config_v2(Path(repo_root), env=env)
+    except OSError as exc:
+        raise _convert_worktree_step_oserror_v2(exc) from exc
+    if local_filter_active:
+        raise DiffAcquisitionError(DIFF_LOCAL_FILTER_CONFIG_ACTIVE_REASON_V2)
+
     holder_dir = Path(tempfile.mkdtemp(prefix="agent-review-diff-attr-source-v2-"))
     worktree_dir = holder_dir / "wt"
     try:
         try:
             added = subprocess.run(
                 sealed_git_argv_v2(
-                    ["git", "worktree", "add", "--quiet", "--detach", str(worktree_dir), head_sha]
+                    ["git", "worktree", "add", "--quiet", "--detach", str(worktree_dir), head_sha],
+                    trusted_repo_root=repo_root,
                 ),
                 cwd=repo_root, env=env, capture_output=True, text=False, check=False,
             )
@@ -956,7 +970,10 @@ def _attribute_bound_diff_worktree_v2(repo_root: Path, head_sha: str) -> Iterato
             yield worktree_dir
         finally:
             subprocess.run(
-                sealed_git_argv_v2(["git", "worktree", "remove", "--force", str(worktree_dir)]),
+                sealed_git_argv_v2(
+                    ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                    trusted_repo_root=repo_root,
+                ),
                 cwd=repo_root, env=env, capture_output=True, check=False,
             )
     finally:

@@ -60,6 +60,23 @@ also reproduced directly, and is NOT covered by neutralizing environment
 variables -- Git has no `GIT_HOOKS_PATH` env var, and repository-local
 `.git/config` is deliberately left reachable here.
 
+**Target-controlled filter drivers.** A repository-local
+`filter.<driver>.smudge`/`.clean`/`.process` command is executed by Git
+whenever a path whose attributes assign that driver is checked out --
+reproduced directly during the same `git worktree add`. The driver name is
+attacker-chosen, so there is no `-c` closure, and `--no-checkout` is not an
+alternative (verified: it leaves the worktree empty and attribute
+resolution stops working, which is the worktree's entire purpose). Detected
+and refused instead by `has_executable_local_filter_config_v2` -- the same
+fail-closed shape already used for `$GIT_DIR/info/attributes`. This does
+refuse repositories that legitimately configure a filter driver, `git-lfs`
+being the common one; that operational cost is accepted deliberately, in
+preference to executing a target-controlled command.
+
+**Target-controlled `core.fsmonitor`.** Holds a command Git executes to
+enumerate working-tree changes; reproduced directly running during
+`git status`. Closed with `-c core.fsmonitor=false`.
+
 Closed on the command line instead, by `sealed_git_argv_v2`: `-c
 core.hooksPath=<os.devnull>` takes precedence over both the default
 `$GIT_DIR/hooks` lookup and any repository-local `core.hooksPath`,
@@ -150,15 +167,37 @@ def sealed_git_child_env_v2() -> dict[str, str]:
 # line. `-c` beats repository-local config, verified directly against both
 # a planted `$GIT_DIR/hooks/post-checkout` and a `core.hooksPath` redirect.
 _HOOKS_DISABLED_CONFIG_V2 = f"core.hooksPath={os.devnull}"
+# `core.fsmonitor` holds a command Git executes to enumerate working-tree
+# changes; reproduced directly, a repository-local value ran during
+# `git status`. `false` is Git's own documented "no fsmonitor" value, and
+# `-c` beats the repository-local setting -- verified directly.
+_FSMONITOR_DISABLED_CONFIG_V2 = "core.fsmonitor=false"
 
 
-def sealed_git_argv_v2(argv: list[str]) -> list[str]:
+def sealed_git_argv_v2(argv: list[str], *, trusted_repo_root: Path) -> list[str]:
     """The argv every Git subprocess a semantic Git authority in this
     package runs must actually execute.
 
     Takes a caller's ordinary ``["git", ...]`` command and returns it with
     this module's frozen command policy spliced in immediately after the
     executable, where Git requires its own `-c` options to appear.
+
+    ``trusted_repo_root`` is the checkout the caller has already explicitly
+    declared as its subject. It is named as `safe.directory` because
+    `GIT_CONFIG_GLOBAL=os.devnull` (above) also discards any
+    `safe.directory` the operator configured there, and Git then refuses
+    outright -- `fatal: detected dubious ownership` -- on any checkout owned
+    by a different uid than the running process. Reproduced directly; that
+    is the ordinary case in a container or CI runner whose checkout is owned
+    by a build user, so without this the seal would convert a working
+    deployment into a total acquisition failure.
+
+    Granting it on the command line is exactly scoped: verified directly
+    that `-c safe.directory=<path>` admits that path and still refuses a
+    DIFFERENT foreign-owned repository, so this trusts precisely the
+    checkout the caller already named and nothing else. It is not a content
+    trust decision either -- the subject's *content* remains hostile, which
+    is what the rest of this module's policy is for.
 
     Raises ``ValueError`` -- not a refusal -- if ``argv`` does not start
     with ``git``: that is a defect in a call site inside this package, and
@@ -167,7 +206,60 @@ def sealed_git_argv_v2(argv: list[str]) -> list[str]:
 
     if not argv or argv[0] != "git":
         raise ValueError("sealed_git_argv_v2 expects an argv beginning with 'git'")
-    return [argv[0], "-c", _HOOKS_DISABLED_CONFIG_V2, *argv[1:]]
+    return [
+        argv[0],
+        "-c", _HOOKS_DISABLED_CONFIG_V2,
+        "-c", _FSMONITOR_DISABLED_CONFIG_V2,
+        "-c", f"safe.directory={Path(trusted_repo_root)}",
+        *argv[1:],
+    ]
+
+
+# A `filter.<driver>.smudge`/`.clean`/`.process` command is executed by Git
+# whenever a path whose attributes assign `filter=<driver>` is checked out
+# or staged. Reproduced directly: a repository-local `filter.evil.smudge`
+# executed during the `git worktree add` this package uses. Unlike hooks and
+# fsmonitor there is no `-c` closure, because the driver NAME is chosen by
+# whoever wrote the config and cannot be enumerated in advance; and
+# `--no-checkout` is not an alternative, verified directly -- it leaves the
+# worktree empty, so attribute resolution stops working entirely, which is
+# the whole reason the worktree exists.
+_EXECUTABLE_FILTER_CONFIG_SUFFIXES_V2 = (".smudge", ".clean", ".process")
+
+
+def has_executable_local_filter_config_v2(repo_root: Path, *, env: dict[str, str]) -> bool:
+    """Whether the repository-local config defines any filter driver that
+    Git would execute during checkout.
+
+    Repository-local `.git/config` is deliberately reachable (it is part of
+    the checkout under review), and this is the one execution vector in it
+    that no command-line override can close, so it is detected and refused
+    instead -- the same fail-closed shape this module already uses for
+    `$GIT_DIR/info/attributes`.
+
+    Scoped to `--local` on purpose: global/system config is already
+    neutralized by `sealed_git_child_env_v2`, and command-line `-c` values
+    are this module's own.
+    """
+
+    import subprocess
+
+    result = subprocess.run(
+        sealed_git_argv_v2(
+            ["git", "config", "--local", "--list", "--name-only", "-z"],
+            trusted_repo_root=repo_root,
+        ),
+        cwd=repo_root, env=env, capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        # No local config at all is the common case and exits non-zero;
+        # nothing executable can be defined by a config that is not there.
+        return False
+    for key in result.stdout.split("\0"):
+        key = key.strip().lower()
+        if key.startswith("filter.") and key.endswith(_EXECUTABLE_FILTER_CONFIG_SUFFIXES_V2):
+            return True
+    return False
 
 
 def has_semantically_active_info_attributes_v2(repo_root: Path, *, env: dict[str, str]) -> bool:
@@ -187,7 +279,9 @@ def has_semantically_active_info_attributes_v2(repo_root: Path, *, env: dict[str
     import subprocess
 
     result = subprocess.run(
-        sealed_git_argv_v2(["git", "rev-parse", "--git-path", "info/attributes"]),
+        sealed_git_argv_v2(
+            ["git", "rev-parse", "--git-path", "info/attributes"], trusted_repo_root=repo_root
+        ),
         cwd=repo_root, env=env, capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:

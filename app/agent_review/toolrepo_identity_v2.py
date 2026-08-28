@@ -195,7 +195,8 @@ def resolve_toolrepo_root_v2(*, executing_script: Path | None = None) -> Path:
 def _run_toolrepo_git_v2(argv: list[str], *, toolrepo_root: Path) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
-            sealed_git_argv_v2(argv), cwd=toolrepo_root, env=sealed_git_child_env_v2(),
+            sealed_git_argv_v2(argv, trusted_repo_root=toolrepo_root),
+            cwd=toolrepo_root, env=sealed_git_child_env_v2(),
             capture_output=True, text=True, check=False,
         )
     except OSError as exc:
