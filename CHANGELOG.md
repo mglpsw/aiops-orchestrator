@@ -2,6 +2,82 @@
 
 ## Unreleased
 
+### Added
+
+- **AgentReview v2 operational composition successor (`#200-D`)**: makes the
+  v2 engine invocable from the toolrepo, as a product, against a separate
+  real target checkout. `run_synthetic_review_v2` already owned the entire
+  back half but had zero production callers in `app/`/`scripts/` -- this adds
+  the missing front half (`app/agent_review/operational_run_v2.py`) and a CLI
+  (`scripts/aiops-review-run-v2.py`), composing every EXISTING authority in
+  order (profile load, grouping policy binding, authoritative diff, manifest
+  assembly, payload building, payload-set emission, content extraction,
+  preparation closure) onto the unchanged back half, re-implementing none of
+  them. Terminal state: Draft, provider-free, offline-transport-only in this
+  slice -- no live Router call, no provider, no target mutation.
+
+  Two new authorities close gaps neither `#271` (the closed, unmerged
+  forensic predecessor) nor `#272` (the merged architectural predecessor)
+  addressed:
+
+  - `app/agent_review/reference_source_v2.py` closes a TOCTOU:
+    `payload_references_v2` reads artifact/contract bytes from the target's
+    mutable WORKING TREE while diff/content come from Git OBJECTS at
+    `base_sha`/`head_sha`, so identical SHA inputs could bind different
+    reference bytes depending only on incidental filesystem state. Every
+    declared reference path is now materialized from its immutable Git blob
+    at `head_sha` into a private per-run directory, and the UNCHANGED
+    payload owner reads from that instead -- the working tree is consulted
+    NOWHERE, proven by a determinism control asserting byte-identical
+    materialized reference sets whether a declared-but-absent path is
+    missing or present as an untracked/generated working-tree file.
+  - `app/agent_review/toolrepo_identity_v2.py` proves the EXECUTING
+    toolrepo's own source checkout matches its declared `toolrepo_sha`
+    before any semantic review runs -- a caller's declaration is never
+    treated as proof of what actually executed. Bounded to the package tree
+    actually imported plus this slice's one CLI script, so an unrelated
+    dirty file elsewhere in the toolrepo cannot block a run. Gitless
+    toolrepo distribution is out of scope for this slice and fails closed
+    (`toolrepo_identity_unavailable`); it belongs to the distribution/release
+    line (`#203` -> `#205`).
+
+  The back-half error surface the composer wraps was measured against the
+  CURRENT call graph, not copied from `#271`'s history: `synthesis_v2`
+  already converts `ChunkResultScopeError` into `SynthesisErrorV2` before it
+  reaches this composer, so preserving a catch for the former would have
+  been dead code. Reading the actual call graph instead found
+  `LifecycleAggregationError` reachable DIRECTLY (synthesis calls the
+  PRIVATE `_aggregate_finding_lifecycle_core_v2` and does not convert it),
+  and `TargetProfileLoadErrorV2` reachable a SECOND time through
+  `produce_review_readiness_v2`'s own required-check re-verification
+  frontier. The payload family is narrowed to `PayloadBuilderError` ONLY --
+  its sibling `PayloadReferenceError` is already converted by the payload
+  owner, so catching it here too would be exactly the enumeration habit
+  `#272` ended. An AST-level structural oracle fails the composer if it ever
+  catches `pydantic.ValidationError`, a raw `OSError`, `PayloadReferenceError`,
+  `Exception` or `BaseException`, or inspects a dynamic `reason_code` off an
+  untyped exception.
+
+  `run_synthetic_review_v2`'s private carrier (`SyntheticReviewOutcomeV2`,
+  non-wire, never persisted) now also returns the exact `SynthesisResultV2`
+  it already computes before deriving readiness from it -- previously
+  discarded, now preserved by object identity so future persistence
+  (`RI-B1`/`#167`) never needs a second synthesis execution.
+
+  Two guards `#271` carried are `OBSOLETE_AFTER_272` and deliberately not
+  ported: `assemble_manifest_from_diff_v2` now owns the `max_lines_per_chunk`
+  type/value guard itself, and `emit_payload_set_v2` now owns the
+  empty-submission case (`payload_set_empty`) instead of raising a raw
+  pydantic `ValidationError`.
+
+  Mandatory provider-free black-box E2E: drives the CLI as a real process
+  from the toolrepo against a real target Git repository created outside the
+  toolrepo tree, reaching honest `manual_required`/`policy_failure`
+  readiness (no fabricated required-check authority is reachable in
+  production today -- see `required_check_readiness_v2`'s own module
+  docstring) and proving the target tree byte-identical before/after. No
+  published schema changed.
+
 ### Fixed
 
 - **AgentReview v2 Router receipt-v2 wire binding (`#200-C-WIRE`)**:
