@@ -1091,3 +1091,44 @@ mutation_matrix_phase2:
 Every mutant: baseline green -> mutation applied -> confirmed to produce the
 intended failure -> reverted -> baseline reconfirmed green, the same
 discipline `#274` established.
+
+### Phase 2 qualification
+
+```yaml
+qualification_phase2:
+  focused_new_tests: "27 passed (test_controlled_subject_v2.py: 16,
+    test_toolrepo_execution_subject_v2.py: 11)"
+  existing_diff_acquisition_tests: "86 passed, untouched"
+  compileall: pass
+  git_diff_check: pass
+  schema_export_check: "byte-identical"
+  full_agentreview_suite: "48 failed, 2586 passed, 12 skipped"
+  full_repository_suite: "48 failed, 3345 passed, 16 skipped"
+  known_environment_classification:
+    reproduced_at_base: true
+    method: >-
+      Spot-checked the sharpest failure
+      (test_telemetry_cli_does_not_call_network_or_provider) against a
+      CLEAN worktree of master (f70af2e) with zero #200-E changes applied
+      -- byte-identical failure and error message. Confirmed none of the 48
+      failing test names reference any #200-E module
+      (controlled_subject_v2, toolrepo_execution_subject_v2,
+      _bounded_git_child_env_v2).
+    classes:
+      - class: environment
+        count: 46
+        description: >-
+          `scripts/aiops-review-*-cli.py`'s own `target_repo_write_blocked`
+          safety check ("AgentReview artifacts cannot be written inside Git
+          worktrees") fires because BOTH this #200-E worktree and the clean
+          master baseline used for comparison are `git worktree add`
+          checkouts, not plain clones -- a pre-existing property of how this
+          multi-worktree host is laid out, unrelated to any change in this
+          slice.
+      - class: environment
+        count: 2
+        description: >-
+          The two long-known `test_isolated_executor_v2.py` sudo tests
+          (fail locally, pass in CI -- established in earlier sessions this
+          slice inherited, not rediscovered here).
+```
