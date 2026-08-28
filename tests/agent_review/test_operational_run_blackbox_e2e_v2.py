@@ -242,6 +242,40 @@ def _canonical_target_observation_v2(repo: Path) -> str:
     return result.stdout
 
 
+def test_target_mutation_oracle_detects_an_ignored_untracked_file(tmp_path):
+    """`#200-D` correction: `HEAD^{tree}` equality -- the ONLY oracle the
+    prior black-box test used -- cannot see a new untracked file at all,
+    ignored or not. This proves the CORRECTED oracle
+    (`_canonical_target_observation_v2`) actually discriminates a mutation
+    the old one would have silently passed."""
+
+    repo, _base_sha, _head_sha = _make_target_repo(tmp_path)
+
+    tree_before = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    observation_before = _canonical_target_observation_v2(repo)
+
+    # Simulate what a mutating bug could leave behind: a new file matched
+    # by an existing or newly-added ignore rule.
+    (repo / ".gitignore").write_text("leaked-review-output.json\n")
+    (repo / "leaked-review-output.json").write_text('{"leaked": true}\n')
+
+    tree_after = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    observation_after = _canonical_target_observation_v2(repo)
+
+    assert tree_after == tree_before, (
+        "sanity check: HEAD^{tree} is UNCHANGED by this mutation -- exactly "
+        "why it is not a sufficient oracle on its own"
+    )
+    assert observation_after != observation_before, (
+        "the corrected oracle must detect a new file even when a .gitignore "
+        "rule would hide it from an unadorned `git status`"
+    )
+
+
 def test_cli_process_reaches_honest_readiness_from_a_separate_target_repo(tmp_path, real_toolrepo_sha):
     repo, base_sha, head_sha = _make_target_repo(tmp_path)
     assert REPO_ROOT != repo and REPO_ROOT not in repo.resolve().parents, "target must be outside the toolrepo tree"
