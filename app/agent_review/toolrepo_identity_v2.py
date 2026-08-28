@@ -134,7 +134,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import app.agent_review as _agent_review_package_v2
-from app.agent_review._sealed_git_execution_v2 import sealed_git_child_env_v2
+from app.agent_review._sealed_git_execution_v2 import (
+    sealed_git_argv_v2,
+    sealed_git_child_env_v2,
+)
 
 TOOLREPO_IDENTITY_UNAVAILABLE_REASON_V2 = "toolrepo_identity_unavailable"
 TOOLREPO_IDENTITY_MISMATCH_REASON_V2 = "toolrepo_identity_mismatch"
@@ -192,7 +195,7 @@ def resolve_toolrepo_root_v2(*, executing_script: Path | None = None) -> Path:
 def _run_toolrepo_git_v2(argv: list[str], *, toolrepo_root: Path) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
-            argv, cwd=toolrepo_root, env=sealed_git_child_env_v2(),
+            sealed_git_argv_v2(argv), cwd=toolrepo_root, env=sealed_git_child_env_v2(),
             capture_output=True, text=True, check=False,
         )
     except OSError as exc:

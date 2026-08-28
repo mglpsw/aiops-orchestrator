@@ -44,6 +44,7 @@ from pydantic import TypeAdapter, ValidationError
 from app.agent_review._sealed_git_execution_v2 import (
     has_semantically_active_info_attributes_v2,
     sealed_git_child_env_v2,
+    sealed_git_argv_v2,
 )
 from app.agent_review.contracts_v2 import RelativePath
 
@@ -835,7 +836,7 @@ def _run_git_v2(
         raise DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2)
     try:
         return subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
-            argv, cwd=(cwd or repo_root), env=sealed_git_child_env_v2(),
+            sealed_git_argv_v2(argv), cwd=(cwd or repo_root), env=sealed_git_child_env_v2(),
             capture_output=True, text=False, check=False,
         )
     except FileNotFoundError as exc:
@@ -936,7 +937,9 @@ def _attribute_bound_diff_worktree_v2(repo_root: Path, head_sha: str) -> Iterato
     try:
         try:
             added = subprocess.run(
-                ["git", "worktree", "add", "--quiet", "--detach", str(worktree_dir), head_sha],
+                sealed_git_argv_v2(
+                    ["git", "worktree", "add", "--quiet", "--detach", str(worktree_dir), head_sha]
+                ),
                 cwd=repo_root, env=env, capture_output=True, text=False, check=False,
             )
         except OSError as exc:
@@ -953,7 +956,7 @@ def _attribute_bound_diff_worktree_v2(repo_root: Path, head_sha: str) -> Iterato
             yield worktree_dir
         finally:
             subprocess.run(
-                ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                sealed_git_argv_v2(["git", "worktree", "remove", "--force", str(worktree_dir)]),
                 cwd=repo_root, env=env, capture_output=True, check=False,
             )
     finally:

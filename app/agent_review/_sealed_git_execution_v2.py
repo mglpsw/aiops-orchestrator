@@ -47,6 +47,27 @@ interpreted independent of the declared subject; stripped.
 arbitrary config key/value pairs into the child process without touching
 any file; stripped.
 
+**Target-controlled hook execution.** `git worktree add` runs the target
+repository's `post-checkout` hook -- reproduced directly: a hook planted at
+`$GIT_DIR/hooks/post-checkout` executed, with the disposable worktree as
+its cwd, during the very `git worktree add` this package uses to bind
+attribute resolution to the declared subject. That made the attribute fix
+itself a target-controlled code-execution path, contradicting the "never
+executes untrusted code" boundary `diff_acquisition_v2` documents for
+itself when it explains `--no-textconv`. A repository-local
+`core.hooksPath` redirect reaches an arbitrary directory the same way,
+also reproduced directly, and is NOT covered by neutralizing environment
+variables -- Git has no `GIT_HOOKS_PATH` env var, and repository-local
+`.git/config` is deliberately left reachable here.
+
+Closed on the command line instead, by `sealed_git_argv_v2`: `-c
+core.hooksPath=<os.devnull>` takes precedence over both the default
+`$GIT_DIR/hooks` lookup and any repository-local `core.hooksPath`,
+verified directly against both vectors. It is an argv prefix rather than
+a per-call-site flag for the same reason `GIT_NO_REPLACE_OBJECTS` is an
+environment variable: a future call site cannot reintroduce the gap by
+forgetting it.
+
 **Global/system Git configuration.** `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`
 set to `os.devnull` make Git consult neither -- verified supported on this
 host's Git 2.39.5 (the mechanism shipped in Git 2.32). Only the target
@@ -122,6 +143,33 @@ def sealed_git_child_env_v2() -> dict[str, str]:
     return env
 
 
+# Git resolves hooks from `$GIT_DIR/hooks` by default and from
+# `core.hooksPath` when set. Neither is reachable through the environment
+# (there is no `GIT_HOOKS_PATH`), and repository-local `.git/config` stays
+# readable by design, so hook neutralization has to travel on the command
+# line. `-c` beats repository-local config, verified directly against both
+# a planted `$GIT_DIR/hooks/post-checkout` and a `core.hooksPath` redirect.
+_HOOKS_DISABLED_CONFIG_V2 = f"core.hooksPath={os.devnull}"
+
+
+def sealed_git_argv_v2(argv: list[str]) -> list[str]:
+    """The argv every Git subprocess a semantic Git authority in this
+    package runs must actually execute.
+
+    Takes a caller's ordinary ``["git", ...]`` command and returns it with
+    this module's frozen command policy spliced in immediately after the
+    executable, where Git requires its own `-c` options to appear.
+
+    Raises ``ValueError`` -- not a refusal -- if ``argv`` does not start
+    with ``git``: that is a defect in a call site inside this package, and
+    a bug must never be laundered into a subject-level refusal.
+    """
+
+    if not argv or argv[0] != "git":
+        raise ValueError("sealed_git_argv_v2 expects an argv beginning with 'git'")
+    return [argv[0], "-c", _HOOKS_DISABLED_CONFIG_V2, *argv[1:]]
+
+
 def has_semantically_active_info_attributes_v2(repo_root: Path, *, env: dict[str, str]) -> bool:
     """Whether `$GIT_DIR/info/attributes` exists and has content capable of
     influencing attribute resolution -- comments and blank lines do not
@@ -139,7 +187,7 @@ def has_semantically_active_info_attributes_v2(repo_root: Path, *, env: dict[str
     import subprocess
 
     result = subprocess.run(
-        ["git", "rev-parse", "--git-path", "info/attributes"],
+        sealed_git_argv_v2(["git", "rev-parse", "--git-path", "info/attributes"]),
         cwd=repo_root, env=env, capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:

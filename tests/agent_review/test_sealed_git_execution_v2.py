@@ -17,6 +17,7 @@ import pytest
 
 from app.agent_review._sealed_git_execution_v2 import (
     has_semantically_active_info_attributes_v2,
+    sealed_git_argv_v2,
     sealed_git_child_env_v2,
 )
 
@@ -240,3 +241,86 @@ def test_info_attributes_leaks_into_a_linked_worktree(tmp_path: Path):
             ["git", "worktree", "remove", "--force", str(worktree_dir)],
             cwd=repo, env=sealed_git_child_env_v2(), check=True,
         )
+
+
+def test_sealed_argv_splices_hook_neutralization_after_the_executable():
+    """`-c` options are only honoured between `git` and the subcommand, so
+    placement is part of the contract, not a formatting detail."""
+
+    argv = sealed_git_argv_v2(["git", "diff", "--binary", "abc...def"])
+
+    assert argv[0] == "git"
+    assert argv[1] == "-c"
+    assert argv[2] == f"core.hooksPath={os.devnull}"
+    assert argv[3:] == ["diff", "--binary", "abc...def"]
+
+
+def test_sealed_argv_rejects_an_argv_that_is_not_git():
+    """A call site handing this something other than `git` is a defect in
+    this package, so it raises rather than becoming a subject refusal."""
+
+    with pytest.raises(ValueError):
+        sealed_git_argv_v2(["not-git", "diff"])
+    with pytest.raises(ValueError):
+        sealed_git_argv_v2([])
+
+
+def test_sealed_argv_suppresses_a_planted_post_checkout_hook(tmp_path: Path):
+    """`git worktree add` runs the TARGET's `post-checkout` hook. Reproduced
+    directly: without the spliced `core.hooksPath`, this marker is created."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    head = _commit_all(repo, "base")
+
+    marker = tmp_path / "hook-ran"
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook = hooks_dir / "post-checkout"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    env = sealed_git_child_env_v2()
+    worktree = tmp_path / "wt"
+    subprocess.run(
+        sealed_git_argv_v2(
+            ["git", "worktree", "add", "--quiet", "--detach", str(worktree), head]
+        ),
+        cwd=repo, env=env, capture_output=True, check=True,
+    )
+
+    assert (worktree / "f.txt").is_file(), "the worktree must still materialize"
+    assert not marker.exists(), "target-controlled post-checkout hook executed"
+
+
+def test_sealed_argv_overrides_a_repository_local_hooks_path_redirect(tmp_path: Path):
+    """Repository-local `.git/config` stays reachable by design, so a
+    `core.hooksPath` redirect has to be beaten on the command line."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    head = _commit_all(repo, "base")
+
+    marker = tmp_path / "redirected-hook-ran"
+    evil_hooks = tmp_path / "evil-hooks"
+    evil_hooks.mkdir()
+    hook = evil_hooks / "post-checkout"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    subprocess.run(
+        ["git", "config", "core.hooksPath", str(evil_hooks)], cwd=repo, check=True
+    )
+
+    env = sealed_git_child_env_v2()
+    worktree = tmp_path / "wt"
+    subprocess.run(
+        sealed_git_argv_v2(
+            ["git", "worktree", "add", "--quiet", "--detach", str(worktree), head]
+        ),
+        cwd=repo, env=env, capture_output=True, check=True,
+    )
+
+    assert (worktree / "f.txt").is_file(), "the worktree must still materialize"
+    assert not marker.exists(), "repository-local core.hooksPath redirect executed"

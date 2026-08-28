@@ -1944,3 +1944,64 @@ def test_replacement_blob_substitution_is_closed_on_the_reference_material_path(
 
     entry = read_head_tree_entry_v2(repo, head_sha=head_sha, relative_path="artifact.txt")
     assert entry.content == b"legit content\n"
+
+
+def test_acquisition_does_not_execute_a_target_post_checkout_hook(tmp_path: Path):
+    """`#200-D` correction, found by an independent review of the FIX itself.
+
+    The disposable worktree that binds attribute resolution to the declared
+    subject is created with `git worktree add` -- which runs the TARGET
+    repository's `post-checkout` hook. That made the attribute fix a
+    target-controlled code-execution path, contradicting the "never
+    executes untrusted code" boundary this module documents for itself
+    when it explains `--no-textconv`. Same threat model as the untracked
+    `.gitattributes` this worktree exists to defeat: anyone who can plant
+    that file can plant a hook.
+    """
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    base = _commit_all(repo, "base")
+    (repo / "f.txt").write_text("hello\nworld\n", encoding="utf-8")
+    head = _commit_all(repo, "head")
+
+    marker = tmp_path / "hook-ran"
+    hooks_dir = repo / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook = hooks_dir / "post-checkout"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    diff = acquire_diff_v2(repo, base_sha=base, head_sha=head)
+
+    assert "world" in diff, "acquisition must still return the real diff"
+    assert not marker.exists(), "target post-checkout hook executed during acquisition"
+
+
+def test_acquisition_does_not_execute_a_redirected_target_hook(tmp_path: Path):
+    """The same closure has to survive a repository-local `core.hooksPath`
+    redirect, which reaches an arbitrary directory and is not covered by
+    neutralizing environment variables."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    base = _commit_all(repo, "base")
+    (repo / "f.txt").write_text("hello\nworld\n", encoding="utf-8")
+    head = _commit_all(repo, "head")
+
+    marker = tmp_path / "redirected-hook-ran"
+    evil_hooks = tmp_path / "evil-hooks"
+    evil_hooks.mkdir()
+    hook = evil_hooks / "post-checkout"
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    subprocess.run(
+        ["git", "config", "core.hooksPath", str(evil_hooks)], cwd=repo, check=True
+    )
+
+    diff = acquire_diff_v2(repo, base_sha=base, head_sha=head)
+
+    assert "world" in diff, "acquisition must still return the real diff"
+    assert not marker.exists(), "redirected target hook executed during acquisition"
