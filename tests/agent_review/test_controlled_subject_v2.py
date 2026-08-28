@@ -8,6 +8,7 @@ against the NEW authority, not a copy of `#274`'s implementation.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -235,6 +236,49 @@ def test_ambient_env_has_no_effect_ce02_ce03(tmp_path: Path, monkeypatch):
         result = run_semantic_git_in_subject_v2(subj, ["git", "cat-file", "-p", f"{head}:f.txt"])
     assert result.returncode == 0
     assert result.stdout == b"hello\nworld\n"
+
+
+def test_hostile_ambient_path_cannot_substitute_the_git_binary(tmp_path: Path, monkeypatch):
+    """Round-2 correction, found by independent review: `bounded_child_env_v2`
+    used to copy the caller's ambient `PATH` verbatim, and every call site
+    passes bare `"git"` as argv[0] -- `subprocess.run` resolves a slash-free
+    argv[0] via `env["PATH"]`, so an attacker controlling the calling
+    shell's `PATH` could substitute their own `git` for every git call this
+    authority makes, including the byte-identity oracle itself. This is the
+    single most ordinary form of ambient-environment control (`PATH` is set
+    by every shell), and exactly the class of threat `bounded_child_env_v2`
+    exists to defeat -- see its module docstring's "Correction" section.
+
+    Proven here: a fake `git` placed first on the ambient `PATH` (that
+    would, if invoked, write a marker file and then delegate to `/usr/bin/git`
+    so the operation would otherwise silently "succeed") must never run --
+    the marker must never appear -- while the real operation still returns
+    the correct, real content."""
+    repo, base, head = _two_commit_repo(tmp_path)
+
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    marker = tmp_path / "fake-git-was-invoked"
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "#!/usr/bin/env bash\n"
+        f"echo invoked >> {marker}\n"
+        'exec /usr/bin/git "$@"\n',
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+
+    monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ.get('PATH', '')}")
+
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        result = run_semantic_git_in_subject_v2(subj, ["git", "cat-file", "-p", f"{head}:f.txt"])
+
+    assert result.returncode == 0
+    assert result.stdout == b"hello\nworld\n"
+    assert not marker.exists(), (
+        "the attacker-controlled PATH's fake `git` must never be invoked -- "
+        "bounded_child_env_v2 must resolve `git` against a fixed, non-ambient path"
+    )
 
 
 def test_severance_semantic_ops_survive_source_unavailable(tmp_path: Path):

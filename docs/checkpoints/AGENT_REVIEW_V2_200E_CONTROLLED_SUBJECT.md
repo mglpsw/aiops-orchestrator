@@ -1704,3 +1704,113 @@ failure-classification discipline:
   samples spanning all 3 affected files. `environment`-class (sandbox
   worktree topology), out of scope for this slice, does not affect this
   slice's own claims or the terminal handoff below.
+
+## Correction loop, round 2 — re-review against the round-1 correction head
+
+Per the grant's rule that a source-changing fix invalidates prior exact-head
+review, three fresh independent lanes were dispatched against `3a4d20d`
+(the round-1 correction head, CI-green). Lane C (model/proof/result) and
+Lane B (composition/authority) both failed to run to completion — the
+reviewing account hit its spend limit mid-run (external constraint, not a
+finding about this codebase; resets 2026-08-31 09:00 UTC per the harness's
+own error). Their results are absent, not clean -- this section does not
+claim B/C found nothing this round; it claims B/C did not finish. Lane A
+(process/subject security) completed and is recorded in full below.
+
+### Lane A — round 2, fixed (P0)
+
+**`bounded_child_env_v2` inherited the caller's ambient `PATH`, so every
+"sealed" git subprocess resolved `git` against an attacker-controllable
+search path.** `app/agent_review/_bounded_git_child_env_v2.py`'s allowlist
+copied `PATH` from `os.environ` verbatim, and every one of the ~15 call
+sites across `controlled_subject_v2.py`/`toolrepo_execution_subject_v2.py`
+passes bare `"git"` as argv[0] (`run_bounded_git_v2` even structurally
+required it: `if argv[0] != "git": raise ValueError(...)`). `subprocess.run`
+resolves a slash-free argv[0] via the `env["PATH"]` it is given -- so an
+attacker who controls the calling shell's `PATH` before invoking the CLI
+(the single most ordinary form of ambient-environment control, and
+precisely the class of threat this module's own docstring claims immunity
+to) could substitute their own `git` for every git call either subject
+authority makes, including both sides of the byte-identity oracle itself
+(an attacker's fake `git` can make an `archive` and a `cat-file` comparison
+agree on fabricated content). This directly contradicts the module's
+central claim ("nothing from the calling process's environment reaches the
+child unless this module named it") for the one name it did allow through.
+
+Reproduced independently (not just taken from the reviewing agent's
+report) before trusting it: a fake `git` prepended to `PATH`, delegating to
+the real binary while logging its own invocation, was invoked by
+`bounded_child_env_v2`/`run_bounded_git_v2` directly. Lane A additionally
+reproduced it end-to-end against the real product CLI (140+ git
+invocations across the full toolrepo-materialization pipeline routed
+through the planted fake binary).
+
+Root cause, per Lane A's own comparison: the architecture spike this
+module is supposed to implement (this checkpoint's own line ~679 at the
+time) used a FIXED `PATH=/usr/bin:/bin` for its allowlist env. The shipped
+code diverged from its own tested primitive and inherited the ambient
+value instead -- every OTHER Python-launching subprocess call in this
+codebase (`isolated_executor_v2.py`, `trusted_check_broker_v2.py`, the
+outer CLI's own re-exec) correctly uses `sys.executable` (an already-
+resolved absolute path); this gap was specific to, and only to, the `git`
+argv resolution. No existing test exercised a hostile `PATH` (the existing
+`test_ambient_env_has_no_effect_ce02_ce03` covers `GIT_DIR`/
+`GIT_OBJECT_DIRECTORY`/`GIT_CONFIG_PARAMETERS`, never `PATH`).
+
+**Fix:** `env["PATH"]` is now always `os.defpath` (a fixed Python constant,
+`'/bin:/usr/bin'` on this platform, never read from `os.environ`). `git`
+itself is resolved to an absolute path exactly once via `shutil.which("git",
+path=os.defpath)` -- the same fixed, trusted search path -- and that
+resolved absolute path is substituted for every call's `"git"` argv[0]
+before `subprocess.run` actually executes, so no git invocation this module
+makes is ever subject to PATH-based resolution against anything the caller
+controls. Fails closed (`RuntimeError`) if `git` cannot be found on the
+fixed path. The public contract (every call site still passes bare
+`"git"`) is unchanged -- this is a single-choke-point fix, matching this
+module's own "one shared primitive" design.
+
+Regression: `test_hostile_ambient_path_cannot_substitute_the_git_binary`
+(`tests/agent_review/test_controlled_subject_v2.py`) -- a fake `git` on
+`PATH` that would, if invoked, write a marker and then delegate to the
+real binary (so the operation would otherwise silently "succeed").
+Mutation-checked: reverting the fix reproduces the marker (RED), restoring
+it removes it while the real operation still returns correct content
+(GREEN).
+
+### Lane A — round 2, re-confirmed (no change from round 1)
+
+- The two round-1 P1 fixes (target-side symlink/gitlink audit; direct
+  `--_controlled-inner` bypass check) were independently re-verified this
+  round by reproducing the ORIGINAL attacks against the current code: both
+  remain correctly refused. The direct-inner-mode check's own documented
+  scope limitation (does not defend against a fully privileged local
+  attacker who can create arbitrary directories matching the marker
+  substring) was independently reproduced as still true -- accurate,
+  neither overstated nor understated.
+- The round-1 P2 (`TMPDIR` staging unsealed against ambient environment,
+  accepted as a bounded trade-off) was re-examined and the trade-off
+  framing confirmed accurate: `mkdtemp`'s `0700` mode still protects
+  contents regardless of which parent directory `TMPDIR` selects.
+- The re-exec-into-`-I -B` defense and the `os`/`sys`-only pre-isolation
+  window were both re-attacked with a more adversarial variant than
+  originally tested (an external-directory shadow, not just a local one)
+  and held.
+
+### Round 2 qualification
+
+```yaml
+correction_loop_round2_qualification:
+  lane_a: "completed, 1 new P0 found and fixed (git PATH resolution), round-1 fixes re-confirmed"
+  lane_b: "did not complete -- account spend limit, resets 2026-08-31T09:00Z -- absent, not clean"
+  lane_c: "did not complete -- account spend limit, resets 2026-08-31T09:00Z -- absent, not clean"
+  fix_regression_test: "test_hostile_ambient_path_cannot_substitute_the_git_binary, mutation-checked"
+  focused_suites_after_fix: "103 passed, 1 skipped -- test_controlled_subject_v2.py,
+    test_toolrepo_execution_subject_v2.py, test_operational_run_authority_v2.py,
+    test_operational_run_router_v2.py, test_operational_run_toolrepo_tampering_v2.py,
+    test_operational_run_blackbox_e2e_v2.py, test_v2_dual_target_e2e.py"
+  full_repository_suite: pending, run after this fix is committed
+  ci_on_final_head: pending, requires push
+  terminal_handoff_status: "NOT YET -- lanes B and C must complete against the post-P0-fix
+    final head before a terminal AGENTREVIEW_V2_200E_OPERATIONAL_PRODUCT_HANDOFF can be issued.
+    This is a genuine, acknowledged gap in this round, not a silent omission."
+```
