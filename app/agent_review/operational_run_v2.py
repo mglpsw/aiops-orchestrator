@@ -28,7 +28,6 @@ trusted profile load (load_target_profile_v2)
   -> preparation closure verified
   -> each chunk executed through the existing transport choke point (execute_chunk_review_v2)
   -> synthesis computed EXACTLY ONCE (synthesize_chunk_results_v2)
-  -> finding lifecycle aggregated (aggregate_finding_lifecycle_v2)
   -> readiness decided from that SAME synthesis object (compute_readiness_decision_v2)
   -> readiness emitted (produce_review_readiness_v2)
 ```
@@ -75,7 +74,6 @@ from app.agent_review.controlled_subject_v2 import (
     materialize_controlled_target_subject_v2,
 )
 from app.agent_review.diff_acquisition_v2 import DiffAcquisitionError, acquire_diff_v2, parse_unified_diff
-from app.agent_review.lifecycle_v2 import aggregate_finding_lifecycle_v2
 from app.agent_review.parser_v2 import ParsedChunkResultV2
 from app.agent_review.payload_builder_v2 import PayloadBuilderError, build_chunk_payloads_from_profile_v2
 from app.agent_review.payload_set_emission_v2 import emit_payload_set_v2
@@ -254,12 +252,28 @@ def run_operational_review_v2(inputs: OperationalReviewInputsV2) -> ReviewReadin
 
     # Everything below is post-seal (§13-adjacent for THIS composer): a
     # defect here is a repository bug, not an operational refusal, and
-    # deliberately escapes raw -- no try/except wraps synthesis, lifecycle,
-    # readiness decision, or readiness emission.
+    # deliberately escapes raw -- no try/except wraps synthesis, readiness
+    # decision, or readiness emission.
+    #
+    # Correction, found by independent review: an earlier revision here
+    # called `aggregate_finding_lifecycle_v2` SEPARATELY to source
+    # `findings=`, alongside `synthesize_chunk_results_v2` -- two
+    # independent computations that happened to agree only because both
+    # share the same private core (`lifecycle_v2._aggregate_finding_
+    # lifecycle_core_v2`), not because anything enforced it; a mutation
+    # injecting an extra, non-blocker-referenced finding into the second
+    # call's result reached the emitted artifact silently. The
+    # ESTABLISHED pattern (`test_v2_dual_target_e2e.py`'s own
+    # `findings=synthesis.findings`, used at all 7 of its call sites, file
+    # unmodified by this slice) already sources findings directly from
+    # `synthesis` -- `synthesize_chunk_results_v2` merges lifecycle
+    # itself (its own `prior_lifecycle` parameter, unused here since this
+    # slice persists nothing). The separate lifecycle call was
+    # unnecessary complexity this composer introduced, not a considered
+    # design choice; removed, matching precedent. `ONE_OPERATIONAL_
+    # SYNTHESIS_INVARIANT` is now true by object identity for `findings`
+    # too, not merely by two computations' outputs agreeing.
     synthesis = synthesize_chunk_results_v2(
-        manifest=manifest, chunk_results=chunk_results, evaluated_head_sha=inputs.head_sha
-    )
-    lifecycle_records, _provenance_by_finding = aggregate_finding_lifecycle_v2(
         manifest=manifest, chunk_results=chunk_results, evaluated_head_sha=inputs.head_sha
     )
     decision = compute_readiness_decision_v2(
@@ -270,7 +284,7 @@ def run_operational_review_v2(inputs: OperationalReviewInputsV2) -> ReviewReadin
     )
     readiness = produce_review_readiness_v2(
         decision=decision,
-        findings=lifecycle_records,
+        findings=synthesis.findings,
         identity=manifest.identity,
         evaluated_identity=manifest.identity,
         pr_state=inputs.pr_state,

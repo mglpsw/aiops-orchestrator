@@ -259,13 +259,32 @@ def test_synthesis_computed_exactly_once_and_same_object_feeds_readiness(tmp_pat
 
     import app.agent_review.operational_run_v2 as mod
 
+    import dataclasses
+    from app.agent_review.contracts_v2 import FindingDispositionV2, FindingLifecycleRecordV2, FindingSeverityV2
+
     original_synthesize = mod.synthesize_chunk_results_v2
     original_decide = mod.compute_readiness_decision_v2
+    original_produce = mod.produce_review_readiness_v2
     synthesis_calls = []
     decision_calls = []
+    produce_findings_calls = []
 
     def _wrapped_synthesize(**kwargs):
         result = original_synthesize(**kwargs)
+        # `findings` is empty for this fixture's transport-failure-only
+        # scenario (no canned chunk responses staged), and CPython interns
+        # the empty tuple singleton (`() is ()` is always True) -- an
+        # identity check against an empty `findings` would pass vacuously
+        # even for a composer that recomputed it from a SEPARATE call. Force
+        # a genuinely non-empty, non-interned tuple so the identity check
+        # below is a real proof, not an artifact of the fixture.
+        dummy_finding = FindingLifecycleRecordV2(
+            finding_id="f" * 64, severity=FindingSeverityV2.P2,
+            observed_at_head_sha=kwargs["evaluated_head_sha"], disposition=FindingDispositionV2.NEW,
+            actionable=True, justification=None,
+            decided_by=None, decided_at_head_sha=None, evidence=[], superseded_by=None,
+        )
+        result = dataclasses.replace(result, findings=(dummy_finding,))
         synthesis_calls.append(result)
         return result
 
@@ -273,14 +292,30 @@ def test_synthesis_computed_exactly_once_and_same_object_feeds_readiness(tmp_pat
         decision_calls.append(synthesis)
         return original_decide(synthesis=synthesis, **kwargs)
 
+    def _wrapped_produce(*, findings, **kwargs):
+        produce_findings_calls.append(findings)
+        return original_produce(findings=findings, **kwargs)
+
     with mock.patch.object(mod, "synthesize_chunk_results_v2", side_effect=_wrapped_synthesize), \
-         mock.patch.object(mod, "compute_readiness_decision_v2", side_effect=_wrapped_decide):
+         mock.patch.object(mod, "compute_readiness_decision_v2", side_effect=_wrapped_decide), \
+         mock.patch.object(mod, "produce_review_readiness_v2", side_effect=_wrapped_produce):
         run_operational_review_v2(inputs)
 
     assert len(synthesis_calls) == 1, "synthesize_chunk_results_v2 must be called exactly once"
     assert len(decision_calls) == 1
     assert decision_calls[0] is synthesis_calls[0], (
         "readiness must be derived from the SAME synthesis object (identity, not equality)"
+    )
+    assert len(produce_findings_calls) == 1
+    assert produce_findings_calls[0] is synthesis_calls[0].findings, (
+        "findings= passed into produce_review_readiness_v2 must be the SAME tuple object "
+        "synthesis produced (identity, not equality) -- an earlier revision sourced findings "
+        "from a SEPARATE aggregate_finding_lifecycle_v2 call that happened to agree only by "
+        "construction, not identity; see #200-E correction loop. NOTE: identity cannot be "
+        "checked past this boundary -- produce_review_readiness_v2's own emission "
+        "(review_readiness_emission_v2.py, unmodified owner) intentionally defensive-copies "
+        "into a list (`findings=list(findings)`) for the final ReviewReadinessV2, so "
+        "`readiness.findings is synthesis.findings` is false by that owner's own design."
     )
 
 
