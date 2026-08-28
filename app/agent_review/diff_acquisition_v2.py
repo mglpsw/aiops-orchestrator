@@ -855,6 +855,22 @@ def _run_git_v2(
 DIFF_INFO_ATTRIBUTES_ACTIVE_REASON_V2 = "diff_info_attributes_active"
 
 
+def _convert_worktree_step_oserror_v2(exc: OSError) -> DiffAcquisitionError:
+    """Same discipline `_run_git_v2` already applies, reused here because
+    every subprocess `_attribute_bound_diff_worktree_v2` runs uses
+    `cwd=repo_root` directly rather than through `_run_git_v2`.
+    `repo_root` was already proven to exist and be a directory by this
+    context manager's own probe, so a `FileNotFoundError` here means the
+    `git` executable itself, unless the checkout vanished in the narrow
+    window between that probe and this exec."""
+
+    if isinstance(exc, FileNotFoundError):
+        if shutil.which("git") is None:
+            return DiffAcquisitionError(GIT_UNAVAILABLE_REASON_V2)
+        return DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2)
+    return DiffAcquisitionError(DIFF_ACQUISITION_IO_FAILED_REASON_V2)
+
+
 @contextmanager
 def _attribute_bound_diff_worktree_v2(repo_root: Path, head_sha: str) -> Iterator[Path]:
     """Yield a disposable, detached Git worktree checked out exactly at
@@ -896,17 +912,35 @@ def _attribute_bound_diff_worktree_v2(repo_root: Path, head_sha: str) -> Iterato
     block, or an unexpected defect.
     """
 
+    # Same probe `_run_git_v2` already performs, applied here too: every
+    # subprocess this context manager runs uses `cwd=repo_root` directly
+    # rather than through `_run_git_v2`, so without this check a `repo_root`
+    # that exists but is not a directory would raise a raw
+    # `NotADirectoryError` here instead of the named
+    # `REPO_ROOT_UNUSABLE_REASON_V2` -- verified directly: this omission
+    # broke `test_repo_root_that_is_a_file_is_named_precisely` before this
+    # check was added.
+    if not Path(repo_root).is_dir():
+        raise DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2)
+
     env = sealed_git_child_env_v2()
-    if has_semantically_active_info_attributes_v2(Path(repo_root), env=env):
+    try:
+        info_attributes_active = has_semantically_active_info_attributes_v2(Path(repo_root), env=env)
+    except OSError as exc:
+        raise _convert_worktree_step_oserror_v2(exc) from exc
+    if info_attributes_active:
         raise DiffAcquisitionError(DIFF_INFO_ATTRIBUTES_ACTIVE_REASON_V2)
 
     holder_dir = Path(tempfile.mkdtemp(prefix="agent-review-diff-attr-source-v2-"))
     worktree_dir = holder_dir / "wt"
     try:
-        added = subprocess.run(
-            ["git", "worktree", "add", "--quiet", "--detach", str(worktree_dir), head_sha],
-            cwd=repo_root, env=env, capture_output=True, text=False, check=False,
-        )
+        try:
+            added = subprocess.run(
+                ["git", "worktree", "add", "--quiet", "--detach", str(worktree_dir), head_sha],
+                cwd=repo_root, env=env, capture_output=True, text=False, check=False,
+            )
+        except OSError as exc:
+            raise _convert_worktree_step_oserror_v2(exc) from exc
         if added.returncode != 0:
             # `head_sha` was already shape-validated by the caller; a
             # worktree-add failure here means Git could not materialize
