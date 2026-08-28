@@ -620,6 +620,51 @@ def test_post_bind_type_defect_escapes_the_real_composed_run_raw(tmp_path, real_
         )
 
 
+def test_post_seal_assembly_validation_error_escapes_the_real_composer_raw(
+    tmp_path, real_toolrepo_sha, monkeypatch
+):
+    """`#200-D` correction, P2: pin the post-seal behavior at the COMPOSITION
+    boundary, not just inside run_assembly_v2's own test suite. Valid caller
+    material is driven through the real composer until AFTER assembly's own
+    seal (`_ValidatedAssemblyIdentityInputV2`), then `ManifestV2` -- the
+    POST-SEAL internal derivation -- is forced to raise a genuine pydantic
+    `ValidationError`. It must escape `prepare_operational_review_v2` raw,
+    never become `OperationalRunError(run_assembly_identity_invalid)`: a
+    derivation defect after the seal is a repository bug, not a caller-input
+    refusal, and `operational_run_v2` must not sanitize it by accident.
+
+    Verified as a real falsifier (applied and reverted in an isolated
+    commit, not bundled with this one): adding
+    `except ValidationError: raise OperationalRunError(...)` around the
+    assembly call makes this test fail with exactly
+    `OperationalRunError(run_assembly_identity_invalid)` instead of the
+    expected raw `ValidationError`."""
+
+    from pydantic import ValidationError
+
+    from app.agent_review import run_assembly_v2
+    from app.agent_review.operational_run_v2 import prepare_operational_review_v2
+
+    repo, base_sha, head_sha = _make_target_repo(tmp_path)
+    profile_root = _make_trusted_profile_root(tmp_path)
+
+    real_manifest_cls = run_assembly_v2.ManifestV2
+
+    def _fake_manifest_ctor(*args, **kwargs):
+        # A real ValidationError from the REAL contract -- empty data is
+        # missing every required field -- not a hand-built exception.
+        real_manifest_cls.model_validate({})
+
+    monkeypatch.setattr(run_assembly_v2, "ManifestV2", _fake_manifest_ctor)
+
+    with pytest.raises(ValidationError):
+        prepare_operational_review_v2(
+            repo_root=repo, target_profile_root=profile_root, grouping_policy=_grouping_policy(),
+            base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+            toolrepo_sha=real_toolrepo_sha, evidence_hash="d" * 64, max_lines_per_chunk=1000,
+        )
+
+
 # -- structural oracles --------------------------------------------------------
 
 
