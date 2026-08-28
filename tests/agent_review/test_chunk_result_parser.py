@@ -585,6 +585,39 @@ def test_u2_cross_chunk_overlap_uses_worst_state_in_global_union(tmp_path: Path)
     assert results.limitations.count("coverage_file_in_multiple_states") == 1
 
 
+def test_u2_cross_chunk_transport_failure_wins_over_reviewed_duplicate(tmp_path: Path) -> None:
+    shared = "src/shared.py"
+    first = _chunk(
+        chunk_id="chunk-01-primary_backend_logic",
+        files=[shared],
+    )
+    second = _chunk(
+        chunk_id="chunk-02-api_schema_contract",
+        group="api_schema_contract",
+        files=[shared],
+    )
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=first,
+        coverage_notes={"files_reviewed": [shared]},
+    )
+
+    results = parse_chunk_results(_plan([first, second]), responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=[shared],
+        reviewed=[],
+        partial=[],
+        not_reviewed=[shared],
+    )
+    assert results.status == "partial"
+    assert results.chunks_failed[0].error_class == "chunk_response_missing"
+    assert "chunk_response_missing" in results.limitations
+    assert results.limitations.count("coverage_file_in_multiple_states") == 1
+
+
 def test_u2_foreign_path_cannot_replace_an_omitted_expected_file(tmp_path: Path) -> None:
     files = ["src/reviewed.py", "src/omitted.py"]
     foreign = "src/foreign.py"

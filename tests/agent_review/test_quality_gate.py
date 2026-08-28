@@ -315,13 +315,15 @@ def test_u2_incomplete_coverage_cannot_bypass_gate_with_mutated_complete_claims(
     critical_pr: bool,
     must_review: str | None,
 ) -> None:
-    final_review = _final_review(
-        status="partial",
-        verdict="manual_review_required",
-        coverage=coverage_payload,
+    final_review = validate_final_review_document(
+        _final_review(
+            status="partial",
+            verdict="manual_review_required",
+            coverage=coverage_payload,
+        )
     )
-    final_review["status"] = "complete"
-    final_review["verdict"] = "approved"
+    final_review.raw["status"] = "complete"
+    final_review.raw["verdict"] = "approved"
     chunk_coverage = ChunkResultsCoverage(
         files_reviewed=list(coverage_payload["files_reviewed"]),
         files_partial=list(coverage_payload["files_partial"]),
@@ -331,7 +333,7 @@ def test_u2_incomplete_coverage_cannot_bypass_gate_with_mutated_complete_claims(
     chunk_results.status = "complete"
     intake = _intake_with_must_review(must_review) if must_review is not None else None
 
-    gate = _gate(
+    gate = evaluate_review_quality_gate(
         final_review,
         chunk_results,
         intake=intake,
@@ -351,6 +353,71 @@ def test_u2_incomplete_coverage_cannot_bypass_gate_with_mutated_complete_claims(
         assert "critical_must_review_files_not_covered" in gate.limitations
     else:
         assert not any(reason.startswith("critical_") for reason in gate.limitations)
+
+
+@pytest.mark.parametrize(
+    "incomplete_carrier",
+    ["final_review", "chunk_results"],
+)
+def test_u2_each_incomplete_coverage_carrier_independently_blocks_gate(
+    incomplete_carrier: str,
+) -> None:
+    complete = _coverage(reviewed=["src/a.py", "src/b.py"])
+    incomplete = _coverage(reviewed=["src/a.py"], partial=["src/b.py"])
+    final_coverage = incomplete if incomplete_carrier == "final_review" else complete
+    chunk_coverage = incomplete if incomplete_carrier == "chunk_results" else complete
+
+    gate = _gate(
+        _final_review(coverage=final_coverage),
+        _chunk_results(
+            coverage=ChunkResultsCoverage(
+                files_reviewed=list(chunk_coverage["files_reviewed"]),
+                files_partial=list(chunk_coverage["files_partial"]),
+                files_not_reviewed=list(chunk_coverage["files_not_reviewed"]),
+            )
+        ),
+        critical_pr=False,
+    )
+
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_supplied_plan_rejects_foreign_complete_coverage(critical_pr: bool) -> None:
+    expected = "src/expected.py"
+    foreign = "src/foreign.py"
+    chunk = SemanticChunk(
+        chunk_id="chunk-01-primary_backend_logic",
+        semantic_group="primary_backend_logic",
+        order_index=0,
+        files=[expected],
+        artifacts=[],
+        contracts=[],
+        coverage="complete",
+        prompt_budget_chars=24_000,
+        estimated_chars=512,
+        limitations=[],
+    )
+    chunk_plan = SemanticChunkPlan(
+        target_repo="mglpsw/AgentEscala",
+        max_parallel_blocks=6,
+        chunks=[chunk],
+        files_covered=[expected],
+        status="complete",
+    )
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[foreign])),
+        _chunk_results(coverage=ChunkResultsCoverage(files_reviewed=[foreign])),
+        chunk_plan=chunk_plan,
+        critical_pr=critical_pr,
+    )
+
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
 
 
 @pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])

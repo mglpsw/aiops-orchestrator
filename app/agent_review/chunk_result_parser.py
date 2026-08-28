@@ -34,6 +34,13 @@ class ChunkResultParserError(ValueError):
         self.message = message
 
 
+COVERAGE_STATE_PRIORITY = {
+    "reviewed": 0,
+    "partial": 1,
+    "not_reviewed": 2,
+}
+
+
 def load_json_object(path: Path | str, *, error_class: str) -> dict[str, Any]:
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -117,17 +124,22 @@ def parse_chunk_results(
         rejected_findings.extend(normalized.rejected_findings)
         limitations.extend(normalized.limitations)
         model_reported_limitations.extend(_response_limitations(response))
-        filtered_coverage, coverage_limitations = _filter_coverage_notes(response.coverage_notes, chunk)
+        normalized_coverage, coverage_limitations, foreign_path_reported = _normalize_coverage_partition(
+            response.coverage_notes,
+            expected_files=chunk.files,
+        )
+        if foreign_path_reported:
+            coverage_limitations.insert(0, f"coverage_file_not_in_chunk:{chunk.chunk_id}")
         limitations.extend(coverage_limitations)
-        coverage.files_reviewed.extend(filtered_coverage.files_reviewed)
-        coverage.files_partial.extend(filtered_coverage.files_partial)
-        coverage.files_not_reviewed.extend(filtered_coverage.files_not_reviewed)
+        coverage.files_reviewed.extend(normalized_coverage.files_reviewed)
+        coverage.files_partial.extend(normalized_coverage.files_partial)
+        coverage.files_not_reviewed.extend(normalized_coverage.files_not_reviewed)
 
-    coverage = ChunkResultsCoverage(
-        files_reviewed=_dedupe(coverage.files_reviewed),
-        files_partial=_dedupe(coverage.files_partial),
-        files_not_reviewed=_dedupe(coverage.files_not_reviewed),
+    coverage, aggregate_coverage_limitations, _ = _normalize_coverage_partition(
+        coverage,
+        expected_files=[file_path for chunk in chunk_plan.chunks for file_path in chunk.files],
     )
+    limitations.extend(aggregate_coverage_limitations)
     results = ChunkResults(
         target_repo=chunk_plan.target_repo,
         chunk_plan_ref=_chunk_plan_ref(chunk_plan),
@@ -139,7 +151,13 @@ def parse_chunk_results(
         model_reported_limitations=_dedupe(model_reported_limitations),
         rejected_findings=rejected_findings,
         coverage=coverage,
-        status=_result_status(chunk_plan=chunk_plan, parsed_count=len(chunks_parsed), failed_count=len(chunks_failed)),
+        status=_result_status(
+            chunk_plan=chunk_plan,
+            parsed_count=len(chunks_parsed),
+            failed_count=len(chunks_failed),
+            coverage=coverage,
+            limitations=limitations,
+        ),
     )
     return _sanitize_results(results)
 
@@ -191,7 +209,14 @@ def _failure(chunk: SemanticChunk, error_class: str, message: str) -> ChunkParse
     )
 
 
-def _result_status(*, chunk_plan: SemanticChunkPlan, parsed_count: int, failed_count: int) -> str:
+def _result_status(
+    *,
+    chunk_plan: SemanticChunkPlan,
+    parsed_count: int,
+    failed_count: int,
+    coverage: ChunkResultsCoverage,
+    limitations: list[str],
+) -> str:
     if chunk_plan.status == "degraded":
         return "degraded"
     if not chunk_plan.chunks:
@@ -207,6 +232,14 @@ def _result_status(*, chunk_plan: SemanticChunkPlan, parsed_count: int, failed_c
     # final_synthesizer and quality_gate already treat "partial" as
     # blocking wherever they read `chunk_results.status`.
     if chunk_plan.status == "partial":
+        return "partial"
+    if coverage.files_partial or coverage.files_not_reviewed:
+        return "partial"
+    if any(
+        limitation in {"coverage_expected_files_missing", "coverage_file_in_multiple_states"}
+        or limitation.startswith("coverage_file_not_in_chunk:")
+        for limitation in limitations
+    ):
         return "partial"
     return "complete"
 
@@ -253,30 +286,67 @@ def _response_limitations(response: ChunkResponse) -> list[str]:
     return limitations
 
 
-def _filter_coverage_notes(
-    coverage_notes: ChunkCoverageNotes,
-    chunk: SemanticChunk,
-) -> tuple[ChunkResultsCoverage, list[str]]:
-    chunk_files = set(chunk.files)
-    removed = False
+def _normalize_coverage_partition(
+    coverage_notes: ChunkCoverageNotes | ChunkResultsCoverage,
+    *,
+    expected_files: list[str],
+) -> tuple[ChunkResultsCoverage, list[str], bool]:
+    """Return one pessimistic coverage state for every expected file.
 
-    def keep_chunk_files(files: list[str]) -> list[str]:
-        nonlocal removed
-        filtered: list[str] = []
-        for file_path in files:
-            if file_path in chunk_files:
-                filtered.append(file_path)
-            else:
-                removed = True
-        return filtered
+    This is the sole partition authority. Callers may aggregate its output and
+    pass that aggregate back through the same authority, which keeps the union
+    disjoint when a path occurs in more than one chunk.
+    """
+    expected = _dedupe(expected_files)
+    expected_set = set(expected)
+    assignments: dict[str, set[str]] = {file_path: set() for file_path in expected}
+    foreign_path_reported = False
 
-    filtered = ChunkResultsCoverage(
-        files_reviewed=keep_chunk_files(coverage_notes.files_reviewed),
-        files_partial=keep_chunk_files(coverage_notes.files_partial),
-        files_not_reviewed=keep_chunk_files(coverage_notes.files_not_reviewed),
+    for state, reported_files in (
+        ("reviewed", coverage_notes.files_reviewed),
+        ("partial", coverage_notes.files_partial),
+        ("not_reviewed", coverage_notes.files_not_reviewed),
+    ):
+        for file_path in _dedupe(reported_files):
+            if file_path not in expected_set:
+                foreign_path_reported = True
+                continue
+            assignments[file_path].add(state)
+
+    normalized: dict[str, list[str]] = {
+        "reviewed": [],
+        "partial": [],
+        "not_reviewed": [],
+    }
+    expected_file_missing = False
+    file_in_multiple_states = False
+
+    for file_path in expected:
+        states = assignments[file_path]
+        if not states:
+            expected_file_missing = True
+            normalized["not_reviewed"].append(file_path)
+            continue
+        if len(states) > 1:
+            file_in_multiple_states = True
+        state = max(states, key=COVERAGE_STATE_PRIORITY.__getitem__)
+        normalized[state].append(file_path)
+
+    limitations: list[str] = []
+    if expected_file_missing:
+        limitations.append("coverage_expected_files_missing")
+    if file_in_multiple_states:
+        limitations.append("coverage_file_in_multiple_states")
+
+    return (
+        ChunkResultsCoverage(
+            files_reviewed=normalized["reviewed"],
+            files_partial=normalized["partial"],
+            files_not_reviewed=normalized["not_reviewed"],
+        ),
+        limitations,
+        foreign_path_reported,
     )
-    limitations = [f"coverage_file_not_in_chunk:{chunk.chunk_id}"] if removed else []
-    return filtered, limitations
 
 
 def _sanitize_results(results: ChunkResults) -> ChunkResults:

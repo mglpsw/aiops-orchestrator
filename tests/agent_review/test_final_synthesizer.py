@@ -224,12 +224,32 @@ def test_u2_recoverable_coverage_errors_stay_partial_and_manual(
     coverage: ChunkResultsCoverage,
 ) -> None:
     review = synthesize_final_review(
-        _chunk_results(status="partial", limitations=[reason], coverage=coverage)
+        _chunk_results(status="complete", limitations=[reason], coverage=coverage)
     )
 
     assert reason in review.limitations
+    assert review.inputs["chunk_results"]["status"] == "complete"
     assert review.status == "partial"
     assert review.verdict == "manual_review_required"
+
+
+def test_u2_synthesis_reuses_worst_state_for_direct_overlapping_results() -> None:
+    review = synthesize_final_review(
+        _chunk_results(
+            status="complete",
+            coverage=ChunkResultsCoverage(
+                files_reviewed=["src/a.py"],
+                files_partial=["src/a.py"],
+            ),
+        )
+    )
+
+    assert review.coverage.files_reviewed == []
+    assert review.coverage.files_partial == ["src/a.py"]
+    assert review.coverage.files_not_reviewed == []
+    assert review.status == "partial"
+    assert review.verdict == "manual_review_required"
+    assert review.limitations.count("coverage_file_in_multiple_states") == 1
 
 
 def test_degraded_chunk_results_keeps_explicit_limitation() -> None:

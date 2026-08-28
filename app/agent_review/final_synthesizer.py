@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.agent_review.chunk_result_parser import _normalize_coverage_partition
 from app.agent_review.redaction import RedactionState, redact_text, redact_value
 from app.agent_review.schemas import (
     CHUNK_RESULTS_SCHEMA,
@@ -39,9 +40,13 @@ LIMITATION_MD_LIMIT = 10
 CRITICAL_LIMITATIONS = {
     "chunk_results_status_failed",
     "coverage_missing",
+    "redaction_report_not_safe_for_llm",
+}
+
+RECOVERABLE_COVERAGE_LIMITATIONS = {
     "coverage_expected_files_missing",
     "coverage_file_in_multiple_states",
-    "redaction_report_not_safe_for_llm",
+    "coverage_reported_files_not_in_plan",
 }
 
 _UNIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.~-])/(?:[A-Za-z0-9._@+=:-]+/)+[A-Za-z0-9._@+=:-]+")
@@ -124,7 +129,7 @@ def synthesize_final_review(
     rejected_summary = _rejected_summary(chunk_results)
     coverage, coverage_limitations = _coverage(chunk_results, chunk_plan=chunk_plan)
     limitations = _limitations(chunk_results, coverage_limitations, redaction_report=redaction_report)
-    status = _review_status(chunk_results, limitations)
+    status = _review_status(chunk_results, limitations, coverage)
     counts = _counts(
         findings=findings,
         risks=risks,
@@ -340,14 +345,13 @@ def _coverage(
     *,
     chunk_plan: SemanticChunkPlan | None,
 ) -> tuple[FinalReviewCoverage, list[str]]:
-    files_reviewed = _dedupe(chunk_results.coverage.files_reviewed)
-    files_partial = _dedupe(chunk_results.coverage.files_partial)
-    files_not_reviewed = _dedupe(chunk_results.coverage.files_not_reviewed)
+    reported_files_reviewed = _dedupe(chunk_results.coverage.files_reviewed)
+    reported_files_partial = _dedupe(chunk_results.coverage.files_partial)
+    reported_files_not_reviewed = _dedupe(chunk_results.coverage.files_not_reviewed)
+    reported = _dedupe(
+        [*reported_files_reviewed, *reported_files_partial, *reported_files_not_reviewed]
+    )
     limitations: list[str] = []
-
-    overlaps = _coverage_overlaps(files_reviewed, files_partial, files_not_reviewed)
-    if overlaps:
-        limitations.append("coverage_file_in_multiple_states")
 
     expected_files: list[str] = []
     missing_expected_files: list[str] = []
@@ -359,22 +363,26 @@ def _coverage(
         if chunk_plan.status != "complete":
             limitations.append(f"chunk_plan_status_{chunk_plan.status}")
         expected_files = _expected_files(chunk_plan)
-        reported = _dedupe([*files_reviewed, *files_partial, *files_not_reviewed])
         missing_expected_files = [file_path for file_path in expected_files if file_path not in reported]
         extra_reported_files = [file_path for file_path in reported if file_path not in expected_files]
-        if missing_expected_files:
-            limitations.append("coverage_expected_files_missing")
         if extra_reported_files:
             limitations.append("coverage_reported_files_not_in_plan")
 
-    if not files_reviewed and not files_partial and not files_not_reviewed:
+    normalization_expected_files = expected_files if comparison_available else reported
+    normalized, normalization_limitations, _ = _normalize_coverage_partition(
+        chunk_results.coverage,
+        expected_files=normalization_expected_files,
+    )
+    limitations.extend(normalization_limitations)
+
+    if not reported_files_reviewed and not reported_files_partial and not reported_files_not_reviewed:
         limitations.append("coverage_missing")
 
     return (
         FinalReviewCoverage(
-            files_reviewed=files_reviewed,
-            files_partial=files_partial,
-            files_not_reviewed=files_not_reviewed,
+            files_reviewed=normalized.files_reviewed,
+            files_partial=normalized.files_partial,
+            files_not_reviewed=normalized.files_not_reviewed,
             expected_files=expected_files,
             missing_expected_files=missing_expected_files,
             extra_reported_files=extra_reported_files,
@@ -411,11 +419,17 @@ def _limitations(
     return _dedupe([*limitations, *coverage_limitations])
 
 
-def _review_status(chunk_results: ChunkResults, limitations: list[str]) -> str:
+def _review_status(
+    chunk_results: ChunkResults,
+    limitations: list[str],
+    coverage: FinalReviewCoverage,
+) -> str:
     if chunk_results.status in {"failed", "degraded"}:
         return "degraded"
     if _has_critical_limitation(limitations):
         return "degraded"
+    if _coverage_requires_manual_review(coverage, limitations):
+        return "partial"
     if chunk_results.status == "partial":
         return "partial"
     return "complete"
@@ -466,6 +480,7 @@ def _verdict(
         chunk_results.status in {"partial", "degraded"}
         or chunk_results.chunks_failed
         or _has_critical_limitation(limitations)
+        or _coverage_requires_manual_review(coverage, limitations)
     ):
         return "manual_review_required"
 
@@ -476,6 +491,19 @@ def _verdict(
     if any(finding.severity == "P3" for finding in findings) or limitations or rejected_summary.total:
         return "approve_with_minor_notes"
     return "approved"
+
+
+def _coverage_requires_manual_review(
+    coverage: FinalReviewCoverage,
+    limitations: list[str],
+) -> bool:
+    if coverage.files_partial or coverage.files_not_reviewed or coverage.missing_expected_files:
+        return True
+    return any(
+        limitation in RECOVERABLE_COVERAGE_LIMITATIONS
+        or limitation.startswith("coverage_file_not_in_chunk:")
+        for limitation in limitations
+    )
 
 
 def _has_minimum_material(
@@ -637,17 +665,6 @@ def _redact_local_paths_in_text(value: str) -> str:
 def _is_absolute_path(value: str) -> bool:
     stripped = value.strip()
     return stripped.startswith("/") or stripped.startswith("~/") or bool(re.match(r"^[A-Za-z]:\\", stripped))
-
-
-def _coverage_overlaps(*groups: list[str]) -> set[str]:
-    seen: set[str] = set()
-    overlaps: set[str] = set()
-    for group in groups:
-        for file_path in group:
-            if file_path in seen:
-                overlaps.add(file_path)
-            seen.add(file_path)
-    return overlaps
 
 
 def _has_critical_limitation(limitations: list[str]) -> bool:

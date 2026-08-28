@@ -11,6 +11,7 @@ from typing import Any, get_args
 from pydantic import ValidationError
 
 from app.agent_review import payload_cost_model
+from app.agent_review.chunk_result_parser import _normalize_coverage_partition
 from app.agent_review.redaction import RedactionState, redact_value
 from app.agent_review.schemas import (
     CHUNK_RESULTS_SCHEMA,
@@ -18,6 +19,7 @@ from app.agent_review.schemas import (
     REDACTION_REPORT_SCHEMA,
     SEMANTIC_CHUNK_PLAN_SCHEMA,
     ChunkResults,
+    ChunkResultsCoverage,
     FinalReview,
     FinalReviewVerdict,
     RedactionReport,
@@ -101,6 +103,12 @@ OPERATIONAL_EVIDENCE_TERMS = (
     "production",
     "runtime",
 )
+
+BLOCKING_COVERAGE_LIMITATIONS = {
+    "coverage_missing",
+    "coverage_expected_files_missing",
+    "coverage_file_in_multiple_states",
+}
 
 _UNIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![\w.~-])/(?:[A-Za-z0-9._@+=:-]+/)+[A-Za-z0-9._@+=:-]+")
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"\b[A-Za-z]:\\(?:[^\\\s]+\\)+[^\\\s]+")
@@ -231,10 +239,16 @@ def evaluate_review_quality_gate(
         critical_pr=critical_pr,
     )
     limitations.extend(coverage_gaps)
+    coverage_requires_manual_review = _coverage_requires_manual_review(
+        raw,
+        chunk_results,
+        chunk_plan=chunk_plan,
+    )
 
     input_degraded = (
         final_status in {"partial", "degraded", "failed"}
         or chunk_results.status in {"partial", "degraded", "failed"}
+        or coverage_requires_manual_review
     )
     has_critical_gap = bool(coverage_gaps)
     has_untrusted_blocker_candidate = any(warning.startswith("untrusted_blocker:") for warning in warnings)
@@ -466,7 +480,7 @@ def _critical_coverage_gaps(
     if chunk_plan is not None and chunk_plan.files_not_covered:
         gaps.append("critical_chunk_plan_files_not_covered")
 
-    covered = reviewed | partial
+    covered = reviewed
     must_review = _must_review_files(intake)
     # P2 follow-through (PR #227 round 3): must_review_files may be declared
     # in a non-canonical form ("./a.py") while reported coverage uses the
@@ -485,6 +499,58 @@ def _critical_coverage_gaps(
     if chunk_results.coverage.files_not_reviewed and not reviewed and not partial:
         gaps.append("critical_all_chunk_coverage_not_reviewed")
     return gaps
+
+
+def _coverage_requires_manual_review(
+    raw: dict[str, Any],
+    chunk_results: ChunkResults,
+    *,
+    chunk_plan: SemanticChunkPlan | None,
+) -> bool:
+    coverage = raw.get("coverage") if isinstance(raw.get("coverage"), dict) else {}
+    if (
+        chunk_results.coverage.files_partial
+        or chunk_results.coverage.files_not_reviewed
+        or _string_set(coverage.get("files_partial"))
+        or _string_set(coverage.get("files_not_reviewed"))
+        or _string_set(coverage.get("missing_expected_files"))
+        or _string_set(coverage.get("extra_reported_files"))
+    ):
+        return True
+
+    if chunk_plan is not None:
+        expected_files = [
+            file_path
+            for chunk in chunk_plan.chunks
+            for file_path in chunk.files
+        ]
+        final_coverage = ChunkResultsCoverage(
+            files_reviewed=sorted(_string_set(coverage.get("files_reviewed"))),
+            files_partial=sorted(_string_set(coverage.get("files_partial"))),
+            files_not_reviewed=sorted(_string_set(coverage.get("files_not_reviewed"))),
+        )
+        for reported_coverage in (chunk_results.coverage, final_coverage):
+            normalized, normalization_limitations, foreign_path_reported = _normalize_coverage_partition(
+                reported_coverage,
+                expected_files=expected_files,
+            )
+            if (
+                foreign_path_reported
+                or normalization_limitations
+                or normalized.files_partial
+                or normalized.files_not_reviewed
+            ):
+                return True
+
+    deterministic_limitations = [
+        *[value for value in raw.get("limitations", []) if isinstance(value, str)],
+        *chunk_results.limitations,
+    ]
+    return any(
+        limitation in BLOCKING_COVERAGE_LIMITATIONS
+        or limitation.startswith("coverage_file_not_in_chunk:")
+        for limitation in deterministic_limitations
+    )
 
 
 def _must_review_files(intake: ReviewIntake | None) -> set[str]:
