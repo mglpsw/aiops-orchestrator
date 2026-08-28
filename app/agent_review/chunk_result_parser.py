@@ -218,6 +218,8 @@ def _snapshot_semantic_chunk_plan(
     """Snapshot the v1 expected-file authority without iterable coercion."""
     if chunk_plan is None:
         return None, []
+    if not isinstance(chunk_plan, SemanticChunkPlan):
+        return None, ["chunk_plan_structure_invalid"]
 
     limitations: list[str] = []
     chunks, chunks_valid = _snapshot_semantic_chunks(
@@ -315,12 +317,18 @@ def _snapshot_semantic_chunks(
         if not isinstance(item, SemanticChunk):
             valid = False
             continue
-        files, files_valid = _snapshot_string_list(item.files)
-        artifacts, artifacts_valid = _snapshot_string_list(item.artifacts)
-        contracts, contracts_valid = _snapshot_string_list(item.contracts)
-        depends_on, depends_valid = _snapshot_string_list(item.depends_on)
+        files, files_valid = _snapshot_string_list(getattr(item, "files", None))
+        artifacts, artifacts_valid = _snapshot_string_list(
+            getattr(item, "artifacts", None)
+        )
+        contracts, contracts_valid = _snapshot_string_list(
+            getattr(item, "contracts", None)
+        )
+        depends_on, depends_valid = _snapshot_string_list(
+            getattr(item, "depends_on", None)
+        )
         item_limitations, item_limitations_valid = _snapshot_string_list(
-            item.limitations
+            getattr(item, "limitations", None)
         )
         valid = valid and all(
             (
@@ -333,16 +341,16 @@ def _snapshot_semantic_chunks(
         )
         snapshots.append(
             SemanticChunk.model_construct(
-                chunk_id=item.chunk_id,
-                semantic_group=item.semantic_group,
-                order_index=item.order_index,
+                chunk_id=getattr(item, "chunk_id", None),
+                semantic_group=getattr(item, "semantic_group", None),
+                order_index=getattr(item, "order_index", None),
                 files=files,
                 artifacts=artifacts,
                 contracts=contracts,
                 depends_on=depends_on,
-                coverage=item.coverage,
-                prompt_budget_chars=item.prompt_budget_chars,
-                estimated_chars=item.estimated_chars,
+                coverage=getattr(item, "coverage", None),
+                prompt_budget_chars=getattr(item, "prompt_budget_chars", None),
+                estimated_chars=getattr(item, "estimated_chars", None),
                 limitations=item_limitations,
             )
         )
@@ -411,10 +419,7 @@ def load_chunk_plan(path: Path | str) -> SemanticChunkPlan:
         plan = SemanticChunkPlan.model_validate(raw)
     except ValidationError as exc:
         raise ChunkResultParserError("chunk_plan_invalid", "semantic chunk plan structure is invalid") from exc
-    if plan.status == "failed":
-        raise ChunkResultParserError("chunk_plan_invalid", "semantic chunk plan status is failed")
-    _validate_chunk_plan_ids(plan)
-    return plan
+    return _validated_chunk_plan_for_consumption(plan)
 
 
 def parse_chunk_results(
@@ -422,12 +427,7 @@ def parse_chunk_results(
     *,
     responses_dir: Path | str,
 ) -> ChunkResults:
-    if chunk_plan.status == "failed":
-        raise ChunkResultParserError(
-            "chunk_plan_invalid",
-            "semantic chunk plan status is failed",
-        )
-    _validate_chunk_plan_ids(chunk_plan)
+    chunk_plan = _validated_chunk_plan_for_consumption(chunk_plan)
     response_root = Path(responses_dir).resolve()
     if not response_root.exists() or not response_root.is_dir():
         raise ChunkResultParserError("responses_dir_invalid", "responses-dir must be an existing directory")
@@ -525,6 +525,48 @@ def parse_chunk_results(
         ),
     )
     return _sanitize_results(results)
+
+
+def _validated_chunk_plan_for_consumption(
+    chunk_plan: SemanticChunkPlan,
+) -> SemanticChunkPlan:
+    """Return one canonical value snapshot for every parser entry point."""
+    snapshot, snapshot_limitations = _snapshot_semantic_chunk_plan(chunk_plan)
+    if snapshot is None:
+        raise ChunkResultParserError(
+            "chunk_plan_invalid",
+            "semantic chunk plan structure is invalid",
+        )
+    if (
+        snapshot.schema_id != SEMANTIC_CHUNK_PLAN_SCHEMA
+        or type(snapshot.schema_version) is not int
+        or snapshot.schema_version != 1
+    ):
+        raise ChunkResultParserError(
+            "chunk_plan_invalid",
+            "semantic chunk plan schema is invalid",
+        )
+    if snapshot_limitations or snapshot.status not in _CHUNK_PLAN_REF_STATUSES:
+        raise ChunkResultParserError(
+            "chunk_plan_invalid",
+            "semantic chunk plan structure is invalid",
+        )
+    try:
+        canonical = SemanticChunkPlan.model_validate(
+            snapshot.model_dump(mode="python", warnings=False)
+        )
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise ChunkResultParserError(
+            "chunk_plan_invalid",
+            "semantic chunk plan structure is invalid",
+        ) from exc
+    if canonical.status == "failed":
+        raise ChunkResultParserError(
+            "chunk_plan_invalid",
+            "semantic chunk plan status is failed",
+        )
+    _validate_chunk_plan_ids(canonical)
+    return canonical
 
 
 def _load_chunk_response(response_path: Path, chunk: SemanticChunk) -> ChunkResponse | ChunkParseFailure:
