@@ -73,6 +73,40 @@ _TOOLREPO_BOUNDED_PATHS = ("app", "scripts/aiops-review-run-v2.py")
 CLI_BOOTSTRAP_INPUT_INVALID_REASON_V2 = "cli_bootstrap_input_invalid"
 CLI_INNER_LAUNCH_FAILED_REASON_V2 = "cli_inner_launch_failed"
 CLI_INNER_INPUT_INVALID_REASON_V2 = "cli_inner_input_invalid"
+CLI_INNER_MATERIALIZATION_UNVERIFIED_REASON_V2 = "cli_inner_materialization_unverified"
+
+# The same fixed prefix materialize_toolrepo_execution_subject_v2 uses for
+# its own tempfile.mkdtemp() -- kept in sync deliberately, not re-derived
+# dynamically, so a change to one is a visible diff against the other.
+_TOOLREPO_SUBJECT_DIR_MARKER_V2 = "agent-review-toolrepo-subject-v2-"
+
+
+def _verify_running_from_a_real_materialized_subject_v2(args: argparse.Namespace) -> bool:
+    """`#200-E` Phase 3 correction, found by independent review:
+    `--_controlled-inner` was reachable directly, with zero verification,
+    letting a caller run the full semantic review in a single unsealed
+    process with a self-declared, unverified `--_inner-declared-toolrepo-sha`
+    -- reproduced directly. `--_inner-subject-root` was parsed but never
+    read anywhere; this makes it load-bearing.
+
+    Not a cryptographic guarantee against a fully privileged local
+    attacker who can also create arbitrary directories -- it closes the
+    ACCIDENTAL/misconfigured-caller and confused-deputy case: the running
+    script's own resolved path must actually sit inside a directory
+    matching the fixed prefix `materialize_toolrepo_execution_subject_v2`
+    uses, and must match the `--_inner-subject-root` the (claimed) outer
+    process declared.
+    """
+
+    if _TOOLREPO_SUBJECT_DIR_MARKER_V2 not in str(_TOOLREPO_ROOT):
+        return False
+    if not args.inner_subject_root:
+        return False
+    try:
+        declared_root = Path(args.inner_subject_root).resolve()
+    except OSError:
+        return False
+    return declared_root == _TOOLREPO_ROOT
 
 
 def _build_argument_parser() -> argparse.ArgumentParser:
@@ -158,6 +192,13 @@ def _run_outer_bootstrap(argv: list[str]) -> int:
 
 
 def _run_inner_semantic_child(args: argparse.Namespace) -> int:
+    if not _verify_running_from_a_real_materialized_subject_v2(args):
+        print(
+            json.dumps({"error_class": CLI_INNER_MATERIALIZATION_UNVERIFIED_REASON_V2}),
+            file=sys.stderr,
+        )
+        return 1
+
     # Deliberately imported HERE, not at module top level: importing these
     # inside outer-bootstrap mode would make the OUTER process capable of
     # running review semantics merely by having them loaded, even if never
@@ -170,7 +211,11 @@ def _run_inner_semantic_child(args: argparse.Namespace) -> int:
     from app.agent_review.diff_acquisition_v2 import DiffAcquisitionError
     from app.agent_review.payload_builder_v2 import PayloadBuilderError
     from app.agent_review.profile_loader_v2 import TargetProfileLoadErrorV2
+    from app.agent_review.payload_set_v2 import PayloadSetBindingError
+    from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanceErrorV2
+    from app.agent_review.required_check_readiness_v2 import RequiredCheckReadinessErrorV2
     from app.agent_review.review_content_extraction_v2 import ExtractionBlockedError
+    from app.agent_review.review_readiness_emission_v2 import ReadinessEmissionError
     from app.agent_review.review_transport_v2 import offline_file_transport_v2
     from app.agent_review.run_assembly_v2 import RunAssemblyError
     from app.agent_review.semantic_grouping_policy_v2 import SemanticGroupingError, SemanticGroupingPolicyV2
@@ -228,7 +273,11 @@ def _run_inner_semantic_child(args: argparse.Namespace) -> int:
         DiffAcquisitionError,
         RunAssemblyError,
         PayloadBuilderError,
+        PayloadSetBindingError,
         ExtractionBlockedError,
+        RequiredCheckReadinessErrorV2,
+        RequiredCheckProvenanceErrorV2,
+        ReadinessEmissionError,
         OperationalRunError,
     ) as exc:
         print(json.dumps({"error_class": exc.reason_code}), file=sys.stderr)

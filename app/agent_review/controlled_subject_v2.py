@@ -218,6 +218,45 @@ _REFERENCE_GITLINK_MODE_V2 = "160000"
 _REFERENCE_TREE_MODE_V2 = "040000"
 
 
+CONTROLLED_SUBJECT_SYMLINK_OR_GITLINK_PRESENT_REASON_V2 = (
+    "controlled_subject_symlink_or_gitlink_present"
+)
+
+_TARGET_SYMLINK_MODE_V2 = "120000"
+_TARGET_GITLINK_MODE_V2 = "160000"
+
+
+def _audit_checkout_tree_for_symlinks_and_gitlinks_v2(subject: ControlledTargetSubjectV2) -> None:
+    """`#200-E` Phase 3 correction, found by independent review: a
+    committed symlink blob (tree mode `120000`) at the declared subject
+    checks out as a REAL filesystem symlink -- reproduced directly, an
+    absolute-path symlink to a host file outside the subject was readable
+    through the checked-out subject after `checkout_head_into_subject_v2`.
+    `toolrepo_execution_subject_v2.py` already closes the identical class
+    for the TOOLREPO side (`git archive` + an `ls-tree` mode audit before
+    extracting); this was the same class left open on the TARGET side --
+    an inconsistency, not a considered design choice, in exactly the
+    pattern that repeatedly falsified `#274`. Audits the FULL tree here
+    (not merely the paths a caller happens to read later), since nothing
+    about `acquire_diff_v2`/`extract_review_content_v2` bounds which paths
+    of the checked-out subject a future change might read directly from
+    the filesystem rather than via git object plumbing.
+    """
+
+    ls_tree = run_semantic_git_in_subject_v2(
+        subject, ["git", "ls-tree", "-r", "-z", subject.head_sha]
+    )
+    if ls_tree.returncode != 0:
+        raise ControlledSubjectError(CONTROLLED_SUBJECT_CHECKOUT_FAILED_REASON_V2)
+    for record in ls_tree.stdout.split(b"\x00"):
+        if not record:
+            continue
+        meta, _, _path = record.partition(b"\t")
+        mode = meta.split(b" ", 1)[0].decode("ascii", errors="replace")
+        if mode in (_TARGET_SYMLINK_MODE_V2, _TARGET_GITLINK_MODE_V2):
+            raise ControlledSubjectError(CONTROLLED_SUBJECT_SYMLINK_OR_GITLINK_PRESENT_REASON_V2)
+
+
 def checkout_head_into_subject_v2(subject: ControlledTargetSubjectV2) -> None:
     """Check ``subject.head_sha`` out into the subject's own working tree.
 
@@ -234,8 +273,14 @@ def checkout_head_into_subject_v2(subject: ControlledTargetSubjectV2) -> None:
     reviewer-owned scratch repo triggers no hook/filter/fsmonitor/includeIf
     execution (the scratch's own config/hooks/index are freshly initialized
     and never populated from the source).
+
+    The tree is audited for symlink/gitlink entries BEFORE the checkout
+    itself -- refused, not resolved or silently skipped, the same
+    fail-closed shape `toolrepo_execution_subject_v2.py` already uses for
+    the identical class.
     """
 
+    _audit_checkout_tree_for_symlinks_and_gitlinks_v2(subject)
     result = run_semantic_git_in_subject_v2(
         subject, ["git", "checkout", "--quiet", subject.head_sha, "--", "."]
     )
