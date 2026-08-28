@@ -1668,7 +1668,12 @@ correction_loop_qualification:
     failures as above, marker-filtered set (`not integration and not requires_runtime and not
     requires_docker and not requires_prometheus and not requires_network`, matching
     scripts/test.sh's own default) excludes the 2 sudo-environment failures"
-  ci_on_final_head: pending, requires push
+  ci_on_final_head: "green -- both `Validate repository` (includes `bash scripts/test.sh`, the
+    exact command that surfaced the 46 preexisting failures locally) and `AgentReview release
+    gates` passed on `10e5992` (run 33195720103). CI checks out a plain clone, never a Git
+    worktree, so the target_repo_write_blocked guard never triggers there -- this is independent
+    confirmation the 46-failure classification above is correct: a sandbox-local checkout-topology
+    condition, not a product defect CI would ever see."
 ```
 
 ### Pre-existing failure classification, 48 items, confirmed at baseline
