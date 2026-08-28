@@ -629,3 +629,110 @@ Never: "fixed because we added another target-specific exception."
 Production implementation does not begin until this ledger exists (it now
 does) and the architecture spike below has produced at least one falsified-
 or-confirmed result for the `TARGET_SUBJECT_MATERIALIZATION_INVARIANT`.
+
+## Architecture spike — empirical, not assumed
+
+Run interactively before any production module existed, against real
+fixture repositories under `mktemp -d`, never against this toolrepo's own
+checkout. Every claim below was executed, not reasoned about.
+
+### The tempting shortcut is falsified, per §5's own instruction
+
+`git clone --shared --no-checkout <source> <scratch>` was tried first and
+rejected with evidence, not merely distrusted on principle:
+
+```text
+$ git clone -q --shared --no-checkout <source> <scratch>
+$ cat <scratch>/.git/objects/info/alternates
+<source>/.git/objects          # still points at the source object store
+
+$ mv <source> <source>.SEVERED
+$ git -C <scratch> cat-file -p <head_sha>:f.txt
+error: unable to normalize alternate object path: <source>/.git/objects
+fatal: path 'f.txt' does not exist in '<head_sha>'
+```
+
+`--shared` is a real, load-bearing dependency on the source's object store,
+not a shortcut that happens to look self-contained. This is exactly
+`STOP_SUBJECT_NOT_SELF_CONTAINED` reproduced directly, confirming §5's
+warning rather than merely restating it.
+
+### The proven mechanism: bounded closure import, not shared/aliased storage
+
+```text
+reviewer-owned `git init` (fresh, empty, allowlist child environment)
+  -> bounded object enumeration against the source:
+       `git rev-list --objects <base_sha> <head_sha>`
+       (plumbing read; computes the closure, checks out nothing)
+  -> `git pack-objects --stdout` against the source, fed exactly that closure
+  -> `git index-pack --stdin` into the scratch object database
+  -> refs created in scratch for base/head (objects already local)
+  -> scratch has no alternates file, no remote, no shared storage
+```
+
+Every step above ran under an explicit allowlist child environment
+(`env -i HOME=<scratch-local> PATH=/usr/bin:/bin GIT_CONFIG_NOSYSTEM=1
+GIT_CONFIG_GLOBAL=/dev/null LC_ALL=C GIT_NO_REPLACE_OBJECTS=1
+GIT_NO_LAZY_FETCH=1`) — never the caller's inherited `os.environ`. This is
+the §7 allowlist-not-blacklist requirement, and it is what makes the
+ambient-injection result below hold without a variable-by-variable
+enumeration.
+
+### Decisive results, hostile fixture
+
+Source fixture had ALL of the following planted simultaneously: a
+`post-checkout` hook, a `filter.evil.smudge` command (assigned via a
+committed `.gitattributes`, so the assignment itself is legitimate subject
+metadata), an `includeIf.gitdir:**/.git/worktrees/**.path` pointing at a
+second hostile filter definition, a blob-level `git replace` substitution
+on the declared head's tracked file, and (in a second run) a genuinely
+missing loose object plus a repository-local `remote.origin.url=ext::` promisor
+helper.
+
+```yaml
+spike_results:
+  materialization_hostile_markers_fired: false   # HOOK_RAN, SMUDGE_RAN, INCLUDEIF_RAN all absent throughout
+  self_contained_after_source_severed: true       # diff/cat-file/checkout identical after `mv <source> <source>.SEVERED`
+  replacement_object_ignored: true                # scratch read the ORIGINAL blob, not the git-replace substitute
+  ambient_GIT_DIR_env_ignored: true                # set in the calling shell; zero effect via env -i allowlist
+  ambient_GIT_CONFIG_PARAMETERS_ignored: true      # same
+  ambient_GIT_OBJECT_DIRECTORY_ignored: true       # same
+  missing_object_fails_closed: true                # rev-list --objects rc=128, "fatal: missing blob object ...", GIT_NO_LAZY_FETCH=1 honored
+  ext_helper_executed_on_missing_object: false     # zero execution -- the closure step refuses before any pack/import happens, never reaches a later semantic op that could lazy-fetch
+  alternates_in_source_detected_pre_closure: true  # trivial check (objects/info/alternates non-empty) maps directly to a TARGET_OBJECT_ALTERNATES_PRESENT refusal per §6
+  committed_gitattributes_semantic_effect_preserved: true  # `filter=evil` assignment visible in checkout/diff; the UNDEFINED driver is a silent no-op (Git's own documented behavior for a referenced-but-undefined filter), not corruption and not an error
+```
+
+This falsifies, by direct reproduction against the new mechanism, the
+ledger items CE-01 (blob replace), CE-02 (ambient `GIT_DIR`/
+`GIT_OBJECT_DIRECTORY`), CE-03 (`GIT_CONFIG_PARAMETERS`), CE-04 (worktree
+`.gitattributes` — moot here since checkout happens from a clean scratch
+tree in the first place), CE-08 (hooks/`core.hooksPath`), CE-10 (smudge),
+CE-13 (`includeIf.gitdir`), CE-16 (lazy fetch/`ext::`), CE-25 (commit/blob
+replacement on the toolrepo side, same mechanism as CE-01). The §6
+alternates-refusal requirement is confirmed trivially checkable at the
+discovery boundary, before any object work begins.
+
+### What the spike does NOT yet establish
+
+- The other layouts §6 requires an explicit decision on (linked worktree
+  `.git` file, commondir, bare repository, shallow repository) were not yet
+  exercised — only an ordinary `.git` directory. Each needs its own
+  discovery-boundary test before the production module can claim to cover
+  them; until then they should fail closed, per §6's own instruction, not
+  be assumed to work.
+- Object-closure computation used `git rev-list --objects <base> <head>`
+  (both full histories), not `<base>...<head>` boundary syntax — this is
+  deliberately conservative (imports more than the diff strictly needs) and
+  should be revisited for large repositories once correctness is settled;
+  performance was not evaluated at all.
+- Renames, submodule gitlinks, and larger real-world object graphs were not
+  exercised — the fixture is a single two-commit, single-file repository.
+- This spike proves the TARGET-side mechanism. The TOOLREPO-side mechanism
+  (§10/§11 — blob-vs-filesystem-bytes identity, and the choice between
+  reading in place vs. materializing the toolrepo itself into an exact
+  controlled subject) is a related but distinct proposition and has not yet
+  been spiked.
+- No production module exists yet. This section is evidence for the design
+  decision the next section commits to, not a substitute for the module,
+  its typed refusals, or its formal test suite.
