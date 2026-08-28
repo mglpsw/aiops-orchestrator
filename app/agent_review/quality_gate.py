@@ -249,6 +249,12 @@ def evaluate_review_quality_gate(
         ),
     )
     limitations.extend(integrity_limitations)
+    review_input_limitations = _final_review_input_limitations(
+        raw,
+        chunk_results,
+        chunk_plan=chunk_plan,
+    )
+    limitations.extend(review_input_limitations)
     if final_review_mutated:
         limitations.append("final_review_mutated_after_validation")
     execution_limitations = _chunk_execution_limitations(
@@ -269,6 +275,7 @@ def evaluate_review_quality_gate(
         input_binding_trusted=(
             not final_review_mutated
             and _result_identity_trustworthy(integrity_limitations)
+            and not review_input_limitations
         ),
     )
     warnings.extend(unreliable_warnings)
@@ -302,6 +309,7 @@ def evaluate_review_quality_gate(
         or coverage_requires_manual_review
         or bool(execution_limitations)
         or bool(integrity_limitations)
+        or bool(review_input_limitations)
         or final_review_mutated
     )
     has_critical_gap = bool(coverage_gaps)
@@ -421,6 +429,92 @@ def _initial_limitations(raw: dict[str, Any], chunk_results: ChunkResults) -> li
     if chunk_results.chunks_failed:
         limitations.append("chunks_failed_present")
     return limitations
+
+
+def _final_review_input_limitations(
+    raw: dict[str, Any],
+    chunk_results: ChunkResults,
+    *,
+    chunk_plan: SemanticChunkPlan | None,
+) -> list[str]:
+    """Reject contradictions in final-review input references that are present.
+
+    Missing refs remain compatible with legacy v1 documents. When a ref or
+    field is present, however, it cannot describe a different result or plan
+    than the objects the gate is currently evaluating.
+    """
+    if "inputs" not in raw:
+        return []
+
+    inputs = raw.get("inputs")
+    if not isinstance(inputs, dict):
+        return ["final_review_input_mismatch"]
+
+    mismatch = False
+    if "chunk_results" in inputs:
+        mismatch = _observable_input_ref_mismatch(
+            inputs["chunk_results"],
+            {
+                "schema_id": chunk_results.schema_id,
+                "schema_version": chunk_results.schema_version,
+                "source": chunk_results.source,
+                "status": chunk_results.status,
+                "created_at": chunk_results.created_at,
+                "target_repo": chunk_results.target_repo,
+            },
+        )
+
+    if "chunk_plan" in inputs:
+        expected_plan_ref = (
+            {
+                "schema_id": chunk_plan.schema_id,
+                "schema_version": chunk_plan.schema_version,
+                "source": chunk_plan.source,
+                "status": chunk_plan.status,
+                "created_at": chunk_plan.created_at,
+                "target_repo": chunk_plan.target_repo,
+                "chunk_count": len(chunk_plan.chunks),
+            }
+            if chunk_plan is not None
+            else None
+        )
+        mismatch = mismatch or _observable_input_ref_mismatch(
+            inputs["chunk_plan"],
+            expected_plan_ref,
+        )
+
+    return ["final_review_input_mismatch"] if mismatch else []
+
+
+def _observable_input_ref_mismatch(
+    reported: object,
+    expected: dict[str, object] | None,
+) -> bool:
+    if not isinstance(reported, dict):
+        return True
+
+    expected_provided = expected is not None
+    if "provided" in reported and reported["provided"] is not expected_provided:
+        return True
+
+    reference_fields = {
+        "schema_id",
+        "schema_version",
+        "source",
+        "status",
+        "created_at",
+        "target_repo",
+        "chunk_count",
+    }
+    if expected is None:
+        return any(
+            field in reported and reported[field] is not None
+            for field in reference_fields
+        )
+    return any(
+        field in reported and reported[field] != expected.get(field)
+        for field in reference_fields
+    )
 
 
 def _initial_warnings(chunk_results: ChunkResults) -> list[str]:
