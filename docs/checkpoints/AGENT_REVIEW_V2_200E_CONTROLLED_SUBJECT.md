@@ -1808,9 +1808,13 @@ correction_loop_round2_qualification:
     test_toolrepo_execution_subject_v2.py, test_operational_run_authority_v2.py,
     test_operational_run_router_v2.py, test_operational_run_toolrepo_tampering_v2.py,
     test_operational_run_blackbox_e2e_v2.py, test_v2_dual_target_e2e.py"
-  full_repository_suite: pending, run after this fix is committed
-  ci_on_final_head: pending, requires push
-  terminal_handoff_status: "NOT YET -- lanes B and C must complete against the post-P0-fix
-    final head before a terminal AGENTREVIEW_V2_200E_OPERATIONAL_PRODUCT_HANDOFF can be issued.
-    This is a genuine, acknowledged gap in this round, not a silent omission."
+  full_agent_review_suite_after_fix: "2644 passed (+1 vs pre-fix, the new regression test),
+    48 failed (same preexisting set, confirmed by name-matching -- none touch a file this
+    fix modified), 13 skipped, 1 warning"
+  ci_on_final_head: "green -- both Validate repository and AgentReview release gates passed on
+    `cd15df6` (run 33200248542)"
+  terminal_handoff_status: "NOT YET -- lanes B and C must complete against this final head
+    before a terminal AGENTREVIEW_V2_200E_OPERATIONAL_PRODUCT_HANDOFF can be issued. This is a
+    genuine, acknowledged gap in this round caused by an external account spend-limit
+    constraint, not a silent omission or a fabricated pass."
 ```
