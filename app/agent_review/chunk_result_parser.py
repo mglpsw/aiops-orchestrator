@@ -6,13 +6,14 @@ import json
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from pydantic import ValidationError
 
 from app.agent_review.chunk_artifact_ids import (
     ChunkArtifactIdError,
     chunk_artifact_filename,
+    validate_chunk_id,
     validate_chunk_ids,
 )
 from app.agent_review.finding_normalizer import DedupeState, normalize_chunk_response
@@ -464,26 +465,21 @@ def _chunk_execution_limitations(
     is freely mutable input at the downstream boundaries and must not acquire
     a deterministic namespace merely by being echoed into one.
     """
-    parsed_ids = [value for value in chunks_parsed if isinstance(value, str)]
-    failed_ids = [
-        failure.chunk_id
-        for failure in chunks_failed
-        if isinstance(getattr(failure, "chunk_id", None), str)
-    ]
-    invalid_reported_id = (
-        len(parsed_ids) != len(chunks_parsed)
-        or len(failed_ids) != len(chunks_failed)
+    parsed_ids, invalid_parsed_id = _validated_chunk_ids(chunks_parsed)
+    failed_ids, invalid_failed_id = _validated_chunk_ids(
+        getattr(failure, "chunk_id", None) for failure in chunks_failed
     )
+    invalid_reported_id = invalid_parsed_id or invalid_failed_id
     parsed_counts = Counter(parsed_ids)
     failed_counts = Counter(failed_ids)
     parsed_set = set(parsed_ids)
     failed_set = set(failed_ids)
     limitations: list[str] = []
 
-    expected_ids = (
-        [chunk.chunk_id for chunk in chunk_plan.chunks]
+    expected_ids, invalid_expected_id = _validated_chunk_ids(
+        (chunk.chunk_id for chunk in chunk_plan.chunks)
         if chunk_plan is not None
-        else []
+        else ()
     )
     expected_counts = Counter(expected_ids)
     expected_set = set(expected_ids)
@@ -505,7 +501,11 @@ def _chunk_execution_limitations(
         accounted_ids = parsed_set | failed_set
         if expected_set - accounted_ids:
             limitations.append("chunk_execution_expected_missing")
-        if invalid_reported_id or (parsed_set | failed_set) - expected_set:
+        if (
+            invalid_reported_id
+            or invalid_expected_id
+            or (parsed_set | failed_set) - expected_set
+        ):
             limitations.append("chunk_execution_foreign_id")
     elif invalid_reported_id:
         limitations.append("chunk_execution_foreign_id")
@@ -521,25 +521,28 @@ def _normalize_plan_run_coverage_partition(
 ) -> _NormalizedCoveragePartition:
     """Bind plan coverage to one coherent parsed/failed execution ledger."""
     plan_coverage = _normalize_plan_coverage_partition(chunk_plan)
-    parsed_ids = {value for value in chunks_parsed if isinstance(value, str)}
-    failed_ids = {
-        failure.chunk_id
-        for failure in chunks_failed
-        if isinstance(getattr(failure, "chunk_id", None), str)
-    }
-    assigned_chunk_ids: dict[str, list[str]] = {
+    parsed_ids = set(_validated_chunk_ids(chunks_parsed)[0])
+    failed_ids = set(
+        _validated_chunk_ids(
+            getattr(failure, "chunk_id", None) for failure in chunks_failed
+        )[0]
+    )
+    assigned_chunk_ids: dict[str, list[str | None]] = {
         file_path: [] for file_path in plan_coverage.expected_files
     }
     for chunk in chunk_plan.chunks:
+        validated_chunk_id = _validated_chunk_id_or_none(chunk.chunk_id)
         for file_path in _dedupe(chunk.files):
             if file_path in assigned_chunk_ids:
-                assigned_chunk_ids[file_path].append(chunk.chunk_id)
+                assigned_chunk_ids[file_path].append(validated_chunk_id)
 
     assignments: list[tuple[str, str]] = []
     for file_path, state in plan_coverage.assignments:
         required_ids = assigned_chunk_ids[file_path]
         execution_backed = all(
-            chunk_id in parsed_ids and chunk_id not in failed_ids
+            chunk_id is not None
+            and chunk_id in parsed_ids
+            and chunk_id not in failed_ids
             for chunk_id in required_ids
         )
         assignments.append(
@@ -561,6 +564,25 @@ def _normalize_plan_run_coverage_partition(
         ),
         foreign_files=plan_coverage.foreign_files,
     )
+
+
+def _validated_chunk_id_or_none(value: object) -> str | None:
+    try:
+        return validate_chunk_id(value)
+    except ChunkArtifactIdError:
+        return None
+
+
+def _validated_chunk_ids(values: Iterable[object]) -> tuple[list[str], bool]:
+    validated: list[str] = []
+    invalid = False
+    for value in values:
+        chunk_id = _validated_chunk_id_or_none(value)
+        if chunk_id is None:
+            invalid = True
+        else:
+            validated.append(chunk_id)
+    return validated, invalid
 
 
 def _normalize_coverage_against_partition(
