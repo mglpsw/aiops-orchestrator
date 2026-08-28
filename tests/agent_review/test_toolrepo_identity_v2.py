@@ -26,10 +26,19 @@ from app.agent_review.toolrepo_identity_v2 import (
 
 
 def _init_fixture_toolrepo(root: Path) -> str:
+    # Mirrors the real toolrepo's shape: app/ contains MULTIPLE packages
+    # (agent_review, common, ...), not just agent_review -- the bounded
+    # source set covers the whole app/ tree precisely because the composed
+    # review path imports across that boundary (e.g. app.common.strict_json
+    # from review_transport_v2.py and several sibling modules).
     (root / "app" / "agent_review").mkdir(parents=True)
+    (root / "app" / "common").mkdir(parents=True)
     (root / "scripts").mkdir()
+    (root / "app" / "__init__.py").write_text("", encoding="utf-8")
     (root / "app" / "agent_review" / "__init__.py").write_text("", encoding="utf-8")
     (root / "app" / "agent_review" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "app" / "common" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "app" / "common" / "strict_json.py").write_text("y = 2\n", encoding="utf-8")
     (root / "scripts" / "aiops-review-run-v2.py").write_text("# cli\n", encoding="utf-8")
     subprocess.run(["git", "init", "--quiet", "-b", "main", "."], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True)
@@ -123,6 +132,52 @@ def test_staged_but_uncommitted_bounded_change_is_refused(fixture_toolrepo):
 def test_untracked_importable_source_is_unverifiable(fixture_toolrepo):
     root, head_sha = fixture_toolrepo
     stray = root / "app" / "agent_review" / "_stray_v2.py"
+    stray.write_text("# stray\n", encoding="utf-8")
+    try:
+        with pytest.raises(ToolrepoIdentityError) as excinfo:
+            establish_toolrepo_source_identity_v2(declared_toolrepo_sha=head_sha)
+        assert excinfo.value.reason_code == TOOLREPO_IDENTITY_UNVERIFIABLE_REASON_V2
+    finally:
+        stray.unlink()
+
+
+def test_dirty_tracked_file_outside_agent_review_but_inside_app_is_refused(fixture_toolrepo):
+    """The bounded set covers the WHOLE `app/` package, not just
+    `app/agent_review` -- the composed review path imports across that
+    boundary (`app.common.strict_json`, reached from `review_transport_v2.py`
+    and several sibling modules). A dirty file under `app/common/` must
+    refuse a run exactly like one under `app/agent_review/`."""
+
+    root, head_sha = fixture_toolrepo
+    target = root / "app" / "common" / "strict_json.py"
+    original = target.read_text(encoding="utf-8")
+    target.write_text(original + "# dirty\n", encoding="utf-8")
+    try:
+        with pytest.raises(ToolrepoIdentityError) as excinfo:
+            establish_toolrepo_source_identity_v2(declared_toolrepo_sha=head_sha)
+        assert excinfo.value.reason_code == TOOLREPO_WORKTREE_DIRTY_REASON_V2
+    finally:
+        target.write_text(original, encoding="utf-8")
+
+
+def test_staged_dirty_file_outside_agent_review_but_inside_app_is_refused(fixture_toolrepo):
+    root, head_sha = fixture_toolrepo
+    target = root / "app" / "common" / "strict_json.py"
+    original = target.read_text(encoding="utf-8")
+    target.write_text(original + "# staged\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app/common/strict_json.py"], cwd=root, check=True)
+    try:
+        with pytest.raises(ToolrepoIdentityError) as excinfo:
+            establish_toolrepo_source_identity_v2(declared_toolrepo_sha=head_sha)
+        assert excinfo.value.reason_code == TOOLREPO_WORKTREE_DIRTY_REASON_V2
+    finally:
+        subprocess.run(["git", "reset", "--quiet", "HEAD", "--", "app/common/strict_json.py"], cwd=root, check=True)
+        target.write_text(original, encoding="utf-8")
+
+
+def test_untracked_file_outside_agent_review_but_inside_app_is_unverifiable(fixture_toolrepo):
+    root, head_sha = fixture_toolrepo
+    stray = root / "app" / "common" / "_stray_v2.py"
     stray.write_text("# stray\n", encoding="utf-8")
     try:
         with pytest.raises(ToolrepoIdentityError) as excinfo:

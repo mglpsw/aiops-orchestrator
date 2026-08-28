@@ -35,13 +35,34 @@ review, no Router call.
 
 ## Bounded executable source set -- defined structurally, not by heuristic
 
-    app/                              (the package tree actually imported)
+    app/                              (the WHOLE package tree, not just
+                                       app/agent_review -- the composed
+                                       review path imports across package
+                                       boundaries, e.g. review_transport_v2,
+                                       required_check_provenance_v2 and
+                                       authoritative_ci_snapshot_v2 all import
+                                       from app.common.strict_json, which
+                                       sits outside app/agent_review)
     scripts/aiops-review-run-v2.py    (this CLI only, not all of scripts/)
 
-A dirty, unrelated file elsewhere in the toolrepo (a doc, an eval fixture)
-must not refuse a run; only source that could actually change what code
-executes is in scope. Git plumbing is used with explicit path arguments and
-NUL-delimited output -- never fragile text parsing of a status line.
+An earlier revision bounded this to `app/agent_review` only, on the
+unverified assumption that the composed path imports nothing else. It does:
+grep confirms multiple modules the composer's own call graph reaches
+(`review_transport_v2.py`, `required_check_provenance_v2.py`,
+`authoritative_ci_snapshot_v2.py`, `authoritative_check_policy_v2.py`,
+`authoritative_producer_evidence_v2.py`, `required_check_assembly_v2.py`,
+`_router_receipt_v2.py`, `target_pack_receipt_v2.py`) import
+`app.common.strict_json`. A dirty `app/common/strict_json.py` would have
+executed as part of the review while this authority still reported a clean
+source checkout -- found on independent review of this same PR, before
+Ready. Widening to the whole `app/` package closes it without building a
+dynamic import-graph inference, at the cost of a dirty file anywhere in
+`app/` (even one this composed path does not import) blocking a run --
+accepted as the simpler, correct-by-construction alternative for this
+slice. `scripts/` stays narrowed to the one CLI this slice adds; a dirty,
+unrelated *toolrepo* file (a doc, an eval fixture, another script) still
+must not refuse a run. Git plumbing is used with explicit path arguments
+and NUL-delimited output -- never fragile text parsing of a status line.
 
 ## Second-order honesty (recorded, not hidden)
 
@@ -82,10 +103,12 @@ TOOLREPO_IDENTITY_UNVERIFIABLE_REASON_V2 = "toolrepo_identity_unverifiable"
 
 _TOOLREPO_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
-# Relative to TOOLREPO_ROOT. Structural, not a heuristic scan: exactly the
-# package tree the engine imports, plus the one CLI script this slice adds.
+# Relative to TOOLREPO_ROOT. Structural, not a heuristic scan: the WHOLE
+# app/ package tree (the composed review path imports across package
+# boundaries -- see the module docstring's "Bounded executable source set"
+# section), plus the one CLI script this slice adds.
 BOUNDED_SOURCE_RELATIVE_PATHS_V2: tuple[str, ...] = (
-    "app/agent_review",
+    "app",
     "scripts/aiops-review-run-v2.py",
 )
 

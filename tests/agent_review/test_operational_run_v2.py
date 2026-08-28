@@ -620,31 +620,52 @@ def test_operational_run_v2_never_inspects_dynamic_reason_code():
 
 
 def test_secret_in_the_real_target_diff_never_reaches_the_outbound_request(tmp_path, monkeypatch):
-    """A token-shaped literal in the REAL target diff must be redacted
-    before it reaches the ACTUAL outbound Router-format request bytes --
-    non-vacuously: the sanitized line must still be present (not deleted
-    entirely), proving redaction, not blanket omission."""
+    """`#200-D` grant §13 in full: a token-shaped literal in the REAL target
+    diff must be redacted before it reaches the ACTUAL outbound Router-format
+    request bytes (non-vacuously: the sanitized line must still be present,
+    not deleted entirely), AND the response path must complete a genuine
+    receipt-v2 verification and Router-result binding -- not merely prove
+    the outbound half and discard the rest. Provider-free throughout: the
+    HTTP transport itself is the only mocked seam
+    (`_open_agent_router_request_v2`); no live network, no real provider.
+
+    An earlier version of this test stopped at the outbound-redaction half
+    and swallowed the response side with a bare `except Exception: pass`,
+    against an intentionally-invalid fake response -- found and corrected on
+    independent review of this same PR, before Ready."""
+
+    from app.agent_review.operational_run_v2 import prepare_operational_review_v2
+    from app.agent_review.review_transport_v2 import build_chunk_review_request_v2, execute_chunk_review_v2
+    from tests.agent_review.test_review_transport_v2 import _ROUTER_FIXTURE_ROOT, _fixture_receipt
 
     repo, base_sha, head_sha = _make_target_repo(
         tmp_path, extra_lines='token = "sk-live-should-never-leak-1234567890"'
     )
     profile_root = _make_trusted_profile_root(tmp_path)
 
-    from app.agent_review.operational_run_v2 import prepare_operational_review_v2
-
     prepared = prepare_operational_review_v2(
         repo_root=repo, target_profile_root=profile_root, grouping_policy=_grouping_policy(),
         base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
         toolrepo_sha="a" * 40, evidence_hash="d" * 64, max_lines_per_chunk=1000,
     )
+    assert len(prepared.content.chunks) >= 1
+    chunk = prepared.content.chunks[0]
+    payload = prepared.payload_by_chunk_id[chunk.chunk_id]
+
+    result_document = {
+        "schema_id": "agent-review.chunk-response.v2", "schema_version": 2,
+        "summary": "router review complete", "findings": [],
+        "coverage": payload.coverage.model_dump(mode="json"), "limitations": [],
+    }
+    assistant_content = json.dumps(
+        result_document, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
 
     captured_bytes: list[bytes] = []
 
     class _FakeResponse:
-        status = 200
-
-        def read(self):
-            return b'{"choices": [{"message": {"content": "{}"}}]}'
+        def __init__(self, raw: bytes) -> None:
+            self._raw = raw
 
         def __enter__(self):
             return self
@@ -652,26 +673,44 @@ def test_secret_in_the_real_target_diff_never_reaches_the_outbound_request(tmp_p
         def __exit__(self, *exc):
             return False
 
+        def read(self):
+            return self._raw
+
     def _fake_open(http_request, timeout_seconds):
         captured_bytes.append(http_request.data)
-        return _FakeResponse()
+        request_body = json.loads(http_request.data.decode("utf-8"))
+        receipt = _fixture_receipt(
+            "local-success-f2a.json", request_body=request_body, assistant_content=assistant_content
+        )
+        response_body = {
+            "id": "chatcmpl-fixture", "object": "chat.completion", "created": 1,
+            "model": "resolved-model-is-not-a-domain-identity",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": assistant_content}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "request_id": "router-public-request", "inference_receipt": receipt,
+        }
+        return _FakeResponse(json.dumps(response_body).encode("utf-8"))
 
     monkeypatch.setattr(review_transport_v2, "_open_agent_router_request_v2", _fake_open)
 
     transport = agent_router_transport_v2(
         base_url="https://router.example.invalid", api_key="test-key", model="review:code"
     )
-    for chunk in prepared.content.chunks:
-        payload = prepared.payload_by_chunk_id[chunk.chunk_id]
-        from app.agent_review.review_transport_v2 import build_chunk_review_request_v2
-
-        request = build_chunk_review_request_v2(chunk, run_id=prepared.content.run_id, head_sha=head_sha)
-        try:
-            transport(request, chunk, payload)
-        except Exception:
-            pass  # the fake response is not a valid parse target; only the outbound bytes matter here
+    outcome = execute_chunk_review_v2(
+        chunk, run_id=prepared.content.run_id, head_sha=head_sha, payload=payload, transport=transport,
+    )
 
     assert captured_bytes, "the transport must have attempted at least one outbound request"
     outbound_text = b"".join(captured_bytes).decode("utf-8", errors="replace")
     assert "sk-live-should-never-leak-1234567890" not in outbound_text
     assert "token" in outbound_text  # the sanitized line survives -- redaction, not deletion
+
+    # The response side: genuine receipt-v2 verification and Router-result
+    # binding, not a swallowed exception. `state == "bound"` is reachable
+    # ONLY past _verify_router_transport_response_v2 (receipt/echo/digest
+    # checks) and bind_verified_router_result_v2 -- both real, unpatched.
+    assert outcome.state == "bound", outcome.reason_code
+    assert outcome.result is not None
+    assert outcome.result.run_id == prepared.content.run_id
+    assert outcome.result.chunk_id == chunk.chunk_id
+    assert outcome.result.head_sha == head_sha
