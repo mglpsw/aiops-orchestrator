@@ -688,6 +688,48 @@ def test_u2_plan_not_reviewed_caps_reviewed_carriers(critical_pr: bool) -> None:
         assert "critical_chunk_plan_files_not_covered" in gate.limitations
 
 
+@pytest.mark.parametrize(
+    "plan_shape",
+    ["covered-outside-chunks", "covered-without-chunks"],
+)
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_plan_covered_file_without_chunk_cannot_authorize_reviewed_carriers(
+    plan_shape: str,
+    critical_pr: bool,
+) -> None:
+    reviewed = "src/a.py"
+    unassigned = "src/b.py"
+    if plan_shape == "covered-outside-chunks":
+        chunk_plan = _chunk_plan_with_partition(
+            chunk_files=[reviewed],
+            files_covered=[reviewed, unassigned],
+        )
+        carrier_files = [reviewed, unassigned]
+    else:
+        chunk_plan = SemanticChunkPlan(
+            target_repo="mglpsw/AgentEscala",
+            max_parallel_blocks=6,
+            chunks=[],
+            files_covered=[unassigned],
+            status="complete",
+        )
+        carrier_files = [unassigned]
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=carrier_files)),
+        _chunk_results(
+            coverage=ChunkResultsCoverage(files_reviewed=carrier_files)
+        ),
+        chunk_plan=chunk_plan,
+        critical_pr=critical_pr,
+    )
+
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+    assert "coverage_expected_files_missing" in gate.limitations
+
+
 @pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
 def test_u2_plan_partial_caps_reviewed_carriers(critical_pr: bool) -> None:
     reviewed = "src/a.py"

@@ -752,6 +752,49 @@ def test_u2_parser_emits_total_plan_known_coverage_beyond_chunk_files(
     assert review.verdict == "manual_review_required"
 
 
+def test_u2_plan_only_reviewed_file_is_pessimized_without_response(
+    tmp_path: Path,
+) -> None:
+    reviewed = "src/a.py"
+    unassigned = "src/b.py"
+    chunk = _chunk(files=[reviewed])
+    chunk_plan = SemanticChunkPlan(
+        target_repo="mglpsw/AgentEscala",
+        max_parallel_blocks=6,
+        chunks=[chunk],
+        files_covered=[reviewed, unassigned],
+        status="complete",
+    )
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        coverage_notes={"files_reviewed": [reviewed]},
+    )
+
+    results = parse_chunk_results(chunk_plan, responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=[reviewed, unassigned],
+        reviewed=[reviewed],
+        partial=[],
+        not_reviewed=[unassigned],
+    )
+    assert results.chunks_parsed == [chunk.chunk_id]
+    assert results.chunks_failed == []
+    assert results.status == "partial"
+    assert "coverage_expected_files_missing" in results.limitations
+
+    review = synthesize_final_review(results)
+
+    assert review.inputs["chunk_plan"] == {"provided": False}
+    assert review.coverage.files_reviewed == [reviewed]
+    assert review.coverage.files_not_reviewed == [unassigned]
+    assert review.status == "partial"
+    assert review.verdict == "manual_review_required"
+
+
 @pytest.mark.parametrize(
     "invalid_chunk_id",
     [

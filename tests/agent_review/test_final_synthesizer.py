@@ -316,6 +316,44 @@ def test_u2_forged_reviewed_results_cannot_promote_plan_not_covered_file() -> No
     assert "coverage_file_in_multiple_states" not in review.limitations
 
 
+def test_u2_forged_results_cannot_review_plan_file_without_a_chunk() -> None:
+    reviewed = "src/a.py"
+    unassigned = "src/b.py"
+    chunk = SemanticChunk(
+        chunk_id="chunk-01-primary_backend_logic",
+        semantic_group="primary_backend_logic",
+        order_index=0,
+        files=[reviewed],
+        artifacts=["artifact:file-diff-context", "artifact:checks"],
+        contracts=["target_profile:domain_contracts"],
+        coverage="complete",
+        prompt_budget_chars=24_000,
+        estimated_chars=512,
+        limitations=[],
+    )
+    chunk_plan = SemanticChunkPlan(
+        target_repo="mglpsw/AgentEscala",
+        max_parallel_blocks=6,
+        chunks=[chunk],
+        files_covered=[reviewed, unassigned],
+        status="complete",
+    )
+    forged_results = _chunk_results(
+        status="complete",
+        coverage=ChunkResultsCoverage(files_reviewed=[reviewed, unassigned]),
+    )
+
+    review = synthesize_final_review(forged_results, chunk_plan=chunk_plan)
+
+    assert review.coverage.files_reviewed == [reviewed]
+    assert review.coverage.files_partial == []
+    assert review.coverage.files_not_reviewed == [unassigned]
+    assert review.coverage.expected_files == [reviewed, unassigned]
+    assert review.status == "partial"
+    assert review.verdict == "manual_review_required"
+    assert "coverage_expected_files_missing" in review.limitations
+
+
 @pytest.mark.parametrize("blocker_severity", ["P0", "P1"])
 def test_u2_reliable_blocker_and_risk_survive_incomplete_coverage(
     blocker_severity: str,
