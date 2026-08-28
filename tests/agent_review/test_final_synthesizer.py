@@ -19,6 +19,7 @@ from app.agent_review.schemas import (
     NormalizedRisk,
     RedactionReport,
     RejectedFinding,
+    ReviewIntake,
     SemanticChunk,
     SemanticChunkPlan,
 )
@@ -542,6 +543,36 @@ def test_u2_synthesis_rejects_post_validation_list_target_repo() -> None:
 
     assert "chunk_results_structure_invalid" in review.limitations
     assert "target_repo_mismatch" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize(
+    "malformed_target",
+    [["mglpsw/AgentEscala"], {"repo": "mglpsw/AgentEscala"}, 42],
+    ids=["list", "dict", "integer"],
+)
+def test_u2_synthesis_rejects_post_validation_malformed_intake_target_repo(
+    malformed_target: object,
+) -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    intake = ReviewIntake(
+        target_repo=results.target_repo,
+        target_profile={},
+        artifacts={},
+        artifact_status=[],
+        redaction_summary={"schema_version": "agent-review.redaction-report.v1"},
+        status="complete",
+    )
+    intake.target_repo = malformed_target  # type: ignore[assignment]
+
+    review = synthesize_final_review(results, intake=intake)
+
+    assert "target_repo_mismatch" in review.limitations
+    assert review.target_repo == results.target_repo
     assert review.status == "degraded"
     assert review.verdict == "manual_review_required"
 
