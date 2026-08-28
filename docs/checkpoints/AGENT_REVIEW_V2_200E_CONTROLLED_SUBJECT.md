@@ -820,16 +820,26 @@ enumerate or hide within.
 archive_ignores_index_flags: true    # assume-unchanged + skip-worktree set on the source files;
                                        # archive output still shows the COMMITTED bytes -- archive
                                        # reads the commit tree object directly, never the index
-archive_ignores_repo_local_filters: true  # filter.evil.clean/smudge configured repository-locally;
-                                       # archived content is the plain committed bytes, no filter
-                                       # command executed (confirmed no smudge marker output)
+archive_ignores_repo_local_clean_and_smudge_filters: true  # filter.evil.clean/smudge
+                                       # configured repository-locally; archived content is the
+                                       # plain committed bytes, no filter command executed
 ```
 
-This directly and simultaneously eliminates CE-09 (`filter.clean`), CE-11
-(`filter.process`), CE-14 (`assume-unchanged`), CE-15 (`skip-worktree`),
-CE-18 (ignored/untracked source), CE-19 (root shadowing), CE-20
-(scripts-directory shadowing), CE-21 (`.pyc`), CE-23 (untracked nested
-repository) for the toolrepo side.
+**Correction, made during production hardening, not left standing:** the
+claim below originally also listed CE-11 (`filter.process`) as eliminated
+by this same result. That was wrong -- `git archive` does NOT ignore
+`filter.*.process` the way it ignores `.clean`/`.smudge`; an isolated
+three-way fixture (all three filter hooks configured on the same
+repository, only `archive` run) confirmed `.process` fires while
+`.clean`/`.smudge` stay silent. CE-11 is refused outright instead (a
+production fix, see `1db7e5d`), the same fail-closed shape as the symlink
+case below, not eliminated architecturally.
+
+This directly and simultaneously eliminates CE-09 (`filter.clean`), CE-14
+(`assume-unchanged`), CE-15 (`skip-worktree`), CE-18 (ignored/untracked
+source), CE-19 (root shadowing), CE-20 (scripts-directory shadowing), CE-21
+(`.pyc`), CE-23 (untracked nested repository) for the toolrepo side. CE-11
+is closed by explicit refusal, not by this elimination.
 
 ### One counterexample `git archive` alone does NOT close — found here, not assumed safe
 
@@ -947,14 +957,28 @@ forensic_witness_mapping:
       scratch never touches the target's .git/hooks at all"
     architectural_reason: "scratch's own .git/hooks is freshly initialized by
       `git init`, never populated from the target"
-  - id: CE-09/CE-11
-    source: "PR274 round 3, toolrepo identity filter.clean/.process finding"
+  - id: CE-09
+    source: "PR274 round 3, toolrepo identity filter.clean finding"
     old_result: "filter.clean executed during the toolrepo cleanliness check and
       hid materially dirty tracked source"
     successor_result: "test_filter_clean_has_no_effect_ce09 -- git archive
-      ignores repository-local filter config entirely, verified directly"
+      does not invoke repository-local filter.clean, verified directly"
     architectural_reason: "git archive reads the commit tree object, not a
-      filtered checkout; no filter command is ever invoked"
+      filtered checkout; the .clean/.smudge filter commands are never invoked"
+  - id: CE-11
+    source: "PR274 lane A, toolrepo identity filter.process finding"
+    old_result: "filter.process executed during toolrepo identity observation"
+    successor_result: "test_filter_process_is_refused_ce11 -- NOT eliminated by
+      the archive mechanism the way CE-09 is; refused outright instead
+      (correction found while writing this test: git archive DOES invoke
+      filter.process even though .clean/.smudge stay silent, confirmed with
+      an isolated three-way fixture -- the checkpoint's spike section
+      originally over-generalized the .clean/.smudge result to imply .process
+      was covered too, which was wrong, and is corrected in place, not hidden)"
+    architectural_reason: "no `-c` override closes an arbitrary attacker-chosen
+      driver name, same reasoning as the target-side smudge/CE-10 refusal --
+      detected via unscoped `git config --list` (not `--local`, learning
+      #274's own include.path lesson) and refused before archive ever runs"
   - id: CE-10
     source: "PR274 M14 (round 2), filter.smudge on checkout"
     old_result: "filter.smudge executed during git worktree add"
@@ -1030,7 +1054,61 @@ forensic_witness_mapping:
       archive alone does not close this (reproduced in the spike, extracting
       a live symlink readable outside the subject) -- required an explicit
       pre-check the spike surfaced, not assumed safe from #274's own closure"
+  - id: CE-04/CE-05/CE-06/CE-07
+    source: "PR274 M4, round-2 core.attributesFile closure, M5, lane B Q4
+      (NBSP/FIFO)"
+    old_result: "target-side attribute redirection (untracked worktree
+      .gitattributes, core.attributesFile, $GIT_DIR/info/attributes, and the
+      NBSP/FIFO bypasses of the round-3 info/attributes detector) each
+      changed acquire_diff_v2's semantic output"
+    successor_result: "test_source_untracked_gitattributes_has_no_effect_ce04,
+      _ce05, and test_source_info_attributes_has_no_effect_ce06_ce07 -- all
+      four planted on the source, zero effect on the scratch subject's diff"
+    architectural_reason: "the scratch subject's own info/attributes and
+      config are freshly initialized and never populated from the source at
+      all -- there is no detector to fool (CE-07's specific class), because
+      there is nothing read from the source to need detecting in the first
+      place"
+  - id: CE-12
+    source: "PR274 round 2, core.fsmonitor"
+    old_result: "core.fsmonitor executed during git status against the target"
+    successor_result: "test_source_fsmonitor_never_executes_ce12 -- configured
+      on the source, zero execution"
+    architectural_reason: "target config, including core.fsmonitor, is never
+      copied into scratch"
+  - id: CE-24
+    source: "PR274 M7/M8 (round 1), deleted bounded source"
+    old_result: "a `.exists()` filesystem prefilter silently excluded a
+      deleted bounded path from the pathspec"
+    successor_result: "test_deleted_bounded_path_is_transparently_absent_ce24
+      -- a bounded path absent at the declared SHA contributes zero entries,
+      visible via `subj.entries`, never hidden; found and fixed a related
+      defect while writing this test: `git archive` fails its ENTIRE
+      invocation (exit 128) if any single pathspec matches nothing, even
+      alongside valid ones, so the archive call now uses only the
+      ls-tree-confirmed-present subset (1db7e5d)"
+    architectural_reason: "expected files come from `git ls-tree` against the
+      declared SHA, never from a filesystem existence check"
+  - id: CE-25
+    source: "PR274 M2 (round 1), commit replacement of toolrepo's own HEAD"
+    old_result: "git replace on the toolrepo's own declared HEAD commit"
+    successor_result: "test_commit_replacement_on_declared_sha_ignored_ce25 --
+      ls-tree/archive against the declared SHA return the ORIGINAL commit's
+      content"
+    architectural_reason: "GIT_NO_REPLACE_OBJECTS=1 is part of the bounded
+      environment for every git invocation this module makes"
 ```
+
+### Phase 2 ledger closure
+
+All 25 ledger items now have a dedicated, passing test -- not the 17 first
+committed. The 8 gap items (CE-04, CE-05, CE-06, CE-07, CE-12, CE-24, CE-25,
+plus the CE-11 correction) were closed by testing each explicitly rather
+than assuming the spike's general-purpose claims covered them, which is
+exactly how CE-11 and CE-24 were caught: both were genuinely new findings
+made while writing what looked like it should have been a routine coverage
+pass, not while looking for bugs specifically. 35 tests total (20 target,
+15 toolrepo).
 
 ### Mutation non-vacuity (§20), all executed and killed
 
@@ -1096,22 +1174,27 @@ discipline `#274` established.
 
 ```yaml
 qualification_phase2:
-  focused_new_tests: "27 passed (test_controlled_subject_v2.py: 16,
-    test_toolrepo_execution_subject_v2.py: 11)"
+  focused_new_tests: "35 passed (test_controlled_subject_v2.py: 20,
+    test_toolrepo_execution_subject_v2.py: 15) -- final count, after the
+    CE-11/CE-24 gap-closure round added 8 more to the original 27"
   existing_diff_acquisition_tests: "86 passed, untouched"
   compileall: pass
   git_diff_check: pass
   schema_export_check: "byte-identical"
-  full_agentreview_suite: "48 failed, 2586 passed, 12 skipped"
-  full_repository_suite: "48 failed, 3345 passed, 16 skipped"
+  full_repository_suite_final: "48 failed, 3353 passed, 16 skipped -- rerun
+    after the CE-11/CE-24 production fixes; identical 48 failing test names
+    to the pre-fix run, +8 passed matching exactly the 8 new tests added,
+    zero regressions"
   known_environment_classification:
     reproduced_at_base: true
     method: >-
       Spot-checked the sharpest failure
       (test_telemetry_cli_does_not_call_network_or_provider) against a
       CLEAN worktree of master (f70af2e) with zero #200-E changes applied
-      -- byte-identical failure and error message. Confirmed none of the 48
-      failing test names reference any #200-E module
+      -- byte-identical failure and error message, and its FULL suite run
+      matched the exact same 48 failing names with an exact +count delta
+      accounted for entirely by #200-E's own new tests. Confirmed none of
+      the 48 failing test names reference any #200-E module
       (controlled_subject_v2, toolrepo_execution_subject_v2,
       _bounded_git_child_env_v2).
     classes:
