@@ -25,6 +25,18 @@ from app.agent_review.schemas import (
 
 
 FIXTURE_SECRET = "AGENTESCALA_PHASE4_FIXTURE_SECRET"
+EXECUTION_CHUNK_IDS = [
+    "chunk-01-primary_backend_logic",
+    "chunk-02-api_schema_contract",
+]
+EXECUTION_GROUPS = ["primary_backend_logic", "api_schema_contract"]
+EXECUTION_FILES = ["src/a.py", "src/b.py"]
+EXECUTION_MISMATCH_REASONS = {
+    "chunk_execution_expected_missing",
+    "chunk_execution_foreign_id",
+    "chunk_execution_duplicate_id",
+    "chunk_execution_state_overlap",
+}
 
 
 def _finding(**overrides: object) -> NormalizedFinding:
@@ -88,6 +100,299 @@ def _chunk_results(
         if coverage is not None
         else ChunkResultsCoverage(files_reviewed=["backend/services/schedule.py"]),
         status=status,  # type: ignore[arg-type]
+    )
+
+
+def _execution_plan(
+    *,
+    chunk_count: int = 1,
+    chunk_coverages: list[str] | None = None,
+    status: str = "complete",
+    limitations: list[str] | None = None,
+) -> SemanticChunkPlan:
+    coverages = chunk_coverages if chunk_coverages is not None else ["complete"] * chunk_count
+    chunks = [
+        SemanticChunk(
+            chunk_id=EXECUTION_CHUNK_IDS[index],
+            semantic_group=EXECUTION_GROUPS[index],  # type: ignore[arg-type]
+            order_index=index,
+            files=[EXECUTION_FILES[index]],
+            artifacts=["artifact:file-diff-context", "artifact:checks"],
+            contracts=["target_profile:domain_contracts"],
+            coverage=coverages[index],  # type: ignore[arg-type]
+            prompt_budget_chars=24_000,
+            estimated_chars=512,
+            limitations=[],
+        )
+        for index in range(chunk_count)
+    ]
+    return SemanticChunkPlan(
+        target_repo="mglpsw/AgentEscala",
+        max_parallel_blocks=6,
+        chunks=chunks,
+        files_covered=EXECUTION_FILES[:chunk_count],
+        limitations=limitations if limitations is not None else [],
+        status=status,  # type: ignore[arg-type]
+    )
+
+
+def _execution_failures(chunk_ids: list[str]) -> list[ChunkParseFailure]:
+    failures: list[ChunkParseFailure] = []
+    for chunk_id in chunk_ids:
+        if chunk_id in EXECUTION_CHUNK_IDS:
+            semantic_group = EXECUTION_GROUPS[EXECUTION_CHUNK_IDS.index(chunk_id)]
+        else:
+            semantic_group = "tests"
+        failures.append(
+            ChunkParseFailure(
+                chunk_id=chunk_id,
+                semantic_group=semantic_group,  # type: ignore[arg-type]
+                error_class="chunk_response_missing",
+                message="chunk response file is missing",
+            )
+        )
+    return failures
+
+
+def _has_reason(limitations: list[str], reason: str) -> bool:
+    return any(
+        limitation == reason or limitation.startswith(f"{reason}:")
+        for limitation in limitations
+    )
+
+
+@pytest.mark.parametrize(
+    (
+        "chunk_count",
+        "chunks_parsed",
+        "failed_ids",
+        "expected_reasons",
+    ),
+    [
+        pytest.param(
+            1,
+            [],
+            [],
+            ["chunks_parsed_missing", "chunk_execution_expected_missing"],
+            id="no-parsed-or-failed",
+        ),
+        pytest.param(
+            1,
+            [EXECUTION_CHUNK_IDS[0], "chunk-99-foreign"],
+            [],
+            ["chunk_execution_foreign_id"],
+            id="foreign-parsed",
+        ),
+        pytest.param(
+            1,
+            [EXECUTION_CHUNK_IDS[0]],
+            ["chunk-99-foreign"],
+            ["chunk_execution_foreign_id", "chunks_failed_present"],
+            id="foreign-failed",
+        ),
+        pytest.param(
+            1,
+            [EXECUTION_CHUNK_IDS[0], EXECUTION_CHUNK_IDS[0]],
+            [],
+            ["chunk_execution_duplicate_id"],
+            id="duplicate-parsed",
+        ),
+        pytest.param(
+            2,
+            [EXECUTION_CHUNK_IDS[0]],
+            [EXECUTION_CHUNK_IDS[1], EXECUTION_CHUNK_IDS[1]],
+            ["chunk_execution_duplicate_id", "chunks_failed_present"],
+            id="duplicate-failed",
+        ),
+        pytest.param(
+            1,
+            [EXECUTION_CHUNK_IDS[0]],
+            [EXECUTION_CHUNK_IDS[0]],
+            ["chunk_execution_state_overlap", "chunks_failed_present"],
+            id="parsed-and-failed-overlap",
+        ),
+        pytest.param(
+            2,
+            [EXECUTION_CHUNK_IDS[0]],
+            [],
+            ["chunk_execution_expected_missing"],
+            id="two-expected-one-accounted",
+        ),
+    ],
+)
+def test_u2_synthesis_rejects_chunk_execution_identity_mismatches(
+    chunk_count: int,
+    chunks_parsed: list[str],
+    failed_ids: list[str],
+    expected_reasons: list[str],
+) -> None:
+    """Coverage claims cannot substitute for a coherent execution ledger."""
+    plan = _execution_plan(chunk_count=chunk_count)
+    results = _chunk_results(
+        status="complete",
+        chunks_parsed=chunks_parsed,
+        chunks_failed=_execution_failures(failed_ids),
+        coverage=ChunkResultsCoverage(
+            files_reviewed=EXECUTION_FILES[:chunk_count],
+        ),
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    for reason in expected_reasons:
+        assert _has_reason(review.limitations, reason)
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+def test_u2_synthesis_keeps_valid_failed_chunk_cause_without_mismatch_reason() -> None:
+    """An expected failed ID is accounted for, but still makes review partial."""
+    plan = _execution_plan(chunk_count=2)
+    failure = _execution_failures([EXECUTION_CHUNK_IDS[1]])
+    results = _chunk_results(
+        status="partial",
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        chunks_failed=failure,
+        limitations=["chunk_response_missing"],
+        coverage=ChunkResultsCoverage(
+            files_reviewed=[EXECUTION_FILES[0]],
+            files_not_reviewed=[EXECUTION_FILES[1]],
+        ),
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert review.status == "partial"
+    assert review.verdict == "manual_review_required"
+    assert "chunk_response_missing" in review.limitations
+    assert "chunks_failed_present" in review.limitations
+    assert "chunks_parsed_missing" not in review.limitations
+    assert not any(
+        _has_reason(review.limitations, reason)
+        for reason in EXECUTION_MISMATCH_REASONS
+    )
+
+
+def test_u2_synthesis_zero_parsed_without_plan_is_not_positive() -> None:
+    results = _chunk_results(
+        status="complete",
+        chunks_parsed=[],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+
+    review = synthesize_final_review(results)
+
+    assert "chunks_parsed_missing" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+    assert not _has_reason(review.limitations, "chunk_execution_expected_missing")
+
+
+@pytest.mark.parametrize(
+    (
+        "plan_status",
+        "chunk_coverage",
+        "plan_limitations",
+        "expected_reason",
+        "reviewed",
+        "partial",
+        "not_reviewed",
+    ),
+    [
+        pytest.param(
+            "complete",
+            "partial",
+            [],
+            "chunk_plan_status_partial",
+            [],
+            [EXECUTION_FILES[0]],
+            [],
+            id="nested-partial",
+        ),
+        pytest.param(
+            "complete",
+            "degraded",
+            [],
+            "chunk_plan_status_degraded",
+            [],
+            [],
+            [EXECUTION_FILES[0]],
+            id="nested-degraded",
+        ),
+        pytest.param(
+            "complete",
+            "complete",
+            ["file_context_fallback_used"],
+            "chunk_plan_status_partial",
+            [EXECUTION_FILES[0]],
+            [],
+            [],
+            id="fallback-derived-partial",
+        ),
+        pytest.param(
+            "failed",
+            "complete",
+            [],
+            "chunk_plan_status_failed",
+            [EXECUTION_FILES[0]],
+            [],
+            [],
+            id="explicit-failed",
+        ),
+    ],
+)
+def test_u2_synthesis_uses_nested_and_explicit_plan_degradation(
+    plan_status: str,
+    chunk_coverage: str,
+    plan_limitations: list[str],
+    expected_reason: str,
+    reviewed: list[str],
+    partial: list[str],
+    not_reviewed: list[str],
+) -> None:
+    plan = _execution_plan(
+        chunk_coverages=[chunk_coverage],
+        status=plan_status,
+        limitations=plan_limitations,
+    )
+    results = _chunk_results(
+        status="complete",
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert review.limitations.count(expected_reason) == 1
+    assert review.coverage.files_reviewed == reviewed
+    assert review.coverage.files_partial == partial
+    assert review.coverage.files_not_reviewed == not_reviewed
+    assert review.status in {"partial", "degraded"}
+    assert review.verdict == "manual_review_required"
+
+
+def test_u2_synthesis_exact_execution_with_informational_note_is_nonblocking() -> None:
+    plan = _execution_plan(
+        chunk_count=2,
+        limitations=["intake_schema_id_missing"],
+    )
+    results = _chunk_results(
+        status="complete",
+        chunks_parsed=EXECUTION_CHUNK_IDS.copy(),
+        limitations=["intake_schema_id_missing"],
+        coverage=ChunkResultsCoverage(files_reviewed=EXECUTION_FILES.copy()),
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert review.status == "complete"
+    assert review.verdict == "approve_with_minor_notes"
+    assert review.coverage.files_reviewed == EXECUTION_FILES
+    assert review.limitations.count("intake_schema_id_missing") == 1
+    assert "chunks_parsed_missing" not in review.limitations
+    assert not any(
+        _has_reason(review.limitations, reason)
+        for reason in EXECUTION_MISMATCH_REASONS
     )
 
 

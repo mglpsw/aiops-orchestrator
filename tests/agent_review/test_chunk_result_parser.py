@@ -18,6 +18,8 @@ def _chunk(
     chunk_id: str = "chunk-01-primary_backend_logic",
     group: str = "primary_backend_logic",
     files: list[str] | None = None,
+    coverage: str = "complete",
+    limitations: list[str] | None = None,
 ) -> SemanticChunk:
     return SemanticChunk(
         chunk_id=chunk_id,
@@ -26,14 +28,19 @@ def _chunk(
         files=files if files is not None else ["backend/services/schedule.py"],
         artifacts=["artifact:file-diff-context", "artifact:checks"],
         contracts=["target_profile:domain_contracts"],
-        coverage="complete",
+        coverage=coverage,  # type: ignore[arg-type]
         prompt_budget_chars=24_000,
         estimated_chars=512,
-        limitations=[],
+        limitations=limitations if limitations is not None else [],
     )
 
 
-def _plan(chunks: list[SemanticChunk] | None = None, *, status: str = "complete") -> SemanticChunkPlan:
+def _plan(
+    chunks: list[SemanticChunk] | None = None,
+    *,
+    status: str = "complete",
+    limitations: list[str] | None = None,
+) -> SemanticChunkPlan:
     effective_chunks = chunks if chunks is not None else [_chunk()]
     files_covered = list(
         dict.fromkeys(
@@ -47,6 +54,7 @@ def _plan(chunks: list[SemanticChunk] | None = None, *, status: str = "complete"
         max_parallel_blocks=6,
         chunks=effective_chunks,
         files_covered=files_covered,
+        limitations=limitations if limitations is not None else [],
         status=status,  # type: ignore[arg-type]
     )
 
@@ -943,3 +951,140 @@ def test_partial_chunk_plan_status_propagates_to_result_status(tmp_path: Path) -
     results = parse_chunk_results(_plan([chunk], status="partial"), responses_dir=responses)
 
     assert results.status == "partial"
+
+
+def test_u2_parser_rejects_direct_failed_plan_with_canonical_error_class(
+    tmp_path: Path,
+) -> None:
+    """The object API must enforce the same failed-plan boundary as the loader.
+
+    Callers are allowed to pass an already-constructed ``SemanticChunkPlan``
+    directly to ``parse_chunk_results``.  A valid response must not make a
+    plan whose authoritative status is ``failed`` consumable through that
+    alternate entry point.
+    """
+    chunk = _chunk()
+    responses = _responses_dir(tmp_path)
+    _write_response(responses, chunk=chunk)
+
+    with pytest.raises(ChunkResultParserError) as exc_info:
+        parse_chunk_results(
+            _plan([chunk], status="failed"),
+            responses_dir=responses,
+        )
+
+    assert exc_info.value.error_class == "chunk_plan_invalid"
+
+
+@pytest.mark.parametrize(
+    (
+        "chunk_coverage",
+        "plan_limitations",
+        "expected_status",
+        "expected_status_reason",
+        "reviewed",
+        "partial",
+        "not_reviewed",
+    ),
+    [
+        pytest.param(
+            "partial",
+            [],
+            "partial",
+            "chunk_plan_status_partial",
+            [],
+            ["src/a.py"],
+            [],
+            id="chunk-partial-caps-reviewed-response",
+        ),
+        pytest.param(
+            "degraded",
+            [],
+            "degraded",
+            "chunk_plan_status_degraded",
+            [],
+            [],
+            ["src/a.py"],
+            id="chunk-degraded-caps-reviewed-response",
+        ),
+        pytest.param(
+            "complete",
+            ["file_context_fallback_used"],
+            "partial",
+            "chunk_plan_status_partial",
+            ["src/a.py"],
+            [],
+            [],
+            id="fallback-limitation-derives-partial-plan",
+        ),
+    ],
+)
+def test_u2_parser_derives_plan_truth_when_top_status_is_forged_complete(
+    tmp_path: Path,
+    chunk_coverage: str,
+    plan_limitations: list[str],
+    expected_status: str,
+    expected_status_reason: str,
+    reviewed: list[str],
+    partial: list[str],
+    not_reviewed: list[str],
+) -> None:
+    """Nested plan evidence must pessimistically cap a clean model response."""
+    chunk = _chunk(files=["src/a.py"], coverage=chunk_coverage)
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        coverage_notes={"files_reviewed": chunk.files},
+    )
+
+    results = parse_chunk_results(
+        _plan(
+            [chunk],
+            status="complete",
+            limitations=plan_limitations,
+        ),
+        responses_dir=responses,
+    )
+
+    assert results.limitations.count(expected_status_reason) == 1
+    _assert_total_coverage_partition(
+        results,
+        expected=chunk.files,
+        reviewed=reviewed,
+        partial=partial,
+        not_reviewed=not_reviewed,
+    )
+    assert results.status == expected_status
+    for limitation in plan_limitations:
+        assert results.limitations.count(limitation) == 1
+    assert "coverage_file_in_multiple_states" not in results.limitations
+
+
+def test_u2_parser_exact_review_with_informational_limitation_stays_complete(
+    tmp_path: Path,
+) -> None:
+    """Unknown informational plan notes remain visible but non-blocking."""
+    chunk = _chunk(files=["src/a.py", "src/b.py"])
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        coverage_notes={"files_reviewed": chunk.files},
+    )
+
+    results = parse_chunk_results(
+        _plan([chunk], limitations=["intake_schema_id_missing"]),
+        responses_dir=responses,
+    )
+
+    _assert_total_coverage_partition(
+        results,
+        expected=chunk.files,
+        reviewed=chunk.files,
+        partial=[],
+        not_reviewed=[],
+    )
+    assert results.status == "complete"
+    assert results.limitations == ["intake_schema_id_missing"]
+    assert not any(reason.startswith("chunk_plan_status_") for reason in results.limitations)

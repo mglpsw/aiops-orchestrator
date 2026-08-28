@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from app.agent_review.chunk_result_parser import _normalize_plan_coverage_partition
+from app.agent_review.chunk_result_parser import (
+    _normalize_plan_coverage_partition,
+    parse_chunk_results,
+)
+from app.agent_review.final_synthesizer import synthesize_final_review
 from app.agent_review.quality_gate import (
     QualityGateError,
     evaluate_review_quality_gate,
@@ -24,6 +28,18 @@ from app.agent_review.schemas import (
 
 
 FIXTURE_SECRET = "AGENTESCALA_PHASE5A_GATE_SECRET"
+EXECUTION_CHUNK_IDS = [
+    "chunk-01-primary_backend_logic",
+    "chunk-02-api_schema_contract",
+]
+EXECUTION_GROUPS = ["primary_backend_logic", "api_schema_contract"]
+EXECUTION_FILES = ["src/a.py", "src/b.py"]
+EXECUTION_MISMATCH_REASONS = {
+    "chunk_execution_expected_missing",
+    "chunk_execution_foreign_id",
+    "chunk_execution_duplicate_id",
+    "chunk_execution_state_overlap",
+}
 
 
 def _finding(**overrides: object) -> dict[str, object]:
@@ -231,6 +247,423 @@ def _chunk_plan_with_partition(
         files_not_covered=files_not_covered if files_not_covered is not None else [],
         status="complete",
     )
+
+
+def _execution_plan(
+    *,
+    chunk_count: int = 1,
+    chunk_coverages: list[str] | None = None,
+    status: str = "complete",
+    limitations: list[str] | None = None,
+) -> SemanticChunkPlan:
+    coverages = chunk_coverages if chunk_coverages is not None else ["complete"] * chunk_count
+    chunks = [
+        SemanticChunk(
+            chunk_id=EXECUTION_CHUNK_IDS[index],
+            semantic_group=EXECUTION_GROUPS[index],  # type: ignore[arg-type]
+            order_index=index,
+            files=[EXECUTION_FILES[index]],
+            artifacts=["artifact:file-diff-context", "artifact:checks"],
+            contracts=["target_profile:domain_contracts"],
+            coverage=coverages[index],  # type: ignore[arg-type]
+            prompt_budget_chars=24_000,
+            estimated_chars=512,
+            limitations=[],
+        )
+        for index in range(chunk_count)
+    ]
+    return SemanticChunkPlan(
+        target_repo="mglpsw/AgentEscala",
+        max_parallel_blocks=6,
+        chunks=chunks,
+        files_covered=EXECUTION_FILES[:chunk_count],
+        limitations=limitations if limitations is not None else [],
+        status=status,  # type: ignore[arg-type]
+    )
+
+
+def _execution_failures(chunk_ids: list[str]) -> list[ChunkParseFailure]:
+    failures: list[ChunkParseFailure] = []
+    for chunk_id in chunk_ids:
+        if chunk_id in EXECUTION_CHUNK_IDS:
+            semantic_group = EXECUTION_GROUPS[EXECUTION_CHUNK_IDS.index(chunk_id)]
+        else:
+            semantic_group = "tests"
+        failures.append(
+            ChunkParseFailure(
+                chunk_id=chunk_id,
+                semantic_group=semantic_group,  # type: ignore[arg-type]
+                error_class="chunk_response_missing",
+                message="chunk response file is missing",
+            )
+        )
+    return failures
+
+
+def _has_reason(limitations: list[str], reason: str) -> bool:
+    return any(
+        limitation == reason or limitation.startswith(f"{reason}:")
+        for limitation in limitations
+    )
+
+
+def _write_round_trip_response(
+    responses_dir: Path,
+    *,
+    plan: SemanticChunkPlan,
+    partial: bool,
+) -> None:
+    chunk = plan.chunks[0]
+    coverage_notes = (
+        {
+            "files_reviewed": [chunk.files[0]],
+            "files_partial": [chunk.files[1]],
+        }
+        if partial
+        else {"files_reviewed": chunk.files}
+    )
+    payload = {
+        "schema_version": 1,
+        "chunk_id": chunk.chunk_id,
+        "semantic_group": chunk.semantic_group,
+        "confirmed_findings": [],
+        "risks": [],
+        "limitations": [],
+        "coverage_notes": coverage_notes,
+    }
+    (responses_dir / f"{chunk.chunk_id}.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+@pytest.mark.parametrize(
+    (
+        "chunk_count",
+        "chunks_parsed",
+        "failed_ids",
+        "expected_reasons",
+    ),
+    [
+        pytest.param(
+            1,
+            [],
+            [],
+            ["chunks_parsed_missing", "chunk_execution_expected_missing"],
+            id="no-parsed-or-failed",
+        ),
+        pytest.param(
+            1,
+            [EXECUTION_CHUNK_IDS[0], "chunk-99-foreign"],
+            [],
+            ["chunk_execution_foreign_id"],
+            id="foreign-parsed",
+        ),
+        pytest.param(
+            1,
+            [EXECUTION_CHUNK_IDS[0]],
+            ["chunk-99-foreign"],
+            ["chunk_execution_foreign_id", "chunks_failed_present"],
+            id="foreign-failed",
+        ),
+        pytest.param(
+            1,
+            [EXECUTION_CHUNK_IDS[0], EXECUTION_CHUNK_IDS[0]],
+            [],
+            ["chunk_execution_duplicate_id"],
+            id="duplicate-parsed",
+        ),
+        pytest.param(
+            2,
+            [EXECUTION_CHUNK_IDS[0]],
+            [EXECUTION_CHUNK_IDS[1], EXECUTION_CHUNK_IDS[1]],
+            ["chunk_execution_duplicate_id", "chunks_failed_present"],
+            id="duplicate-failed",
+        ),
+        pytest.param(
+            1,
+            [EXECUTION_CHUNK_IDS[0]],
+            [EXECUTION_CHUNK_IDS[0]],
+            ["chunk_execution_state_overlap", "chunks_failed_present"],
+            id="parsed-and-failed-overlap",
+        ),
+        pytest.param(
+            2,
+            [EXECUTION_CHUNK_IDS[0]],
+            [],
+            ["chunk_execution_expected_missing"],
+            id="two-expected-one-accounted",
+        ),
+    ],
+)
+def test_u2_gate_rejects_chunk_execution_identity_mismatches(
+    chunk_count: int,
+    chunks_parsed: list[str],
+    failed_ids: list[str],
+    expected_reasons: list[str],
+    critical_pr: bool,
+) -> None:
+    plan = _execution_plan(chunk_count=chunk_count)
+    results = _chunk_results(
+        status="complete",
+        chunks_parsed=chunks_parsed,
+        chunks_failed=_execution_failures(failed_ids),
+        coverage=ChunkResultsCoverage(
+            files_reviewed=EXECUTION_FILES[:chunk_count],
+        ),
+    )
+
+    gate = _gate(
+        _final_review(
+            coverage=_coverage(reviewed=EXECUTION_FILES[:chunk_count]),
+        ),
+        results,
+        chunk_plan=plan,
+        critical_pr=critical_pr,
+    )
+
+    for reason in expected_reasons:
+        assert _has_reason(gate.limitations, reason)
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_gate_keeps_valid_failed_chunk_cause_without_mismatch_reason(
+    critical_pr: bool,
+) -> None:
+    plan = _execution_plan(chunk_count=2)
+    results = _chunk_results(
+        status="partial",
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        chunks_failed=_execution_failures([EXECUTION_CHUNK_IDS[1]]),
+        limitations=["chunk_response_missing"],
+        coverage=ChunkResultsCoverage(
+            files_reviewed=[EXECUTION_FILES[0]],
+            files_not_reviewed=[EXECUTION_FILES[1]],
+        ),
+    )
+
+    gate = _gate(
+        _final_review(
+            status="partial",
+            verdict="manual_review_required",
+            limitations=["chunk_response_missing", "chunks_failed_present"],
+            coverage=_coverage(
+                reviewed=[EXECUTION_FILES[0]],
+                not_reviewed=[EXECUTION_FILES[1]],
+            ),
+        ),
+        results,
+        chunk_plan=plan,
+        critical_pr=critical_pr,
+    )
+
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+    assert "chunk_response_missing" in gate.limitations
+    assert "chunks_failed_present" in gate.limitations
+    assert f"chunk_failed:{EXECUTION_CHUNK_IDS[1]}:chunk_response_missing" in gate.warnings
+    assert "chunks_parsed_missing" not in gate.limitations
+    assert not any(
+        _has_reason(gate.limitations, reason)
+        for reason in EXECUTION_MISMATCH_REASONS
+    )
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_gate_zero_parsed_without_plan_is_not_positive(critical_pr: bool) -> None:
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]])),
+        _chunk_results(
+            status="complete",
+            chunks_parsed=[],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+        critical_pr=critical_pr,
+    )
+
+    assert "chunks_parsed_missing" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+    assert not _has_reason(gate.limitations, "chunk_execution_expected_missing")
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+@pytest.mark.parametrize(
+    (
+        "plan_status",
+        "chunk_coverage",
+        "plan_limitations",
+        "expected_reason",
+    ),
+    [
+        pytest.param(
+            "complete",
+            "partial",
+            [],
+            "chunk_plan_status_partial",
+            id="nested-partial",
+        ),
+        pytest.param(
+            "complete",
+            "degraded",
+            [],
+            "chunk_plan_status_degraded",
+            id="nested-degraded",
+        ),
+        pytest.param(
+            "complete",
+            "complete",
+            ["file_context_fallback_used"],
+            "chunk_plan_status_partial",
+            id="fallback-derived-partial",
+        ),
+        pytest.param(
+            "failed",
+            "complete",
+            [],
+            "chunk_plan_status_failed",
+            id="explicit-failed",
+        ),
+    ],
+)
+def test_u2_gate_uses_nested_and_explicit_plan_degradation(
+    plan_status: str,
+    chunk_coverage: str,
+    plan_limitations: list[str],
+    expected_reason: str,
+    critical_pr: bool,
+) -> None:
+    plan = _execution_plan(
+        chunk_coverages=[chunk_coverage],
+        status=plan_status,
+        limitations=plan_limitations,
+    )
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]])),
+        _chunk_results(
+            status="complete",
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+        chunk_plan=plan,
+        critical_pr=critical_pr,
+    )
+
+    assert gate.limitations.count(expected_reason) == 1
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_gate_exact_execution_with_informational_reason_is_nonblocking(
+    critical_pr: bool,
+) -> None:
+    plan = _execution_plan(
+        chunk_count=2,
+        limitations=["intake_schema_id_missing"],
+    )
+
+    gate = _gate(
+        _final_review(
+            verdict="approve_with_minor_notes",
+            limitations=["intake_schema_id_missing"],
+            coverage=_coverage(reviewed=EXECUTION_FILES.copy()),
+        ),
+        _chunk_results(
+            status="complete",
+            chunks_parsed=EXECUTION_CHUNK_IDS.copy(),
+            limitations=["intake_schema_id_missing"],
+            coverage=ChunkResultsCoverage(files_reviewed=EXECUTION_FILES.copy()),
+        ),
+        chunk_plan=plan,
+        critical_pr=critical_pr,
+    )
+
+    assert gate.status == "passed"
+    assert gate.normalized_verdict == "approve_with_minor_notes"
+    assert gate.manual_review_required is False
+    assert gate.limitations.count("intake_schema_id_missing") == 1
+    assert "chunks_parsed_missing" not in gate.limitations
+    assert not any(
+        _has_reason(gate.limitations, reason)
+        for reason in EXECUTION_MISMATCH_REASONS
+    )
+
+
+@pytest.mark.parametrize(
+    ("partial", "expected_parser_status", "expected_review_status", "expected_gate_status"),
+    [
+        pytest.param(False, "complete", "complete", "passed", id="all-reviewed"),
+        pytest.param(
+            True,
+            "partial",
+            "partial",
+            "manual_review_required",
+            id="partial",
+        ),
+    ],
+)
+def test_u2_serialized_parser_synthesizer_gate_round_trip_preserves_truth(
+    tmp_path: Path,
+    partial: bool,
+    expected_parser_status: str,
+    expected_review_status: str,
+    expected_gate_status: str,
+) -> None:
+    plan = _execution_plan()
+    plan.chunks[0].files = EXECUTION_FILES.copy()
+    plan.files_covered = EXECUTION_FILES.copy()
+    responses_dir = tmp_path / "chunk-responses"
+    responses_dir.mkdir()
+    _write_round_trip_response(
+        responses_dir,
+        plan=plan,
+        partial=partial,
+    )
+
+    parsed = parse_chunk_results(plan, responses_dir=responses_dir)
+    serialized_results = parsed.model_dump_json()
+    loaded_results = ChunkResults.model_validate_json(serialized_results)
+    review = synthesize_final_review(loaded_results, chunk_plan=plan)
+    serialized_review = review.model_dump_json()
+    final_document = validate_final_review_document(json.loads(serialized_review))
+    gate = evaluate_review_quality_gate(
+        final_document,
+        ChunkResults.model_validate_json(serialized_results),
+        chunk_plan=plan,
+        critical_pr=False,
+    )
+
+    assert parsed.status == expected_parser_status
+    assert loaded_results.status == expected_parser_status
+    assert review.status == expected_review_status
+    assert gate.status == expected_gate_status
+    assert gate.manual_review_required is partial
+    if partial:
+        assert review.coverage.files_partial == [EXECUTION_FILES[1]]
+        assert review.verdict == "manual_review_required"
+        assert gate.normalized_verdict == "manual_review_required"
+    else:
+        assert review.coverage.files_reviewed == EXECUTION_FILES
+        assert review.verdict == "approved"
+        assert gate.normalized_verdict == "approved"
+    assert "chunks_parsed_missing" not in review.limitations
+    assert "chunks_parsed_missing" not in gate.limitations
+    assert not any(
+        _has_reason(review.limitations, reason)
+        or _has_reason(gate.limitations, reason)
+        for reason in EXECUTION_MISMATCH_REASONS
+    )
+
+
 def test_unknown_final_verdict_generates_failed_gate_not_validation_error() -> None:
     gate = _gate(_final_review(verdict="surprising_verdict"))
 
