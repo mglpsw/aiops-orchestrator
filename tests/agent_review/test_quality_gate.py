@@ -874,6 +874,100 @@ def test_u2_gate_target_mismatch_cannot_authorize_p1_finding() -> None:
     assert gate.manual_review_required is True
 
 
+@pytest.mark.parametrize(
+    "chunk_results_ref",
+    [
+        pytest.param({"status": "failed"}, id="status"),
+        pytest.param({"created_at": "2000-01-01T00:00:00Z"}, id="created-at"),
+        pytest.param({"schema_version": 99}, id="schema-version"),
+    ],
+)
+def test_u2_gate_rejects_observable_final_chunk_results_ref_mismatch(
+    chunk_results_ref: dict[str, object],
+) -> None:
+    gate = _gate(
+        _final_review(
+            inputs={"chunk_results": chunk_results_ref},
+            coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+        ),
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
+
+    assert "final_review_input_mismatch" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    "chunk_plan_ref",
+    [
+        pytest.param({"provided": False}, id="provided-false"),
+        pytest.param({"provided": True, "status": "partial"}, id="status"),
+    ],
+)
+def test_u2_gate_rejects_observable_final_chunk_plan_ref_mismatch(
+    chunk_plan_ref: dict[str, object],
+) -> None:
+    plan = _execution_plan()
+    gate = _gate(
+        _final_review(
+            inputs={"chunk_plan": chunk_plan_ref},
+            coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+        ),
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+        chunk_plan=plan,
+    )
+
+    assert "final_review_input_mismatch" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_final_input_mismatch_cannot_authorize_p1_finding() -> None:
+    gate = _gate(
+        _final_review(
+            confirmed_findings=[_finding()],
+            inputs={"chunk_results": {"status": "failed"}},
+            coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+        ),
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
+
+    assert "final_review_input_mismatch" in gate.limitations
+    assert any("input_binding_mismatch" in warning for warning in gate.warnings)
+    assert not any(reason.startswith("confirmed_blocker:") for reason in gate.blocked_reasons)
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_matching_generated_input_refs_remain_a_positive_control() -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    gate = _gate(review.model_dump(mode="json"), results, chunk_plan=plan)
+
+    assert "final_review_input_mismatch" not in gate.limitations
+    assert gate.status == "passed"
+    assert gate.normalized_verdict == "approved"
+    assert gate.manual_review_required is False
+
+
 @pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
 @pytest.mark.parametrize(
     (
