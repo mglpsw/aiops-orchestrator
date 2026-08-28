@@ -123,6 +123,7 @@ class OperationalReviewInputsV2:
     head_sha: str
     tested_merge_sha: str
     toolrepo_sha: str
+    toolchain_digest: str
     evidence_hash: str
     repo: str
     pr_number: int
@@ -277,7 +278,7 @@ def run_operational_review_v2(inputs: OperationalReviewInputsV2) -> ReviewReadin
         provenance=[],
         origin=inputs.origin,
         snapshot=empty_snapshot,
-        toolchain_digest=inputs.toolrepo_sha,
+        toolchain_digest=inputs.toolchain_digest,
         target_profile_root=str(inputs.trusted_profile_root),
     )
     return readiness

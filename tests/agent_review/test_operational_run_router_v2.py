@@ -179,6 +179,7 @@ def _run_router_product_review(tmp_path: Path, *, mock_urlopen):
         head_sha=head_sha,
         tested_merge_sha="3" * 40,
         toolrepo_sha="4" * 40,
+        toolchain_digest="e" * 64,
         evidence_hash=_EVIDENCE_HASH,
         repo="mglpsw/AgentEscala",
         pr_number=101,
