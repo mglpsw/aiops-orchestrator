@@ -289,6 +289,65 @@ def test_u2_synthesis_zero_parsed_without_plan_is_not_positive() -> None:
 
 
 @pytest.mark.parametrize(
+    "invalid_chunk_id",
+    [
+        "",
+        " chunk-01-primary_backend_logic",
+        "../chunk-01-primary_backend_logic",
+        "ghp_abcdefghijk_sensitive",
+    ],
+    ids=["empty", "leading-space", "path-like", "secret-like"],
+)
+def test_u2_synthesis_invalid_parsed_id_without_plan_is_not_positive(
+    invalid_chunk_id: str,
+) -> None:
+    """A string is not execution evidence until it passes the canonical ID rules."""
+    results = _chunk_results(
+        status="complete",
+        chunks_parsed=[invalid_chunk_id],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+
+    review = synthesize_final_review(results)
+
+    assert "chunks_parsed_missing" in review.limitations
+    assert "chunk_execution_foreign_id" in review.limitations
+    if invalid_chunk_id:
+        assert invalid_chunk_id not in "\n".join(review.limitations)
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize(
+    "invalid_chunk_id",
+    ["", "../chunk-01-primary_backend_logic", "ghp_abcdefghijk_sensitive"],
+    ids=["empty", "path-like", "secret-like"],
+)
+def test_u2_synthesis_matching_invalid_plan_and_result_ids_are_not_execution_backed(
+    invalid_chunk_id: str,
+) -> None:
+    """Two matching invalid carriers cannot manufacture one executed chunk."""
+    plan = _execution_plan()
+    plan.chunks[0].chunk_id = invalid_chunk_id
+    results = _chunk_results(
+        status="complete",
+        chunks_parsed=[invalid_chunk_id],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert "chunks_parsed_missing" in review.limitations
+    assert "chunk_execution_foreign_id" in review.limitations
+    if invalid_chunk_id:
+        assert invalid_chunk_id not in "\n".join(review.limitations)
+    assert review.coverage.files_reviewed == []
+    assert review.coverage.files_not_reviewed == [EXECUTION_FILES[0]]
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize(
     (
         "plan_status",
         "chunk_coverage",
