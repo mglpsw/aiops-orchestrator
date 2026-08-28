@@ -66,6 +66,8 @@ def _build_argument_parser() -> argparse.ArgumentParser:
                          help=argparse.SUPPRESS)
     parser.add_argument("--_inner-declared-toolrepo-sha", dest="inner_declared_toolrepo_sha", default=None,
                          help=argparse.SUPPRESS)
+    parser.add_argument("--_diagnose-source-origin", action="store_true", dest="diagnose_source_origin",
+                         help=argparse.SUPPRESS)
     parser.add_argument("--toolchain-digest", required=True,
                          help="sha256 identity of the interpreter/third-party dependency set -- "
                               "a DISTINCT authority from --_inner-declared-toolrepo-sha (project "
@@ -140,6 +142,23 @@ def _run_inner_semantic_child(args: argparse.Namespace) -> int:
     from app.agent_review.review_transport_v2 import offline_file_transport_v2
     from app.agent_review.run_assembly_v2 import RunAssemblyError
     from app.agent_review.semantic_grouping_policy_v2 import SemanticGroupingError, SemanticGroupingPolicyV2
+
+    if args.diagnose_source_origin:
+        # §5: private/test-only diagnostic proving the semantic child's
+        # own project-owned source imported from the materialized
+        # ToolrepoExecutionSubjectV2, not the mutable development
+        # checkout. Never part of the canonical stdout contract -- printed
+        # to stderr, and this mode exits without running any review.
+        import app.agent_review.controlled_subject_v2 as _csv2
+        import app.agent_review.operational_run_v2 as _orv2
+        import app.agent_review.review_transport_v2 as _rtv2
+        print(json.dumps({
+            "operational_run_v2_file": _orv2.__file__,
+            "controlled_subject_v2_file": _csv2.__file__,
+            "review_transport_v2_file": _rtv2.__file__,
+            "this_script_file": str(_THIS_SCRIPT),
+        }), file=sys.stderr)
+        return 0
 
     try:
         grouping_policy_text = args.grouping_policy.read_text(encoding="utf-8")
