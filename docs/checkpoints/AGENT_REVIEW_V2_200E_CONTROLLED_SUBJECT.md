@@ -1400,6 +1400,19 @@ distinct fields (`fd3dc50`).
   outbound request while a redaction placeholder survives; two tamper
   non-vacuity controls (`returned_output.sha256`,
   `caller_declared_metadata`) each degrade to zero bound findings.
+
+  **Scope limitation, found by independent review and confirmed
+  directly, recorded rather than left implicit:** this proves the
+  `ghp_`/`github_pat_` GitHub-token shape specifically -- it is not a
+  claim that `app/agent_review/redaction.py` (a pre-existing authority,
+  no part of this PR's diff) catches every secret shape. Verified
+  directly: an AWS access key ID, an `aws_secret_access_key = ...`
+  assignment, a Slack bot token (`xoxb-...`), and a Stripe live key
+  (`sk_live_...`) all pass through `redact_text` unredacted on this host,
+  while `sk-...` (OpenAI-style), `sk-ant-...` (Anthropic-style), and both
+  GitHub token shapes are caught. Widening `redaction.py`'s pattern set is
+  a legitimate follow-up; it is a pre-existing-authority change, out of
+  scope for this slice's own claims, and not attempted here.
 - **§17** — recursive before/after snapshot (worktree + `.git` + ignored
   + untracked) around the real product subprocess; a read-only target
   fixture (worktree and `.git` both `chmod`-restricted) still succeeds,
