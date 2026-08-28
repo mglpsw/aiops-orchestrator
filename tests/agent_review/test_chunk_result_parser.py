@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.agent_review.chunk_result_parser import ChunkResultParserError, parse_chunk_results
+from app.agent_review.final_synthesizer import synthesize_final_review
 from app.agent_review.schemas import ChunkResults, SemanticChunk, SemanticChunkPlan
 
 
@@ -33,11 +34,19 @@ def _chunk(
 
 
 def _plan(chunks: list[SemanticChunk] | None = None, *, status: str = "complete") -> SemanticChunkPlan:
+    effective_chunks = chunks if chunks is not None else [_chunk()]
+    files_covered = list(
+        dict.fromkeys(
+            file_path
+            for chunk in effective_chunks
+            for file_path in chunk.files
+        )
+    )
     return SemanticChunkPlan(
         target_repo="mglpsw/AgentEscala",
         max_parallel_blocks=6,
-        chunks=chunks if chunks is not None else [_chunk()],
-        files_covered=["backend/services/schedule.py"],
+        chunks=effective_chunks,
+        files_covered=files_covered,
         status=status,  # type: ignore[arg-type]
     )
 
@@ -694,6 +703,53 @@ def test_u2_all_expected_files_exactly_reviewed_remains_complete(tmp_path: Path)
     )
     assert results.status == "complete"
     assert not any(limitation.startswith("coverage_") for limitation in results.limitations)
+
+
+def test_u2_parser_emits_total_plan_known_coverage_beyond_chunk_files(
+    tmp_path: Path,
+) -> None:
+    reviewed = "src/a.py"
+    not_covered = "src/b.py"
+    chunk = _chunk(files=[reviewed])
+    chunk_plan = SemanticChunkPlan(
+        target_repo="mglpsw/AgentEscala",
+        max_parallel_blocks=6,
+        chunks=[chunk],
+        files_covered=[reviewed],
+        files_not_covered=[not_covered],
+        status="degraded",
+    )
+    responses = _responses_dir(tmp_path)
+    _write_response(
+        responses,
+        chunk=chunk,
+        coverage_notes={"files_reviewed": [reviewed]},
+    )
+
+    results = parse_chunk_results(chunk_plan, responses_dir=responses)
+
+    _assert_total_coverage_partition(
+        results,
+        expected=[reviewed, not_covered],
+        reviewed=[reviewed],
+        partial=[],
+        not_reviewed=[not_covered],
+    )
+    assert results.chunks_parsed == [chunk.chunk_id]
+    assert results.chunks_failed == []
+    assert results.status == "degraded"
+    assert "chunk_plan_status_degraded" in results.limitations
+
+    results.status = "complete"
+    review = synthesize_final_review(results)
+
+    assert review.inputs["chunk_results"]["status"] == "complete"
+    assert review.inputs["chunk_plan"] == {"provided": False}
+    assert review.coverage.files_reviewed == [reviewed]
+    assert review.coverage.files_partial == []
+    assert review.coverage.files_not_reviewed == [not_covered]
+    assert review.status == "partial"
+    assert review.verdict == "manual_review_required"
 
 
 @pytest.mark.parametrize(

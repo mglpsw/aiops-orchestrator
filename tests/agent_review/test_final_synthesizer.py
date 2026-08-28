@@ -252,6 +252,113 @@ def test_u2_synthesis_reuses_worst_state_for_direct_overlapping_results() -> Non
     assert review.limitations.count("coverage_file_in_multiple_states") == 1
 
 
+def test_u2_mutated_complete_status_cannot_hide_self_contained_gap() -> None:
+    reviewed = "src/a.py"
+    not_reviewed = "src/b.py"
+    chunk_results = _chunk_results(
+        status="degraded",
+        coverage=ChunkResultsCoverage(
+            files_reviewed=[reviewed],
+            files_not_reviewed=[not_reviewed],
+        ),
+    )
+    chunk_results.status = "complete"
+
+    review = synthesize_final_review(chunk_results)
+
+    assert review.inputs["chunk_results"]["status"] == "complete"
+    assert review.inputs["chunk_plan"] == {"provided": False}
+    assert review.coverage.files_reviewed == [reviewed]
+    assert review.coverage.files_partial == []
+    assert review.coverage.files_not_reviewed == [not_reviewed]
+    assert review.status == "partial"
+    assert review.verdict == "manual_review_required"
+
+
+def test_u2_forged_reviewed_results_cannot_promote_plan_not_covered_file() -> None:
+    reviewed = "src/a.py"
+    capped = "src/b.py"
+    chunk = SemanticChunk(
+        chunk_id="chunk-01-primary_backend_logic",
+        semantic_group="primary_backend_logic",
+        order_index=0,
+        files=[reviewed],
+        artifacts=["artifact:file-diff-context", "artifact:checks"],
+        contracts=["target_profile:domain_contracts"],
+        coverage="complete",
+        prompt_budget_chars=24_000,
+        estimated_chars=512,
+        limitations=[],
+    )
+    chunk_plan = SemanticChunkPlan(
+        target_repo="mglpsw/AgentEscala",
+        max_parallel_blocks=6,
+        chunks=[chunk],
+        files_covered=[reviewed],
+        files_not_covered=[capped],
+        status="complete",
+    )
+    forged_results = _chunk_results(
+        status="complete",
+        coverage=ChunkResultsCoverage(files_reviewed=[reviewed, capped]),
+    )
+
+    review = synthesize_final_review(forged_results, chunk_plan=chunk_plan)
+
+    assert review.coverage.files_reviewed == [reviewed]
+    assert review.coverage.files_partial == []
+    assert review.coverage.files_not_reviewed == [capped]
+    assert review.coverage.expected_files == [reviewed, capped]
+    assert review.coverage.missing_expected_files == []
+    assert review.coverage.extra_reported_files == []
+    assert review.status == "partial"
+    assert review.verdict == "manual_review_required"
+    assert "coverage_file_in_multiple_states" not in review.limitations
+
+
+@pytest.mark.parametrize("blocker_severity", ["P0", "P1"])
+def test_u2_reliable_blocker_and_risk_survive_incomplete_coverage(
+    blocker_severity: str,
+) -> None:
+    blocker = _finding(
+        severity=blocker_severity,
+        title=f"{blocker_severity} reliable blocker",
+        dedupe_key=f"reliable-{blocker_severity}",
+    )
+    followup = _finding(
+        severity="P2",
+        title="P2 follow-up",
+        dedupe_key="p2-follow-up",
+    )
+    risk = _risk(title="Coverage follow-up risk")
+    review = synthesize_final_review(
+        _chunk_results(
+            status="complete",
+            findings=[followup, blocker],
+            risks=[risk],
+            coverage=ChunkResultsCoverage(
+                files_reviewed=["src/a.py"],
+                files_not_reviewed=["src/b.py"],
+            ),
+        )
+    )
+
+    assert review.status == "partial"
+    assert review.verdict == "changes_requested"
+    assert [finding.severity for finding in review.confirmed_findings] == [
+        blocker_severity,
+        "P2",
+    ]
+    assert [finding.title for finding in review.confirmed_findings] == [
+        f"{blocker_severity} reliable blocker",
+        "P2 follow-up",
+    ]
+    assert len(review.risks) == 1
+    assert review.risks[0].title == "Coverage follow-up risk"
+    assert review.risks[0].source == "chunk_risk"
+    assert review.coverage.files_not_reviewed == ["src/b.py"]
+
+
 def test_degraded_chunk_results_keeps_explicit_limitation() -> None:
     review = synthesize_final_review(
         _chunk_results(status="degraded", limitations=["chunk_response_json_invalid"])

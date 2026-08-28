@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,43 @@ COVERAGE_STATE_PRIORITY = {
     "partial": 1,
     "not_reviewed": 2,
 }
+
+
+@dataclass(frozen=True)
+class _NormalizedCoveragePartition:
+    """One ordered universe with exactly one effective state per file.
+
+    This is intentionally an internal value rather than a v1 wire model.  The
+    file universe is the set of assignment keys, so callers cannot separate a
+    flat expected-file list from the plan state that constrains it.
+    """
+
+    assignments: tuple[tuple[str, str], ...]
+    limitations: tuple[str, ...] = ()
+    foreign_files: tuple[str, ...] = ()
+
+    @property
+    def expected_files(self) -> list[str]:
+        return [file_path for file_path, _ in self.assignments]
+
+    @property
+    def states(self) -> dict[str, str]:
+        return dict(self.assignments)
+
+    def as_chunk_results_coverage(self) -> ChunkResultsCoverage:
+        return ChunkResultsCoverage(
+            files_reviewed=[
+                file_path for file_path, state in self.assignments if state == "reviewed"
+            ],
+            files_partial=[
+                file_path for file_path, state in self.assignments if state == "partial"
+            ],
+            files_not_reviewed=[
+                file_path
+                for file_path, state in self.assignments
+                if state == "not_reviewed"
+            ],
+        )
 
 
 def load_json_object(path: Path | str, *, error_class: str) -> dict[str, Any]:
@@ -86,6 +124,8 @@ def parse_chunk_results(
     rejected_findings = []
     coverage = ChunkResultsCoverage()
     limitations = list(chunk_plan.limitations)
+    plan_coverage = _normalize_plan_coverage_partition(chunk_plan)
+    limitations.extend(plan_coverage.limitations)
     # Kept strictly apart from `limitations` (AgentEscala#675, Fix A). Every
     # append to `limitations` below is engine-authored; the only model-authored
     # strings in this function land in `model_reported_limitations`.
@@ -135,11 +175,18 @@ def parse_chunk_results(
         coverage.files_partial.extend(normalized_coverage.files_partial)
         coverage.files_not_reviewed.extend(normalized_coverage.files_not_reviewed)
 
-    coverage, aggregate_coverage_limitations, _ = _normalize_coverage_partition(
+    response_universe = [
+        file_path for chunk in chunk_plan.chunks for file_path in chunk.files
+    ]
+    reported_coverage = _build_normalized_coverage_partition(
         coverage,
-        expected_files=[file_path for chunk in chunk_plan.chunks for file_path in chunk.files],
+        expected_files=response_universe,
     )
-    limitations.extend(aggregate_coverage_limitations)
+    limitations.extend(reported_coverage.limitations)
+    coverage = _compose_coverage_partitions(
+        plan_coverage,
+        reported_coverage,
+    ).as_chunk_results_coverage()
     results = ChunkResults(
         target_repo=chunk_plan.target_repo,
         chunk_plan_ref=_chunk_plan_ref(chunk_plan),
@@ -153,6 +200,7 @@ def parse_chunk_results(
         coverage=coverage,
         status=_result_status(
             chunk_plan=chunk_plan,
+            plan_coverage=plan_coverage,
             parsed_count=len(chunks_parsed),
             failed_count=len(chunks_failed),
             coverage=coverage,
@@ -212,6 +260,7 @@ def _failure(chunk: SemanticChunk, error_class: str, message: str) -> ChunkParse
 def _result_status(
     *,
     chunk_plan: SemanticChunkPlan,
+    plan_coverage: _NormalizedCoveragePartition,
     parsed_count: int,
     failed_count: int,
     coverage: ChunkResultsCoverage,
@@ -232,6 +281,12 @@ def _result_status(
     # final_synthesizer and quality_gate already treat "partial" as
     # blocking wherever they read `chunk_results.status`.
     if chunk_plan.status == "partial":
+        return "partial"
+    normalized_plan_coverage = plan_coverage.as_chunk_results_coverage()
+    if (
+        normalized_plan_coverage.files_partial
+        or normalized_plan_coverage.files_not_reviewed
+    ):
         return "partial"
     if coverage.files_partial or coverage.files_not_reviewed:
         return "partial"
@@ -286,16 +341,76 @@ def _response_limitations(response: ChunkResponse) -> list[str]:
     return limitations
 
 
-def _expected_plan_files(chunk_plan: SemanticChunkPlan) -> list[str]:
-    """Return the plan-wide file universe used by downstream coverage checks."""
-    files = [
+def _normalize_plan_coverage_partition(
+    chunk_plan: SemanticChunkPlan,
+) -> _NormalizedCoveragePartition:
+    """Normalize the plan's universe and state claims as one authority value."""
+    chunk_files = [
+        file_path for chunk in chunk_plan.chunks for file_path in chunk.files
+    ]
+    expected_files = [
         *chunk_plan.files_covered,
         *chunk_plan.files_partially_covered,
         *chunk_plan.files_not_covered,
+        *chunk_files,
     ]
-    for chunk in chunk_plan.chunks:
-        files.extend(chunk.files)
-    return _dedupe(files)
+    return _build_normalized_coverage_partition(
+        ChunkResultsCoverage(
+            files_reviewed=chunk_plan.files_covered,
+            files_partial=chunk_plan.files_partially_covered,
+            files_not_reviewed=chunk_plan.files_not_covered,
+        ),
+        expected_files=expected_files,
+    )
+
+
+def _normalize_coverage_against_partition(
+    coverage_notes: ChunkCoverageNotes | ChunkResultsCoverage,
+    *,
+    authority: _NormalizedCoveragePartition,
+) -> _NormalizedCoveragePartition:
+    """Revalidate one freely constructible carrier against one authority."""
+    return _build_normalized_coverage_partition(
+        coverage_notes,
+        expected_files=authority.expected_files,
+    )
+
+
+def _coverage_universe_partition(files: list[str]) -> _NormalizedCoveragePartition:
+    """Build a neutral reviewed-state partition for an observable universe."""
+    expected = _dedupe(files)
+    return _NormalizedCoveragePartition(
+        assignments=tuple((file_path, "reviewed") for file_path in expected)
+    )
+
+
+def _compose_coverage_partitions(
+    authority: _NormalizedCoveragePartition,
+    *reported_partitions: _NormalizedCoveragePartition,
+) -> _NormalizedCoveragePartition:
+    """Join normalized carriers without treating cross-carrier states as overlap."""
+    effective = authority.states
+    limitations = list(authority.limitations)
+    foreign_files = list(authority.foreign_files)
+
+    for reported in reported_partitions:
+        limitations.extend(reported.limitations)
+        foreign_files.extend(reported.foreign_files)
+        for file_path, state in reported.assignments:
+            if file_path not in effective:
+                foreign_files.append(file_path)
+                continue
+            if COVERAGE_STATE_PRIORITY[state] > COVERAGE_STATE_PRIORITY[effective[file_path]]:
+                effective[file_path] = state
+
+    return _NormalizedCoveragePartition(
+        assignments=tuple(
+            (file_path, effective[file_path])
+            for file_path in authority.expected_files
+        ),
+        limitations=tuple(_dedupe(limitations)),
+        foreign_files=tuple(_dedupe(foreign_files)),
+    )
 
 
 def _normalize_coverage_partition(
@@ -309,10 +424,26 @@ def _normalize_coverage_partition(
     pass that aggregate back through the same authority, which keeps the union
     disjoint when a path occurs in more than one chunk.
     """
+    normalized = _build_normalized_coverage_partition(
+        coverage_notes,
+        expected_files=expected_files,
+    )
+    return (
+        normalized.as_chunk_results_coverage(),
+        list(normalized.limitations),
+        bool(normalized.foreign_files),
+    )
+
+
+def _build_normalized_coverage_partition(
+    coverage_notes: ChunkCoverageNotes | ChunkResultsCoverage,
+    *,
+    expected_files: list[str],
+) -> _NormalizedCoveragePartition:
     expected = _dedupe(expected_files)
     expected_set = set(expected)
     assignments: dict[str, set[str]] = {file_path: set() for file_path in expected}
-    foreign_path_reported = False
+    foreign_files: list[str] = []
 
     for state, reported_files in (
         ("reviewed", coverage_notes.files_reviewed),
@@ -321,15 +452,11 @@ def _normalize_coverage_partition(
     ):
         for file_path in _dedupe(reported_files):
             if file_path not in expected_set:
-                foreign_path_reported = True
+                foreign_files.append(file_path)
                 continue
             assignments[file_path].add(state)
 
-    normalized: dict[str, list[str]] = {
-        "reviewed": [],
-        "partial": [],
-        "not_reviewed": [],
-    }
+    normalized: list[tuple[str, str]] = []
     expected_file_missing = False
     file_in_multiple_states = False
 
@@ -337,12 +464,12 @@ def _normalize_coverage_partition(
         states = assignments[file_path]
         if not states:
             expected_file_missing = True
-            normalized["not_reviewed"].append(file_path)
+            normalized.append((file_path, "not_reviewed"))
             continue
         if len(states) > 1:
             file_in_multiple_states = True
         state = max(states, key=COVERAGE_STATE_PRIORITY.__getitem__)
-        normalized[state].append(file_path)
+        normalized.append((file_path, state))
 
     limitations: list[str] = []
     if expected_file_missing:
@@ -350,14 +477,10 @@ def _normalize_coverage_partition(
     if file_in_multiple_states:
         limitations.append("coverage_file_in_multiple_states")
 
-    return (
-        ChunkResultsCoverage(
-            files_reviewed=normalized["reviewed"],
-            files_partial=normalized["partial"],
-            files_not_reviewed=normalized["not_reviewed"],
-        ),
-        limitations,
-        foreign_path_reported,
+    return _NormalizedCoveragePartition(
+        assignments=tuple(normalized),
+        limitations=tuple(limitations),
+        foreign_files=tuple(_dedupe(foreign_files)),
     )
 
 

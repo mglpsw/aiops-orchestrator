@@ -11,8 +11,10 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.agent_review.chunk_result_parser import (
-    _expected_plan_files,
-    _normalize_coverage_partition,
+    _build_normalized_coverage_partition,
+    _compose_coverage_partitions,
+    _normalize_coverage_against_partition,
+    _normalize_plan_coverage_partition,
 )
 from app.agent_review.redaction import RedactionState, redact_text, redact_value
 from app.agent_review.schemas import (
@@ -365,18 +367,31 @@ def _coverage(
         comparison_available = True
         if chunk_plan.status != "complete":
             limitations.append(f"chunk_plan_status_{chunk_plan.status}")
-        expected_files = _expected_plan_files(chunk_plan)
+        plan_coverage = _normalize_plan_coverage_partition(chunk_plan)
+        expected_files = plan_coverage.expected_files
         missing_expected_files = [file_path for file_path in expected_files if file_path not in reported]
         extra_reported_files = [file_path for file_path in reported if file_path not in expected_files]
         if extra_reported_files:
             limitations.append("coverage_reported_files_not_in_plan")
+        normalized_report = _normalize_coverage_against_partition(
+            chunk_results.coverage,
+            authority=plan_coverage,
+        )
+        normalized_partition = _compose_coverage_partitions(
+            plan_coverage,
+            normalized_report,
+        )
+        limitations.extend(normalized_partition.limitations)
+        if normalized_report.foreign_files:
+            limitations.append("coverage_reported_files_not_in_plan")
+    else:
+        normalized_partition = _build_normalized_coverage_partition(
+            chunk_results.coverage,
+            expected_files=reported,
+        )
+        limitations.extend(normalized_partition.limitations)
 
-    normalization_expected_files = expected_files if comparison_available else reported
-    normalized, normalization_limitations, _ = _normalize_coverage_partition(
-        chunk_results.coverage,
-        expected_files=normalization_expected_files,
-    )
-    limitations.extend(normalization_limitations)
+    normalized = normalized_partition.as_chunk_results_coverage()
 
     if not reported_files_reviewed and not reported_files_partial and not reported_files_not_reviewed:
         limitations.append("coverage_missing")
@@ -494,6 +509,7 @@ def _coverage_requires_manual_review(
     return any(
         limitation in RECOVERABLE_COVERAGE_LIMITATIONS
         or limitation.startswith("coverage_file_not_in_chunk:")
+        or limitation.startswith("chunk_plan_status_")
         for limitation in limitations
     )
 
