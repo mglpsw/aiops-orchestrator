@@ -91,6 +91,18 @@ These counterexamples, their fixtures, tests and commit history are preserved
 as forensic evidence and must be ported as red tests where applicable. No new
 Git-semantic implementation correction is authorized in this predecessor.
 
+Runnable, independently re-derived reproductions of all six counterexamples
+above (built fresh from scratch against the real functions, not merely
+re-asserted from a lane's claim), plus the three adversarial review lanes'
+full final reports and every named reproduction driver script they wrote,
+are committed at
+`docs/checkpoints/evidence/AGENT_REVIEW_V2_274_ROUND3_ADVERSARIAL/`
+(`independent-verification/` for the six re-derivations, `laneA`/`laneB`/
+`laneC` for the original lane material). Exact head reviewed:
+`c68a8b9a6b4d57383918f7fc1fa6a85536e331c6`; subject `HEAD` and
+`git status --porcelain` were captured before and after dispatch and
+confirmed identical, so the lanes' read-only constraint held.
+
 ### Port classification
 
 | Current material | Successor disposition |
