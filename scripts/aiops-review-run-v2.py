@@ -8,10 +8,29 @@ real credential.
 ## This CLI's own epoch (`#200-D` §9)
 
 This CLI owns: argv parsing, reading its own caller-supplied JSON/text
-files, UTF-8/file I/O for those inputs, strict JSON parsing, writing its
-output file, and the Router credential environment lookup. Each of those
-operations is translated into this CLI's OWN `input_invalid`-style reason
-codes below.
+files, UTF-8/file I/O for those inputs, strict JSON parsing, and the Router
+credential environment lookup. Each of those operations is translated into
+this CLI's OWN `input_invalid`-style reason codes below.
+
+## No target-filesystem output writer (`#200-D` correction)
+
+An earlier revision accepted `--output <path>` and wrote the result there
+directly -- a caller could pass `--output <repo_root>/review.json` and the
+review engine itself would write into the target checkout it was reviewing,
+contradicting this feature's own target-non-mutation claim in a way its own
+black-box test (comparing only `HEAD^{tree}`) could not even detect, since a
+new untracked file does not change a tree hash.
+
+This CLI has no filesystem-output authority at all: the canonical
+`ReviewReadinessV2` JSON is written to **stdout**, and only to stdout, on
+success. A host workflow that wants a file redirects stdout itself
+(`aiops-review-run-v2.py ... > result.json`) -- that redirection happens
+entirely outside this process and is not something this engine can point
+at the target checkout, because this engine never receives or interprets a
+destination path at all. This is the clean fix rather than a resolve-and-
+validate containment check: a check-then-write path can always be
+retargeted between the check and the write, and this CLI is new/unreleased,
+so there is no existing caller depending on `--output` to preserve.
 
 After material crosses into `run_operational_review_v2` (the composer's own
 boundary), this CLI does not generically catch downstream
@@ -29,11 +48,12 @@ proves the executing engine's own source checkout against it
 (`toolrepo_identity_v2`) before any semantic review runs. The PROVEN sha,
 never the bare declaration, is what reaches assembly's run identity.
 
-Exit code convention, matching the existing v2 quality-gate CLI:
+Exit code convention:
 
-    exit 0  => a ReviewReadinessV2 artifact was written to --output.
+    exit 0  => the canonical ReviewReadinessV2 JSON was printed to stdout.
                Does NOT mean ready -- the state is INSIDE the artifact.
-    exit !=0 => NO artifact was written.
+    exit !=0 => nothing was printed to stdout; a stable reason code was
+               printed to stderr instead.
 """
 
 from __future__ import annotations
@@ -79,7 +99,6 @@ CLI_INPUT_INVALID_REASON_V2 = "run_cli_input_invalid"
 CLI_OFFLINE_RESPONSES_DIR_REQUIRED_REASON_V2 = "run_cli_offline_responses_dir_required"
 CLI_ROUTER_ARGS_REQUIRED_REASON_V2 = "run_cli_router_args_required"
 CLI_ROUTER_CREDENTIAL_MISSING_REASON_V2 = "run_cli_router_credential_missing"
-CLI_OUTPUT_UNWRITABLE_REASON_V2 = "run_cli_output_unwritable"
 
 _ROUTER_API_KEY_ENV_VAR_V2 = "AGENT_ROUTER_API_KEY"
 
@@ -114,7 +133,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--offline-responses-dir", help="offline mode: transport envelope directory")
     parser.add_argument("--router-base-url", help="router mode: Agent Router base URL")
     parser.add_argument("--router-model", help="router mode: logical review preset")
-    parser.add_argument("--output", required=True, help="path to write the ReviewReadinessV2 JSON")
     return parser.parse_args(argv)
 
 
@@ -245,22 +263,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
 
-    output_path = Path(args.output)
-    try:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(
-                outcome.review.readiness.model_dump(mode="json"),
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
+    # No filesystem output writer: the canonical result goes to stdout only.
+    # A caller redirects stdout itself; this process never receives or
+    # interprets a destination path, so it structurally cannot write into
+    # the target checkout it just reviewed.
+    print(
+        json.dumps(
+            outcome.review.readiness.model_dump(mode="json"),
+            ensure_ascii=False, indent=2, sort_keys=True,
         )
-    except OSError:
-        print(f"error: {CLI_OUTPUT_UNWRITABLE_REASON_V2}", file=sys.stderr)
-        return 1
+    )
     return 0
 
 

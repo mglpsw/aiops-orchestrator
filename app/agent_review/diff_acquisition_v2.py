@@ -33,12 +33,18 @@ import hashlib
 import re
 import shutil
 import subprocess
+import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 from pydantic import TypeAdapter, ValidationError
 
+from app.agent_review._sealed_git_execution_v2 import (
+    has_semantically_active_info_attributes_v2,
+    sealed_git_child_env_v2,
+)
 from app.agent_review.contracts_v2 import RelativePath
 
 _RELATIVE_PATH_ADAPTER: TypeAdapter[str] = TypeAdapter(RelativePath)
@@ -797,7 +803,9 @@ _RENAME_COPY_DETECTION_ARGS_V2: tuple[str, ...] = ("--find-renames=50%", "--find
 
 
 
-def _run_git_v2(argv: list[str], *, repo_root: Path) -> subprocess.CompletedProcess:
+def _run_git_v2(
+    argv: list[str], *, repo_root: Path, cwd: Path | None = None
+) -> subprocess.CompletedProcess:
     """Run git for acquisition, converting OS-level failures to this
     authority's own family.
 
@@ -809,13 +817,26 @@ def _run_git_v2(argv: list[str], *, repo_root: Path) -> subprocess.CompletedProc
 
     Only ``OSError`` is converted. A defect in this module still raises: a bug
     must never be laundered into an acquisition refusal.
+
+    `#200-D` correction: runs under `_sealed_git_execution_v2.sealed_git_
+    child_env_v2()` -- see that module for the measured `GIT_SEMANTIC_
+    EXECUTION_INVARIANT` this closes (replacement objects, ambient
+    GIT_DIR/GIT_OBJECT_DIRECTORY/etc redirection, global/system config).
+
+    ``cwd``, when given, is where the git PROCESS actually runs -- used by
+    the attribute-bound-worktree callers below so attribute resolution is
+    rooted at a disposable checkout of the declared subject rather than
+    the target's own (possibly attribute-polluted) working tree.
+    ``repo_root`` is still validated and is always what a caller declared
+    as the subject checkout.
     """
 
     if not Path(repo_root).is_dir():
         raise DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2)
     try:
         return subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
-            argv, cwd=repo_root, capture_output=True, text=False, check=False
+            argv, cwd=(cwd or repo_root), env=sealed_git_child_env_v2(),
+            capture_output=True, text=False, check=False,
         )
     except FileNotFoundError as exc:
         # Ask which file was missing rather than infer it. The earlier version
@@ -829,6 +850,80 @@ def _run_git_v2(argv: list[str], *, repo_root: Path) -> subprocess.CompletedProc
     except OSError as exc:
         # permissions, ENOTDIR after a race, fork/exec exhaustion, ...
         raise DiffAcquisitionError(DIFF_ACQUISITION_IO_FAILED_REASON_V2) from exc
+
+
+DIFF_INFO_ATTRIBUTES_ACTIVE_REASON_V2 = "diff_info_attributes_active"
+
+
+@contextmanager
+def _attribute_bound_diff_worktree_v2(repo_root: Path, head_sha: str) -> Iterator[Path]:
+    """Yield a disposable, detached Git worktree checked out exactly at
+    ``head_sha``, so `git diff`'s attribute resolution is rooted at the
+    DECLARED subject's own `.gitattributes` rather than the target
+    checkout's mutable working tree.
+
+    `#200-D` correction. Reproduced directly, without this: an untracked
+    `.gitattributes` planted in the target's own working tree (never
+    committed, invisible to any diff of tracked content) changed
+    `acquire_diff_v2`'s output for the IDENTICAL `base_sha...head_sha`
+    range from an ordinary text hunk to a binary patch -- `--no-textconv`/
+    `--no-ext-diff` do not touch this: `-diff`/`diff=<driver>` attribute
+    assignment is resolved independently of either mechanism.
+
+    `--attr-source=<tree-ish>` is Git's own native fix for exactly this,
+    but requires Git >= 2.40; this host's Git (2.39.5, Debian 12/bookworm
+    stable) does not have it -- verified directly, the flag fails with a
+    usage error, not merely absent from `--help`. A disposable `git
+    worktree` checked out at the exact declared commit achieves the same
+    property (attribute resolution walks that worktree's OWN
+    `.gitattributes`, never the target's) using only mechanics available
+    on this host's Git, verified directly: an untracked `.gitattributes`
+    in the ORIGINAL checkout has zero effect on a diff run from the
+    disposable worktree, while one committed AT `head_sha` is correctly
+    and deterministically applied (it is checked out into the disposable
+    worktree by construction).
+
+    `$GIT_DIR/info/attributes` is NOT closed by this -- it is shared by
+    every worktree of a repository, including this disposable one,
+    reproduced directly. Checked and refused separately, before the
+    worktree is even created, by `has_semantically_active_info_
+    attributes_v2` -- fail-closed, since no supported Git mechanism
+    excludes it from attribute resolution short of Git version support
+    this host does not have.
+
+    The worktree is removed, and its containing directory deleted, on
+    every exit path -- success, a typed refusal raised inside the `with`
+    block, or an unexpected defect.
+    """
+
+    env = sealed_git_child_env_v2()
+    if has_semantically_active_info_attributes_v2(Path(repo_root), env=env):
+        raise DiffAcquisitionError(DIFF_INFO_ATTRIBUTES_ACTIVE_REASON_V2)
+
+    holder_dir = Path(tempfile.mkdtemp(prefix="agent-review-diff-attr-source-v2-"))
+    worktree_dir = holder_dir / "wt"
+    try:
+        added = subprocess.run(
+            ["git", "worktree", "add", "--quiet", "--detach", str(worktree_dir), head_sha],
+            cwd=repo_root, env=env, capture_output=True, text=False, check=False,
+        )
+        if added.returncode != 0:
+            # `head_sha` was already shape-validated by the caller; a
+            # worktree-add failure here means Git could not materialize
+            # that commit -- the same class of failure `git diff` itself
+            # would report as `DIFF_UNREADABLE_REASON_V2` had this
+            # disposable-worktree step not existed. No new taxonomy for a
+            # condition the existing code already named.
+            raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
+        try:
+            yield worktree_dir
+        finally:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(worktree_dir)],
+                cwd=repo_root, env=env, capture_output=True, check=False,
+            )
+    finally:
+        shutil.rmtree(holder_dir, ignore_errors=True)
 
 
 def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
@@ -870,24 +965,26 @@ def acquire_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str:
     # same replacement character before the hunk body is hashed, so
     # genuinely different content could collide on the same diff_sha256/
     # fragment_id. Undecodable output fails closed instead.
-    result = _run_git_v2(
-        [
-            "git", "diff", "--no-ext-diff", "--no-textconv", "--binary",
-            # A Codex review found that an ambient diff.noprefix=true
-            # config (a real, documented git setting) makes git emit
-            # "diff --git my file.bin my file.bin" instead of the
-            # canonical "a/<path> b/<path>" form -- _split_diff_git_
-            # header_paths' fallback only recognizes headers starting
-            # with "a/", so a prefixless binary path with a space would
-            # still resolve to nothing. Forcing the standard prefixes
-            # explicitly, like -l1000 above forces the rename limit,
-            # means acquisition output never depends on ambient runner
-            # configuration.
-            "--src-prefix=a/", "--dst-prefix=b/",
-            *_RENAME_COPY_DETECTION_ARGS_V2, f"{base_sha}...{head_sha}",
-        ],
-        repo_root=repo_root,
-    )
+    with _attribute_bound_diff_worktree_v2(repo_root, head_sha) as attr_source_worktree:
+        result = _run_git_v2(
+            [
+                "git", "diff", "--no-ext-diff", "--no-textconv", "--binary",
+                # A Codex review found that an ambient diff.noprefix=true
+                # config (a real, documented git setting) makes git emit
+                # "diff --git my file.bin my file.bin" instead of the
+                # canonical "a/<path> b/<path>" form -- _split_diff_git_
+                # header_paths' fallback only recognizes headers starting
+                # with "a/", so a prefixless binary path with a space would
+                # still resolve to nothing. Forcing the standard prefixes
+                # explicitly, like -l1000 above forces the rename limit,
+                # means acquisition output never depends on ambient runner
+                # configuration.
+                "--src-prefix=a/", "--dst-prefix=b/",
+                *_RENAME_COPY_DETECTION_ARGS_V2, f"{base_sha}...{head_sha}",
+            ],
+            repo_root=repo_root,
+            cwd=attr_source_worktree,
+        )
     if result.returncode != 0:
         raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
     try:
@@ -1233,13 +1330,19 @@ def acquire_raw_diff_v2(repo_root: Path, *, base_sha: str, head_sha: str) -> str
     if not _GIT_SHA_RE.match(base_sha) or not _GIT_SHA_RE.match(head_sha):
         raise DiffAcquisitionError(INVALID_REF_REASON_V2)
 
-    result = _run_git_v2(
-        [
-            "git", "diff", "--no-ext-diff", "--raw", "-z",
-            *_RENAME_COPY_DETECTION_ARGS_V2, f"{base_sha}...{head_sha}",
-        ],
-        repo_root=repo_root,
-    )
+    # Same attribute-source binding as `acquire_diff_v2` (grant requirement:
+    # unified and raw/correlation acquisitions must use compatible attribute
+    # semantics, so `correlate_raw_and_unified_v2` never has to reconcile
+    # two views computed under different attribute truths).
+    with _attribute_bound_diff_worktree_v2(repo_root, head_sha) as attr_source_worktree:
+        result = _run_git_v2(
+            [
+                "git", "diff", "--no-ext-diff", "--raw", "-z",
+                *_RENAME_COPY_DETECTION_ARGS_V2, f"{base_sha}...{head_sha}",
+            ],
+            repo_root=repo_root,
+            cwd=attr_source_worktree,
+        )
     if result.returncode != 0:
         raise DiffAcquisitionError(DIFF_UNREADABLE_REASON_V2)
     try:

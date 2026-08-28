@@ -64,6 +64,45 @@ unrelated *toolrepo* file (a doc, an eval fixture, another script) still
 must not refuse a run. Git plumbing is used with explicit path arguments
 and NUL-delimited output -- never fragile text parsing of a status line.
 
+## `#200-D` correction: sealed Git execution, honest ignore/deletion semantics
+
+Independent review found three further gaps, each closed here:
+
+- **Ambient Git state and replacement objects.** Every Git call in this
+  module now runs under `_sealed_git_execution_v2.sealed_git_child_env_v2()`
+  -- see that module for the measured invariant this closes (an ambient
+  `GIT_DIR`, for one, silently redirects every Git command in a process to
+  an unrelated repository regardless of `cwd`, reproduced directly).
+
+- **`--exclude-standard` is not a source-identity authority.**
+  `git ls-files --others --exclude-standard` deliberately hides any path
+  matched by `.gitignore`/`.git/info/exclude`/the global ignore file --
+  reproduced directly: a stray `app/common/_stray_evil.py` became
+  completely invisible to the untracked-source check the moment a matching
+  `.gitignore` line existed, ignored or not, tracked or not. A file does
+  not become non-importable merely because Git has been told to ignore it.
+  The untracked-source check now enumerates ALL untracked paths under the
+  bounded set (`git ls-files --others`, no `--exclude-standard`) and
+  applies its OWN explicit SOURCE_IDENTITY filter -- `.py` files, excluding
+  `__pycache__` directory components -- rather than letting ignore
+  configuration make that decision. `__pycache__`/`.pyc` are TOOLCHAIN/
+  EXECUTION_ENVIRONMENT artifacts, `toolchain_digest`'s subject, not this
+  module's; routine Python execution must not be refused merely for
+  producing them.
+
+- **A deleted bounded path must not vanish from the proof.** The prior
+  implementation pre-filtered `BOUNDED_SOURCE_RELATIVE_PATHS_V2` to paths
+  that `.exists()` on disk BEFORE calling `git diff`, so a bounded path
+  deleted from disk (e.g. the CLI script itself) was silently excluded from
+  the pathspec `git diff` was even asked about -- reproduced directly: `git
+  diff --name-only HEAD -- scripts/aiops-review-run-v2.py` DOES report a
+  deletion when actually asked, but the prior code never asked, because the
+  path had already failed a filesystem `.exists()` check first. The full
+  declared `BOUNDED_SOURCE_RELATIVE_PATHS_V2` is now always passed to `git
+  diff` unconditionally; a genuinely wrong/empty `TOOLREPO_ROOT` (nothing
+  under the bounded set ever existed in the tree at all) is instead detected
+  by asking Git's own tree, via `git ls-tree`, never the filesystem.
+
 ## Second-order honesty (recorded, not hidden)
 
 This module is itself code that was imported and is running before it has
@@ -95,6 +134,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import app.agent_review as _agent_review_package_v2
+from app.agent_review._sealed_git_execution_v2 import sealed_git_child_env_v2
 
 TOOLREPO_IDENTITY_UNAVAILABLE_REASON_V2 = "toolrepo_identity_unavailable"
 TOOLREPO_IDENTITY_MISMATCH_REASON_V2 = "toolrepo_identity_mismatch"
@@ -151,7 +191,10 @@ def resolve_toolrepo_root_v2(*, executing_script: Path | None = None) -> Path:
 
 def _run_toolrepo_git_v2(argv: list[str], *, toolrepo_root: Path) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(argv, cwd=toolrepo_root, capture_output=True, text=True, check=False)
+        return subprocess.run(
+            argv, cwd=toolrepo_root, env=sealed_git_child_env_v2(),
+            capture_output=True, text=True, check=False,
+        )
     except OSError as exc:
         raise ToolrepoIdentityError(TOOLREPO_IDENTITY_UNAVAILABLE_REASON_V2) from exc
 
@@ -168,29 +211,72 @@ def _resolve_toolrepo_head_v2(toolrepo_root: Path) -> str:
     return head
 
 
-def _assert_bounded_source_clean_v2(toolrepo_root: Path) -> None:
-    existing_paths = [
-        path for path in BOUNDED_SOURCE_RELATIVE_PATHS_V2 if (toolrepo_root / path).exists()
+# SOURCE_IDENTITY vs TOOLCHAIN/EXECUTION_ENVIRONMENT, made explicit rather
+# than left to ignore-file configuration: a `.py` file is source; anything
+# under a `__pycache__` directory is a compiled-bytecode cache Python itself
+# creates during ordinary execution, and is `toolchain_digest`'s subject.
+_TOOLCHAIN_DIRECTORY_COMPONENTS_V2 = frozenset({"__pycache__"})
+
+
+def _is_toolchain_artifact_v2(relative_path: str) -> bool:
+    return "__pycache__" in Path(relative_path).parts
+
+
+def _bounded_source_present_in_tree_v2(toolrepo_root: Path) -> bool:
+    """Whether HEAD's own tree -- not the filesystem -- has anything under
+    the declared bounded set. Replaces a `.exists()` filesystem prefilter
+    that silently dropped a deleted bounded path from every check below it;
+    this is asked once, up front, only to detect a genuinely wrong or empty
+    `TOOLREPO_ROOT`, never to shrink the pathspec `git diff` is asked
+    about."""
+
+    result = _run_toolrepo_git_v2(
+        ["git", "ls-tree", "-r", "--name-only", "-z", "HEAD", "--", *BOUNDED_SOURCE_RELATIVE_PATHS_V2],
+        toolrepo_root=toolrepo_root,
+    )
+    if result.returncode != 0:
+        return False
+    return any(entry for entry in result.stdout.split("\0") if entry)
+
+
+def _assert_no_untracked_source_v2(toolrepo_root: Path) -> None:
+    # NO --exclude-standard: reproduced directly, that flag makes a stray
+    # source file matched by ANY .gitignore/.git/info/exclude/global-ignore
+    # entry invisible here, ignored or not, even though the file is fully
+    # present and, if imported, fully executable. Ignore configuration is
+    # not a source-identity authority.
+    untracked = _run_toolrepo_git_v2(
+        ["git", "ls-files", "--others", "-z", "--", *BOUNDED_SOURCE_RELATIVE_PATHS_V2],
+        toolrepo_root=toolrepo_root,
+    )
+    if untracked.returncode != 0:
+        raise ToolrepoIdentityError(TOOLREPO_IDENTITY_UNAVAILABLE_REASON_V2)
+    source_candidates = [
+        entry
+        for entry in untracked.stdout.split("\0")
+        if entry and entry.endswith(".py") and not _is_toolchain_artifact_v2(entry)
     ]
-    if not existing_paths:
+    if source_candidates:
+        raise ToolrepoIdentityError(TOOLREPO_IDENTITY_UNVERIFIABLE_REASON_V2)
+
+
+def _assert_bounded_source_clean_v2(toolrepo_root: Path) -> None:
+    if not _bounded_source_present_in_tree_v2(toolrepo_root):
         raise ToolrepoIdentityError(TOOLREPO_IDENTITY_UNAVAILABLE_REASON_V2)
 
+    # The FULL declared set, unconditionally -- a bounded path deleted from
+    # disk must surface as a tracked deletion here, never silently drop out
+    # of the pathspec before Git is even asked about it.
     modified = _run_toolrepo_git_v2(
-        ["git", "diff", "--name-only", "-z", "HEAD", "--", *existing_paths], toolrepo_root=toolrepo_root
+        ["git", "diff", "--name-only", "-z", "HEAD", "--", *BOUNDED_SOURCE_RELATIVE_PATHS_V2],
+        toolrepo_root=toolrepo_root,
     )
     if modified.returncode != 0:
         raise ToolrepoIdentityError(TOOLREPO_IDENTITY_UNAVAILABLE_REASON_V2)
     if any(entry for entry in modified.stdout.split("\0") if entry):
         raise ToolrepoIdentityError(TOOLREPO_WORKTREE_DIRTY_REASON_V2)
 
-    untracked = _run_toolrepo_git_v2(
-        ["git", "ls-files", "--others", "--exclude-standard", "-z", "--", *existing_paths],
-        toolrepo_root=toolrepo_root,
-    )
-    if untracked.returncode != 0:
-        raise ToolrepoIdentityError(TOOLREPO_IDENTITY_UNAVAILABLE_REASON_V2)
-    if any(entry for entry in untracked.stdout.split("\0") if entry):
-        raise ToolrepoIdentityError(TOOLREPO_IDENTITY_UNVERIFIABLE_REASON_V2)
+    _assert_no_untracked_source_v2(toolrepo_root)
 
 
 def establish_toolrepo_source_identity_v2(

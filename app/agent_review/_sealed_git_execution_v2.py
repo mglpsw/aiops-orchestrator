@@ -1,0 +1,160 @@
+"""`#200-D` correction: sealed Git execution boundary (issue #200).
+
+## `GIT_SEMANTIC_EXECUTION_INVARIANT`
+
+For every Git operation whose result participates in review subject
+acquisition, immutable reference material, or toolrepo source identity, the
+result must be a deterministic function of the explicitly named Git subject
+and this module's explicitly frozen command policy. Ambient Git process
+state, replacement refs, caller Git environment overrides, or global/system
+Git configuration must not alter the semantic result.
+
+Equivalently: `GitSHAIdentity + UnboundGitInterpretationEnvironment` is NOT
+a closed subject. This module is the shared, low-level mechanism that
+closes the *environment* half; `diff_acquisition_v2` and
+`toolrepo_identity_v2` each remain the distinct authority over their own
+subject and refusal semantics -- this module manufactures no reason code
+and raises nothing of its own.
+
+## What this closes, measured directly against this host's actual Git, not
+## assumed from documentation
+
+**Replacement objects (`git replace`).** `git cat-file`/`git ls-tree` honor
+a replacement mapping by default, and the substitution is invisible at the
+identity layer: `git ls-tree <head_sha> -- path` still names the ORIGINAL
+blob SHA after `git replace <original> <malicious>`, while
+`git cat-file -p <original>` returns the malicious bytes. Reproduced
+directly before this module existed. `GIT_NO_REPLACE_OBJECTS=1` closes it
+-- applied as an environment variable rather than a per-command
+`--no-replace-objects` flag, so a future call site cannot reintroduce the
+gap by forgetting one flag.
+
+**Ambient repository/object-store redirection.** An ambient `GIT_DIR`
+pointing at an unrelated repository silently redirects every Git command
+run in this process to that repository, regardless of `cwd`/`-C` --
+reproduced directly. The same class applies to `GIT_WORK_TREE`,
+`GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY` (reproduced directly: injecting it
+broke object resolution for the real repository's own HEAD entirely),
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR` and `GIT_NAMESPACE`.
+All are stripped from the child environment.
+
+**Diff-driver and attribute-source redirection.** `GIT_EXTERNAL_DIFF`,
+`GIT_DIFF_OPTS` and `GIT_ATTR_SOURCE` can each change how content is
+interpreted independent of the declared subject; stripped.
+
+**Ad hoc config injection.** `GIT_CONFIG_COUNT` plus its indexed
+`GIT_CONFIG_KEY_*`/`GIT_CONFIG_VALUE_*` companions let a caller inject
+arbitrary config key/value pairs into the child process without touching
+any file; stripped.
+
+**Global/system Git configuration.** `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`
+set to `os.devnull` make Git consult neither -- verified supported on this
+host's Git 2.39.5 (the mechanism shipped in Git 2.32). Only the target
+repository's own repository-local `.git/config` is left reachable, since
+that is part of the checkout under review, not ambient caller/machine
+state.
+
+## What this module deliberately does NOT close
+
+`--attr-source=<tree-ish>` -- the Git-native mechanism to bind attribute
+resolution to a tree instead of a working directory -- requires Git >=
+2.40. This host's Git (2.39.5, Debian 12/bookworm stable) does not have it;
+the flag was verified to fail with a usage error directly, not merely
+absent from `--help`. This module therefore does not attempt to rely on it,
+and claims nothing about attribute-source binding: see
+`diff_acquisition_v2`'s own docstring for the mechanism it uses instead
+(a disposable, detached `git worktree` checked out exactly at the declared
+subject) and its explicit, separate handling of `$GIT_DIR/info/attributes`,
+which is shared by every worktree of a repository -- including a freshly
+created one -- and is NOT closed by anything in this module.
+
+Repository-local `.git/config` is deliberately left reachable: it is part
+of the checkout under review, not ambient state outside it.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+# Every one of these can redirect which repository, object store, index, or
+# diff driver Git actually consults, independent of any `cwd`/`-C` argument
+# -- or inject config that changes interpretation without touching a file.
+_NEUTRALIZED_GIT_ENV_VARS_V2 = frozenset(
+    {
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_NAMESPACE",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_DIFF_OPTS",
+        "GIT_ATTR_SOURCE",
+        "GIT_CONFIG_COUNT",
+    }
+)
+_NEUTRALIZED_GIT_ENV_PREFIXES_V2 = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
+
+
+def sealed_git_child_env_v2() -> dict[str, str]:
+    """The child environment for every Git subprocess a semantic Git
+    authority in this package runs.
+
+    Starts from the current process environment -- `PATH` and other OS-level
+    state Git needs merely to execute is preserved -- then strips every
+    ambient `GIT_*` variable capable of redirecting which repository,
+    object store, index, diff driver or config Git consults, disables
+    replacement-object resolution unconditionally, and points global/system
+    Git config at `os.devnull`.
+    """
+
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _NEUTRALIZED_GIT_ENV_VARS_V2
+        and not key.startswith(_NEUTRALIZED_GIT_ENV_PREFIXES_V2)
+    }
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    return env
+
+
+def has_semantically_active_info_attributes_v2(repo_root: Path, *, env: dict[str, str]) -> bool:
+    """Whether `$GIT_DIR/info/attributes` exists and has content capable of
+    influencing attribute resolution -- comments and blank lines do not
+    count. Shared by every worktree of a repository, including one created
+    solely to isolate the working-tree `.gitattributes` vector, so it is
+    NOT closed by that isolation and must be checked separately.
+
+    Resolved via `git rev-parse --git-path info/attributes` rather than a
+    hardcoded `.git/info/attributes` join, so this is correct for a linked
+    worktree or any non-standard `.git` layout (verified directly: from a
+    linked worktree, this resolves to the shared common directory's file,
+    not a nonexistent per-worktree one).
+    """
+
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-path", "info/attributes"],
+        cwd=repo_root, env=env, capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        return False
+    info_attributes_path = (repo_root / result.stdout.strip()).resolve()
+    if not info_attributes_path.is_file():
+        return False
+    try:
+        raw_text = info_attributes_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        # Present but unreadable: cannot prove it is inactive. Fail closed
+        # by treating it as active -- callers refuse rather than proceed.
+        return True
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return True
+    return False

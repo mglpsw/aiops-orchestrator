@@ -224,6 +224,24 @@ def real_toolrepo_sha() -> str:
     ).stdout.strip()
 
 
+def _canonical_target_observation_v2(repo: Path) -> str:
+    """A before/after oracle capable of detecting tracked modification,
+    tracked deletion, a new untracked file, AND a new file an ignore rule
+    would otherwise hide -- `HEAD^{tree}` alone proves only committed-tree
+    identity and cannot see any of these (a new untracked file changes
+    nothing about a tree hash). `-uall` lists every untracked path
+    individually rather than collapsing a directory; `--ignored=matching`
+    surfaces ignored paths too, verified directly: without it, a file
+    matched by a `.gitignore` entry is invisible to `git status` even
+    though it is fully present on disk."""
+
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "-uall", "--ignored=matching"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    )
+    return result.stdout
+
+
 def test_cli_process_reaches_honest_readiness_from_a_separate_target_repo(tmp_path, real_toolrepo_sha):
     repo, base_sha, head_sha = _make_target_repo(tmp_path)
     assert REPO_ROOT != repo and REPO_ROOT not in repo.resolve().parents, "target must be outside the toolrepo tree"
@@ -256,11 +274,8 @@ def test_cli_process_reaches_honest_readiness_from_a_separate_target_repo(tmp_pa
     grouping_policy_file = _grouping_policy_file(tmp_path)
     run_origin_file = _run_origin_file(tmp_path)
     checks_snapshot_file, toolchain_digest = _checks_snapshot_file(tmp_path)
-    output_file = tmp_path / "readiness.json"
 
-    tree_before = subprocess.run(
-        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo, capture_output=True, text=True, check=True
-    ).stdout.strip()
+    observation_before = _canonical_target_observation_v2(repo)
 
     result = subprocess.run(
         [
@@ -282,7 +297,6 @@ def test_cli_process_reaches_honest_readiness_from_a_separate_target_repo(tmp_pa
             "--toolchain-digest", toolchain_digest,
             "--transport", "offline",
             "--offline-responses-dir", str(responses_dir),
-            "--output", str(output_file),
         ],
         cwd=str(REPO_ROOT),
         capture_output=True,
@@ -290,14 +304,72 @@ def test_cli_process_reaches_honest_readiness_from_a_separate_target_repo(tmp_pa
     )
 
     assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
-    readiness = json.loads(output_file.read_text(encoding="utf-8"))
+    # No --output: the canonical result is on stdout, and stdout ONLY.
+    readiness = json.loads(result.stdout)
     assert readiness["state"] == "manual_required"
     assert "policy_failure" in readiness["reason_codes"]
 
-    tree_after = subprocess.run(
-        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo, capture_output=True, text=True, check=True
-    ).stdout.strip()
-    assert tree_after == tree_before, "the CLI must never mutate the target checkout"
+    observation_after = _canonical_target_observation_v2(repo)
+    assert observation_after == observation_before, (
+        "the CLI must never mutate the target checkout -- this includes "
+        "tracked changes, new untracked files, and new files an ignore "
+        "rule would otherwise hide"
+    )
+
+
+def test_cli_has_no_filesystem_output_authority(tmp_path, real_toolrepo_sha):
+    """Structural control for the removed `--output` authority: the CLI
+    accepts no destination-path argument at all, so it cannot be pointed
+    at a path inside the target checkout. Piping stdout to a file OUTSIDE
+    the target still works normally; nothing appears INSIDE the target."""
+
+    repo, base_sha, head_sha = _make_target_repo(tmp_path)
+    profile_root = _make_trusted_profile_root(tmp_path)
+    grouping_policy_file = _grouping_policy_file(tmp_path)
+    run_origin_file = _run_origin_file(tmp_path)
+    checks_snapshot_file, toolchain_digest = _checks_snapshot_file(tmp_path)
+
+    help_result = subprocess.run(
+        [sys.executable, str(CLI_SCRIPT), "--help"], cwd=str(REPO_ROOT), capture_output=True, text=True,
+    )
+    assert "--output" not in help_result.stdout
+
+    observation_before = _canonical_target_observation_v2(repo)
+
+    external_output = tmp_path / "outside-the-target.json"
+    with open(external_output, "w") as fh:
+        result = subprocess.run(
+            [
+                sys.executable, str(CLI_SCRIPT),
+                "--contract-version", "v2",
+                "--repo-root", str(repo),
+                "--target-profile", str(profile_root),
+                "--grouping-policy", str(grouping_policy_file),
+                "--base-sha", base_sha,
+                "--head-sha", head_sha,
+                "--tested-merge-sha", head_sha,
+                "--pr-number", "1",
+                "--toolrepo-sha", real_toolrepo_sha,
+                "--evidence-hash", "d" * 64,
+                "--max-lines-per-chunk", "1000",
+                "--pr-state", "open",
+                "--run-origin", str(run_origin_file),
+                "--checks-snapshot", str(checks_snapshot_file),
+                "--toolchain-digest", toolchain_digest,
+                "--transport", "offline",
+                "--offline-responses-dir", str(tmp_path / "responses"),
+            ],
+            cwd=str(REPO_ROOT),
+            stdout=fh,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    assert result.returncode == 0, result.stderr
+    readiness = json.loads(external_output.read_text(encoding="utf-8"))
+    assert readiness["state"] == "manual_required"
+
+    observation_after = _canonical_target_observation_v2(repo)
+    assert observation_after == observation_before
 
 
 def test_cli_process_refuses_with_wrong_toolrepo_sha(tmp_path):
@@ -306,7 +378,6 @@ def test_cli_process_refuses_with_wrong_toolrepo_sha(tmp_path):
     grouping_policy_file = _grouping_policy_file(tmp_path)
     run_origin_file = _run_origin_file(tmp_path)
     checks_snapshot_file, toolchain_digest = _checks_snapshot_file(tmp_path)
-    output_file = tmp_path / "readiness.json"
 
     result = subprocess.run(
         [
@@ -328,7 +399,6 @@ def test_cli_process_refuses_with_wrong_toolrepo_sha(tmp_path):
             "--toolchain-digest", toolchain_digest,
             "--transport", "offline",
             "--offline-responses-dir", str(tmp_path / "responses"),
-            "--output", str(output_file),
         ],
         cwd=str(REPO_ROOT),
         capture_output=True,
@@ -337,4 +407,4 @@ def test_cli_process_refuses_with_wrong_toolrepo_sha(tmp_path):
 
     assert result.returncode == 1
     assert "toolrepo_identity_mismatch" in result.stderr
-    assert not output_file.exists()
+    assert result.stdout == ""
