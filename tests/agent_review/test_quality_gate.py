@@ -798,6 +798,62 @@ def test_u2_no_plan_uses_final_expected_universe_for_both_carriers(
     assert "coverage_expected_files_missing" in gate.limitations
 
 
+@pytest.mark.parametrize("with_plan", [False, True], ids=["no-plan", "with-plan"])
+@pytest.mark.parametrize(
+    "foreign_carrier",
+    ["final_review", "chunk_results"],
+)
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_mutated_expected_files_cannot_shrink_away_reviewed_paths(
+    with_plan: bool,
+    foreign_carrier: str,
+    critical_pr: bool,
+) -> None:
+    expected = "src/a.py"
+    hidden = "src/b.py"
+    final_reviewed = [expected, hidden] if foreign_carrier == "final_review" else [expected]
+    chunk_reviewed = [expected, hidden] if foreign_carrier == "chunk_results" else [expected]
+    final_coverage = _coverage(reviewed=final_reviewed)
+    final_coverage["expected_files"] = [expected]
+    chunk_plan = _chunk_plan_for_gate(reviewed_file=expected) if with_plan else None
+
+    gate = _gate(
+        _final_review(coverage=final_coverage),
+        _chunk_results(
+            coverage=ChunkResultsCoverage(files_reviewed=chunk_reviewed)
+        ),
+        chunk_plan=chunk_plan,
+        critical_pr=critical_pr,
+    )
+
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+    assert "coverage_reported_files_not_in_plan" in gate.limitations
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_empty_mutated_expected_files_cannot_authorize_nonempty_carriers(
+    critical_pr: bool,
+) -> None:
+    reviewed = "src/a.py"
+    final_coverage = _coverage(reviewed=[reviewed])
+    final_coverage["expected_files"] = []
+
+    gate = _gate(
+        _final_review(coverage=final_coverage),
+        _chunk_results(
+            coverage=ChunkResultsCoverage(files_reviewed=[reviewed])
+        ),
+        critical_pr=critical_pr,
+    )
+
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+    assert "coverage_reported_files_not_in_plan" in gate.limitations
+
+
 @pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
 def test_u2_disjoint_complete_carriers_are_rejected(critical_pr: bool) -> None:
     final_path = "src/a.py"
