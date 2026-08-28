@@ -329,10 +329,38 @@ def test_cli_has_no_filesystem_output_authority(tmp_path, real_toolrepo_sha):
     run_origin_file = _run_origin_file(tmp_path)
     checks_snapshot_file, toolchain_digest = _checks_snapshot_file(tmp_path)
 
-    help_result = subprocess.run(
-        [sys.executable, str(CLI_SCRIPT), "--help"], cwd=str(REPO_ROOT), capture_output=True, text=True,
+    # Precise structural proof, not a substring match against --help (whose
+    # text is this module's own docstring and legitimately discusses the
+    # removed authority in prose): with every REQUIRED argument supplied,
+    # argparse must reject the extra, unknown --output flag specifically
+    # (rather than reporting missing-required-arguments first, which would
+    # not prove --output itself is unrecognized).
+    rejected = subprocess.run(
+        [
+            sys.executable, str(CLI_SCRIPT),
+            "--contract-version", "v2",
+            "--repo-root", str(repo),
+            "--target-profile", str(profile_root),
+            "--grouping-policy", str(grouping_policy_file),
+            "--base-sha", base_sha,
+            "--head-sha", head_sha,
+            "--tested-merge-sha", head_sha,
+            "--pr-number", "1",
+            "--toolrepo-sha", real_toolrepo_sha,
+            "--evidence-hash", "d" * 64,
+            "--max-lines-per-chunk", "1000",
+            "--pr-state", "open",
+            "--run-origin", str(run_origin_file),
+            "--checks-snapshot", str(checks_snapshot_file),
+            "--toolchain-digest", toolchain_digest,
+            "--transport", "offline",
+            "--offline-responses-dir", str(tmp_path / "responses"),
+            "--output", "/tmp/anything",
+        ],
+        cwd=str(REPO_ROOT), capture_output=True, text=True,
     )
-    assert "--output" not in help_result.stdout
+    assert rejected.returncode != 0
+    assert "unrecognized arguments" in rejected.stderr and "--output" in rejected.stderr
 
     observation_before = _canonical_target_observation_v2(repo)
 
