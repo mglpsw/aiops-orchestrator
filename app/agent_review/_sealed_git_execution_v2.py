@@ -73,6 +73,14 @@ refuse repositories that legitimately configure a filter driver, `git-lfs`
 being the common one; that operational cost is accepted deliberately, in
 preference to executing a target-controlled command.
 
+**Out-of-tree attribute redirection via `core.attributesFile`.** A
+repository-local `core.attributesFile` points attribute resolution at an
+arbitrary path, and the disposable worktree does not close it -- reproduced
+directly, flipping a text diff to "Binary files differ", which is precisely
+the corruption that worktree exists to prevent. Closed with
+`-c core.attributesFile=<os.devnull>`, verified to leave a genuinely
+committed `.gitattributes` at the subject commit fully effective.
+
 **Target-controlled `core.fsmonitor`.** Holds a command Git executes to
 enumerate working-tree changes; reproduced directly running during
 `git status`. Closed with `-c core.fsmonitor=false`.
@@ -172,6 +180,15 @@ _HOOKS_DISABLED_CONFIG_V2 = f"core.hooksPath={os.devnull}"
 # `git status`. `false` is Git's own documented "no fsmonitor" value, and
 # `-c` beats the repository-local setting -- verified directly.
 _FSMONITOR_DISABLED_CONFIG_V2 = "core.fsmonitor=false"
+# `core.attributesFile` names an out-of-tree attributes file. Set in the
+# repository-local config it redirects attribute resolution to an
+# arbitrary path and the disposable worktree does not close it at all --
+# reproduced directly: it flipped an ordinary text diff to "Binary files
+# differ", the exact corruption the worktree exists to prevent. Pointing
+# it at `os.devnull` restores the text diff while leaving a genuinely
+# COMMITTED `.gitattributes` at the subject commit fully effective --
+# both directions verified directly.
+_ATTRIBUTES_FILE_DISABLED_CONFIG_V2 = f"core.attributesFile={os.devnull}"
 
 
 def sealed_git_argv_v2(argv: list[str], *, trusted_repo_root: Path) -> list[str]:
@@ -210,6 +227,7 @@ def sealed_git_argv_v2(argv: list[str], *, trusted_repo_root: Path) -> list[str]
         argv[0],
         "-c", _HOOKS_DISABLED_CONFIG_V2,
         "-c", _FSMONITOR_DISABLED_CONFIG_V2,
+        "-c", _ATTRIBUTES_FILE_DISABLED_CONFIG_V2,
         "-c", f"safe.directory={Path(trusted_repo_root)}",
         *argv[1:],
     ]
@@ -237,23 +255,29 @@ def has_executable_local_filter_config_v2(repo_root: Path, *, env: dict[str, str
     instead -- the same fail-closed shape this module already uses for
     `$GIT_DIR/info/attributes`.
 
-    Scoped to `--local` on purpose: global/system config is already
-    neutralized by `sealed_git_child_env_v2`, and command-line `-c` values
-    are this module's own.
+    Deliberately NOT scoped with `--local`. `git config --local --list` does
+    not follow `include.path`/`includeIf`, while Git's actual filter lookup
+    does -- reproduced directly: a filter driver moved into an included file
+    was invisible to `--local --list` and still executed during
+    `git worktree add`, bypassing this detector entirely. The unscoped
+    `--list` resolves includes, and under `sealed_git_child_env_v2` it can
+    still only report repository-local content, because global and system
+    config are already pointed at `os.devnull`; the only other entries are
+    this module's own command-line `-c` values, none of which are `filter.*`.
     """
 
     import subprocess
 
     result = subprocess.run(
         sealed_git_argv_v2(
-            ["git", "config", "--local", "--list", "--name-only", "-z"],
+            ["git", "config", "--list", "--name-only", "-z"],
             trusted_repo_root=repo_root,
         ),
         cwd=repo_root, env=env, capture_output=True, text=True, check=False,
     )
     if result.returncode != 0:
-        # No local config at all is the common case and exits non-zero;
-        # nothing executable can be defined by a config that is not there.
+        # Nothing readable to prove a driver is defined; the caller's own
+        # git invocations will fail for the same reason if this is real.
         return False
     for key in result.stdout.split("\0"):
         key = key.strip().lower()

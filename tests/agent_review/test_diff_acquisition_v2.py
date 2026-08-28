@@ -2052,3 +2052,49 @@ def test_acquisition_still_works_for_a_repository_with_no_filter_config(tmp_path
     head = _commit_all(repo, "head")
 
     assert "world" in acquire_diff_v2(repo, base_sha=base, head_sha=head)
+
+
+def test_acquisition_ignores_a_repository_local_attributes_file_redirect(tmp_path: Path):
+    """`#200-D` correction, second round. A repository-local
+    `core.attributesFile` points attribute resolution at an arbitrary path,
+    and the disposable worktree does NOT close it -- reproduced directly, it
+    flipped an ordinary text diff to a binary one, which is exactly the
+    corruption the worktree was introduced to prevent."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    base = _commit_all(repo, "base")
+    (repo / "f.txt").write_text("hello\nworld\n", encoding="utf-8")
+    head = _commit_all(repo, "head")
+
+    redirect = tmp_path / "outside.attributes"
+    redirect.write_text("f.txt -diff\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "config", "core.attributesFile", str(redirect)], cwd=repo, check=True
+    )
+
+    diff = acquire_diff_v2(repo, base_sha=base, head_sha=head)
+
+    assert "world" in diff, "out-of-tree attributes redirect changed the diff"
+    # `--binary` renders a `-diff` path as "GIT binary patch", not the
+    # plain-`git diff` "Binary files ... differ" wording.
+    assert "GIT binary patch" not in diff
+
+
+def test_acquisition_still_honours_attributes_committed_at_the_subject(tmp_path: Path):
+    """The closure above must not suppress the subject's OWN committed
+    attributes -- those are part of the declared subject."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    base = _commit_all(repo, "base")
+    (repo / "f.txt").write_text("hello\nworld\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text("f.txt -diff\n", encoding="utf-8")
+    head = _commit_all(repo, "head")
+
+    diff = acquire_diff_v2(repo, base_sha=base, head_sha=head)
+
+    assert "GIT binary patch" in diff, "committed .gitattributes at the subject was ignored"
+    assert "+world" not in diff, "the path should not have diffed as text"

@@ -477,6 +477,42 @@ not self-validating, and reviewing only the ORIGINAL defect would have
 shipped a fix that reintroduced a strictly worse instance of the class it
 closed.
 
+**P0 — the same class again, twice more, reproduced directly.** Applying
+that same skepticism to the hook fix found two further target-controlled
+execution paths in the identical checkout step:
+
+- `filter.<driver>.smudge`/`.clean`/`.process`, from repository-local
+  config, executes during the checkout `git worktree add` performs. Proven
+  end-to-end through `acquire_diff_v2` in both directions. There is no `-c`
+  closure here, because the driver NAME is chosen by whoever wrote the
+  config and cannot be enumerated, and `--no-checkout` is not an
+  alternative -- verified: it leaves the worktree empty, so attribute
+  resolution stops working entirely, which is the worktree's whole purpose.
+  Detected and refused instead (`diff_local_filter_config_active`), the
+  same fail-closed shape already used for `$GIT_DIR/info/attributes`.
+- `core.fsmonitor` holds a command Git executes to enumerate working-tree
+  changes, reproduced running during `git status`. Closed with
+  `-c core.fsmonitor=false`.
+
+**Accepted operational cost, recorded rather than hidden.** The filter
+refusal rejects any repository whose local config defines a filter driver
+-- `git-lfs` being the common legitimate case. That is a deliberate
+fail-closed choice in preference to executing a target-controlled command,
+and it is the one place in this slice where the closure is strictly
+narrower than "works everywhere". `filter.<driver>.required`, which carries
+no command, is explicitly NOT treated as executable.
+
+**P1 — the seal broke foreign-owned checkouts, reproduced directly.**
+`GIT_CONFIG_GLOBAL=os.devnull` also discards the operator's
+`safe.directory`, after which Git refuses outright (`fatal: detected
+dubious ownership`) on any checkout owned by a different uid than the
+running process -- the ordinary container/CI case, so the seal converted a
+working deployment into total acquisition failure. The declared subject is
+now named via `-c safe.directory=<repo_root>`; verified to admit exactly
+that path while still refusing a DIFFERENT foreign-owned repository, so it
+is not a blanket grant, and not a content-trust decision (the subject's
+content stays hostile, which is what the rest of the policy is for).
+
 **P1-B — ignore rules are not a source-identity authority, reproduced
 directly.** `--exclude-standard` hid a stray `app/common/_stray_evil.py`
 from the untracked-source check the moment a matching `.gitignore` line
@@ -515,7 +551,7 @@ review_v2` raw, verified as a real falsifier (an isolated mutant adding
 turn the raw error into `OperationalRunError(run_assembly_identity_
 invalid)`, then reverted).
 
-### Mutation/adversarial matrix (M1–M13), all executed and killed
+### Mutation/adversarial matrix (M1–M16), all executed and killed
 
 | # | Condition | Killed by |
 |---|---|---|
@@ -532,6 +568,9 @@ invalid)`, then reverted).
 | M11 | sanitize post-seal `ValidationError` | `test_operational_run_v2` |
 | M12 | target `post-checkout` hook during acquisition | `test_sealed_git_execution_v2`, `test_diff_acquisition_v2` |
 | M13 | repository-local `core.hooksPath` redirect | `test_sealed_git_execution_v2`, `test_diff_acquisition_v2` |
+| M14 | repository-local `filter.*.smudge` on checkout | `test_sealed_git_execution_v2`, `test_diff_acquisition_v2` |
+| M15 | repository-local `core.fsmonitor` | `test_sealed_git_execution_v2` |
+| M16 | foreign-owned checkout refused by the seal | `test_sealed_git_execution_v2` |
 
 Every mutant: baseline green → mutation applied in an isolated commit →
 confirmed to produce the intended failure → reverted → baseline
@@ -552,6 +591,9 @@ caem_alignment:
   ignored_source_not_authoritative: true
   target_mutation_oracle_complete: true
   target_hook_execution_closed: true
+  target_filter_driver_execution_refused: true
+  target_fsmonitor_execution_closed: true
+  foreign_owned_checkout_supported: true
 
   formal_caem_f0_f2_conformance:
     established_by_this_slice: false

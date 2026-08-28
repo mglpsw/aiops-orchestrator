@@ -128,6 +128,20 @@
   `-c core.hooksPath=/dev/null` between `git` and the subcommand, applied
   inside the shared runners so no call site can forget it.
 
+  Applying the same skepticism to *that* fix found the identical class twice
+  more in the same checkout step: a repository-local `filter.<driver>.smudge`
+  executes during the checkout `git worktree add` performs (no `-c` closure
+  exists, because the driver name is attacker-chosen, and `--no-checkout`
+  empties the worktree and defeats attribute resolution — so it is detected
+  and refused as `diff_local_filter_config_active`, which does reject
+  `git-lfs` repositories, a cost accepted deliberately in preference to
+  executing a target-controlled command), and `core.fsmonitor` executes
+  during `git status` (closed with `-c core.fsmonitor=false`). Sealing
+  global config also discarded the operator's `safe.directory`, which made
+  Git refuse any checkout owned by another uid — the ordinary container/CI
+  case — so the declared subject is now named via `-c safe.directory=<root>`,
+  verified to admit that path only.
+
   Two further gaps: `--exclude-standard` let a `.gitignore` entry
   hide a stray importable `.py` file from the toolrepo untracked-source
   check entirely — the check now enumerates all untracked paths and applies

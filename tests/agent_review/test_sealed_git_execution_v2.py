@@ -256,6 +256,7 @@ def test_sealed_argv_splices_hook_neutralization_after_the_executable():
         "git",
         "-c", f"core.hooksPath={os.devnull}",
         "-c", "core.fsmonitor=false",
+        "-c", f"core.attributesFile={os.devnull}",
         "-c", "safe.directory=/srv/checkout",
         "diff", "--binary", "abc...def",
     ]
@@ -454,3 +455,31 @@ def test_non_executable_filter_config_is_not_treated_as_executable(tmp_path: Pat
     subprocess.run(["git", "config", "filter.lfs.required", "false"], cwd=repo, check=True)
 
     assert has_executable_local_filter_config_v2(repo, env=sealed_git_child_env_v2()) is False
+
+
+def test_executable_filter_config_reached_through_an_include_is_detected(tmp_path: Path):
+    """`git config --local --list` does NOT follow `include.path`, but Git's
+    own filter lookup does -- reproduced directly, a driver moved into an
+    included file executed during `git worktree add` while staying invisible
+    to a `--local`-scoped check."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "f.txt").write_text("hello\n", encoding="utf-8")
+    _commit_all(repo, "base")
+
+    included = tmp_path / "hidden.cfg"
+    included.write_text(
+        "[filter \"evil\"]\n\tsmudge = touch /tmp/should-not-happen\n", encoding="utf-8"
+    )
+    subprocess.run(["git", "config", "include.path", str(included)], cwd=repo, check=True)
+
+    local_only = subprocess.run(
+        ["git", "config", "--local", "--list", "--name-only"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert "filter.evil.smudge" not in local_only, (
+        "precondition: a --local-scoped read must not see the included driver"
+    )
+
+    assert has_executable_local_filter_config_v2(repo, env=sealed_git_child_env_v2()) is True
