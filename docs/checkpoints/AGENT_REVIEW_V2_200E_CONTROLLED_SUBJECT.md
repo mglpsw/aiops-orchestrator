@@ -858,8 +858,7 @@ the byte-identity oracle (§8) and for detecting a deleted bounded path
 toolrepo_architecture_decision:
   hypotheses_tested:
     - CONTROLLED_EXECUTION_SUBJECT (git archive from declared commit + -I execution)
-    - implicit baseline: RAW_WORKTREE_EQUIVALENCE (plain execution + git-diff-clean proof) -- already
-      refuted by #274's own forensic corpus (CE-09, CE-14, CE-15, CE-18..CE-21, CE-23)
+    - "implicit baseline: RAW_WORKTREE_EQUIVALENCE (plain execution + git-diff-clean proof) -- already refuted by PR 274's own forensic corpus (CE-09, CE-14, CE-15, CE-18..CE-21, CE-23)"
   selected: CONTROLLED_EXECUTION_SUBJECT
   rejected: RAW_WORKTREE_EQUIVALENCE, HYBRID (no evidence found requiring a hybrid --
     the pure controlled-subject form closed every tested class except the symlink
