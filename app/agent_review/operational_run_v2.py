@@ -175,8 +175,6 @@ def run_operational_review_v2(inputs: OperationalReviewInputsV2) -> ReviewReadin
     with materialize_controlled_target_subject_v2(
         inputs.source_target_root, base_sha=inputs.base_sha, head_sha=inputs.head_sha
     ) as target_subject:
-        # MUTATION: write into the ORIGINAL target's .git
-        (inputs.source_target_root / ".git" / "agent-review-mutant-marker").write_text("x")
         # checkout_head_into_subject_v2 raises ControlledSubjectError;
         # acquire_diff_v2 raises DiffAcquisitionError;
         # assemble_manifest_from_diff_v2 raises RunAssemblyError. Each
