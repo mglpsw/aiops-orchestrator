@@ -586,6 +586,40 @@ def test_preparation_closure_refuses_chunk_set_mismatch(tmp_path, real_toolrepo_
     assert excinfo.value.reason_code == PREPARATION_CHUNK_SET_MISMATCH_REASON_V2
 
 
+def test_post_bind_type_defect_escapes_the_real_composed_run_raw(tmp_path, real_toolrepo_sha, monkeypatch):
+    """`parser_v2.parse_bound_chunk_response_v2` raises a raw `TypeError` for
+    anything not produced by the binder -- source proof and binding have
+    already passed by that point, so this is a PROGRAMMER DEFECT, not an
+    operational refusal. Proven here through the REAL composed run (offline
+    transport, real target checkout), not a generic back-half monkeypatch:
+    `bind_chunk_response_v2` itself is forced to return a plain dict instead
+    of a `BoundChunkResponseV2`, and the resulting TypeError must still
+    escape `run_operational_review_v2` uncaught."""
+
+    repo, base_sha, head_sha = _make_target_repo(tmp_path)
+    profile_root = _make_trusted_profile_root(tmp_path)
+
+    from app.agent_review.operational_run_v2 import prepare_operational_review_v2
+
+    prepared = prepare_operational_review_v2(
+        repo_root=repo, target_profile_root=profile_root, grouping_policy=_grouping_policy(),
+        base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha, pr_number=1,
+        toolrepo_sha=real_toolrepo_sha, evidence_hash="d" * 64, max_lines_per_chunk=1000,
+    )
+    responses_dir = tmp_path / "responses"
+    _write_offline_responses(responses_dir, content=prepared.content, manifest=prepared.manifest)
+
+    monkeypatch.setattr(review_transport_v2, "bind_chunk_response_v2", lambda **kwargs: {"not": "a BoundChunkResponseV2"})
+
+    with pytest.raises(TypeError):
+        run_operational_review_v2(
+            **_run_kwargs(
+                repo_root=repo, profile_root=profile_root, base_sha=base_sha, head_sha=head_sha,
+                transport=offline_file_transport_v2(responses_dir), toolrepo_sha=real_toolrepo_sha,
+            )
+        )
+
+
 # -- structural oracles --------------------------------------------------------
 
 
