@@ -602,6 +602,7 @@ def _coverage_requires_manual_review(
     for normalized in (normalized_chunk_coverage, normalized_final_coverage):
         validation_limitations.extend(normalized.limitations)
         if normalized.foreign_files:
+            requires_manual_review = True
             validation_limitations.append("coverage_reported_files_not_in_plan")
 
     if effective_coverage.files_partial or effective_coverage.files_not_reviewed:
