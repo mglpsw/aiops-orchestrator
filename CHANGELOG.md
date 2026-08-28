@@ -113,7 +113,22 @@
   diff-acquisition functions instead run inside a disposable `git worktree`
   checked out exactly at `head_sha`; `$GIT_DIR/info/attributes`, which is
   *not* closed by that worktree isolation, is separately detected and fails
-  closed). Two further gaps: `--exclude-standard` let a `.gitignore` entry
+  closed).
+
+  A subsequent independent review, taking that correction as its own
+  subject, found the fix had reintroduced a strictly worse instance of the
+  class it closed: `git worktree add` runs the **target repository's
+  `post-checkout` hook** — reproduced directly, and reachable equally via a
+  repository-local `core.hooksPath` redirect — making the attribute fix
+  itself a target-controlled code-execution path, under the same threat
+  model as the untracked `.gitattributes` it defeats. Neither vector is
+  reachable through the environment (Git has no `GIT_HOOKS_PATH`, and
+  repository-local `.git/config` stays readable by design), so it is closed
+  on the command line by a new `sealed_git_argv_v2` splicing
+  `-c core.hooksPath=/dev/null` between `git` and the subcommand, applied
+  inside the shared runners so no call site can forget it.
+
+  Two further gaps: `--exclude-standard` let a `.gitignore` entry
   hide a stray importable `.py` file from the toolrepo untracked-source
   check entirely — the check now enumerates all untracked paths and applies
   its own `.py`-file/`__pycache__`-exclusion filter instead of trusting

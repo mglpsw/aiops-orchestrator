@@ -448,6 +448,35 @@ is instead explicitly checked and refused
 (`diff_info_attributes_active`) before the worktree is even created, since
 no supported Git mechanism on this host excludes it.
 
+**P0 — the attribute fix itself executed target-controlled code,
+reproduced directly.** Found by the *next* independent review round, whose
+subject was this correction rather than the original code. `git worktree
+add` runs the TARGET repository's `post-checkout` hook: a hook planted at
+`$GIT_DIR/hooks/post-checkout` executed, with the disposable worktree as
+its cwd, during the very `git worktree add` introduced above for P1-A. A
+repository-local `core.hooksPath` redirect reached an arbitrary directory
+the same way. The attribute-source fix was therefore itself a
+target-controlled code-execution path, contradicting the "never executes
+untrusted code" boundary `diff_acquisition_v2` documents for itself when
+it explains `--no-textconv` -- under the SAME threat model the worktree
+exists to defeat, since anyone who can plant an untracked `.gitattributes`
+can plant a hook.
+
+Neither vector is reachable through the environment: Git has no
+`GIT_HOOKS_PATH`, and repository-local `.git/config` is deliberately left
+readable (above). Closed on the command line by `sealed_git_argv_v2`,
+which splices `-c core.hooksPath=<os.devnull>` between `git` and the
+subcommand, where Git requires its own `-c` options to appear -- verified
+to override both the default `$GIT_DIR/hooks` lookup and a
+repository-local redirect. Applied inside the shared runners as an argv
+prefix rather than at each call site, for the same reason
+`GIT_NO_REPLACE_OBJECTS` is an environment variable.
+
+This is the concrete reason the round was re-run at all: a correction is
+not self-validating, and reviewing only the ORIGINAL defect would have
+shipped a fix that reintroduced a strictly worse instance of the class it
+closed.
+
 **P1-B — ignore rules are not a source-identity authority, reproduced
 directly.** `--exclude-standard` hid a stray `app/common/_stray_evil.py`
 from the untracked-source check the moment a matching `.gitignore` line
@@ -486,7 +515,7 @@ review_v2` raw, verified as a real falsifier (an isolated mutant adding
 turn the raw error into `OperationalRunError(run_assembly_identity_
 invalid)`, then reverted).
 
-### Mutation/adversarial matrix (M1–M11), all executed and killed
+### Mutation/adversarial matrix (M1–M13), all executed and killed
 
 | # | Condition | Killed by |
 |---|---|---|
@@ -501,6 +530,8 @@ invalid)`, then reverted).
 | M9 | CLI result path inside target | `test_operational_run_blackbox_e2e_v2` |
 | M10 | ignored untracked file mutation | `test_operational_run_blackbox_e2e_v2` |
 | M11 | sanitize post-seal `ValidationError` | `test_operational_run_v2` |
+| M12 | target `post-checkout` hook during acquisition | `test_sealed_git_execution_v2`, `test_diff_acquisition_v2` |
+| M13 | repository-local `core.hooksPath` redirect | `test_sealed_git_execution_v2`, `test_diff_acquisition_v2` |
 
 Every mutant: baseline green → mutation applied in an isolated commit →
 confirmed to produce the intended failure → reverted → baseline
@@ -520,6 +551,7 @@ caem_alignment:
   attributes_source_bound: true
   ignored_source_not_authoritative: true
   target_mutation_oracle_complete: true
+  target_hook_execution_closed: true
 
   formal_caem_f0_f2_conformance:
     established_by_this_slice: false
