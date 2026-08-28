@@ -1003,6 +1003,50 @@ def test_u2_parser_rejects_direct_failed_plan_with_canonical_error_class(
 
 
 @pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param("schema_id", id="schema-id"),
+        pytest.param("schema_version", id="schema-version-bool"),
+        pytest.param("chunks_container", id="chunks-tuple"),
+        pytest.param("files_covered_container", id="files-covered-tuple"),
+        pytest.param("files_covered_mapping", id="files-covered-mapping"),
+        pytest.param("chunk_files_container", id="chunk-files-mapping"),
+        pytest.param("status", id="unknown-status"),
+    ],
+)
+def test_u2_parser_rejects_mutated_direct_plan_before_response_consumption(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """The object entry point must enforce the loader's canonical boundary."""
+    chunk = _chunk()
+    plan = _plan([chunk])
+    responses = _responses_dir(tmp_path)
+    _write_response(responses, chunk=chunk)
+
+    if mutation == "schema_id":
+        plan.schema_id = "attacker.invalid-plan.v1"
+    elif mutation == "schema_version":
+        plan.schema_version = True  # type: ignore[assignment]
+    elif mutation == "chunks_container":
+        plan.chunks = tuple(plan.chunks)  # type: ignore[assignment]
+    elif mutation == "files_covered_container":
+        plan.files_covered = tuple(plan.files_covered)  # type: ignore[assignment]
+    elif mutation == "files_covered_mapping":
+        plan.files_covered = {plan.files_covered[0]: "reviewed"}  # type: ignore[assignment]
+    elif mutation == "chunk_files_container":
+        plan.chunks[0].files = {plan.files_covered[0]: "reviewed"}  # type: ignore[assignment]
+    else:
+        plan.status = "attacker-status"  # type: ignore[assignment]
+
+    with pytest.raises(ChunkResultParserError) as exc_info:
+        parse_chunk_results(plan, responses_dir=responses)
+
+    assert exc_info.value.error_class == "chunk_plan_invalid"
+    assert "attacker" not in exc_info.value.message
+
+
+@pytest.mark.parametrize(
     (
         "chunk_coverage",
         "plan_limitations",
