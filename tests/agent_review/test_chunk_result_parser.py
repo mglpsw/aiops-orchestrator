@@ -780,7 +780,9 @@ def test_u2_parser_emits_total_plan_known_coverage_beyond_chunk_files(
     assert review.coverage.files_reviewed == [reviewed]
     assert review.coverage.files_partial == []
     assert review.coverage.files_not_reviewed == [not_covered]
-    assert review.status == "partial"
+    # The supplied plan object is absent, but the parser-authored reference
+    # still records its degraded status and remains authoritative downstream.
+    assert review.status == "degraded"
     assert review.verdict == "manual_review_required"
 
 

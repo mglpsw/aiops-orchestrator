@@ -13,9 +13,12 @@ from pydantic import ValidationError
 from app.agent_review.chunk_result_parser import (
     _build_normalized_coverage_partition,
     _chunk_execution_limitations,
+    _chunk_result_integrity_limitations,
     _compose_coverage_partitions,
     _normalize_coverage_against_partition,
     _normalize_plan_run_coverage_partition,
+    _result_identity_trustworthy,
+    _validated_chunk_ids,
 )
 from app.agent_review.redaction import RedactionState, redact_text, redact_value
 from app.agent_review.schemas import (
@@ -44,10 +47,13 @@ SAMPLE_TITLE_LIMIT = 5
 LIMITATION_MD_LIMIT = 10
 
 CRITICAL_LIMITATIONS = {
+    "chunk_plan_ref_mismatch",
     "chunk_results_status_failed",
+    "chunk_results_status_invalid",
     "chunks_parsed_missing",
     "coverage_missing",
     "redaction_report_not_safe_for_llm",
+    "target_repo_mismatch",
 }
 
 RECOVERABLE_COVERAGE_LIMITATIONS = {
@@ -135,7 +141,16 @@ def synthesize_final_review(
     risks = _dedupe_risks(chunk_results.risks)
     rejected_summary = _rejected_summary(chunk_results)
     coverage, coverage_limitations = _coverage(chunk_results, chunk_plan=chunk_plan)
-    limitations = _limitations(chunk_results, coverage_limitations, redaction_report=redaction_report)
+    integrity_limitations = _chunk_result_integrity_limitations(
+        chunk_results,
+        chunk_plan=chunk_plan,
+        target_repos=(intake.target_repo,) if intake is not None else (),
+    )
+    limitations = _limitations(
+        chunk_results,
+        [*coverage_limitations, *integrity_limitations],
+        redaction_report=redaction_report,
+    )
     status = _review_status(chunk_results, limitations, coverage)
     counts = _counts(
         findings=findings,
@@ -428,7 +443,10 @@ def _limitations(
     redaction_report: RedactionReport | None,
 ) -> list[str]:
     limitations = list(chunk_results.limitations)
-    if chunk_results.status != "complete":
+    if (
+        isinstance(chunk_results.status, str)
+        and chunk_results.status in {"partial", "degraded", "failed"}
+    ):
         limitations.append(f"chunk_results_status_{chunk_results.status}")
     if chunk_results.chunks_failed:
         limitations.append("chunks_failed_present")
@@ -442,9 +460,9 @@ def _review_status(
     limitations: list[str],
     coverage: FinalReviewCoverage,
 ) -> str:
-    if chunk_results.status in {"failed", "degraded"}:
-        return "degraded"
     if _has_critical_limitation(limitations):
+        return "degraded"
+    if chunk_results.status == "failed" or chunk_results.status == "degraded":
         return "degraded"
     if _coverage_requires_manual_review(coverage, limitations):
         return "partial"
@@ -471,8 +489,13 @@ def _counts(
         rejected_findings_total=rejected_summary.total,
         rejected_findings_by_reason=rejected_summary.by_reason,
         limitations_total=len(limitations),
-        chunks_parsed=len(chunk_results.chunks_parsed),
-        chunks_failed=len(chunk_results.chunks_failed),
+        chunks_parsed=len(_validated_chunk_ids(chunk_results.chunks_parsed)[0]),
+        chunks_failed=len(
+            _validated_chunk_ids(
+                getattr(failure, "chunk_id", None)
+                for failure in chunk_results.chunks_failed
+            )[0]
+        ),
     )
 
 
@@ -489,13 +512,17 @@ def _verdict(
         return "review_unavailable"
 
     p0_p1 = [finding for finding in findings if finding.severity in {"P0", "P1"}]
-    if p0_p1 and any(_finding_is_trustworthy(finding, chunk_results) for finding in p0_p1):
+    if p0_p1 and any(
+        _finding_is_trustworthy(finding, chunk_results, limitations)
+        for finding in p0_p1
+    ):
         return "changes_requested"
     if p0_p1:
         return "manual_review_required"
 
     if (
-        chunk_results.status in {"partial", "degraded"}
+        chunk_results.status == "partial"
+        or chunk_results.status == "degraded"
         or chunk_results.chunks_failed
         or _has_critical_limitation(limitations)
         or _coverage_requires_manual_review(coverage, limitations)
@@ -550,10 +577,15 @@ def _has_minimum_material(
     )
 
 
-def _finding_is_trustworthy(finding: FinalReviewFinding, chunk_results: ChunkResults) -> bool:
-    parsed_chunks = set(chunk_results.chunks_parsed)
+def _finding_is_trustworthy(
+    finding: FinalReviewFinding,
+    chunk_results: ChunkResults,
+    limitations: list[str],
+) -> bool:
+    parsed_chunks = set(_validated_chunk_ids(chunk_results.chunks_parsed)[0])
     return (
-        bool(finding.file_path)
+        _result_identity_trustworthy(limitations)
+        and bool(finding.file_path)
         and bool(finding.evidence)
         and bool(finding.source_artifact or finding.line_or_hunk)
         and any(chunk_id in parsed_chunks for chunk_id in finding.source_chunks)
@@ -693,6 +725,7 @@ def _is_absolute_path(value: str) -> bool:
 def _has_critical_limitation(limitations: list[str]) -> bool:
     return any(
         limitation in CRITICAL_LIMITATIONS
+        or limitation in {"chunk_plan_status_degraded", "chunk_plan_status_failed"}
         or limitation.startswith("chunk_execution_")
         for limitation in limitations
     )

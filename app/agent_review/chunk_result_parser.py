@@ -43,6 +43,16 @@ COVERAGE_STATE_PRIORITY = {
     "not_reviewed": 2,
 }
 
+_CHUNK_RESULT_STATUSES = frozenset({"complete", "partial", "degraded", "failed"})
+_CHUNK_PLAN_REF_STATUSES = frozenset({"complete", "partial", "degraded", "failed"})
+_RESULT_IDENTITY_TRUST_LIMITATIONS = frozenset(
+    {
+        "target_repo_mismatch",
+        "chunk_plan_ref_mismatch",
+        "chunk_results_status_invalid",
+    }
+)
+
 
 @dataclass(frozen=True)
 class _NormalizedCoveragePartition:
@@ -511,6 +521,101 @@ def _chunk_execution_limitations(
         limitations.append("chunk_execution_foreign_id")
 
     return _dedupe(limitations)
+
+
+def _chunk_result_integrity_limitations(
+    chunk_results: ChunkResults,
+    *,
+    chunk_plan: SemanticChunkPlan | None,
+    target_repos: Iterable[object] = (),
+) -> list[str]:
+    """Bind freely mutable result metadata to observable input authority.
+
+    The v1 plan reference has no required digest, so only contradictions that
+    are actually present can be rejected. Missing optional reference fields
+    remain compatible with legacy v1 carriers; present fields never override
+    a supplied plan or a contradictory execution ledger.
+    """
+    limitations: list[str] = []
+
+    if (
+        not isinstance(chunk_results.status, str)
+        or chunk_results.status not in _CHUNK_RESULT_STATUSES
+    ):
+        limitations.append("chunk_results_status_invalid")
+
+    repositories: list[object] = [chunk_results.target_repo, *target_repos]
+    if chunk_plan is not None:
+        repositories.append(chunk_plan.target_repo)
+    if (
+        any(not isinstance(value, str) or not value for value in repositories)
+        or len(set(repositories)) > 1
+    ):
+        limitations.append("target_repo_mismatch")
+
+    plan_ref = chunk_results.chunk_plan_ref
+    if not isinstance(plan_ref, dict):
+        limitations.append("chunk_plan_ref_mismatch")
+        return _dedupe(limitations)
+
+    if (
+        "schema_id" in plan_ref
+        and plan_ref["schema_id"] != SEMANTIC_CHUNK_PLAN_SCHEMA
+    ) or (
+        "schema_version" in plan_ref
+        and plan_ref["schema_version"] != 1
+    ):
+        limitations.append("chunk_plan_ref_mismatch")
+
+    ref_status = plan_ref.get("status") if "status" in plan_ref else None
+    if "status" in plan_ref:
+        if not isinstance(ref_status, str) or ref_status not in _CHUNK_PLAN_REF_STATUSES:
+            limitations.append("chunk_plan_ref_mismatch")
+        elif ref_status != "complete":
+            limitations.append(f"chunk_plan_status_{ref_status}")
+
+    if chunk_plan is not None:
+        expected_ref = {
+            "schema_id": chunk_plan.schema_id,
+            "schema_version": chunk_plan.schema_version,
+            "source": chunk_plan.source,
+            "status": chunk_plan.status,
+            "created_at": chunk_plan.created_at,
+            "chunk_count": len(chunk_plan.chunks),
+        }
+        if any(
+            field in plan_ref and plan_ref[field] != expected
+            for field, expected in expected_ref.items()
+        ):
+            limitations.append("chunk_plan_ref_mismatch")
+        return _dedupe(limitations)
+
+    if "chunk_count" in plan_ref:
+        declared_count = plan_ref["chunk_count"]
+        if type(declared_count) is not int or declared_count < 0:
+            limitations.append("chunk_plan_ref_mismatch")
+        else:
+            parsed_ids = set(_validated_chunk_ids(chunk_results.chunks_parsed)[0])
+            failed_ids = set(
+                _validated_chunk_ids(
+                    getattr(failure, "chunk_id", None)
+                    for failure in chunk_results.chunks_failed
+                )[0]
+            )
+            accounted_count = len(parsed_ids | failed_ids)
+            if declared_count > accounted_count:
+                limitations.append("chunk_execution_expected_missing")
+            elif declared_count < accounted_count:
+                limitations.append("chunk_execution_foreign_id")
+
+    return _dedupe(limitations)
+
+
+def _result_identity_trustworthy(limitations: Iterable[str]) -> bool:
+    return not any(
+        limitation in _RESULT_IDENTITY_TRUST_LIMITATIONS
+        for limitation in limitations
+    )
 
 
 def _normalize_plan_run_coverage_partition(

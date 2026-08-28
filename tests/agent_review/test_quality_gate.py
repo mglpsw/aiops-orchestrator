@@ -810,6 +810,32 @@ def test_u2_gate_snapshots_validated_final_coverage_against_later_mutation() -> 
     assert gate.manual_review_required is True
 
 
+def test_u2_gate_rejects_mutation_of_validated_document_snapshot() -> None:
+    document = validate_final_review_document(
+        _final_review(
+            status="partial",
+            verdict="manual_review_required",
+            coverage=_coverage(partial=[EXECUTION_FILES[0]]),
+        )
+    )
+    document.raw["status"] = "complete"
+    document.raw["verdict"] = "approved"
+    document.raw["coverage"] = _coverage(reviewed=[EXECUTION_FILES[0]])
+
+    gate = evaluate_review_quality_gate(
+        document,
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
+
+    assert "final_review_mutated_after_validation" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
 def test_u2_gate_revalidates_direct_final_review_document() -> None:
     raw = _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]]))
     raw["schema_id"] = "agent-review.not-final-review.v1"

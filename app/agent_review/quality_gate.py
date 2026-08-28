@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, get_args
 
@@ -13,10 +14,14 @@ from pydantic import ValidationError
 from app.agent_review import payload_cost_model
 from app.agent_review.chunk_result_parser import (
     _chunk_execution_limitations,
+    _chunk_result_integrity_limitations,
     _compose_coverage_partitions,
     _coverage_universe_partition,
     _normalize_coverage_against_partition,
     _normalize_plan_run_coverage_partition,
+    _result_identity_trustworthy,
+    _validated_chunk_id_or_none,
+    _validated_chunk_ids,
 )
 from app.agent_review.redaction import RedactionState, redact_value
 from app.agent_review.schemas import (
@@ -131,6 +136,12 @@ class QualityGateError(ValueError):
 class FinalReviewDocument:
     raw: dict[str, Any]
     verdict_unknown: bool = False
+    _snapshot: dict[str, Any] = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        raw = deepcopy(self.raw)
+        object.__setattr__(self, "raw", raw)
+        object.__setattr__(self, "_snapshot", deepcopy(raw))
 
 
 def load_json_object(path: Path | str, *, error_class: str) -> dict[str, Any]:
@@ -218,10 +229,28 @@ def evaluate_review_quality_gate(
     checks: dict[str, Any] | None = None,
     critical_pr: bool = False,
 ) -> ReviewQualityGate:
-    raw = final_review.raw
+    final_review_mutated = final_review.raw != final_review._snapshot
+    validated_final_review = validate_final_review_document(final_review.raw)
+    raw = validated_final_review.raw
+    verdict_unknown = validated_final_review.verdict_unknown
     final_status = _clean(raw.get("status"))
     final_verdict = _clean(raw.get("verdict"))
     limitations = _initial_limitations(raw, chunk_results)
+    integrity_limitations = _chunk_result_integrity_limitations(
+        chunk_results,
+        chunk_plan=chunk_plan,
+        target_repos=(
+            raw.get("target_repo"),
+            *(
+                (intake.target_repo,)
+                if intake is not None
+                else ()
+            ),
+        ),
+    )
+    limitations.extend(integrity_limitations)
+    if final_review_mutated:
+        limitations.append("final_review_mutated_after_validation")
     execution_limitations = _chunk_execution_limitations(
         chunks_parsed=chunk_results.chunks_parsed,
         chunks_failed=chunk_results.chunks_failed,
@@ -231,10 +260,17 @@ def evaluate_review_quality_gate(
     warnings = _initial_warnings(chunk_results)
     blocked_reasons: list[str] = []
 
-    if final_review.verdict_unknown:
+    if verdict_unknown:
         limitations.append("final_review_verdict_unknown")
 
-    reliable_blockers, unreliable_warnings = _confirmed_blockers(raw, chunk_results)
+    reliable_blockers, unreliable_warnings = _confirmed_blockers(
+        raw,
+        chunk_results,
+        input_binding_trusted=(
+            not final_review_mutated
+            and _result_identity_trustworthy(integrity_limitations)
+        ),
+    )
     warnings.extend(unreliable_warnings)
     for blocker in reliable_blockers:
         blocked_reasons.append(
@@ -262,15 +298,17 @@ def evaluate_review_quality_gate(
 
     input_degraded = (
         final_status in {"partial", "degraded", "failed"}
-        or chunk_results.status in {"partial", "degraded", "failed"}
+        or _clean(chunk_results.status) in {"partial", "degraded", "failed"}
         or coverage_requires_manual_review
         or bool(execution_limitations)
+        or bool(integrity_limitations)
+        or final_review_mutated
     )
     has_critical_gap = bool(coverage_gaps)
     has_untrusted_blocker_candidate = any(warning.startswith("untrusted_blocker:") for warning in warnings)
     has_minimum_material = _has_minimum_material(raw, chunk_results)
 
-    if final_review.verdict_unknown:
+    if verdict_unknown:
         status = "failed"
         normalized_verdict = "review_unavailable"
         manual_review_required = True
@@ -317,7 +355,7 @@ def evaluate_review_quality_gate(
         quality_score=_quality_score(
             status=status,
             final_status=final_status,
-            chunk_status=chunk_results.status,
+            chunk_status=_clean(chunk_results.status),
             warnings=warnings,
             limitations=limitations,
         ),
@@ -375,7 +413,10 @@ def _initial_limitations(raw: dict[str, Any], chunk_results: ChunkResults) -> li
     final_status = _clean(raw.get("status"))
     if final_status in {"partial", "degraded", "failed"}:
         limitations.append(f"final_review_status_{final_status}")
-    if chunk_results.status in {"partial", "degraded", "failed"}:
+    if (
+        isinstance(chunk_results.status, str)
+        and chunk_results.status in {"partial", "degraded", "failed"}
+    ):
         limitations.append(f"chunk_results_status_{chunk_results.status}")
     if chunk_results.chunks_failed:
         limitations.append("chunks_failed_present")
@@ -385,15 +426,21 @@ def _initial_limitations(raw: dict[str, Any], chunk_results: ChunkResults) -> li
 def _initial_warnings(chunk_results: ChunkResults) -> list[str]:
     warnings: list[str] = []
     for failure in chunk_results.chunks_failed:
-        warnings.append(f"chunk_failed:{failure.chunk_id}:{failure.error_class}")
+        chunk_id = _validated_chunk_id_or_none(getattr(failure, "chunk_id", None))
+        error_class = getattr(failure, "error_class", None)
+        if chunk_id is None or not isinstance(error_class, str) or not error_class:
+            continue
+        warnings.append(f"chunk_failed:{chunk_id}:{error_class}")
     return warnings
 
 
 def _confirmed_blockers(
     raw: dict[str, Any],
     chunk_results: ChunkResults,
+    *,
+    input_binding_trusted: bool,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    parsed_chunks = set(chunk_results.chunks_parsed)
+    parsed_chunks = set(_validated_chunk_ids(chunk_results.chunks_parsed)[0])
     reliable: list[dict[str, Any]] = []
     warnings: list[str] = []
 
@@ -401,7 +448,11 @@ def _confirmed_blockers(
         severity = _clean(finding.get("severity"))
         if severity not in BLOCKER_SEVERITIES:
             continue
-        reasons = _blocker_unreliable_reasons(finding, parsed_chunks)
+        reasons = _blocker_unreliable_reasons(
+            finding,
+            parsed_chunks,
+            input_binding_trusted=input_binding_trusted,
+        )
         if reasons:
             for reason in reasons:
                 warnings.append(_finding_warning(finding, reason))
@@ -411,7 +462,12 @@ def _confirmed_blockers(
     return reliable, warnings
 
 
-def _blocker_unreliable_reasons(finding: dict[str, Any], parsed_chunks: set[str]) -> list[str]:
+def _blocker_unreliable_reasons(
+    finding: dict[str, Any],
+    parsed_chunks: set[str],
+    *,
+    input_binding_trusted: bool,
+) -> list[str]:
     reasons: list[str] = []
     file_path = _clean(finding.get("file_path"))
     impact = _clean(finding.get("impact"))
@@ -419,6 +475,8 @@ def _blocker_unreliable_reasons(finding: dict[str, Any], parsed_chunks: set[str]
     source_artifact = _clean(finding.get("source_artifact"))
     line_or_hunk = _clean(finding.get("line_or_hunk"))
 
+    if not input_binding_trusted:
+        reasons.append("input_binding_mismatch")
     if not file_path:
         reasons.append("missing_file_path")
     if not impact:
