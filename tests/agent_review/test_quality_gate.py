@@ -11,6 +11,7 @@ from app.agent_review.chunk_result_parser import (
 )
 from app.agent_review.final_synthesizer import synthesize_final_review
 from app.agent_review.quality_gate import (
+    FinalReviewDocument,
     QualityGateError,
     evaluate_review_quality_gate,
     load_intake,
@@ -554,6 +555,294 @@ def test_u2_gate_matching_invalid_plan_and_result_ids_are_not_execution_backed(
     assert "chunk_execution_foreign_id" in gate.limitations
     if invalid_chunk_id:
         assert invalid_chunk_id not in "\n".join([*gate.limitations, *gate.warnings])
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_mutated_unhashable_parsed_id_with_p1_fails_closed() -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunks_parsed[0] = []  # type: ignore[assignment]
+
+    gate = _gate(
+        _final_review(
+            confirmed_findings=[_finding()],
+            coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+        ),
+        results,
+    )
+
+    assert "chunks_parsed_missing" in gate.limitations
+    assert "chunk_execution_foreign_id" in gate.limitations
+    assert any("source_chunk_not_parsed" in warning for warning in gate.warnings)
+    assert not any(reason.startswith("confirmed_blocker:") for reason in gate.blocked_reasons)
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_invalid_parsed_id_cannot_authorize_p1_finding() -> None:
+    invalid_chunk_id = "../chunk-01-primary_backend_logic"
+    gate = _gate(
+        _final_review(
+            confirmed_findings=[
+                _finding(
+                    chunk_id=invalid_chunk_id,
+                    source_chunks=[invalid_chunk_id],
+                )
+            ],
+            coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+        ),
+        _chunk_results(
+            chunks_parsed=[invalid_chunk_id],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
+
+    assert "chunks_parsed_missing" in gate.limitations
+    assert "chunk_execution_foreign_id" in gate.limitations
+    assert any("source_chunk_not_parsed" in warning for warning in gate.warnings)
+    assert not any(reason.startswith("confirmed_blocker:") for reason in gate.blocked_reasons)
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_does_not_echo_invalid_failed_chunk_id() -> None:
+    invalid_chunk_id = "../chunk-02-api_schema_contract"
+    failure = _execution_failures([EXECUTION_CHUNK_IDS[1]])[0]
+    failure.chunk_id = invalid_chunk_id
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]])),
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            chunks_failed=[failure],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
+
+    assert "chunk_execution_foreign_id" in gate.limitations
+    assert "chunks_failed_present" in gate.limitations
+    assert invalid_chunk_id not in "\n".join([*gate.limitations, *gate.warnings])
+    assert gate.status == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_mutated_malformed_failed_carrier_fails_closed() -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        chunks_failed=_execution_failures([EXECUTION_CHUNK_IDS[1]]),
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunks_failed[0] = None  # type: ignore[assignment]
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]])),
+        results,
+    )
+
+    assert "chunk_execution_foreign_id" in gate.limitations
+    assert "chunks_failed_present" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_rejects_mismatched_plan_target_repo() -> None:
+    plan = _execution_plan()
+    plan.target_repo = "mglpsw/OtherRepo"
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]])),
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+        chunk_plan=plan,
+    )
+
+    assert "target_repo_mismatch" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_rejects_observable_chunk_plan_ref_mismatch() -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref["status"] = "partial"
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]])),
+        results,
+        chunk_plan=plan,
+    )
+
+    assert "chunk_plan_ref_mismatch" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_rejects_final_review_target_repo_mismatch() -> None:
+    gate = _gate(
+        _final_review(
+            target_repo="mglpsw/OtherRepo",
+            coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+        ),
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
+
+    assert "target_repo_mismatch" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    "plan_ref_status",
+    ["partial", "degraded", "failed"],
+    ids=["partial", "degraded", "failed"],
+)
+def test_u2_gate_propagates_chunk_plan_ref_status_without_plan(
+    plan_ref_status: str,
+) -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref["status"] = plan_ref_status
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]])),
+        results,
+    )
+
+    assert f"chunk_plan_status_{plan_ref_status}" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    ("declared_count", "expected_reason"),
+    [
+        pytest.param(2, "chunk_execution_expected_missing", id="declares-more"),
+        pytest.param(0, "chunk_execution_foreign_id", id="declares-none"),
+    ],
+)
+def test_u2_gate_checks_chunk_plan_ref_count_without_plan(
+    declared_count: int,
+    expected_reason: str,
+) -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref["chunk_count"] = declared_count
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]])),
+        results,
+    )
+
+    assert expected_reason in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    "mutated_status",
+    ["", "mystery", None, [], {}],
+    ids=["empty", "unknown", "none", "list", "dict"],
+)
+def test_u2_gate_mutated_invalid_chunk_results_status_fails_closed(
+    mutated_status: object,
+) -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.status = mutated_status  # type: ignore[assignment]
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]])),
+        results,
+    )
+
+    assert "chunk_results_status_invalid" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_snapshots_validated_final_coverage_against_later_mutation() -> None:
+    raw = _final_review(
+        status="partial",
+        verdict="manual_review_required",
+        coverage=_coverage(partial=[EXECUTION_FILES[0]]),
+    )
+    document = validate_final_review_document(raw)
+    raw["status"] = "complete"
+    raw["verdict"] = "approved"
+    raw["coverage"] = _coverage(reviewed=[EXECUTION_FILES[0]])
+
+    gate = evaluate_review_quality_gate(
+        document,
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
+
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_revalidates_direct_final_review_document() -> None:
+    raw = _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]]))
+    raw["schema_id"] = "agent-review.not-final-review.v1"
+    document = FinalReviewDocument(raw=raw, verdict_unknown=False)
+
+    with pytest.raises(QualityGateError) as exc:
+        evaluate_review_quality_gate(
+            document,
+            _chunk_results(
+                chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+                coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+            ),
+        )
+
+    assert exc.value.error_class == "final_review_invalid"
+
+
+def test_u2_gate_target_mismatch_cannot_authorize_p1_finding() -> None:
+    gate = _gate(
+        _final_review(
+            target_repo="mglpsw/OtherRepo",
+            confirmed_findings=[_finding()],
+            coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+        ),
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
+
+    assert "target_repo_mismatch" in gate.limitations
+    assert any("input_binding_mismatch" in warning for warning in gate.warnings)
+    assert not any(reason.startswith("confirmed_blocker:") for reason in gate.blocked_reasons)
     assert gate.status == "manual_review_required"
     assert gate.normalized_verdict == "manual_review_required"
     assert gate.manual_review_required is True

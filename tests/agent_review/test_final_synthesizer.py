@@ -347,6 +347,156 @@ def test_u2_synthesis_matching_invalid_plan_and_result_ids_are_not_execution_bac
     assert review.verdict == "manual_review_required"
 
 
+def test_u2_synthesis_mutated_unhashable_parsed_id_with_p1_fails_closed() -> None:
+    results = _chunk_results(
+        findings=[_finding(severity="P1")],
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunks_parsed[0] = []  # type: ignore[assignment]
+
+    review = synthesize_final_review(results)
+
+    assert "chunks_parsed_missing" in review.limitations
+    assert "chunk_execution_foreign_id" in review.limitations
+    assert review.counts.chunks_parsed == 0
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+def test_u2_synthesis_invalid_parsed_id_cannot_authorize_p1_finding() -> None:
+    invalid_chunk_id = "../chunk-01-primary_backend_logic"
+    results = _chunk_results(
+        findings=[_finding(chunk_id=invalid_chunk_id, severity="P1")],
+        chunks_parsed=[invalid_chunk_id],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+
+    review = synthesize_final_review(results)
+
+    assert "chunks_parsed_missing" in review.limitations
+    assert "chunk_execution_foreign_id" in review.limitations
+    assert review.counts.chunks_parsed == 0
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+def test_u2_synthesis_rejects_mismatched_plan_target_repo() -> None:
+    plan = _execution_plan()
+    plan.target_repo = "mglpsw/OtherRepo"
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert "target_repo_mismatch" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+def test_u2_synthesis_rejects_observable_chunk_plan_ref_mismatch() -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref["status"] = "partial"
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert "chunk_plan_ref_mismatch" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize(
+    ("plan_ref_status", "expected_status"),
+    [
+        pytest.param("partial", "partial", id="partial"),
+        pytest.param("degraded", "degraded", id="degraded"),
+        pytest.param("failed", "degraded", id="failed"),
+    ],
+)
+def test_u2_synthesis_propagates_chunk_plan_ref_status_without_plan(
+    plan_ref_status: str,
+    expected_status: str,
+) -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref["status"] = plan_ref_status
+
+    review = synthesize_final_review(results)
+
+    assert f"chunk_plan_status_{plan_ref_status}" in review.limitations
+    assert review.status == expected_status
+    assert review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize(
+    ("declared_count", "expected_reason"),
+    [
+        pytest.param(2, "chunk_execution_expected_missing", id="declares-more"),
+        pytest.param(0, "chunk_execution_foreign_id", id="declares-none"),
+    ],
+)
+def test_u2_synthesis_checks_chunk_plan_ref_count_without_plan(
+    declared_count: int,
+    expected_reason: str,
+) -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref["chunk_count"] = declared_count
+
+    review = synthesize_final_review(results)
+
+    assert expected_reason in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+@pytest.mark.parametrize(
+    "mutated_status",
+    ["", "mystery", None, [], {}],
+    ids=["empty", "unknown", "none", "list", "dict"],
+)
+def test_u2_synthesis_mutated_invalid_chunk_results_status_fails_closed(
+    mutated_status: object,
+) -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.status = mutated_status  # type: ignore[assignment]
+
+    review = synthesize_final_review(results)
+
+    assert "chunk_results_status_invalid" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
+def test_u2_synthesis_target_mismatch_cannot_authorize_p1_finding() -> None:
+    plan = _execution_plan()
+    plan.target_repo = "mglpsw/OtherRepo"
+    results = _chunk_results(
+        findings=[_finding(severity="P1")],
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert "target_repo_mismatch" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
 @pytest.mark.parametrize(
     (
         "plan_status",

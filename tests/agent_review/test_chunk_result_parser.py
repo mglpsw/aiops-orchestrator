@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from app.agent_review.chunk_result_parser import ChunkResultParserError, parse_chunk_results
+from app.agent_review.chunk_result_parser import (
+    ChunkResultParserError,
+    _normalize_plan_run_coverage_partition,
+    parse_chunk_results,
+)
 from app.agent_review.final_synthesizer import synthesize_final_review
 from app.agent_review.schemas import ChunkResults, SemanticChunk, SemanticChunkPlan
 
@@ -123,6 +127,26 @@ def _assert_total_coverage_partition(
     ]
     assert sorted(reported) == sorted(expected)
     assert len(reported) == len(set(reported))
+
+
+def test_u2_invalid_matching_plan_and_result_ids_cannot_back_reviewed_coverage() -> None:
+    """The shared authority itself must reject a matching invalid identity."""
+    plan = _plan()
+    invalid_chunk_id = "../chunk-01-primary_backend_logic"
+    plan.chunks[0].chunk_id = invalid_chunk_id
+
+    authority = _normalize_plan_run_coverage_partition(
+        plan,
+        chunks_parsed=[invalid_chunk_id],
+        chunks_failed=[],
+    )
+    coverage = authority.as_chunk_results_coverage()
+
+    assert coverage.files_reviewed == []
+    assert coverage.files_partial == []
+    assert coverage.files_not_reviewed == plan.files_covered
+    assert "chunks_parsed_missing" in authority.limitations
+    assert "chunk_execution_foreign_id" in authority.limitations
 
 
 def test_parse_valid_response_keeps_confirmed_p2_finding(tmp_path: Path) -> None:
