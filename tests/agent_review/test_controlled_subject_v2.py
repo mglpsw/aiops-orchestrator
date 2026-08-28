@@ -17,8 +17,11 @@ from app.agent_review.controlled_subject_v2 import (
     CONTROLLED_SUBJECT_ALTERNATES_PRESENT_REASON_V2,
     CONTROLLED_SUBJECT_INVALID_REF_REASON_V2,
     CONTROLLED_SUBJECT_OBJECT_CLOSURE_INCOMPLETE_REASON_V2,
+    CONTROLLED_SUBJECT_REFERENCE_PATH_UNSUPPORTED_REASON_V2,
     CONTROLLED_SUBJECT_SOURCE_LAYOUT_UNSUPPORTED_REASON_V2,
     ControlledSubjectError,
+    checkout_head_into_subject_v2,
+    materialize_controlled_reference_root_v2,
     materialize_controlled_target_subject_v2,
     run_semantic_git_in_subject_v2,
 )
@@ -339,3 +342,101 @@ def test_source_fsmonitor_never_executes_ce12(tmp_path: Path):
     with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
         run_semantic_git_in_subject_v2(subj, ["git", "status", "--short"])
     assert not marker.exists()
+
+
+def test_checkout_head_materializes_working_tree(tmp_path: Path):
+    repo, base, head = _two_commit_repo(tmp_path)
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        checkout_head_into_subject_v2(subj)
+        assert (subj.root / "f.txt").read_text() == "hello\nworld\n"
+
+
+def test_checkout_head_triggers_no_hostile_execution(tmp_path: Path):
+    """The checkout helper reuses the exact mechanism Phase 1 proved safe
+    against hooks/filters/fsmonitor/includeIf -- this is a smoke check that
+    the wiring didn't regress that, not a re-derivation of Phase 1."""
+    repo, base, head = _two_commit_repo(tmp_path)
+    marker = tmp_path / "hook-ran"
+    hook = repo / ".git" / "hooks" / "post-checkout"
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_text(f"#!/bin/sh\ntouch {marker}\n", encoding="utf-8")
+    hook.chmod(0o755)
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        checkout_head_into_subject_v2(subj)
+    assert not marker.exists()
+
+
+def test_reference_root_materializes_declared_regular_files(tmp_path: Path):
+    repo = tmp_path / "source"
+    _init_repo(repo)
+    (repo / ".aiops").mkdir()
+    (repo / ".aiops" / "artifact.yaml").write_text("artifact bytes\n", encoding="utf-8")
+    base = _commit_all(repo, "base")
+    (repo / ".aiops" / "artifact.yaml").write_text("artifact bytes\nmore\n", encoding="utf-8")
+    head = _commit_all(repo, "head")
+
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        checkout_head_into_subject_v2(subj)
+        ref_root = materialize_controlled_reference_root_v2(
+            subj, declared_paths=(".aiops/artifact.yaml", ".aiops/does-not-exist.yaml")
+        )
+        assert (ref_root / ".aiops" / "artifact.yaml").read_text() == "artifact bytes\nmore\n"
+        assert not (ref_root / ".aiops" / "does-not-exist.yaml").exists()
+
+
+def test_reference_root_refuses_symlink_declared_path(tmp_path: Path):
+    repo = tmp_path / "source"
+    _init_repo(repo)
+    (repo / ".aiops").mkdir()
+    (repo / "outside.yaml").write_text("MALICIOUS\n", encoding="utf-8")
+    (repo / ".aiops" / "evil_link.yaml").symlink_to(repo / "outside.yaml")
+    base = _commit_all(repo, "with symlink")
+    head = base
+
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        checkout_head_into_subject_v2(subj)
+        with pytest.raises(ControlledSubjectError) as excinfo:
+            materialize_controlled_reference_root_v2(subj, declared_paths=(".aiops/evil_link.yaml",))
+        assert (
+            excinfo.value.reason_code == CONTROLLED_SUBJECT_REFERENCE_PATH_UNSUPPORTED_REASON_V2
+        )
+
+
+def test_reference_root_refuses_directory_declared_path(tmp_path: Path):
+    repo = tmp_path / "source"
+    _init_repo(repo)
+    (repo / ".aiops" / "nested").mkdir(parents=True)
+    (repo / ".aiops" / "nested" / "f.yaml").write_text("x\n", encoding="utf-8")
+    base = _commit_all(repo, "base")
+    head = base
+
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        checkout_head_into_subject_v2(subj)
+        with pytest.raises(ControlledSubjectError) as excinfo:
+            materialize_controlled_reference_root_v2(subj, declared_paths=(".aiops/nested",))
+        assert (
+            excinfo.value.reason_code == CONTROLLED_SUBJECT_REFERENCE_PATH_UNSUPPORTED_REASON_V2
+        )
+
+
+def test_reference_root_ignores_source_working_tree_toctou(tmp_path: Path):
+    """Decisive proposition for §7: identical (base_sha, head_sha) inputs
+    must bind identical reference bytes regardless of what the SOURCE's own
+    mutable working tree contains at read time -- the whole TOCTOU class
+    #274's reference_source_v2.py existed to close."""
+    repo = tmp_path / "source"
+    _init_repo(repo)
+    (repo / ".aiops").mkdir()
+    (repo / ".aiops" / "artifact.yaml").write_text("committed bytes\n", encoding="utf-8")
+    base = _commit_all(repo, "base")
+    head = base
+
+    # Mutate the SOURCE's own working tree after commit, without a new commit.
+    (repo / ".aiops" / "artifact.yaml").write_text("DIRTY_UNCOMMITTED_BYTES\n", encoding="utf-8")
+
+    with materialize_controlled_target_subject_v2(repo, base_sha=base, head_sha=head) as subj:
+        checkout_head_into_subject_v2(subj)
+        ref_root = materialize_controlled_reference_root_v2(
+            subj, declared_paths=(".aiops/artifact.yaml",)
+        )
+        assert (ref_root / ".aiops" / "artifact.yaml").read_text() == "committed bytes\n"

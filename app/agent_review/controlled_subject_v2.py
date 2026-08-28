@@ -202,3 +202,111 @@ def run_semantic_git_in_subject_v2(subject: ControlledTargetSubjectV2, argv: lis
     env = bounded_child_env_v2(isolated_home=subject.root.parent / "op-home")
     (subject.root.parent / "op-home").mkdir(parents=True, exist_ok=True)
     return run_bounded_git_v2(argv, cwd=subject.root, env=env)
+
+
+CONTROLLED_SUBJECT_CHECKOUT_FAILED_REASON_V2 = "controlled_subject_checkout_failed"
+CONTROLLED_SUBJECT_REFERENCE_PATH_UNSUPPORTED_REASON_V2 = (
+    "controlled_subject_reference_path_unsupported"
+)
+CONTROLLED_SUBJECT_REFERENCE_MATERIALIZATION_FAILED_REASON_V2 = (
+    "controlled_subject_reference_materialization_failed"
+)
+
+_REGULAR_FILE_MODES_V2 = ("100644", "100755")
+_REFERENCE_SYMLINK_MODE_V2 = "120000"
+_REFERENCE_GITLINK_MODE_V2 = "160000"
+_REFERENCE_TREE_MODE_V2 = "040000"
+
+
+def checkout_head_into_subject_v2(subject: ControlledTargetSubjectV2) -> None:
+    """Check ``subject.head_sha`` out into the subject's own working tree.
+
+    `#200-E` Phase 3 (`#200`). Git's attribute resolution (used by
+    `acquire_diff_v2` and downstream owners) walks the WORKING TREE for a
+    `.gitattributes` file when no `--attr-source` is given -- unavailable on
+    this host's Git (`#274`'s own finding, still true). Left un-checked-out,
+    the subject's working tree is empty, so a committed `.gitattributes`
+    at `head_sha` would have NO effect, which is wrong (not a security gap,
+    but a correctness one: §8 requires the declared subject's own committed
+    attributes to be a genuine semantic input). Checking out here makes the
+    committed attributes visible on disk exactly where Git looks for them --
+    safely, because Phase 2 already proved a checkout inside this
+    reviewer-owned scratch repo triggers no hook/filter/fsmonitor/includeIf
+    execution (the scratch's own config/hooks/index are freshly initialized
+    and never populated from the source).
+    """
+
+    result = run_semantic_git_in_subject_v2(
+        subject, ["git", "checkout", "--quiet", subject.head_sha, "--", "."]
+    )
+    if result.returncode != 0:
+        raise ControlledSubjectError(CONTROLLED_SUBJECT_CHECKOUT_FAILED_REASON_V2)
+
+
+def materialize_controlled_reference_root_v2(
+    subject: ControlledTargetSubjectV2, *, declared_paths: tuple[str, ...]
+) -> Path:
+    """`#200-E` Phase 3, §7 -- the controlled-subject replacement for
+    `#274`'s `reference_source_v2.py` (NOT ported; re-derived).
+
+    `payload_references_v2.build_payload_artifact_references_v2`/
+    `build_payload_contract_references_v2` and
+    `payload_builder_v2.build_chunk_payloads_from_profile_v2` read
+    profile-declared artifact/contract paths from the WORKING TREE at a
+    caller-supplied `repo_root` via ordinary filesystem reads -- they are
+    not git-object-bound the way `acquire_diff_v2` is. Pointing `repo_root`
+    at the original target checkout would reintroduce exactly the TOCTOU
+    `#274` closed for diff/content: identical `(base_sha, head_sha)` inputs
+    binding different bytes depending on what the target's mutable
+    filesystem happened to contain at read time.
+
+    This builds a SEPARATE, narrow, reviewer-owned root containing ONLY the
+    declared reference paths, each read directly from `subject`'s own Git
+    object database via `ls-tree`/`cat-file` -- never a general checkout,
+    and never the caller's working tree. Existing callers
+    (`build_payload_artifact_references_v2` etc.) are then pointed at THIS
+    root, unmodified: the same required/optional-missing semantics they
+    already implement apply unchanged, because a genuinely absent declared
+    path simply has nothing written for it here (no second missing-artifact
+    taxonomy is created).
+
+    A declared path that resolves to anything other than a regular file
+    (symlink, gitlink/submodule, or a directory) is refused outright, the
+    same fail-closed shape `toolrepo_execution_subject_v2.py` uses for the
+    identical class of entry.
+    """
+
+    env = bounded_child_env_v2(isolated_home=subject.root.parent / "ref-home")
+    (subject.root.parent / "ref-home").mkdir(parents=True, exist_ok=True)
+    reference_root = subject.root.parent / "reference-root"
+    reference_root.mkdir(parents=True, exist_ok=True)
+
+    for declared_path in declared_paths:
+        ls_tree = run_bounded_git_v2(
+            ["git", "ls-tree", subject.head_sha, "--", declared_path],
+            cwd=subject.root, env=env,
+        )
+        if ls_tree.returncode != 0:
+            raise ControlledSubjectError(
+                CONTROLLED_SUBJECT_REFERENCE_MATERIALIZATION_FAILED_REASON_V2
+            )
+        line = ls_tree.stdout.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue  # genuinely absent at head_sha -- existing callers handle this
+        meta, _, _path = line.partition("\t")
+        mode, _obj_type, blob_sha = meta.split(" ", 2)
+        if mode in (_REFERENCE_SYMLINK_MODE_V2, _REFERENCE_GITLINK_MODE_V2, _REFERENCE_TREE_MODE_V2):
+            raise ControlledSubjectError(CONTROLLED_SUBJECT_REFERENCE_PATH_UNSUPPORTED_REASON_V2)
+        if mode not in _REGULAR_FILE_MODES_V2:
+            raise ControlledSubjectError(CONTROLLED_SUBJECT_REFERENCE_PATH_UNSUPPORTED_REASON_V2)
+
+        blob = run_bounded_git_v2(["git", "cat-file", "-p", blob_sha], cwd=subject.root, env=env)
+        if blob.returncode != 0:
+            raise ControlledSubjectError(
+                CONTROLLED_SUBJECT_REFERENCE_MATERIALIZATION_FAILED_REASON_V2
+            )
+        destination = reference_root / declared_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(blob.stdout)
+
+    return reference_root
