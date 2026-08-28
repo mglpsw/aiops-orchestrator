@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from app.agent_review.diff_acquisition_v2 import (
+    DIFF_INFO_ATTRIBUTES_ACTIVE_REASON_V2,
     DIFF_UNREADABLE_REASON_V2,
     INVALID_REF_REASON_V2,
     RAW_DIFF_CARDINALITY_MISMATCH_REASON_V2,
@@ -1785,3 +1786,161 @@ def test_acquire_raw_diff_fails_closed_on_non_utf8_path_bytes(tmp_path: Path) ->
     with pytest.raises(DiffAcquisitionError) as excinfo:
         acquire_raw_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
     assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
+# -- `#200-D` correction: attribute-source binding and info/attributes -------
+
+
+def test_untracked_worktree_gitattributes_does_not_change_the_canonical_diff(tmp_path: Path) -> None:
+    """M4: an UNTRACKED `.gitattributes` planted in the target's own
+    working tree must have zero effect on `acquire_diff_v2`'s output for
+    the identical `base_sha...head_sha` range."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "reviewed.txt").write_text("l1\nl2\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "base")
+    (repo / "reviewed.txt").write_text("l1\nl2 changed\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    diff_before = acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    (repo / ".gitattributes").write_text("reviewed.txt -diff\n", encoding="utf-8")
+    diff_during_attack = acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+
+    assert diff_during_attack == diff_before
+    assert "GIT binary patch" not in diff_during_attack
+
+
+def test_modified_worktree_gitattributes_does_not_change_the_canonical_diff(tmp_path: Path) -> None:
+    """M4 variant: a MODIFIED (not merely added) working-tree
+    `.gitattributes` must be equally inert."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "reviewed.txt").write_text("l1\nl2\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text("*.md text\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "base")
+    (repo / "reviewed.txt").write_text("l1\nl2 changed\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    diff_before = acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    (repo / ".gitattributes").write_text("reviewed.txt -diff\n", encoding="utf-8")  # modified, uncommitted
+    diff_during_attack = acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+
+    assert diff_during_attack == diff_before
+
+
+def test_gitattributes_committed_at_head_sha_is_applied_deterministically(tmp_path: Path) -> None:
+    """The flip side of M4: attributes actually declared AT `head_sha`
+    must still be honored -- the fix binds attribute resolution to the
+    declared subject, it does not disable attributes altogether."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "reviewed.txt").write_text("l1\nl2\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "base")
+    (repo / "reviewed.txt").write_text("l1\nl2 changed\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text("reviewed.txt -diff\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update with committed attributes")
+
+    diff_text = acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert "GIT binary patch" in diff_text
+
+
+def test_raw_diff_acquisition_is_also_attribute_source_bound(tmp_path: Path) -> None:
+    """The grant requires unified and raw/correlation acquisitions to use
+    compatible attribute semantics -- `acquire_raw_diff_v2` gets the
+    identical untracked-`.gitattributes` immunity."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "reviewed.txt").write_text("l1\nl2\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "base")
+    (repo / "reviewed.txt").write_text("l1\nl2 changed\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    raw_before = acquire_raw_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    (repo / ".gitattributes").write_text("reviewed.txt -diff\n", encoding="utf-8")
+    raw_during_attack = acquire_raw_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+
+    assert raw_during_attack == raw_before
+
+
+def test_different_checkout_head_does_not_change_the_canonical_diff(tmp_path: Path) -> None:
+    """The target's checked-out HEAD (as opposed to the declared
+    `head_sha` argument) must be irrelevant to attribute resolution -- the
+    disposable worktree is always checked out at the DECLARED subject,
+    never at whatever the target happens to be sitting on."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "reviewed.txt").write_text("l1\nl2\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "base")
+    (repo / "reviewed.txt").write_text("l1\nl2 changed\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    diff_at_real_head = acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+
+    subprocess.run(["git", "checkout", "--quiet", "--detach", base_sha], cwd=repo, check=True)
+    diff_with_different_checkout_head = acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+
+    assert diff_with_different_checkout_head == diff_at_real_head
+
+
+def test_active_info_attributes_refuses_diff_acquisition(tmp_path: Path) -> None:
+    """M5: `$GIT_DIR/info/attributes` is not closed by the disposable
+    worktree (it is shared common-dir state) and must fail closed rather
+    than silently influence the diff."""
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "reviewed.txt").write_text("l1\nl2\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "base")
+    (repo / "reviewed.txt").write_text("l1\nl2 changed\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "attributes").write_text("reviewed.txt -diff\n", encoding="utf-8")
+
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert excinfo.value.reason_code == DIFF_INFO_ATTRIBUTES_ACTIVE_REASON_V2
+
+
+def test_comment_only_info_attributes_does_not_block(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "reviewed.txt").write_text("l1\nl2\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "base")
+    (repo / "reviewed.txt").write_text("l1\nl2 changed\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "attributes").write_text("# nothing active\n", encoding="utf-8")
+
+    diff_text = acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert "l2 changed" in diff_text
+
+
+def test_replacement_blob_substitution_is_closed_on_the_reference_material_path(tmp_path: Path) -> None:
+    """M1, exercised through this module's own public reference-material
+    reader (the function `reference_source_v2` depends on)."""
+
+    from app.agent_review.diff_acquisition_v2 import read_head_tree_entry_v2
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "artifact.txt").write_text("legit content\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "add artifact")
+
+    artifact_blob = subprocess.run(
+        ["git", "rev-parse", f"{head_sha}:artifact.txt"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    malicious_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"], cwd=repo, input="MALICIOUS SUBSTITUTED\n",
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "replace", artifact_blob, malicious_blob], cwd=repo, check=True)
+
+    entry = read_head_tree_entry_v2(repo, head_sha=head_sha, relative_path="artifact.txt")
+    assert entry.content == b"legit content\n"
