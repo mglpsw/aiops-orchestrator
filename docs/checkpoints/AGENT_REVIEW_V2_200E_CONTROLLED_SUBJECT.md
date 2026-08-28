@@ -1215,3 +1215,98 @@ qualification_phase2:
           (fail locally, pass in CI -- established in earlier sessions this
           slice inherited, not rediscovered here).
 ```
+
+## Phase 3 — operational composition (in progress)
+
+Grant received 2026-08-28, continuation of Phase 2 on the same PR #276.
+Revalidated before starting: PR #276 OPEN/Draft/unmerged at the exact
+declared head `05fb102`, `#200` OPEN, `#274` CLOSED/unmerged, no competing
+v2 implementation, Phase 2 CI green on the exact head.
+
+### Design decision: two-process model, decisively proven
+
+Investigated the real call graph on current master before writing any
+composer (`test_v2_dual_target_e2e.py`'s `_assemble`/`_build_full_run`
+helpers, `run_assembly_v2.assemble_manifest_from_diff_v2`,
+`execute_chunk_review_v2`'s internal bind/parse) rather than porting or
+guessing at #274's design.
+
+The decisive architectural finding: `diff_acquisition_v2.acquire_diff_v2`
+(and every other existing owner) calls bare `subprocess.run(argv,
+cwd=repo_root)` with NO explicit `env=` -- meaning it inherits the calling
+PYTHON PROCESS's own OS environment. This means launching the semantic
+child process ITSELF with `env=bounded_child_env_v2(...)` as its OS
+environment automatically seals every existing owner's subprocess calls,
+without modifying any of them. Proven directly
+(`test_semantic_child_process_boundary_v2.py`): a real subprocess running
+the real, unmodified `acquire_diff_v2`, launched bounded, ignored hostile
+`GIT_DIR`/`GIT_OBJECT_DIRECTORY`/`GIT_CONFIG_PARAMETERS`/`PYTHONPATH` set
+in the calling shell, and still produced the correct diff. Mutation-checked:
+reverting to unbounded `os.environ` inheritance actually broke
+`acquire_diff_v2` (the hostile `GIT_DIR` redirected it to a nonexistent
+repo).
+
+### Built and qualified this phase
+
+- `materialize_controlled_reference_root_v2` /
+  `checkout_head_into_subject_v2` (`controlled_subject_v2.py`) -- §7's
+  re-derived replacement for `#274`'s `reference_source_v2.py`. Builds a
+  narrow, reviewer-owned root containing only profile-declared
+  artifact/contract paths, each read via `ls-tree`/`cat-file` from the
+  target subject's object database -- never the source's working tree.
+  Refuses symlink/gitlink/tree entries. 6 tests, including the decisive
+  TOCTOU proposition (identical `(base_sha, head_sha)` bind identical
+  reference bytes regardless of what the source's mutable working tree
+  contains at read time).
+- `operational_run_v2.py`'s `run_operational_review_v2` -- the semantic
+  child's composer, wiring: profile load -> grouping policy bind ->
+  controlled target subject -> checkout -> authoritative diff ->
+  manifest assembly -> controlled reference root -> payload build ->
+  payload-set emission -> content extraction -> preparation closure ->
+  per-chunk transport execution -> synthesis (once) -> lifecycle
+  aggregation -> readiness decision -> readiness emission. Each front-half
+  owner's own typed error family propagates unmodified; `OperationalRunError`
+  is reserved for exactly this composer's own two pre-seal classes (a
+  genuine `blocked_pipeline` assembly outcome, a preparation-closure
+  mismatch).
+- Integration test (`test_operational_run_v2.py`) against a REAL git
+  target repository and the EXISTING `agent_escala` profile fixture
+  (`tests/agent_review/fixtures/v2/agent_escala`, loaded through the real
+  `load_target_profile_v2`, never hand-constructed): 4 tests, all passing
+  on essentially the first real attempt once the composer compiled --
+  honest non-ready readiness with zero authoritative checks submitted,
+  provable original-target non-mutation (full recursive byte snapshot
+  before/after), a genuine `blocked_pipeline` outcome correctly converted,
+  and an unclassifiable diff's `RunAssemblyError` correctly propagating
+  unmodified.
+
+Running total this phase: 12 new tests (6 + 2 + 4), 47 total across the
+`#200-E` slice's own test files, all passing; the pre-existing
+`test_v2_dual_target_e2e.py` (86-test-adjacent full pipeline suite)
+confirmed untouched and still green.
+
+### Explicitly not yet done (remaining Phase 3 scope)
+
+- The two-process CLI itself (`scripts/aiops-review-run-v2.py` with an
+  outer bootstrap epoch and an inner `--_controlled-inner` contract) --
+  the ARCHITECTURE is proven (above) but not yet wired into a real product
+  entrypoint.
+- Provider-free Router receipt-v2 black-box E2E (§17) -- only the offline
+  transport path has been exercised so far.
+- Product-level target non-mutation and toolrepo-tampering proofs run
+  against the REAL outer CLI subprocess (§18/§19) -- the underlying
+  authorities are unit-tested; the full outer-CLI-level product proof is
+  not yet built.
+- The full §23 mutation matrix (M3-01 through M3-15) -- several items are
+  effectively covered by tests already written (the process-boundary test
+  covers M3-04; the composer's own tests cover pieces of M3-05/M3-07/M3-08),
+  but the matrix has not been formally audited item-by-item the way Phase
+  1/2's matrices were.
+- Full qualification suite (schema export, CAEM pin, generated views,
+  benchmark gates) and the three independent adversarial review lanes.
+
+Recorded honestly rather than claimed complete: this phase's grant is
+substantially larger in scope than Phase 1 or Phase 2 individually, and
+what's captured above is real, tested, committed progress on the
+architecturally decisive pieces -- the process boundary and the composer
+actually working end to end -- not the full 28-section grant.
