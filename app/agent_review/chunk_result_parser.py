@@ -344,7 +344,13 @@ def _response_limitations(response: ChunkResponse) -> list[str]:
 def _normalize_plan_coverage_partition(
     chunk_plan: SemanticChunkPlan,
 ) -> _NormalizedCoveragePartition:
-    """Normalize the plan's universe and state claims as one authority value."""
+    """Normalize the plan's universe and state claims as one authority value.
+
+    A plan may preserve partial/not-covered paths outside emitted chunks, but
+    `files_covered` is not response evidence by itself.  A reviewed state is
+    therefore valid only for a path assigned to at least one chunk; otherwise
+    the path remains in the universe and is pessimistically unreviewed.
+    """
     chunk_files = [
         file_path for chunk in chunk_plan.chunks for file_path in chunk.files
     ]
@@ -354,13 +360,34 @@ def _normalize_plan_coverage_partition(
         *chunk_plan.files_not_covered,
         *chunk_files,
     ]
-    return _build_normalized_coverage_partition(
+    normalized = _build_normalized_coverage_partition(
         ChunkResultsCoverage(
             files_reviewed=chunk_plan.files_covered,
             files_partial=chunk_plan.files_partially_covered,
             files_not_reviewed=chunk_plan.files_not_covered,
         ),
         expected_files=expected_files,
+    )
+    chunk_file_set = set(chunk_files)
+    unassigned_reviewed = {
+        file_path
+        for file_path, state in normalized.assignments
+        if state == "reviewed" and file_path not in chunk_file_set
+    }
+    if not unassigned_reviewed:
+        return normalized
+    return _NormalizedCoveragePartition(
+        assignments=tuple(
+            (
+                file_path,
+                "not_reviewed" if file_path in unassigned_reviewed else state,
+            )
+            for file_path, state in normalized.assignments
+        ),
+        limitations=tuple(
+            _dedupe([*normalized.limitations, "coverage_expected_files_missing"])
+        ),
+        foreign_files=normalized.foreign_files,
     )
 
 
