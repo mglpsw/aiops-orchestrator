@@ -504,8 +504,9 @@ def test_u2_synthesis_target_mismatch_cannot_authorize_p1_finding() -> None:
         pytest.param("chunks_parsed", (EXECUTION_CHUNK_IDS[0],), id="parsed-tuple"),
         pytest.param("chunks_parsed", {EXECUTION_CHUNK_IDS[0]}, id="parsed-set"),
         pytest.param("chunks_parsed", 1, id="parsed-scalar"),
-        pytest.param("chunks_failed", None, id="failed-none"),
+        pytest.param("chunks_failed", {}, id="failed-empty-dict"),
         pytest.param("files_reviewed", {EXECUTION_FILES[0]: []}, id="reviewed-dict"),
+        pytest.param("files_reviewed", EXECUTION_FILES[0], id="reviewed-scalar"),
         pytest.param("files_partial", (), id="partial-tuple"),
         pytest.param("files_not_reviewed", set(), id="not-reviewed-set"),
     ],
@@ -530,16 +531,32 @@ def test_u2_synthesis_rejects_malformed_result_coverage_carriers(
     assert review.verdict == "manual_review_required"
 
 
+def test_u2_synthesis_rejects_post_validation_list_target_repo() -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.target_repo = ["mglpsw/AgentEscala"]  # type: ignore[assignment]
+
+    review = synthesize_final_review(results)
+
+    assert "chunk_results_structure_invalid" in review.limitations
+    assert "target_repo_mismatch" in review.limitations
+    assert review.status == "degraded"
+    assert review.verdict == "manual_review_required"
+
+
 @pytest.mark.parametrize(
     ("carrier", "malformed"),
     [
-        pytest.param("chunks", (), id="chunks-tuple"),
-        pytest.param("chunks", None, id="chunks-none"),
+        pytest.param("chunks", {"chunk": EXECUTION_CHUNK_IDS[0]}, id="chunks-dict"),
         pytest.param("files_covered", (EXECUTION_FILES[0],), id="covered-tuple"),
         pytest.param("files_partially_covered", set(), id="partial-set"),
         pytest.param("files_not_covered", {}, id="not-covered-dict"),
         pytest.param("chunk_files", {EXECUTION_FILES[0]: []}, id="chunk-files-dict"),
         pytest.param("chunk_files", (EXECUTION_FILES[0],), id="chunk-files-tuple"),
+        pytest.param("chunk_files", {EXECUTION_FILES[0]}, id="chunk-files-set"),
+        pytest.param("chunk_files", EXECUTION_FILES[0], id="chunk-files-scalar"),
     ],
 )
 def test_u2_synthesis_rejects_malformed_plan_universe_carriers(
@@ -567,10 +584,10 @@ def test_u2_synthesis_rejects_malformed_plan_universe_carriers(
     ("authority", "field", "mutated"),
     [
         pytest.param("results", "schema_id", "agent-review.not-chunk-results.v1", id="result-schema-id"),
-        pytest.param("results", "schema_version", 99, id="result-schema-version"),
+        pytest.param("results", "schema_version", 2, id="result-schema-version"),
         pytest.param("results", "schema_version", True, id="result-schema-version-bool"),
         pytest.param("plan", "schema_id", "agent-review.not-plan.v1", id="plan-schema-id"),
-        pytest.param("plan", "schema_version", 99, id="plan-schema-version"),
+        pytest.param("plan", "schema_version", 2, id="plan-schema-version"),
         pytest.param("plan", "schema_version", True, id="plan-schema-version-bool"),
     ],
 )
@@ -591,9 +608,9 @@ def test_u2_synthesis_revalidates_direct_authority_envelopes(
     review = synthesize_final_review(results, chunk_plan=plan)
 
     expected_reason = (
-        "chunk_results_identity_mismatch"
+        "chunk_results_schema_mismatch"
         if authority == "results"
-        else "chunk_plan_ref_mismatch"
+        else "chunk_plan_schema_mismatch"
     )
     assert expected_reason in review.limitations
     assert review.status == "degraded"
@@ -623,7 +640,6 @@ def test_u2_synthesis_binds_present_plan_ref_target_repo(with_plan: bool) -> Non
     ("field", "mutated"),
     [
         pytest.param("schema_version", True, id="schema-bool"),
-        pytest.param("schema_version", 1.0, id="schema-float"),
         pytest.param("chunk_count", True, id="count-bool"),
         pytest.param("chunk_count", 1.0, id="count-float"),
     ],
@@ -646,23 +662,83 @@ def test_u2_synthesis_rejects_plan_ref_integer_type_confusion(
     assert review.verdict == "manual_review_required"
 
 
-def test_u2_synthesis_plan_foreign_p1_cannot_authorize_changes_requested() -> None:
-    foreign_id = "chunk-99-primary_backend_logic"
+@pytest.mark.parametrize(
+    ("case", "source_chunk", "semantic_group", "reason"),
+    [
+        pytest.param(
+            "foreign",
+            "chunk-99-tests",
+            "tests",
+            "source_chunk_not_in_plan",
+            id="foreign-source-chunk",
+        ),
+        pytest.param(
+            "wrong-file",
+            EXECUTION_CHUNK_IDS[1],
+            EXECUTION_GROUPS[1],
+            "source_chunk_not_assigned_to_file",
+            id="source-chunk-assigned-elsewhere",
+        ),
+    ],
+)
+def test_u2_synthesis_plan_source_must_authorize_p1_file(
+    case: str,
+    source_chunk: str,
+    semantic_group: str,
+    reason: str,
+) -> None:
+    plan = _execution_plan(chunk_count=1 if case == "foreign" else 2)
+    parsed = (
+        [EXECUTION_CHUNK_IDS[0], source_chunk]
+        if case == "foreign"
+        else EXECUTION_CHUNK_IDS.copy()
+    )
+    results = _chunk_results(
+        findings=[
+            _finding(
+                chunk_id=source_chunk,
+                semantic_group=semantic_group,
+                severity="P1",
+                file_path=EXECUTION_FILES[0],
+            )
+        ],
+        chunks_parsed=parsed,
+        coverage=ChunkResultsCoverage(files_reviewed=EXECUTION_FILES[: len(plan.chunks)]),
+    )
+
+    review = synthesize_final_review(results, chunk_plan=plan)
+
+    assert reason in review.limitations
+    assert review.verdict == "manual_review_required"
+    assert review.verdict != "changes_requested"
+
+
+def test_u2_synthesis_plan_assigned_p1_remains_reliable() -> None:
     plan = _execution_plan()
     results = _chunk_results(
-        findings=[_finding(chunk_id=foreign_id, severity="P1")],
-        chunks_parsed=[foreign_id],
+        findings=[
+            _finding(
+                chunk_id=EXECUTION_CHUNK_IDS[0],
+                semantic_group=EXECUTION_GROUPS[0],
+                severity="P1",
+                file_path=EXECUTION_FILES[0],
+            )
+        ],
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
         coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
     )
 
     review = synthesize_final_review(results, chunk_plan=plan)
 
-    assert "chunk_execution_foreign_id" in review.limitations
-    assert review.status == "degraded"
-    assert review.verdict == "manual_review_required"
+    assert "source_chunk_not_in_plan" not in review.limitations
+    assert "source_chunk_not_assigned_to_file" not in review.limitations
+    assert review.verdict == "changes_requested"
 
 
-def test_u2_synthesis_exact_list_and_integer_authorities_remain_positive() -> None:
+@pytest.mark.parametrize("include_target_repo", [False, True], ids=["target-omitted", "target-exact"])
+def test_u2_synthesis_exact_list_and_integer_authorities_remain_positive(
+    include_target_repo: bool,
+) -> None:
     plan = _execution_plan()
     results = _chunk_results(
         chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
@@ -670,16 +746,20 @@ def test_u2_synthesis_exact_list_and_integer_authorities_remain_positive() -> No
     )
     results.chunk_plan_ref.update(
         {
-            "target_repo": results.target_repo,
             "chunk_count": 1,
         }
     )
+    if include_target_repo:
+        results.chunk_plan_ref["target_repo"] = results.target_repo
 
     review = synthesize_final_review(results, chunk_plan=plan)
 
     assert "chunk_results_structure_invalid" not in review.limitations
     assert "chunk_plan_structure_invalid" not in review.limitations
-    assert "chunk_results_identity_mismatch" not in review.limitations
+    assert type(results.chunk_plan_ref["schema_version"]) is int
+    assert type(results.chunk_plan_ref["chunk_count"]) is int
+    assert "chunk_results_schema_mismatch" not in review.limitations
+    assert "chunk_plan_schema_mismatch" not in review.limitations
     assert "chunk_plan_ref_mismatch" not in review.limitations
     assert review.status == "complete"
     assert review.verdict == "approved"

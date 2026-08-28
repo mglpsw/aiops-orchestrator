@@ -1049,28 +1049,28 @@ def test_u2_gate_rejects_malformed_coverage_authority_containers(
             "results",
             "schema_id",
             "agent-review.not-chunk-results.v1",
-            "chunk_results_identity_mismatch",
+            "chunk_results_schema_mismatch",
             id="result-schema-id",
         ),
         pytest.param(
             "results",
             "schema_version",
             True,
-            "chunk_results_identity_mismatch",
+            "chunk_results_schema_mismatch",
             id="result-schema-bool",
         ),
         pytest.param(
             "plan",
             "schema_id",
             "agent-review.not-plan.v1",
-            "chunk_plan_ref_mismatch",
+            "chunk_plan_schema_mismatch",
             id="plan-schema-id",
         ),
         pytest.param(
             "plan",
             "schema_version",
             1.0,
-            "chunk_plan_ref_mismatch",
+            "chunk_plan_schema_mismatch",
             id="plan-schema-float",
         ),
     ],
@@ -1224,16 +1224,18 @@ def test_u2_gate_detects_boolean_schema_mutation_after_validation() -> None:
     )
     document.raw["schema_version"] = True
 
-    with pytest.raises(QualityGateError) as exc:
-        evaluate_review_quality_gate(
-            document,
-            _chunk_results(
-                chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
-                coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
-            ),
-        )
+    gate = evaluate_review_quality_gate(
+        document,
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
 
-    assert exc.value.error_class == "final_review_invalid"
+    assert "final_review_mutated_after_validation" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
 
 
 def test_u2_gate_matching_explicit_integer_and_target_refs_remain_positive() -> None:
@@ -2596,3 +2598,493 @@ def test_schema_transport_and_coverage_failures_stay_distinct_causes() -> None:
         "agent_router_call_failed:http_5xx",
         "coverage_missing",
     } & set(gate.limitations)) == 3
+
+
+@pytest.mark.parametrize(
+    ("carrier", "malformed", "extra_reason"),
+    [
+        pytest.param("chunks_parsed", {EXECUTION_CHUNK_IDS[0]: []}, None, id="parsed-dict"),
+        pytest.param("chunks_parsed", (EXECUTION_CHUNK_IDS[0],), None, id="parsed-tuple"),
+        pytest.param("chunks_parsed", {EXECUTION_CHUNK_IDS[0]}, None, id="parsed-set"),
+        pytest.param("chunks_parsed", 1, None, id="parsed-scalar"),
+        pytest.param("chunks_failed", {}, None, id="failed-empty-dict"),
+        pytest.param("files_reviewed", {EXECUTION_FILES[0]: []}, None, id="reviewed-dict"),
+        pytest.param("files_reviewed", EXECUTION_FILES[0], None, id="reviewed-scalar"),
+        pytest.param("files_partial", (EXECUTION_FILES[0],), None, id="partial-tuple"),
+        pytest.param("files_not_reviewed", {EXECUTION_FILES[0]}, None, id="not-reviewed-set"),
+        pytest.param("target_repo", ["mglpsw/AgentEscala"], "target_repo_mismatch", id="target-list"),
+    ],
+)
+def test_u2_gate_rejects_post_validation_malformed_chunk_results_shape(
+    carrier: str,
+    malformed: object,
+    extra_reason: str | None,
+) -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    if carrier in {"chunks_parsed", "chunks_failed", "target_repo"}:
+        setattr(results, carrier, malformed)
+    else:
+        setattr(results.coverage, carrier, malformed)
+    raw = _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]]))
+    raw.pop("inputs")
+
+    gate = _gate(raw, results)
+
+    assert "chunk_results_structure_invalid" in gate.limitations
+    if extra_reason is not None:
+        assert extra_reason in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    ("carrier", "malformed"),
+    [
+        pytest.param("chunks", {"chunk": EXECUTION_CHUNK_IDS[0]}, id="chunks-dict"),
+        pytest.param("files_covered", (EXECUTION_FILES[0],), id="covered-tuple"),
+        pytest.param("files_partially_covered", {EXECUTION_FILES[0]}, id="partial-set"),
+        pytest.param("files_not_covered", EXECUTION_FILES[0], id="not-covered-scalar"),
+        pytest.param("chunk_files", {EXECUTION_FILES[0]: []}, id="chunk-files-dict"),
+        pytest.param("chunk_files", (EXECUTION_FILES[0],), id="chunk-files-tuple"),
+        pytest.param("chunk_files", {EXECUTION_FILES[0]}, id="chunk-files-set"),
+        pytest.param("chunk_files", EXECUTION_FILES[0], id="chunk-files-scalar"),
+    ],
+)
+def test_u2_gate_rejects_post_validation_malformed_chunk_plan_shape(
+    carrier: str,
+    malformed: object,
+) -> None:
+    plan = _execution_plan()
+    if carrier == "chunk_files":
+        plan.chunks[0].files = malformed  # type: ignore[assignment]
+    else:
+        setattr(plan, carrier, malformed)
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    raw = _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]]))
+    raw.pop("inputs")
+
+    gate = _gate(raw, results, chunk_plan=plan)
+
+    assert "chunk_plan_structure_invalid" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    ("authority", "field", "mutated", "reason"),
+    [
+        pytest.param("results", "schema_id", "agent-review.not-chunk-results.v1", "chunk_results_schema_mismatch", id="result-schema-id"),
+        pytest.param("results", "schema_version", 2, "chunk_results_schema_mismatch", id="result-schema-version-two"),
+        pytest.param("results", "schema_version", True, "chunk_results_schema_mismatch", id="result-schema-version-bool"),
+        pytest.param("plan", "schema_id", "agent-review.not-plan.v1", "chunk_plan_schema_mismatch", id="plan-schema-id"),
+        pytest.param("plan", "schema_version", 2, "chunk_plan_schema_mismatch", id="plan-schema-version-two"),
+        pytest.param("plan", "schema_version", True, "chunk_plan_schema_mismatch", id="plan-schema-version-bool"),
+    ],
+)
+def test_u2_gate_rejects_mutated_authority_envelope(
+    authority: str,
+    field: str,
+    mutated: object,
+    reason: str,
+) -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    setattr(results if authority == "results" else plan, field, mutated)
+    raw = _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]]))
+    raw.pop("inputs")
+
+    gate = _gate(raw, results, chunk_plan=plan)
+
+    assert reason in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    ("field", "mutated", "supply_plan"),
+    [
+        pytest.param("schema_version", True, True, id="schema-version-bool"),
+        pytest.param("chunk_count", True, True, id="chunk-count-bool"),
+        pytest.param("chunk_count", 1.0, True, id="chunk-count-float"),
+        pytest.param("target_repo", "mglpsw/OtherRepo", False, id="target-without-plan"),
+        pytest.param("target_repo", "mglpsw/OtherRepo", True, id="target-with-plan"),
+    ],
+)
+def test_u2_gate_rejects_exact_type_or_target_plan_ref_confusion(
+    field: str,
+    mutated: object,
+    supply_plan: bool,
+) -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref.update(
+        {
+            "source": plan.source,
+            "status": plan.status,
+            "created_at": plan.created_at,
+            "chunk_count": len(plan.chunks),
+            "target_repo": plan.target_repo,
+        }
+    )
+    results.chunk_plan_ref[field] = mutated
+    raw = _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]]))
+    raw.pop("inputs")
+
+    gate = _gate(raw, results, chunk_plan=plan if supply_plan else None)
+
+    assert "chunk_plan_ref_mismatch" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        pytest.param(
+            {"chunk_results": {"schema_version": True}},
+            id="chunk-results-schema-bool",
+        ),
+        pytest.param(
+            {"chunk_plan": {"chunk_count": 1.0}},
+            id="chunk-plan-count-float",
+        ),
+    ],
+)
+def test_u2_gate_rejects_exact_type_confusion_in_final_input_ref(
+    inputs: dict[str, object],
+) -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+
+    gate = _gate(
+        _final_review(inputs=inputs, coverage=_coverage(reviewed=[EXECUTION_FILES[0]])),
+        results,
+        chunk_plan=plan,
+    )
+
+    assert "final_review_input_mismatch" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize("include_target_repo", [False, True], ids=["target-omitted", "target-exact"])
+def test_u2_gate_exact_list_and_reference_types_remain_positive(
+    include_target_repo: bool,
+) -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref.update(
+        {
+            "source": plan.source,
+            "status": plan.status,
+            "created_at": plan.created_at,
+            "chunk_count": len(plan.chunks),
+        }
+    )
+    chunk_results_ref: dict[str, object] = {
+        "schema_id": results.schema_id,
+        "schema_version": results.schema_version,
+        "source": results.source,
+        "status": results.status,
+        "created_at": results.created_at,
+    }
+    chunk_plan_ref: dict[str, object] = {
+        "schema_id": plan.schema_id,
+        "schema_version": plan.schema_version,
+        "source": plan.source,
+        "status": plan.status,
+        "created_at": plan.created_at,
+        "chunk_count": len(plan.chunks),
+    }
+    if include_target_repo:
+        results.chunk_plan_ref["target_repo"] = results.target_repo
+        chunk_results_ref["target_repo"] = results.target_repo
+        chunk_plan_ref["target_repo"] = plan.target_repo
+
+    gate = _gate(
+        _final_review(
+            inputs={"chunk_results": chunk_results_ref, "chunk_plan": chunk_plan_ref},
+            coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+        ),
+        results,
+        chunk_plan=plan,
+    )
+
+    assert type(chunk_results_ref["schema_version"]) is int
+    assert type(chunk_plan_ref["schema_version"]) is int
+    assert type(chunk_plan_ref["chunk_count"]) is int
+    assert "chunk_results_structure_invalid" not in gate.limitations
+    assert "chunk_plan_structure_invalid" not in gate.limitations
+    assert "final_review_input_mismatch" not in gate.limitations
+    assert "chunk_plan_ref_mismatch" not in gate.limitations
+    assert gate.status == "passed"
+    assert gate.normalized_verdict == "approved"
+    assert gate.manual_review_required is False
+
+
+@pytest.mark.parametrize(
+    ("reported_count", "expect_mismatch"),
+    [
+        pytest.param(1, False, id="matching-retained-ref"),
+        pytest.param(2, True, id="contradictory-retained-ref"),
+    ],
+)
+def test_u2_gate_compares_final_plan_ref_to_retained_result_ref_without_plan(
+    reported_count: int,
+    expect_mismatch: bool,
+) -> None:
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    results.chunk_plan_ref.update(
+        {
+            "source": "aiops-semantic-chunk-planner",
+            "status": "complete",
+            "chunk_count": 1,
+            "target_repo": results.target_repo,
+        }
+    )
+    final_plan_ref = {"provided": True, **results.chunk_plan_ref}
+    final_plan_ref["chunk_count"] = reported_count
+
+    gate = _gate(
+        _final_review(
+            inputs={"chunk_plan": final_plan_ref},
+            coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+        ),
+        results,
+    )
+
+    assert ("final_review_input_mismatch" in gate.limitations) is expect_mismatch
+    if expect_mismatch:
+        assert gate.status == "manual_review_required"
+        assert gate.normalized_verdict == "manual_review_required"
+        assert gate.manual_review_required is True
+    else:
+        assert gate.status == "passed"
+        assert gate.normalized_verdict == "approved"
+        assert gate.manual_review_required is False
+
+
+def test_u2_gate_rejects_boolean_schema_version_mutated_after_final_validation() -> None:
+    document = validate_final_review_document(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]]))
+    )
+    document.raw["schema_version"] = True
+
+    gate = evaluate_review_quality_gate(
+        document,
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
+
+    assert "final_review_mutated_after_validation" in gate.limitations
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.normalized_verdict != "approved"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_exact_integer_final_schema_version_remains_positive() -> None:
+    document = validate_final_review_document(
+        _final_review(coverage=_coverage(reviewed=[EXECUTION_FILES[0]]))
+    )
+
+    gate = evaluate_review_quality_gate(
+        document,
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+        ),
+    )
+
+    assert type(document.raw["schema_version"]) is int
+    assert "final_review_mutated_after_validation" not in gate.limitations
+    assert gate.status == "passed"
+    assert gate.normalized_verdict == "approved"
+    assert gate.manual_review_required is False
+
+
+def test_u2_gate_snapshot_mutation_revokes_matching_p1_causal_trust() -> None:
+    raw = _final_review(
+        verdict="changes_requested",
+        confirmed_findings=[
+            _finding(file_path=EXECUTION_FILES[0], source_chunks=[EXECUTION_CHUNK_IDS[0]])
+        ],
+        coverage=_coverage(reviewed=EXECUTION_FILES.copy()),
+    )
+    raw.pop("inputs")
+    document = validate_final_review_document(raw)
+    document.raw["coverage"]["files_reviewed"].reverse()  # type: ignore[index,union-attr]
+    document._snapshot["coverage"]["files_reviewed"].reverse()  # type: ignore[index,union-attr]
+
+    gate = evaluate_review_quality_gate(
+        document,
+        _chunk_results(
+            chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+            coverage=ChunkResultsCoverage(files_reviewed=EXECUTION_FILES.copy()),
+        ),
+    )
+
+    assert "final_review_mutated_after_validation" in gate.limitations
+    assert any("input_binding_mismatch" in warning for warning in gate.warnings)
+    assert not any(reason.startswith("confirmed_blocker:") for reason in gate.blocked_reasons)
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.normalized_verdict != "changes_requested"
+    assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    ("case", "source_chunk", "semantic_group", "reason"),
+    [
+        pytest.param(
+            "foreign",
+            "chunk-99-tests",
+            "tests",
+            "source_chunk_not_in_plan",
+            id="foreign-source-chunk",
+        ),
+        pytest.param(
+            "wrong-file",
+            EXECUTION_CHUNK_IDS[1],
+            EXECUTION_GROUPS[1],
+            "source_chunk_not_assigned_to_file",
+            id="source-chunk-assigned-elsewhere",
+        ),
+    ],
+)
+def test_u2_gate_plan_source_must_authorize_p1_file(
+    case: str,
+    source_chunk: str,
+    semantic_group: str,
+    reason: str,
+) -> None:
+    plan = _execution_plan(chunk_count=1 if case == "foreign" else 2)
+    parsed = (
+        [EXECUTION_CHUNK_IDS[0], source_chunk]
+        if case == "foreign"
+        else EXECUTION_CHUNK_IDS.copy()
+    )
+    results = _chunk_results(
+        chunks_parsed=parsed,
+        coverage=ChunkResultsCoverage(files_reviewed=EXECUTION_FILES[: len(plan.chunks)]),
+    )
+    raw = _final_review(
+        verdict="changes_requested",
+        confirmed_findings=[
+            _finding(
+                chunk_id=source_chunk,
+                semantic_group=semantic_group,
+                file_path=EXECUTION_FILES[0],
+                source_chunks=[source_chunk],
+            )
+        ],
+        coverage=_coverage(reviewed=EXECUTION_FILES[: len(plan.chunks)]),
+    )
+    raw.pop("inputs")
+
+    gate = _gate(raw, results, chunk_plan=plan)
+
+    assert any(reason in warning for warning in gate.warnings)
+    assert not any(blocked.startswith("confirmed_blocker:") for blocked in gate.blocked_reasons)
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.normalized_verdict != "changes_requested"
+    assert gate.manual_review_required is True
+
+
+def test_u2_gate_plan_assigned_p1_remains_a_confirmed_blocker() -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    raw = _final_review(
+        verdict="changes_requested",
+        confirmed_findings=[
+            _finding(
+                chunk_id=EXECUTION_CHUNK_IDS[0],
+                semantic_group=EXECUTION_GROUPS[0],
+                file_path=EXECUTION_FILES[0],
+                source_chunks=[EXECUTION_CHUNK_IDS[0]],
+            )
+        ],
+        coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+    )
+    raw.pop("inputs")
+
+    gate = _gate(raw, results, chunk_plan=plan)
+
+    assert not any("source_chunk_not_" in warning for warning in gate.warnings)
+    assert any(reason.startswith("confirmed_blocker:P1:") for reason in gate.blocked_reasons)
+    assert gate.normalized_verdict == "changes_requested"
+    assert gate.manual_review_required is False
+
+
+@pytest.mark.parametrize(
+    ("case", "trigger_reason"),
+    [
+        pytest.param("plan-ref", "chunk_plan_ref_mismatch", id="plan-ref-mismatch"),
+        pytest.param("result-status", "chunk_results_status_invalid", id="result-status-invalid"),
+    ],
+)
+def test_u2_gate_integrity_failure_revokes_matching_p1_causal_trust(
+    case: str,
+    trigger_reason: str,
+) -> None:
+    plan = _execution_plan()
+    results = _chunk_results(
+        chunks_parsed=[EXECUTION_CHUNK_IDS[0]],
+        coverage=ChunkResultsCoverage(files_reviewed=[EXECUTION_FILES[0]]),
+    )
+    if case == "plan-ref":
+        results.chunk_plan_ref["status"] = "partial"
+    else:
+        results.status = "mystery"  # type: ignore[assignment]
+    raw = _final_review(
+        verdict="changes_requested",
+        confirmed_findings=[
+            _finding(
+                file_path=EXECUTION_FILES[0],
+                source_chunks=[EXECUTION_CHUNK_IDS[0]],
+            )
+        ],
+        coverage=_coverage(reviewed=[EXECUTION_FILES[0]]),
+    )
+    raw.pop("inputs")
+
+    gate = _gate(raw, results, chunk_plan=plan)
+
+    assert trigger_reason in gate.limitations
+    assert any("input_binding_mismatch" in warning for warning in gate.warnings)
+    assert not any(reason.startswith("confirmed_blocker:") for reason in gate.blocked_reasons)
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.normalized_verdict != "changes_requested"
+    assert gate.manual_review_required is True
