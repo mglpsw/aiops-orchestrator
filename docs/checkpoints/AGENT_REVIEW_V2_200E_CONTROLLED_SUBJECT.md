@@ -1,0 +1,631 @@
+# Checkpoint — `#200-E` controlled subject materialization + executed-source identity
+
+**Status:** planning — counterexample ledger and architecture spike, no
+production code yet. Terminal state target: Draft PR, not Ready, not merged.
+
+```yaml
+subject:
+  repository: mglpsw/aiops-orchestrator
+  parent: 200
+  roadmap_parent: 80 / 46
+  base_sha: f70af2e635643d1ee96ba431857002ae079b502b
+  base_tree: 945f3247a9e8ad534a0d35f4450b24446906f30c
+  branch: feat/200-e-controlled-subject-materialization
+forensic_predecessor:
+  pr: 274
+  classification: FROZEN_FORENSIC
+  state: CLOSED
+  merged: false
+  head: c37d5b5a3f273dea8e44c60bc3b5a8bb2df13e4b
+  qualification_transferred: false
+  knowledge_port: required
+preflight:
+  origin_master_sha_matched: true
+  origin_master_tree_matched: true
+  issue_200_state: OPEN
+  pr_274_state_confirmed: CLOSED, merged=false, head=c37d5b5a..., body markers present
+  competing_v2_implementation: none (only #275, explicitly v1 lane, out of scope)
+  base_drift: false
+```
+
+## Mission
+
+Do not revive `#274`. Do not attempt another round of "seal every Git
+behavior inside the target repository" — three rounds of exactly that were
+each falsified by the next round finding a sibling target-controlled-
+execution vector in the same checkout step (full record:
+`#274`'s `docs/checkpoints/AGENT_REVIEW_V2_200D_OPERATIONAL_SUCCESSOR.md`
+§ Round 3, and its "Terminal forensic reconciliation").
+
+The authority boundary changes:
+
+```text
+OLD (REFUTED):
+  target-controlled repository
+    -> enumerate/neutralize hooks/config/filters/index/Git behavior
+    -> execute semantic Git operations there
+
+NEW:
+  untrusted source checkout
+    -> object/source input only
+    -> reviewer-controlled subject (reviewer-owned config, hooks, index)
+    -> semantic diff / blobs / references / content
+    -> existing AgentReview v2 pipeline
+```
+
+`SourceLocation != SemanticSubjectAuthority`. `DeclaredSHA !=
+ExecutedSourceIdentity`. `ObservationThatGitSaysClean != ByteIdentity`.
+
+## Counterexample ledger
+
+Built from the preserved `#274` evidence at `c37d5b5a3f273dea8e44c60bc3b5a8bb2df13e4b`
+(`git show c37d5b5:docs/checkpoints/evidence/AGENT_REVIEW_V2_274_ROUND3_ADVERSARIAL/...`),
+not from memory. Every witness that mapped to a real, independently
+reproduced finding in that corpus is listed. This ledger is the planning
+artifact required before any production code exists in this slice; no item
+below has yet been tested against `#200-E` code, because none exists yet.
+`disposition` therefore records the **plan**, not an achieved result:
+
+- `MUST_START_RED` — the corpus already has (or the architecture spike will
+  produce) a harness that reproduces this witness against the OLD/vulnerable
+  model; a `#200-E` test using the same harness must fail (RED) before any
+  successor mechanism exists, then pass (GREEN) once it does, because the
+  authority boundary moved — not because of a new target-specific exception.
+- `ALREADY_ELIMINATED_BY_ARCHITECTURE` — reserved for a witness whose
+  precondition cannot exist in the new topology at all (there is no target
+  object/ref/config path in the semantic operation's dependency graph). Still
+  requires a concrete falsifier test per the acceptance rule below; the
+  disposition records the topological argument, not a substitute for testing
+  it.
+- `OUT_OF_SCOPE_WITH_FALSIFIER` — explicitly deferred, with the falsifier
+  that justifies deferring it (used here only for the bootstrap-trust
+  question in § Bootstrap honesty, which is not one of the 25 witnesses but
+  is adjacent to them).
+
+```yaml
+COUNTEREXAMPLE_LEDGER:
+
+  - id: CE-01-git-replace-blob-substitution
+    class: TARGET_ACQUISITION
+    old_design_falsifier: >-
+      git replace <original> <malicious> makes `git cat-file -p <original>`
+      return malicious bytes while `git ls-tree`/`rev-parse` keep reporting
+      the original SHA. Closed in #274 round 1 via GIT_NO_REPLACE_OBJECTS=1
+      applied to the TARGET's own git process -- a per-process mitigation
+      that still shared the target's ref namespace.
+    successor_proposition: >-
+      The scratch object database is populated by a bounded, explicit object
+      import for the declared base_sha/head_sha closure -- it never resolves
+      or imports refs/replace/* from the source at all, and the reviewer's
+      own scratch git process runs with GIT_NO_REPLACE_OBJECTS=1 as an
+      authority-owned value regardless.
+    planned_oracle: >-
+      Plant a replacement ref in the SOURCE repo mapping the declared
+      head_sha's tree/blob to malicious content; materialize the scratch
+      subject; assert the scratch diff/blob reads return the ORIGINAL bytes,
+      not the replaced ones.
+    disposition: MUST_START_RED
+
+  - id: CE-02-ambient-git-env-redirection
+    class: TARGET_ACQUISITION
+    old_design_falsifier: >-
+      An ambient GIT_DIR/GIT_OBJECT_DIRECTORY/etc. in the calling process's
+      environment silently redirects every git command run in that process,
+      independent of cwd/-C. #274 closed this by stripping a fixed list of
+      GIT_* names from an inherited os.environ -- a blacklist, falsified in
+      round 3 by GIT_CONFIG_PARAMETERS (CE-03) surviving the same list.
+    successor_proposition: >-
+      The scratch process never inherits the caller's environment. Its child
+      environment is constructed from an explicit OS-level allowlist (HOME,
+      PATH sufficient to locate the canonical git executable, locale) plus
+      authority-owned Git values -- no caller-provided GIT_* variable
+      survives unless the new authority explicitly sets it itself.
+    planned_oracle: >-
+      Set every GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE/GIT_OBJECT_DIRECTORY/
+      GIT_ALTERNATE_OBJECT_DIRECTORIES/GIT_COMMON_DIR/GIT_NAMESPACE in the
+      calling process's environment before materialization; assert the
+      scratch subject's semantic operations are unaffected (the allowlist
+      construction means none of these should even reach the child argv/env
+      inspection, not merely be neutralized value-by-value).
+    disposition: MUST_START_RED
+
+  - id: CE-03-git-config-parameters-leak
+    class: CROSS_BOUNDARY
+    old_design_falsifier: >-
+      GIT_CONFIG_PARAMETERS was absent from #274's env-stripping blacklist
+      and is honored by this host's Git; an ambient (not target-local) value
+      injects arbitrary config, including an executable filter/hook key,
+      into every "sealed" invocation. Independently reproduced in
+      #274 round 3 (evidence/.../independent-verification/02).
+    successor_proposition: >-
+      Same mechanism as CE-02 -- an allowlist child environment has no
+      GIT_CONFIG_PARAMETERS entry unless the new authority sets one itself,
+      so there is no blacklist to have a gap in.
+    planned_oracle: >-
+      Set GIT_CONFIG_PARAMETERS in the calling process's environment to
+      inject core.hooksPath or a filter definition; assert it has no effect
+      on the scratch subject's semantic operations.
+    disposition: MUST_START_RED
+
+  - id: CE-04-worktree-gitattributes-mutation
+    class: TARGET_ACQUISITION
+    old_design_falsifier: >-
+      An untracked .gitattributes planted in the target's own working tree
+      (never committed) changed acquire_diff_v2's output for the identical
+      base_sha...head_sha range from text to binary. #274 M4.
+    successor_proposition: >-
+      Attribute resolution happens inside the scratch checkout at the exact
+      declared head_sha, which is checked out FROM the scratch object
+      database, never from the target's working tree -- an untracked file in
+      the target's working tree is not even read to materialize the scratch
+      subject.
+    planned_oracle: >-
+      Plant an untracked .gitattributes in the target with different
+      semantics than the committed one; assert the scratch subject's
+      semantic diff reflects only the COMMITTED attributes at head_sha.
+    disposition: MUST_START_RED
+
+  - id: CE-05-core-attributesfile-redirect
+    class: TARGET_ACQUISITION
+    old_design_falsifier: >-
+      A repository-local core.attributesFile in the target points attribute
+      resolution at an arbitrary out-of-tree path; #274's disposable worktree
+      (round 1-2) did not cover this at all -- it flipped a text diff to
+      binary. Closed in round 2 via `-c core.attributesFile=<devnull>`, an
+      override that depended on remembering to add it to every git
+      invocation.
+    successor_proposition: >-
+      The target's repository-local config (including core.attributesFile)
+      is never copied or consulted by the scratch subject at all -- there is
+      no config-reading step against the target in the materialization path,
+      so there is no override to remember.
+    planned_oracle: >-
+      Set core.attributesFile in the target pointing at a file with
+      different rules than the committed .gitattributes; assert scratch
+      output matches the committed-attributes-only case (CE-04's oracle).
+    disposition: MUST_START_RED
+
+  - id: CE-06-info-attributes-active
+    class: TARGET_ACQUISITION
+    old_design_falsifier: >-
+      $GIT_DIR/info/attributes is shared by every worktree of a repository,
+      including a disposable one created solely to isolate the working-tree
+      .gitattributes vector -- #274 M5, closed by detecting and refusing
+      rather than by isolation (no supported Git mechanism excluded it).
+    successor_proposition: >-
+      The scratch subject has its own git init and its own $GIT_DIR --
+      info/attributes there starts empty and reviewer-owned; the target's
+      info/attributes is never read to construct it.
+    planned_oracle: >-
+      Populate the target's $GIT_DIR/info/attributes with an active rule;
+      assert the scratch subject's own info/attributes remains empty and
+      semantic output is unaffected.
+    disposition: MUST_START_RED
+
+  - id: CE-07-info-attributes-nbsp-fifo-witness
+    class: TARGET_ACQUISITION
+    old_design_falsifier: >-
+      Lane B, Q4 (#274 round 3): a U+00A0 (NBSP) prefix defeats Python's
+      `strip()`-based comment detection in the info/attributes refusal
+      helper while Git's own attribute parser treats it as an active rule --
+      a corrupted binary patch was returned instead of a refusal. A FIFO at
+      the same path was skipped by `Path.is_file()` but read by Git.
+    successor_proposition: >-
+      Not merely a stricter parser for the SAME detect-and-refuse pattern --
+      this witness specifically motivates CE-06's structural fix: an
+      always-empty, reviewer-owned info/attributes has no content to
+      misparse, and no target-controlled file identity (regular file vs.
+      FIFO) to misclassify.
+    planned_oracle: >-
+      Same fixtures as lane B Q4 (NBSP-prefixed rule, FIFO at info/attributes
+      path) run against the scratch subject; assert both have zero semantic
+      effect because the scratch info/attributes was never populated from
+      the target in the first place, not because a smarter parser classified
+      them correctly.
+    disposition: MUST_START_RED
+
+  - id: CE-08-hooks-corehookspath
+    class: TARGET_ACQUISITION
+    old_design_falsifier: >-
+      git worktree add runs the TARGET's post-checkout hook; a
+      repository-local core.hooksPath redirect reaches an arbitrary
+      directory the same way. #274 round 2, closed via
+      `-c core.hooksPath=<devnull>` on every git invocation in the shared
+      runners.
+    successor_proposition: >-
+      The scratch subject's hooks directory is reviewer-owned (freshly
+      initialized, never populated from the target); no checkout of target
+      content ever consults a target-controlled hooks path because no
+      target-owned .git/hooks or core.hooksPath value is ever read.
+    planned_oracle: >-
+      Plant a post-checkout hook in the target's .git/hooks AND set a
+      repository-local core.hooksPath redirect; assert neither executes
+      during materialization (marker-file technique from
+      evidence/.../independent-verification/01).
+    disposition: MUST_START_RED
+
+  - id: CE-09-filter-clean-toolrepo
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      A repository-local filter.*.clean executes during the bounded-path
+      `git diff --name-only HEAD` establish_toolrepo_source_identity_v2
+      used as its cleanliness check, and can make materially different
+      worktree bytes read as clean against HEAD. Independently reproduced,
+      #274 round 3 (evidence/.../independent-verification/03, /04) --
+      identity PASSED while the checked file on disk read `# TAMPERED`.
+    successor_proposition: >-
+      §10's rejected proposition (`git diff HEAD == empty => executed ==
+      declared`) is replaced entirely: enumerate the expected executable
+      files at the exact declared toolrepo commit tree, read each blob's
+      bytes via cat-file, compare directly against the raw filesystem bytes
+      actually about to execute. No git-mediated comparison, so no filter
+      driver sits between the two byte sources being compared.
+    planned_oracle: >-
+      Configure filter.*.clean to emit the committed bytes verbatim while
+      the actual file on disk is tampered; assert the new toolrepo identity
+      authority REFUSES (byte comparison fails) rather than passing.
+    disposition: MUST_START_RED
+
+  - id: CE-10-filter-smudge-acquisition
+    class: TARGET_ACQUISITION
+    old_design_falsifier: >-
+      A repository-local filter.*.smudge executes during the checkout
+      git worktree add performs. #274 round 2 detected and refused this
+      (no `-c` closure exists, since the driver name is attacker-chosen);
+      round 3 found the detector itself bypassable via includeIf.gitdir
+      (CE-13).
+    successor_proposition: >-
+      Target filter definitions are never copied into the scratch subject's
+      config (§8). A committed .gitattributes assigning `filter=<driver>` is
+      semantic input (subject bytes), but the DRIVER COMMAND is target-local
+      config that is never imported, so there is nothing for Git to execute
+      even when the attribute assignment is honored.
+    planned_oracle: >-
+      Configure filter.*.smudge in the target with a committed
+      .gitattributes assigning it; assert materialization completes with the
+      marker-file technique showing no execution, and that the committed
+      attribute assignment is still visible as semantic metadata (not
+      silently dropped).
+    disposition: MUST_START_RED
+
+  - id: CE-11-filter-process-toolrepo
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      Lane A (#274 round 3): filter.*.process also executes during toolrepo
+      identity observation, same class as CE-09.
+    successor_proposition: same as CE-09 -- cat-file-vs-filesystem-bytes
+      comparison has no git-mediated step for a process filter to intercept.
+    planned_oracle: >-
+      Configure filter.*.process instead of .clean with the same tamper
+      scenario as CE-09; assert the new authority still refuses.
+    disposition: MUST_START_RED
+
+  - id: CE-12-fsmonitor
+    class: TARGET_ACQUISITION
+    old_design_falsifier: >-
+      core.fsmonitor holds a command Git executes to enumerate working-tree
+      changes; reproduced running during `git status` in the target. #274
+      round 2, closed via `-c core.fsmonitor=false`.
+    successor_proposition: >-
+      Target config, including core.fsmonitor, is never copied into the
+      scratch subject (§8); the scratch subject's own fsmonitor is unset by
+      default (reviewer-owned, freshly initialized config).
+    planned_oracle: >-
+      Set core.fsmonitor in the target to an executable marker command;
+      assert no semantic operation against the target ever runs `git
+      status` or otherwise triggers it, and that materialization does not
+      transitively invoke it either.
+    disposition: MUST_START_RED
+
+  - id: CE-13-includeif-worktree-bypass
+    class: TARGET_ACQUISITION
+    old_design_falsifier: >-
+      includeIf.gitdir:<repo>/.git/worktrees/** is invisible to #274's
+      filter detector before the disposable worktree exists (the pattern
+      only matches once a worktree admin dir is present), then activates a
+      filter.evil.smudge during the git worktree add it was meant to guard.
+      acquire_diff_v2 returned success. Independently reproduced, #274 round
+      3, the SHARPEST demonstration that patching this design converges to
+      nothing (evidence/.../independent-verification/01) -- it defeats the
+      exact detection round 2 added for CE-10.
+    successor_proposition: >-
+      This witness is the one MOST worth stating precisely why the new
+      architecture eliminates the whole CLASS, not just this instance:
+      includeIf.gitdir conditions on the PATH of the .git directory doing
+      the checkout. The scratch subject's .git directory is a reviewer-
+      created path that was never derived from or nested under the target's
+      .git at all (no `git worktree add` against the target, ever) -- there
+      is no target-owned includeIf condition that can ever match it, by
+      construction of the path itself, not by detecting and refusing a
+      config key.
+    planned_oracle: >-
+      Configure includeIf.gitdir:<any pattern, including one matching the
+      target's own worktrees admin path> pointing at a file defining a
+      filter driver; assert scratch materialization is unaffected because
+      the scratch .git path was never derived from the target's.
+    disposition: MUST_START_RED
+
+  - id: CE-14-assume-unchanged
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      git update-index --assume-unchanged makes Git itself omit a modified
+      tracked file from `git diff --name-only HEAD`, so
+      establish_toolrepo_source_identity_v2 PASSED while the file on disk
+      was tampered. Independently reproduced through the real function,
+      #274 round 3 (evidence/.../independent-verification/04).
+    successor_proposition: same as CE-09 -- byte comparison against cat-file
+      blobs does not consult the index at all, so assume-unchanged (an
+      index flag) has nothing to influence.
+    planned_oracle: >-
+      Same as CE-09's oracle with assume-unchanged instead of a clean
+      filter as the concealment mechanism.
+    disposition: MUST_START_RED
+
+  - id: CE-15-skip-worktree
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      Lane B, Q6 (#274 round 3): git update-index --skip-worktree defeats
+      the same cleanliness check via a different index flag, both for a
+      modification and a deletion.
+    successor_proposition: same as CE-14.
+    planned_oracle: >-
+      Same as CE-09's oracle with skip-worktree, both for a modify and a
+      delete variant.
+    disposition: MUST_START_RED
+
+  - id: CE-16-lazy-fetch-promisor-ext
+    class: CROSS_BOUNDARY
+    old_design_falsifier: >-
+      A genuinely missing (not merely --filter-hidden) blob plus a
+      repository-local remote.origin.url=ext::<helper> makes the disposable-
+      worktree diff trigger Git's lazy object fetch, executing the helper.
+      GIT_NO_LAZY_FETCH=1 was absent from #274's sealed environment. A full
+      CLI run exited 0 while persisting a NEW PROMISOR PACK into the
+      reviewed repository -- this is the #274 P0: execution AND target
+      mutation on the declared success path. Independently reproduced,
+      #274 round 3 (evidence/.../independent-verification/05); note the
+      first reproduction attempt used a `file://`-transport partial clone
+      and produced a false negative (no object was actually left missing) --
+      the working reproduction deletes a loose object directly.
+    successor_proposition: >-
+      The scratch object database is populated by an explicit, bounded
+      object-closure import BEFORE any semantic operation runs (§6), from a
+      source-discovery step that fails closed on any layout whose safe
+      semantics aren't established (promisor/partial repositories
+      explicitly named in §6 as a fail-closed case). There is no promisor
+      remote, no lazy-fetch path, and no `ext::` transport configured in the
+      scratch subject at all -- missing objects after import is proven
+      complete are a materialization-time refusal (§6: "fail closed, not
+      lazy fetch"), never a runtime fetch during a later semantic operation.
+    planned_oracle: >-
+      Same fixture as evidence/.../05 (loose object deleted, repository-
+      local ext:: promisor remote configured) run against source discovery
+      and object-closure import; assert either (a) TARGET_OBJECT_ALTERNATES_
+      PRESENT / promisor-repository refusal at discovery time with no helper
+      execution, or (b) if the object IS present in the source, successful
+      import with zero helper invocation and zero write to the target under
+      any outcome.
+    disposition: MUST_START_RED
+
+  - id: CE-17-target-git-mutation-oracle-blind
+    class: TARGET_NONMUTATION
+    old_design_falsifier: >-
+      test_target_checkout_is_never_mutated and
+      test_cli_has_no_filesystem_output_authority relied on `git status
+      --porcelain` before/after, which never observes .git contents. A
+      scratch-copy mutant writing .git/agent-review-mutant-marker from
+      inside prepare_operational_review_v2 passed both tests unmodified.
+      Independently reproduced, #274 round 3
+      (evidence/.../independent-verification/06); note the first attempt at
+      this reproduction used an IN-PLACE mutant and was confounded by
+      dirtying the toolrepo's own checkout, tripping an unrelated refusal
+      before reaching the oracle question -- the working method mutates a
+      disposable scratch CLONE of the toolrepo, never the real checkout.
+    successor_proposition: >-
+      §9's TARGET_NONMUTATION_INVARIANT: after source discovery/object
+      import begins, no semantic operation is permitted to require a
+      write-capable Git operation against the target. This is enforced
+      structurally (semantic subprocesses use the scratch repo/cwd, never
+      the target's), and PROVEN by an oracle that observes the target's
+      worktree, .git contents, and ignored/untracked files recursively
+      before/after -- not merely `git status --porcelain`.
+    planned_oracle: >-
+      Port the exact mutant from evidence/.../06 (write
+      .git/agent-review-mutant-marker) against the #200-E oracle; it MUST
+      fail (the point of the new oracle is to catch what the old one
+      missed). Combine with a target made read-only at both worktree and
+      .git level -- successful review must still complete.
+    disposition: MUST_START_RED
+
+  - id: CE-18-ignored-untracked-executable-source
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      --exclude-standard hid a stray importable app/common/_stray_evil.py
+      from the untracked-source check the moment a matching .gitignore line
+      existed. #274 round 1 (M6), closed by enumerating all untracked paths
+      without --exclude-standard.
+    successor_proposition: >-
+      If §11's preferred form is adopted (execute directly from the exact
+      controlled toolrepo subject materialized from the declared SHA, not
+      from an arbitrary development worktree), this class collapses:
+      the execution root contains only what is in the declared commit tree
+      -- there is no untracked-file universe to enumerate or hide within,
+      because nothing untracked is ever copied into the execution subject.
+    planned_oracle: >-
+      Plant an untracked, .gitignore-hidden importable .py file in the
+      TOOLREPO's development checkout used to declare the SHA under test;
+      assert it is absent from the materialized toolrepo execution subject
+      and cannot be imported by the semantic review process.
+    disposition: MUST_START_RED
+
+  - id: CE-19-root-import-shadowing
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      Lane B, Q6 (#274 round 3): an untracked repository-root pydantic.py
+      executed before identity was even established, outside the identity
+      authority's declared `app/` + CLI-script bound.
+    successor_proposition: same collapse as CE-18, via §13's Python startup
+      isolation (isolated mode, PYTHONPATH ignored, user site disabled) on
+      top of an execution root containing only declared-commit content.
+    planned_oracle: >-
+      Same fixture as lane B Q6 (untracked root-level pydantic.py proxy);
+      assert it is neither present in the materialized subject nor
+      importable given the isolated Python startup configuration.
+    disposition: MUST_START_RED
+
+  - id: CE-20-scripts-stdlib-shadowing
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      Lane B, Q6: an untracked scripts/argparse.py shadowed the stdlib
+      module and executed via ordinary Python import resolution before the
+      CLI's own argument parsing ran.
+    successor_proposition: same as CE-19.
+    planned_oracle: >-
+      Same fixture with scripts/argparse.py; assert absence from the
+      materialized subject and non-importability.
+    disposition: MUST_START_RED
+
+  - id: CE-21-pyc-importable-bytecode
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      Lane B, Q6: an unchecked-hash __pycache__/*.pyc replaced the identity
+      checker's own tracked module; PYTHONDONTWRITEBYTECODE=1 does not
+      prevent READING existing bytecode.
+    successor_proposition: >-
+      The materialized toolrepo execution subject is built from exact
+      commit blobs (CE-09's mechanism) -- .pyc is never a tracked blob type
+      this authority expects, and is not part of the declared commit tree,
+      so it is never materialized into the execution subject at all,
+      independent of any PYTHONDONTWRITEBYTECODE setting.
+    planned_oracle: >-
+      Plant __pycache__/*.pyc shadowing a real tracked module in the
+      TOOLREPO's development checkout; assert absence from the materialized
+      subject and that only the source .py at the declared blob executes.
+    disposition: MUST_START_RED
+
+  - id: CE-22-symlinked-import-paths
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      Lane B, Q6: an untracked symlinked package directory evaded the
+      `.py`-suffix filter (Git reports it as a suffixless entry); separately,
+      a TRACKED symlink did not bind the executed bytes to the declared
+      identity -- changing the external referent changed executed Python
+      without changing HEAD, the symlink blob, or git status.
+    successor_proposition: >-
+      §6 (source discovery) and the toolrepo materialization mechanism must
+      make an explicit, positive decision about symlink blobs rather than
+      an implicit one: either refuse a declared toolrepo commit containing a
+      symlink under the bounded executable-source path, or resolve it AT
+      MATERIALIZATION TIME to a concrete blob whose bytes are then compared
+      like any other -- never leave it to resolve dynamically against
+      whatever the filesystem happens to point at when the process runs.
+    planned_oracle: >-
+      Both the untracked-symlink-directory and the tracked-symlink-external-
+      referent-change fixtures from lane B Q6, run against the new
+      materialization; assert either a typed refusal or a byte comparison
+      that is provably insensitive to the external referent changing after
+      materialization.
+    disposition: MUST_START_RED
+
+  - id: CE-23-nested-repo-import-surface
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      Lane B, Q6: an untracked nested Git repository under the bounded
+      source path was collapsed by Git to a suffixless directory entry,
+      evading the `.py`-suffix filter the same way as CE-22's symlink case.
+    successor_proposition: >-
+      Same structural fix as CE-18/CE-21: a materialization built from the
+      declared commit tree's blobs has no path for an untracked nested
+      repository to enter the execution universe, independent of any
+      suffix-based filtering.
+    planned_oracle: >-
+      Plant an untracked nested .git repository with a payload module under
+      the bounded toolrepo source path; assert absence from the
+      materialized subject.
+    disposition: MUST_START_RED
+
+  - id: CE-24-deleted-bounded-source
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      A `.exists()` filesystem prefilter excluded a bounded path DELETED
+      from disk (e.g. the CLI script itself) from the pathspec `git diff`
+      was even asked about. #274 round 1 (M7/M8), closed by always passing
+      the full declared bounded-path set unconditionally and detecting a
+      genuinely wrong/empty TOOLREPO_ROOT via `git ls-tree` against HEAD.
+    successor_proposition: >-
+      The byte-comparison authority (CE-09's mechanism) enumerates the
+      EXPECTED files from the declared commit tree first (via ls-tree, not
+      via filesystem existence), then reads each one -- a deleted file
+      becomes a required-but-missing filesystem read, a refusal by
+      construction, not an item that can silently drop out of a pathspec.
+    planned_oracle: >-
+      Delete a bounded tracked executable source file from the toolrepo
+      development checkout used to declare the SHA under test; assert the
+      new authority refuses (missing required file), never silently omits
+      it from consideration.
+    disposition: MUST_START_RED
+
+  - id: CE-25-commit-replacement-toolrepo
+    class: TOOLREPO_EXECUTION_IDENTITY
+    old_design_falsifier: >-
+      The commit-level analogue of CE-01: `git replace` on the toolrepo's
+      own declared HEAD commit. #274 round 1 (M2), closed via
+      GIT_NO_REPLACE_OBJECTS=1 on the toolrepo's own git process.
+    successor_proposition: >-
+      Whatever mechanism reads the declared toolrepo commit's tree/blobs
+      for CE-09's byte comparison runs with GIT_NO_REPLACE_OBJECTS=1 as an
+      authority-owned value (§7), and, if the toolrepo execution subject
+      itself is materialized as a bounded object import rather than read
+      in place (§11's preferred form), the same argument as CE-01 applies:
+      replacement refs are never resolved during import in the first place.
+    planned_oracle: >-
+      Plant a commit-level replacement for the declared toolrepo HEAD in
+      the development checkout; assert the materialized/compared bytes are
+      the ORIGINAL commit's, not the replacement's.
+    disposition: MUST_START_RED
+```
+
+### Ledger totals
+
+```yaml
+total: 25
+by_class:
+  TARGET_ACQUISITION: 10
+  TOOLREPO_EXECUTION_IDENTITY: 12
+  TARGET_NONMUTATION: 1
+  CROSS_BOUNDARY: 2
+by_planned_disposition:
+  MUST_START_RED: 25
+  ALREADY_ELIMINATED_BY_ARCHITECTURE: 0
+  OUT_OF_SCOPE_WITH_FALSIFIER: 0
+```
+
+No item is marked `ALREADY_ELIMINATED_BY_ARCHITECTURE` at this planning
+stage, deliberately: that disposition asserts a topological argument has
+been proven, and nothing in `#200-E` has been built or tested yet. CE-13
+(`includeIf.gitdir`) and several `TOOLREPO_EXECUTION_IDENTITY` items (CE-18,
+CE-19, CE-20, CE-21, CE-23) have unusually strong topological arguments —
+their successor propositions above explain why the vulnerable precondition
+should not exist at all in the new design, not merely be handled better —
+but they stay `MUST_START_RED` until the architecture spike (next section)
+and the corresponding falsifier actually prove it, per the acceptance rule.
+
+## Successor acceptance rule
+
+```text
+Every material #274 counterexample must either:
+
+A. begin RED against the vulnerable model and become GREEN because the
+   authority boundary changed;
+
+or
+
+B. be proven structurally unreachable under the successor with a concrete
+   falsifier.
+
+Never: "fixed because we added another target-specific exception."
+```
+
+Production implementation does not begin until this ledger exists (it now
+does) and the architecture spike below has produced at least one falsified-
+or-confirmed result for the `TARGET_SUBJECT_MATERIALIZATION_INVARIANT`.
