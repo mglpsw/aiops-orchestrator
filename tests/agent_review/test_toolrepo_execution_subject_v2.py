@@ -51,7 +51,12 @@ def _package_repo(tmp_path: Path) -> tuple[Path, str]:
         "import app.agent_review.probe_target as pt\n"
         "print('MARKER', pt.MARKER)\n"
         "print('ARGPARSE_FILE', argparse.__file__)\n"
-        "print('PROBE_FILE', pt.__file__)\n",
+        "print('PROBE_FILE', pt.__file__)\n"
+        "try:\n"
+        "    import pythonpath_canary\n"
+        "    print('PYTHONPATH_CANARY_IMPORTED')\n"
+        "except ImportError:\n"
+        "    print('PYTHONPATH_CANARY_ABSENT')\n",
         encoding="utf-8",
     )
     sha = _commit_all(repo, "base")
@@ -209,13 +214,19 @@ def test_real_subprocess_isolated_mode_imports_from_subject_not_devrepo(tmp_path
         "raise SystemExit('SCRIPTS_ARGPARSE_SHADOW_EXECUTED')\n", encoding="utf-8"
     )
 
+    canary_dir = tmp_path / "pythonpath-injected"
+    canary_dir.mkdir()
+    (canary_dir / "pythonpath_canary.py").write_text(
+        "raise SystemExit('PYTHONPATH_INJECTED_MODULE_EXECUTED')\n", encoding="utf-8"
+    )
+
     with materialize_toolrepo_execution_subject_v2(
         repo, declared_toolrepo_sha=sha, bounded_paths=("app", "scripts")
     ) as subj:
         result = subprocess.run(
             [sys.executable, "-I", "-B", "scripts/probe_entry.py"],
             cwd=subj.root, capture_output=True, text=True,
-            env={"PYTHONPATH": "/should/be/ignored"},
+            env={"PYTHONPATH": str(canary_dir), "PATH": "/usr/bin:/bin"},
         )
     assert result.returncode == 0, result.stderr
     assert "MARKER LEGITIMATE" in result.stdout
@@ -223,6 +234,9 @@ def test_real_subprocess_isolated_mode_imports_from_subject_not_devrepo(tmp_path
     assert "/usr/lib/python" in result.stdout or "argparse.py" in result.stdout
     assert "SHADOW_EXECUTED" not in result.stdout
     assert "SHADOW_EXECUTED" not in result.stderr
+    assert "PYTHONPATH_CANARY_ABSENT" in result.stdout, (
+        "a REAL hostile module on PYTHONPATH must not become importable under -I"
+    )
 
 
 def test_tampered_bounded_source_refused_by_byte_identity_oracle(tmp_path: Path, monkeypatch):
