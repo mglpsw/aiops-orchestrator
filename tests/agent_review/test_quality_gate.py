@@ -172,6 +172,34 @@ def _intake_with_must_review(file_path: str) -> ReviewIntake:
     )
 
 
+def _chunk_plan_for_gate(
+    *,
+    reviewed_file: str,
+    status: str = "complete",
+    files_not_covered: list[str] | None = None,
+) -> SemanticChunkPlan:
+    chunk = SemanticChunk(
+        chunk_id="chunk-01-primary_backend_logic",
+        semantic_group="primary_backend_logic",
+        order_index=0,
+        files=[reviewed_file],
+        artifacts=["artifact:file-diff-context", "artifact:checks"],
+        contracts=["target_profile:domain_contracts"],
+        coverage="complete",
+        prompt_budget_chars=24_000,
+        estimated_chars=512,
+        limitations=[],
+    )
+    return SemanticChunkPlan(
+        target_repo="mglpsw/AgentEscala",
+        max_parallel_blocks=6,
+        chunks=[chunk],
+        files_covered=[reviewed_file],
+        files_not_covered=files_not_covered if files_not_covered is not None else [],
+        status=status,  # type: ignore[arg-type]
+    )
+
+
 def test_unknown_final_verdict_generates_failed_gate_not_validation_error() -> None:
     gate = _gate(_final_review(verdict="surprising_verdict"))
 
@@ -418,6 +446,109 @@ def test_u2_supplied_plan_rejects_foreign_complete_coverage(critical_pr: bool) -
     assert gate.status == "manual_review_required"
     assert gate.normalized_verdict == "manual_review_required"
     assert gate.manual_review_required is True
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_partial_chunk_plan_blocks_otherwise_complete_gate(critical_pr: bool) -> None:
+    reviewed = "src/reviewed.py"
+    chunk_plan = _chunk_plan_for_gate(reviewed_file=reviewed, status="partial")
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[reviewed])),
+        _chunk_results(coverage=ChunkResultsCoverage(files_reviewed=[reviewed])),
+        chunk_plan=chunk_plan,
+        critical_pr=critical_pr,
+    )
+
+    assert gate.inputs["final_review"]["status"] == "complete"
+    assert gate.inputs["chunk_results"]["status"] == "complete"
+    assert gate.inputs["chunk_plan"]["status"] == "partial"
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+    assert "chunk_plan_status_partial" in gate.limitations
+    assert "review_material_missing" not in gate.limitations
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_plan_files_not_covered_blocks_otherwise_complete_gate(critical_pr: bool) -> None:
+    reviewed = "src/reviewed.py"
+    not_covered = "src/not_covered.py"
+    chunk_plan = _chunk_plan_for_gate(
+        reviewed_file=reviewed,
+        files_not_covered=[not_covered],
+    )
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[reviewed])),
+        _chunk_results(coverage=ChunkResultsCoverage(files_reviewed=[reviewed])),
+        chunk_plan=chunk_plan,
+        critical_pr=critical_pr,
+    )
+
+    assert chunk_plan.chunks[0].artifacts == ["artifact:file-diff-context", "artifact:checks"]
+    assert chunk_plan.files_not_covered == [not_covered]
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+    assert "coverage_expected_files_missing" in gate.limitations
+    if critical_pr:
+        assert "critical_chunk_plan_files_not_covered" in gate.limitations
+    else:
+        assert not any(reason.startswith("critical_") for reason in gate.limitations)
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_mutated_expected_files_cannot_hide_omission_without_plan(critical_pr: bool) -> None:
+    reviewed = "src/reviewed.py"
+    omitted = "src/omitted.py"
+    final_review = validate_final_review_document(
+        _final_review(coverage=_coverage(reviewed=[reviewed]))
+    )
+    raw_coverage = final_review.raw["coverage"]
+    assert isinstance(raw_coverage, dict)
+    expected_files = raw_coverage["expected_files"]
+    assert isinstance(expected_files, list)
+    expected_files.append(omitted)
+    assert raw_coverage["files_reviewed"] == [reviewed]
+    assert raw_coverage["expected_files"] == [reviewed, omitted]
+    assert raw_coverage["missing_expected_files"] == []
+
+    gate = evaluate_review_quality_gate(
+        final_review,
+        _chunk_results(coverage=ChunkResultsCoverage(files_reviewed=[reviewed])),
+        critical_pr=critical_pr,
+    )
+
+    assert gate.inputs["final_review"]["status"] == "complete"
+    assert gate.inputs["chunk_results"]["status"] == "complete"
+    assert gate.inputs["chunk_plan"] == {"provided": False}
+    assert gate.status == "manual_review_required"
+    assert gate.normalized_verdict == "manual_review_required"
+    assert gate.manual_review_required is True
+    assert "coverage_expected_files_missing" in gate.limitations
+    assert "review_material_missing" not in gate.limitations
+
+
+@pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])
+def test_u2_complete_matching_plan_remains_a_positive_gate_control(critical_pr: bool) -> None:
+    reviewed = "src/reviewed.py"
+    chunk_plan = _chunk_plan_for_gate(reviewed_file=reviewed)
+
+    gate = _gate(
+        _final_review(coverage=_coverage(reviewed=[reviewed])),
+        _chunk_results(coverage=ChunkResultsCoverage(files_reviewed=[reviewed])),
+        chunk_plan=chunk_plan,
+        critical_pr=critical_pr,
+    )
+
+    assert gate.inputs["chunk_plan"]["status"] == "complete"
+    assert gate.status == "passed"
+    assert gate.normalized_verdict == "approved"
+    assert gate.manual_review_required is False
+    assert "chunk_plan_status_partial" not in gate.limitations
+    assert "coverage_expected_files_missing" not in gate.limitations
+    assert "critical_chunk_plan_files_not_covered" not in gate.limitations
 
 
 @pytest.mark.parametrize("critical_pr", [False, True], ids=["noncritical", "critical"])

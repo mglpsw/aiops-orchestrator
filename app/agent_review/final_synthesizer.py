@@ -10,7 +10,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.agent_review.chunk_result_parser import _normalize_coverage_partition
+from app.agent_review.chunk_result_parser import (
+    _expected_plan_files,
+    _normalize_coverage_partition,
+)
 from app.agent_review.redaction import RedactionState, redact_text, redact_value
 from app.agent_review.schemas import (
     CHUNK_RESULTS_SCHEMA,
@@ -362,7 +365,7 @@ def _coverage(
         comparison_available = True
         if chunk_plan.status != "complete":
             limitations.append(f"chunk_plan_status_{chunk_plan.status}")
-        expected_files = _expected_files(chunk_plan)
+        expected_files = _expected_plan_files(chunk_plan)
         missing_expected_files = [file_path for file_path in expected_files if file_path not in reported]
         extra_reported_files = [file_path for file_path in reported if file_path not in expected_files]
         if extra_reported_files:
@@ -390,17 +393,6 @@ def _coverage(
         ),
         limitations,
     )
-
-
-def _expected_files(chunk_plan: SemanticChunkPlan) -> list[str]:
-    files = [
-        *chunk_plan.files_covered,
-        *chunk_plan.files_partially_covered,
-        *chunk_plan.files_not_covered,
-    ]
-    for chunk in chunk_plan.chunks:
-        files.extend(chunk.files)
-    return _dedupe(files)
 
 
 def _limitations(

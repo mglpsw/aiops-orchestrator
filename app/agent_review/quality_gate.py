@@ -11,7 +11,10 @@ from typing import Any, get_args
 from pydantic import ValidationError
 
 from app.agent_review import payload_cost_model
-from app.agent_review.chunk_result_parser import _normalize_coverage_partition
+from app.agent_review.chunk_result_parser import (
+    _expected_plan_files,
+    _normalize_coverage_partition,
+)
 from app.agent_review.redaction import RedactionState, redact_value
 from app.agent_review.schemas import (
     CHUNK_RESULTS_SCHEMA,
@@ -239,11 +242,14 @@ def evaluate_review_quality_gate(
         critical_pr=critical_pr,
     )
     limitations.extend(coverage_gaps)
-    coverage_requires_manual_review = _coverage_requires_manual_review(
-        raw,
-        chunk_results,
-        chunk_plan=chunk_plan,
+    coverage_requires_manual_review, coverage_validation_limitations = (
+        _coverage_requires_manual_review(
+            raw,
+            chunk_results,
+            chunk_plan=chunk_plan,
+        )
     )
+    limitations.extend(coverage_validation_limitations)
 
     input_degraded = (
         final_status in {"partial", "degraded", "failed"}
@@ -506,51 +512,75 @@ def _coverage_requires_manual_review(
     chunk_results: ChunkResults,
     *,
     chunk_plan: SemanticChunkPlan | None,
-) -> bool:
+) -> tuple[bool, list[str]]:
     coverage = raw.get("coverage") if isinstance(raw.get("coverage"), dict) else {}
-    if (
+    requires_manual_review = bool(
         chunk_results.coverage.files_partial
         or chunk_results.coverage.files_not_reviewed
         or _string_set(coverage.get("files_partial"))
         or _string_set(coverage.get("files_not_reviewed"))
         or _string_set(coverage.get("missing_expected_files"))
         or _string_set(coverage.get("extra_reported_files"))
-    ):
-        return True
+    )
+    validation_limitations: list[str] = []
 
-    if chunk_plan is not None:
-        expected_files = [
-            file_path
-            for chunk in chunk_plan.chunks
-            for file_path in chunk.files
-        ]
-        final_coverage = ChunkResultsCoverage(
-            files_reviewed=sorted(_string_set(coverage.get("files_reviewed"))),
-            files_partial=sorted(_string_set(coverage.get("files_partial"))),
-            files_not_reviewed=sorted(_string_set(coverage.get("files_not_reviewed"))),
-        )
-        for reported_coverage in (chunk_results.coverage, final_coverage):
-            normalized, normalization_limitations, foreign_path_reported = _normalize_coverage_partition(
+    final_coverage = ChunkResultsCoverage(
+        files_reviewed=sorted(_string_set(coverage.get("files_reviewed"))),
+        files_partial=sorted(_string_set(coverage.get("files_partial"))),
+        files_not_reviewed=sorted(_string_set(coverage.get("files_not_reviewed"))),
+    )
+
+    def validate_partition(
+        reported_coverage: ChunkResultsCoverage,
+        *,
+        expected_files: list[str],
+    ) -> None:
+        nonlocal requires_manual_review
+        normalized, normalization_limitations, foreign_path_reported = (
+            _normalize_coverage_partition(
                 reported_coverage,
                 expected_files=expected_files,
             )
-            if (
-                foreign_path_reported
-                or normalization_limitations
-                or normalized.files_partial
-                or normalized.files_not_reviewed
-            ):
-                return True
+        )
+        validation_limitations.extend(normalization_limitations)
+        if foreign_path_reported:
+            validation_limitations.append("coverage_reported_files_not_in_plan")
+        if (
+            foreign_path_reported
+            or normalization_limitations
+            or normalized.files_partial
+            or normalized.files_not_reviewed
+        ):
+            requires_manual_review = True
+
+    final_expected_files = sorted(_string_set(coverage.get("expected_files")))
+    comparison_available = coverage.get("comparison_available") is True
+    if comparison_available:
+        validate_partition(final_coverage, expected_files=final_expected_files)
+    elif final_expected_files:
+        requires_manual_review = True
+        validation_limitations.append("coverage_expected_files_missing")
+
+    if chunk_plan is not None:
+        expected_files = _expected_plan_files(chunk_plan)
+        if chunk_plan.status != "complete":
+            requires_manual_review = True
+            validation_limitations.append(f"chunk_plan_status_{chunk_plan.status}")
+        for reported_coverage in (chunk_results.coverage, final_coverage):
+            validate_partition(reported_coverage, expected_files=expected_files)
 
     deterministic_limitations = [
         *[value for value in raw.get("limitations", []) if isinstance(value, str)],
         *chunk_results.limitations,
     ]
-    return any(
+    if any(
         limitation in BLOCKING_COVERAGE_LIMITATIONS
         or limitation.startswith("coverage_file_not_in_chunk:")
         for limitation in deterministic_limitations
-    )
+    ):
+        requires_manual_review = True
+
+    return requires_manual_review, _dedupe(validation_limitations)
 
 
 def _must_review_files(intake: ReviewIntake | None) -> set[str]:

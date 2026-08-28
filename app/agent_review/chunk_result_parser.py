@@ -286,6 +286,18 @@ def _response_limitations(response: ChunkResponse) -> list[str]:
     return limitations
 
 
+def _expected_plan_files(chunk_plan: SemanticChunkPlan) -> list[str]:
+    """Return the plan-wide file universe used by downstream coverage checks."""
+    files = [
+        *chunk_plan.files_covered,
+        *chunk_plan.files_partially_covered,
+        *chunk_plan.files_not_covered,
+    ]
+    for chunk in chunk_plan.chunks:
+        files.extend(chunk.files)
+    return _dedupe(files)
+
+
 def _normalize_coverage_partition(
     coverage_notes: ChunkCoverageNotes | ChunkResultsCoverage,
     *,
