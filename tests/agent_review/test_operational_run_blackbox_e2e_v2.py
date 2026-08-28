@@ -260,3 +260,43 @@ def test_product_level_target_readonly_fixture_still_succeeds(tmp_path: Path):
             except OSError:
                 pass
         target_repo.chmod(0o755)
+
+
+def test_product_level_reference_material_ignores_post_commit_tampering(tmp_path: Path):
+    """§9: target worktree artifact/contract bytes tampered AFTER commit
+    -> product review still consumes committed head bytes, proven through
+    the real CLI subprocess (unit-level already proven in
+    test_controlled_subject_v2.py; this is the product-level witness)."""
+    target_repo, base_sha, head_sha = _build_real_target(tmp_path)
+    responses_dir = tmp_path / "responses"
+    responses_dir.mkdir()
+    policy_path = tmp_path / "policy.json"
+    _write_grouping_policy(policy_path)
+
+    clean_result = subprocess.run(
+        _cli_argv(target_repo=target_repo, base_sha=base_sha, head_sha=head_sha,
+                   responses_dir=responses_dir, policy_path=policy_path),
+        capture_output=True, text=True,
+    )
+    assert clean_result.returncode == 0, clean_result.stderr
+    clean_readiness = json.loads(clean_result.stdout)
+
+    # Tamper the WORKING TREE copy of the declared artifact/contract AFTER
+    # the commit -- never a new commit.
+    (target_repo / "artifacts" / "full.diff").write_text(
+        "TAMPERED_AFTER_COMMIT_NOT_PART_OF_ANY_COMMIT\n", encoding="utf-8"
+    )
+    (target_repo / "contracts" / "domain-contracts.yaml").write_text(
+        "TAMPERED_AFTER_COMMIT_NOT_PART_OF_ANY_COMMIT\n", encoding="utf-8"
+    )
+
+    tampered_result = subprocess.run(
+        _cli_argv(target_repo=target_repo, base_sha=base_sha, head_sha=head_sha,
+                   responses_dir=responses_dir, policy_path=policy_path),
+        capture_output=True, text=True,
+    )
+    assert tampered_result.returncode == 0, tampered_result.stderr
+    tampered_readiness = json.loads(tampered_result.stdout)
+
+    assert tampered_readiness["identity"]["manifest_hash"] == clean_readiness["identity"]["manifest_hash"]
+    assert tampered_readiness["state"] == clean_readiness["state"]
