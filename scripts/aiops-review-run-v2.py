@@ -283,6 +283,14 @@ def _run_inner_semantic_child(args: argparse.Namespace) -> int:
     from app.agent_review.profile_loader_v2 import TargetProfileLoadErrorV2
     from app.agent_review.payload_set_v2 import PayloadSetBindingError
     from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanceErrorV2
+    # Reachable on the ORDINARY path, not an edge case: every target that
+    # has a v2 profile but is not yet onboarded to #203's target pack
+    # lacks `.aiops/authoritative-checks.v2.yaml`, which is the default
+    # first-run state. Omitted until round 3, where it escaped as a raw
+    # traceback printing absolute host paths -- see the structural
+    # completeness test in test_operational_run_blackbox_e2e_v2.py, which
+    # now fails if any reason_code-bearing owner error is missing here.
+    from app.agent_review.authoritative_check_policy_v2 import AuthoritativeCheckPolicyErrorV2
     from app.agent_review.required_check_readiness_v2 import RequiredCheckReadinessErrorV2
     from app.agent_review.review_content_extraction_v2 import ExtractionBlockedError
     from app.agent_review.review_readiness_emission_v2 import ReadinessEmissionError
@@ -347,6 +355,7 @@ def _run_inner_semantic_child(args: argparse.Namespace) -> int:
         ExtractionBlockedError,
         RequiredCheckReadinessErrorV2,
         RequiredCheckProvenanceErrorV2,
+        AuthoritativeCheckPolicyErrorV2,
         ReadinessEmissionError,
         OperationalRunError,
     ) as exc:

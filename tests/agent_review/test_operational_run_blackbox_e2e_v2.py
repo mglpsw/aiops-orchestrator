@@ -501,3 +501,178 @@ def test_ordinary_cli_still_emits_the_real_toolrepo_sha(tmp_path: Path):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert json.loads(result.stdout)["identity"]["toolrepo_sha"] == real_head
+
+
+# ---- round-3 lane B: the CLI except tuple must be COMPLETE by construction ----
+
+# Every `reason_code`-bearing owner error that this composer's import graph
+# can produce must be EITHER caught by the CLI (converted to a structured
+# `{"error_class": ...}` refusal) or listed here with a written reason.
+# A new owner error added later belongs to neither set and fails the test,
+# which is the point: the previous two rounds each found a missing class by
+# manual inspection, because nothing enforced completeness.
+_DELIBERATELY_UNCAUGHT_OWNER_ERRORS_V2 = {
+    # Converted by their OWN owners before the composer can ever see them --
+    # verified directly by reading the conversion sites, not inherited.
+    "ChunkTransportError":
+        "converted to a ChunkReviewOutcomeV2('manual_required') inside the transport "
+        "choke point (review_transport_v2.py:254-255); never propagates",
+    "PayloadReferenceError":
+        "sibling family converted by payload_builder_v2.py:211,274 into PayloadBuilderError, "
+        "which IS caught",
+    "ReviewContentBindingError":
+        "sibling family converted by review_content_extraction_v2.py:688 into "
+        "ExtractionBlockedError, which IS caught",
+    # Programmer-defect classes. Catching these would LAUNDER a repository bug
+    # into an operator-facing refusal, defeating the composer's documented
+    # post-seal 'defects escape raw' epoch. See the §13 tests.
+    "ReadinessDecisionError":
+        "internal-consistency defect class; unreachable from this composer's calling "
+        "convention (stale_reason_codes never passed; remaining sites are "
+        "synthesis-vs-manifest consistency checks over objects the composer derives "
+        "from one source). NOTE round-3 lane B: sites 299/312 are unreachable only "
+        "because run_assembly_v2.py:536 hardcodes degradation_causes=[] -- a fragile "
+        "dependency, recorded in the checkpoint, not a permanent guarantee",
+    "SynthesisErrorV2":
+        "post-seal internal derivation over composer-owned objects; a raise here is a "
+        "repository bug, not a caller-material refusal",
+    "LifecycleAggregationError":
+        "post-seal internal derivation; same epoch as SynthesisErrorV2",
+    "ChunkResultScopeError":
+        "post-seal scope re-check over already-bound results; a raise is a defect in "
+        "binding, which the binder itself is responsible for refusing earlier",
+    "FragmentCoverageBindingError":
+        "post-seal coverage derivation over composer-owned manifest/fragments",
+    # Not on this composer's call path at all: raised only by modules
+    # run_operational_review_v2 never calls. Reachable from OTHER entrypoints
+    # (the acquire/promote CLIs), which own their own error surfaces.
+    "TrustedCheckAuthorityBoundaryErrorV2":
+        "trusted-check acquisition/promotion path; not called by run_operational_review_v2",
+    "TrustedCheckBindingError":
+        "trusted-check acquisition/promotion path; not called by run_operational_review_v2",
+    "TrustedCheckPromotionError":
+        "trusted-check acquisition/promotion path; not called by run_operational_review_v2",
+    "DlpPolicyContractError":
+        "DLP policy loading belongs to the payload/DLP entrypoints; the offline "
+        "composer path does not load a DLP policy contract",
+    "ResponseBindingError":
+        "raised by consumer_v2 binding, which the transport choke point already "
+        "converts into a non-bound ChunkReviewOutcomeV2 rather than propagating",
+    "RouterReceiptError":
+        "Router receipt verification is converted to a non-bound outcome by the same "
+        "choke point; additionally the shipped CLI wires only the offline transport",
+    "TransportEchoError":
+        "offline echo transport self-check; converted by the choke point alongside "
+        "ChunkTransportError",
+}
+
+
+def _cli_except_tuple_class_names_v2() -> set[str]:
+    """Read the CLI's own `except (...)` tuple STATICALLY, via AST.
+
+    Deliberately not by importing the script: it re-execs itself into
+    `-I -B` at module scope, so importing it is not a read-only act.
+    """
+    import ast
+
+    tree = ast.parse(CLI_SCRIPT.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name != "_run_inner_semantic_child":
+            continue
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        # UNION over every except tuple in the function, not the first one
+        # found: this child has two (the caller-material argparse/parse
+        # boundary, and the owner-refusal tuple). Returning early on the
+        # first made every owner class look uncaught.
+        names: set[str] = set()
+        for handler in (h for n in ast.walk(node) if isinstance(n, ast.Try) for h in n.handlers):
+            if isinstance(handler.type, ast.Tuple):
+                names |= {e.id for e in handler.type.elts if isinstance(e, ast.Name)}
+            elif isinstance(handler.type, ast.Name):
+                names.add(handler.type.id)
+        if names:
+            return names
+    raise AssertionError("could not locate the inner child's except tuple")
+
+
+def _reason_code_bearing_owner_errors_v2() -> set[str]:
+    import sys as _sys
+
+    import app.agent_review.operational_run_v2  # noqa: F401  (populates sys.modules)
+
+    names: set[str] = set()
+    for module_name, module in list(_sys.modules.items()):
+        if not module_name.startswith("app.agent_review"):
+            continue
+        for attr in dir(module):
+            obj = getattr(module, attr)
+            if not (isinstance(obj, type) and issubclass(obj, Exception)):
+                continue
+            try:
+                probe = obj("probe-reason")
+            except Exception:
+                continue
+            if getattr(probe, "reason_code", None) == "probe-reason":
+                names.add(attr)
+    return names
+
+
+def test_cli_except_tuple_is_complete_by_construction():
+    """Round-3 lane B P1 anti-recurrence control.
+
+    `AuthoritativeCheckPolicyErrorV2` escaped the CLI as a raw traceback --
+    printing absolute host paths, against the content-free reason-code
+    discipline every owner documents -- for any target lacking
+    `.aiops/authoritative-checks.v2.yaml`, which is the DEFAULT first-run
+    state of a target not yet onboarded to #203's pack. It sits on the exact
+    transitive path a previous round already walked to add two sibling
+    classes; that round derived the tuple by inspecting imports rather than
+    tracing the call graph, and nothing tested completeness, so the next gap
+    was found by a reviewer instead of by CI. Twice.
+
+    This test makes the tuple complete BY CONSTRUCTION: every reason_code-
+    bearing owner error must be explicitly caught or explicitly excused."""
+    caught = _cli_except_tuple_class_names_v2()
+    excused = set(_DELIBERATELY_UNCAUGHT_OWNER_ERRORS_V2)
+    unclassified = _reason_code_bearing_owner_errors_v2() - caught - excused
+
+    assert not unclassified, (
+        "reason_code-bearing owner error(s) neither caught by the CLI nor listed in "
+        f"_DELIBERATELY_UNCAUGHT_OWNER_ERRORS_V2 with a reason: {sorted(unclassified)}. "
+        "Either add it to the CLI's except tuple (so it becomes a structured "
+        '{"error_class": ...} refusal instead of a raw traceback) or excuse it with a '
+        "written justification."
+    )
+    assert not (caught & excused), (
+        f"class listed as BOTH caught and deliberately uncaught: {sorted(caught & excused)}"
+    )
+
+
+def test_missing_authoritative_check_policy_is_a_structured_refusal(tmp_path: Path):
+    """The concrete round-3 lane B P1 reproduction: a profile root with no
+    `.aiops/authoritative-checks.v2.yaml` must produce a structured refusal
+    on stderr and no artifact -- not a Python traceback leaking host paths."""
+    target_repo, base_sha, head_sha = _build_real_target(tmp_path)
+    responses_dir = tmp_path / "responses"
+    responses_dir.mkdir()
+    policy_path = tmp_path / "policy.json"
+    _write_grouping_policy(policy_path)
+
+    profile_root = tmp_path / "profile"
+    shutil.copytree(FIXTURES_ROOT, profile_root)
+    (profile_root / ".aiops" / "authoritative-checks.v2.yaml").unlink()
+
+    argv = _cli_argv(
+        target_repo=target_repo, base_sha=base_sha, head_sha=head_sha,
+        responses_dir=responses_dir, policy_path=policy_path,
+    )
+    argv[argv.index("--trusted-profile-root") + 1] = str(profile_root)
+    result = subprocess.run(argv, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "Traceback" not in result.stderr, (
+        f"raw traceback escaped instead of a structured refusal:\n{result.stderr}"
+    )
+    assert json.loads(result.stderr)["error_class"] == "authoritative_check_policy_missing"
