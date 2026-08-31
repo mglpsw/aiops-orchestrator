@@ -533,6 +533,13 @@ def _assemble_manifest_from_diff_v2(
         "fragments": all_fragments,
         "chunks": all_chunks,
         "max_chunks": profile.budgets.max_chunks,
+        # NOTE (round-3 lane B): readiness_decision_v2.py:299,312 are
+        # unreachable from the operational composer ONLY because this is
+        # hardcoded empty -- which is why ReadinessDecisionError is
+        # deliberately absent from the product CLI's except tuple. A slice
+        # that makes assembly emit a real degradation cause here MUST
+        # revisit that exclusion, or a target-diff-shaped condition becomes
+        # a raw traceback. See _DELIBERATELY_UNCAUGHT_OWNER_ERRORS_V2.
         "degradation_causes": [],
     }
     material = ManifestMaterialV2.model_validate(material_kwargs)

@@ -564,6 +564,24 @@ _DELIBERATELY_UNCAUGHT_OWNER_ERRORS_V2 = {
     "TransportEchoError":
         "offline echo transport self-check; converted by the choke point alongside "
         "ChunkTransportError",
+    # Handled, but by the OUTER bootstrap rather than the inner child: the
+    # outer already converts it to a structured refusal at its own
+    # materialize call site. Listed here because this enumeration is
+    # package-wide, not because it is unhandled.
+    "ToolrepoExecutionSubjectError":
+        "caught by _run_outer_bootstrap's own `except ToolrepoExecutionSubjectError`, "
+        "which prints the same {\"error_class\": ...} shape; it cannot reach the inner child",
+    # Modules run_operational_review_v2 never calls. Reachable only from other
+    # entrypoints (isolated execution, target-pack build/install, planning,
+    # trusted-check simulation), each of which owns its own error surface.
+    "IsolatedExecutorError": "isolated-executor entrypoint; not on the composer's call path",
+    "PlanError": "chunk planning entrypoint; not raised through the composer's owners",
+    "TrustedCheckSimulationError": "trusted-check simulation entrypoint; not on the call path",
+    "TargetInstallReceiptLoadErrorV2": "#203 target-pack install path; not on the call path",
+    "TargetPackAuthorizedApplyErrorV2": "#203 target-pack apply path; not on the call path",
+    "TargetPackBuildError": "#203 target-pack build path; not on the call path",
+    "TargetPackEpochError": "#203 target-pack epoch path; not on the call path",
+    "TargetPackInstallError": "#203 target-pack install path; not on the call path",
 }
 
 
@@ -597,9 +615,25 @@ def _cli_except_tuple_class_names_v2() -> set[str]:
 
 
 def _reason_code_bearing_owner_errors_v2() -> set[str]:
+    """Enumerate over the WHOLE `app.agent_review` package, deterministically.
+
+    An earlier version walked `sys.modules` after importing the composer,
+    which made the result depend on whatever other test modules pytest had
+    already imported -- it passed alone and failed in a combined run. Import
+    every module explicitly instead, so the set is the same in any order and
+    is a superset of anything the composer can reach.
+    """
+    import importlib
+    import pkgutil
     import sys as _sys
 
-    import app.agent_review.operational_run_v2  # noqa: F401  (populates sys.modules)
+    import app.agent_review as _pkg
+
+    for info in pkgutil.iter_modules(_pkg.__path__):
+        try:
+            importlib.import_module(f"app.agent_review.{info.name}")
+        except Exception:  # a module that cannot import cannot raise at runtime either
+            continue
 
     names: set[str] = set()
     for module_name, module in list(_sys.modules.items()):

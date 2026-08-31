@@ -1453,12 +1453,36 @@ distinct fields (`fd3dc50`).
   and hostile caller `PYTHONPATH` with a real planted module -- produces
   an identical result to a clean checkout in every case.
 
+  **Scope correction (round-3 lane A), recorded rather than quietly
+  narrowed:** "in every case" was too strong for the ROOT-LEVEL SHADOW
+  member. That fixture plants `pydantic.py`, which the OUTER bootstrap
+  never imports, so it passed without exercising the case. A root-level
+  shadow of a stdlib module the outer imports FRESH after its own
+  `sys.path.insert` -- `dataclasses`, `contextlib`, `re`, `typing` -- does
+  execute attacker code in the outer process, PRE-SEAL (reproduced
+  directly; modules already cached from the earlier import block, such as
+  `argparse`/`json`/`subprocess`/`pathlib`, are inert). What survives
+  unchanged is the claim this section actually exists to establish:
+  POST-SEAL, the inner semantic child loads only committed blobs of
+  `app/` + the one script from the materialized subject, so a root-level
+  `dataclasses.py` is never materialized and never on the inner
+  `sys.path[0]` -- verified. The exposure is bounded (an attacker who can
+  write `$TOOLREPO/dataclasses.py` can equally edit the bootstrap script
+  itself) and no outer-launcher attestation is claimed anywhere.
+
 ### Mutation matrix (§19) — all 15 items
 
 ```yaml
 mutation_matrix_phase3:
   M3_01: {status: killed, oracle: "AST-inspection structural test (top-level imports)"}
-  M3_02: {status: killed, oracle: "toolrepo-tampering product corpus"}
+  M3_02: {status: killed, oracle: "toolrepo-tampering product corpus",
+          scope_correction_round3: "the 'root-level shadow' member of this corpus plants
+          pydantic.py, which the OUTER bootstrap never imports, so it passed vacuously for
+          that member. A root-level shadow of a stdlib module the outer DOES import fresh
+          after its own sys.path.insert (e.g. dataclasses.py) executes attacker code in the
+          outer process PRE-SEAL. Post-seal isolation is unaffected and separately verified.
+          The kill stands for the post-seal claims; the 'identical result in every case'
+          wording did not."}
   M3_03: {status: killed, oracle: "process-boundary + blackbox hostile-env + tampering PYTHONPATH"}
   M3_04: {status: killed, oracle: "blackbox hostile-env product test (real acquire_diff_v2)"}
   M3_05: {status: killed, oracle: "test_diff_acquisition_never_receives_the_original_target_root"}
@@ -1473,7 +1497,7 @@ mutation_matrix_phase3:
   M3_14: {status: killed, oracle: "recursive nonmutation snapshot, mutation-verified at PRODUCT level (real .git write injected and caught)"}
   M3_15: {status: killed, oracle: "structural: --output is not a recognized argparse flag at all"}
 survivors: 0
-non_vacuity_audited: true
+non_vacuity_audited: false   # CORRECTED round 3 -- see below
 ```
 
 **Methodology note for future reviewers of M3-14 (and any black-box
@@ -1818,3 +1842,173 @@ correction_loop_round2_qualification:
     genuine, acknowledged gap in this round caused by an external account spend-limit
     constraint, not a silent omission or a fabricated pass."
 ```
+
+## Correction loop, round 3 — three complete lanes against `54a39f5b`
+
+First round in which **all three lanes ran to completion against one exact
+immutable head** (`54a39f5bb7dc27bbef369ee0571d59579844850b`, tree
+`a20d3dd8c9f47250c5d1bfd233050fb4fb6d1565`, CI run 33200654258 green).
+Rounds 1–2 never achieved this: round 1's Lane A finding changed source, and
+rounds 1–2's Lanes B/C died on a reviewer spend limit. Provenance was
+tracked in a coordinator-local dispatch ledger binding each lane to the
+agent actually assigned to it; every result was checked to carry the
+expected head/tree before being accepted, and every P0/P1 was reproduced by
+the coordinator before any code was touched.
+
+Verdicts as returned: **Lane A NON_REFUTED** (0 P0, 0 P1); **Lane B BLOCK**
+(1 P0, 1 P1); **Lane C BLOCK** (1 P0, 3 P1).
+
+### Fixed — P0
+
+1. **Forged `identity.toolrepo_sha` through the ORDINARY public CLI**
+   (lane B). Appending `--_inner-declared-toolrepo-sha` after the normal
+   arguments overrode the outer's own sealed `git rev-parse HEAD` value:
+   the outer spliced `*argv` AFTER its derived value and argparse is
+   last-wins. Reproduced at **exit 0 with empty stderr**, emitting
+   `deadbbbb…` as the engine identity of a canonical `ReviewReadinessV2`.
+
+   This was the SECOND appearance of the "unverified toolrepo_sha reaches
+   the emitted identity" class — round 1 closed the DIRECT
+   `--_controlled-inner` route but left the value caller-assertable — so it
+   was fixed at the **mechanism**, not the reported route:
+   `_OUTER_OWNED_PRIVATE_FLAGS_V2` makes authority-bearing private flags
+   outer-owned, and any caller-supplied one is refused before any probe,
+   materialization or semantics. Both argparse spellings covered; outer
+   values now spliced last as defence in depth. The authority-free
+   `--_diagnose-source-origin` deliberately remains caller-passable.
+
+2. **`ready` + `COMPLETE` coverage over a silently narrowed scope**
+   (lane C). `assemble_manifest_from_diff_v2` drops non-must-review paths
+   it cannot represent (binary/submodule/hunkless/truncated) from
+   `expected_files` with **no** degradation cause, delegating the audit to
+   its caller's `excluded_paths` — a field with **zero production
+   consumers** (`grep -rn excluded_paths app/ scripts/` hit only its own
+   module). Reproduced: a PR touching a `.py` and a binary yields
+   `DECISION.state = READY`, `reasons = []`, coverage COMPLETE over the
+   narrowed set, and an artifact that never mentions the unreviewed file.
+   Lane C correctly noted the terminal artifact is `manual_required` today
+   only because this composer hardcodes `checks=[]` — an incidental control
+   that `#203` is scheduled to remove, not a guard for this vector.
+
+   The composer now refuses fail-closed
+   (`operational_run_scope_silently_narrowed`), because `ReviewReadinessV2`
+   has nowhere to honestly record a narrowed scope. Deliberately stricter
+   than the assembly owner's own tolerance: a future slice wanting
+   binary-touching PRs to proceed must add an explicit, RECORDED
+   degradation to the contract first, never restore silence.
+
+### Fixed — P1
+
+3. **`AuthoritativeCheckPolicyErrorV2` escaped as a raw traceback**
+   (lane B), leaking absolute host paths, for any target lacking
+   `.aiops/authoritative-checks.v2.yaml` — the default first-run state of a
+   target not yet onboarded to `#203`'s pack. Added to the CLI tuple, but
+   the real fix is structural: `test_cli_except_tuple_is_complete_by_construction`
+   enumerates every `reason_code`-bearing owner error in the composer's
+   import graph (28 today) and fails unless each is explicitly caught or
+   explicitly excused with a written reason. Lane B's diagnosis was that the
+   tuple had been derived by inspecting imports rather than tracing the call
+   graph, with nothing testing completeness — which is why a reviewer, not
+   CI, found the gap twice. The three "converted by its own owner"
+   exclusions were verified directly at their conversion sites.
+
+4. **Two credited mutation oracles did not kill their mutants** (lane C),
+   falsifying `non_vacuity_audited: true` — corrected to `false` above, and
+   now genuinely re-established for these two. `_dynamic_router_mock`
+   hardcoded `findings: []`, so the untampered run also yielded zero
+   findings and `assert len(readiness.findings) == 0` could not distinguish
+   "binding refused" from "nothing ever bound". Independently confirmed in a
+   disposable clone: with the `returned_output` digest check disabled the
+   credited suite passed 4/4, and the mutant died only in a different,
+   pre-existing suite. `survivors: 0` was and remains true — the properties
+   ARE protected; the *attributions* were wrong. Both oracles now fail under
+   their own mutants.
+
+5. **The lifecycle "two models agreeing" test tested no agreement**
+   (lane C): one finding, one chunk result. Expressing agreement properly
+   surfaced a stronger guarantee — two observations of one chunk are refused
+   as `duplicate_chunk_result`, and chunk scope places a finding in exactly
+   one chunk, so **no input shape aggregates two independent observations of
+   the same finding**. Split into that structural refusal plus a test that
+   the single aggregatable observation stays `NEW` and invents no decision
+   owner. Mutation-checked with the agreement→`CONFIRMED` mutant that
+   previously survived the entire suite.
+
+### Recorded, not fixed — accepted limitations
+
+6. **§18 / `M3_02` "root-level shadow … identical result in every case" is
+   FALSE** (lane A P2, the only finding from an otherwise NON_REFUTED lane).
+   The tampering test plants `pydantic.py`, which the outer bootstrap never
+   imports, so it passed vacuously. Lane A executed attacker code in the
+   OUTER process pre-seal via a root-level `dataclasses.py` — a stdlib
+   module the outer imports *fresh* after its own `sys.path.insert` (modules
+   already cached from earlier imports, e.g. `argparse`/`json`/`subprocess`,
+   are inert). **Post-seal isolation is unaffected**: the subject
+   materializes only `app/` + the one script, so a root-level
+   `dataclasses.py` is never materialized and never on the inner
+   `sys.path[0]` — verified. Bounded because an attacker who can write
+   `$TOOLREPO/dataclasses.py` can equally edit the bootstrap script itself,
+   and no outer-launcher attestation is claimed. The §18 wording is the
+   defect, and is corrected here rather than by widening the claim.
+
+7. **The redaction "escape" guard is not an independent net** (lane C P1,
+   classified DOC_OVERCLAIM). `_redaction_escaped_v2` is
+   `sanitize_artifact_value(text) != text`, and `sanitize_artifact_value`
+   routes through the SAME `redact_text` pattern set — verified by reading
+   the call chain. It therefore *structurally cannot* catch what the
+   redactor misses, so it is defence in depth against a redaction **bug**,
+   never against a missing **pattern**. The AWS/Slack/Stripe shape gap
+   itself remains pre-existing and out of scope (already scoped at
+   `e20d509`); what was wrong was implying a second, independent net exists.
+
+8. **Third read of trusted material is unbound** (lane B P2).
+   `.aiops/authoritative-checks.v2.yaml` is loaded at the readiness epoch
+   (`required_check_readiness_v2.py:311`) with no hash binding and no digest
+   recorded in the artifact — unlike the PROFILE, whose second read IS
+   hash-bound and which lane B verified refuses correctly in both
+   directions. Inert today only because `checks=[]` makes the verification
+   loop vacuous; it becomes load-bearing the moment `#203` brings positive
+   check authority online.
+
+9. **The composer fabricates an authoritative-CI snapshot shape** (lane B
+   P2): `operational_run_v2.py` constructs a document asserting
+   `api_host: api.github.com`, `acquired_by: …-v2` and an
+   `observation_bytes_digest` of `"0"*64` that the parser never verifies
+   against `observations`. Inert and never emitted today, but it is a
+   fabricated-evidence shape inside the authority path that a future slice
+   must replace rather than inherit.
+
+10. **`ReadinessDecisionError`'s exclusion is correct, its recorded
+    rationale was not** (lane B P2). Sites 299/312 are not consistency
+    checks; they are driven by `manifest.degradation_causes` and are
+    unreachable only because `run_assembly_v2.py:536` hardcodes `[]`. The
+    exclusion stands, the dependency is now recorded at the exclusion site,
+    and the first slice that makes assembly emit a degradation cause must
+    revisit it.
+
+11. **No proof-source provenance in the artifact** (lane C P2): an
+    offline-echo-derived readiness and a Router-receipt-derived one are
+    indistinguishable in `ReviewReadinessV2`. Compounding, the shipped CLI
+    wires only `offline_file_transport_v2` — `agent_router_transport_v2`
+    has zero non-test callers — so §16's "product E2E" label is stronger
+    than its oracle (it is a composer-level E2E). Recorded rather than
+    relabelled silently.
+
+12. **Staleness is vacuous from the operational path** (lane C P2):
+    `identity` and `evaluated_identity` are the same object, and
+    `stale_reason_codes` is never passed, so `STALE` is unreachable here.
+    **Receipt verification is a consistency proof, not an authenticity
+    proof** (lane C P2): nothing signs `producer.revision`, so in-process
+    code can mint a passing receipt. Neither is claimed otherwise in code;
+    both are recorded so the docs do not imply more.
+
+### Round-3 recurrence watch
+
+The "unverified `toolrepo_sha` reaches the emitted identity" class has now
+appeared in **two** rounds (round 1: direct inner route; round 3:
+pass-through argv route). Per the governing stop rule, a further recurrence
+of this class after this correction round is a
+`STOP_ARCHITECTURE_NOT_CONVERGING` condition, not another patch. That is why
+this round fixed the mechanism (outer-owned flag class) rather than the
+route, and added a structural completeness test for the sibling
+"CLI except tuple incomplete" class, which has also now appeared twice.
