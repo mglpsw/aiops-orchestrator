@@ -17,6 +17,7 @@ import pytest
 from app.agent_review.contracts_v2 import PullRequestStateV2, RunOriginV2, SemanticGroupV2
 from app.agent_review.operational_run_v2 import (
     OPERATIONAL_RUN_PREPARATION_CLOSURE_MISMATCH_REASON_V2,
+    OPERATIONAL_RUN_SCOPE_SILENTLY_NARROWED_REASON_V2,
     OperationalReviewInputsV2,
     OperationalRunError,
     _verify_preparation_closure_v2,
@@ -473,3 +474,78 @@ def test_post_seal_validation_error_escapes_raw(tmp_path: Path):
     with mock.patch.object(mod, "synthesize_chunk_results_v2", side_effect=_boom):
         with pytest.raises(ValidationError):
             run_operational_review_v2(inputs)
+
+
+# ---- round-3 lane C P0: scope must never narrow silently ------------------
+
+def _target_with_binary_change(tmp_path: Path) -> tuple[Path, str, str]:
+    """A PR touching BOTH a reviewable .py and a NON-must-review binary.
+    The fixture profile's must_review.patterns is `backend/scheduling/*.py`,
+    so the binary is deliberately outside must-review -- which is exactly
+    the case run assembly silently excludes rather than blocking on."""
+    repo = tmp_path / "target_repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--quiet", "."], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "backend" / "scheduling").mkdir(parents=True)
+    (repo / "backend" / "scheduling" / "shift_rules.py").write_text(
+        "def compute_shift():\n    return 1\n", encoding="utf-8"
+    )
+    (repo / "backend" / "scheduling" / "blob.bin").write_bytes(b"\x00\x01binary-v1\xff")
+    (repo / "artifacts").mkdir()
+    shutil.copy(FIXTURES_ROOT / "artifacts" / "full.diff", repo / "artifacts" / "full.diff")
+    (repo / "contracts").mkdir()
+    shutil.copy(
+        FIXTURES_ROOT / "contracts" / "domain-contracts.yaml",
+        repo / "contracts" / "domain-contracts.yaml",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "base"], cwd=repo, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (repo / "backend" / "scheduling" / "shift_rules.py").write_text(
+        "def compute_shift():\n    return 2\n", encoding="utf-8"
+    )
+    (repo / "backend" / "scheduling" / "blob.bin").write_bytes(b"\x00\x01binary-V2-CHANGED\xff")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "head"], cwd=repo, check=True)
+    head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return repo, base_sha, head_sha
+
+
+def test_silently_narrowed_scope_is_refused_not_reported_ready(tmp_path: Path):
+    """Round-3 lane C P0: a changed file dropped from scope by run assembly
+    (binary/submodule/hunkless/truncated, and not must-review) produced
+    `expected_files` covering only the survivors, `degradation_causes == []`,
+    and a readiness decision of READY with COMPLETE coverage over the
+    NARROWED set -- while the emitted artifact said nothing about the file
+    that was never reviewed. `excluded_paths`, the audit field the assembly
+    owner explicitly delegates to its caller, had zero production consumers.
+
+    The composer now refuses fail-closed, because `ReviewReadinessV2` has
+    nowhere to honestly record a narrowed scope."""
+    repo, base_sha, head_sha = _target_with_binary_change(tmp_path)
+    responses_dir = tmp_path / "responses"
+    responses_dir.mkdir()
+    inputs = _inputs(repo, base_sha, head_sha, responses_dir, "narrowed-1")
+
+    with pytest.raises(OperationalRunError) as excinfo:
+        run_operational_review_v2(inputs)
+    assert excinfo.value.args[0] == OPERATIONAL_RUN_SCOPE_SILENTLY_NARROWED_REASON_V2
+
+
+def test_unnarrowed_scope_still_runs_to_readiness(tmp_path: Path):
+    """Non-vacuity control: the SAME shape without the excluded binary must
+    still complete normally, so the refusal above cannot be passing merely
+    because this fixture never works."""
+    repo, base_sha, head_sha = _build_real_target(tmp_path)
+    responses_dir = tmp_path / "responses"
+    responses_dir.mkdir()
+    inputs = _inputs(repo, base_sha, head_sha, responses_dir, "narrowed-2")
+
+    readiness = run_operational_review_v2(inputs)
+    assert readiness.schema_id == "agent-review.review-readiness.v2"

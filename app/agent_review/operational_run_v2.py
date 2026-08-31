@@ -95,6 +95,7 @@ OPERATIONAL_RUN_ASSEMBLY_BLOCKED_REASON_V2 = "operational_run_assembly_blocked"
 OPERATIONAL_RUN_PREPARATION_CLOSURE_MISMATCH_REASON_V2 = (
     "operational_run_preparation_closure_mismatch"
 )
+OPERATIONAL_RUN_SCOPE_SILENTLY_NARROWED_REASON_V2 = "operational_run_scope_silently_narrowed"
 
 
 class OperationalRunError(ValueError):
@@ -197,6 +198,36 @@ def run_operational_review_v2(inputs: OperationalReviewInputsV2) -> ReviewReadin
         )
         if assembly.state != "assembled" or assembly.manifest is None:
             raise OperationalRunError(OPERATIONAL_RUN_ASSEMBLY_BLOCKED_REASON_V2)
+        # Round-3 lane C P0. `assemble_manifest_from_diff_v2` drops any
+        # NON-must-review path it cannot represent (binary, submodule,
+        # hunkless, truncated patch) from `expected_files`, emitting NO
+        # `degradation_causes` -- and its own module docstring is explicit
+        # that the compensating control is the caller auditing
+        # `excluded_paths`. This composer was that caller, and read only
+        # `state`/`manifest`. `grep -rn excluded_paths app/ scripts/`
+        # returned hits ONLY inside run_assembly_v2.py itself: the field
+        # had zero production consumers.
+        #
+        # Consequence, reproduced directly: a PR touching both a reviewable
+        # .py and a binary yields `expected_files` covering only the .py,
+        # `degradation_causes == []`, and `compute_readiness_decision_v2`
+        # then computes COMPLETE coverage over the NARROWED set and returns
+        # `READY` with zero reason codes. A changed file was never reviewed
+        # and the emitted artifact says nothing about it.
+        #
+        # Refused rather than degraded, deliberately: `ReviewReadinessV2` is
+        # a frozen contract with nowhere to honestly record "scope was
+        # narrowed", so an emitted artifact CANNOT represent what actually
+        # happened. Fail-closed is the documented posture for exactly this
+        # -- a property that cannot be proven must not be asserted. This is
+        # stricter than the assembly owner's own tolerance (it considers
+        # non-must-review exclusions acceptable), which is a deliberate
+        # composer-level choice, not a claim that the owner is wrong: a
+        # future slice that wants binary-touching PRs to proceed must add an
+        # EXPLICIT, RECORDED degradation to the contract first, not restore
+        # silence.
+        if assembly.excluded_paths:
+            raise OperationalRunError(OPERATIONAL_RUN_SCOPE_SILENTLY_NARROWED_REASON_V2)
         manifest = assembly.manifest
 
         declared_paths = tuple(artifact.path for artifact in profile.artifacts) + tuple(
