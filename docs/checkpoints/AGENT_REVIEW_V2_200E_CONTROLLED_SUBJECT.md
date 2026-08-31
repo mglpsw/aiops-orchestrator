@@ -2012,3 +2012,234 @@ of this class after this correction round is a
 this round fixed the mechanism (outer-owned flag class) rather than the
 route, and added a structural completeness test for the sibling
 "CLI except tuple incomplete" class, which has also now appeared twice.
+
+# TERMINAL FORENSIC RECONCILIATION — `#276`
+
+**This section is documentary only.** It changes no source, no test and no
+policy. It records the terminal disposition of `#276` and the port map for
+its successor. It carries **no qualification**: the head it describes
+(`dd409cc`) is the head three independent lanes reviewed, and this commit
+supersedes that head for record-keeping purposes only.
+
+## Disposition
+
+```yaml
+classification: FROZEN_FORENSIC_OPERATIONAL_BOUNDARY
+grant_verdict: STOP_ARCHITECTURE_NOT_CONVERGING
+
+core_subject_architecture:
+  refuted: false          # survived three lanes, twice
+operational_boundary:
+  converged: false        # CLI / ingress / error taxonomy / scope accounting
+
+pr_276:
+  merge: NO
+  more_code_fixes: NO
+  ready: NO
+  next_action: TERMINAL_FORENSIC_RECONCILIATION   # this section
+  eventual_disposition: CLOSED_UNMERGED           # separate, explicit gate
+```
+
+### Scoping correction, adopted deliberately
+
+The grant's stop code is `STOP_ARCHITECTURE_NOT_CONVERGING`, and that code
+is used verbatim above because it is the contractually defined verdict. But
+the code alone would misdescribe what happened, so it is qualified here
+rather than left to imply more than the evidence supports:
+
+> It was **not** the core AgentReview v2 architecture that failed to
+> converge. It was the architecture of the **operational product boundary**
+> — CLI, ingress, error taxonomy, scope accounting.
+
+All five frozen propositions survived adversarial review in both rounds:
+controlled target subject (severance mid-run left artifacts byte-identical),
+controlled toolrepo execution subject, two-process outer/inner separation,
+bounded child environment (the round-2 `PATH` P0 is genuinely closed — a
+planted fake `git` was never invoked through the product path), and the
+one-synthesis invariant (object identity genuine, verified non-vacuous).
+No false-`READY` path exists; lane B further established that `ready` is
+**structurally unreachable** through this composer, since
+`TargetProfileV2.policies.required_checks` carries `Field(min_length=1)`
+while the composer hardcodes `checks=[]`.
+
+## Why the loop was stopped
+
+Two defect classes each consumed two bounded correction rounds and returned:
+
+| Class | Round 1 | Round 3 | Round 4 |
+|---|---|---|---|
+| Operational error surface | 4 owner classes missing → added | 1 more missing → added **+ "complete by construction" control** | **two** independent recurrences, one of them *through* that control |
+| Private-flag authority surface | direct `--_controlled-inner` route → subject-root verification | pass-through argv route → **"closed at the mechanism"** guard | guard bypassed by argparse prefix abbreviation |
+
+The decisive evidence is not that another case was missed. It is that **the
+mechanisms built specifically to prevent recurrence were themselves
+falsified on their first independent exposure**:
+
+- `test_cli_except_tuple_is_complete_by_construction` is green while
+  `--delivery-id 'bad id here'` — an ordinary value of a required public
+  flag — still emits a raw `pydantic.ValidationError` traceback leaking
+  `/opt/agent-tools/.venvs/...` and the subject tmpdir, from
+  `scripts/aiops-review-run-v2.py:339`, outside any `try`. The control
+  **cannot** see it: it enumerates only classes satisfying
+  `Cls("probe").reason_code == "probe"` (74 of 95 owner classes), and
+  `ValidationError` is not an `app.agent_review` owner at all.
+- The same control passed over a **false written excuse**: it recorded that
+  `ChunkResultScopeError` is "a defect in binding, which the binder is
+  responsible for refusing earlier". The binder's scope authority
+  (`contracts_v2.py:849-888`) compares paths, `expected_files` and
+  `must_review_files` — it never inspects line ranges. That check lives at
+  `chunk_result_scope_v2.py:65-71`, i.e. at **synthesis, after binding**. An
+  ordinary off-by-N line number from a model therefore aborts the entire run
+  with `SynthesisErrorV2: finding_outside_chunk_scope`.
+- The private-flag guard compares flag names textually, but `argparse`
+  accepts unambiguous abbreviations, so `--_inner-d` bypasses the detector.
+  Forgery is still blocked — but by the outer's last-wins splice, i.e. by
+  defence in depth, **not** by the named "root" fix. The claim "closed at
+  the mechanism" is false and is still present in the live code.
+
+That is the transition from *"one more case was missed"* to **"the method
+used to enumerate the cases does not constitute authority"**, which is why a
+third enumeration series was not started.
+
+### The round-3 corrections also introduced regressions
+
+Recorded plainly rather than defended:
+
+- `if assembly.excluded_paths: raise` converts ordinary PR shapes into total
+  review denial — **pure rename**, chmod-only change, binary/lockfile/image,
+  empty-file add. Pure renames are routine. Reproduced through the real CLI.
+- The reason code `operational_run_scope_silently_narrowed` is a **misnomer**:
+  nothing was silently narrowed, the composer refused, so the operator is
+  told about a defect that did not occur.
+- The vector it closed could not have produced an emitted `ready` artifact
+  at all. The fix was made at the wrong level of abstraction, and the
+  in-code comment asserting "returns READY with zero reason codes" is true
+  only of the intermediate decision object, never of an artifact.
+
+## Port map for the successor
+
+Preserves nearly all of the hard engineering while transferring **no**
+qualification.
+
+| Material from `#276` | Disposition |
+|---|---|
+| `ControlledTargetSubjectV2` | `PORT_WITH_REVALIDATION` |
+| `ToolrepoExecutionSubjectV2` | `PORT_WITH_REVALIDATION` |
+| bounded child env + `PATH` fix | `PORT_WITH_REVALIDATION` |
+| controlled reference material | `PORT_WITH_REVALIDATION` |
+| two-process separation | `PORT_AS_CONCEPT` |
+| operational composition order | `PORT_AS_CONCEPT` |
+| one-synthesis invariant | `PORT_WITH_REVALIDATION` |
+| Router receipt-v2 E2E corpus | `PORT_AS_TEST_CORPUS` |
+| 25/25 `#274` adversarial corpus | `PORT_AS_RED_TESTS` |
+| CLI exception tuple | `DO_NOT_PORT` |
+| private authority flags via argv | `DO_NOT_PORT` |
+| "enumerate every owner error + prose justification" control | `DO_NOT_PORT_AS_AUTHORITY` |
+| fail on every `excluded_paths` | `DO_NOT_PORT_AS_PRODUCT_POLICY` |
+| round-3/4 findings | `PORT_AS_RED_TESTS` |
+| quoted-password leak | `PORT_AS_MANDATORY_RED_TEST` |
+
+## Successor design directives (`#200-F`)
+
+Three primitives, not another round of catches and flags.
+
+### A. Typed operational refusal
+
+Replace "the CLI knows 14, then 17, then 28 classes" with a derivable
+family:
+
+```text
+ExpectedOperationalRefusalV2
+        ├── TargetProfileLoadErrorV2
+        ├── ControlledSubjectError
+        ├── Payload...
+        └── ...
+```
+
+Each owner keeps its own `reason_code`; the CLI catches
+`ExpectedOperationalRefusalV2` structurally. Programmer defects do **not**
+belong to the family and continue to escape raw. CLI-supplied inputs are
+validated **before the seal** by their own authority, so caller material can
+never reach a post-seal traceback.
+
+### B. Eliminate private authority via argv
+
+`--_controlled-inner`, `--_inner-subject-root` and
+`--_inner-declared-toolrepo-sha` are retired as an authority channel:
+
+```text
+PUBLIC CLI ARGV  → public inputs only
+OUTER            → builds the bounded child environment,
+                   injects inner context over an exclusive outer→inner channel
+INNER            → derives its context from that channel alone
+```
+
+The invariant is **`caller argv cannot express inner authority`** — not
+merely "the caller loses the last-wins race".
+
+### C. Explicit scope authority
+
+Before the manifest:
+
+```text
+all changed paths
+       ↓
+ScopeAssessment
+       ├── reviewable
+       ├── unsupported
+       ├── unrepresentable
+       └── must-review blocked
+```
+
+so that `ChangedScope != ReviewableFragmentScope` is explicit. Renames,
+mode changes and binaries neither vanish silently nor abort the whole
+review; readiness receives enough information to state "review complete over
+the representable fragments, total scope incomplete → `manual_required` /
+limitation" — no false-`READY`, no artificial deny-all.
+
+### D. Binder completeness (arising from round-4 lane C)
+
+A finding's line range is **external material from the model**. It must not
+survive binding and reach synthesis. The binder must validate
+`path + fragment + range` before producing a `BoundChunkResponseV2`,
+eliminating that entire post-bind traceback class at its source.
+
+## Blocker before any live Router canary
+
+Independent of the boundary non-convergence, and **not** to be carried
+forward silently:
+
+> `password = "…"` (quoted value) reaches the bytes sent to the provider.
+
+`redaction.py`'s `_ASSIGNMENT_RE` value class `([^\s&;,"']+)` excludes quote
+characters, so the dominant source-code secret shape is never matched — this
+is a *generic, key-name-driven* failure, broader than the previously
+documented vendor-shape gap (AWS/Slack/Stripe). The escape guard
+`_redaction_escaped_v2` cannot compensate: it routes through the same
+`redact_text` pattern set and so structurally cannot catch a missing
+pattern. **No real Router/LLM call may be made until this witness is a RED
+test and closed.**
+
+## Next sequence
+
+```text
+#276  TERMINAL FORENSIC RECONCILIATION   ← this section
+        ↓
+      close unmerged                      (separate, explicit gate)
+        ↓
+#200-F  Typed Operational Boundary
+        + Review Scope Authority
+        + Sealed Inner Control Channel
+        ↓
+      provider-free adversarial qualification
+        ↓
+      controlled live Router canary
+        ↓
+#273  Impact Context
+        ↓
+      AgentEscala shadow
+```
+
+`master` remains at `f70af2e635643d1ee96ba431857002ae079b502b`, so `#200-F`
+is born from the same clean base. The branch is **not** reused and no
+qualification is transferred.
