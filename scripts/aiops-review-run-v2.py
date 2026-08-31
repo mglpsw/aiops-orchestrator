@@ -74,6 +74,55 @@ CLI_BOOTSTRAP_INPUT_INVALID_REASON_V2 = "cli_bootstrap_input_invalid"
 CLI_INNER_LAUNCH_FAILED_REASON_V2 = "cli_inner_launch_failed"
 CLI_INNER_INPUT_INVALID_REASON_V2 = "cli_inner_input_invalid"
 CLI_INNER_MATERIALIZATION_UNVERIFIED_REASON_V2 = "cli_inner_materialization_unverified"
+CLI_CALLER_SUPPLIED_OUTER_OWNED_FLAG_REASON_V2 = "cli_caller_supplied_outer_owned_flag"
+
+# ROOT invariant for the private `--_` surface, added after an independent
+# review lane forged `identity.toolrepo_sha` through the ORDINARY outer CLI.
+#
+# The private flags are not one undifferentiated set. They split by whether
+# they carry AUTHORITY:
+#
+#   outer-OWNED (authority-bearing): the outer bootstrap DERIVES these
+#     itself -- `--_inner-declared-toolrepo-sha` from its own sealed
+#     `git rev-parse HEAD` probe, `--_inner-subject-root` from the
+#     directory it actually materialized -- and they flow into
+#     `manifest.identity` -> manifest_hash/run_id -> the emitted
+#     `ReviewReadinessV2`. A caller has no legitimate reason to supply one,
+#     and supplying one is the whole attack.
+#
+#   caller-PERMITTED (diagnostic): `--_diagnose-source-origin` is
+#     stderr-only, inner-mode-only, and carries no authority. It is
+#     legitimately passed through the outer (see the §5 source-origin
+#     proof), so it is deliberately NOT in this tuple.
+#
+# Why this is the ROOT fix and not a third route-plug: the previous round
+# closed the DIRECT `--_controlled-inner` route by verifying the subject
+# root, but left the value itself caller-assertable, so the pass-through
+# route reproduced the identical defect. The defect class is "caller argv
+# overrides outer-derived authority", and it is closed here at the
+# mechanism -- any outer-owned flag from the caller is refused outright,
+# for every present and future flag added to this tuple -- rather than at
+# the one route that happened to be reported.
+_OUTER_OWNED_PRIVATE_FLAGS_V2 = (
+    "--_controlled-inner",
+    "--_inner-subject-root",
+    "--_inner-declared-toolrepo-sha",
+)
+
+
+def _caller_supplied_an_outer_owned_flag_v2(raw_argv: list[str]) -> bool:
+    """True if the CALLER's argv carries any authority-bearing private flag.
+
+    Matches both `--flag value` and `--flag=value` spellings; argparse
+    accepts both, so checking only the bare token would leave the `=` form
+    as an open route.
+    """
+
+    for token in raw_argv:
+        name = token.split("=", 1)[0]
+        if name in _OUTER_OWNED_PRIVATE_FLAGS_V2:
+            return True
+    return False
 
 # The same fixed prefix materialize_toolrepo_execution_subject_v2 uses for
 # its own tempfile.mkdtemp() -- kept in sync deliberately, not re-derived
@@ -147,6 +196,18 @@ def _build_argument_parser() -> argparse.ArgumentParser:
 
 
 def _run_outer_bootstrap(argv: list[str]) -> int:
+    # ROOT guard (see _OUTER_OWNED_PRIVATE_FLAGS_V2): refuse before any
+    # probe, materialization or semantics if the caller asserted an
+    # authority-bearing private flag. Deliberately FIRST -- a forged
+    # identity must never reach a run that then emits an artifact
+    # claiming it.
+    if _caller_supplied_an_outer_owned_flag_v2(argv):
+        print(
+            json.dumps({"error_class": CLI_CALLER_SUPPLIED_OUTER_OWNED_FLAG_REASON_V2}),
+            file=sys.stderr,
+        )
+        return 1
+
     # The outer process's OWN git probe is just as reachable by hostile
     # ambient GIT_* state as any other bare subprocess.run call -- proven
     # directly (test_product_level_hostile_outer_environment_has_zero_
@@ -178,10 +239,19 @@ def _run_outer_bootstrap(argv: list[str]) -> int:
             result = subprocess.run(
                 [
                     sys.executable, "-I", "-B", str(inner_script),
+                    # Defence in depth alongside the root guard above:
+                    # argparse is LAST-WINS, so the outer's own derived
+                    # values are spliced AFTER the caller's argv, not
+                    # before. Previously they came first, which is what
+                    # let a trailing caller-supplied duplicate override
+                    # them. Even if a future flag is added to the private
+                    # surface and someone forgets to list it in
+                    # _OUTER_OWNED_PRIVATE_FLAGS_V2, the outer's value
+                    # still wins here.
+                    *argv,
                     "--_controlled-inner",
                     "--_inner-subject-root", str(subject.root),
                     "--_inner-declared-toolrepo-sha", declared_toolrepo_sha,
-                    *argv,
                 ],
                 cwd=subject.root, env=child_env,
             )

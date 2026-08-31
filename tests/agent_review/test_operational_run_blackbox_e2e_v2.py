@@ -390,10 +390,21 @@ def test_direct_inner_mode_invocation_is_refused(tmp_path: Path):
     """Independent review lane A's finding: --_controlled-inner was
     reachable directly, skipping the entire outer bootstrap/materialization/
     bounded-env, with a self-declared, unverified --_inner-declared-
-    toolrepo-sha flowing straight into the canonical output. Closed:
-    the inner child now refuses unless its own resolved path genuinely
-    sits inside a real materialize_toolrepo_execution_subject_v2 output
-    directory matching --_inner-subject-root."""
+    toolrepo-sha flowing straight into the canonical output. This DIRECT
+    route is closed: the inner child refuses unless its own resolved path
+    genuinely sits inside a real materialize_toolrepo_execution_subject_v2
+    output directory matching --_inner-subject-root.
+
+    SCOPE CORRECTION (round-3 lane B): this test closes the DIRECT route
+    only. It does NOT establish that the toolrepo SHA cannot be forged --
+    lane B reproduced the identical defect through the ORDINARY outer CLI
+    by appending --_inner-declared-toolrepo-sha after the normal arguments
+    (argparse is last-wins, and the outer spliced its own derived value
+    BEFORE the caller's argv). The earlier wording here claimed the class
+    was closed when only one of its two routes was. The pass-through route
+    is covered by
+    test_caller_supplied_outer_owned_flag_is_refused_through_the_ordinary_cli
+    below, and the mechanism itself by _OUTER_OWNED_PRIVATE_FLAGS_V2."""
     target_repo, base_sha, head_sha = _build_real_target(tmp_path)
     responses_dir = tmp_path / "responses"
     responses_dir.mkdir()
@@ -420,3 +431,73 @@ def test_direct_inner_mode_invocation_is_refused(tmp_path: Path):
     assert result.stdout == ""
     error = json.loads(result.stderr)
     assert error["error_class"] == "cli_inner_materialization_unverified"
+
+
+@pytest.mark.parametrize(
+    "injected",
+    [
+        pytest.param(["--_inner-declared-toolrepo-sha", "d" * 40], id="sha-space-form"),
+        pytest.param([f"--_inner-declared-toolrepo-sha={'d' * 40}"], id="sha-equals-form"),
+        pytest.param(["--_inner-subject-root", "/totally/bogus"], id="subject-root-space-form"),
+        pytest.param(["--_inner-subject-root=/totally/bogus"], id="subject-root-equals-form"),
+    ],
+)
+def test_caller_supplied_outer_owned_flag_is_refused_through_the_ordinary_cli(
+    tmp_path: Path, injected: list[str]
+):
+    """Round-3 lane B P0: `identity.toolrepo_sha` in the EMITTED artifact was
+    forgeable by any caller of the ordinary public CLI -- no private setup,
+    no direct inner invocation. The outer derives the real SHA from its own
+    sealed `git rev-parse HEAD` probe, then spliced `*argv` AFTER it; argparse
+    is last-wins, so a trailing caller-supplied duplicate silently overrode
+    the derived value, and the inner accepted it with zero verification.
+    Reproduced at exit 0 with empty stderr, emitting a fabricated engine
+    identity into a canonical ReviewReadinessV2.
+
+    Closed at the MECHANISM, not at the reported route: authority-bearing
+    private flags are outer-OWNED, so a caller supplying any of them is
+    refused outright before any probe/materialization/semantics. Both argparse
+    spellings are covered, because checking only the bare token would leave
+    `--flag=value` open. The stderr-only, authority-free
+    `--_diagnose-source-origin` deliberately remains caller-passable -- see
+    test_source_origin_diagnostic_proves_subject_not_devrepo."""
+    target_repo, base_sha, head_sha = _build_real_target(tmp_path)
+    responses_dir = tmp_path / "responses"
+    responses_dir.mkdir()
+    policy_path = tmp_path / "policy.json"
+    _write_grouping_policy(policy_path)
+    argv = _cli_argv(
+        target_repo=target_repo, base_sha=base_sha, head_sha=head_sha,
+        responses_dir=responses_dir, policy_path=policy_path,
+    )
+
+    result = subprocess.run([*argv, *injected], capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert result.stdout == "", "a refused run must emit no artifact at all"
+    assert json.loads(result.stderr)["error_class"] == "cli_caller_supplied_outer_owned_flag"
+
+
+def test_ordinary_cli_still_emits_the_real_toolrepo_sha(tmp_path: Path):
+    """Non-vacuity control for the refusal above: the same argv WITHOUT the
+    injected flag must still succeed and carry this toolrepo's REAL committed
+    HEAD -- otherwise the test above could pass against a CLI that refuses
+    everything."""
+    target_repo, base_sha, head_sha = _build_real_target(tmp_path)
+    responses_dir = tmp_path / "responses"
+    responses_dir.mkdir()
+    policy_path = tmp_path / "policy.json"
+    _write_grouping_policy(policy_path)
+    argv = _cli_argv(
+        target_repo=target_repo, base_sha=base_sha, head_sha=head_sha,
+        responses_dir=responses_dir, policy_path=policy_path,
+    )
+
+    result = subprocess.run(argv, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+    real_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=TOOLREPO_ROOT,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert json.loads(result.stdout)["identity"]["toolrepo_sha"] == real_head
