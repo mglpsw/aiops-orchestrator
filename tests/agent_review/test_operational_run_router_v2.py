@@ -122,11 +122,34 @@ def _dynamic_router_mock(*, captured: list, tamper_returned_sha256: bool = False
         user_material = json.loads(request_body["messages"][1]["content"])
         coverage = user_material["coverage"]
 
+        # Round-3 lane C P1: this used to hardcode `findings: []`, which made
+        # the tamper tests' `assert len(readiness.findings) == 0` vacuous --
+        # the UNTAMPERED run also produced zero findings, so the assertion
+        # could not distinguish "binding was refused" from "nothing was ever
+        # bound". Verified directly: with the returned_output digest check
+        # disabled, this suite still passed 4/4; the mutant was killed only by
+        # a different, pre-existing suite. Emit ONE genuinely in-scope finding
+        # so a bound run yields 1 and a refused run yields 0.
+        reviewed = list(coverage["expected_files"])
         result_document = {
             "schema_id": "agent-review.chunk-response.v2",
             "schema_version": 2,
             "summary": "router review complete",
-            "findings": [],
+            "findings": [
+                {
+                    "finding_id": "f" * 64,
+                    "severity": "P2",
+                    "title": "synthetic in-scope finding, non-blocking",
+                    "file_path": reviewed[0],
+                    "line_start": 2,
+                    "line_end": 2,
+                    "evidence": "synthetic, illustrative only",
+                    "impact": "synthetic, illustrative only",
+                    "confidence": "high",
+                    "contract_ids": [],
+                    "disposition": "new",
+                }
+            ],
             "coverage": coverage,
             "limitations": [],
         }
@@ -202,6 +225,13 @@ def test_router_product_e2e_binds_a_real_chunk_result(tmp_path: Path):
     assert len(captured) >= 1
     assert readiness.evaluated_head_sha != ""
     assert readiness.state != "ready"  # honest: no authoritative checks submitted
+    # The positive half of the tamper oracles below: an UNTAMPERED run must
+    # actually bind the finding the model returned. Without this, those tests'
+    # `len(findings) == 0` would hold trivially (round-3 lane C P1).
+    assert len(readiness.findings) == 1, (
+        "untampered router run must bind the returned finding; if this is 0 the "
+        "tamper tests below are vacuous"
+    )
 
 
 def test_router_product_e2e_redacts_secret_before_outbound_request(tmp_path: Path):

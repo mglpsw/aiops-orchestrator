@@ -17,6 +17,7 @@ from app.agent_review.contracts_v2 import (
 )
 from app.agent_review.chunk_result_scope_v2 import (
     CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2,
+    DUPLICATE_CHUNK_RESULT_REASON_V2,
     CHUNK_RESULT_HEAD_MISMATCH_REASON_V2,
     CROSS_RUN_CHUNK_RESULT_REASON_V2,
     FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2,
@@ -382,7 +383,43 @@ def test_rejects_a_finding_whose_line_range_belongs_to_a_different_chunks_fragme
     assert excinfo.value.reason_code == FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2
 
 
-def test_two_models_agreeing_stays_new_never_confirmed() -> None:
+def test_two_models_agreeing_cannot_even_be_submitted_for_one_chunk() -> None:
+    """Model agreement must never manufacture authority. Round-3 lane C P1:
+    the previous version of this test passed a SINGLE finding from a SINGLE
+    chunk result -- no two models, no agreement -- so it asserted nothing
+    about the property its name claimed.
+
+    Attempting to express agreement properly reveals a STRONGER guarantee
+    than the original test implied: two observations of the same chunk are
+    refused outright as `duplicate_chunk_result`, so a second concurring
+    model result cannot even enter aggregation. Combined with chunk scope
+    (a finding lies within exactly one chunk's line range -- see
+    test_finding_outside_chunk_scope_is_refused), there is no input shape in
+    which two independent observations of the SAME finding are aggregated,
+    which is why no agreement->promotion code path can exist."""
+    manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
+    chunk_id = manifest.chunks[0].chunk_id
+    finding = _finding(finding_id="f1", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"])
+    concurring = [
+        _result(
+            run_id=manifest.run_id, chunk_id=chunk_id, head_sha=manifest.identity.head_sha,
+            findings=(finding,), coverage=_coverage_all_reviewed(["app/a.py"]),
+        )
+        for _ in range(2)
+    ]
+
+    with pytest.raises(LifecycleAggregationError) as excinfo:
+        aggregate_finding_lifecycle_v2(
+            manifest=manifest, chunk_results=concurring,
+            evaluated_head_sha=manifest.identity.head_sha,
+        )
+    assert excinfo.value.reason_code == DUPLICATE_CHUNK_RESULT_REASON_V2
+
+
+def test_single_observation_stays_new_and_invents_no_decision_owner() -> None:
+    """The complementary half: the one observation that CAN be aggregated
+    must stay NEW, with no fabricated decision owner/justification/head --
+    only a recorded HUMAN decision may move a finding off NEW."""
     manifest = _build_manifest([_hunk("app/a.py")], expected_files=["app/a.py"])
     chunk_id = manifest.chunks[0].chunk_id
     finding = _finding(finding_id="f1", path="app/a.py", line_start=1, line_end=10, contract_ids=["c1"])
@@ -395,6 +432,10 @@ def test_two_models_agreeing_stays_new_never_confirmed() -> None:
     )
     assert len(findings) == 1
     assert findings[0].disposition is FindingDispositionV2.NEW
+    assert findings[0].actionable is True
+    assert findings[0].decided_by is None, "agreement is not a decision; no owner may be invented"
+    assert findings[0].decided_at_head_sha is None
+    assert findings[0].justification is None
 
 
 # -- prior lifecycle: preserved, never fabricated ------------------------------
