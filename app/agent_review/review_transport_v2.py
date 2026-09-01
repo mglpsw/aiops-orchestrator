@@ -76,10 +76,14 @@ from app.agent_review._router_receipt_v2 import (
 )
 from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
 from app.agent_review.chunk_result_scope_v2 import ChunkResultScopeError
+from app.agent_review.operational_result_binding_v2 import (
+    bind_offline_response_with_range_authority_v2,
+    bind_router_result_with_range_authority_v2,
+)
 from app.agent_review.consumer_v2 import (
     ResponseBindingError,
     bind_chunk_response_v2,
-    bind_verified_router_result_v2,
+    bind_verified_router_result_v2,  # noqa: F401 -- kept for external callers
 )
 from app.agent_review.contracts_v2 import (
     PAYLOAD_CONTRACT_INVALID_REASON_V2,
@@ -180,6 +184,7 @@ def execute_chunk_review_v2(
     run_id: str,
     head_sha: str,
     payload: ChunkPayloadV2,
+    manifest: ManifestV2,
     transport: ChunkReviewTransportV2,
 ) -> ChunkReviewOutcomeV2:
     """The single choke point: no finding is reachable from this chunk
@@ -264,7 +269,9 @@ def execute_chunk_review_v2(
             )
 
         try:
-            bound = bind_chunk_response_v2(envelope=response, payload=fresh_payload)
+            bound = bind_offline_response_with_range_authority_v2(
+                envelope=response, payload=fresh_payload, manifest=manifest
+            )
         except ResponseBindingError as exc:
             return ChunkReviewOutcomeV2(
                 outcome_chunk_id, "manual_required", None, exc.reason_code
@@ -283,8 +290,8 @@ def execute_chunk_review_v2(
             )
 
         try:
-            bound = bind_verified_router_result_v2(
-                verified=verified, payload=fresh_payload
+            bound = bind_router_result_with_range_authority_v2(
+                verified=verified, payload=fresh_payload, manifest=manifest
             )
         except ResponseBindingError as exc:
             return ChunkReviewOutcomeV2(
@@ -348,7 +355,8 @@ def run_synthetic_review_v2(
     outcomes = tuple(
         execute_chunk_review_v2(
             chunk_content, run_id=content.run_id, head_sha=manifest.identity.head_sha,
-            payload=payload_by_chunk_id[chunk_content.chunk_id], transport=transport,
+            payload=payload_by_chunk_id[chunk_content.chunk_id], manifest=manifest,
+            transport=transport,
         )
         for chunk_content in content.chunks
     )

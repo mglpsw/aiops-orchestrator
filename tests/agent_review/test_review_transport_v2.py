@@ -4,6 +4,7 @@ import copy
 import hashlib
 import http.client
 import json
+import tempfile
 import ssl
 import subprocess
 import sys
@@ -590,7 +591,7 @@ def _run_mocked_router_chunk(
             chunk_content,
             run_id=content.run_id,
             head_sha=manifest.identity.head_sha,
-            payload=payload,
+            payload=payload, manifest=manifest,
             transport=transport,
         )
     return outcome, captured, chunk_content, payload
@@ -1086,7 +1087,7 @@ def test_payload_content_mismatch_stops_before_message_builder_and_http(
             mismatched,
             run_id=content.run_id,
             head_sha=manifest.identity.head_sha,
-            payload=payload,
+            payload=payload, manifest=manifest,
             transport=transport,
         )
 
@@ -1119,7 +1120,7 @@ def test_agent_router_transport_maps_5xx_to_unavailable_never_approval(
             content.chunks[0],
             run_id=content.run_id,
             head_sha=manifest.identity.head_sha,
-            payload=payload,
+            payload=payload, manifest=manifest,
             transport=transport,
         )
     assert outcome.state == "manual_required"
@@ -1155,7 +1156,7 @@ def test_agent_router_transport_maps_truncated_body_to_invalid_response(
             content.chunks[0],
             run_id=content.run_id,
             head_sha=manifest.identity.head_sha,
-            payload=payload,
+            payload=payload, manifest=manifest,
             transport=transport,
         )
 
@@ -1192,7 +1193,7 @@ def test_agent_router_transport_maps_invalid_utf8_to_invalid_response(
             content.chunks[0],
             run_id=content.run_id,
             head_sha=manifest.identity.head_sha,
-            payload=payload,
+            payload=payload, manifest=manifest,
             transport=transport,
         )
 
@@ -1372,7 +1373,7 @@ def test_agent_router_transport_types_socket_read_failures(
             content.chunks[0],
             run_id=content.run_id,
             head_sha=manifest.identity.head_sha,
-            payload=payload,
+            payload=payload, manifest=manifest,
             transport=transport,
         )
 
@@ -1414,7 +1415,7 @@ def test_agent_router_transport_types_http_protocol_read_failures(
             content.chunks[0],
             run_id=content.run_id,
             head_sha=manifest.identity.head_sha,
-            payload=payload,
+            payload=payload, manifest=manifest,
             transport=transport,
         )
 
@@ -1464,7 +1465,7 @@ def test_agent_router_transport_does_not_swallow_programmer_errors(
                 content.chunks[0],
                 run_id=content.run_id,
                 head_sha=manifest.identity.head_sha,
-                payload=payload,
+                payload=payload, manifest=manifest,
                 transport=transport,
             )
 
@@ -1585,3 +1586,81 @@ def test_router_vector_expectation_is_not_derived_from_the_implementation() -> N
     data_fields = {key: value for key, value in vector.items() if key != "_comment"}
     assert "_canonical_messages_bytes_v2" not in json.dumps(data_fields)
     assert vector["authority"]["repository"] == "mglpsw/agent-router-api"
+
+
+# -- `#200-F` authority D: the Router path gets range validation too ----------
+
+
+def test_router_out_of_range_finding_is_refused_at_binding_not_at_synthesis() -> None:
+    """`#200-F` §14 -- the Router-format path, provider-free, end to end.
+
+    Real preparation, real Router-format request bytes, a real receipt-v2
+    fixture, an accepted-message digest and an assistant digest. Only the HTTP
+    boundary is mocked, and no provider is contacted.
+
+    The model returns a finding on a file the chunk really covers, at a line
+    outside the fragment's range -- an ordinary off-by-N, not an attack.
+
+    Before `#200-F`, ``execute_chunk_review_v2`` bound Router results through
+    ``bind_verified_router_result_v2``, which compares file paths and contract
+    ids and never ranges. The finding bound cleanly here and detonated later
+    in synthesis, aborting the whole run. Now it is a typed
+    ``manual_required`` for this chunk, discovered where the untrusted
+    material enters.
+    """
+    def add_out_of_range_finding(document: dict) -> None:
+        document["findings"] = [
+            {
+                "finding_id": "router-out-of-range",
+                "severity": "P2",
+                "title": "cited a line outside the hunk",
+                "file_path": "app.py",
+                "line_start": 900_001,
+                "line_end": 900_002,
+                "evidence": "off-by-N",
+                "impact": "unclear",
+                "confidence": "medium",
+                "contract_ids": [],
+                "disposition": "new",
+            }
+        ]
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        Path(tempfile.mkdtemp()), result_mutator=add_out_of_range_finding
+    )
+
+    assert outcome.state == "manual_required"
+    assert outcome.reason_code == "finding_outside_chunk_scope"
+    assert outcome.result is None
+
+
+def test_router_in_range_finding_still_binds() -> None:
+    """Non-vacuity control for the test above.
+
+    A range check that rejected every Router finding would satisfy it and
+    destroy the Router path.
+    """
+    def add_in_range_finding(document: dict) -> None:
+        document["findings"] = [
+            {
+                "finding_id": "router-in-range",
+                "severity": "P2",
+                "title": "a real observation",
+                "file_path": "app.py",
+                "line_start": 1,
+                "line_end": 1,
+                "evidence": "fixture evidence",
+                "impact": "unclear",
+                "confidence": "medium",
+                "contract_ids": [],
+                "disposition": "new",
+            }
+        ]
+
+    outcome, _, _, _ = _run_mocked_router_chunk(
+        Path(tempfile.mkdtemp()), result_mutator=add_in_range_finding
+    )
+
+    assert outcome.state == "bound", outcome.reason_code
+    assert outcome.result is not None
+    assert len(outcome.result.findings) == 1
