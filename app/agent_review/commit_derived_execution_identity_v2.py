@@ -242,10 +242,19 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
     entries. A symlinked directory anywhere under ``subject_root`` is
     therefore never something this primitive's own materialisation would
     produce, and is refused unconditionally rather than given a traversal
-    policy to disagree about. This also means the per-entry comparison
-    loop's plain path joins are safe from this specific class once this
-    function has run: nothing left under ``subject_root`` can transparently
-    redirect an intermediate path component elsewhere.
+    policy to disagree about.
+
+    Called by ``verify_executed_source_identity_v2`` LAST, with a fresh
+    walk, deliberately not before the per-entry comparison loop (round-2
+    independent review: calling it only once, early, left the rest of the
+    function -- including subprocess calls to git -- as an open window in
+    which a concurrent writer could add a file a start-of-call snapshot
+    would never see; see that function's docstring, check 4). This function
+    does not make any claim about what happens *during* the per-entry loop
+    that runs before it; it only guarantees that whatever is actually under
+    ``subject_root`` at the moment IT runs -- including anything introduced
+    partway through the call -- is what gets compared against the commit's
+    tree for completeness.
 
     ``os.walk(..., followlinks=False)`` is used rather than
     ``Path.rglob`` for the enumeration itself precisely because it reports
@@ -306,19 +315,11 @@ def verify_executed_source_identity_v2(
 
     1. ``commit_sha`` resolves to a real commit in ``repo_root`` (never a
        tree or blob sha, and never a value that merely looks like a sha).
-    2. ``subject_root`` contains no symlinked directory anywhere --
-       ``_reachable_leaf_paths_v2`` walks it with one consistent traversal
-       policy and refuses outright if it finds one, closing a mismatch
-       between that policy and plain path joining that independent review
-       showed could otherwise hide an untracked file behind a symlinked
-       directory. Its result is also what check 4 below compares against,
-       so both "is everything expected present" and "is nothing unexpected
-       present" share the same view of ``subject_root``.
-    3. The commit's tree contains no gitlink -- a submodule reference names
+    2. The commit's tree contains no gitlink -- a submodule reference names
        a commit in another repository, which this primitive has no bytes
        for and therefore cannot verify; refused rather than silently
        skipped.
-    4. Every tracked path in the commit's tree exists under ``subject_root``
+    3. Every tracked path in the commit's tree exists under ``subject_root``
        with byte-identical content (and, for symlinks, byte-identical
        target text) and the mode implied by git (executable bit set iff the
        tree entry is the executable blob mode). This alone makes a
@@ -330,18 +331,32 @@ def verify_executed_source_identity_v2(
        ``/`` inside one path segment, not the two-character name ``..``),
        which ``ls-tree -r`` then flattens into an entry path like
        ``../evil.py`` -- an unchecked join would read from outside
-       ``subject_root`` when the OS resolves it. Safe against symlinked-
-       directory redirection specifically because check 2 has already
-       proven none exist under ``subject_root`` by this point.
-    5. ``subject_root`` contains no file absent from the commit's tree --
-       an untracked file planted directly into the subject (whether before
-       or after materialisation) is refused rather than silently ignored.
-       Compares against the SAME leaf-path set check 2 already computed,
-       not a second, independently-traversed view of the filesystem.
-    6. Every path in ``loaded_module_paths`` (defaulting to
+       ``subject_root`` when the OS resolves it.
+    4. ``subject_root`` contains no symlinked directory anywhere, and no
+       file absent from the commit's tree. Both checked together by
+       ``_reachable_leaf_paths_v2``, deliberately called LAST -- as close to
+       return as this function's structure allows -- with a FRESH walk, not
+       one taken at call start. Independent review (round 1) found that
+       checking this once, early, let a symlinked directory's transparent
+       following by check 3's plain path joins disagree with an
+       early-computed "what's present" view. Independent review (round 2)
+       found a narrower but real follow-on: even after that fix, checking
+       completeness once at call start left everything after it (commit
+       resolution, tree listing, blob reads, all of check 3) as an open
+       window in which a concurrent writer with access to ``subject_root``
+       could add a file that a start-of-call snapshot would never see.
+       Running this check last, against the filesystem as it is at that
+       moment, does not eliminate every conceivable race (no check-then-use
+       pattern can, without a filesystem-level lock this primitive does not
+       take), but it collapses the window from "this function's entire
+       duration, including subprocess calls to git" to "the checks between
+       here and return", and a symlinked directory introduced earlier in
+       the call to redirect an earlier comparison is still caught here, as
+       long as it has not ALSO been removed again by the time this runs.
+    5. Every path in ``loaded_module_paths`` (defaulting to
        ``loaded_module_files_v2()``, i.e. real interpreter state) resolves
        under ``subject_root``. Kept as an independent second signal on top
-       of (4): "every tracked path is present" and "every loaded module
+       of (3): "every tracked path is present" and "every loaded module
        lives under the root" are different properties, and neither check is
        asked to cover for the other.
     """
@@ -350,12 +365,6 @@ def verify_executed_source_identity_v2(
 
     if not subject_root.is_dir():
         raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2)
-
-    # Runs before anything else touches subject_root's contents: once this
-    # has not raised, nothing under subject_root can redirect a plain path
-    # join elsewhere, so every later check's use of ordinary path joining is
-    # safe against symlinked-directory substitution.
-    reachable_leaf_paths = _reachable_leaf_paths_v2(subject_root)
 
     try:
         resolved_commit = resolve_commit_v2(repo_root=repo_root, ref=commit_sha)
@@ -410,6 +419,13 @@ def verify_executed_source_identity_v2(
         if should_be_executable != is_executable:
             raise ExecutedSourceIdentityError(IDENTITY_MODE_MISMATCH_REASON_V2)
 
+    # Deliberately called here, last, with a fresh walk -- not at call
+    # start. See check 4 in the docstring above for why: this is what
+    # closes the round-2 TOCTOU gap on top of round 1's static fix. A
+    # symlinked directory introduced at ANY point before this line, and
+    # still present when this line runs, is caught here regardless of
+    # whether it existed for the whole call or was introduced moments ago.
+    reachable_leaf_paths = _reachable_leaf_paths_v2(subject_root)
     for relative in sorted(reachable_leaf_paths):
         if relative not in expected_paths:
             raise ExecutedSourceIdentityError(IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2)
