@@ -192,9 +192,17 @@
       "ri_b0_role": "none: RI-B0 has no reason to read, cite, or depend on target-pack installation planning.",
       "source_path": "schemas/agent-review/v2/agent-review.target-pack-operation-plan.v2.schema.json",
       "state": "not_applicable"
+    },
+    {
+      "contract_id": "agent-review.manifest-diff-binding.v2",
+      "notes": "Additive sidecar (#200-G3B) binding one ManifestV2's run_id/manifest_hash to the exact SHA-256 of the authoritative diff bytes acquired for base_sha...head_sha, closing the #285-class gap where a path-set agreement check could not detect a truncated/tampered diff supplying the same apparent paths. ManifestV2, manifest_hash, and run_id remain byte-for-byte unchanged; this is scope-integrity plumbing internal to AgentReview's own diff acquisition/manifest assembly, not a review finding or readiness artifact.",
+      "owner": "aiops-orchestrator (app/agent_review/)",
+      "ri_b0_role": "none: RI-B0 consumes review-readiness and finding-level evidence, not the diff-byte authenticity check that gates scope classification upstream of it.",
+      "source_path": "schemas/agent-review/v2/agent-review.manifest-diff-binding.v2.schema.json",
+      "state": "not_applicable"
     }
   ],
-  "generated_from": "live schemas/agent-review/v2/*.json (20 files) and this repository's own CURRENT_CHECKPOINT.md observation of the ProjectOps track boundary",
+  "generated_from": "live schemas/agent-review/v2/*.json (23 files) and this repository's own CURRENT_CHECKPOINT.md observation of the ProjectOps track boundary",
   "schema_version": 1,
   "states": [
     "reuse",
