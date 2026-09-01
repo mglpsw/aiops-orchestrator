@@ -15,10 +15,13 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
+import app.agent_review.commit_derived_execution_identity_v2 as commit_derived_execution_identity_module
 from app.agent_review.bounded_git_v2 import BoundedGitError
 from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_BLOB_MISSING_REASON_V2,
@@ -647,6 +650,64 @@ def test_symlinked_directory_cannot_hide_an_untracked_file(tmp_path: Path) -> No
     # The decisive assertion: verification must NOT report success while
     # evil.py sits reachable under subject_root, uncompared against git.
     assert (subject_root / "pkg" / "evil.py").exists()
+
+
+def test_completeness_is_reverified_close_to_return_not_only_at_call_start(
+    tmp_path: Path,
+) -> None:
+    """Independent-review P1 (round 2, lane C): the completeness scan ran
+    exactly ONCE, at the very start of `verify_executed_source_identity_v2`,
+    and everything after (commit resolution, tree listing, blob reads, the
+    per-entry comparison loop) reused that single frozen snapshot rather
+    than re-scanning. A concurrent writer with access to `subject_root`
+    during the call itself could add a new file inside that window and
+    verification would return SUCCESS while the new file existed on disk,
+    uncompared against git -- a different mechanism from the round-1 static
+    symlink-directory bypass (this one requires an attacker who can write
+    into `subject_root` *during* the call, not just before it), but the
+    same underlying failure: a completeness guarantee that was not actually
+    true at return time.
+
+    Deterministic repro: delay `resolve_commit_v2` (called early in
+    verification, well before any check that reads `subject_root`'s
+    content) and have a background thread write a new file into
+    `subject_root` partway through that delay. If completeness is checked
+    fresh, close to return, the new file must be caught regardless of when
+    within the call it appeared."""
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    evil_path = subject_root / "app_agent_review" / "toctou_evil.py"
+
+    real_resolve_commit_v2 = commit_derived_execution_identity_module.resolve_commit_v2
+
+    def delayed_resolve_commit_v2(*, repo_root, ref):
+        time.sleep(0.2)
+        return real_resolve_commit_v2(repo_root=repo_root, ref=ref)
+
+    def write_evil_file_partway_through_the_delay() -> None:
+        time.sleep(0.05)
+        evil_path.write_text("EVIL = True\n")
+
+    writer = threading.Thread(target=write_evil_file_partway_through_the_delay)
+    commit_derived_execution_identity_module.resolve_commit_v2 = delayed_resolve_commit_v2
+    try:
+        writer.start()
+        with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+            verify_executed_source_identity_v2(
+                repo_root=repo,
+                commit_sha=head_sha,
+                subject_root=subject_root,
+                loaded_module_paths=(),
+            )
+    finally:
+        commit_derived_execution_identity_module.resolve_commit_v2 = real_resolve_commit_v2
+        writer.join()
+
+    assert excinfo.value.reason_code == IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2
+    assert evil_path.exists()
 
 
 def test_nonexistent_subject_root_is_refused(tmp_path: Path) -> None:
