@@ -11,7 +11,9 @@ from app.agent_review.target_pack_manifest_v2 import (
 )
 from app.agent_review.target_pack_plan_v2 import (
     PLAN_PATH_RESOLUTION_FAILED_REASON_V2,
+    PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2,
     PLAN_ROLLOUT_CEILING_EXCEEDED_REASON_V2,
+    PLAN_TARGET_ROOT_UNUSABLE_REASON_V2,
     PlanError,
     PlannedActionV2,
     compute_install_plan_v2,
@@ -245,3 +247,94 @@ def test_read_on_disk_sha256_is_bound_to_the_captured_root_not_a_mutable_alias(
 
     assert on_disk_hash == _sha256(b"root-content")
     assert on_disk_hash != _sha256(b"subdir-divergent-content")
+
+
+# ---------------------------------------------------------------------------
+# G4B (#200-G4B): the documented `resolve_within_target_root_v2` `OSError`
+# hole, and its ripple into every bare caller of `target_root.resolve()` in
+# this module. `target_pack_validate_v2._resolve_contained_path_v2`'s own
+# docstring named this as "a separate predecessor change against a shared
+# module" -- these are the RED/GREEN witnesses for that change, reproduced
+# via a targeted `Path.resolve`/`is_file`/`read_bytes` monkeypatch (only the
+# path under test fails; every other call -- including pytest's own -- goes
+# through unmodified), matching the pattern `test_external_path_ingress_v2.py`
+# already established.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_within_target_root_returns_a_typed_refusal_for_an_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED against the unfixed shape: `Path.resolve(strict=False)` can raise
+    a raw `OSError` (EACCES on an ancestor, EIO on a failing mount,
+    ENAMETOOLONG on an overlong candidate) that the predecessor `except
+    RuntimeError` alone never caught -- it propagated straight out of
+    `resolve_within_target_root_v2`, uncaught, instead of the typed
+    `PlanError` every other resolution failure in this module produces."""
+    candidate = tmp_path / "a"
+    real_resolve = Path.resolve
+
+    def failing_resolve(self: Path, strict: bool = False):
+        if self == candidate:
+            raise OSError(13, "denied")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", failing_resolve)
+    with pytest.raises(PlanError) as exc_info:
+        resolve_within_target_root_v2(tmp_path.resolve(strict=False), candidate)
+    assert exc_info.value.reason_code == PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2
+
+
+def test_read_on_disk_sha256_does_not_leak_a_raw_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED against the unfixed shape: `_read_on_disk_sha256_v2`'s own
+    `is_file()`/`read_bytes()` calls, on a path already proven contained,
+    had no guard at all -- a permission-denied ancestor or a TOCTOU
+    symlink swap between containment and this read raised a raw `OSError`
+    this function let escape uncaught."""
+    import app.agent_review.target_pack_plan_v2 as plan_module
+
+    root = tmp_path.resolve(strict=False)
+    target = root / "target-profile.v2.yaml"
+    target.write_bytes(b"x")
+    real_is_file = Path.is_file
+
+    def failing_is_file(self: Path):
+        if self == target:
+            raise OSError(13, "denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", failing_is_file)
+    with pytest.raises(PlanError) as exc_info:
+        plan_module._read_on_disk_sha256_v2(root, "target-profile.v2.yaml")
+    assert exc_info.value.reason_code == PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2
+
+
+def test_compute_install_plan_refuses_an_unresolvable_target_root_instead_of_crashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED against the unfixed shape: `compute_install_plan_v2`'s own
+    `target_root.resolve(strict=False)` had NO guard at all -- neither
+    `RuntimeError` (symlink loop) nor `OSError`. `target_root` is the
+    primary caller-controlled ingress point for this function (it is
+    `--target-root`, threaded through from the CLI); a symlink loop there
+    crashed this function uncaught, not merely a nested manifest path
+    (already covered by the symlink-loop test above)."""
+    target_root = tmp_path / "target"
+    entry = GeneratedFileEntryV2(
+        path=".aiops/target-profile.v2.yaml",
+        ownership=TargetPackFileOwnershipV2.TARGET_OWNED,
+        content_sha256=_sha256(b"seed"),
+    )
+    real_resolve = Path.resolve
+
+    def failing_resolve(self: Path, strict: bool = False):
+        if self == target_root:
+            raise RuntimeError("Symlink loop")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", failing_resolve)
+    with pytest.raises(PlanError) as exc_info:
+        compute_install_plan_v2(manifest=_manifest(entry), target_root=target_root, previous_receipt=None)
+    assert exc_info.value.reason_code == PLAN_TARGET_ROOT_UNUSABLE_REASON_V2
