@@ -146,3 +146,78 @@ def test_digest_hashes_symlink_target_text_not_followed_content(tmp_path: Path) 
     # The symlink's target *text* did not change, only the pointed-at file's
     # content -- which this digest never reads.
     assert before == after
+
+
+def test_materialise_refuses_blob_subtree_name_collision_instead_of_crashing(
+    tmp_path: Path,
+) -> None:
+    """Independent-review P1 (lane B, correction round): a git tree object
+    can legally contain a blob and a tree with the *same one-byte name*
+    (git's own sort comparator treats a subdirectory entry as if it had a
+    trailing "/", so "collide" (blob) and "collide" (tree) do not collide
+    from git's point of view, and `git mktree` accepts it). `ls-tree -r`'s
+    canonical sort then emits the blob entry before the tree's flattened
+    "collide/bar.py" entry. Materialisation wrote "collide" as a regular
+    file first, then tried `mkdir(parents=True, exist_ok=True)` for
+    "collide" as a directory for the second entry -- `exist_ok=True` only
+    suppresses the error when the existing path is already a directory, so
+    this raised a raw, untyped `FileExistsError` and left the "collide"
+    file behind as a partial write. Proven with real `git mktree` plumbing,
+    not a synthetic mock."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.py").write_text("SEED = 1\n")
+    _commit_all(repo, "seed")
+
+    blob_sha = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="blob content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    nested_blob_sha = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="nested content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    inner_tree_sha = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"100644 blob {nested_blob_sha}\tbar.py\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    # A blob "collide" and a tree "collide" as siblings in the SAME tree --
+    # git's sort treats the directory as "collide/" for comparison, so this
+    # is not a duplicate name from git's point of view.
+    outer_tree_sha = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=(
+            f"100644 blob {blob_sha}\tcollide\n"
+            f"040000 tree {inner_tree_sha}\tcollide\n"
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    collision_commit = subprocess.run(
+        ["git", "commit-tree", outer_tree_sha, "-m", "collision"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    destination = tmp_path / "dest"
+    with pytest.raises(SubjectMaterialisationError):
+        materialise_commit_subject_v2(repo_root=repo, ref=collision_commit, destination=destination)
+    # No partial write left behind for a caller to mistake for a valid
+    # subject.
+    assert not destination.exists() or not any(destination.iterdir())

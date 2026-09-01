@@ -600,6 +600,55 @@ def test_path_traversal_tree_entry_cannot_escape_subject_root(tmp_path: Path) ->
     assert excinfo.value.reason_code == IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2
 
 
+def test_symlinked_directory_cannot_hide_an_untracked_file(tmp_path: Path) -> None:
+    """Independent-review P0 (lane A, correction round): `Path.rglob("*")`
+    does not descend into a symlinked directory (it reports the symlink
+    entry itself and stops), but ordinary path joining used by the
+    per-tracked-path comparison transparently follows a symlinked directory
+    in an intermediate path component. If `pkg` in `subject_root` is
+    replaced with a symlink to an attacker directory containing a
+    byte-identical `pkg/util.py` (satisfies the tracked-file check) plus an
+    untracked `pkg/evil.py`, the two checks disagree about what is "under"
+    subject_root: the completeness scan never sees `evil.py` (it never
+    descends past the symlink), while Python's own import machinery would
+    happily read it. `materialise_commit_subject_v2` never creates a
+    symlinked directory itself (only real directories via `mkdir`, and
+    symlinks only as leaf blob entries) -- so any symlinked directory found
+    under `subject_root` is definitionally something the primitive itself
+    did not put there, and must be refused outright rather than silently
+    traversed one way and not the other."""
+    repo = tmp_path / "toolrepo"
+    _init_repo(repo)
+    (repo / "main.py").write_text("MAIN = 1\n")
+    (repo / "pkg").mkdir()
+    (repo / "pkg" / "util.py").write_text("UTIL = 1\n")
+    head_sha = _commit_all(repo, "init")
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    attacker_dir = tmp_path / "attacker_pkg"
+    attacker_dir.mkdir()
+    (attacker_dir / "util.py").write_text("UTIL = 1\n")  # byte-identical to the tracked blob
+    (attacker_dir / "evil.py").write_text("EVIL = True\n")  # untracked, never in the commit
+
+    shutil.rmtree(subject_root / "pkg")
+    (subject_root / "pkg").symlink_to(attacker_dir)
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+    # Refused for containing a symlinked directory at all -- not required to
+    # be this exact reason code by any external contract, but it must not be
+    # IDENTITY_EXTRA_UNTRACKED_FILE's absence read as "nothing to report".
+    assert excinfo.value.reason_code is not None
+    # The decisive assertion: verification must NOT report success while
+    # evil.py sits reachable under subject_root, uncompared against git.
+    assert (subject_root / "pkg" / "evil.py").exists()
+
+
 def test_nonexistent_subject_root_is_refused(tmp_path: Path) -> None:
     repo, head_sha = _toolrepo_fixture(tmp_path)
     with pytest.raises(ExecutedSourceIdentityError):
@@ -685,3 +734,31 @@ def test_authorization_rejects_an_unresolvable_commit(tmp_path: Path) -> None:
             repo_root=repo, commit_sha="d" * 40, trusted_ref=head_sha
         )
     assert excinfo.value.reason_code == IDENTITY_UNKNOWN_COMMIT_REASON_V2
+
+
+def test_unauthorized_result_is_falsy(tmp_path: Path) -> None:
+    """Independent-review P1 (lane B, correction round):
+    `ExecutedSourceAuthorizationV2` had no `__bool__`, so `bool(instance)`
+    was always `True` regardless of `.authorized` -- a footgun for any
+    future caller who writes `if authorize_commit_for_execution_v2(...):`
+    instead of `.authorized`. Not live today (zero call sites outside this
+    module/its tests), but G5 is expected to wire this primitive in next,
+    so the dataclass's own truthiness must agree with its `.authorized`
+    field rather than silently always being truthy."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+    subprocess.run(["git", "checkout", "-b", "feature"], cwd=repo, check=True, capture_output=True)
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nFEATURE = True\n")
+    feature_sha = _commit_all(repo, "feature work")
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
+
+    unauthorized = authorize_commit_for_execution_v2(
+        repo_root=repo, commit_sha=feature_sha, trusted_ref="main"
+    )
+    assert unauthorized.authorized is False
+    assert not unauthorized, "bool(result) must track .authorized, not always be True"
+
+    authorized = authorize_commit_for_execution_v2(
+        repo_root=repo, commit_sha=base_sha, trusted_ref=feature_sha
+    )
+    assert authorized.authorized is True
+    assert authorized
