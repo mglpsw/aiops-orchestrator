@@ -234,7 +234,7 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
     from app.agent_review.operational_run_v2 import execute_operational_run_v2
     from app.agent_review.semantic_grouping_policy_v2 import SemanticGroupingPolicyV2
 
-    verify_inner_control_document_v2(
+    verified = verify_inner_control_document_v2(
         document, executing_module_path=Path(__file__).resolve()
     )
 
@@ -261,6 +261,9 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
 
     result = execute_operational_run_v2(
         inputs=inputs,
+        # The identity of the code that is actually running, established by
+        # the verification immediately above -- never the caller's claim.
+        verified_toolrepo_sha=verified.declared_toolrepo_sha,
         profile=profile,
         grouping_policy=grouping_policy,
         file_diffs=file_diffs,
@@ -273,7 +276,7 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
             {
                 "schema_id": "agent-review.operational-run.v2",
                 "run_id": result.manifest.run_id,
-                "toolrepo_sha": document.declared_toolrepo_sha,
+                "toolrepo_sha": verified.declared_toolrepo_sha,
                 "readiness_state": result.readiness_state.value,
                 "reason_codes": list(result.reason_codes),
                 "finding_count": len(result.findings),

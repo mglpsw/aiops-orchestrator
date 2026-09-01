@@ -123,6 +123,7 @@ ReviewTransportV2 = Callable[[ChunkPayloadV2], Mapping[str, Any] | str | bytes]
 def execute_operational_run_v2(
     *,
     inputs: ValidatedPublicInputsV2,
+    verified_toolrepo_sha: str,
     profile: TargetProfileV2,
     grouping_policy: SemanticGroupingPolicyV2,
     file_diffs: Sequence[ParsedFileDiffV2],
@@ -131,6 +132,19 @@ def execute_operational_run_v2(
     max_lines_per_chunk: int = 400,
 ) -> OperationalRunResultV2:
     """Compose one review run and return its readiness.
+
+    ``verified_toolrepo_sha`` is the identity of the code that is *actually*
+    executing, taken from the inner-control document after
+    ``verify_inner_control_document_v2`` has checked it against the bytes on
+    disk. It is a required argument rather than something derived here,
+    because this module cannot verify the tree it is itself part of -- only
+    the caller that received the document can.
+
+    An earlier revision truncated the caller-supplied ``toolchain_digest`` to
+    forty characters and recorded *that* as ``toolrepo_sha``. It type-checked
+    and every test passed, and it was wrong in the way this whole slice exists
+    to prevent: the run identity named a value no history contains, derived
+    from caller material rather than from the executing code.
 
     Every refusal raised from here is a member of the operational refusal
     family, so the CLI catches structurally and never enumerates.
@@ -161,7 +175,7 @@ def execute_operational_run_v2(
         base_sha=inputs.base_sha,
         head_sha=inputs.head_sha,
         tested_merge_sha=inputs.tested_merge_sha,
-        toolrepo_sha=inputs.toolchain_digest[:40],
+        toolrepo_sha=verified_toolrepo_sha,
         evidence_hash=evidence_hash,
         max_lines_per_chunk=max_lines_per_chunk,
     )

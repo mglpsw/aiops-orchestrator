@@ -39,6 +39,8 @@ _BASE_SHA_V2 = "1" * 40
 _HEAD_SHA_V2 = "2" * 40
 _TESTED_MERGE_SHA_V2 = "3" * 40
 _DIGEST_V2 = "4" * 64
+#: Stands in for the sha the inner-control document carries after verification.
+_VERIFIED_TOOLREPO_SHA_V2 = "a" * 40
 
 _REVIEWABLE_DIFF_V2 = """diff --git a/app/service.py b/app/service.py
 index 1111111..2222222 100644
@@ -164,7 +166,7 @@ def _transport_for_v2(*diff_texts: str, findings_per_chunk: int = 0):
         base_sha=_BASE_SHA_V2,
         head_sha=_HEAD_SHA_V2,
         tested_merge_sha=_TESTED_MERGE_SHA_V2,
-        toolrepo_sha=_DIGEST_V2[:40],
+        toolrepo_sha=_VERIFIED_TOOLREPO_SHA_V2,
         evidence_hash=_DIGEST_V2,
         max_lines_per_chunk=400,
     )
@@ -228,6 +230,7 @@ def _transport_for_v2(*diff_texts: str, findings_per_chunk: int = 0):
 def _run_v2(*diff_texts: str, profile: TargetProfileV2 | None = None, findings_per_chunk: int = 0):
     return execute_operational_run_v2(
         inputs=_inputs_v2(),
+        verified_toolrepo_sha=_VERIFIED_TOOLREPO_SHA_V2,
         profile=profile or _profile_v2(),
         grouping_policy=_grouping_policy_v2(),
         file_diffs=[fd for text in diff_texts for fd in parse_unified_diff(text)],
@@ -307,6 +310,7 @@ def test_a_missing_chunk_response_is_a_typed_refusal() -> None:
     with pytest.raises(OperationalRunError) as caught:
         execute_operational_run_v2(
             inputs=_inputs_v2(),
+            verified_toolrepo_sha=_VERIFIED_TOOLREPO_SHA_V2,
             profile=_profile_v2(),
             grouping_policy=_grouping_policy_v2(),
             file_diffs=list(parse_unified_diff(_REVIEWABLE_DIFF_V2)),
@@ -353,3 +357,17 @@ def inspect_source_v2(module) -> str:
     import inspect as _inspect
 
     return _inspect.getsource(module)
+
+
+def test_the_run_identity_records_the_verified_toolrepo_sha_not_a_caller_value() -> None:
+    """Identity must name the code that ran, never caller material.
+
+    An earlier revision truncated ``toolchain_digest`` to forty characters and
+    recorded that as ``toolrepo_sha``. It type-checked and every test passed,
+    and it named a value no history contains -- exactly the class of defect
+    this slice exists to prevent, arrived at by accident rather than attack.
+    """
+    result = _run_v2(_REVIEWABLE_DIFF_V2)
+
+    assert result.manifest.identity.toolrepo_sha == _VERIFIED_TOOLREPO_SHA_V2
+    assert result.manifest.identity.toolrepo_sha != _DIGEST_V2[:40]

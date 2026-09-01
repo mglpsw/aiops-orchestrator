@@ -47,6 +47,23 @@ _HEAD_SHA_V2 = "2" * 40
 _TESTED_MERGE_SHA_V2 = "3" * 40
 _TOOLCHAIN_DIGEST_V2 = "4" * 64
 
+
+def _committed_toolrepo_sha_v2() -> str:
+    """The sha the product will derive for itself and record as identity.
+
+    Read here so the prepared responses bind to the same run identity the
+    product computes. The product does not take this value from argv -- it
+    materialises a subject and verifies the document against the bytes -- so
+    the fixture has to agree with reality rather than assert it.
+    """
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=_REPOSITORY_ROOT_V2,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
 # One reviewable file carrying a quoted secret, plus a pure rename that the
 # predecessor's blanket refusal would have used to deny the whole review.
 _DIFF_V2 = f'''diff --git a/app/service.py b/app/service.py
@@ -160,7 +177,7 @@ def product_workspace_v2(tmp_path: pathlib.Path) -> dict[str, pathlib.Path]:
         base_sha=_BASE_SHA_V2,
         head_sha=_HEAD_SHA_V2,
         tested_merge_sha=_TESTED_MERGE_SHA_V2,
-        toolrepo_sha=_TOOLCHAIN_DIGEST_V2[:40],
+        toolrepo_sha=_committed_toolrepo_sha_v2(),
         evidence_hash=_TOOLCHAIN_DIGEST_V2,
         max_lines_per_chunk=400,
     )
