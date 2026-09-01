@@ -593,3 +593,85 @@ def test_a_relative_caller_path_is_refused_rather_than_resolved(
 
     assert completed.returncode == 2
     assert completed.stderr.strip() == "operational_ingress_path_not_absolute"
+
+
+def test_the_outer_validates_before_it_materialises_or_spawns_anything() -> None:
+    """§4's *pre-seal* ordering, asserted structurally.
+
+    A behavioural probe was attempted first and abandoned, for reasons worth
+    recording rather than hiding:
+
+    * a read-only ``TMPDIR`` is inert, because this suite runs as root and
+      root writes to a 0o500 directory happily;
+    * a missing ``TMPDIR`` is also inert, because ``tempfile`` deliberately
+      falls through its candidate list to ``/tmp`` when a candidate is
+      unusable.
+
+    Both would have produced a green test that proved nothing, which is
+    precisely the `#276` failure mode. So the ordering is asserted where it is
+    actually decidable -- in the source of the one function that owns it --
+    and the claim is limited to what that shows: the outer calls the ingress
+    authority before it materialises a subject or starts a child.
+    """
+    import ast
+
+    source = _CLI_V2.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    outer = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_run_outer_bootstrap_v2"
+    )
+
+    def _first_line_calling(name: str) -> int:
+        for node in ast.walk(outer):
+            if isinstance(node, ast.Call):
+                target = node.func
+                called = getattr(target, "id", None) or getattr(target, "attr", None)
+                if called == name:
+                    return node.lineno
+        raise AssertionError(f"{name} is not called by the outer bootstrap")
+
+    validation_line = _first_line_calling("_validated_inputs_v2")
+
+    for sealing_call in (
+        "materialise_toolrepo_execution_subject_v2",
+        "mkdtemp",
+        "run",  # subprocess.run -- the child
+        "pipe",
+    ):
+        assert validation_line < _first_line_calling(sealing_call), (
+            f"public input must be validated before {sealing_call}"
+        )
+
+
+def test_both_processes_validate_public_input() -> None:
+    """Validation is duplicated on purpose, and that is worth pinning.
+
+    A product mutation that deleted the *outer's* validation survived: the
+    inner validates too, so the same typed reason code still came out. That is
+    not a coverage gap being papered over -- it is defence in depth working as
+    designed, and the honest test is the one that asserts both call sites
+    exist rather than one that pretends a single-sided deletion is observable
+    from outside.
+
+    The outer's copy exists so an impossible run is refused before a ~700-file
+    subject is materialised and a child is started. The inner's copy exists so
+    the semantic layer never trusts that someone upstream did it.
+    """
+    import ast
+
+    tree = ast.parse(_CLI_V2.read_text(encoding="utf-8"))
+    callers = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            isinstance(inner, ast.Call)
+            and (getattr(inner.func, "id", None) == "_validated_inputs_v2")
+            for inner in ast.walk(node)
+        )
+    }
+
+    assert callers == {"_run_outer_bootstrap_v2", "_run_inner_semantic_v2"}
