@@ -319,17 +319,185 @@ skipped** -- exactly `2600 + 4` (this correction round's 4 new tests) over
 the pre-correction count, same 48 named environment-class failures as every
 prior run in this document. No new failures introduced by the correction.
 
-### Round 2 -- pending
+### Round 2 -- dispatched against head `9c8d5d18039442112a1b6665605a7578ab704336`
 
-To be dispatched against the corrected, re-frozen head (see identity block
-at the top of this document once updated) per process step 9: two fresh
-independent lanes, prior review invalidated by the source change, at least
-one lane specifically re-attacking path-containment via symlink
-substitution (nested symlinks, symlinks-to-symlinks, symlinked files as
-well as directories, case variations) since path-containment is the
-abstraction whose second independent refutation would trigger
-`STOP_G1_ARCHITECTURE_NOT_CONVERGING`.
+Two fresh independent lanes (Agent tool, `isolation: worktree`), prior
+round-1 review explicitly invalidated by the source change. Lane C tasked
+specifically with re-attacking path-containment via symlink substitution
+(the abstraction whose second independent refutation would trigger
+`STOP_G1_ARCHITECTURE_NOT_CONVERGING`); lane D tasked with a broad re-attack
+across all three files.
+
+**Lane C.** Rebuilt round 1's exact symlink-directory exploit from scratch
+against the corrected code and confirmed it stays closed. Additionally
+tried nested symlinked directories (two/three levels deep), symlink-to-
+symlink chains, symlinked files (not directories) as path components, an
+empty-vs-populated symlinked directory, a symlink cycle pointing back at
+`subject_root` itself, and unusual `entry.path` shapes against
+`_safe_subject_path_v2`'s lexical containment check -- none refuted
+path-containment again. Found one new, real P1, a genuine TOCTOU gap,
+different mechanism from round 1's break: `_reachable_leaf_paths_v2` walked
+`subject_root` exactly once, at the very start of
+`verify_executed_source_identity_v2`, and everything after (commit
+resolution, tree listing, blob reads, the whole comparison loop) reused
+that single frozen snapshot instead of re-scanning. Deterministic repro:
+delay `resolve_commit_v2` and write a new file into `subject_root` from a
+background thread partway through the delay -- verification returned
+SUCCESS with the new file present. Narrower precondition than round 1
+(requires a concurrent writer with access to `subject_root` during the call
+itself, not just a one-shot setup before the call), hence P1 not P0.
+
+**Lane D.** Broad re-attack: git alias/config hijacking via a hostile
+local git config or tracked `.gitattributes` within the repository being
+read (not just ambient env vars, already covered in round 1) -- held.
+Adversarial `ref`/`commit_sha` strings (an `a..b` range shape, empty
+string, leading dashes) against `resolve_commit_v2`'s
+`f"{ref}^{{commit}}"` construction -- held; every malformed/ambiguous
+shape was refused, none resolved to something unintended. Module-level
+mutable state shared across concurrent callers -- none found (grepped all
+three files). Re-ran 3 of the existing mutations independently -- all
+still killed. Findings were all P2 (test-strength/coverage gaps, not
+bypasses): a "decisive" assertion in the symlinked-directory test that was
+actually tautological (`reason_code is not None`, true for any refusal)
+rather than pinned to the specific code; the only gitlink test always
+mixes the gitlink with other tracked files, so the gitlink-present path
+was never exercised in isolation; the collision fix's
+`shutil.rmtree(destination, ignore_errors=True)` blast radius on failure,
+already anticipated by the existing test's own assertion, not a hidden
+regression. One item explicitly fenced off as SUSPECTED-but-not-urgent:
+`compute_subject_digest_v2`'s newline-joined entry encoding isn't provably
+injective against embedded-newline filenames -- not on the live
+verification path (test-only caller today), and its own docstring already
+disclaims it as unsafe for untrusted comparison; left as documented, not
+fixed in this slice.
+
+**Verdict of round 2 itself:** neither lane refuted the commit->bytes /
+path-containment abstraction a second time. The two-strikes STOP rule does
+not apply. The P1 was closed directly (narrow, well-understood gap, not a
+design failure) rather than treated as a second correction round on the
+core abstraction, per the process contract's guidance for this situation.
+
+### Round-2 correction (closing the TOCTOU P1, and the two P2s)
+
+Commits `5f05645` (RED: TOCTOU regression test, personally reproduced
+against the real function with a scratch monkeypatch-delay script before
+writing the test, confirmed "DID NOT RAISE" against pre-fix code) and
+`38c3008` (GREEN: fix) and `44df754` (the two P2s).
+
+Fix: moved `_reachable_leaf_paths_v2`'s call from the very start of
+`verify_executed_source_identity_v2` to LAST, immediately before the
+extra-file comparison, with a fresh walk taken at that point rather than
+reused from call start. This does not eliminate every conceivable race (no
+check-then-use pattern can without a filesystem lock this primitive does
+not take), but collapses the window from "this function's entire duration,
+including subprocess calls to git" to "between the per-entry comparison
+loop and return". Re-verified round 1's static exploit is still caught
+under this reordering: a symlinked directory introduced (or merely
+present) earlier in the call and still present when the final check runs
+is still refused, because the check does not care when the directory
+appeared, only whether it is there now.
+
+Re-ran both standalone repro scripts from every prior round directly
+against the corrected code, not just the test suite: round 1's static
+exploit still refuses (`identity_symlinked_directory_in_subject`), round
+2's TOCTOU exploit now refuses too (`identity_extra_untracked_file`, with
+the planted file confirmed present on disk), and the unrelated
+blob/subtree collision fix from the first correction round is unaffected.
+
+Mutation-tested the reordering itself (mutation 16: moved the call back to
+call-start, i.e. structurally reproduced the pre-fix ordering) -- killed
+cleanly: the TOCTOU regression test failed with the exact same "DID NOT
+RAISE" as the original RED state, confirming the reordering itself, not
+just the function's mere existence, is what closes the gap. 16/16
+mutations killed overall across this primitive's life (12 original + 3
+first correction + 1 this correction).
+
+Also closed lane D's two P2s: pinned the symlinked-directory test's
+assertion to `IDENTITY_SYMLINKED_DIRECTORY_REASON_V2` instead of
+`is not None`; added `test_pure_gitlink_only_tree_is_refused`, a tree
+containing nothing but one gitlink entry, isolating that code path from
+the mixed-tree fixture every other gitlink test uses.
+
+Final corpus for this slice: **47 tests**, all green -- 30 in
+`test_commit_derived_execution_identity_v2.py`, 9 in
+`test_git_commit_subject_v2.py`, 8 in `test_bounded_git_v2.py`.
+
+Full `tests/agent_review/` regression re-run at the final head: **2606
+passed, 48 failed, 12 skipped** -- exactly `2559 + 47` (this slice's total
+test count) over the live-master baseline recorded in the post-`#200-F`
+recovery checkpoint, same 48 named environment-class failures
+(sudo-denial, worktree-write-blocked) as every prior run in this document.
+No new failures introduced across the entire slice, from first commit to
+last.
+
+No further external review lanes were dispatched after this closing fix,
+per explicit instruction: the fix is narrow and well-understood (not a
+design failure), the primitive's own mutation-tested regression coverage
+is sufficient at this point, and two full independent review rounds have
+already cleared the core `commit -> bytes` / path-containment design
+itself.
 
 ## 6. Terminal verdict
 
-_To be filled in once round 2 is complete._
+**`PRIMITIVE_NON_REFUTED`**
+
+Code implementation anchor (the sha the mutation record, review rounds, and
+regression run above are all identity-tied to): `44df7549fe7fbfff30a07712e7a2525405b4230d`
+(tree `808610dba8359351ddd182ba2ae8fcfaf4a2d642`). This checkpoint's own
+final revision necessarily lands in a later, doc-only commit on top of that
+anchor -- it cannot state its own resulting sha without going stale the
+instant it is written, the same reason `docs/engineering/CURRENT_CHECKPOINT.md`
+keeps `implementation_anchor` and `checkpoint_document` as separate
+identities rather than one. Branch `feat/200-g1-executed-source-identity`,
+pushed to `origin`, Draft PR #284; revalidate the branch's actual HEAD via
+`git log`/the PR before relying on any sha printed here.
+
+The `commit -> bytes` executed-source-identity design survived two full
+independent adversarial review rounds (4 lanes total) without the core
+abstraction being refuted twice on the same failure class -- the
+precondition in the task contract for `STOP_G1_ARCHITECTURE_NOT_CONVERGING`
+was never met. Three real defects were found and closed across two bounded
+correction rounds, each personally reproduced against the real code before
+being accepted or fixed, each closed with a RED-test-first regression, and
+each mutation-tested in isolation to confirm the fix (not just the test) is
+load-bearing:
+
+- round 1, lane A (P0): symlinked-directory bypass of the completeness
+  scan -- closed by unifying traversal policy and refusing any symlinked
+  directory under `subject_root` outright.
+- round 1, lane B (P1 x2): blob/subtree name-collision crash in
+  materialisation -- closed with a typed refusal and cleanup; missing
+  `__bool__` on the authorization result -- closed.
+- round 2, lane C (P1): TOCTOU window in the completeness check -- closed
+  by moving that check to run last, with a fresh walk, minimizing (not
+  eliminating -- stated honestly, not overclaimed) the race window.
+
+What is PROVED, not merely claimed: both original `#277` falsifier classes
+(narrow-root, fabricated-digest) are closed and independently confirmed
+held by both review rounds; the three defects above are closed and
+independently reproduced by this document's author before and after each
+fix; IDENTITY and AUTHORIZATION are never conflated anywhere in this
+module's own code (grepped and confirmed by lane D); the bounded git
+environment holds against ambient-environment poisoning, `PATH` poisoning,
+`git replace`, and hostile in-repository git config (lane A, lane D).
+
+What remains honestly a limitation, not hidden: this primitive proves
+identity as of the moment its checks run, under the constraints of the
+threat scope in section 3 (`host_arbitrary_code_attacker` explicitly out of
+scope; a filesystem-level lock is not taken, so an infinitesimally narrow
+TOCTOU window between the final completeness check and whatever the
+caller does next is not claimed to be closed by this primitive alone -- a
+caller that needs a stronger guarantee must not leave time between calling
+this and acting on its result). `compute_subject_digest_v2`'s injectivity
+against adversarial embedded-newline filenames is undemonstrated and
+explicitly out of scope for this slice, since nothing on the live
+verification path depends on it.
+
+Recomposition note for G5: this primitive provides IDENTITY
+(`verify_executed_source_identity_v2`) and AUTHORIZATION
+(`authorize_commit_for_execution_v2`) as two independent, uncombined
+functions. G5 must compose them explicitly and must not assume either one
+implies the other. No two-process outer/inner wiring, no CLI, no product
+composer was built in this slice (per the port ledger's
+`PORT_AS_CONCEPT`/G5-deferred disposition) -- G1 delivers the verification
+primitive only.
