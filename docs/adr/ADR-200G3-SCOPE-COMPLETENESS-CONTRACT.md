@@ -249,14 +249,19 @@ array) `scope` property — verified by diff, not asserted.
   incomplete now emits a real, explicit, non-`ready` artifact naming
   `SCOPE_INCOMPLETE` — the exact case `#200-F` could only represent
   internally is now externally visible.
-- `ready` is impossible when `scope.complete` is `False`, or when any
-  `must_review_blocked_paths` exist even with `scope.complete` `True` —
-  enforced both pre-seal (`evaluate_ready_preconditions_v2`, consulted by
+- `ready` is impossible when `scope.complete` is `False` -- which, after
+  the correction round below, is ALSO true whenever any `must_review_
+  blocked_paths` exist, since `complete` now accounts for both -- enforced
+  both pre-seal (`evaluate_ready_preconditions_v2`, consulted by
   `ReviewReadinessV2.validate_state_invariants`) and, independently, by the
   frozen contract's own constructor: `test_the_false_ready_path_stays_
   closed_end_to_end` proves construction of a `ready` artifact from
   scope-incomplete material raises `pydantic.ValidationError`, not merely
-  that the composer chooses not to build one.
+  that the composer chooses not to build one. This is a claim about the
+  CONTRACT's own construction-time refusal, true regardless of which
+  caller reaches it -- it does not by itself claim every real caller
+  actually supplies a real `scope`; see the correction round below for
+  that distinct claim.
 - Ordinary renames, chmod-only changes, empty-file transitions, and
   submodule pointer moves remain vacuously scope-complete — `#276`'s
   regression (denying ordinary refactors) is not reintroduced.
@@ -269,14 +274,6 @@ array) `scope` property — verified by diff, not asserted.
 
 **Deferred, honestly**
 
-- No production composer in this repository currently calls `assess_
-  changed_scope_v2` end to end against a live diff and threads the result
-  through `produce_review_readiness_v2` automatically — per the recovery
-  checkpoint, there is no operational composer/product CLI on `master` at
-  all yet (`#200-G5`'s job). `scripts/aiops-review-quality-gate-v2.py`
-  accepts `scope` as caller-supplied, optional, unauthenticated material,
-  matching its own established trust boundary for every other input
-  (`decision`, `identity`, `checks`) — it does not itself compute one.
 - The full `#277` differential fuzz corpus (2,592 cases, an 82-repo
   randomized real-git fuzz, a hostile `git mktree` corpus) was not
   reproduced at that scale under this grant. What was reproduced: an
@@ -288,7 +285,86 @@ array) `scope` property — verified by diff, not asserted.
   not synthetic diff text. This is real, executed revalidation, not trust
   in the predecessor's claim — but it is smaller in scale than `#277`'s
   own corpus, and that gap is not closed here.
+- `run_synthetic_review_v2`'s `file_diffs`/`profile` scope-assessment
+  parameters (added in the correction round below) are OPT-IN, not
+  automatic. Every current caller of that function in this repository is a
+  test; there is no production composer that supplies them yet — that
+  remains `#200-G5`'s job. A caller that omits them gets pre-`#200-G3`
+  behavior, unchanged.
 
-**Verdict:** `PRIMITIVE_NON_REFUTED` (pending the two independent
-adversarial review passes required by this slice's process; see the
-`#200-G3` checkpoint for their disposition).
+## Correction round (post initial adversarial review)
+
+Two independent adversarial review passes, dispatched via the Agent tool
+against the initial implementation (head `eec5c1c0bdfb2e80f511bbef6cf70afc3840a694`),
+found the following, each independently reproduced before any fix was
+applied:
+
+**Lane A, P0 (decisive).** `assess_changed_scope_v2`/`assert_scope_
+authority_agrees_with_assembly_v2` had zero call sites outside this
+slice's own new test files. The real E2E entrypoint,
+`review_transport_v2.run_synthetic_review_v2`, called `compute_readiness_
+decision_v2` with no `scope=` kwarg, and had no parameter through which a
+caller could even supply one — so `#277`'s false-READY hazard remained
+FULLY reproducible, unchanged, through the actual shipped pipeline. This
+slice's own headline test claiming to prove the real pipeline closed
+(`test_the_false_ready_path_stays_closed_end_to_end`) in fact called
+`assess_changed_scope_v2` and `compute_readiness_decision_v2` manually,
+never `run_synthetic_review_v2` — it proved the LIBRARY functions compose
+correctly, not that the real entrypoint used them. Independently
+reproduced (a standalone script driving the exact call shape at
+`review_transport_v2.py:364` through a real `assemble_manifest_from_diff_v2`
++ `compute_readiness_decision_v2` call, confirming `decision.state is
+READY` and `decision.scope is None` while `src/pages/[id].tsx` was
+silently excluded) before any fix.
+
+Fix: `run_synthetic_review_v2` gained optional, additive `file_diffs`/
+`profile` parameters (required together). When supplied, it computes a
+real scope assessment from the SAME material the caller already used to
+build `manifest`, runs the disagreement detector against
+`manifest.expected_files` (a real composer-level refusal now, not merely
+a unit-tested function), and threads the result into `compute_readiness_
+decision_v2`. A new test, `test_run_synthetic_review_gates_on_scope_
+completeness_through_the_real_entrypoint`, drives this through the actual
+entrypoint (not manual wiring) and proves both the composer's choice and
+the frozen contract's own constructor refuse `ready`. The docstring was
+corrected to state plainly that this is opt-in, not automatic, and that no
+production caller supplies it yet — see "Deferred, honestly" above,
+corrected from the initial revision's less precise framing.
+
+**Lane B.** `NON_REFUTED` specifically on "can you construct `ready` with
+scope incomplete" — the full `evaluate_ready_preconditions_v2` gate held
+wherever scope was actually threaded through. Two real gaps found anyway,
+both fixed:
+
+- `ScopeCompletenessV2.complete=True` was constructible alongside a
+  nonempty `must_review_blocked_paths` — dishonest at the sub-object
+  level (a naive reader checking only `.complete` would be misled) even
+  though the outer `ready` gate independently blocked it. Fixed: `complete`
+  now requires BOTH `unsupported_paths` and `must_review_blocked_paths`
+  empty, matching the precedent `ChunkCoverageV2.status is COMPLETE`
+  already sets for `missing_must_review_files`.
+- `scripts/aiops-review-quality-gate-v2.py`'s `--decision` JSON `scope`
+  key had zero test coverage, and a scope-incomplete decision fed through
+  it could reach `manual_required`/`blocked_code`/`blocked_pipeline`
+  without `SCOPE_INCOMPLETE` ever appearing in `reason_codes` — the frozen
+  contract only cross-checked scope content against reason codes inside
+  the `ready` branch. Fixed: `ReviewReadinessV2.validate_state_invariants`
+  now cross-checks `scope.complete` against `reason_codes` unconditionally
+  for every non-`STALE` state.
+- P2 (addressed): a mutation on `_is_type_change_pair_v2` (`==` → `<=`)
+  survived the original fuzz matrix — two `deleted` blocks for the same
+  path would misclassify as `TYPE_CHANGE` instead of raising. Real `git`
+  never produces this shape, but `ParsedFileDiffV2` is freely
+  constructible; a regression test now covers it directly.
+
+All corrections independently mutation-tested (commit `1bc7e4b0` is the
+post-correction baseline): forcing `run_synthetic_review_v2` to always
+pass `scope=None`, reverting the tightened `complete` invariant, and
+disabling the new cross-state `reason_codes` check were each confirmed to
+flip the relevant new test(s) RED, then restored to GREEN.
+
+**Verdict:** see the `#200-G3` checkpoint
+(`docs/checkpoints/AGENT_REVIEW_V2_200G3_SCOPE_COMPLETENESS.md`) for the
+disposition of the two FRESH adversarial review passes dispatched against
+this correction round's head — this ADR is not updated further per-round;
+the checkpoint is the live status document.
