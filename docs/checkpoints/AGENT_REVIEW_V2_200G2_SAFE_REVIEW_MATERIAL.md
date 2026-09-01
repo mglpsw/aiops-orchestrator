@@ -554,16 +554,164 @@ architecture itself (not just the four found mechanisms), since that
 abstraction being refuted a second time is the designated
 `STOP_G2_SAFE_REVIEW_MATERIAL_NOT_CONVERGING` trigger.
 
-## Review round 2
+## Review round 2 (head `04240c2`)
 
-[Recorded here once both fresh lanes return, evaluated against head
-`d97d656` (or later, if the regression suite requires a further fix
-before dispatch).]
+Two fresh, independent adversarial review lanes dispatched against the
+corrected head, explicitly briefed that round 1 already found and fixed
+four P0s, and instructed to find NEW problems distinct from those — not
+to re-verify them. Lane B was specifically briefed to re-attack the
+postcondition-verification architecture itself, since that abstraction
+being refuted a second time is this primitive's designated hard-stop
+trigger.
+
+**Lane A — new leak classes, same underlying mechanism as round 1
+(pattern/vocabulary coverage), independently reproduced by me:**
+
+1. **P0 — unquoted numeric secret values unconditionally spared,
+   regardless of key sensitivity.** `_is_benign_literal`'s numeric check
+   (`_NUMERIC_RE`) spares ANY unquoted purely-numeric value AFTER the key
+   has already been confirmed sensitive. Reproduced:
+   `derive_safe_review_material('password=13572468')` →
+   `SAFE_UNCHANGED`, `'password=13572468'` verbatim. Never a witness, so
+   postcondition verification never even sees it. This is the module's
+   primary stated use case (unquoted `.env`/config-style assignment).
+2. **P1 — merged ALL-CAPS/no-separator compound keys bypass word-
+   splitting entirely.** `_split_identifier_words` splits on `_` and
+   camelCase transitions; a run with NEITHER (`DBPASSWORD`, `SECRETKEY`,
+   `CLIENTSECRET`, `ACCESSTOKEN`) produces a single unrecognized word.
+   Reproduced: `derive_safe_review_material('DBPASSWORD=SuperSecretPass123')`
+   → `SAFE_UNCHANGED`. Same class round 1 fixed for the underscore form,
+   left open for the no-separator form.
+3. **P1 — narrow bigram vocabulary misses common real compounds.**
+   `_COMPOUND_SENSITIVE_BIGRAMS` has no pairing for `master_key`,
+   `csrf_token`, `id_token`, `auth_key`, `signing_secret`, and `password`/
+   `secret`/`apikey` are single-word-simple only (capped at ≤2 total
+   words) with no bigram fallback for longer real names like
+   `DB_ADMIN_PASSWORD`. Reproduced: `derive_safe_review_material('master_key=SuperSecretPass123')`
+   and `derive_safe_review_material('csrf_token=SuperSecretPass123')` both
+   → `SAFE_UNCHANGED`.
+
+**Lane B — postcondition-verification architecture itself refuted, via
+two mechanisms independent of round 1's DLP-override finding, both
+reproduced by me:**
+
+1. **P0 — the "malformed key=value, spare with no witness" path lets an
+   adjacent, unrelated real secret ride through on the strength of some
+   OTHER redaction elsewhere in the material.** Round 1 deliberately chose
+   to SPARE (not guess-redact) an unterminated single/double-quoted value
+   (`_scan_value_span`'s "no closing quote found on this line" branch),
+   because the round-1 oracle found the alternative (redact-to-EOL)
+   produced worse false positives (`assert b"token=" not in canonical`
+   misdetecting the enclosing string's own closing quote as a new value
+   opening). That trade-off is exploitable: an ACTUAL unterminated
+   secret assignment now leaks completely, and if the SAME material has
+   any other successful redaction anywhere, the overall disposition is
+   `SAFELY_TRANSFORMED` with `postcondition_verified=True`, because there
+   is no witness recorded for the spared value to fail verification
+   against. Reproduced:
+   ```python
+   text = 'token="RealLeakedSecretValue999\nother_note = "hi"\npassword = "OtherRedactedSecret123"\n'
+   derive_safe_review_material(text)
+   # -> SAFELY_TRANSFORMED, postcondition_verified=True
+   # output contains 'RealLeakedSecretValue999' verbatim
+   ```
+2. **P0 — the witness length floor (`_verify_postcondition` skips
+   witnesses under 4 characters) lets a short-but-sensitive value leak
+   when it reappears elsewhere in the material.** A redacted `password =
+   "911"` produces a witness `"911"` (3 characters), which the
+   postcondition check explicitly does not verify, so a SEPARATE
+   occurrence of the same value elsewhere in the material (e.g. a comment
+   mentioning the same PIN) survives untouched with no failure signal.
+   Reproduced:
+   ```python
+   text = 'password = "911"\n# ops note: the bypass pin is 911\n'
+   derive_safe_review_material(text)
+   # -> SAFELY_TRANSFORMED, postcondition_verified=True
+   # output: 'password = "[REDACTED]"\n# ops note: the bypass pin is 911\n'
+   ```
+
+Both lanes converge on the same diagnosis, from different mechanisms: the
+postcondition check only ever verifies the SPECIFIC witnesses the scanner
+happened to record during transformation. Any of (a) a detection gap in
+the scanner's vocabulary/pattern coverage, (b) a value shape the scanner
+declines to redact without recording why, or (c) a value below an
+arbitrary length floor, silently defeats verification rather than being
+caught by it. "Postcondition verified" is therefore a check on the
+scanner's own bookkeeping, not an independent property of the actual
+output text.
 
 ## Terminal verdict
 
-[Recorded here once round 2 completes: `PRIMITIVE_NON_REFUTED` or
-`STOP_G2_SAFE_REVIEW_MATERIAL_NOT_CONVERGING`.]
+**`STOP_G2_SAFE_REVIEW_MATERIAL_NOT_CONVERGING`**
+
+The safe-material disposition abstraction — pattern/vocabulary-based
+value scanning combined with a witness-scoped postcondition check — was
+independently refuted twice: round 1 (4 P0s: compound key names, comma-
+tail truncation, unquoted dotted `.env` values, a DLP-override
+verification bypass) and round 2, by two FRESH independent lanes using
+mechanisms distinct from every round-1 finding (numeric-value blindness,
+no-separator compound keys, narrow bigram vocabulary, a spare-with-no-
+witness code path, and a witness-length floor). Per the grant's explicit
+rule for this primitive: "If G2 is independently refuted again by the
+same transformation-model class: STOP_G2_SAFE_REVIEW_MATERIAL_NOT_
+CONVERGING. No further regex widening." That condition is met. No third
+correction round was attempted; no further pattern/vocabulary widening
+follows this checkpoint.
+
+### Root cause, stated precisely (for whoever picks this up next)
+
+The postcondition check (`_verify_postcondition` in
+`safe_review_material.py`) is a check on the scanner's own witness
+bookkeeping (`state.redacted_witnesses`), not an independent property of
+the output. It answers "is every value I decided to redact actually
+gone?" — never "is there anything secret-shaped still in this output,
+regardless of what I decided to redact?" Every round-1 and round-2 defect
+is an instance of the same shape: something never became a witness (a
+missed key-naming convention, a spared numeric value, an abandoned
+malformed-key attempt, a length-filtered witness), and the postcondition
+check, by construction, cannot see what was never recorded.
+
+A future attempt at this primitive needs the verification step
+redesigned as a true NEGATIVE ORACLE: after transformation, INDEPENDENTLY
+re-scan the final output for anything secret-shaped (reusing the
+structural/format detectors — JWT, vendor prefixes, high-confidence
+credential shapes — as a confirmation pass, not just the forward
+transformation's own bookkeeping), and require that re-scan to find
+NOTHING, not merely that the recorded witnesses are individually absent.
+That is a materially different verification architecture, not a patch to
+this one — which is exactly why this is a stop, not a fifth or sixth
+point-fix.
+
+### What is salvageable (not refuted, worth porting with revalidation)
+
+- The `SAFE_UNCHANGED | SAFELY_TRANSFORMED | BLOCKED_UNSAFE_TO_TRANSFORM`
+  disposition taxonomy itself, as an interface/contract shape — neither
+  review lane found anything wrong with the three-state model itself,
+  only with what feeds the decision between them.
+- The standalone structural credential-shape detectors (JWT validation
+  via base64url-decode-to-JSON, vendor token prefixes AWS/Slack/GitLab/
+  npm/Google/Stripe, PEM private-key blocks) — held under both rounds'
+  attacks, on both lanes, in both rounds. These are good candidates to
+  reuse directly as the "confirmation pass" detectors in a redesigned
+  negative-oracle verification step.
+- The linear-time scanning discipline itself (maximal-munch identifier
+  extraction, bounded lookaheads, bounded triple-quote search windows) —
+  the performance/ReDoS story held under adversarial timing attempts in
+  both rounds; the failure mode this time is coverage/verification, not
+  complexity.
+- `DLPOverrideConfig.additional_blocked_substrings` (the fail-closed
+  force-BLOCK override) — held under both rounds' attacks. Its sibling,
+  `additional_safe_substrings`, was the round-1 P0 and remains suspect
+  even after the fix (its correctness now depends on the same witness-
+  scoped verification this checkpoint is stopping on) — do not port it
+  without redesigning it alongside the negative-oracle change above.
+
+### What is refuted
+
+The combination of pattern/vocabulary-based value scanning as the sole
+detector AND witness-scoped postcondition verification as the sole safety
+net. Neither survives independent adversarial review a second time. Do
+not attempt a third round of point-fixes against this combination.
 
 ## Not authorized / not done
 
