@@ -43,6 +43,7 @@ from app.agent_review.target_pack_manifest_v2 import (
     TargetPackManifestV2,
 )
 from app.agent_review.target_pack_receipt_v2 import TargetInstallReceiptV2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 PLAN_UNKNOWN_OWNERSHIP_REASON_V2 = "target_pack_plan_unknown_ownership_class"
 PLAN_ROLLOUT_CEILING_EXCEEDED_REASON_V2 = "target_pack_plan_rollout_ceiling_exceeded"
@@ -65,7 +66,7 @@ class PlannedActionV2(str, Enum):
     NOOP_UNCHANGED = "noop_unchanged"
 
 
-class PlanError(ValueError):
+class PlanError(ExpectedOperationalRefusalV2, ValueError):
     """Raised for a plan-computation failure this module itself detects.
     Carries a stable `reason_code` only."""
 

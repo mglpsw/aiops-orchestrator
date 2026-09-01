@@ -118,6 +118,7 @@ from app.agent_review.contracts_v2 import (
 )
 from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.redaction import sanitize_artifact_value
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 REVIEW_CONTENT_SCHEMA_V2 = "agent-review.review-content.v2"
 DLP_POLICY_SCHEMA_V1 = "agent-review.dlp-policy.v1"
@@ -395,7 +396,7 @@ def verify_review_content_sha256_v2(content: ReviewContentV2) -> None:
     ReviewContentV2.model_validate_json(encoded)
 
 
-class ReviewContentBindingError(ValueError):
+class ReviewContentBindingError(ExpectedOperationalRefusalV2, ValueError):
     """Raised by ``bind_review_content_to_manifest_v2``. Carries a stable
     ``reason_code`` only -- never manifest or content material."""
 
@@ -519,7 +520,7 @@ def compute_dlp_policy_digest_v2(declaration: DlpPolicyDeclarationV2) -> str:
     return hashlib.sha256(_canonical_json_bytes_v2(declaration.model_dump(mode="json"))).hexdigest()
 
 
-class DlpPolicyContractError(ValueError):
+class DlpPolicyContractError(ExpectedOperationalRefusalV2, ValueError):
     """Raised by ``load_dlp_policy_declaration_v2`` /
     ``verify_dlp_policy_digest_v2``. Carries a stable ``reason_code`` only."""
 

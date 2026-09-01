@@ -75,6 +75,7 @@ from app.agent_review.authoritative_producer_evidence_v2 import (
     ProducerWorkflowIdentityV2,
 )
 from app.common.strict_json import canonical_json_digest_hex, raw_bytes_digest_hex
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 AUTHORITATIVE_CHECK_POLICY_SCHEMA_V2 = "agent-review.authoritative-check-policy.v2"
 
@@ -89,7 +90,7 @@ POLICY_ENTRY_NOT_REQUIRED_REASON_V2 = "authoritative_check_policy_entry_not_requ
 POLICY_WORKFLOW_REF_NOT_BASE_OWNED_REASON_V2 = "authoritative_check_policy_workflow_ref_not_base_owned"
 
 
-class AuthoritativeCheckPolicyErrorV2(ValueError):
+class AuthoritativeCheckPolicyErrorV2(ExpectedOperationalRefusalV2, ValueError):
     """Carries a stable `reason_code` only -- never raw YAML, the original
     exception text, or a local path."""
 

@@ -102,6 +102,7 @@ from app.agent_review.review_content_v2 import (
     compute_review_content_sha256_v2,
 )
 from app.agent_review.redaction import RedactionState
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 CONTENT_REASON_NO_REVIEWABLE_CHUNKS_V2 = "no_reviewable_chunks"
 CONTENT_REASON_HUNK_BODY_UNAVAILABLE_V2 = "hunk_body_unavailable"
@@ -162,7 +163,7 @@ _GENERATED_PATH_MARKERS_V2: tuple[str, ...] = (
 _MINIFIED_PATH_MARKERS_V2: tuple[str, ...] = (".min.js", ".min.css")
 
 
-class ExtractionBlockedError(ValueError):
+class ExtractionBlockedError(ExpectedOperationalRefusalV2, ValueError):
     """Raised by ``extract_review_content_v2`` when the WHOLE extraction
     must be refused fail-closed (a ``must_review`` fragment cannot be
     represented safely). Carries a stable ``reason_code`` and the

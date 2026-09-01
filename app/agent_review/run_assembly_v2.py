@@ -102,6 +102,7 @@ from app.agent_review.semantic_grouping_policy_v2 import (
     classify_semantic_group_v2,
     compute_effective_policy_hash_v2,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 # `#200-D` predecessor: this authority CONSTRUCTS `RunIdentityV2`/`ManifestV2`
 # and drives the planner, so contract violations and caller-supplied budget
@@ -126,7 +127,7 @@ _MANIFEST_SCHEMA_ID_V2 = "agent-review.manifest.v2"
 _MANIFEST_SOURCE_V2 = "aiops-review-plan-chunks-v2"
 
 
-class RunAssemblyError(ValueError):
+class RunAssemblyError(ExpectedOperationalRefusalV2, ValueError):
     """Raised for a run-assembly failure that is a configuration/input
     defect, not a legitimate blocked-pipeline outcome. Carries a stable
     ``reason_code`` only -- never manifest, diff, or profile content."""

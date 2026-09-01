@@ -28,12 +28,13 @@ from app.agent_review.target_pack_receipt_v2 import (
     TargetInstallReceiptV2,
     load_target_install_receipt_bytes_v2,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 TARGET_PACK_PLAN_STALE_REASON_V2 = "target_pack_plan_stale"
 TARGET_PACK_PREVIOUS_RECEIPT_INVALID_REASON_V2 = "target_pack_cli_previous_receipt_invalid"
 
 
-class TargetPackAuthorizedApplyErrorV2(ValueError):
+class TargetPackAuthorizedApplyErrorV2(ExpectedOperationalRefusalV2, ValueError):
     """A refusal at the apply authorization boundary."""
 
     def __init__(self, reason_code: str) -> None:

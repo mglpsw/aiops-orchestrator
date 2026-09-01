@@ -182,6 +182,7 @@ from app.agent_review.trusted_checks_v2 import (
     compute_trusted_check_result_sha256_v2,
     validate_trusted_check_authority_v2,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 EXECUTOR_REASON_COMMAND_NOT_IN_INVENTORY_V2 = "isolated_executor_command_not_in_inventory"
 EXECUTOR_REASON_ISOLATION_UNAVAILABLE_V2 = "isolated_executor_isolation_unavailable"
@@ -280,7 +281,7 @@ def compute_command_spec_digest_v2(spec: AllowlistedCommandSpecV2) -> str:
     return hashlib.sha256(_canonical_json_bytes_v2(spec.model_dump(mode="json"))).hexdigest()
 
 
-class IsolatedExecutorError(RuntimeError):
+class IsolatedExecutorError(ExpectedOperationalRefusalV2, RuntimeError):
     """Raised only for a setup-time failure this module refuses to paper
     over by silently degrading (e.g. isolation unavailable). Callers that
     want a typed, non-raising ``INFRA_FAILURE`` result instead of an

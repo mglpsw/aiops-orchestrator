@@ -72,6 +72,7 @@ from app.agent_review.contracts_v2 import (
     SafeIdentifier,
     Sha256,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 TRUSTED_CHECK_PLAN_SCHEMA_V2 = "agent-review.trusted-check-plan.v2"
 TRUSTED_CHECK_RESULT_SCHEMA_V2 = "agent-review.trusted-check-result.v2"
@@ -106,7 +107,7 @@ class TrustedCheckAuthorityV2(str, Enum):
 TrustedCheckAuthorityValueV2 = Annotated[TrustedCheckAuthorityV2, Field(strict=False)]
 
 
-class TrustedCheckAuthorityBoundaryErrorV2(ValueError):
+class TrustedCheckAuthorityBoundaryErrorV2(ExpectedOperationalRefusalV2, ValueError):
     """Raised by `validate_trusted_check_authority_v2` when a caller-
     supplied `authority` value cannot be validated as a real
     `TrustedCheckAuthorityV2` member. Carries a stable `reason_code`
@@ -287,7 +288,7 @@ class TrustedCheckResultV2(TrustedCheckResultMaterialV2):
         return self
 
 
-class TrustedCheckBindingError(ValueError):
+class TrustedCheckBindingError(ExpectedOperationalRefusalV2, ValueError):
     """Raised by `bind_trusted_check_result_to_plan_v2`. Carries a stable
     `reason_code` only -- never plan or result content."""
 
@@ -317,7 +318,7 @@ def bind_trusted_check_result_to_plan_v2(result: TrustedCheckResultV2, plan: Tru
         raise TrustedCheckBindingError(RESULT_HASH_MISMATCH_REASON_V2)
 
 
-class TrustedCheckPromotionError(ValueError):
+class TrustedCheckPromotionError(ExpectedOperationalRefusalV2, ValueError):
     """Raised by `promote_trusted_check_to_required_v2`. Carries a stable
     `reason_code` only."""
 

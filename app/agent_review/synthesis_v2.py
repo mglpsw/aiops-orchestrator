@@ -78,6 +78,7 @@ from app.agent_review.run_fragment_coverage_v2 import (
     compute_coverage_report_sha256_v2,
     compute_fragment_coverage_status_v2,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 FRAGMENTLESS_EXPECTED_FILE_REASON_V2 = "fragmentless_expected_file"
 
@@ -85,7 +86,7 @@ _COVERAGE_REPORT_SCHEMA_ID_V2 = "agent-review.run-fragment-coverage.v2"
 _COVERAGE_REPORT_SOURCE_V2 = "aiops-review-fragment-coverage"
 
 
-class SynthesisErrorV2(ValueError):
+class SynthesisErrorV2(ExpectedOperationalRefusalV2, ValueError):
     """Raised for a synthesis failure. Carries a stable ``reason_code``
     only -- never chunk content, findings, or manifest data."""
 

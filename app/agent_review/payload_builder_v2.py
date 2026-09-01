@@ -51,9 +51,10 @@ from app.agent_review.payload_references_v2 import (
     build_payload_artifact_references_v2,
     build_payload_contract_references_v2,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 
-class PayloadBuilderError(ValueError):
+class PayloadBuilderError(ExpectedOperationalRefusalV2, ValueError):
     """Raised when a payload cannot be built for a manifest chunk. Carries
     a stable ``reason_code`` only."""
 

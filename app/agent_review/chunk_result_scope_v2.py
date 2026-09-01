@@ -35,6 +35,7 @@ from collections.abc import Mapping, Sequence
 from app.agent_review.contracts_v2 import ChunkFindingV2
 from app.agent_review.manifest_v2 import FragmentV2, ManifestV2
 from app.agent_review.parser_v2 import ParsedChunkResultV2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 CROSS_RUN_CHUNK_RESULT_REASON_V2 = "cross_run_chunk_result"
 INVALID_CHUNK_RESULT_TYPE_REASON_V2 = "invalid_chunk_result_type"
@@ -46,7 +47,7 @@ CHUNK_RESULT_COVERAGE_SCOPE_MISMATCH_REASON_V2 = "chunk_result_coverage_scope_mi
 FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2 = "finding_outside_chunk_scope"
 
 
-class ChunkResultScopeError(ValueError):
+class ChunkResultScopeError(ExpectedOperationalRefusalV2, ValueError):
     """Raised when a ``ParsedChunkResultV2`` fails scope revalidation
     against its manifest. Carries a stable ``reason_code`` only -- never
     chunk content, findings, or manifest data."""

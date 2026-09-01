@@ -29,6 +29,7 @@ from app.agent_review.contracts_v2 import (
 from app.agent_review.review_transport_contract_v2 import ChunkReviewRequestV2
 from app.agent_review.versioning import ContractVersionV2, select_contract_version
 from app.common.strict_json import strict_json_loads
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 ROUTER_RECEIPT_INVALID_REASON_V2 = "router_receipt_invalid"
 ROUTER_INPUT_MISMATCH_REASON_V2 = "router_input_mismatch"
@@ -44,7 +45,7 @@ _SAFE_MODEL_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^[A-Za-z]:/")
 
 
-class RouterReceiptError(ValueError):
+class RouterReceiptError(ExpectedOperationalRefusalV2, ValueError):
     """Fail-closed receipt rejection carrying a content-free reason code."""
 
     def __init__(self, reason_code: str) -> None:

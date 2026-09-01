@@ -110,6 +110,7 @@ from app.agent_review.review_transport_contract_v2 import (
     verify_transport_echo_v1,
 )
 from app.agent_review.synthesis_v2 import synthesize_chunk_results_v2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 CHUNK_TRANSPORT_FAILURE_REASON_V2 = "transport_failure"
 CHUNK_TRANSPORT_TIMEOUT_REASON_V2 = "transport_timeout"
@@ -125,7 +126,7 @@ AGENT_ROUTER_STRUCTURED_REVIEW_PRESETS_V2 = frozenset(
 )
 
 
-class ChunkTransportError(ValueError):
+class ChunkTransportError(ExpectedOperationalRefusalV2, ValueError):
     """Raised by a ``ChunkReviewTransportV2`` implementation. Carries a
     stable ``reason_code`` only -- never request or response content."""
 

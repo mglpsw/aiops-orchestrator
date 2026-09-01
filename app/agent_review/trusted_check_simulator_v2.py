@@ -43,6 +43,7 @@ from app.agent_review.trusted_checks_v2 import (
     _RESOLVED_OUTCOMES_V2,
     compute_trusted_check_result_sha256_v2,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 SIMULATION_MISSING_FIXTURE_REASON_V2 = "trusted_check_simulation_missing_fixture"
 SIMULATION_UNKNOWN_CHECK_REASON_V2 = "trusted_check_simulation_unknown_check"
@@ -63,7 +64,7 @@ class SimulatedCheckOutcomeV2(ContractV2Model):
     outcome: TrustedCheckOutcomeV2
 
 
-class TrustedCheckSimulationError(ValueError):
+class TrustedCheckSimulationError(ExpectedOperationalRefusalV2, ValueError):
     """Raised by `simulate_trusted_check_plan_v2`. Carries a stable
     `reason_code` only."""
 

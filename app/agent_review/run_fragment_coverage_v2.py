@@ -46,6 +46,7 @@ from pydantic import Field, model_validator
 
 from app.agent_review.contracts_v2 import ContractV2Model, RelativePath, SafeIdentifier, Sha256
 from app.agent_review.manifest_v2 import ManifestV2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 RUN_FRAGMENT_COVERAGE_SCHEMA_V2 = "agent-review.run-fragment-coverage.v2"
 
@@ -260,7 +261,7 @@ class RunFragmentCoverageReportV2(RunFragmentCoverageReportMaterialV2):
         return self
 
 
-class FragmentCoverageBindingError(ValueError):
+class FragmentCoverageBindingError(ExpectedOperationalRefusalV2, ValueError):
     """Raised by ``bind_coverage_report_to_manifest_v2``. Carries a stable
     ``reason_code`` only -- never manifest/report content."""
 

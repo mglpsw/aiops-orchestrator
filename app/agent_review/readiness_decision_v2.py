@@ -118,6 +118,7 @@ from app.agent_review.run_fragment_coverage_v2 import (
     bind_coverage_report_to_manifest_v2,
 )
 from app.agent_review.synthesis_v2 import SynthesisResultV2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 READINESS_SYNTHESIS_MANIFEST_RUN_ID_MISMATCH_REASON_V2 = "readiness_synthesis_manifest_run_id_mismatch"
 READINESS_INVALID_STALE_REASON_CODES_REASON_V2 = "readiness_invalid_stale_reason_codes"
@@ -191,7 +192,7 @@ _MANIFEST_TO_COVERAGE_DEGRADATION_REASON_V2: Mapping[str, CoverageDegradationRea
 }
 
 
-class ReadinessDecisionError(ValueError):
+class ReadinessDecisionError(ExpectedOperationalRefusalV2, ValueError):
     """Raised for a readiness-decision failure. Carries a stable
     ``reason_code`` only -- never manifest, synthesis, or policy content."""
 

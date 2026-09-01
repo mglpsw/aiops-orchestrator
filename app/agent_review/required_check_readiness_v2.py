@@ -174,6 +174,7 @@ from app.agent_review.contracts_v2 import (
 from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_v2
 from app.agent_review.required_check_assembly_v2 import reassemble_and_verify_required_checks_v2
 from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanceV2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 ASSESSMENT_PROFILE_IDENTITY_MISMATCH_REASON_V2 = (
     "readiness_required_check_assessment_profile_identity_mismatch"
@@ -183,7 +184,7 @@ ASSESSMENT_CONCLUSION_UNRESOLVED_REASON_V2 = "readiness_required_check_assessmen
 _RESOLVED_CONCLUSIONS_V2 = frozenset({RequiredCheckConclusionV2.SUCCESS, RequiredCheckConclusionV2.FAILURE})
 
 
-class RequiredCheckReadinessErrorV2(ValueError):
+class RequiredCheckReadinessErrorV2(ExpectedOperationalRefusalV2, ValueError):
     """Raised for a failure this module itself detects -- never a translation
     of `RequiredCheckProvenanceErrorV2`, which always propagates verbatim.
     Carries a stable `reason_code` only."""

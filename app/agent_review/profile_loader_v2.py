@@ -25,6 +25,7 @@ import yaml
 from pydantic import ValidationError
 
 from app.agent_review.contracts_v2 import TargetProfileV2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 TARGET_PROFILE_MISSING_REASON_V2 = "target_profile_missing"
 TARGET_PROFILE_UNREADABLE_REASON_V2 = "target_profile_unreadable"
@@ -33,7 +34,7 @@ TARGET_PROFILE_INVALID_REASON_V2 = "target_profile_invalid"
 DEFAULT_TARGET_PROFILE_RELATIVE_PATH = Path(".aiops") / "target-profile.v2.yaml"
 
 
-class TargetProfileLoadErrorV2(ValueError):
+class TargetProfileLoadErrorV2(ExpectedOperationalRefusalV2, ValueError):
     """Raised for every profile-loading failure. Carries a stable
     ``reason_code`` only -- never raw YAML/JSON content, the original
     exception text, or a local path."""

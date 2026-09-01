@@ -32,6 +32,7 @@ from pydantic import (
 )
 
 from app.agent_review.redaction import sanitize_artifact_value
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 
 RUN_SCHEMA_V2 = "agent-review.run.v2"
@@ -833,7 +834,7 @@ class ResponseBindingV2(ContractV2Model):
     payload: ChunkPayloadV2
 
 
-class ResponseBindingError(ValueError):
+class ResponseBindingError(ExpectedOperationalRefusalV2, ValueError):
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code

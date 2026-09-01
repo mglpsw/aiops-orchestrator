@@ -58,6 +58,7 @@ from pydantic import model_validator
 
 from app.agent_review.contracts_v2 import ContractV2Model, SafeIdentifier, Sha256
 from app.agent_review.manifest_v2 import ManifestV2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 PAYLOAD_SET_SCHEMA_V2 = "agent-review.payload-set.v2"
 
@@ -75,7 +76,7 @@ def _canonical_json_bytes_v2(value: object) -> bytes:
     ).encode("utf-8")
 
 
-class PayloadSetBindingError(ValueError):
+class PayloadSetBindingError(ExpectedOperationalRefusalV2, ValueError):
     """Raised when a ``PayloadSetV2`` fails to bind against a specific
     ``ManifestV2``. Carries a stable ``reason_code`` only -- never manifest
     or payload content."""

@@ -58,6 +58,7 @@ from app.agent_review.contracts_v2 import (
 )
 from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.parser_v2 import ParsedChunkResultV2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 _SEVERITY_RANK_V2 = {
     FindingSeverityV2.P0: 0,
@@ -73,7 +74,7 @@ STALE_PRIOR_LIFECYCLE_EVIDENCE_REASON_V2 = "stale_prior_lifecycle_evidence"
 PRIOR_LIFECYCLE_SEVERITY_MISMATCH_REASON_V2 = "prior_lifecycle_severity_mismatch"
 
 
-class LifecycleAggregationError(ValueError):
+class LifecycleAggregationError(ExpectedOperationalRefusalV2, ValueError):
     """Raised for a lifecycle aggregation failure. Carries a stable
     ``reason_code`` only."""
 

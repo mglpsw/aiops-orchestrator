@@ -21,13 +21,14 @@ from app.agent_review.target_pack_manifest_v2 import (
 )
 from app.agent_review.target_pack_plan_v2 import InstallPlanV2, PlanError, PlannedActionV2, resolve_within_target_root_v2
 from app.agent_review.target_pack_receipt_v2 import RECEIPT_RELATIVE_PATH_V2, TargetInstallReceiptV2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 INSTALL_DRIFT_UNRESOLVED_REASON_V2 = "target_pack_install_drift_unresolved"
 INSTALL_PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_install_path_escapes_target_root"
 INSTALL_TARGET_ROOT_IDENTITY_CHANGED_REASON_V2 = "target_pack_install_target_root_identity_changed"
 
 
-class TargetPackInstallError(ValueError):
+class TargetPackInstallError(ExpectedOperationalRefusalV2, ValueError):
     """Raised for an install/upgrade failure this module itself detects.
     Carries a stable `reason_code` only."""
 

@@ -112,13 +112,14 @@ from app.agent_review.contracts_v2 import (
 from app.agent_review.readiness_decision_v2 import ReadinessDecisionV2, _apply_required_check_assessment_v2
 from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanceV2
 from app.agent_review.required_check_readiness_v2 import _verify_and_assess_required_checks_v2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 REVIEW_READINESS_SOURCE_V2 = "aiops-review-quality-gate"
 
 READINESS_EMISSION_DECISION_PROVENANCE_MISMATCH_REASON_V2 = "readiness_emission_decision_provenance_mismatch"
 
 
-class ReadinessEmissionError(ValueError):
+class ReadinessEmissionError(ExpectedOperationalRefusalV2, ValueError):
     """Raised when a `ReadinessDecisionV2` is emitted against an identity it
     was not actually computed for. Carries a stable `reason_code` only --
     never decision or identity content."""

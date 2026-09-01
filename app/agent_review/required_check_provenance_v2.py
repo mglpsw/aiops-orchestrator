@@ -66,6 +66,7 @@ from app.agent_review.contracts_v2 import (
     RequiredCheckResultV2,
 )
 from app.common.strict_json import canonical_json_digest_hex
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 REQUIRED_CHECK_PROVENANCE_SCHEMA_V2 = "agent-review.required-check-provenance.v2"
 REQUIRED_CHECK_PROVENANCE_SOURCE_V2 = "aiops-review-check-provenance"
@@ -118,7 +119,7 @@ ALL_PROVENANCE_REASON_CODES_V2: tuple[str, ...] = (
 )
 
 
-class RequiredCheckProvenanceErrorV2(ValueError):
+class RequiredCheckProvenanceErrorV2(ExpectedOperationalRefusalV2, ValueError):
     """Carries a stable `reason_code` only -- never observation content, never
     a path, never a token. Every raise site in `#201-C0` uses this type."""
 

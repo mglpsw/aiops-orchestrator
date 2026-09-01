@@ -53,6 +53,7 @@ from app.agent_review.contracts_v2 import (
     SafeText,
     Sha256,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 TARGET_INSTALL_RECEIPT_SCHEMA_ID_V2 = "agent-review.target-install-receipt.v2"
 
@@ -84,7 +85,7 @@ RECEIPT_OWNERSHIP_LEDGERS_OVERLAP_REASON_V2 = "target_install_receipt_ownership_
 RECEIPT_INVALID_REASON_V2 = "target_install_receipt_invalid"
 
 
-class TargetInstallReceiptLoadErrorV2(ValueError):
+class TargetInstallReceiptLoadErrorV2(ExpectedOperationalRefusalV2, ValueError):
     """Every failure of the shared receipt-loading authority.
 
     A `ValueError` because that is what a typed target-authored

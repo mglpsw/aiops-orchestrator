@@ -46,6 +46,7 @@ from app.agent_review.target_pack_manifest_v2 import (
     TargetPackFileOwnershipV2,
     TargetPackManifestV2,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 BUILD_TEMPLATE_ROOT_MISSING_REASON_V2 = "target_pack_build_template_root_missing"
 BUILD_TEMPLATE_SOURCE_MISSING_REASON_V2 = "target_pack_build_template_source_missing"
@@ -94,7 +95,7 @@ _TEMPLATE_SOURCES_V2: tuple[TemplateSourceV2, ...] = (
 )
 
 
-class TargetPackBuildError(ValueError):
+class TargetPackBuildError(ExpectedOperationalRefusalV2, ValueError):
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code

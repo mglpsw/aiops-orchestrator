@@ -55,6 +55,7 @@ from app.agent_review.contracts_v2 import (
     TargetProfileV2,
 )
 from app.agent_review.redaction import sanitize_artifact_value
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 PAYLOAD_REQUIRED_ARTIFACT_MISSING_REASON_V2 = "payload_required_artifact_missing"
 PAYLOAD_ARTIFACT_EXCEEDS_MAX_BYTES_REASON_V2 = "payload_artifact_exceeds_max_bytes"
@@ -72,7 +73,7 @@ OPTIONAL_ARTIFACT_MISSING_LIMITATION_PREFIX_V2 = "optional_artifact_missing"
 _UNIFORM_ARTIFACT_ROLE_V2 = "primary"
 
 
-class PayloadReferenceError(ValueError):
+class PayloadReferenceError(ExpectedOperationalRefusalV2, ValueError):
     """Raised when an artifact/contract reference cannot be built. Carries
     a stable ``reason_code`` only -- never file content or a local path."""
 

@@ -65,6 +65,7 @@ from app.agent_review.contracts_v2 import (
     TargetPoliciesV2,
     TargetProfileV2,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 SEMANTIC_GROUPING_NO_MATCH_REASON_V2 = "semantic_grouping_no_match"
 SEMANTIC_GROUPING_AMBIGUOUS_MATCH_REASON_V2 = "semantic_grouping_ambiguous_match"
@@ -83,7 +84,7 @@ def _canonical_json_bytes_v2(value: object) -> bytes:
     ).encode("utf-8")
 
 
-class SemanticGroupingError(ValueError):
+class SemanticGroupingError(ExpectedOperationalRefusalV2, ValueError):
     """Raised for a semantic-grouping policy or classification failure.
     Carries a stable ``reason_code`` only -- never rule content, path
     values, or profile data."""

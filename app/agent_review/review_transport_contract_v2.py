@@ -64,6 +64,7 @@ from app.agent_review.contracts_v2 import (
     Sha256,
     validate_chunk_response_envelope_v2,
 )
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 REVIEW_TRANSPORT_ENVELOPE_SCHEMA_V1 = "agent-review.review-transport-envelope.v1"
 
@@ -80,7 +81,7 @@ def _canonical_json_bytes_v2(value: object) -> bytes:
     ).encode("utf-8")
 
 
-class TransportEchoError(ValueError):
+class TransportEchoError(ExpectedOperationalRefusalV2, ValueError):
     """Raised by ``verify_transport_echo_v1``. Carries a stable
     ``reason_code`` only -- never request or response content."""
 
