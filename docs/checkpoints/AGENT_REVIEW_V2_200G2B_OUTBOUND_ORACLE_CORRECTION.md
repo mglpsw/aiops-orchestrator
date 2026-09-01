@@ -265,24 +265,168 @@ committed. The corresponding over-blocks on those three files were left
 as-is; they are pre-existing (present in the `47/341` baseline already, not
 introduced by this round) and out of this round's scope.
 
-## 7. Identities and state at close of this round
+## 7. CI on the corrected head
+
+Pushed the round-2 fix (`094b0f7`) and the mutation-test writeup (`0be7d89`)
+to `feat/200-g2b-outbound-oracle-spike`. `gh pr checks 293` on head
+`0be7d891458a57bbcb11ff6b96a5926e206ec163`: both `AgentReview release
+gates` and `Validate repository` reported `pass`.
+
+## 8. Round-2 independent adversarial review -- SECOND REFUTATION
+
+Three fresh, independent general-purpose review lanes (not Codex, per this
+project's standing tooling preference) were dispatched against the frozen
+head `0be7d891458a57bbcb11ff6b96a5926e206ec163`, each briefed with the same
+history above and told to: reproduce before claiming, hunt for new
+false-SAFE shapes beyond round 1's six, specifically try to break the new
+narrow "provably safe" allowlist, and separately confirm independence from
+the forward redactor. Their relayed findings were **not** accepted at face
+value -- each was independently re-reproduced against the same frozen head
+before being written into this record, per this project's standing rule
+("coordinator must independently reproduce every P0/P1 before accepting;
+do not patch directly from reviewer prose").
+
+### 8a. Independently reproduced findings
+
+All five reproduced (four exactly as described, one via a corrected
+mechanism -- see below). Reproduction script logic and exact payload
+`bytes` fed to `inspect_outbound_body_v2` at head `0be7d89`:
+
+1. **Hex-suffix-key bypass (confirmed, exact).**
+   `release_commit_hash=<real 64-hex secret>` and
+   `commit_sha256=<real 64-hex secret>` both verdict `OUTBOUND_SAFE`, zero
+   findings. `_HEX_IDENTIFIER_KEY_SUFFIXES` narrowed round 1's *global* hex
+   exemption to require an affirmative key suffix (`sha`, `hash`, `digest`,
+   `commit`, `revision`, ...) -- but nothing stops a genuinely sensitive
+   value from being assigned to a key that happens to end in one of those
+   words. Same defect class as the original global exemption, narrower
+   attack surface, still fully exploitable.
+2. **Plural/synonym key bypass (confirmed, exact).**
+   `passwords = ["qT7zR2mP9xL4vK8nB1wD6"]` (a 21-char, non-dictionary,
+   mixed-case+digit value) verdict `OUTBOUND_SAFE`, zero findings.
+   `"passwords".endswith("password")` is `False`, so `_sensitive_key`
+   never fires; the value lands in the non-sensitive, array-literal
+   container-recursion path, which only looks for *nested key:value
+   shapes* inside the array and never runs the generic entropy/opaque
+   check against a bare array element that isn't itself an assignment.
+3. **Nested-brace regex swallow (confirmed, exact).**
+   `outer={"inner":{"password":"Hunter2"}}` (no whitespace, two levels of
+   `{}` nesting) verdict `OUTBOUND_SAFE`, zero findings. `_VALUE_ALT`'s
+   object-literal alternative (`\{[^{}\n]*\}...`) is deliberately
+   one-level (documented as such at its definition) to keep the regex
+   linear-time; with two unspaced nested levels, the *bare-token*
+   fallback alternative -- not the object-literal one -- ends up matching
+   first and stops at the first `}` it meets (the innermost one),
+   producing a value that is neither recursed into as a container nor
+   itself flagged.
+4. **512-char length-cap evasion (confirmed, corrected mechanism).**
+   As literally described ("a secret sitting past byte 512 gets silently
+   dropped, so it's never scanned"), this does **not** reproduce under a
+   *sensitive* key: `password=<520 a's><secret>` still blocks, because the
+   sensitive-key branch requires the value to positively match the
+   placeholder allowlist, and 512 bytes of `a` padding already fails that
+   check on its own -- the branch doesn't need to see the actual secret
+   substring to refuse it. It **does** reproduce under a *non-sensitive*
+   key: `blob=<500 a's><21-char high-entropy secret>` (531 chars total,
+   still over the 160-char span `_OPAQUE_TOKEN_RE` can match in one piece)
+   verdict `OUTBOUND_SAFE`, zero findings. The actual mechanism is subtler
+   than "truncation drops the tail": `_OPAQUE_TOKEN_RE`'s trailing
+   negative lookahead (`(?![A-Za-z0-9_])`) can only succeed where a
+   non-alnum character or the string boundary follows, and an unbroken
+   alnum run has no such boundary except at its very end -- so the regex
+   engine's first successful match is anchored to the *last* 160
+   characters of the value, mixing low-entropy padding with the
+   high-entropy secret tail in one window and diluting the aggregate
+   Shannon entropy of that window below the 4.25 threshold. Same
+   practical evasion (pad a real secret with enough low-entropy filler),
+   different exact mechanism than originally described -- corrected here
+   rather than recorded uncritically.
+5. **CapitalCase heuristic surviving on the non-sensitive-key sibling path
+   (confirmed, exact).** `db_pass=Tr0ub4dorAndThree` verdict
+   `OUTBOUND_SAFE`, zero findings. `db_pass` is not in `_SENSITIVE_EXACT`
+   and does not end in any of `_sensitive_key`'s suffixes, so it takes the
+   non-sensitive branch, which calls `_placeholder_or_type` --
+   the *same* CapitalCase/type-name shape reasoning that an earlier commit
+   in this PR's own history (`4ad18ec`, "never apply type-name exemption
+   under sensitive keys") deliberately removed from the sensitive-key
+   path after CI caught it waving through an actual CapitalCase-shaped
+   secret. It was only ever removed from one of the two call sites.
+
+Independence re-confirmed directly against the file at this head:
+`grep -n "^import\|^from"` shows only `json`, `math`, `re`,
+`collections.Counter`, `dataclasses.dataclass`,
+`typing.{Any,Callable,Literal,TypeVar}` -- no import of or reference to
+`sanitize_artifact_value`, `redact_text`, `review_content_extraction_v2`,
+or `redaction.py` anywhere in the module. This holds; the architectural
+seat is not what is being refuted.
+
+### 8b. Verdict
+
+**`STOP_G2B_ARCHITECTURE_NOT_CONVERGING`.**
+
+This is the second refutation of this design after one bounded correction
+round, matching the grant's explicit stop condition: "If G2B is
+independently refuted again by the same transformation-model class: STOP.
+No further regex widening." Five genuinely different mechanisms (an
+under-scoped key-suffix exemption, a missed plural/synonym key form, a
+regex nesting-depth limit, an entropy-dilution side effect of a length
+cap, and a heuristic removed from one call site but not its sibling) all
+reduce to the same architectural fact: **both the original blocklist
+design (`#277`/`#286`: enumerate dangerous patterns, refuse a match) and
+this round's allowlist redesign (enumerate provably-safe patterns, refuse
+anything else) are vocabulary-enumeration problems over an open,
+unenumerable domain** -- arbitrary source code, in arbitrary languages,
+arbitrary key-naming conventions across teams/eras/frameworks. Round 1 of
+*this* correction found the allowlist leaking on the SAFE side (prefix
+matching, a global hex exemption). This round's own implementation needed
+three self-found fixes during its own real-source calibration (`section
+4`) before it stabilized. And now three fresh, independent lanes each
+found a *different* gap in the same enumeration, on their first pass, with
+no coordination between them. That pattern -- competent, good-faith
+attempts to enumerate a bounded-safe or bounded-dangerous vocabulary, each
+one finding the previous enumeration was still incomplete -- is exactly
+what "not converging" looks like, not "needs one more entry."
+
+**What is salvageable:** the architectural SEAT is sound and independently
+confirmed sound across every round of adversarial review to date --
+inspecting the exact pre-HTTP request bytes, structurally independent from
+the forward redactor (no shared witness set, no shared import), refusing
+the HTTP delegate until proof of safety. That property was never refuted,
+in either this round or the prior one. A successor design should keep the
+seat and replace the classification mechanism with something that is not
+another enumerable vocabulary on either side -- e.g. a truth-maker that
+does not depend on recognizing *which* shapes are dangerous or safe at
+all (structural transformation/canonicalization proofs, type-level
+tainting from the point secrets actually enter the system, or some other
+mechanism outside the "pattern-match arbitrary text" family). This
+checkpoint does not attempt to design that successor; per the coordinating
+grant this is one bounded correction round on the existing spike, and a
+third correction attempt of the same shape is explicitly out of scope.
+
+## 9. Identities and state at close of this round
 
 ```yaml
 branch: feat/200-g2b-outbound-oracle-spike
 pr: 293
 frozen_head_entering_round: 4ad18ecb96ec2bd0c22a6fe7b48f2da2d1cd2365
-new_head_at_close: <filled in after push, see PR #293 commit list>
-ci: <filled in after gh pr checks 293>
+new_head_at_close: 0be7d891458a57bbcb11ff6b96a5926e206ec163
+ci: pass (AgentReview release gates, Validate repository)
 mutation_test: recorded_above_section_5
 negative_direction_scan: 47/340 blocked, same order as 47/341 baseline
-review_round_2: <filled in after 3 independent lanes return>
+review_round_2: STOP_G2B_ARCHITECTURE_NOT_CONVERGING (5 independently
+  reproduced P0-class false-safes across 3 lanes; see section 8)
 production_g2b_started: false
 pr_state: Draft
+terminal_state_this_round: stopped_pending_coordinator_disposition
 ```
 
-## 8. Not authorized / not done in this round
+## 10. Not authorized / not done in this round
 
 No Ready marking, no merge, no tag/release, no deploy, no live Router or
 real LLM provider call, no CI workflow file change, no AgentEscala/
 InterLeitos/CAEM mutation, no `#200` closure, no `#273` modification, no
-production G2B implementation start. PR #293 remains Draft.
+production G2B implementation start, **no third correction attempt on the
+same classification-mechanism family**. PR #293 remains Draft. The STOP
+verdict in section 8 is this execution's evidence-backed recommendation,
+not a self-authorized closure of `#200-G2B` -- disposition of the primitive
+(redesign under a new grant, or otherwise) is the coordinator's call.
