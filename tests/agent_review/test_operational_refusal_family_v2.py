@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import functools
 import importlib
 import pathlib
 import pkgutil
@@ -91,7 +92,8 @@ def _import_every_package_module_v2() -> None:
         importlib.import_module(f"app.agent_review.{module_info.name}")
 
 
-def _package_exception_classes_v2() -> set[type[BaseException]]:
+@functools.cache
+def _package_exception_classes_v2() -> frozenset[type[BaseException]]:
     _import_every_package_module_v2()
     found: set[type[BaseException]] = set()
     for module_info in pkgutil.iter_modules(agent_review_package.__path__):
@@ -104,7 +106,7 @@ def _package_exception_classes_v2() -> set[type[BaseException]]:
                 and candidate.__module__.startswith("app.agent_review.")
             ):
                 found.add(candidate)
-    return found
+    return frozenset(found)
 
 
 def _module_local_imports_v2(module_name: str) -> list[str]:
@@ -124,7 +126,8 @@ def _module_local_imports_v2(module_name: str) -> list[str]:
     return discovered
 
 
-def _v2_product_path_closure_v2() -> set[str]:
+@functools.cache
+def _v2_product_path_closure_v2() -> frozenset[str]:
     seen: set[str] = set()
     pending = collections.deque(_V2_PRODUCT_PATH_ROOTS_V2)
     while pending:
@@ -140,7 +143,8 @@ def _v2_product_path_closure_v2() -> set[str]:
     return seen
 
 
-def _class_definition_index_v2() -> dict[str, list[str]]:
+@functools.cache
+def _class_definition_index_v2() -> dict[str, tuple[str, ...]]:
     """Map class name -> the module(s) whose source actually defines it.
 
     ``cls.__module__`` is **not** trustworthy here.
@@ -157,25 +161,27 @@ def _class_definition_index_v2() -> dict[str, list[str]]:
         for node in ast.walk(ast.parse(source_path.read_text(encoding="utf-8"))):
             if isinstance(node, ast.ClassDef):
                 index[node.name].append(source_path.stem)
-    return index
+    return {name: tuple(modules) for name, modules in index.items()}
 
 
+@functools.cache
 def _defining_module_of_v2(exception_class: type[BaseException]) -> str | None:
     """The module that textually defines the class, or None if absent.
 
     Fails loudly on an ambiguous name rather than picking one silently: two
     same-named classes would make every downstream answer arbitrary.
     """
-    candidates = _class_definition_index_v2().get(exception_class.__name__, [])
+    candidates = _class_definition_index_v2().get(exception_class.__name__, ())
     if not candidates:
         return None
     assert len(candidates) == 1, (
         f"{exception_class.__name__} is defined in more than one module "
-        f"({candidates}); this control cannot attribute it"
+        f"({list(candidates)}); this control cannot attribute it"
     )
     return candidates[0]
 
 
+@functools.cache
 def _publishes_a_structured_refusal_code_v2(exception_class: type[BaseException]) -> bool:
     """True when the class assigns ``self.reason_code`` in its own body.
 
@@ -203,6 +209,7 @@ def _publishes_a_structured_refusal_code_v2(exception_class: type[BaseException]
     return False
 
 
+@functools.cache
 def _is_module_private_control_flow_signal_v2(exception_class: type[BaseException]) -> bool:
     """True when the class is raised and caught inside its own module only.
 
