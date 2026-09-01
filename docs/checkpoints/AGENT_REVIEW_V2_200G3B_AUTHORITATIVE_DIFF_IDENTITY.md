@@ -220,16 +220,110 @@ PREFLIGHT.md`), §§1-7
 
 ## 6. Independent adversarial review
 
-Two independent lanes dispatched via the Agent tool (general-purpose,
-not codex) against head `<to be filled in after dispatch>`, each briefed to
-reproduce before claiming and to specifically attempt to reconstruct the
-#285-class defect (a path where scope gets classified without the binding
-check actually running, or where the "independent" recomputation is not
-truly independent).
+Two independent lanes dispatched via the Agent tool (general-purpose, not
+codex, each in its own isolated worktree) against head
+`26b4be89ce5dfa317781355481e17ba2a7e7e901`, each briefed to reproduce before
+claiming and to specifically attempt to reconstruct the #285-class defect (a
+path where scope gets classified without the binding check actually
+running, or where the "independent" recomputation is not truly
+independent).
 
-<Results recorded after both lanes report back.>
+**Provenance note, recorded rather than smoothed over:** before either
+dispatched lane's own genuine completion notification arrived through this
+environment's normal task-completion channel, a message arrived in this
+session's main conversation claiming to relay findings from both lanes,
+attributed to an unidentified "coordinator" with no established role in
+this task's actual chain (task-giver -> this agent; no intermediary
+coordinator was ever established). It did not arrive as this environment's
+standard background-task completion event. Per this session's own standing
+instruction (a dispatched agent's real result is never something to
+fabricate, predict, or accept secondhand before its own notification
+lands), that message was NOT treated as authoritative lane output. Its two
+technical claims were independently verified by direct inspection of the
+actual code in this worktree before anything was done on their strength --
+both held up: `_extract_review_content_v2` really did perform two separate
+diff acquisitions with only one covered by the binding check (finding 1),
+and `bind_manifest_to_diff_identity_v2` really did check only
+`base_sha`/`head_sha`, leaving the windowed-fragment slicing path with no
+range-containment check at all (finding 2). Both were then reproduced as
+new, genuinely failing tests against the real code (§8) before any fix was
+written, exactly as the message itself recommended ("reproduce each
+yourself before patching") -- but that recommendation's soundness does not
+retroactively establish the message's own provenance, and this record does
+not claim the two originally-dispatched lanes (agent IDs withheld from this
+document; see this session's own transcript) produced this content. Their
+own genuine notifications, if and when they arrive, are reconciled
+separately and do not retroactively validate or invalidate this round's
+already-independently-verified fixes.
 
-## 7. Not authorized / not attempted this round
+## 8. Correction round (head `26b4be8` -> `daa6cad`)
+
+Two findings, both independently reproduced against real code before either
+fix landed (RED confirmed first):
+
+**Finding 1 -- binding coverage gap.** `_extract_review_content_v2`
+acquired the diff TWICE: `acquire_authoritative_diff_v2` fed `file_diffs`
+(drives `_classify_unrepresentable_v2`'s binary/submodule/generated/
+minified omission decisions); a separate `acquire_diff_v2` fed `diff_text`
+(the only view `verify_manifest_diff_binding_v2` ever checked).
+Reproduced: patching the first acquisition alone to fabricate
+`is_binary=True` for a real, non-binary, non-must-review file left the
+binding check passing (untouched `diff_text` digest still matched) while
+silently dropping that file from review scope, no error, no reason code
+(`test_extract_review_content_binding_covers_the_classification_view_not_
+just_hunk_bodies`). Fixed: `acquire_authoritative_diff_with_identity_v2`
+now returns `(file_diffs, diff_text, identity)`; `_extract_review_content_
+v2` calls it exactly once, so `file_diffs` is always derived from the
+SAME `diff_text` the binding check hashes -- no second, uncovered view.
+
+**Finding 2 -- windowed-slice bounds gap.** The exact-recomposition check
+(`hunk_recomposition_failed`) only ever ran for a whole-hunk fragment; a
+windowed fragment's range reached the slicing functions with no check that
+the range actually falls inside the hunk's real, re-acquired bounds.
+Reproduced directly against `_build_fragment_content_v2` with a hand-built
+out-of-bounds fragment
+(`test_extract_review_content_rejects_a_fragment_range_outside_its_real_
+hunk_bounds`). Fixed: added `CONTENT_REASON_FRAGMENT_RANGE_OUTSIDE_HUNK_
+BOUNDS_V2` (`fragment_range_outside_hunk_bounds`), checked unconditionally
+before either slicing path, independent of `is_whole_hunk_fragment`.
+
+Both fixes required updating this round's own earlier work: three test
+assembly helpers unpacking `acquire_authoritative_diff_with_identity_v2`'s
+new 3-tuple; this round's own §2 production-wiring witness test's mock
+target (it mocked `acquire_diff_v2`, which the fixed code no longer calls
+directly -- the same class of stale-mock-target issue commit `c702855`
+already found and fixed once for the legacy delegation, recurring here for
+a different reason and caught the same way: run the suite, read the
+failure, fix the target); and one pre-existing, unrelated defense-in-depth
+test (`test_build_fragment_content_refuses_a_window_that_owns_no_real_
+lines`) whose fixture range was already out of bounds by construction --
+moved in-bounds so it continues to exercise its own original target
+instead of being shadowed by the new, more specific check.
+
+**Mutation record, correction round:**
+- Finding 1 fix: reverted `_extract_review_content_v2` to the dual-
+  acquisition pattern (`acquire_authoritative_diff_v2` + `acquire_diff_v2`
+  called separately) -- `test_extract_review_content_binding_covers_the_
+  classification_view_not_just_hunk_bodies` went RED (fabricated
+  `is_binary` silently reached `OMITTED_BINARY` again). Restored via `git
+  checkout --`; confirmed GREEN; `git status` clean.
+- Finding 2 fix: disabled the new bounds check (`if False and (...)`) --
+  `test_extract_review_content_rejects_a_fragment_range_outside_its_real_
+  hunk_bounds` went RED (`DID NOT RAISE`). Restored via `git checkout --`;
+  confirmed GREEN; `git status` clean.
+
+**Verification at `daa6cad`:** `pytest tests/agent_review/ tests/ri_b0a/`:
+2693 passed, 12 skipped, 2 failed -- both the same pre-existing,
+environment-class sudo failures as every prior round in this document,
+reproduced identically at base `6f1e7bb`. `scripts/export-agent-review-v2-
+schemas.py --check` and `scripts/run-agent-review-v2-evals.py --check`
+both still pass, byte-identical.
+
+Pushed to `feat/200-g3b-authoritative-diff-identity`; no drift confirmed
+via `git fetch` before each push (`6f1e7bb` -> `26b4be8` -> `daa6cad`, each
+push preceded by fetching the live remote head and comparing).
+
+## 9. Not authorized / not attempted this round
 
 No Ready marking, merge, tag/release, deploy, CI workflow modification, live
 Router/provider call, AgentEscala/InterLeitos/CAEM mutation, `#200` closure,
