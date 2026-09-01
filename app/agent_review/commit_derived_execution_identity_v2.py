@@ -261,6 +261,14 @@ def verify_executed_source_identity_v2(
     expected_paths = {entry.path: entry for entry in entries}
 
     for entry in entries:
+        if entry.mode == GITLINK_MODE_V2:
+            # Defensive only: the early loop above already refuses any
+            # commit whose tree contains a gitlink, so this is never reached
+            # in practice. Kept so that a future change to (or mutation of)
+            # that early check fails closed with a typed refusal here
+            # instead of an uncaught KeyError against
+            # `expected_content_by_path`, which never has gitlink entries.
+            continue
         actual_path = subject_root / entry.path
         expected_bytes = expected_content_by_path[entry.path]
 
