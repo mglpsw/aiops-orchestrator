@@ -1,7 +1,7 @@
 """#200-G2B executable spike: an independent negative oracle for outbound bytes.
 
-This module is deliberately under ``evals/`` rather than ``app/``.  It is not
-production authority and does not wire AgentReview's Router transport.  Its one
+This module is deliberately under ``evals/`` rather than ``app/``. It is not
+production authority and does not wire AgentReview's Router transport. Its one
 job is to test the architectural proposition that was missing from G2:
 
     forward detector misses a secret
@@ -10,12 +10,12 @@ job is to test the architectural proposition that was missing from G2:
 
 Independence is structural: this module imports neither ``redaction.py`` nor
 ``review_content_extraction_v2.py`` and consumes no witness set produced by
-those modules.  The input is the exact ``bytes`` object that would otherwise
-be handed to ``urllib.request.Request(..., data=body)`` / the HTTP opener.
+those modules. The input is the exact ``bytes`` object that would otherwise be
+handed to ``urllib.request.Request(..., data=body)`` / the HTTP opener.
 
-The oracle is conservative.  It does not transform source and therefore cannot
+The oracle is conservative. It does not transform source and therefore cannot
 claim that a secret was safely redacted; it only returns OUTBOUND_SAFE or
-OUTBOUND_NOT_PROVEN_SAFE.  False positives are tested separately against real
+OUTBOUND_NOT_PROVEN_SAFE. False positives are tested separately against real
 repository source before this spike can graduate into a production design.
 """
 
@@ -49,7 +49,7 @@ class OutboundSafetyReportV2:
 
 
 class OutboundSafetyBlockedV2(RuntimeError):
-    """Spike-only refusal.  Carries classification, never matched secret text."""
+    """Spike-only refusal. Carries classification, never matched secret text."""
 
     def __init__(self, report: OutboundSafetyReportV2) -> None:
         super().__init__("outbound_not_proven_safe")
@@ -64,8 +64,13 @@ _SLACK_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])xox[baprs]-[A-Za-z0-9-]{10,}(?![A
 _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"
 )
+# ReviewContent carries unified-hunk body lines, so the real outbound form of
+# an added/deleted assignment begins with '+'/'-'.  Ignoring that marker made
+# the first spike green only for synthetic plain-text shapes and blind on the
+# actual transport material -- exactly the correlated-fixture error this spike
+# exists to prevent.
 _LINE_ASSIGNMENT_RE = re.compile(
-    r"(?mi)^[ \t]*(?:export[ \t]+)?(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)[ \t]*(?P<sep>[:=])[ \t]*(?P<value>[^\r\n]*)$"
+    r"(?mi)^[ \t]*[+-]?(?:export[ \t]+)?(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)[ \t]*(?P<sep>[:=])[ \t]*(?P<value>[^\r\n]*)$"
 )
 _OPAQUE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9_+/=-]{24,160}(?![A-Za-z0-9_])")
 
@@ -141,6 +146,25 @@ def _looks_like_sha_or_identifier(value: str) -> bool:
     return False
 
 
+def _looks_token_like_for_entropy(value: str) -> bool:
+    """Keep entropy as an independent detector without flagging code names.
+
+    A broad first attempt treated a long mixed identifier in real
+    ``run_assembly_v2.py`` as a secret.  Token-shaped opaque material needs a
+    stronger surface signal than entropy alone: mixed case plus several digits,
+    or base64 punctuation.  This still catches the spike's deliberately opaque
+    candidate while excluding ordinary ``LongPythonIdentifierV2``-style names.
+    """
+
+    if any(character in value for character in "+/="):
+        return True
+    return (
+        any(character.islower() for character in value)
+        and any(character.isupper() for character in value)
+        and sum(character.isdigit() for character in value) >= 3
+    )
+
+
 def _scan_text(text: str, *, location: str, findings: list[OutboundSafetyFindingV2]) -> None:
     for detector, regex in (
         ("jwt", _JWT_RE),
@@ -153,23 +177,18 @@ def _scan_text(text: str, *, location: str, findings: list[OutboundSafetyFinding
 
     for match in _LINE_ASSIGNMENT_RE.finditer(text):
         key = match.group("key")
-        if not _sensitive_key(key):
-            continue
         value = _strip_assignment_value(match.group("value"))
-        if _placeholder_or_type(value):
-            continue
-        findings.append(
-            OutboundSafetyFindingV2("sensitive_assignment", location, "sensitive_key_value")
-        )
+        if _sensitive_key(key) and not _placeholder_or_type(value):
+            findings.append(
+                OutboundSafetyFindingV2("sensitive_assignment", location, "sensitive_key_value")
+            )
 
-    # Independent broad negative oracle: opaque high-entropy strings.  It is
+    # Independent broad negative oracle: opaque high-entropy strings. It is
     # intentionally subordinate to structural detectors and excludes canonical
     # SHA-sized values because AgentReview's request legitimately contains many.
     for match in _OPAQUE_TOKEN_RE.finditer(text):
         token = match.group(0)
-        if _looks_like_sha_or_identifier(token):
-            continue
-        if not (re.search(r"[A-Za-z]", token) and re.search(r"[0-9]", token)):
+        if _looks_like_sha_or_identifier(token) or not _looks_token_like_for_entropy(token):
             continue
         if _entropy(token) >= 4.25:
             findings.append(
@@ -177,7 +196,7 @@ def _scan_text(text: str, *, location: str, findings: list[OutboundSafetyFinding
             )
             break
 
-    # The Router user message contains canonical JSON as a string.  Parse and
+    # The Router user message contains canonical JSON as a string. Parse and
     # recurse so the oracle reasons about that final material independently of
     # however the forward extractor represented it.
     stripped = text.strip()
@@ -210,7 +229,7 @@ def _scan_value(value: Any, *, location: str, findings: list[OutboundSafetyFindi
 
 
 def inspect_outbound_body_v2(body: bytes) -> OutboundSafetyReportV2:
-    """Inspect the exact pre-HTTP request bytes without consulting forward witnesses."""
+    """Inspect exact pre-HTTP request bytes without consulting forward witnesses."""
 
     findings: list[OutboundSafetyFindingV2] = []
     try:
