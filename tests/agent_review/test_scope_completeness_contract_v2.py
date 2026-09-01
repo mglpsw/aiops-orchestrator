@@ -258,6 +258,25 @@ class TestScopeCompletenessV2Contract:
                 must_review_blocked_paths=("app/a.py",),
             )
 
+    def test_complete_flag_must_also_require_no_must_review_blocked_paths(self) -> None:
+        """`#200-G3` correction round, direct regression for Lane B's P1:
+        `complete=True` was constructible alongside a nonempty `must_
+        review_blocked_paths` before this fix -- dishonest at the sub-
+        object level, a naive reader checking only `.complete` would be
+        misled, even though the outer `ready` gate independently blocked
+        it. Now rejected by the contract itself, mirroring the precedent
+        `ChunkCoverageV2.status is COMPLETE` already sets by requiring
+        `missing_must_review_files` to be empty too."""
+        with pytest.raises(ValidationError):
+            ScopeCompletenessV2(
+                complete=True,
+                changed_paths=("app/a.py", "app/renamed.py"),
+                reviewable_paths=("app/a.py",),
+                metadata_only_paths=("app/renamed.py",),
+                unsupported_paths=(),
+                must_review_blocked_paths=("app/renamed.py",),
+            )
+
     def test_pipeline_degradation_cause_now_accepts_scope_incomplete(self) -> None:
         PipelineDegradationCauseV2(
             reason_code=ReadinessReasonV2.SCOPE_INCOMPLETE,
@@ -306,9 +325,17 @@ class TestEvaluateReadyPreconditionsScopeGating:
         unmet = evaluate_ready_preconditions_v2(**_ready_kwargs(scope=scope))
         assert unmet == READY_REQUIRES_SCOPE_COMPLETE_REASON_V2
 
-    def test_scope_complete_but_must_review_blocked_still_blocks_ready(self) -> None:
+    def test_must_review_blocked_scope_blocks_ready(self) -> None:
+        """`#200-G3` correction round: `ScopeCompletenessV2.complete` now
+        ALSO accounts for `must_review_blocked_paths` (see `Test
+        ScopeCompletenessV2Contract.test_complete_flag_must_also_require_no_
+        must_review_blocked_paths` below) -- a required path that produced
+        nothing reviewable is `complete=False` at the published level, not
+        merely blocked underneath a `complete=True` summary. Still worth
+        asserting the READY gate independently of the invariant that
+        produces it."""
         scope = ScopeCompletenessV2(
-            complete=True,
+            complete=False,
             changed_paths=("app/a.py", "app/renamed.py"),
             reviewable_paths=("app/a.py",),
             metadata_only_paths=("app/renamed.py",),
@@ -427,11 +454,19 @@ class TestComputeReadinessDecisionScopeWiring:
         assert decision.state is ReadinessStateV2.MANUAL_REQUIRED
         assert ReadinessReasonV2.SCOPE_INCOMPLETE in decision.reason_codes
 
-    def test_must_review_blocked_scope_moves_off_ready_even_though_scope_complete(self) -> None:
+    def test_must_review_blocked_scope_moves_off_ready(self) -> None:
+        """`assess_changed_scope_v2` itself still distinguishes `scope_
+        complete` (no capability gap) from `blocked` (a required path was
+        unreviewable) internally -- see `test_operational_scope_v2.py::
+        TestAssessChangedScopeV2::test_must_review_pure_rename_is_blocked_
+        even_though_scope_stays_complete`, which asserts exactly that at
+        the `ScopeAssessmentV2` level. The PUBLISHED `ScopeCompletenessV2`
+        this decision consumes folds both into one `complete` flag
+        (`#200-G3` correction round)."""
         manifest, report = _fully_reviewed_manifest_and_report()
         synthesis = _synthesis(manifest=manifest, coverage_report=report)
         scope = ScopeCompletenessV2(
-            complete=True,
+            complete=False,
             changed_paths=("app/a.py", "app/renamed.py"),
             reviewable_paths=("app/a.py",),
             metadata_only_paths=("app/renamed.py",),

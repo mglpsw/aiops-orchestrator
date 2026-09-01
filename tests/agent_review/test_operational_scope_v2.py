@@ -317,6 +317,43 @@ class TestAssessChangedScopeV2:
             assess_changed_scope_v2(file_diffs=diffs, profile=_profile())
         assert excinfo.value.reason_code == SCOPE_ASSESSMENT_DUPLICATE_PATH_REASON_V2
 
+    def test_two_deleted_blocks_same_path_is_not_a_type_change_pair(self) -> None:
+        """`#200-G3` correction round (adversarial review, Lane B P2): a
+        mutation on `_is_type_change_pair_v2` (`==` -> `<=`, i.e. subset
+        instead of exact-set-equality) survived the previous fuzz matrix,
+        because nothing exercised two blocks sharing a change_type. Two
+        `deleted` blocks for the same path is a genuine inconsistency (git
+        never emits this for an ordinary type change, which is always
+        exactly one delete plus one add) and must still refuse, not be
+        silently misclassified as `TYPE_CHANGE`. `ParsedFileDiffV2` is
+        freely constructible, so this shape is reachable even though real
+        `git` would never produce it."""
+        diffs = [
+            _diff(path="app/x", change_type="deleted", hunks=()),
+            _diff(path="app/x", change_type="deleted", hunks=()),
+        ]
+        with pytest.raises(ScopeAssessmentError) as excinfo:
+            assess_changed_scope_v2(file_diffs=diffs, profile=_profile())
+        assert excinfo.value.reason_code == SCOPE_ASSESSMENT_DUPLICATE_PATH_REASON_V2
+
+    def test_two_added_blocks_same_path_is_not_a_type_change_pair(self) -> None:
+        diffs = [
+            _diff(path="app/x", change_type="added", hunks=()),
+            _diff(path="app/x", change_type="added", hunks=()),
+        ]
+        with pytest.raises(ScopeAssessmentError) as excinfo:
+            assess_changed_scope_v2(file_diffs=diffs, profile=_profile())
+        assert excinfo.value.reason_code == SCOPE_ASSESSMENT_DUPLICATE_PATH_REASON_V2
+
+    def test_is_type_change_pair_helper_rejects_same_change_type_pair(self) -> None:
+        from app.agent_review.operational_scope_v2 import _is_type_change_pair_v2
+
+        two_deletes = (
+            _diff(path="app/x", change_type="deleted", hunks=()),
+            _diff(path="app/x", change_type="deleted", hunks=()),
+        )
+        assert _is_type_change_pair_v2(two_deletes) is False
+
     def test_ordinary_rename_does_not_make_scope_incomplete(self) -> None:
         diffs = [_diff(path="app/renamed.py", change_type="renamed", hunks=())]
         assessment = assess_changed_scope_v2(file_diffs=diffs, profile=_profile())

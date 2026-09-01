@@ -336,6 +336,116 @@ def test_run_synthetic_review_produces_manual_required_when_authority_is_not_est
     assert ReadinessReasonV2.POLICY_FAILURE in outcome.readiness.reason_codes
 
 
+def test_run_synthetic_review_gates_on_scope_completeness_through_the_real_entrypoint(tmp_path: Path) -> None:
+    """`#200-G3` correction round (adversarial review, Lane A P0): the
+    first version of this slice built `assess_changed_scope_v2`/
+    `ScopeCompletenessV2`/the `SCOPE_INCOMPLETE` gate, but never wired
+    them into the ACTUAL production entrypoint -- `run_synthetic_review_v2`
+    called `compute_readiness_decision_v2` with no `scope=` kwarg, and had
+    no parameter through which a caller could even supply one.
+    `test_the_false_ready_path_stays_closed_end_to_end`
+    (`test_scope_completeness_contract_v2.py`) called `assess_changed_
+    scope_v2` and `compute_readiness_decision_v2` manually, side-stepping
+    `run_synthetic_review_v2` entirely -- it never actually proved the
+    real entrypoint was closed, despite its own docstring's claim.
+
+    This test drives the REAL entrypoint: a repo whose diff contains BOTH
+    an ordinary reviewable change AND `src/pages/[id].tsx` (`#277`'s exact
+    false-READY witness -- unrepresentable under `contracts_v2.RelativePath`,
+    silently excluded by `assemble_manifest_from_diff_v2`, invisible to
+    `ChunkCoverageV2`), with the SAME `file_diffs`/`profile` the assembly
+    itself used threaded into `run_synthetic_review_v2` (the opt-in
+    `#200-G3` parameters). The emitted `ReviewReadinessV2` must carry
+    `SCOPE_INCOMPLETE` and must not be `ready` -- proven through
+    `run_synthetic_review_v2`, not through manually-wired lower-level
+    calls.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "app.py").write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+    (repo / "app.py").write_text("a = 1\nb = CHANGED\nc = 3\n", encoding="utf-8")
+    witness_dir = repo / "src" / "pages"
+    witness_dir.mkdir(parents=True)
+    (witness_dir / "[id].tsx").write_text("export default function Page() { return null; }\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update app.py + add unrepresentable-path witness file")
+
+    profile = _profile()
+    file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    outcome = assemble_manifest_from_diff_v2(
+        file_diffs, profile=profile, grouping_policy=_grouping_policy(),
+        repo="example/repo", pr_number=1, base_sha=base_sha, head_sha=head_sha,
+        tested_merge_sha=head_sha, toolrepo_sha="b" * 40, evidence_hash="c" * 64,
+        max_lines_per_chunk=1000,
+    )
+    assert outcome.state == "assembled", outcome.blocked_reason
+    manifest = outcome.manifest
+    # Confirm the hazard is real BEFORE asserting the fix: the assembly
+    # itself silently dropped the witness path, and coverage over what
+    # remains is still exactly `app.py` -- nothing downstream of coverage
+    # alone would ever notice.
+    assert outcome.excluded_paths == ("src/pages/[id].tsx",)
+    assert list(manifest.expected_files) == ["app.py"]
+
+    payload_by_chunk_id = {c.chunk_id: build_chunk_payload_v2(manifest, c) for c in manifest.chunks}
+    content = extract_review_content_v2(
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        payload_sha256_by_chunk_id={cid: p.payload_sha256 for cid, p in payload_by_chunk_id.items()},
+        target_profile=profile,
+    )
+    responses_dir = tmp_path / "responses"
+    _write_offline_responses(responses_dir, content=content, manifest=manifest)
+
+    outcome_without_scope = run_synthetic_review_v2(
+        content=content, manifest=manifest, payload_by_chunk_id=payload_by_chunk_id,
+        transport=offline_file_transport_v2(responses_dir), policies=_policies(),
+        pr_state=PullRequestStateV2.OPEN, checks=(), provenance=(),
+        **_empty_authority(tmp_path),
+    )
+    # Pre-`#200-G3`-wiring behavior, still reachable when a caller omits
+    # `file_diffs`/`profile`: coverage alone is complete, and today's
+    # required-check gap (see the docstring of the "authority is not
+    # established" test above) already keeps this off `ready` for an
+    # UNRELATED reason -- so this alone would not distinguish "scope was
+    # accounted for" from "scope was never asked about". The point of THIS
+    # test is the `scope=` branch below, which the correction round added.
+    assert ReadinessReasonV2.SCOPE_INCOMPLETE not in outcome_without_scope.readiness.reason_codes
+
+    outcome_with_scope = run_synthetic_review_v2(
+        content=content, manifest=manifest, payload_by_chunk_id=payload_by_chunk_id,
+        transport=offline_file_transport_v2(responses_dir), policies=_policies(),
+        pr_state=PullRequestStateV2.OPEN, checks=(), provenance=(),
+        file_diffs=file_diffs, profile=profile,
+        **_empty_authority(tmp_path),
+    )
+    assert outcome_with_scope.readiness.state is not ReadinessStateV2.READY
+    assert ReadinessReasonV2.SCOPE_INCOMPLETE in outcome_with_scope.readiness.reason_codes
+    assert outcome_with_scope.readiness.scope is not None
+    assert outcome_with_scope.readiness.scope.complete is False
+    assert outcome_with_scope.readiness.scope.unsupported_paths == ("src/pages/[id].tsx",)
+    # And, independently of the composer's choice: the frozen contract
+    # itself cannot represent this exact material as `ready` -- checked via
+    # the same route `test_the_false_ready_path_stays_closed_end_to_end`
+    # uses, kept here too so this specific real-entrypoint reproduction
+    # does not rely on trusting that other test file's fixtures.
+    from pydantic import ValidationError as _ValidationError
+
+    from app.agent_review.contracts_v2 import PipelineAssessmentV2 as _PipelineAssessmentV2
+    from app.agent_review.contracts_v2 import ReviewReadinessV2 as _ReviewReadinessV2
+
+    readiness = outcome_with_scope.readiness
+    with pytest.raises(_ValidationError):
+        _ReviewReadinessV2(
+            schema_id=readiness.schema_id, schema_version=readiness.schema_version, source=readiness.source,
+            run_id=readiness.run_id, identity=readiness.identity, evaluated_run_id=readiness.evaluated_run_id,
+            evaluated_identity=readiness.evaluated_identity, head_sha=readiness.head_sha,
+            evaluated_head_sha=readiness.evaluated_head_sha, pr_state=readiness.pr_state,
+            checks=readiness.checks, coverage=readiness.coverage, scope=readiness.scope,
+            pipeline=_PipelineAssessmentV2(degraded=False, causes=[]),
+            state=ReadinessStateV2.READY, reason_codes=[], blockers=[], findings=readiness.findings,
+        )
+
+
 @pytest.mark.requires_network
 def test_run_synthetic_review_degrades_a_tampered_echo_chunk_to_manual_required(tmp_path: Path) -> None:
     manifest, content, payload_by_chunk_id = _build_repo_manifest_and_content(tmp_path)

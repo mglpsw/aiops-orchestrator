@@ -2447,6 +2447,90 @@ def test_manual_required_cannot_mask_a_confirmed_blocking_finding() -> None:
         _validate_json(ReviewReadinessV2, payload)
 
 
+def test_manual_required_scope_incomplete_must_appear_in_reason_codes() -> None:
+    """`#200-G3` correction round, direct regression for Lane B's P1: a
+    `--decision`-JSON-shaped artifact carrying `scope.complete=False`
+    could reach `manual_required` (or `blocked_code`/`blocked_pipeline`)
+    without `SCOPE_INCOMPLETE` anywhere in `reason_codes` -- the frozen
+    contract only cross-checked scope content against reason codes inside
+    the `ready` branch. Not any more: checked unconditionally for every
+    non-`stale` state."""
+    payload = _readiness()
+    payload.update(
+        state="manual_required",
+        reason_codes=["model_uncertainty"],
+        blockers=[
+            {
+                "blocker_id": "manual-1",
+                "reason_code": "model_uncertainty",
+                "active": True,
+                "finding_id": None,
+            }
+        ],
+        pipeline={
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": "model_uncertainty",
+                    "component": "provider-response",
+                    "detail": "response needs human review",
+                }
+            ],
+        },
+        scope={
+            "complete": False,
+            "changed_paths": ["assets/logo.png"],
+            "reviewable_paths": [],
+            "metadata_only_paths": [],
+            "unsupported_paths": ["assets/logo.png"],
+            "must_review_blocked_paths": [],
+        },
+    )
+
+    with pytest.raises(ValidationError):
+        _validate_json(ReviewReadinessV2, payload)
+
+
+def test_manual_required_scope_incomplete_represented_is_accepted() -> None:
+    """Companion to the test above: the SAME scope content, WITH
+    `scope_incomplete` correctly represented in `reason_codes` and a
+    matching structured pipeline cause, constructs cleanly."""
+    payload = _readiness()
+    payload.update(
+        state="manual_required",
+        reason_codes=["scope_incomplete"],
+        blockers=[
+            {
+                "blocker_id": "scope-incomplete",
+                "reason_code": "scope_incomplete",
+                "active": True,
+                "finding_id": None,
+            }
+        ],
+        pipeline={
+            "degraded": True,
+            "causes": [
+                {
+                    "reason_code": "scope_incomplete",
+                    "component": "scope_completeness",
+                    "detail": "assets/logo.png is binary and cannot be represented for review",
+                }
+            ],
+        },
+        scope={
+            "complete": False,
+            "changed_paths": ["assets/logo.png"],
+            "reviewable_paths": [],
+            "metadata_only_paths": [],
+            "unsupported_paths": ["assets/logo.png"],
+            "must_review_blocked_paths": [],
+        },
+    )
+
+    readiness = _validate_json(ReviewReadinessV2, payload)
+    assert readiness.scope.complete is False
+
+
 @pytest.mark.parametrize(
     "disposition",
     ["confirmed", "fixed", "dismissed", "superseded", "stale"],

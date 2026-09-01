@@ -385,12 +385,26 @@ class ScopeAssessmentV2:
         """Fold this internal assessment into the published, additive
         ``contracts_v2.ScopeCompletenessV2``. Imported lazily to avoid a
         module-level import cycle (``contracts_v2`` does not, and must
-        not, import this module)."""
+        not, import this module).
+
+        ``complete`` is ``scope_complete AND NOT blocked`` -- `#200-G3`
+        correction round: the published field means "nothing here needs
+        attention", not merely "no capability gap". A required path that
+        produced nothing reviewable (``blocked``) must also flip the
+        published ``complete`` to ``False``, even when every OTHER path is
+        vacuously representable -- see ``ScopeCompletenessV2.validate_
+        partition``'s own docstring comment for the precedent
+        (``ChunkCoverageV2`` already ties its ``COMPLETE`` status to the
+        absence of missing must-review files the same way). The internal
+        ``scope_complete``/``blocked`` distinction this dataclass exposes
+        stays available for diagnostics; only the PUBLISHED summary is
+        tightened.
+        """
 
         from app.agent_review.contracts_v2 import ScopeCompletenessV2
 
         return ScopeCompletenessV2(
-            complete=self.scope_complete,
+            complete=self.scope_complete and not self.blocked,
             changed_paths=self.changed_paths,
             reviewable_paths=self.reviewable_paths,
             metadata_only_paths=self.metadata_only_paths,

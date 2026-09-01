@@ -90,9 +90,12 @@ from app.agent_review.contracts_v2 import (
     ReviewReadinessV2,
     RunOriginV2,
     TargetPoliciesV2,
+    TargetProfileV2,
 )
+from app.agent_review.diff_acquisition_v2 import ParsedFileDiffV2
 from app.agent_review.lifecycle_v2 import FindingLifecycleRecordV2
 from app.agent_review.manifest_v2 import ManifestV2
+from app.agent_review.operational_scope_v2 import assess_changed_scope_v2, assert_scope_authority_agrees_with_assembly_v2
 from app.agent_review.parser_v2 import ParsedChunkResultV2, parse_bound_chunk_response_v2
 from app.agent_review.readiness_decision_v2 import compute_readiness_decision_v2
 from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanceV2
@@ -322,6 +325,8 @@ def run_synthetic_review_v2(
     checks: Sequence[RequiredCheckResultV2] = (),
     provenance: Sequence[RequiredCheckProvenanceV2] = (),
     prior_lifecycle: Sequence[FindingLifecycleRecordV2] = (),
+    file_diffs: Sequence[ParsedFileDiffV2] = (),
+    profile: TargetProfileV2 | None = None,
 ) -> SyntheticReviewOutcomeV2:
     """The full E2E: every chunk in ``content`` goes through ``execute_
     chunk_review_v2``; only the ones that bind feed ``synthesize_chunk_
@@ -342,6 +347,30 @@ def run_synthetic_review_v2(
     ``authority_not_established`` rather than silently defaulting to an
     already-approved empty set, which is what this parameter meant before
     `#201-C`.
+
+    ``file_diffs``/``profile`` (`#200-G3`, both optional, both required
+    TOGETHER) -- when a caller supplies the SAME ``file_diffs``/``profile``
+    it already used to build ``manifest`` (via ``run_assembly_v2.
+    assemble_manifest_from_diff_v2``), this function ALSO assesses total
+    changed-scope completeness (``operational_scope_v2.assess_changed_
+    scope_v2``) and threads it into ``compute_readiness_decision_v2``,
+    gating ``ready`` on it exactly like coverage. It additionally runs the
+    scope-authority/assembly disagreement detector
+    (``assert_scope_authority_agrees_with_assembly_v2``) against
+    ``manifest.expected_files`` -- a composer-level refusal (raises
+    ``ScopeAssessmentError``, uncaught, same discipline as ``ChunkResult
+    ScopeError`` just below) if the two ever disagree about which paths are
+    reviewable, the exact `#277` round-1 defect class.
+
+    THIS IS OPT-IN, NOT AUTOMATIC: a caller that omits both (the default)
+    gets pre-`#200-G3` behavior unchanged -- ``scope=None`` reaches
+    ``compute_readiness_decision_v2``, which is honestly "not assessed",
+    never silently "complete". Every current caller of this function in
+    this repository is a test; there is no production composer wiring
+    ``file_diffs``/``profile`` through yet (`#200-G5`'s job) -- do not read
+    this parameter's existence as a claim that the real production
+    pipeline is closed end-to-end today. It is closed for any caller that
+    actually supplies both.
     """
 
     outcomes = tuple(
@@ -361,7 +390,20 @@ def run_synthetic_review_v2(
     except ChunkResultScopeError:
         raise
 
-    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=policies)
+    scope = None
+    if file_diffs or profile is not None:
+        if profile is None or not file_diffs:
+            raise ValueError("run_synthetic_review_v2 requires file_diffs and profile together, or neither")
+        scope_assessment = assess_changed_scope_v2(file_diffs=file_diffs, profile=profile)
+        # Composer-level refusal, uncaught: see the docstring above. This is
+        # the anti-recurrence mechanism actually exercised in a real call
+        # path now, not merely proven at the unit level.
+        assert_scope_authority_agrees_with_assembly_v2(
+            scope_assessment, assembly_expected_files=manifest.expected_files
+        )
+        scope = scope_assessment.to_scope_completeness_v2()
+
+    decision = compute_readiness_decision_v2(synthesis=synthesis, manifest=manifest, policies=policies, scope=scope)
     readiness = produce_review_readiness_v2(
         decision=decision, findings=synthesis.findings, identity=manifest.identity,
         evaluated_identity=manifest.identity, pr_state=pr_state,

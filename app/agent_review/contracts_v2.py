@@ -1206,8 +1206,23 @@ class ScopeCompletenessV2(ContractV2Model):
             raise ValueError("scope completeness partitions must exactly account for every changed path")
         if not must_review_blocked <= (metadata_only | unsupported):
             raise ValueError("must_review_blocked_paths must be unreviewable paths")
-        if self.complete != (not unsupported):
-            raise ValueError("complete must be exactly represented by the absence of unsupported paths")
+        # `#200-G3` correction round (adversarial review, Lane B P1): `complete`
+        # must mean "nothing here needs attention", not merely "no capability
+        # gap". A naive reader checking ONLY `complete` -- never also
+        # `must_review_blocked_paths` -- must not be misled, exactly mirroring
+        # the precedent already set by `ChunkCoverageV2`: `status is COMPLETE`
+        # there already REQUIRES `missing_must_review_files` to be empty too
+        # (see `ChunkCoverageV2.validate_partition`'s own `if self.status is
+        # CoverageStateV2.COMPLETE:` branch), never independently `True` while
+        # a required path is still missing. `complete=True` with a nonempty
+        # `must_review_blocked_paths` was constructible before this fix --
+        # dishonest at the sub-object level even though the outer `ready` gate
+        # (`evaluate_ready_preconditions_v2`) independently blocked it.
+        if self.complete != (not unsupported and not must_review_blocked):
+            raise ValueError(
+                "complete must be exactly represented by the absence of both "
+                "unsupported paths and must-review-blocked paths"
+            )
         return self
 
 
@@ -1511,6 +1526,30 @@ class ReviewReadinessV2(ContractV2Model):
             )
         if self.state is ReadinessStateV2.STALE:
             return self
+
+        # `#200-G3` correction round (adversarial review, Lane B P1): this
+        # was previously checked ONLY inside the `READY` branch below (via
+        # `evaluate_ready_preconditions_v2`), which a Codex-shaped review
+        # (via the Agent tool, per this repo's standing preference) proved
+        # insufficient: a hand-crafted or `--decision`-JSON-supplied
+        # artifact could carry `state=manual_required` (or `blocked_code`/
+        # `blocked_pipeline`) with `scope.complete=False` and NO
+        # `SCOPE_INCOMPLETE` in `reason_codes` -- constructible, and
+        # therefore able to reach `scripts/aiops-review-quality-gate-v2.py`'s
+        # real `--decision` `scope` input surface, misrepresenting itself as
+        # if scope had nothing to report. Checked here, UNCONDITIONALLY for
+        # every non-`STALE` state (including `READY`, redundantly-but-
+        # harmlessly -- `READY` already independently requires
+        # `scope.complete` via `evaluate_ready_preconditions_v2` below, so
+        # this can never fire for a valid `READY` artifact).
+        if (
+            self.scope is not None
+            and not self.scope.complete
+            and ReadinessReasonV2.SCOPE_INCOMPLETE not in self.reason_codes
+        ):
+            raise ValueError(
+                "scope-incomplete material must be represented by SCOPE_INCOMPLETE in reason_codes"
+            )
 
         blocking_findings = [
             finding
