@@ -24,15 +24,9 @@ import hashlib
 from pathlib import Path
 from typing import Literal
 
+from app.agent_review import diff_acquisition_v2
 from app.agent_review.contracts_v2 import ContractV2Model, GitSha, Repository, Sha256
-from app.agent_review.diff_acquisition_v2 import (
-    ParsedFileDiffV2,
-    acquire_diff_v2,
-    acquire_raw_diff_v2,
-    correlate_raw_and_unified_v2,
-    parse_raw_diff_z,
-    parse_unified_diff,
-)
+from app.agent_review.diff_acquisition_v2 import ParsedFileDiffV2
 from app.agent_review.manifest_v2 import ManifestV2
 
 MANIFEST_DIFF_BINDING_SCHEMA_V2 = "agent-review.manifest-diff-binding.v2"
@@ -96,19 +90,26 @@ def acquire_authoritative_diff_with_identity_v2(
 ) -> tuple[tuple[ParsedFileDiffV2, ...], AcquiredDiffIdentityV2]:
     """Acquire and correlate both Git diff views while retaining byte identity.
 
-    This is the new G3B path. The legacy ``acquire_authoritative_diff_v2`` is
-    intentionally not modified in this first additive commit; both paths use
-    the same lower-level acquisition/parsing/correlation authorities. A later
-    migration may make the legacy wrapper delegate once this primitive is
-    independently qualified, but no caller needs to trust a second parser or
+    This is the G3B path. ``diff_acquisition_v2.acquire_authoritative_diff_v2``
+    (the legacy wrapper) now delegates to this function and discards the
+    identity value, so both entry points share one acquisition/parsing/
+    correlation implementation. No caller needs to trust a second parser or
     a path-set projection to establish the digest.
     """
 
-    diff_text = acquire_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
-    file_diffs = parse_unified_diff(diff_text)
-    raw_text = acquire_raw_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
-    raw_records = parse_raw_diff_z(raw_text)
-    correlate_raw_and_unified_v2(raw_records, file_diffs)
+    # Called through the `diff_acquisition_v2` module object, not as
+    # directly-imported names: a caller mocking e.g.
+    # `app.agent_review.diff_acquisition_v2.parse_unified_diff` (the
+    # legacy acquisition surface's own patch point) must still observe
+    # that mock here, since `diff_acquisition_v2.acquire_authoritative_
+    # diff_v2` now delegates to this function. A `from ... import name`
+    # binds the ORIGINAL function object at import time and would silently
+    # stop observing such a patch.
+    diff_text = diff_acquisition_v2.acquire_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
+    file_diffs = diff_acquisition_v2.parse_unified_diff(diff_text)
+    raw_text = diff_acquisition_v2.acquire_raw_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
+    raw_records = diff_acquisition_v2.parse_raw_diff_z(raw_text)
+    diff_acquisition_v2.correlate_raw_and_unified_v2(raw_records, file_diffs)
     identity = AcquiredDiffIdentityV2(
         base_sha=base_sha,
         head_sha=head_sha,

@@ -1270,16 +1270,26 @@ def acquire_authoritative_diff_v2(
     tuple only after ``correlate_raw_and_unified_v2`` has proven its
     paths and change types against the raw stream's ground truth.
 
-    This is now the entry point a caller wanting authoritative path
-    identity should use in place of calling ``acquire_diff_v2`` +
-    ``parse_unified_diff`` directly -- both remain available and
-    unchanged for callers (e.g. existing tests) that do not need the
-    cross-check.
+    This is the entry point a caller wanting authoritative path identity
+    should use in place of calling ``acquire_diff_v2`` + ``parse_unified_diff``
+    directly -- both remain available and unchanged for callers (e.g.
+    existing tests) that do not need the cross-check.
+
+    #200-G3B: this now delegates to
+    ``authoritative_diff_identity_v2.acquire_authoritative_diff_with_identity_v2``,
+    which performs the exact same acquisition/parse/correlate sequence and
+    additionally proves the byte-identity digest of the acquired diff. The
+    import is local to avoid a module-level import cycle (that module
+    imports this one for the lower-level acquisition/parse/correlate
+    primitives). Signature and return type are unchanged for existing
+    callers -- the identity value is simply discarded here.
     """
 
-    diff_text = acquire_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
-    file_diffs = parse_unified_diff(diff_text)
-    raw_text = acquire_raw_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
-    raw_records = parse_raw_diff_z(raw_text)
-    correlate_raw_and_unified_v2(raw_records, file_diffs)
+    from app.agent_review.authoritative_diff_identity_v2 import (
+        acquire_authoritative_diff_with_identity_v2,
+    )
+
+    file_diffs, _identity = acquire_authoritative_diff_with_identity_v2(
+        repo_root, base_sha=base_sha, head_sha=head_sha
+    )
     return file_diffs
