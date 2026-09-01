@@ -65,10 +65,7 @@ _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"
 )
 # ReviewContent carries unified-hunk body lines, so the real outbound form of
-# an added/deleted assignment begins with '+'/'-'.  Ignoring that marker made
-# the first spike green only for synthetic plain-text shapes and blind on the
-# actual transport material -- exactly the correlated-fixture error this spike
-# exists to prevent.
+# an added/deleted assignment begins with '+'/'-'.
 _LINE_ASSIGNMENT_RE = re.compile(
     r"(?mi)^[ \t]*[+-]?(?:export[ \t]+)?(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)[ \t]*(?P<sep>[:=])[ \t]*(?P<value>[^\r\n]*)$"
 )
@@ -122,7 +119,6 @@ def _placeholder_or_type(value: str) -> bool:
         return True
     if lowered.startswith(("${", "$", "<", "[redacted", "[placeholder")):
         return True
-    # Python annotations/default-shape examples are not credentials.
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.\[\]| ]*", value) and (
         value[:1].isupper() or lowered in _SAFE_VALUE_WORDS
     ):
@@ -147,15 +143,6 @@ def _looks_like_sha_or_identifier(value: str) -> bool:
 
 
 def _looks_token_like_for_entropy(value: str) -> bool:
-    """Keep entropy as an independent detector without flagging code names.
-
-    A broad first attempt treated a long mixed identifier in real
-    ``run_assembly_v2.py`` as a secret.  Token-shaped opaque material needs a
-    stronger surface signal than entropy alone: mixed case plus several digits,
-    or base64 punctuation.  This still catches the spike's deliberately opaque
-    candidate while excluding ordinary ``LongPythonIdentifierV2``-style names.
-    """
-
     if any(character in value for character in "+/="):
         return True
     return (
@@ -163,6 +150,25 @@ def _looks_token_like_for_entropy(value: str) -> bool:
         and any(character.isupper() for character in value)
         and sum(character.isdigit() for character in value) >= 3
     )
+
+
+def _opaque_value_is_suspicious(value: str) -> bool:
+    """Entropy is meaningful only for a value-bearing context, not arbitrary code.
+
+    The previous spike scanned every token in source text and independently
+    rediscovered the classic entropy-scanner false-positive: a long legitimate
+    Python identifier in ``run_assembly_v2.py``.  This helper is therefore
+    invoked only for assignment/JSON scalar values.  Structural JWT/AWS/Slack/
+    PEM detectors remain global because their shape itself is the evidence.
+    """
+
+    for match in _OPAQUE_TOKEN_RE.finditer(value):
+        token = match.group(0)
+        if _looks_like_sha_or_identifier(token) or not _looks_token_like_for_entropy(token):
+            continue
+        if _entropy(token) >= 4.25:
+            return True
+    return False
 
 
 def _scan_text(text: str, *, location: str, findings: list[OutboundSafetyFindingV2]) -> None:
@@ -182,19 +188,11 @@ def _scan_text(text: str, *, location: str, findings: list[OutboundSafetyFinding
             findings.append(
                 OutboundSafetyFindingV2("sensitive_assignment", location, "sensitive_key_value")
             )
-
-    # Independent broad negative oracle: opaque high-entropy strings. It is
-    # intentionally subordinate to structural detectors and excludes canonical
-    # SHA-sized values because AgentReview's request legitimately contains many.
-    for match in _OPAQUE_TOKEN_RE.finditer(text):
-        token = match.group(0)
-        if _looks_like_sha_or_identifier(token) or not _looks_token_like_for_entropy(token):
             continue
-        if _entropy(token) >= 4.25:
+        if not _placeholder_or_type(value) and _opaque_value_is_suspicious(value):
             findings.append(
-                OutboundSafetyFindingV2("high_entropy_opaque", location, "opaque_candidate")
+                OutboundSafetyFindingV2("high_entropy_assignment", location, "opaque_candidate")
             )
-            break
 
     # The Router user message contains canonical JSON as a string. Parse and
     # recurse so the oracle reasons about that final material independently of
@@ -218,6 +216,10 @@ def _scan_value(value: Any, *, location: str, findings: list[OutboundSafetyFindi
                     findings.append(
                         OutboundSafetyFindingV2("sensitive_json_key", child_location, "sensitive_key_value")
                     )
+            elif isinstance(child, str) and not _placeholder_or_type(child) and _opaque_value_is_suspicious(child):
+                findings.append(
+                    OutboundSafetyFindingV2("high_entropy_json_value", child_location, "opaque_candidate")
+                )
             _scan_value(child, location=child_location, findings=findings)
         return
     if isinstance(value, list):
