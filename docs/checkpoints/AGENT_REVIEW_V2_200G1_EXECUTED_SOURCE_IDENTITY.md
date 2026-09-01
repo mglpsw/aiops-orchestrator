@@ -110,13 +110,65 @@ port ledger).
 
 ## 4. Test and mutation record
 
-_Filled in after implementation and full corpus land -- see §4 below this
-line once populated._
+### Process followed
+
+1. **RED** (commit `64fd3d3`): the two `#277` falsifiers written against a
+   stub (`NotImplementedError` for both `verify_executed_source_identity_v2`
+   and `authorize_commit_for_execution_v2`). Ran before any real logic
+   existed; both failed with `NotImplementedError`, confirmed not vacuous.
+2. **GREEN** (commit `985c64e`): real implementation. Both falsifiers pass
+   without weakening either assertion, plus the full required negative
+   corpus, a happy path, and IDENTITY/AUTHORIZATION separation tests. Full
+   corpus for this primitive: **25 tests** in
+   `test_commit_derived_execution_identity_v2.py`, **16 new** tests for the
+   two ported building blocks (`test_bounded_git_v2.py`,
+   `test_git_commit_subject_v2.py`) -- **41 total, all green**.
+   Writing the full corpus (not just the two falsifiers) caught a real bug
+   the falsifiers alone missed: `os.readlink`/`os.access` were used without
+   `import os`. Both falsifier scenarios happen to raise before reaching
+   that code path (round 1 via a missing-tracked-file on the first
+   alphabetically-sorted entry, round 2 via content mismatch on the same),
+   so the two RED tests alone would have stayed green with a `NameError`
+   time bomb in the mode-check/symlink-check paths. The happy-path and
+   mode-mismatch tests, added while building out the corpus, are what
+   exposed it.
+3. **Mutation testing** (commit `985c64e` as the restore point, confirmed
+   clean via `git diff --stat` before and after every mutation): each
+   mutation was applied on top of the committed GREEN state, the full
+   corpus (41 tests) or the targeted subset was run, the result recorded,
+   and the file was reverted to the exact committed text before the next
+   mutation. One mutation (defensive gitlink `continue`, see below) was
+   kept as a genuine fix and committed separately (`ba8daf7`).
+
+### Mutation matrix
+
+| # | Mutated proposition | File | Result | Classification |
+|---|---|---|---|---|
+| 1 | Invert content-equality check (`==` for `!=`) | `commit_derived_execution_identity_v2.py` | 15/25 tests failed | **real** -- central to closing round 2 |
+| 2 | Disable extra-untracked-file check | same | 1 failed (`test_untracked_shadow_file_in_subject_is_refused`) | **real** |
+| 3 | Disable `loaded_module_paths` check | same | 1 failed (`test_module_outside_the_executed_closure_is_refused`); round-1 falsifier stayed green under this mutation alone | **real, but not the sole closer of round-1** -- full-tree-presence (mutation 2/target of the missing-tracked-file check) already refuses round-1's narrowed root before this check would ever run; this check is an independent second signal for a *different* narrowing shape (complete subject, code loaded from elsewhere). Documented in §1 as intentional non-single-point-of-failure design. |
+| 4 | Disable gitlink-present check | same | 1 failed (`test_gitlink_in_tree_is_refused`), but via the collateral missing-tracked-file check on an *earlier* alphabetically-sorted entry in an unmaterialised subject, not a clean isolation of the gitlink path itself | **real (still fail-closed), test isolation is imperfect** -- led directly to finding a latent `KeyError` risk (gitlink entries are absent from `expected_content_by_path`); fixed defensively in `ba8daf7` rather than left as a note only |
+| 5 | Disable mode-mismatch check | same | 1 failed (`test_mode_mismatch_is_refused`) | **real** |
+| 6 | Disable symlink-target check | same | 1 failed (`test_tampered_symlink_target_is_refused`) | **real** |
+| 7 | Drop `^{commit}` from `resolve_commit_v2`'s `rev-parse` | `git_commit_subject_v2.py` | 4 failed, incl. `test_resolve_commit_refuses_a_tree_sha` | **real** -- this is the check that keeps a tree/blob sha from being accepted as an identity |
+| 8 | Remove `--no-replace-objects` | `bounded_git_v2.py` | 1 failed (`test_git_replace_ref_cannot_substitute_a_different_tree`), reproducing the substituted tree's content exactly | **real** |
+| 9 | Build child env from `dict(os.environ)` instead of an allowlist | same | 3 failed, incl. the exact-key-set assertion | **real** -- this is the allowlist-vs-blacklist property from the port ledger |
+| 10 | Resolve `git` via caller `PATH` instead of `os.defpath` | same | 2 failed, incl. `test_fake_git_earlier_in_path_is_never_executed` | **real** |
+| 11 | Swap ancestor/descendant argument order in `authorize_commit_for_execution_v2`'s `merge-base --is-ancestor` | `commit_derived_execution_identity_v2.py` | 2 failed | **real** -- confirms AUTHORIZATION direction is exercised, not just present |
+
+11/11 mutations killed. No equivalent or redundant-control survivors in the
+strict sense; mutation 3 is a *deliberately* non-single-point-of-failure
+check (kept even though one specific attack shape no longer needs it, per
+the design rationale in §1), and mutation 4's kill is collateral rather than
+a clean isolation of the intended check -- both are called out above rather
+than reported as clean kills they were not.
 
 ## 5. Review rounds and findings
 
-_Filled in after adversarial review passes complete._
+_To be filled in after the two independent adversarial review passes
+dispatched via the Agent tool complete, against the exact head frozen below._
 
 ## 6. Terminal verdict
 
-_Filled in at the end of this slice._
+_To be filled in once review rounds are complete and (if needed) one bounded
+correction round has been applied and re-reviewed._
