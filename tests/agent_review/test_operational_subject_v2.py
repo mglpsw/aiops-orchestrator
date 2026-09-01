@@ -458,3 +458,68 @@ def test_a_toolrepo_subject_digest_describes_the_bytes_that_will_run(
 
     (subject.root / "src" / "service.py").write_text("tampered\n", encoding="utf-8")
     assert subject.subject_digest != compute_subject_digest_v2(subject.root)
+
+
+def test_an_untracked_root_module_cannot_reach_the_inner_epoch(
+    target_repository_v2: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """`#200-F` §6 -- the bootstrap shadowing witness, for the inner.
+
+    The `#276` witness planted an untracked ``dataclasses.py`` beside the
+    entry point, where it executed before any subject was sealed while HEAD
+    and the worktree status stayed unchanged.
+
+    For the **inner** this is closed structurally rather than by a check: the
+    inner executes from a subject materialised out of committed bytes, and an
+    untracked file is by definition not in them. There is no import-order
+    guard to get wrong, and nothing to regress.
+
+    The scope of the claim is exactly that. The **outer** still executes from
+    the ordinary checkout before anything is sealed and remains exposed;
+    closing that needs an attested launcher this slice does not build, and the
+    checkpoint records ``bootstrap.remotely_attested: false`` rather than
+    implying otherwise.
+    """
+    shadow = target_repository_v2 / "dataclasses.py"
+    shadow.write_text(
+        "raise SystemExit('shadow module executed')\n", encoding="utf-8"
+    )
+    also_shadowed = target_repository_v2 / "src" / "os.py"
+    also_shadowed.write_text("BAD = True\n", encoding="utf-8")
+
+    # Untracked, and deliberately left that way: this is the whole point.
+    assert "dataclasses.py" in _git_v2(target_repository_v2, "status", "--porcelain=v1")
+
+    subject = materialise_toolrepo_execution_subject_v2(
+        toolrepo_root=target_repository_v2,
+        toolrepo_sha=_head_v2(target_repository_v2),
+        destination=tmp_path / "toolrepo",
+    )
+
+    assert not (subject.root / "dataclasses.py").exists()
+    assert not (subject.root / "src" / "os.py").exists()
+    assert (subject.root / "src" / "service.py").is_file(), (
+        "non-vacuity: committed files must still be present"
+    )
+
+
+def test_a_stale_bytecode_file_cannot_reach_the_inner_epoch(
+    target_repository_v2: pathlib.Path, tmp_path: pathlib.Path
+) -> None:
+    """The ``.pyc`` entry of the red corpus, closed the same way.
+
+    A committed tree carries no ``__pycache__``, and the inner runs under
+    ``python -B`` so it writes none either.
+    """
+    cache = target_repository_v2 / "src" / "__pycache__"
+    cache.mkdir()
+    (cache / "service.cpython-311.pyc").write_bytes(b"\x00stale bytecode")
+
+    subject = materialise_toolrepo_execution_subject_v2(
+        toolrepo_root=target_repository_v2,
+        toolrepo_sha=_head_v2(target_repository_v2),
+        destination=tmp_path / "toolrepo",
+    )
+
+    assert not (subject.root / "src" / "__pycache__").exists()
+    assert list(subject.root.rglob("*.pyc")) == []
