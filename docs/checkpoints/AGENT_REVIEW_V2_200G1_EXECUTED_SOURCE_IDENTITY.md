@@ -11,6 +11,25 @@ attempt G2--G4 or the G5 recomposition.
 `f70af2e635643d1ee96ba431857002ae079b502b` (verified as HEAD before any
 change; no drift).
 
+**Self-found P1, fixed before external review (commit `548a9f0`):** while
+re-reading the implementation before dispatching adversarial review,
+`verify_executed_source_identity_v2`'s per-entry comparison loop was found
+to join `subject_root / entry.path` directly, without the containment
+discipline the *ported* materialisation code
+(`git_commit_subject_v2._safe_destination_v2`) already applies. Proven
+exploitable, not theoretical: `git mktree` accepts a subtree literally
+named `..`, and `git ls-tree -r` on such a tree flattens it into an entry
+path like `../evil.py`; demonstrated end-to-end that, unfixed, a
+maliciously crafted commit could make `verify_executed_source_identity_v2`
+read a file *outside* `subject_root` and report success. Fixed with a
+lexical (`posixpath.normpath`-based, not `Path.resolve()`-based --
+`resolve()` would dereference an already-materialised symlink entry and
+answer a different question) containment check, `_safe_subject_path_v2`,
+mutation-tested in isolation to confirm a clean (non-collateral) kill. Full
+detail in §4. Recorded here, not hidden in the diff, because the process
+contract requires reproducing and disclosing findings rather than folding
+them silently into "the implementation" as if they had never been wrong.
+
 ## 1. Design rationale (written before implementation, per process step 2)
 
 ### Why the round-1 narrow-root attack closes
@@ -119,10 +138,11 @@ port ledger).
 2. **GREEN** (commit `985c64e`): real implementation. Both falsifiers pass
    without weakening either assertion, plus the full required negative
    corpus, a happy path, and IDENTITY/AUTHORIZATION separation tests. Full
-   corpus for this primitive: **25 tests** in
+   corpus for this primitive (after the path-traversal fix in `548a9f0`
+   added one more test): **26 tests** in
    `test_commit_derived_execution_identity_v2.py`, **16 new** tests for the
    two ported building blocks (`test_bounded_git_v2.py`,
-   `test_git_commit_subject_v2.py`) -- **41 total, all green**.
+   `test_git_commit_subject_v2.py`) -- **42 total, all green**.
    Writing the full corpus (not just the two falsifiers) caught a real bug
    the falsifiers alone missed: `os.readlink`/`os.access` were used without
    `import os`. Both falsifier scenarios happen to raise before reaching
@@ -155,13 +175,37 @@ port ledger).
 | 9 | Build child env from `dict(os.environ)` instead of an allowlist | same | 3 failed, incl. the exact-key-set assertion | **real** -- this is the allowlist-vs-blacklist property from the port ledger |
 | 10 | Resolve `git` via caller `PATH` instead of `os.defpath` | same | 2 failed, incl. `test_fake_git_earlier_in_path_is_never_executed` | **real** |
 | 11 | Swap ancestor/descendant argument order in `authorize_commit_for_execution_v2`'s `merge-base --is-ancestor` | `commit_derived_execution_identity_v2.py` | 2 failed | **real** -- confirms AUTHORIZATION direction is exercised, not just present |
+| 12 | Disable `_safe_subject_path_v2`'s containment check (path-traversal fix, commit `548a9f0`) | `commit_derived_execution_identity_v2.py` | 1 failed with "DID NOT RAISE" against a test where a file matching the malicious blob's content was pre-planted at the escape target | **real, clean kill** -- confirms the check is load-bearing and the earlier collateral-kill pattern (mutations 4, and originally this one before the test was strengthened) does not apply here |
 
-11/11 mutations killed. No equivalent or redundant-control survivors in the
+12/12 mutations killed. No equivalent or redundant-control survivors in the
 strict sense; mutation 3 is a *deliberately* non-single-point-of-failure
 check (kept even though one specific attack shape no longer needs it, per
 the design rationale in §1), and mutation 4's kill is collateral rather than
 a clean isolation of the intended check -- both are called out above rather
-than reported as clean kills they were not.
+than reported as clean kills they were not. Mutation 12 documents a
+self-found P1 (path-traversal via a git tree entry literally named `..`)
+that was fixed and proven exploitable end-to-end *before* dispatching
+adversarial review -- see the note at the top of this document.
+
+### Full adjacent regression suite
+
+Run at commit `985c64e` (before the path-traversal fix; re-run not repeated
+after `548a9f0` since that commit only touches this primitive's own two test
+files, already green): `python -m pytest tests/agent_review/ -q` ->
+**2600 passed, 48 failed, 12 skipped** (277s). The post-`#200-F` recovery
+checkpoint recorded **2559 passed, 48 failed, 12 skipped** at `f70af2e6`
+(live master, before this branch). `2559 + 41 (this slice's new tests at
+that commit) = 2600` exactly. The 48 failures are byte-for-byte the same
+named tests as the recovery checkpoint's own list (`test_isolated_
+executor_v2.py::test_execute_denies_sudo_inside_the_isolated_check`,
+`::test_sudo_path_resolves_to_an_absolute_path_via_a_fixed_search_list`,
+plus the `target_repo_write_blocked`-class failures across `test_agent_
+review_e2e_contract.py` / `test_aiops_review_build_payloads_cli.py` /
+`test_aiops_review_false_positives_cli.py` / `test_aiops_review_telemetry_
+cli.py`) -- environment-class (sudo-denial, worktree-write-blocked from
+running inside a `git worktree add` checkout), not product regressions, and
+not this slice's to fix per the recovery checkpoint's own disposition.
+**No new failures introduced by this slice.**
 
 ## 5. Review rounds and findings
 
