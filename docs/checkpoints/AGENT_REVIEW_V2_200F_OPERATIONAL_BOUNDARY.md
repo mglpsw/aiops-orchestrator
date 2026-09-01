@@ -116,3 +116,105 @@ target_repo_mutation: false
 close_200: false
 change_273: false
 ```
+
+---
+
+# Implementation record
+
+## Authorities built
+
+| # | Authority | Module | Status |
+|---|---|---|---|
+| A | derivable operational refusal | `operational_refusal_v2.py` | built, mutation-qualified |
+| — | pre-seal public input (§4) | `operational_ingress_v2.py` | built, mutation-qualified |
+| B | exclusive outer→inner channel | `operational_inner_control_v2.py` | built, mutation-qualified |
+| C | explicit changed scope | `operational_scope_v2.py` | built |
+| D | range-aware result binding | `operational_result_binding_v2.py` | built, mutation-qualified (both paths) |
+| E | quoted assignment redaction | `redaction.py` | built, mutation-qualified |
+| — | bounded git | `operational_bounded_git_v2.py` | built |
+| — | controlled subjects (§11) | `operational_subject_v2.py` | built |
+| — | composition (§12/§13) | `operational_run_v2.py` | built |
+| — | product CLI (§14) | `scripts/aiops-review-run-v2.py` | built |
+
+## §8 verdict — `STOP_SCOPE_CONTRACT_REQUIRED`
+
+The published `agent-review.review-readiness.v2` contract cannot express
+"fragment review complete, total changed scope incomplete" without semantic
+distortion. All four candidate routes are **structurally accepted** by the
+contracts and semantically false; the spike executes each rather than arguing
+about it. ADR: `docs/adr/ADR-200F-SCOPE-COMPLETENESS-CONTRACT.md`.
+
+This blocks **emission only**. The private scope authority still prevents a
+false `ready`, so the rest of the slice proceeded.
+
+## Soundness traps found while building the controls
+
+Recorded because each would have produced a control that looked green while
+being blind — the exact `#276` failure mode.
+
+| Trap | Consequence if unnoticed | Resolution |
+|---|---|---|
+| `cls.__module__` is mutable; `_target_pack_epoch_contract_v2.py:50` rewrites it | source lookup reads the wrong file, reports a false violation | resolve definitions from an AST index; fail loudly on an ambiguous name |
+| enumeration by instantiation probe | `#276` saw 74/95 classes and called it complete | read the AST, not a constructed instance |
+| `git checkout --` on an **untracked** file silently fails | four mutations accumulated; each "discriminator" was measuring the previous mutation too | commit before mutating, always |
+| naive import insertion landed inside a parenthesised import | mutation produced an ImportError, not a discriminator — 4 failures that proved nothing | AST-anchored insertion + an explicit import check before running the suite |
+| >64 KiB write to a pipe with no reader | test deadlocked | deliver oversized payloads through a file descriptor |
+| poisoned `GIT_*` broke the *fixture helper*, not the product | 3 false failures | read fixture state before poisoning |
+
+## Mutation matrix
+
+| Mutation | Intended discriminator | Result |
+|---|---|---|
+| drop marker from `DiffAcquisitionError` | A1 | RED |
+| claim membership without `reason_code` | A2 | RED (exactly 1 failure) |
+| undispositioned non-member on product path | A3 | RED (exactly 1) |
+| ingress stops translating `ValidationError` | round-4 witness | RED (9) |
+| drop subject-root check | root mismatch | RED |
+| drop subject digest check | TOCTOU | RED |
+| accept smuggled extra keys | document shape | RED |
+| add environment fallback | exclusivity | RED |
+| remove line-range validation | `#276` P0 | RED (6) |
+| skip ranges on Router path only | both-paths rule | **survived**, then RED after the gap was closed |
+| restore quote-excluding value class | E witness | RED (16) |
+| drop the colon rule | YAML/JSON leak | RED (4) |
+| greedy quoted value | multi-secret | RED |
+
+One survivor, recorded rather than explained away: the Router-path mutation
+survived the first round because every authority-D test drove the offline
+path. A surviving mutant is a coverage statement, so a Router-path test was
+added and the mutation re-run.
+
+## Deliberately not claimed
+
+```yaml
+bootstrap:
+  remotely_attested: false
+```
+
+The outer bootstrap necessarily executes from the ordinary checkout before any
+subject is sealed, so an untracked module planted beside it can still run
+first. The **inner** is not exposed to this: it executes from a subject
+materialised from committed bytes, where an untracked shadow cannot exist.
+Closing it for the outer requires an attested launcher this slice does not
+build.
+
+`declared_toolrepo_sha` is bound to the *bytes* of the subject by digest, and
+no argv or environment route can express it. Someone who can already run
+arbitrary code on the host can run their own copy of the product; that is not
+the boundary, and is not claimed to be.
+
+## Protected actions — still not taken
+
+```yaml
+ready: false
+merge: false
+release: false
+deploy: false
+workflow_mutation: false
+live_router: false
+provider: false
+network_required: false
+target_repo_mutation: false
+close_200: false
+change_273: false
+```
