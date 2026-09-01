@@ -70,11 +70,19 @@ class DLPOverrideConfig:
     target knows is sensitive by domain knowledge the generic engine can't
     have (e.g. an internal hostname fragment, a project-specific credential
     label).
-    ``additional_safe_substrings``: literal substrings a target has
-    reviewed and knows are safe (e.g. a fixture/test constant that happens
-    to look like a secret) -- spared from redaction when they are the
-    *entire* matched value, never used to widen what counts as benign
-    inside a real secret.
+    ``additional_safe_substrings``: literal values a target has reviewed
+    and knows are safe (e.g. a fixture/test constant that happens to look
+    like a secret). Wired into the redactor's OWN placeholder check
+    (`RedactionState.extra_safe_values`) before it runs, so a listed value
+    is never treated as suspect in the first place -- it is simply never a
+    witness, and every value that IS a witness is still verified with no
+    exemptions. #200-G2 round 2: an earlier version filtered this OUT of
+    the post-hoc witness list instead, which silently stopped verifying
+    ANY occurrence of that literal anywhere in the material once ONE
+    occurrence was declared safe -- including a second, never-redacted
+    occurrence elsewhere (e.g. repeated in a comment) that the postcondition
+    check would otherwise have caught. Independent review reproduced that
+    as a live leak; this is the fix, not a follow-up.
     """
 
     additional_blocked_substrings: frozenset[str] = field(default_factory=frozenset)
@@ -133,15 +141,16 @@ def derive_safe_review_material(
         )
 
     state = RedactionState()
-    output = redact_text(text, state)
-
     if dlp_config is not None and dlp_config.additional_safe_substrings:
-        # A target-declared safe substring is only honoured when it is
-        # exactly what was redacted (the whole witness), never used to
-        # excuse part of a larger, still-suspect value.
-        witnesses = [w for w in state.redacted_witnesses if w not in dlp_config.additional_safe_substrings]
-    else:
-        witnesses = list(state.redacted_witnesses)
+        state.extra_safe_values = dlp_config.additional_safe_substrings
+    output = redact_text(text, state)
+    # No post-hoc witness filtering: every witness the scanner actually
+    # recorded is verified, unconditionally. A DLP-declared-safe value
+    # never becomes a witness in the first place (see `state.
+    # extra_safe_values` above), so there is nothing to exempt here -- see
+    # the round-2 correction note on `DLPOverrideConfig.additional_safe_
+    # substrings` for why a separate exemption step here was the bug.
+    witnesses = list(state.redacted_witnesses)
 
     if state.unbounded_construct_present:
         return SafeMaterialResult(

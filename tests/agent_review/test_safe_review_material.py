@@ -29,6 +29,26 @@ POSITIVE_CORPUS = [
     pytest.param('password = "Sup3r-Secret-Value!"', "Sup3r-Secret-Value!", id="quoted_password"),
     pytest.param("export API_KEY=Zm9vYmFyYmF6", "Zm9vYmFyYmF6", id="shell_export"),
     pytest.param("API_KEY=Zm9vYmFyYmF6\n", "Zm9vYmFyYmF6", id="dotenv_line"),
+    # #200-G2 round 2 (independent review, P0): compound/prefixed key
+    # names -- the single most common real-world secret-naming convention
+    # -- bypassed the exact-literal-match scanner entirely.
+    pytest.param('db_password = "SuperSecretPass123!"', "SuperSecretPass123!", id="compound_key_db_password"),
+    pytest.param('STRIPE_API_KEY = "sk_live_abcdef1234567890"', "sk_live_abcdef1234567890", id="compound_key_stripe_api_key"),
+    pytest.param('JWT_SECRET="whatevershhh12345"', "whatevershhh12345", id="compound_key_jwt_secret"),
+    pytest.param('ADMIN_PASSWORD = "letmein987654"', "letmein987654", id="compound_key_admin_password"),
+    pytest.param('{"db_password": "SuperSecretPass123!"}', "SuperSecretPass123!", id="compound_key_json_field"),
+    # #200-G2 round 2 (independent review, P0): a comma-joined pair under
+    # ONE key only had the pre-comma half captured and redacted; the tail
+    # was left in plaintext and never even recorded as a witness, so
+    # postcondition verification had nothing to check it against.
+    pytest.param("api_key=abcd1234,efgh5678", "efgh5678", id="comma_joined_tail"),
+    pytest.param("api_key=abcd1234,efgh5678,ijkl9012", "ijkl9012", id="comma_joined_third_segment"),
+    # #200-G2 round 2 (independent review, P0): unquoted dotted `.env`-
+    # style values were spared OUTRIGHT by the dotted-reference carve-out
+    # (meant for Python attribute chains like `self.api_key`), with ZERO
+    # witness recorded -- a silent false negative.
+    pytest.param("token=deadbeef.cafebabe1234", "deadbeef.cafebabe1234", id="dotenv_dotted_value"),
+    pytest.param("password=admin.hunter2value", "admin.hunter2value", id="dotenv_dotted_value_wordlike"),
     # A "same name as the key" carve-out (added to spare `token=token`
     # kwarg-passing in real scripts) must not spare a secret whose OWN
     # descriptive/fixture name happens to contain the key word as a whole
@@ -94,6 +114,15 @@ def test_positive_corpus_never_leaves_plaintext(text: str, witness: str) -> None
 NEGATIVE_CORPUS = [
     pytest.param("token=token", id="same_name_keyword_argument"),
     pytest.param("self.token = token", id="same_name_attribute_assignment"),
+    # The comma-tail fix (see POSITIVE_CORPUS's comma_joined cases) must
+    # not swallow a genuine SECOND keyword argument after the comma.
+    pytest.param("GitHubClient(api_key=api_key, other_param=other_param)", id="comma_separates_two_kwargs"),
+    pytest.param("foo(a=1, b=2)", id="comma_separates_two_kwargs_generic"),
+    # The compound-key fix (see POSITIVE_CORPUS's compound_key cases) must
+    # not start flagging ordinary compound identifiers that merely contain
+    # an unrelated substring near a sensitive word, or dotted references
+    # under a compound key name.
+    pytest.param("db_password_reset_enabled = True", id="compound_key_boolean_flag_not_a_secret"),
     pytest.param('"prompt_tokens": usage.get("input_tokens", 0)', id="prompt_tokens_dict_lookup"),
     pytest.param("max_tokens = 100", id="max_tokens_numeric"),
     pytest.param('max_tokens: int = 4096', id="max_tokens_annotation"),
@@ -212,24 +241,50 @@ def test_dlp_override_forces_block_on_declared_sensitive_substring() -> None:
 
 
 def test_dlp_override_safe_substring_only_excuses_whole_witness() -> None:
-    """A target-declared safe substring only spares a witness when it is
-    exactly what would have been redacted -- it must not widen what counts
-    as benign inside a still-suspect larger value.
+    """A target-declared safe substring only spares a value that is
+    EXACTLY it -- it must not widen what counts as benign inside a still-
+    suspect larger value that merely contains it as a substring.
     """
     cfg = DLPOverrideConfig(additional_safe_substrings=frozenset({"fixture-test-secret-001"}))
 
+    # The declared-safe value is treated the same as a known placeholder:
+    # it is never flagged as suspect in the first place, so the material
+    # is left byte-identical (SAFE_UNCHANGED), not redacted-then-excused.
     spared = derive_safe_review_material('token = "fixture-test-secret-001"', dlp_config=cfg)
-    # The witness is on the "safe" list, so it is excluded from postcondition
-    # tracking, but the underlying redactor still ran and redacted it --
-    # sparing here means "don't demand this exact witness be proven absent",
-    # not "let it leak". Confirm it is in fact absent anyway (redaction
-    # still happened; the override only affects what postcondition checking
-    # requires, not what the transform does).
-    assert spared.disposition in (MaterialDisposition.SAFELY_TRANSFORMED, MaterialDisposition.SAFE_UNCHANGED)
+    assert spared.disposition is MaterialDisposition.SAFE_UNCHANGED
+    assert spared.output == 'token = "fixture-test-secret-001"'
 
+    # A larger value that merely CONTAINS the declared-safe substring is
+    # still suspect in full and still gets redacted.
     not_spared = derive_safe_review_material('token = "fixture-test-secret-001-extended-with-more-entropy"', dlp_config=cfg)
     assert not_spared.disposition is MaterialDisposition.SAFELY_TRANSFORMED
     assert "fixture-test-secret-001-extended-with-more-entropy" not in (not_spared.output or "")
+
+
+def test_dlp_override_safe_substring_does_not_disable_verification_of_other_occurrences() -> None:
+    """#200-G2 round 2 (independent review, reproduced and fixed): an
+    earlier version of the override REMOVED a declared-safe value from the
+    GLOBAL postcondition witness list, which silently stopped verifying
+    ANY occurrence of that literal anywhere in the material -- including a
+    SEPARATE occurrence that was never even redacted (e.g. the same secret
+    repeated in a comment, which the key=value scanner never touches at
+    all). That is a live leak: `SAFELY_TRANSFORMED`/`postcondition_verified
+    =True` with the real secret still visible. The fix routes the override
+    through the redactor's own placeholder check instead (the value is
+    simply never treated as suspect), which this test locks in.
+    """
+    text = 'api_key = "SECRETXYZ123456"\n# note: SECRETXYZ123456 is the rotation key\n'
+
+    control = derive_safe_review_material(text)
+    assert control.disposition is MaterialDisposition.BLOCKED_UNSAFE_TO_TRANSFORM
+
+    cfg = DLPOverrideConfig(additional_safe_substrings=frozenset({"SECRETXYZ123456"}))
+    result = derive_safe_review_material(text, dlp_config=cfg)
+    # The value is declared safe, so leaving it untouched everywhere is the
+    # correct, honest outcome -- SAFE_UNCHANGED, not a claimed
+    # transformation.
+    assert result.disposition is MaterialDisposition.SAFE_UNCHANGED
+    assert result.output == text
 
 
 def test_safe_unchanged_disposition_leaves_material_byte_identical() -> None:

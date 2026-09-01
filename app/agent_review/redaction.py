@@ -156,19 +156,122 @@ _JWT_CANDIDATE_RE = re.compile(
 # legitimate large multi-line secret block while bounding blast radius.
 _MAX_TRIPLE_QUOTE_SEARCH_WINDOW = 20_000
 
-_ASSIGNMENT_KEY_FORMS: tuple[str, ...] = tuple(
-    sorted(
-        (SENSITIVE_KEYS | {"credential", "credentials", "client_id_secret"}) - {"authorization"},
-        key=len,
-        reverse=True,
-    )
+# #200-G2 round 2: an earlier version of this module matched sensitive keys
+# by EXACT identifier equality against an enumerated set (`password`,
+# `api_key`, ...). Independent review found that requires an underscore-
+# bounded WHOLE word, so `DB_PASSWORD`, `STRIPE_API_KEY`, `JWT_SECRET`,
+# `ADMIN_PASSWORD` -- the single most common real-world compound secret-
+# naming convention -- never matched at all (kebab-case like `db-password`
+# DID match, purely because `-` isn't a word character and so accidentally
+# acted as a boundary; that asymmetry was itself the tell). Replaced with
+# WORD-based matching: an identifier is split into words on `_` and
+# camelCase boundaries, and is a sensitive key if any single word, or any
+# adjacent word pair, is in the sets below. This still costs O(1) per
+# identifier occurrence (bounded by identifier length) and is applied via
+# maximal-munch identifier extraction (`_IDENTIFIER_RE`), not an unanchored
+# search -- see `_scan_and_redact_key_values`, which advances its cursor
+# past a whole identifier in ONE step whether or not it turns out
+# sensitive, so a very long non-matching identifier still costs O(its own
+# length) once, not O(remaining text) at every one of its offsets.
+_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+_SIMPLE_SENSITIVE_WORDS = frozenset(
+    {
+        "password", "passwd", "pwd", "secret", "apikey", "authorization",
+    }
 )
-# `authorization` is deliberately excluded from the generic key=value/key:
-# value scanner above: an HTTP header value is often two tokens
-# ("Bearer <opaque>"), which the bare-value scanner (stops at whitespace)
-# would truncate and mis-redact only the "Bearer" word. It stays in
-# SENSITIVE_KEYS for JSON-field redaction, and `_sub_authorization_bearer`/
-# `_sub_bearer` already cover the header-value text form specifically.
+# #200-G2 round 2: `token` was originally in `_SIMPLE_SENSITIVE_WORDS`
+# too (matching as a compound COMPONENT, same as `password`/`secret`), but
+# independent review's own required negative corpus uses
+# `command_token: SafeIdentifier` as the exemplar for "project-defined
+# CapitalCase type names must not be damaged" -- and `token` as a bare
+# SUFFIX is genuinely overloaded: `command_token`/`expected_token`/
+# `parse_token` are ordinary non-credential code, while `session_token`/
+# `auth_token`/`access_token`/`refresh_token` clearly are credentials.
+# There is no structural (non-casing) signal that tells them apart. So
+# `token` is treated as sensitive ONLY when it is the WHOLE identifier on
+# its own (`token = ...`, unambiguous) or as part of one of the explicit
+# compound forms below -- the same "ambiguous word, enumerate the compound
+# forms instead of matching generically" trade-off this module already
+# applies to `key`.
+_SINGLE_WORD_ONLY_SENSITIVE = frozenset({"token", "credential", "credentials"})
+# `credential(s)` moved here from `_SIMPLE_SENSITIVE_WORDS` for the same
+# reason as `token`: `allow_credentials` (a FastAPI/Django CORS boolean
+# config flag, `app/main.py`) was flagged as a credential-holding key by
+# compound matching -- it is a toggle, not a secret. No Lane-A witness
+# needed `credentials` to match compound-wise.
+# Compound terms where the sensitive meaning only exists as the PAIR
+# (`key` alone is the genuinely ambiguous case named in the historical
+# commit history -- `dedupe_key`, `namespace_key` are ordinary code; `api`
+# immediately followed by `key` is not ambiguous).
+_COMPOUND_SENSITIVE_BIGRAMS = frozenset(
+    {
+        ("api", "key"), ("secret", "key"), ("signing", "key"),
+        ("access", "key"), ("encryption", "key"), ("private", "key"),
+        ("client", "secret"), ("access", "token"), ("refresh", "token"),
+        ("session", "token"), ("auth", "token"),
+    }
+)
+
+
+def _split_identifier_words(identifier: str) -> list[str]:
+    """Split ``identifier`` into lowercase words on ``_`` and camelCase
+    boundaries. ``DB_PASSWORD`` -> ``["db", "password"]``,
+    ``stripeApiKey`` -> ``["stripe", "api", "key"]``. O(len(identifier)).
+    """
+    words: list[str] = []
+    for chunk in identifier.split("_"):
+        if not chunk:
+            continue
+        start = 0
+        for idx in range(1, len(chunk)):
+            if chunk[idx].isupper() and (chunk[idx - 1].islower() or chunk[idx - 1].isdigit()):
+                words.append(chunk[start:idx])
+                start = idx
+        words.append(chunk[start:])
+    return [w.lower() for w in words if w]
+
+
+def _identifier_is_sensitive_key(identifier: str, *, exclude_authorization: bool = True) -> bool:
+    """Is ``identifier`` a sensitive key, by word-based (not exact-string)
+    matching?
+
+    ``exclude_authorization`` defaults to True for the TEXT key=value
+    scanner, where an HTTP header value is often two tokens
+    ("Bearer <opaque>"), which the bare-value scanner (stops at
+    whitespace) would truncate and mis-redact only the word "Bearer" --
+    `_sub_authorization_bearer`/`_sub_bearer` cover that form specifically.
+    The JSON/dict-field path (`_redact_sensitive_field`) passes
+    ``exclude_authorization=False``: a dict value is never embedded prose
+    subject to that truncation risk, so `{"authorization": "Bearer xyz"}`
+    should redact the whole value.
+    """
+    if exclude_authorization and identifier.lower() == "authorization":
+        return False
+    words = _split_identifier_words(identifier)
+    if len(words) == 1 and words[0] in _SINGLE_WORD_ONLY_SENSITIVE:
+        return True
+    # #200-G2 round 2: the single-word simple-word check is capped at 2
+    # words, found necessary by the real-source oracle.
+    # `hardcoded_secret_confirmed` (3 words) and `secret_like_values_found`
+    # (4 words) both contain "secret" as a component and were flagged as
+    # credential-holding keys -- both are COUNTS/FLAGS *describing*
+    # secret-shaped material, the same "descriptive metadata name, not a
+    # credential" shape as `command_token`. Every real Lane-A witness
+    # (`db_password`, `jwt_secret`, `admin_password`) is exactly 2 words;
+    # longer compounds are measured, in this repository's own source, to
+    # be far more often descriptive/metric identifiers than actual secret
+    # holders. The BIGRAM check (below) is intentionally NOT length-capped
+    # the same way: `stripe_api_key` (3 words) is a real Lane-A witness,
+    # caught via the ("api", "key") bigram regardless of the leading
+    # "stripe" -- a bigram is a much more specific signal (two co-occurring
+    # exact words) than a single word, so its false-positive rate is
+    # structurally lower and a length cap is less needed to control it.
+    if len(words) <= 2 and any(word in _SIMPLE_SENSITIVE_WORDS for word in words):
+        return True
+    return any((a, b) in _COMPOUND_SENSITIVE_BIGRAMS for a, b in zip(words, words[1:]))
+
+
 _WORD_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
 )
@@ -204,6 +307,21 @@ class RedactionState:
         # files_processed/replacements_by_type/limitations are unaffected.
         self.redacted_witnesses: list[str] = []
         self.unbounded_construct_present: bool = False
+        # #200-G2 round 2: target-owned DLP "known safe" values (see
+        # `safe_review_material.DLPOverrideConfig.additional_safe_
+        # substrings`). Consulted at the REDACTION DECISION itself (via
+        # `_is_placeholder`), not just at postcondition-verification time --
+        # independent review found the previous design excused a value from
+        # the GLOBAL witness list once ANY occurrence of it was
+        # "known safe", which silently stopped checking for OTHER,
+        # never-redacted occurrences of the same literal elsewhere in the
+        # material (e.g. a second mention in a comment) -- a real leak the
+        # postcondition check exists specifically to catch. Wiring it in
+        # here instead means: a value on this list is never treated as
+        # suspect in the first place, so it is simply never a witness, and
+        # every value that IS a witness is still verified with no
+        # exemptions.
+        self.extra_safe_values: frozenset[str] = frozenset()
 
     @property
     def secret_like_values_found(self) -> int:
@@ -280,7 +398,15 @@ def redact_text(text: str, state: RedactionState) -> str:
 
 
 def _redact_sensitive_field(key: Any, value: Any, state: RedactionState) -> Any:
-    if _normalize_key(key) in SENSITIVE_KEYS and isinstance(value, str) and not _is_placeholder(value):
+    # #200-G2 round 2: word-based, not exact-set membership -- same
+    # `DB_PASSWORD`/`STRIPE_API_KEY` blind spot independent review found in
+    # the text scanner applied here too, since a JSON/dict key is exactly
+    # as likely to be a compound identifier as an assignment's LHS.
+    if (
+        _identifier_is_sensitive_key(_normalize_key(key), exclude_authorization=False)
+        and isinstance(value, str)
+        and not _is_placeholder(value, state)
+    ):
         state.record("sensitive_json_field")
         state.record_witness(value)
         return REDACTED
@@ -312,7 +438,7 @@ def _looks_like_jwt(token: str) -> bool:
 def _sub_jwt_tokens(text: str, state: RedactionState) -> str:
     def replace(match: re.Match[str]) -> str:
         candidate = match.group(0)
-        if not _looks_like_jwt(candidate) or _is_placeholder(candidate):
+        if not _looks_like_jwt(candidate) or _is_placeholder(candidate, state):
             return candidate
         state.record("jwt")
         state.record_witness(candidate)
@@ -334,7 +460,7 @@ def _sub_known_credential_prefixes(text: str, state: RedactionState) -> str:
     for label, pattern in patterns:
         def replace(match: re.Match[str], _label: str = label) -> str:
             candidate = match.group(0)
-            if _is_placeholder(candidate):
+            if _is_placeholder(candidate, state):
                 return candidate
             state.record(_label)
             state.record_witness(candidate)
@@ -347,7 +473,7 @@ def _sub_known_credential_prefixes(text: str, state: RedactionState) -> str:
 def _sub_authorization_bearer(text: str, state: RedactionState) -> str:
     def replace(match: re.Match[str]) -> str:
         token = match.group(2)
-        if _is_placeholder(token):
+        if _is_placeholder(token, state):
             return match.group(0)
         state.record("authorization_bearer")
         state.record_witness(token)
@@ -359,7 +485,7 @@ def _sub_authorization_bearer(text: str, state: RedactionState) -> str:
 def _sub_bearer(text: str, state: RedactionState) -> str:
     def replace(match: re.Match[str]) -> str:
         token = match.group(1)
-        if _is_placeholder(token) or token == REDACTED:
+        if _is_placeholder(token, state) or token == REDACTED:
             return match.group(0)
         state.record("bearer_token")
         state.record_witness(token)
@@ -372,22 +498,82 @@ def _is_word_char(ch: str) -> bool:
     return ch in _WORD_CHARS
 
 
-def _match_key_at(text: str, lowered: str, i: int) -> str | None:
-    """Return the sensitive key literal matched at position ``i``, if any.
+def _identifier_match_at(text: str, i: int) -> re.Match[str] | None:
+    """Return the maximal-munch identifier match starting at ``i``, if any
+    identifier starts there at all (i.e. ``i`` is a word boundary AND
+    ``text[i]`` is itself a word-start character).
 
-    Direct bounded slice comparison against a fixed, small alternative set --
-    no unanchored `.*?`/`X*?` prefix search retried at every offset. That is
-    the mechanism difference from the #277 lineage's quadratic defect (see
-    module docstring): a failed attempt here costs O(len(longest key)),
-    a small constant, never O(remaining text).
+    This is the ONLY unanchored-ish regex scan in the key-matching path,
+    and it is safe: `[A-Za-z_][A-Za-z0-9_]*` has no internal ambiguity (no
+    nested/alternated quantifiers that could match the same span multiple
+    ways), so matching it at a single fixed offset via ``re.match`` costs
+    O(len(the identifier)), never more. The caller (`_scan_and_redact_key_
+    values`) uses the match's end position to skip a whole identifier in
+    one step regardless of whether it turns out sensitive -- that is what
+    keeps the overall scan O(n): a single very long non-matching
+    "identifier" is charged once for its own length, not re-attempted at
+    every one of its internal offsets.
     """
     if i > 0 and _is_word_char(text[i - 1]):
         return None
-    for key in _ASSIGNMENT_KEY_FORMS:
-        end = i + len(key)
-        if lowered[i:end] == key and not (end < len(text) and _is_word_char(text[end])):
-            return text[i:end]
-    return None
+    return _IDENTIFIER_RE.match(text, i)
+
+
+def _looks_like_new_assignment_after(text: str, sep_index: int) -> bool:
+    """Peek past a `,`/`;`/`&` separator at ``sep_index``: does what
+    follows look like the START of a new ``identifier = value`` /
+    ``identifier: value`` pair, OR a new QUOTED JSON/dict-literal key
+    (``"key": value``) -- a real second keyword argument or field -- as
+    opposed to more DATA under the same key (a delimited list)? Used only
+    to decide whether a bare-value scan should stop at the separator or
+    absorb it; see `_scan_value_span`.
+
+    #200-G2 round 2: the bare-identifier-only version of this check found
+    a real defect via the real-source oracle -- `{"secret_like_values_
+    found": 1, "redacted_lines_present": True, ...}` has QUOTED keys, so
+    the lookahead never recognised `"redacted_lines_present"` as a new
+    field and absorbed the whole rest of the dict literal into the first
+    value. Bounded to a fixed small window (200 chars) for the quoted-key
+    case -- a peek, not a search, so this stays O(1) per call regardless
+    of file size.
+
+    A second, related defect the oracle found: real multi-line dict/call
+    literals put the next field on its OWN LINE after the comma (`1,\n
+    "next_field": ...`), and the original whitespace-skip here only
+    skipped spaces/tabs, never a newline -- so it never even reached the
+    quoted-key or identifier check for the extremely common "one field per
+    line" formatting style. The skip below is bounded (200 chars) for the
+    same linear-time reason as the quote scan above.
+    """
+    n = len(text)
+    j = sep_index + 1
+    skip_start = j
+    while j < n and text[j] in " \t\r\n" and (j - skip_start) < 200:
+        j += 1
+    if j < n and text[j] in "\"'":
+        quote = text[j]
+        k = j + 1
+        found_close = False
+        while k < n and text[k] != "\n" and (k - j) < 200:
+            if text[k] == "\\" and k + 1 < n:
+                k += 2
+                continue
+            if text[k] == quote:
+                k += 1
+                found_close = True
+                break
+            k += 1
+        if not found_close:
+            return False
+        j = k
+    else:
+        match = _IDENTIFIER_RE.match(text, j)
+        if match is None:
+            return False
+        j = match.end()
+    while j < n and text[j] in " \t":
+        j += 1
+    return j < n and text[j] in "=:"
 
 
 def _scan_value_span(text: str, start: int) -> tuple[str, int, bool]:
@@ -431,9 +617,32 @@ def _scan_value_span(text: str, start: int) -> tuple[str, int, bool]:
         # literal characters, backslash then `n`) right before a value's
         # enclosing quote was consumed as "part of the value" and
         # discarded on replacement, silently dropping the escape.
+        #
+        # #200-G2 round 2: `,`/`;`/`&` stopping UNCONDITIONALLY left a
+        # real gap independent review found -- `api_key=abcd1234,efgh5678`
+        # (a realistic comma-joined credential pair, e.g. a rotation pair
+        # or a scope list) only had the pre-comma half captured, so only
+        # half was redacted, and because the tail was never even examined
+        # it was never recorded as a witness either -- postcondition
+        # verification had nothing to check it against. `)`, `]`, `}` stay
+        # unconditional hard stops (real container/call closers, and
+        # extending past them risks exactly the syntax damage the
+        # exclusion above exists to prevent). `,`/`;`/`&` are different:
+        # they are BOTH a plausible argument separator (`foo(a=1, b=2)`,
+        # which must not be swallowed) AND a plausible data separator
+        # (`KEY=val1,val2`), and the two are only distinguishable by what
+        # comes after. So: peek past the separator: if it is followed by
+        # `identifier =` or `identifier :` (a new key=value pair, however
+        # is spelled), stop here, exactly as before -- but if not, the
+        # separator is almost certainly part of the DATA (a delimited list
+        # under a single key), so it is consumed and the scan continues.
         j = start
         while j < n and text[j] not in " \t\r\n,;&)]}{\"'\\":
             j += 1
+        while j < n and text[j] in ",;&" and not _looks_like_new_assignment_after(text, j):
+            j += 1
+            while j < n and text[j] not in " \t\r\n,;&)]}{\"'\\":
+                j += 1
         return text[start:j], j, True
     quote = text[i]
     triple = quote * 3
@@ -515,6 +724,31 @@ def _unwrap_value(value: str) -> tuple[str, str, str]:
 # starting uppercase is far more likely to be DATA that happens to contain
 # a literal '.' than a live reference, so it is not spared this way.
 _DOTTED_REFERENCE_RE = re.compile(r"^[a-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$")
+# #200-G2 round 2: lowercase-first was NOT sufficient. Round-1 independent
+# review found `token=deadbeef.cafebabe1234` and
+# `password=admin.hunter2value` -- two lowercase, dot-joined runs that are
+# .env/shell-style secrets, not Python references -- spared outright by the
+# rule above with ZERO witness recorded (a silent false negative, worse
+# than a leak that at least gets flagged). Lowercase-vs-uppercase distinguishes
+# a secret from a TYPE reference, but does not distinguish a secret from a
+# VARIABLE/ATTRIBUTE reference, because both are lowercase by convention.
+# The additional signal used here is a closed, named enumeration of
+# FIRST-SEGMENT names that are actually common as the head of a Python
+# reference chain in this kind of code (`self`, `settings`, `config`, a
+# request/context/session object, ...) -- the same trade-off shape as the
+# `*_key` enumeration elsewhere in this module: a real project-specific
+# object name not on this list (`payload.access_token`) will still be
+# over-redacted, accepted deliberately because the alternative (guessing
+# any lowercase word is a reference) is exactly what reopened the leak.
+_KNOWN_REFERENCE_PREFIXES = frozenset(
+    {
+        "self", "cls", "settings", "config", "cfg", "options", "opts",
+        "app", "request", "req", "response", "resp", "ctx", "context",
+        "obj", "instance", "client", "session", "env", "environ", "os",
+        "sys", "this", "args", "kwargs", "params", "payload", "state",
+        "conn", "connection", "db", "store",
+    }
+)
 # An identifier (optionally dotted) immediately followed by `(` or `[` --
 # a call or subscript (`get_secret()`, `tokens[index]`), never a data
 # literal. Anchored at the start, unlike the retired "contains '(' or '['
@@ -558,7 +792,8 @@ def _is_benign_literal(value: str, *, quoted: bool) -> bool:
         return True
     if _TEMPLATE_RE.match(value):
         return True
-    if _DOTTED_REFERENCE_RE.match(value):
+    dotted_match = _DOTTED_REFERENCE_RE.match(value)
+    if dotted_match is not None and value.split(".", 1)[0].lower() in _KNOWN_REFERENCE_PREFIXES:
         return True
     if _CALL_OR_SUBSCRIPT_RE.match(value):
         return True
@@ -577,17 +812,25 @@ def _scan_and_redact_key_values(text: str, state: RedactionState) -> tuple[str, 
     for the complexity argument and its empirical proof.
     """
     n = len(text)
-    lowered = text.lower()
     out: list[str] = []
     i = 0
     unbounded = False
     while i < n:
-        key = _match_key_at(text, lowered, i)
-        if key is None:
+        ident_match = _identifier_match_at(text, i)
+        if ident_match is None:
             out.append(text[i])
             i += 1
             continue
-        key_end = i + len(key)
+        identifier = ident_match.group(0)
+        if not _identifier_is_sensitive_key(identifier):
+            # Skip the WHOLE identifier in one step (not char by char) --
+            # see `_identifier_match_at`'s docstring for why this is what
+            # keeps the scan linear.
+            out.append(identifier)
+            i = ident_match.end()
+            continue
+        key = identifier
+        key_end = ident_match.end()
         j = key_end
         while j < n and text[j] in " \t":
             j += 1
@@ -676,7 +919,7 @@ def _scan_and_redact_key_values(text: str, state: RedactionState) -> tuple[str, 
         )
         if (
             not value_text
-            or _is_placeholder(stripped_inner)
+            or _is_placeholder(stripped_inner, state)
             or _is_benign_literal(stripped_inner, quoted=bool(quote))
             or looks_like_annotation_with_default
             or looks_like_same_name_reference
@@ -697,7 +940,7 @@ def _scan_and_redact_key_values(text: str, state: RedactionState) -> tuple[str, 
 def _sub_cookie_headers(text: str, state: RedactionState) -> str:
     def replace(match: re.Match[str]) -> str:
         value = match.group(2)
-        if _is_placeholder(value):
+        if _is_placeholder(value, state):
             return match.group(0)
         state.record("cookie")
         state.record_witness(value)
@@ -709,7 +952,7 @@ def _sub_cookie_headers(text: str, state: RedactionState) -> str:
 def _sub_simple_tokens(text: str, state: RedactionState) -> str:
     def replace_github(match: re.Match[str]) -> str:
         token = match.group(1)
-        if _is_placeholder(token):
+        if _is_placeholder(token, state):
             return token
         state.record("github_token")
         state.record_witness(token)
@@ -717,7 +960,7 @@ def _sub_simple_tokens(text: str, state: RedactionState) -> str:
 
     def replace_openai(match: re.Match[str]) -> str:
         token = match.group(0)
-        if _is_placeholder(token):
+        if _is_placeholder(token, state):
             return token
         state.record("openai_token")
         state.record_witness(token)
@@ -728,9 +971,15 @@ def _sub_simple_tokens(text: str, state: RedactionState) -> str:
 
 def _sub_database_urls(text: str, state: RedactionState) -> str:
     def replace(match: re.Match[str]) -> str:
+        username = match.group(3)
+        password = match.group(4)
+        # #200-G2 round 2: this sibling was missing the placeholder check
+        # `_sub_credential_urls` (just below) has -- found in review.
+        if REDACTED in {username, password} or _is_placeholder(username, state) or _is_placeholder(password, state):
+            return match.group(0)
         state.record("database_url_credentials")
-        state.record_witness(match.group(3))
-        state.record_witness(match.group(4))
+        state.record_witness(username)
+        state.record_witness(password)
         return f"{match.group(1)}{match.group(2)}{REDACTED}:{REDACTED}@"
 
     return _DATABASE_URL_RE.sub(replace, text)
@@ -740,7 +989,7 @@ def _sub_credential_urls(text: str, state: RedactionState) -> str:
     def replace(match: re.Match[str]) -> str:
         username = match.group(2)
         password = match.group(3)
-        if REDACTED in {username, password} or _is_placeholder(username) or _is_placeholder(password):
+        if REDACTED in {username, password} or _is_placeholder(username, state) or _is_placeholder(password, state):
             return match.group(0)
         state.record("url_credentials")
         state.record_witness(username)
@@ -754,12 +1003,16 @@ def _normalize_key(key: Any) -> str:
     return str(key).strip().lower().replace("-", "_")
 
 
-def _is_placeholder(value: str) -> bool:
+def _is_placeholder(value: str, state: RedactionState | None = None) -> bool:
     normalized = value.strip().lower().strip("\"'")
     if normalized in PLACEHOLDER_VALUES:
         return True
     if normalized.startswith("example") or normalized.endswith("-example"):
         return True
+    if state is not None and state.extra_safe_values:
+        stripped = value.strip().strip("\"'")
+        if value in state.extra_safe_values or stripped in state.extra_safe_values:
+            return True
     return False
 
 
