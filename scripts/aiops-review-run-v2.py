@@ -272,25 +272,6 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
     # The profile goes through its owner's typed loader, which already raises
     # a family member and additionally rejects the ambiguous-YAML-document
     # shapes a bare JSON parse would silently accept.
-    # The controlled target subject, materialised BEFORE any review material
-    # is read. The ordering is the claim: an earlier revision asserted it in a
-    # comment while reading `--diff` first, which review caught. Everything
-    # downstream therefore sees a subject that cannot change underneath it,
-    # and a target repository rewritten or deleted mid-run cannot alter what
-    # was reviewed.
-    #
-    # Scope of what this currently buys, stated honestly: the subject's
-    # identity is derived and reported, and severance and non-mutation are
-    # verified against it. The reviewed *content* is still the caller's
-    # `--diff`; reading review material out of the subject is not wired yet
-    # and is not claimed to be.
-    target_subject_root = Path(_tempfile.mkdtemp(prefix="agent-review-target-"))
-    target_subject = materialise_controlled_target_subject_v2(
-        target_root=validate_existing_directory_v2(arguments.target_root),
-        head_sha=inputs.head_sha,
-        destination=target_subject_root / "subject",
-    )
-
     profile = load_target_profile_text_v2(
         read_caller_document_text_v2(arguments.profile, field_name="profile")
     )
@@ -299,6 +280,36 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
         model=SemanticGroupingPolicyV2,
         field_name="grouping_policy",
     )
+
+    # The controlled target subject, materialised AFTER the trusted profile
+    # and BEFORE any review material is read.
+    #
+    # That order is the grant's composition order (validated inputs ->
+    # toolrepo subject -> control channel -> trusted profile -> controlled
+    # target subject -> changed scope), and I had it wrong twice in opposite
+    # directions. First the comment claimed materialisation preceded reading
+    # review material while the code read `--diff` first, which review caught.
+    # The correction then hoisted materialisation above the profile, which
+    # fixed the comment but inverted the grant's order and made a malformed
+    # profile cost a full target materialisation before failing.
+    #
+    # Profile first, then subject, then review material: the profile is
+    # cheap caller material and should refuse early, and the subject still
+    # precedes everything that reads the change, which is the property
+    # severance actually needs.
+    #
+    # Scope of what this currently buys, stated plainly: the subject's
+    # identity is derived and reported, and severance and non-mutation are
+    # verified against it. The reviewed *content* is still the caller's
+    # `--diff`; reading review material out of the subject is not wired and
+    # is not claimed to be.
+    target_subject_root = Path(_tempfile.mkdtemp(prefix="agent-review-target-"))
+    target_subject = materialise_controlled_target_subject_v2(
+        target_root=validate_existing_directory_v2(arguments.target_root),
+        head_sha=inputs.head_sha,
+        destination=target_subject_root / "subject",
+    )
+
     diff_text = read_caller_document_text_v2(arguments.diff, field_name="diff")
     file_diffs = parse_unified_diff(diff_text)
 
