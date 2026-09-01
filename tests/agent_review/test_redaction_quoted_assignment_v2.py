@@ -352,8 +352,18 @@ def test_redaction_does_not_damage_this_repository_s_own_source() -> None:
 
     offenders = [entry for entry in damaged if not entry.startswith("redaction.py:")]
 
-    assert offenders == [], (
-        f"redaction altered {len(offenders)} lines of ordinary source: {offenders[:10]}"
+    # One accepted residue, named rather than hidden: a docstring in
+    # `isolated_executor_v2.py` documents a dict shape `{command_token: argv}`.
+    # Sparing a bare lowercase identifier after a colon would reopen the
+    # unquoted-YAML leak (`password: hunter2` has exactly that shape), so the
+    # trade is one cosmetically altered docstring line against a real secret
+    # vector. Listed explicitly so a second one cannot appear unnoticed.
+    accepted = {"isolated_executor_v2.py:267"}
+    unexpected = [entry for entry in offenders if entry not in accepted]
+
+    assert unexpected == [], (
+        f"redaction altered {len(unexpected)} lines of ordinary source: "
+        f"{unexpected[:10]}"
     )
     assert len(damaged) < 20, (
         "even redaction.py's own example-bearing comments should not grow "

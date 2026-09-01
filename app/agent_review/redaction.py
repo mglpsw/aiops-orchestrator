@@ -72,13 +72,22 @@ _BEARER_RE = re.compile(r"(?i)\bbearer\s+([A-Za-z0-9._~+/=-]{8,})")
 # of handing a reviewer invalid syntax -- that damages exactly the material
 # the product exists to review. Plural `tokens` is excluded deliberately: in
 # this domain it means units of text, never a secret.
+_SENSITIVE_KEY_V2_HEAD = r"(?:password|passwd|pwd|secret|token|credentials?)"
+
+# `key` is genuinely ambiguous in a way `password` and `token` are not:
+# `dedupe_key`, `namespace_key` and `DUPLICATE_JSON_KEY` are ordinary code,
+# while `api_key` and `signing_key` are credentials. No shape distinguishes
+# them, so this IS an enumeration -- stated plainly rather than dressed up as
+# derivable. Its limitation is real: a project-specific credential name ending
+# in `key` and not listed here will not match. That is a deliberate trade
+# against mangling every `*_key` variable in the repository, measured at four
+# damaged lines when the generic form was used.
+_SENSITIVE_KEY_NAMES_V2 = (
+    r"(?:api[_.\-]?key|secret[_.\-]?key|private[_.\-]?key|access[_.\-]?key"
+    r"|signing[_.\-]?key|encryption[_.\-]?key|client[_.\-]?key)"
+)
 _SENSITIVE_KEY_V2 = (
-    r"[A-Za-z0-9_.\-]*?"
-    r"(?:password|passwd|pwd|secret|token|apikey|credentials?"
-    # A separator before `key` is required so `secret_key`, `signing_key` and
-    # `api-key` match while `monkey` and `donkey` do not. Bare `key` is left
-    # out: it is a very common ordinary variable name.
-    r"|[_.\-]key)"
+    r"(?:[A-Za-z0-9_.\-]*?" + _SENSITIVE_KEY_V2_HEAD + r"|" + _SENSITIVE_KEY_NAMES_V2 + r")"
 )
 
 # An optional Python string prefix (f, b, r, u and their pairs) followed by a
@@ -136,17 +145,25 @@ _BENIGN_VALUE_RE_V2 = re.compile(
       # A dotted name or a call is a REFERENCE, not a literal, so it cannot
       # itself be a hard-coded secret. `self.api_key = settings.claude_api_key`
       # and `usage: X = Field(...)` are ordinary code that was being mangled.
-      | [A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+
+      # Case-sensitive for the same reason as the type alternative below:
+      # `settings.claude_api_key` is a reference, `SUPERSECRETVALUE.py` is a
+      # secret with a suffix, and under the `i` flag both looked identical.
+      | (?-i:[a-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)
       | [A-Za-z_][A-Za-z0-9_.]*\([^\n]*
       # A subscript is a lookup, not a literal: `token = tokens[index]`.
       | [A-Za-z_][A-Za-z0-9_.]*\[[^\n]*
       # A collection literal is not a credential: `token = ['"']`.
       | [\[\{\(][^\n]*
       # A CapitalCase name in a type position is a class, not a secret:
-      # `command_token: SafeIdentifier`. Enumerating type names missed every
-      # project-defined one, which is the same enumeration failure this
-      # module keeps relearning.
-      | [A-Z][A-Za-z0-9_]*(?:\[[^\n]*\])?(?:\s*\|\s*[A-Za-z_][A-Za-z0-9_.\[\]]*)*
+      # `command_token: SafeIdentifier`. At least one lowercase letter is
+      # REQUIRED, because ALL-CAPS is the convention for constants and
+      # secrets, not for types -- without it `token=SUPERSECRET` was spared
+      # and twelve existing sanitisation tests went red.
+      # (?-i:...) is load-bearing: this pattern carries the `i` flag, under
+      # which `[a-z]` also matches uppercase, so the lowercase requirement was
+      # silently void and `token=SUPERSECRET` was spared as a "type name".
+      | (?-i:[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*)
+        (?:\[[^\n]*\])?(?:\s*\|\s*[A-Za-z_][A-Za-z0-9_.\[\]]*)*
     )$
     """
 )
