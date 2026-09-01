@@ -313,6 +313,12 @@ Full corpus after correction: 45 tests -- 28 in
 `test_git_commit_subject_v2.py` (8 + 1 new), 8 unchanged in
 `test_bounded_git_v2.py` -- all green.
 
+Full `tests/agent_review/` regression re-run at the corrected head
+(`9bd6730`, before the freeze commit below): **2604 passed, 48 failed, 12
+skipped** -- exactly `2600 + 4` (this correction round's 4 new tests) over
+the pre-correction count, same 48 named environment-class failures as every
+prior run in this document. No new failures introduced by the correction.
+
 ### Round 2 -- pending
 
 To be dispatched against the corrected, re-frozen head (see identity block
