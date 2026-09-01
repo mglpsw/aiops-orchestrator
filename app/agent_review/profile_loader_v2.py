@@ -98,6 +98,26 @@ _YAML_VALUE_TAG_V2 = "tag:yaml.org,2002:value"
 # The set is enumerated; its completeness is NOT proven. The corpus below
 # is systematic evidence over the families it enumerates, not a
 # demonstration that no other PyYAML behaviour can escape.
+#
+# Named limitation (`#200-G4` round 2, independent review): this tuple also
+# wraps calls that recurse into `_CollisionRefusingSafeLoaderV2`'s OWN
+# `construct_mapping`/`construct_scalar` overrides (via
+# `yaml.load(..., Loader=_CollisionRefusingSafeLoaderV2)` in
+# `_read_unambiguously_v2`), not only stock PyYAML. A defect in THAT
+# override code that happened to raise one of these same exception types
+# would be indistinguishable here from a legitimate PyYAML failure on
+# genuinely malformed caller YAML (reproduced by deliberately breaking
+# `construct_mapping` during `#200-G4`'s review). That loader is pre-existing,
+# adversarially hardened code (issue #203-S2 / commit `6d613cf`, "supersedes
+# #236", multiple prior adversarial rounds) that this ingress-boundary
+# primitive does not own and did not modify; re-architecting its internal
+# error provenance to close this gap is out of this primitive's scope and
+# risks regressing already-hardened collision-detection logic under time
+# pressure. Recorded here rather than patched narrowly enough to only look
+# closed -- the same disposition as the pydantic-validator-body ambiguity
+# documented in `operational_ingress_v2`'s module docstring, which this is a
+# sibling instance of, one layer down (YAML construction rather than pydantic
+# validation).
 _YAML_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (
     yaml.YAMLError,
     RecursionError,
@@ -289,7 +309,20 @@ def load_target_profile_text_v2(raw_text: str) -> TargetProfileV2:
         # `model_validate_json(json.dumps(...), strict=True)` agree on
         # every valid profile in the corpus (0 divergences).
         return TargetProfileV2.model_validate(raw)
-    except (ValidationError, TypeError, ValueError) as exc:
+    except ValidationError as exc:
+        # `#200-G4` round-2 independent review: this previously also caught
+        # bare `TypeError`/`ValueError`, which laundered a genuine internal
+        # defect (an injected `TypeError` simulating a real bug elsewhere in
+        # this codebase, reproduced directly against this function) into an
+        # ordinary-looking `target_profile_invalid` refusal. `raw` is
+        # already confirmed to be a `dict` by the check above, and an
+        # adversarial corpus of malformed dict-shaped input (empty, wrong
+        # field types, `NaN`, oversized strings, non-string nested keys)
+        # confirmed `model_validate` always raises `ValidationError` for
+        # every one of them, never a bare `TypeError`/`ValueError` -- so
+        # narrowing here is not a blind guess, it is the same empirically
+        # verified narrowing already applied to
+        # `operational_ingress_v2.validate_caller_document_v2`.
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_INVALID_REASON_V2) from exc
 
 

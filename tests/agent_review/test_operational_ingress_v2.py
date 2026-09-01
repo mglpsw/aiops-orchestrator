@@ -21,6 +21,7 @@ import pathlib
 
 import pydantic
 import pytest
+from pydantic import field_validator, model_validator
 
 from app.agent_review.contracts_v2 import ContractV2Model, RunOriginV2
 from app.agent_review.operational_ingress_v2 import (
@@ -32,6 +33,7 @@ from app.agent_review.operational_ingress_v2 import (
     INGRESS_PATH_NOT_A_DIRECTORY_REASON_V2,
     INGRESS_PATH_NOT_A_FILE_REASON_V2,
     INGRESS_RESPONSE_ESCAPES_DIRECTORY_REASON_V2,
+    INGRESS_RESPONSE_PATH_UNUSABLE_REASON_V2,
     INGRESS_UNKNOWN_PUBLIC_INPUT_REASON_V2,
     INGRESS_USAGE_ERROR_REASON_V2,
     PUBLIC_INPUT_FIELD_NAMES_V2,
@@ -396,6 +398,59 @@ def test_a_chunk_id_cannot_escape_the_responses_directory(tmp_path: pathlib.Path
     assert caught.value.reason_code == INGRESS_RESPONSE_ESCAPES_DIRECTORY_REASON_V2
 
 
+def test_red_witness_a_null_byte_in_chunk_id_is_a_typed_refusal_not_a_value_error(
+    tmp_path: pathlib.Path,
+) -> None:
+    """RED WITNESS (`#200-G4` round-2 independent review, Lane A): a
+    ``chunk_id`` containing an embedded NUL byte made ``Path.resolve()``
+    raise a raw ``ValueError`` that the original escape-check ``except
+    OSError`` did not cover. Reproduced raw below; this asserts the fix."""
+    with pytest.raises(OperationalIngressError) as caught:
+        read_offline_response_document_v2(
+            tmp_path, "chunk-\x00null", model=_TrivialResponseModelV2
+        )
+    assert caught.value.reason_code == INGRESS_RESPONSE_PATH_UNUSABLE_REASON_V2
+    assert type(caught.value) is OperationalIngressError
+
+
+def test_the_raw_null_byte_shape_really_did_leak(tmp_path: pathlib.Path) -> None:
+    """Proves the RED witness is real: ``Path.resolve()`` really does raise
+    a raw, un-family ``ValueError`` for an embedded NUL byte, independent of
+    this module's fix."""
+    with pytest.raises(ValueError, match="embedded null byte"):
+        (tmp_path / "chunk-\x00null.json").resolve()
+
+
+def test_red_witness_an_overlong_chunk_id_is_a_typed_refusal_not_a_path_leaking_oserror(
+    tmp_path: pathlib.Path,
+) -> None:
+    """RED WITNESS (`#200-G4` round-2 independent review, Lane A): a
+    ``chunk_id`` long enough to exceed the filesystem's name-length limit
+    (~100k chars) let ``resolve()`` succeed (best-effort, ``strict=False``)
+    while the separate, previously-unguarded ``is_file()`` call raised a raw
+    ``OSError`` whose own message embedded the full absolute subject
+    temp-directory path -- the exact leak class this whole primitive exists
+    to close, reached through a different function than the mandatory
+    RED witness. Reproduced raw below; this asserts the fix."""
+    huge_chunk_id = "a" * 100_000
+
+    with pytest.raises(OperationalIngressError) as caught:
+        read_offline_response_document_v2(tmp_path, huge_chunk_id, model=_TrivialResponseModelV2)
+
+    assert caught.value.reason_code == INGRESS_RESPONSE_PATH_UNUSABLE_REASON_V2
+    assert str(tmp_path) not in str(caught.value)
+
+
+def test_the_raw_overlong_name_shape_really_did_leak(tmp_path: pathlib.Path) -> None:
+    """Proves the RED witness is real: an overlong path component really
+    does raise a raw, path-embedding ``OSError`` from ``is_file()``,
+    independent of this module's fix."""
+    huge_path = tmp_path / (("a" * 100_000) + ".json")
+    with pytest.raises(OSError) as caught:
+        huge_path.is_file()
+    assert str(tmp_path) in str(caught.value)  # the leak, unfixed
+
+
 # ---------------------------------------------------------------------------
 # New: the inner-control-fd environment variable.
 # ---------------------------------------------------------------------------
@@ -531,12 +586,18 @@ def test_a_well_formed_parse_does_not_raise() -> None:
 def test_a_genuine_internal_assertion_error_is_not_swallowed_by_response_reading(
     tmp_path: pathlib.Path,
 ) -> None:
-    """If the *model* passed to ``read_offline_response_document_v2`` -- not
-    the caller's file content -- is itself broken (a real programmer
-    defect: raises on construction regardless of input), that must surface
-    raw. This is the exact shape of the mandatory bidirectional invariant:
-    over-catching in the conversion machinery would make a bug in *our own*
-    code look like an ordinary caller mistake."""
+    """If the whole ``model_validate_json`` DISPATCH is broken (the model's
+    classmethod itself raises regardless of input, rather than a validator
+    *inside* a normal pydantic-core validation run), that must surface raw.
+
+    `#200-G4` round-2 independent review found this reproduction, while
+    real, does not exercise the actual vulnerable surface: a real defect
+    almost always lives inside a ``@field_validator``/``@model_validator``
+    function's own body, not in a broken classmethod override. See
+    ``test_a_real_internal_typeerror_inside_a_validator_escapes_raw`` and
+    the ``test_KNOWN_LIMITATION_*`` tests below for reproductions against
+    the real pydantic-core validator dispatch, which is what actually
+    matters here."""
     (tmp_path / "chunk-0000.json").write_text(json.dumps({"anything": 1}), encoding="utf-8")
 
     class _BrokenModelV2:
@@ -551,6 +612,10 @@ def test_a_genuine_internal_assertion_error_is_not_swallowed_by_response_reading
 def test_a_genuine_internal_assertion_error_is_not_swallowed_by_document_validation(
     tmp_path: pathlib.Path,
 ) -> None:
+    """See the docstring on the sibling test above: real but narrower than
+    it looks. Kept because it still proves a true, useful property (a
+    broken dispatch escapes raw), not because it proves the full invariant
+    by itself."""
     path = tmp_path / "doc.json"
     path.write_text(json.dumps({"anything": 1}), encoding="utf-8")
 
@@ -561,6 +626,144 @@ def test_a_genuine_internal_assertion_error_is_not_swallowed_by_document_validat
 
     with pytest.raises(AssertionError):
         validate_caller_document_v2(path, model=_BrokenModelV2, field_name="thing")
+
+
+class _RealisticValidatedDocumentModelV2(ContractV2Model):
+    """A model with a genuine custom ``field_validator``, matching the shape
+    of this codebase's real contract models (``RunOriginV2``,
+    ``TargetProfileV2``, the ``AfterValidator`` functions behind
+    ``SafeIdentifier``/``Repository``/etc.) -- unlike ``_BrokenModelV2``
+    above, a bug injected here goes through pydantic-core's REAL validator
+    dispatch, which is the surface `#200-G4` round-2 independent review
+    identified as untested."""
+
+    label: str
+
+    @field_validator("label")
+    @classmethod
+    def _reject_or_simulate_a_bug(cls, value: str) -> str:
+        if value == "reject-me":
+            raise ValueError("label is not an acceptable value")  # legitimate rejection
+        if value == "internal-type-bug":
+            raise TypeError("simulated internal bug: wrong type used inside this validator")
+        if value == "internal-key-bug":
+            raise KeyError("simulated internal bug: a bad lookup inside this validator")
+        if value == "internal-attribute-bug":
+            raise AttributeError("simulated internal bug: a bad attribute access")
+        if value == "internal-assertion-bug":
+            assert False, (  # noqa: B011 -- deliberate, simulating a broken invariant check
+                "simulated internal bug, shaped exactly like a legitimate rejection"
+            )
+        return value
+
+
+def test_a_real_validators_legitimate_rejection_is_a_typed_refusal(tmp_path: pathlib.Path) -> None:
+    """Non-vacuity control for the tests below: the realistic model's own
+    legitimate rejection path still produces an ordinary typed refusal."""
+    path = tmp_path / "doc.json"
+    path.write_text(json.dumps({"label": "reject-me"}), encoding="utf-8")
+
+    with pytest.raises(OperationalIngressError) as caught:
+        validate_caller_document_v2(
+            path, model=_RealisticValidatedDocumentModelV2, field_name="thing"
+        )
+    assert caught.value.reason_code == f"{INGRESS_DOCUMENT_INVALID_REASON_V2}_thing"
+
+
+@pytest.mark.parametrize(
+    "bad_label, expected_type",
+    [
+        ("internal-type-bug", TypeError),
+        ("internal-key-bug", KeyError),
+        ("internal-attribute-bug", AttributeError),
+    ],
+)
+def test_a_real_internal_defect_inside_a_validator_escapes_raw_for_these_shapes(
+    tmp_path: pathlib.Path, bad_label: str, expected_type: type[BaseException]
+) -> None:
+    """The achievable half of the bidirectional invariant, proven against a
+    REAL pydantic validator dispatch (not a monkeypatched classmethod):
+    pydantic-core only wraps ``ValueError``/``AssertionError`` raised from
+    inside a validator into ``ValidationError`` -- ``TypeError``/
+    ``KeyError``/``AttributeError`` (and, empirically, ``RuntimeError``)
+    escape unwrapped, so this module's ``except ValidationError`` correctly
+    lets them through raw rather than laundering them."""
+    path = tmp_path / "doc.json"
+    path.write_text(json.dumps({"label": bad_label}), encoding="utf-8")
+
+    with pytest.raises(expected_type):
+        validate_caller_document_v2(
+            path, model=_RealisticValidatedDocumentModelV2, field_name="thing"
+        )
+
+
+def test_KNOWN_LIMITATION_a_validator_body_bug_shaped_as_assertion_error_is_indistinguishable(
+    tmp_path: pathlib.Path,
+) -> None:
+    """NAMED, ACCEPTED LIMITATION -- see this module's own docstring
+    ("A named, accepted limit of the two-epoch discipline"). This is NOT a
+    desired property and is not silently "fixed" by narrowing the except
+    clause further, because doing so is not honestly possible from inside
+    this module: pydantic-core wraps a validator-raised ``ValueError``/
+    ``AssertionError`` into ``ValidationError`` identically whether the
+    validator is correctly rejecting bad caller content or has an internal
+    defect that happens to raise the same way. This test PINS that current,
+    documented behaviour so it cannot silently drift narrower or wider
+    without this test forcing the change to be deliberate; it does not
+    assert this is acceptable in general, only that this module's own
+    ``except ValidationError`` cannot be the place that closes it."""
+    path = tmp_path / "doc.json"
+    path.write_text(json.dumps({"label": "internal-assertion-bug"}), encoding="utf-8")
+
+    with pytest.raises(OperationalIngressError) as caught:
+        validate_caller_document_v2(
+            path, model=_RealisticValidatedDocumentModelV2, field_name="thing"
+        )
+    assert caught.value.reason_code == f"{INGRESS_DOCUMENT_INVALID_REASON_V2}_thing"
+
+
+def test_a_real_internal_typeerror_inside_run_origin_revalidation_escapes_raw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercises the exact call site `#200-G4` round-2 independent review
+    used to prove the gap: ``validate_public_inputs_v2``'s own
+    re-validation of ``RunOriginV2(...)`` after the scalar model already
+    passed. A validator bug that raises ``TypeError`` must still escape raw
+    through this second, internal pydantic construction, not just the
+    first."""
+    import app.agent_review.operational_ingress_v2 as ingress_module
+
+    class _BrokenRunOriginV2(RunOriginV2):
+        @model_validator(mode="after")
+        def _internal_bug(self) -> "_BrokenRunOriginV2":
+            raise TypeError("simulated internal bug in RunOriginV2 revalidation")
+
+    monkeypatch.setattr(ingress_module, "RunOriginV2", _BrokenRunOriginV2)
+
+    with pytest.raises(TypeError):
+        validate_public_inputs_v2(_well_formed_public_inputs_v2())
+
+
+def test_KNOWN_LIMITATION_an_assertion_error_inside_run_origin_revalidation_is_indistinguishable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NAMED, ACCEPTED LIMITATION, companion to the document-validation one
+    above, pinned against the exact ``RunOriginV2`` re-validation call site
+    Lane B's independent review used for its own reproduction."""
+    import app.agent_review.operational_ingress_v2 as ingress_module
+
+    class _BrokenRunOriginV2(RunOriginV2):
+        @model_validator(mode="after")
+        def _internal_bug(self) -> "_BrokenRunOriginV2":
+            assert False, (  # noqa: B011 -- deliberate
+                "internal invariant violated -- shaped like a legitimate rejection"
+            )
+
+    monkeypatch.setattr(ingress_module, "RunOriginV2", _BrokenRunOriginV2)
+
+    with pytest.raises(OperationalIngressError) as caught:
+        validate_public_inputs_v2(_well_formed_public_inputs_v2())
+    assert caught.value.reason_code == INGRESS_INVALID_PUBLIC_INPUT_REASON_V2
 
 
 def test_a_genuine_internal_defect_in_argparse_action_callback_is_not_swallowed() -> None:

@@ -67,6 +67,51 @@ after the *flag*, never the value and never a per-entry key such as a chunk
 id -- a chunk id inside ``--responses`` can itself be derived from
 caller-supplied diff content, so it is exactly the kind of value that must
 never reach a reason code or stderr.
+
+## A named, accepted limit of the two-epoch discipline (`#200-G4` round 2)
+
+The asymmetry above assumes a refusal's *type* reliably tells pre-seal and
+post-seal failures apart: ``OperationalIngressError`` for the former,
+anything else for the latter. That assumption is sound for every exception
+type this module's own code raises or explicitly enumerates -- but every
+``except ValidationError`` in this module (``validate_public_inputs_v2``,
+the ``RunOriginV2`` re-validation inside it, and
+``validate_caller_document_v2``) sits downstream of pydantic-core, which has
+*already* decided what counts as "the caller's fault" before any of this
+module's own code runs.
+
+Empirically (pydantic 2.11.3, reconfirmed 2026-09-01): a ``@field_validator``
+or ``@model_validator`` that raises ``TypeError``, ``KeyError``,
+``AttributeError``, or ``RuntimeError`` -- the shapes a genuine internal bug
+in this codebase's own validator logic would plausibly produce -- escapes
+**raw**, unwrapped, exactly as required; this module's narrowing to
+``except ValidationError`` (rather than the broader ``except Exception`` an
+earlier revision used, corrected during this slice's own bidirectional-
+invariant testing) does not and cannot catch those. But a validator that
+raises bare ``ValueError`` or ``AssertionError`` -- which is *also* the
+sanctioned, correct way for a custom validator in ``contracts_v2.py`` (and
+sibling contract modules) to reject genuinely bad caller content -- is
+wrapped by pydantic-core into ``ValidationError`` with ``errors()[i]['type']``
+of ``"value_error"``/``"assertion_error"`` in **both** cases, before this
+module's ``except ValidationError`` ever runs. There is no information left
+in the resulting ``ValidationError`` to tell "this validator correctly
+rejected bad input" apart from "this validator's own logic has a bug that
+happens to raise the same way its correct rejection does" -- the ambiguity
+is baked in by pydantic-core itself, not introduced or reducible by this
+module.
+
+Closing this fully would mean every custom validator across this codebase's
+contract modules adopting a convention that does not use ``ValueError``/
+``AssertionError`` as its caller-rejection signal (so a validator's own
+internal defect stays distinguishable) -- a cross-cutting change spanning
+dozens of existing ``AfterValidator``/``field_validator``/``model_validator``
+functions, disproportionate to and out of scope for this ingress-boundary
+primitive. Recorded here, precisely, rather than papered over with an
+``except`` clause narrowed just enough to look closed: this module's
+bidirectional invariant holds for every exception shape *except* a validator-
+body bug that happens to manifest as ``ValueError``/``AssertionError``, and
+that residual is a property of building on pydantic v2's validator protocol,
+not of this module's own conversion logic.
 """
 
 from __future__ import annotations
@@ -98,6 +143,7 @@ __all__ = [
     "INGRESS_PATH_NOT_ABSOLUTE_REASON_V2",
     "INGRESS_UNKNOWN_PUBLIC_INPUT_REASON_V2",
     "INGRESS_RESPONSE_ESCAPES_DIRECTORY_REASON_V2",
+    "INGRESS_RESPONSE_PATH_UNUSABLE_REASON_V2",
     "INGRESS_CONTROL_FD_INVALID_REASON_V2",
     "INGRESS_USAGE_ERROR_REASON_V2",
     "OperationalIngressError",
@@ -122,6 +168,7 @@ INGRESS_PATH_NOT_A_DIRECTORY_REASON_V2 = "operational_ingress_path_not_a_directo
 INGRESS_DOCUMENT_UNREADABLE_REASON_V2 = "operational_ingress_document_unreadable"
 INGRESS_DOCUMENT_INVALID_REASON_V2 = "operational_ingress_document_invalid"
 INGRESS_RESPONSE_ESCAPES_DIRECTORY_REASON_V2 = "operational_ingress_response_escapes_directory"
+INGRESS_RESPONSE_PATH_UNUSABLE_REASON_V2 = "operational_ingress_response_path_unusable"
 INGRESS_CONTROL_FD_INVALID_REASON_V2 = "operational_ingress_invalid_control_fd"
 INGRESS_USAGE_ERROR_REASON_V2 = "operational_ingress_usage_error"
 
@@ -409,14 +456,34 @@ def read_offline_response_document_v2(
     # `chunk_id` is expected to already be constrained to a safe identifier
     # shape upstream, but this function must not assume its caller got that
     # right -- it is, itself, a boundary.
+    #
+    # `#200-G4` round-2 independent review found this guard incomplete in
+    # two ways, both proven by direct reproduction against this function,
+    # not merely reasoned about: a `chunk_id` containing an embedded NUL
+    # byte makes `Path.resolve()` itself raise a raw `ValueError` (`OSError`
+    # alone did not cover it), and a sufficiently long `chunk_id` (~100k
+    # chars) lets `resolve()` succeed -- `strict=False` best-efforts through
+    # unstattable intermediate components rather than raising -- while the
+    # *separate* `is_file()` call below then raises a raw `OSError`
+    # (`ENAMETOOLONG`) whose own message embeds the full absolute path,
+    # leaking the subject's real filesystem location exactly as the
+    # malformed-response-content witness does. Neither shape is reachable
+    # through the current CLI (`chunk_id` is always internally generated as
+    # `chunk-NNNN`), but this function's own contract is to be a boundary
+    # for a `chunk_id` of ANY shape a future caller-derived source might
+    # supply, so both are closed here rather than deferred.
     try:
         escapes = response_path.resolve().parent != root.resolve()
-    except OSError:
-        escapes = True
+    except (OSError, ValueError):
+        raise OperationalIngressError(INGRESS_RESPONSE_PATH_UNUSABLE_REASON_V2) from None
     if escapes:
         raise OperationalIngressError(INGRESS_RESPONSE_ESCAPES_DIRECTORY_REASON_V2)
 
-    if not response_path.is_file():
+    try:
+        exists = response_path.is_file()
+    except OSError:
+        raise OperationalIngressError(INGRESS_RESPONSE_PATH_UNUSABLE_REASON_V2) from None
+    if not exists:
         return None
 
     return validate_caller_document_v2(response_path, model=model, field_name=field_name)
