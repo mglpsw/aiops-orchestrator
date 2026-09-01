@@ -127,7 +127,7 @@ def _build_repo_manifest_and_content(tmp_path: Path):
     head_sha = _commit_all(repo, "update")
 
     profile = _profile()
-    file_diffs, acquired_identity = acquire_authoritative_diff_with_identity_v2(
+    file_diffs, _diff_text, acquired_identity = acquire_authoritative_diff_with_identity_v2(
         repo, base_sha=base_sha, head_sha=head_sha
     )
     outcome = assemble_manifest_from_diff_v2(

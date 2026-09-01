@@ -147,7 +147,7 @@ def _grouping_policy() -> SemanticGroupingPolicyV2:
 
 def _assembled(repo: Path, base_sha: str, head_sha: str, profile=None):
     profile = profile or load_target_profile_v2(repo)
-    diffs, acquired_identity = acquire_authoritative_diff_with_identity_v2(
+    diffs, _diff_text, acquired_identity = acquire_authoritative_diff_with_identity_v2(
         repo, base_sha=base_sha, head_sha=head_sha
     )
     outcome = assemble_manifest_from_diff_v2(

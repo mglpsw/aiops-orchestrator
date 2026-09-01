@@ -1276,7 +1276,7 @@ def acquire_authoritative_diff_v2(
         acquire_authoritative_diff_with_identity_v2,
     )
 
-    file_diffs, _identity = acquire_authoritative_diff_with_identity_v2(
+    file_diffs, _diff_text, _identity = acquire_authoritative_diff_with_identity_v2(
         repo_root, base_sha=base_sha, head_sha=head_sha
     )
     return file_diffs

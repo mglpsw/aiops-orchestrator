@@ -136,7 +136,7 @@ def _grouping_policy() -> SemanticGroupingPolicyV2:
 
 
 def _assemble(repo, base_sha, head_sha, *, profile, max_lines_per_chunk=1000):
-    file_diffs, acquired_identity = acquire_authoritative_diff_with_identity_v2(
+    file_diffs, _diff_text, acquired_identity = acquire_authoritative_diff_with_identity_v2(
         repo, base_sha=base_sha, head_sha=head_sha
     )
     outcome = assemble_manifest_from_diff_v2(
@@ -263,14 +263,15 @@ def test_extract_review_content_refuses_a_tampered_re_acquisition_before_any_cla
 
     `manifest_diff_binding` is built at "assembly time" from the real,
     untruncated diff. `extract_review_content_v2` re-acquires the diff
-    independently INSIDE its own real body
-    (`review_content_extraction_v2.acquire_diff_v2`, a module-level import
-    distinct from `authoritative_diff_identity_v2`'s own qualified calls) --
-    that second, independent acquisition is patched here to return a
-    truncated diff carrying the SAME apparent `app.py` path, standing in for
-    a tampered/stale checkout at extraction time. The expected mismatch is
-    established via a fresh, direct `hashlib.sha256` call, never by asking
-    the production helper to grade its own homework.
+    independently INSIDE its own real body, via ONE call to
+    `acquire_authoritative_diff_with_identity_v2` (#200-G3B correction
+    round, finding 1: `file_diffs` and `diff_text` now always come from
+    this single acquisition, never two separate ones) -- that acquisition
+    is patched here to return a truncated diff carrying the SAME apparent
+    `app.py` path, standing in for a tampered/stale checkout at extraction
+    time. The expected mismatch is established via a fresh, direct
+    `hashlib.sha256` call, never by asking the production helper to grade
+    its own homework.
     """
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -287,6 +288,7 @@ def test_extract_review_content_refuses_a_tampered_re_acquisition_before_any_cla
 
     from app.agent_review.diff_acquisition_v2 import acquire_diff_v2 as _real_acquire_diff_v2
 
+    real_file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
     real_diff_text = _real_acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
     diff_lines = real_diff_text.splitlines(keepends=True)
     assert any("app.py" in line for line in diff_lines)
@@ -311,8 +313,8 @@ def test_extract_review_content_refuses_a_tampered_re_acquisition_before_any_cla
         return real_build_fragment_content(*args, **kwargs)
 
     with mock.patch(
-        "app.agent_review.review_content_extraction_v2.acquire_diff_v2",
-        return_value=truncated_diff_text,
+        "app.agent_review.review_content_extraction_v2.acquire_authoritative_diff_with_identity_v2",
+        return_value=(real_file_diffs, truncated_diff_text, None),
     ), mock.patch(
         "app.agent_review.review_content_extraction_v2._build_fragment_content_v2",
         side_effect=_tracking_build_fragment_content_v2,
@@ -326,6 +328,138 @@ def test_extract_review_content_refuses_a_tampered_re_acquisition_before_any_cla
 
     assert excinfo.value.reason_code == DIFF_BINDING_DIFF_IDENTITY_MISMATCH_REASON_V2
     assert classification_reached is False
+
+
+@pytest.mark.requires_network
+def test_extract_review_content_binding_covers_the_classification_view_not_just_hunk_bodies(
+    tmp_path: Path,
+) -> None:
+    """#200-G3B correction round, finding 1: `_extract_review_content_v2`
+    performed TWO separate diff acquisitions -- `acquire_authoritative_
+    diff_v2` (feeding `file_diffs`, which drives `_classify_unrepresentable_
+    v2`'s binary/submodule/generated/minified omission decisions) and
+    `acquire_diff_v2` (feeding `diff_text`, the ONLY one `verify_manifest_
+    diff_binding_v2` ever checked). A caller able to make those two
+    acquisitions diverge -- here simulated by patching the first -- could
+    get a real, untampered `diff_text` to satisfy the binding check while a
+    fabricated `file_diffs` silently misclassified a non-must-review file as
+    binary and dropped it from review scope, with no error and no reason
+    code. The fix must derive both `file_diffs` and `diff_text` from ONE
+    acquisition, so there is no second, uncovered view left to diverge."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "app.py").write_text("alpha = 1\n", encoding="utf-8")
+    (repo / "readme.md").write_text("line one\nline two\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+    (repo / "app.py").write_text("alpha = 2\n", encoding="utf-8")
+    (repo / "readme.md").write_text("line one\nline TWO\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    # must_review is app.py only; readme.md is a real, ordinary text file --
+    # never binary in reality -- so its honest extraction is INCLUDED.
+    profile = _profile(must_review_paths=["app.py"])
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
+
+    real_file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    assert any(fd.path == "readme.md" and not fd.is_binary for fd in real_file_diffs)
+
+    import dataclasses
+
+    fabricated_file_diffs = tuple(
+        dataclasses.replace(fd, is_binary=True) if fd.path == "readme.md" else fd
+        for fd in real_file_diffs
+    )
+
+    with mock.patch(
+        "app.agent_review.review_content_extraction_v2.acquire_authoritative_diff_v2",
+        return_value=fabricated_file_diffs,
+    ):
+        content = extract_review_content_v2(
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            manifest_diff_binding=manifest_diff_binding,
+            payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
+        )
+
+    readme_fragments = [
+        f for chunk in content.chunks for f in chunk.fragments if f.path == "readme.md"
+    ]
+    assert readme_fragments, "readme.md must still have a fragment to exhibit the bug"
+    assert all(
+        f.policy is not ReviewContentPolicyV2.OMITTED_BINARY for f in readme_fragments
+    ), (
+        "a real, non-binary file must never be silently OMITTED_BINARY: the "
+        "binding check passed on the real diff_text while a fabricated, "
+        "UNCOVERED file_diffs view drove this wrong, unreported classification"
+    )
+
+
+@pytest.mark.requires_network
+def test_extract_review_content_rejects_a_fragment_range_outside_its_real_hunk_bounds(
+    tmp_path: Path,
+) -> None:
+    """#200-G3B correction round, finding 2: the exact-recomposition check
+    (`hunk_recomposition_failed`) only ever ran for a WHOLE-hunk fragment
+    (`is_whole_hunk_fragment`); a windowed fragment's range was sliced from
+    the real, re-acquired `hunk_body` with NO check that the range actually
+    falls inside that hunk's real bounds. If `manifest.fragments[i]`'s range
+    was planned against a hunk view that does not match the hunk actually
+    re-acquired at extraction time (e.g. assembly saw a shifted `new_start`
+    for this hunk), the fragment stops looking like a whole-hunk fragment,
+    silently takes the windowed path, and `slice_hunk_body_by_range_v2`
+    slices the REAL body by the WRONG range -- wrong content reported as
+    `INCLUDED`, no error, no reason code. Reproduced here directly against
+    `slice_hunk_body_by_range_v2`'s caller inside `_build_fragment_content_
+    v2`, via a hand-built out-of-bounds `FragmentV2`, matching this
+    module's own established "kept in case a future change reopens it"
+    precedent for exercising `_build_fragment_content_v2` directly."""
+    import dataclasses
+
+    from app.agent_review.diff_acquisition_v2 import ParsedFileDiffV2
+    from app.agent_review.manifest_v2 import FragmentV2, compute_fragment_id_v2
+    from app.agent_review.review_content_extraction_v2 import _build_fragment_content_v2
+
+    hunk_body = extract_hunk_bodies_v2(
+        "diff --git a/app.py b/app.py\n"
+        "--- a/app.py\n+++ b/app.py\n"
+        "@@ -1,3 +1,3 @@\n-a\n-b\n-c\n+A\n+B\n+C\n"
+    )[0]
+    # An ordinary, representable text file_diff -- so `_classify_
+    # unrepresentable_v2` passes through and this check's own boundary,
+    # not that one, is what's being exercised.
+    file_diff = ParsedFileDiffV2(
+        old_path="app.py", new_path="app.py", change_type="modified",
+        is_binary=False, is_submodule=False, similarity_index=None,
+        old_no_newline_at_eof=False, new_no_newline_at_eof=False,
+        hunks=(), truncated=False,
+    )
+
+    # The real hunk covers new lines 1-3. A fragment claiming new lines 5-6
+    # -- entirely outside that real range -- is not a legitimate sub-window
+    # of it (a real planner_v2 window is always a subset of the hunk it was
+    # planned from). owned_line_indices makes this take the windowed (not
+    # whole-hunk) path, which is exactly the path that had no bounds check.
+    old_range = LineRangeV2(start=5, end=6)
+    new_range = LineRangeV2(start=5, end=6)
+    diff_sha256 = "0" * 64
+    out_of_bounds_fragment = FragmentV2(
+        fragment_id=compute_fragment_id_v2(
+            path="app.py", old_range=old_range, new_range=new_range, diff_sha256=diff_sha256
+        ),
+        path="app.py", hunk_indexes=[0],
+        old_range=old_range, new_range=new_range,
+        diff_chars=0, diff_sha256=diff_sha256, coverage_required=False,
+    )
+
+    with pytest.raises(ExtractionBlockedError) as excinfo:
+        _build_fragment_content_v2(
+            out_of_bounds_fragment,
+            file_diff=file_diff,
+            hunk_body=hunk_body,
+            dlp_policy=None,
+            max_chars_per_chunk=24000,
+            owned_line_indices=frozenset({0}),
+        )
+    assert excinfo.value.reason_code == "fragment_range_outside_hunk_bounds"
 
 
 @pytest.mark.requires_network
@@ -1005,11 +1139,16 @@ def test_build_fragment_content_refuses_a_window_that_owns_no_real_lines() -> No
         old_start=1, old_lines=1, new_start=1, new_lines=2,
         old_no_newline_at_eof=False, new_no_newline_at_eof=False,
     )
-    # A range that is NOT the hunk's own full range (new_range points past
-    # the real content) -- is_whole_hunk_fragment is False, so this takes
-    # the ownership-resolved slicing path, not the plain whole-hunk one.
+    # A range that is a real sub-window WITHIN the hunk's own bounds (old:
+    # 1-1, new: 1-2) but not the hunk's own full range -- is_whole_hunk_
+    # fragment is False (new_range is a strict subset, 1-1 vs the hunk's
+    # 1-2), so this takes the ownership-resolved slicing path, not the
+    # plain whole-hunk one, WITHOUT tripping the #200-G3B correction round's
+    # own out-of-bounds check (a different, prior boundary this fixture
+    # must stay inside of to keep exercising ITS OWN target: an in-bounds
+    # window that still ends up owning no real lines).
     old_range = LineRangeV2(start=1, end=1)
-    new_range = LineRangeV2(start=5, end=5)
+    new_range = LineRangeV2(start=1, end=1)
     fragment_id = compute_fragment_id_v2(path="a.py", old_range=old_range, new_range=new_range, diff_sha256="a" * 64)
     fragment = FragmentV2(
         fragment_id=fragment_id, path="a.py", old_range=old_range, new_range=new_range,
