@@ -73,6 +73,7 @@ from app.agent_review.synthesis_v2 import synthesize_chunk_results_v2
 __all__ = [
     "OPERATIONAL_RUN_ASSEMBLY_BLOCKED_REASON_V2",
     "OPERATIONAL_RUN_MISSING_CHUNK_RESPONSE_REASON_V2",
+    "OPERATIONAL_RUN_MUST_REVIEW_UNREVIEWABLE_REASON_V2",
     "OperationalRunError",
     "OperationalRunResultV2",
     "execute_operational_run_v2",
@@ -81,6 +82,7 @@ __all__ = [
 
 OPERATIONAL_RUN_ASSEMBLY_BLOCKED_REASON_V2 = "operational_run_assembly_blocked"
 OPERATIONAL_RUN_MISSING_CHUNK_RESPONSE_REASON_V2 = "operational_run_missing_chunk_response"
+OPERATIONAL_RUN_MUST_REVIEW_UNREVIEWABLE_REASON_V2 = "operational_run_must_review_unreviewable"
 
 
 class OperationalRunError(ExpectedOperationalRefusalV2, ValueError):
@@ -139,6 +141,17 @@ def execute_operational_run_v2(
     # -- which is precisely the blind spot authority C exists to remove.
     scope = assess_changed_scope_v2(file_diffs=file_diffs, profile=profile)
 
+    if scope.blocked:
+        # Fail closed, with a reason code that says what happened. The
+        # assembly would also refuse this run -- a must-review path with no
+        # fragments blocks it -- but under a generic
+        # `operational_run_assembly_blocked`, which tells an operator to go
+        # looking at chunking when the real cause is that a path the target
+        # declared must-review carried nothing reviewable. Deciding it here,
+        # from the scope authority that actually knows, keeps the diagnosis
+        # accurate and does not depend on assembly's incidental ordering.
+        raise OperationalRunError(OPERATIONAL_RUN_MUST_REVIEW_UNREVIEWABLE_REASON_V2)
+
     outcome = assemble_manifest_from_diff_v2(
         file_diffs,
         profile=profile,
@@ -192,11 +205,6 @@ def execute_operational_run_v2(
         # can be done without a published-contract change is refuse to claim
         # ready, which is the part that actually protects a consumer.
         state = ReadinessStateV2.MANUAL_REQUIRED
-
-    if scope.blocked:
-        # A must-review path the product could not review. Fail closed
-        # regardless of how the fragments went.
-        state = ReadinessStateV2.BLOCKED_PIPELINE
 
     return OperationalRunResultV2(
         manifest=manifest,

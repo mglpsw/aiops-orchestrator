@@ -410,17 +410,20 @@ def test_no_argv_spelling_can_express_inner_authority(
     assert "unrecognized arguments" in completed.stderr
 
 
-def test_a_duplicate_public_flag_cannot_smuggle_a_second_identity(
+def test_a_duplicate_public_flag_cannot_smuggle_inner_authority(
     product_workspace_v2: dict[str, pathlib.Path],
 ) -> None:
     """`#276` leaned on argparse last-wins ordering as a defence.
 
-    Ordering is not authority. Here a duplicated public flag simply cannot
-    reach inner authority, because no public flag carries any: the run still
-    reports the real committed toolrepo sha.
+    Ordering is not authority. A duplicated public flag cannot reach inner
+    authority because no public flag carries any, so the run still reports the
+    real committed toolrepo sha regardless of which occurrence argparse kept.
+    ``--delivery-id`` is duplicated here precisely because it is *not* part of
+    ``RunIdentityV2``: it isolates the argv question from the identity one,
+    which the next test covers.
     """
     completed = _run_product_v2(
-        product_workspace_v2, extra_argv=["--toolchain-digest", "5" * 64]
+        product_workspace_v2, extra_argv=["--delivery-id", "delivery-second"]
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -429,6 +432,29 @@ def test_a_duplicate_public_flag_cannot_smuggle_a_second_identity(
         cwd=_REPOSITORY_ROOT_V2, capture_output=True, text=True, check=True
     ).stdout.strip()
     assert json.loads(completed.stdout)["toolrepo_sha"] == expected
+
+
+def test_a_duplicated_identity_flag_refuses_rather_than_running_a_different_run(
+    product_workspace_v2: dict[str, pathlib.Path],
+) -> None:
+    """Duplicating an identity-bearing flag must not quietly change the run.
+
+    ``--toolchain-digest`` participates in ``RunIdentityV2``, so a second
+    occurrence yields a different ``run_id``. The prepared responses then bind
+    to nothing, and the product refuses with a typed reason instead of
+    composing a run whose responses describe a different identity.
+
+    This is the outcome that matters: last-wins is a parser behaviour, and the
+    protection comes from identity binding downstream of it, not from argv
+    ordering.
+    """
+    completed = _run_product_v2(
+        product_workspace_v2, extra_argv=["--toolchain-digest", "5" * 64]
+    )
+
+    assert completed.returncode == 2
+    assert completed.stderr.strip() == "run_id_mismatch"
+    assert "Traceback" not in completed.stderr
 
 
 def test_a_poisoned_environment_cannot_supply_inner_authority(
