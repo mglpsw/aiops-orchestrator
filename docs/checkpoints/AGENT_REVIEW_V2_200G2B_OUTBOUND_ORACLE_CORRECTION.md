@@ -180,25 +180,35 @@ before being fixed, not assumed:
 Recorded as instructed: commit before mutating, confirm the mutation makes
 the round-2 regression tests fail, restore, confirm green again.
 
-Committed the fix at `<commit-sha-A>` (see §7 for the actual hash), then:
+Committed the fix at `094b0f755563053da8c9dd49bece40a1196835ca`, then:
 
 - **Mutation 1 -- revert `_safe_placeholder` to prefix matching.**
   Restored the round-1 `value.lower().startswith(("${", "$", "<",
   "[redacted", "[placeholder"))` shape in place of the exact/`fullmatch`
-  checks. Result: `test_round2_closed_world_false_safes_are_blocked[password=$ecret123-...]`
-  and the `[REDACTED]Hunter2` case both failed (false-safe reproduced),
-  confirming the allowlist-boundedness fix is load-bearing for those two
-  cases. Restored the real implementation; suite back to 22/22.
+  checks (edited in place, not committed). Result:
+  `2 failed, 4 passed, 16 deselected` -- exactly
+  `test_round2_closed_world_false_safes_are_blocked[password=$ecret123-...]`
+  and the `[REDACTED]Hunter2` case failed (false-safe reproduced, same
+  `AssertionError: real HTTP delegate must never run for unsafe outbound
+  material` signature as the original round-1 RED run), confirming the
+  allowlist-boundedness fix is load-bearing for exactly those two cases
+  and no others. Restored via `git checkout -- evals/agent_review_v2/outbound_safety_oracle_spike.py`;
+  full suite back to 22/22.
 - **Mutation 2 -- revert `_ASSIGNMENT_RE` to line-start-anchored, bare-key-only.**
   Restored the round-1 `_LINE_ASSIGNMENT_RE` shape (dropping quoted-key
-  support and the non-anchored scan). Result: the `connect(password=...)`,
-  `"password": "Hunter2"`, and nested `config = {...}` cases all failed
+  support and the non-anchored scan; dummy never-participating
+  `qkey1`/`qkey2`/`qval` groups kept so the consumer's `match.group(...)`
+  calls do not raise on a structurally different regex). Result:
+  `3 failed, 3 passed, 16 deselected` -- exactly the `connect(password=...)`,
+  `"password": "Hunter2"`, and nested `config = {...}` cases failed
   (false-safe reproduced), confirming the structural-coverage fix is
-  load-bearing for those three cases. Restored the real implementation;
-  suite back to 22/22.
+  load-bearing for exactly those three cases. Restored via `git checkout
+  --`; full suite back to 22/22, working tree clean (`git status --short`
+  empty) before proceeding.
 
-`<mutation results and exact commands recorded in the PR/commit trail;
-see §7 for hashes>`
+Both mutations independently confirmed necessary and sufficient for the
+cases they target -- no overlap, no case left unexplained by either
+mutation, no case broken by both/neither.
 
 ## 6. Real-source negative-direction check (task step 6)
 
