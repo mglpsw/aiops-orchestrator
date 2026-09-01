@@ -402,3 +402,62 @@ def test_the_scope_authority_agrees_with_the_assembly_about_representability() -
 
     assert assessment.reviewable_paths, "non-vacuity: something must be reviewable"
     assert "src/pages/[id].tsx" in assessment.unsupported_paths
+
+
+# Git's rendering of ONE type change: a delete block plus an add block for the
+# same path. Captured from real `git diff` output, not hand-written.
+_TYPE_CHANGE_DIFF_V2 = """diff --git a/config.ini b/config.ini
+deleted file mode 100644
+index dcc2780..0000000
+--- a/config.ini
++++ /dev/null
+@@ -1 +0,0 @@
+-orig
+diff --git a/config.ini b/config.ini
+new file mode 120000
+index 0000000..48980ad
+--- /dev/null
++++ b/config.ini
+@@ -0,0 +1 @@
++/etc/hostname
+\\ No newline at end of file
+"""
+
+
+def test_a_git_type_change_does_not_deny_the_whole_review() -> None:
+    """Lane B P1. The `#276` regression shape, reintroduced and now removed.
+
+    A regular file becoming a symlink is one coherent change, but git renders
+    it as delete + add for the same path. The previous revision iterated block
+    by block and raised ``scope_assessment_duplicate_changed_path`` on the
+    second one -- denying the entire review for an ordinary refactor, under a
+    reason code that misdescribed the event, since nothing was duplicated.
+
+    It is ``unsupported`` rather than ``metadata_only``: material genuinely
+    changed and this product cannot render the transition, so total scope is
+    incomplete and ``ready`` becomes impossible. That is the honest outcome.
+    """
+    assessment = _assess_v2(_ORDINARY_DIFF_V2, _TYPE_CHANGE_DIFF_V2)
+
+    assert assessment.reviewable_paths == ("src/a.py",)
+    assert assessment.unsupported_paths == ("config.ini",)
+    assert assessment.scope_complete is False
+    assert assessment.blocked is False
+
+
+def test_a_genuine_duplicate_still_refuses() -> None:
+    """Non-vacuity control for the pairing rule.
+
+    Pairing must not become a way for two real changes to the same file to be
+    silently merged. Only exactly one delete plus one add is a type change.
+    """
+    with pytest.raises(ScopeAssessmentError) as caught:
+        _assess_v2(_ORDINARY_DIFF_V2, _ORDINARY_DIFF_V2)
+
+    assert caught.value.reason_code == SCOPE_ASSESSMENT_DUPLICATE_PATH_REASON_V2
+
+
+def test_three_blocks_for_one_path_still_refuses() -> None:
+    """A shape git does not produce is still an inconsistency, not a pair."""
+    with pytest.raises(ScopeAssessmentError):
+        _assess_v2(_TYPE_CHANGE_DIFF_V2, _ORDINARY_DIFF_V2.replace("src/a.py", "config.ini"))

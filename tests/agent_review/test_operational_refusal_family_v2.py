@@ -45,37 +45,13 @@ from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 _PACKAGE_ROOT_V2 = pathlib.Path(agent_review_package.__file__).parent
 
-# Entry points a v2 operational run is allowed to touch. The closure is
-# computed from these, so adding a real import to the product path widens the
-# closure automatically -- this list cannot silently drift narrower than the
-# code.
-_V2_PRODUCT_PATH_ROOTS_V2 = (
-    "authoritative_check_policy_v2",
-    "chunk_result_scope_v2",
-    "contracts_v2",
-    "diff_acquisition_v2",
-    "evidence_hash_v2",
-    "lifecycle_v2",
-    "manifest_v2",
-    "parser_v2",
-    "payload_builder_v2",
-    "payload_references_v2",
-    "payload_set_emission_v2",
-    "payload_set_v2",
-    "planner_v2",
-    "profile_loader_v2",
-    "readiness_decision_v2",
-    "required_check_readiness_v2",
-    "review_content_extraction_v2",
-    "review_content_v2",
-    "review_readiness_emission_v2",
-    "review_transport_contract_v2",
-    "review_transport_v2",
-    "run_assembly_v2",
-    "run_fragment_coverage_v2",
-    "semantic_grouping_policy_v2",
-    "synthesis_v2",
-    "_router_receipt_v2",
+#: The product's real entry point. The closure is seeded from what THIS file
+#: imports -- transitively, including function-local imports -- so it is
+#: derived from the code rather than maintained beside it.
+_PRODUCT_ENTRY_POINT_V2 = (
+    pathlib.Path(agent_review_package.__file__).parents[2]
+    / "scripts"
+    / "aiops-review-run-v2.py"
 )
 
 
@@ -109,12 +85,13 @@ def _package_exception_classes_v2() -> frozenset[type[BaseException]]:
     return frozenset(found)
 
 
-def _module_local_imports_v2(module_name: str) -> list[str]:
-    source_path = _PACKAGE_ROOT_V2 / f"{module_name}.py"
-    if not source_path.exists():
-        return []
+def _local_imports_in_source_v2(source: str) -> list[str]:
+    """Package modules imported anywhere in this source, including inside
+    functions -- the CLI defers most of its imports into the outer and inner
+    entry functions, and a top-level-only scan would miss nearly all of them.
+    """
     discovered: list[str] = []
-    for node in ast.walk(ast.parse(source_path.read_text(encoding="utf-8"))):
+    for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith(
             "app.agent_review."
         ):
@@ -126,10 +103,40 @@ def _module_local_imports_v2(module_name: str) -> list[str]:
     return discovered
 
 
+def _entry_point_local_imports_v2() -> list[str]:
+    return _local_imports_in_source_v2(
+        _PRODUCT_ENTRY_POINT_V2.read_text(encoding="utf-8")
+    )
+
+
+def _module_local_imports_v2(module_name: str) -> list[str]:
+    source_path = _PACKAGE_ROOT_V2 / f"{module_name}.py"
+    if not source_path.exists():
+        return []
+    return _local_imports_in_source_v2(source_path.read_text(encoding="utf-8"))
+
+
+@functools.cache
 @functools.cache
 def _v2_product_path_closure_v2() -> frozenset[str]:
+    """Every package module a real run can execute, derived from the CLI.
+
+    The first revision seeded this from a hand-written tuple of module names
+    and carried a comment claiming the closure "cannot silently drift narrower
+    than the code". That claim was **false**, and adversarial review proved
+    it: six of the eight ``operational_*`` modules -- including
+    ``operational_run_v2``, which the inner calls directly -- were outside the
+    closure, because they *import* the listed roots rather than being imported
+    by them. Invariant A3 was therefore blind to exactly the modules this
+    slice added.
+
+    A hand-maintained list with a false claim of automatic completeness is the
+    `#276` control in different clothing. Seeding from the entry point's own
+    imports removes the list: a module reachable from the CLI is in the
+    closure because the CLI reaches it, and nobody has to remember.
+    """
     seen: set[str] = set()
-    pending = collections.deque(_V2_PRODUCT_PATH_ROOTS_V2)
+    pending = collections.deque(_entry_point_local_imports_v2())
     while pending:
         module_name = pending.popleft()
         if module_name in seen:
@@ -211,17 +218,43 @@ def _publishes_a_structured_refusal_code_v2(exception_class: type[BaseException]
 
 @functools.cache
 def _is_module_private_control_flow_signal_v2(exception_class: type[BaseException]) -> bool:
-    """True when the class is raised and caught inside its own module only.
+    """True when the class is an underscore-named, module-local signal.
 
-    Structural, not editorial: the name must not appear in any *other* module
-    in the package, and its own module must contain both a ``raise`` and an
-    ``except`` for it. Such a class is unreachable at the boundary because it
-    never crosses a module edge.
+    The first revision asked only whether the module contained *a* raise and
+    *a* handler somewhere, which proves nothing about the raise sites it did
+    not inspect; adversarial review added a public function raising outside
+    any ``try`` and the invariant stayed green.
+
+    The obvious repair -- prove by static analysis that every raise is
+    guarded -- was attempted and **abandoned**, which is worth recording. A
+    sound version needs call-graph plus exception-propagation analysis: the
+    real pattern here is a nested closure that raises and an enclosing
+    function that catches, so a lexical rule rejects valid code, while a
+    call-graph rule has to attribute raises to the *innermost* function and
+    then decide reachability from outside the module. Two attempts produced,
+    in turn, false negatives on the clean tree and false positives on the
+    mutant. A control I cannot get right is worse than a narrower one I can,
+    because its greenness would mean nothing.
+
+    So the exemption is narrowed to what is decidable by inspection:
+
+    1. the class name is underscore-prefixed, i.e. not part of any public
+       surface by the convention this codebase already relies on; and
+    2. the name appears in no other module in the package, so no other module
+       can catch it, raise it, or name it.
+
+    Anything else must join the family and publish a reason code. That is a
+    stricter bar than before -- ``AmbiguousProfileDocumentV2`` no longer
+    qualifies and was made a member -- and it removes the analysis entirely
+    rather than shipping one that is merely plausible.
     """
     owning_module = _defining_module_of_v2(exception_class)
     if owning_module is None:
         return False
+
     name = exception_class.__name__
+    if not name.startswith("_"):
+        return False
 
     for source_path in _PACKAGE_ROOT_V2.glob("*.py"):
         if source_path.stem == owning_module:

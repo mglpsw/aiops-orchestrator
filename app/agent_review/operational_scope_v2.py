@@ -117,6 +117,18 @@ class PathDispositionV2(str, enum.Enum):
     UNSUPPORTED = "unsupported"
 
 
+def _is_type_change_pair_v2(blocks: Sequence[ParsedFileDiffV2]) -> bool:
+    """Are these two blocks git's rendering of one type change?
+
+    Exactly one delete and one add for the same path. Anything else sharing a
+    path is a genuine inconsistency and still refuses, so this does not become
+    a way for two real changes to the same file to be silently merged.
+    """
+    if len(blocks) != 2:
+        return False
+    return {block.change_type for block in blocks} == {"deleted", "added"}
+
+
 def classify_changed_path_v2(file_diff: ParsedFileDiffV2) -> PathDispositionV2:
     """Give one changed path exactly one disposition.
 
@@ -238,15 +250,39 @@ def assess_changed_scope_v2(
     metadata_only: list[str] = []
     unsupported: list[str] = []
     must_review_blocked: list[str] = []
-    seen: set[str] = set()
 
+    # Group by path BEFORE dispositioning. Git renders a single type change --
+    # a regular file becoming a symlink, or the reverse -- as a delete block
+    # *plus* an add block for the same path. `diff_acquisition_v2` documents
+    # this empirically and `acquire_authoritative_diff_v2` refuses it upstream
+    # with the accurate `raw_diff_type_change_unsupported`, but the product
+    # CLI parses a caller-supplied `--diff` directly, so the pair reaches here.
+    #
+    # The previous revision iterated block by block and raised
+    # `scope_assessment_duplicate_changed_path` on the second one, denying the
+    # WHOLE review for an ordinary refactor, under a reason code that
+    # misdescribed the event -- nothing was duplicated; a type change is one
+    # coherent change. That is precisely the `#276` shape this slice exists to
+    # retire, reintroduced.
+    by_path: dict[str, list[ParsedFileDiffV2]] = {}
     for file_diff in file_diffs:
-        path = file_diff.path
-        if path in seen:
-            raise ScopeAssessmentError(SCOPE_ASSESSMENT_DUPLICATE_PATH_REASON_V2)
-        seen.add(path)
+        by_path.setdefault(file_diff.path, []).append(file_diff)
 
-        disposition = classify_changed_path_v2(file_diff)
+    seen: set[str] = set(by_path)
+
+    for path, blocks in by_path.items():
+        if len(blocks) == 1:
+            disposition = classify_changed_path_v2(blocks[0])
+        elif _is_type_change_pair_v2(blocks):
+            # Representable as a fact, not as reviewable content: the old and
+            # new objects are different kinds. Unsupported rather than
+            # metadata-only, because material genuinely changed and this
+            # product cannot render the transition for review -- so total
+            # scope is incomplete and `ready` becomes impossible, which is the
+            # honest outcome.
+            disposition = PathDispositionV2.UNSUPPORTED
+        else:
+            raise ScopeAssessmentError(SCOPE_ASSESSMENT_DUPLICATE_PATH_REASON_V2)
         if disposition is PathDispositionV2.REVIEWABLE:
             reviewable.append(path)
             continue

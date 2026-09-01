@@ -103,8 +103,16 @@ _YAML_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (
 )
 
 
-class AmbiguousProfileDocumentV2(Exception):
+class AmbiguousProfileDocumentV2(ExpectedOperationalRefusalV2, Exception):
     """Raised at the exact point PyYAML would otherwise pick silently."""
+
+    #: `#200-F`: this no longer qualifies for A3's module-private exemption
+    #: (it has a public name), so it joins the family and publishes a code
+    #: rather than relying on a static-analysis proof that it cannot escape.
+    def __init__(self, reason_code: str = "target_profile_document_ambiguous") -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
 
 
 class _CollisionRefusingSafeLoaderV2(yaml.SafeLoader):
