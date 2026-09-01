@@ -228,10 +228,18 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
     """Verify the document against the running code, then compose."""
     import json as _json
 
+    import tempfile as _tempfile
+
     from app.agent_review.diff_acquisition_v2 import parse_unified_diff
     from app.agent_review.contracts_v2 import TargetProfileV2
-    from app.agent_review.operational_ingress_v2 import validate_existing_file_v2
+    from app.agent_review.operational_ingress_v2 import (
+        validate_existing_directory_v2,
+        validate_existing_file_v2,
+    )
     from app.agent_review.operational_run_v2 import execute_operational_run_v2
+    from app.agent_review.operational_subject_v2 import (
+        materialise_controlled_target_subject_v2,
+    )
     from app.agent_review.semantic_grouping_policy_v2 import SemanticGroupingPolicyV2
 
     verified = verify_inner_control_document_v2(
@@ -249,6 +257,18 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
     )
     diff_text = validate_existing_file_v2(arguments.diff).read_text(encoding="utf-8")
     file_diffs = parse_unified_diff(diff_text)
+
+    # The controlled target subject: the target's committed bytes at the head
+    # under review, severed from the checkout they came from. Materialised
+    # before any review material is read, so everything downstream sees a
+    # subject that cannot change underneath it -- and so a target repository
+    # that is rewritten or deleted mid-run cannot alter what was reviewed.
+    target_subject_root = Path(_tempfile.mkdtemp(prefix="agent-review-target-"))
+    target_subject = materialise_controlled_target_subject_v2(
+        target_root=validate_existing_directory_v2(arguments.target_root),
+        head_sha=inputs.head_sha,
+        destination=target_subject_root / "subject",
+    )
 
     responses_root = Path(arguments.responses)
 
@@ -277,6 +297,10 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
                 "schema_id": "agent-review.operational-run.v2",
                 "run_id": result.manifest.run_id,
                 "toolrepo_sha": verified.declared_toolrepo_sha,
+                "target_subject": {
+                    "head_sha": target_subject.head_sha,
+                    "file_count": target_subject.file_count,
+                },
                 "readiness_state": result.readiness_state.value,
                 "reason_codes": list(result.reason_codes),
                 "finding_count": len(result.findings),
@@ -297,6 +321,7 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
         )
         + "\n"
     )
+    shutil.rmtree(target_subject_root, ignore_errors=True)
     return _EXIT_OK_V2
 
 

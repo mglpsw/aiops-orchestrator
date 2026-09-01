@@ -43,8 +43,45 @@ _CLI_V2 = _REPOSITORY_ROOT_V2 / "scripts" / "aiops-review-run-v2.py"
 _SECRET_V2 = "super-secret-value"
 
 _BASE_SHA_V2 = "1" * 40
-_HEAD_SHA_V2 = "2" * 40
 _TESTED_MERGE_SHA_V2 = "3" * 40
+
+
+def _build_target_repository_v2(root: pathlib.Path) -> str:
+    """A real target repository whose HEAD is the head under review.
+
+    The product materialises a controlled target subject from this checkout at
+    ``--head-sha``, so the sha has to name a real commit. Using a made-up
+    constant would have meant the target-subject authority was never exercised
+    by the product test at all -- which is exactly how ``--target-root`` came
+    to be validated but unused in an earlier revision.
+
+    The tree is the *post-change* state the diff describes.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    environment = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@example.invalid",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@example.invalid",
+    }
+
+    def _git(*arguments: str) -> str:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=root, capture_output=True, text=True, check=True, env=environment,
+        ).stdout.strip()
+
+    _git("init", "-q", "-b", "main")
+    (root / "app").mkdir()
+    (root / "app" / "service.py").write_text(
+        f'import os\npassword = "{_SECRET_V2}"\ndef handler():\n    return 1\n',
+        encoding="utf-8",
+    )
+    (root / "app" / "new_name.py").write_text("RENAMED = True\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("commit", "-q", "-m", "head under review")
+    return _git("rev-parse", "HEAD")
 _TOOLCHAIN_DIGEST_V2 = "4" * 64
 
 
@@ -166,7 +203,7 @@ def product_workspace_v2(tmp_path: pathlib.Path) -> dict[str, pathlib.Path]:
     diff_path.write_text(_DIFF_V2, encoding="utf-8")
 
     target_root = tmp_path / "target"
-    target_root.mkdir()
+    head_sha = _build_target_repository_v2(target_root)
 
     outcome = assemble_manifest_from_diff_v2(
         parse_unified_diff(_DIFF_V2),
@@ -175,7 +212,7 @@ def product_workspace_v2(tmp_path: pathlib.Path) -> dict[str, pathlib.Path]:
         repo="mglpsw/aiops-orchestrator",
         pr_number=200,
         base_sha=_BASE_SHA_V2,
-        head_sha=_HEAD_SHA_V2,
+        head_sha=head_sha,
         tested_merge_sha=_TESTED_MERGE_SHA_V2,
         toolrepo_sha=_committed_toolrepo_sha_v2(),
         evidence_hash=_TOOLCHAIN_DIGEST_V2,
@@ -218,6 +255,7 @@ def product_workspace_v2(tmp_path: pathlib.Path) -> dict[str, pathlib.Path]:
         )
 
     return {
+        "head_sha": head_sha,
         "profile": profile_path,
         "grouping_policy": policy_path,
         "diff": diff_path,
@@ -231,7 +269,7 @@ def _public_argv_v2(workspace: dict[str, pathlib.Path], **overrides: str) -> lis
         "--repo": "mglpsw/aiops-orchestrator",
         "--pr-number": "200",
         "--base-sha": _BASE_SHA_V2,
-        "--head-sha": _HEAD_SHA_V2,
+        "--head-sha": str(workspace["head_sha"]),
         "--tested-merge-sha": _TESTED_MERGE_SHA_V2,
         "--toolchain-digest": _TOOLCHAIN_DIGEST_V2,
         "--event-type": "pull_request",
@@ -692,3 +730,82 @@ def test_both_processes_validate_public_input() -> None:
     }
 
     assert callers == {"_run_outer_bootstrap_v2", "_run_inner_semantic_v2"}
+
+
+def test_the_run_records_the_controlled_target_subject_it_materialised(
+    product_workspace_v2: dict[str, pathlib.Path],
+) -> None:
+    """`#11`'s target subject, exercised by the product rather than in a unit.
+
+    An earlier revision validated ``--target-root`` and then never used it, so
+    the authority was tested in isolation while the product ignored it. The
+    run document now reports the subject it actually built.
+    """
+    completed = _run_product_v2(product_workspace_v2)
+    assert completed.returncode == 0, completed.stderr
+
+    target_subject = json.loads(completed.stdout)["target_subject"]
+
+    assert target_subject["head_sha"] == str(product_workspace_v2["head_sha"])
+    assert target_subject["file_count"] == 2
+
+
+def test_source_severance_holds_at_product_level(
+    product_workspace_v2: dict[str, pathlib.Path],
+) -> None:
+    """Deleting the target checkout after the run cannot change the artifact.
+
+    Run once, capture the document, destroy the checkout, and confirm the
+    recorded subject identity is unchanged -- the review is reproducible from
+    its artifact, not from a directory that has since moved on.
+    """
+    import shutil as _shutil
+
+    first = _run_product_v2(product_workspace_v2)
+    assert first.returncode == 0, first.stderr
+    recorded = json.loads(first.stdout)["target_subject"]
+
+    _shutil.rmtree(product_workspace_v2["target_root"])
+    assert not product_workspace_v2["target_root"].exists()
+
+    assert recorded["head_sha"] == str(product_workspace_v2["head_sha"])
+    assert recorded["file_count"] == 2
+
+
+def test_a_run_does_not_mutate_the_target_repository(
+    product_workspace_v2: dict[str, pathlib.Path],
+) -> None:
+    """Reviewing a repository must leave no trace in it."""
+    target_root = product_workspace_v2["target_root"]
+
+    def _state() -> tuple[str, str]:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=target_root, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            cwd=target_root, capture_output=True, text=True, check=True
+        ).stdout
+        return head, porcelain
+
+    before = _state()
+    completed = _run_product_v2(product_workspace_v2)
+    assert completed.returncode == 0, completed.stderr
+
+    assert _state() == before
+
+
+def test_a_head_sha_absent_from_the_target_is_a_typed_refusal(
+    product_workspace_v2: dict[str, pathlib.Path],
+) -> None:
+    """A run cannot review a commit the target does not contain.
+
+    Well-formed input, so ingress passes; the refusal comes from the subject
+    authority, and is still content-free with no traceback.
+    """
+    completed = _run_product_v2(product_workspace_v2, **{"--head-sha": "a" * 40})
+
+    assert completed.returncode == 2
+    assert completed.stderr.strip() == "subject_unknown_commit"
+    assert "Traceback" not in completed.stderr
