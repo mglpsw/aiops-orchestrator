@@ -7,6 +7,10 @@ import json
 import re
 from typing import Any
 
+from app.agent_review.authoritative_check_policy_v2 import AuthoritativeCheckPolicyV2
+from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
+from app.agent_review.authoritative_diff_identity_v2 import ManifestDiffBindingV2
+from app.agent_review.authoritative_producer_evidence_v2 import ProducerAttestationV2
 from app.agent_review.contracts_v2 import (
     AgentReviewRunV2,
     ChunkPayloadV2,
@@ -17,11 +21,8 @@ from app.agent_review.contracts_v2 import (
 from app.agent_review.evidence_hash_v2 import EvidenceBundleV2
 from app.agent_review.manifest_v2 import ManifestV2
 from app.agent_review.payload_set_v2 import PayloadSetV2
-from app.agent_review.review_content_v2 import DlpPolicyDeclarationV2, ReviewContentV2
-from app.agent_review.authoritative_check_policy_v2 import AuthoritativeCheckPolicyV2
-from app.agent_review.authoritative_ci_snapshot_v2 import AuthoritativeCheckSnapshotV2
-from app.agent_review.authoritative_producer_evidence_v2 import ProducerAttestationV2
 from app.agent_review.required_check_provenance_v2 import RequiredCheckProvenanceV2
+from app.agent_review.review_content_v2 import DlpPolicyDeclarationV2, ReviewContentV2
 from app.agent_review.review_transport_contract_v2 import ChunkReviewTransportEnvelopeV1
 from app.agent_review.run_fragment_coverage_v2 import RunFragmentCoverageReportV2
 from app.agent_review.semantic_grouping_policy_v2 import SemanticGroupingPolicyV2
@@ -147,6 +148,9 @@ def render_v2_json_schemas() -> dict[str, dict[str, object]]:
         "agent-review.target-profile.v2.schema.json": TargetProfileV2.model_json_schema(mode="validation"),
         "agent-review.review-readiness.v2.schema.json": ReviewReadinessV2.model_json_schema(mode="validation"),
         "agent-review.manifest.v2.schema.json": ManifestV2.model_json_schema(mode="validation"),
+        "agent-review.manifest-diff-binding.v2.schema.json": ManifestDiffBindingV2.model_json_schema(
+            mode="validation"
+        ),
         "agent-review.run-fragment-coverage.v2.schema.json": RunFragmentCoverageReportV2.model_json_schema(
             mode="validation"
         ),
