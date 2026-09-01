@@ -209,10 +209,121 @@ not this slice's to fix per the recovery checkpoint's own disposition.
 
 ## 5. Review rounds and findings
 
-_To be filled in after the two independent adversarial review passes
-dispatched via the Agent tool complete, against the exact head frozen below._
+### Round 1 -- dispatched against head `848bc185cc899bdbc6556e708fb31e0a914971c1`
+
+Two independent lanes, both via the Agent tool (general-purpose subagents,
+`isolation: worktree`), told to reproduce before claiming, attempt
+fabrication/forgery specifically against the commit->bytes binding, separate
+PROVED from SUSPECTED, and not trust this document's claims.
+
+**Lane A -- P0, decisive.** The commit->bytes binding was refuted by a
+THIRD mechanism, distinct from both original `#277` falsifier classes
+(which lane A confirmed still held). `verify_executed_source_identity_v2`'s
+own "no extra file" scan used `Path.rglob("*")`, which does not descend
+into a symlinked directory (reports the symlink entry, stops), while the
+per-tracked-path comparison used ordinary path joining, which the OS
+resolves by transparently following a symlinked directory in an
+intermediate component. Exploit: materialise honestly, replace a tracked
+directory with a symlink to an attacker directory containing a
+byte-identical file (satisfies the tracked-file check) plus an extra
+untracked file -> `verify_executed_source_identity_v2` returns SUCCESS
+while the extra file sits reachable under `subject_root`, never compared
+against git. Lane A also flagged the existing check 5
+(`identity_loaded_code_outside_subject`) as only a partial mitigation,
+since it reads live `sys.modules` by default and is therefore only useful
+if the file happens to already be imported by the time verification runs --
+not a "verify before executing" gate.
+
+Confirmed-safe per lane A (attacked and could not break): CLI/argv
+injection via `commit_sha`/`ref`, the `..`-traversal fix, gitlink-present
+refusal, blob-missing refusal, full ambient-environment poisoning
+(`PATH`/`GIT_DIR`/`GIT_SSH_COMMAND`/`LD_PRELOAD`/`GIT_ALTERNATE_OBJECT_
+DIRECTORIES`, confirmed via a sentinel-writing fake `git`), and IDENTITY/
+AUTHORIZATION non-conflation (a real unmerged-branch repo, identity
+succeeds independently of authorization).
+
+**Lane B -- did not refute the commit->bytes binding.** Attacked it with
+two new git-plumbing constructions this document's corpus did not cover (a
+blob/subtree name-collision tree, and a direct write-time repro of the
+`..`-traversal case against materialisation rather than only verification)
+and it held both times. Found two lower-severity, real P1s instead:
+
+1. `materialise_commit_subject_v2` crashed with a raw, untyped
+   `FileExistsError` (not `SubjectMaterialisationError`) on a hostile tree
+   where a blob and a tree share the exact same one-byte name -- git's own
+   tree-sort comparator treats a directory entry as if it had a trailing
+   `/`, so this is not a duplicate name to git, and `git mktree` accepts
+   it. Left a partial write on disk. In this primitive's own declared
+   `hostile_target_checkout` threat scope.
+2. `ExecutedSourceAuthorizationV2` had no `__bool__`, so `bool(instance)`
+   was always `True` regardless of `.authorized` -- not live today (zero
+   call sites outside this module/its tests) but a footgun for whatever
+   wires this primitive in next.
+
+### Independent reproduction (this document's author, before patching)
+
+Per the process contract, every finding above was personally reproduced
+against the real functions before any fix was written -- not accepted from
+reviewer prose:
+
+- Lane A P0: reproduced live in a throwaway script
+  (`/tmp/g1_repro_script.py` during the session; not committed, scratch
+  only) against the actual `verify_executed_source_identity_v2` --
+  confirmed `VERIFY RESULT: SUCCESS` with `evil.py` reachable under
+  `subject_root`, exactly as reported.
+- Lane B P1 #1: reproduced with real `git mktree --missing` plumbing
+  (`/tmp/g1_repro_collision.py`) -- confirmed a raw `FileExistsError`
+  (not the typed error) and a leftover `collide` file on disk.
+- Lane B P1 #2: confirmed `bool(ExecutedSourceAuthorizationV2(..., authorized=False))`
+  evaluates to `True` with no `__bool__` defined.
+
+### Correction round (one bounded round, per process step 9)
+
+Commits `334bf51` (RED: three regression tests, confirmed failing against
+pre-correction code) and `e4f3c65` (GREEN: fixes). Summary of fixes -- full
+rationale in each function's docstring and the commit message:
+
+1. New `_reachable_leaf_paths_v2`: one traversal policy
+   (`os.walk(followlinks=False)`), refuses on any symlinked directory
+   found anywhere under `subject_root`, and its leaf-path set is reused by
+   both the completeness scan and (implicitly, by having already run) made
+   safe the per-tracked-path comparison's plain path joins. Re-reproduced
+   the exact lane A exploit script against the fixed code: now returns
+   `identity_symlinked_directory_in_subject` instead of false success.
+2. `materialise_commit_subject_v2` catches the blob/tree name-collision
+   (and any `SubjectMaterialisationError` raised mid-write, e.g. the
+   existing path-escape check) and cleans up the destination before
+   raising a typed `subject_path_collision` error. Re-reproduced lane B's
+   script against the fixed code: now raises the typed error and leaves no
+   partial write.
+3. `ExecutedSourceAuthorizationV2.__bool__` added, tracking `.authorized`.
+
+Mutation-tested all three new/changed checks in isolation (commit before
+mutating, mutate, run tests + the standalone repro scripts, confirm both go
+red for the right reason, restore, confirm green): mutation 13 (disable the
+symlinked-directory raise) reproduced the exact lane A false-success again
+via both the test and the standalone script; mutation 14 (force `__bool__`
+to always return `True`) killed cleanly by the new test; mutation 15
+(prevent the collision `except` clause from matching) reproduced the exact
+raw `FileExistsError` from before the fix. 15/15 mutations killed overall
+across this primitive (12 from the original round, 3 from this correction).
+
+Full corpus after correction: 45 tests -- 28 in
+`test_commit_derived_execution_identity_v2.py` (26 + 2 new), 9 in
+`test_git_commit_subject_v2.py` (8 + 1 new), 8 unchanged in
+`test_bounded_git_v2.py` -- all green.
+
+### Round 2 -- pending
+
+To be dispatched against the corrected, re-frozen head (see identity block
+at the top of this document once updated) per process step 9: two fresh
+independent lanes, prior review invalidated by the source change, at least
+one lane specifically re-attacking path-containment via symlink
+substitution (nested symlinks, symlinks-to-symlinks, symlinked files as
+well as directories, case variations) since path-containment is the
+abstraction whose second independent refutation would trigger
+`STOP_G1_ARCHITECTURE_NOT_CONVERGING`.
 
 ## 6. Terminal verdict
 
-_To be filled in once review rounds are complete and (if needed) one bounded
-correction round has been applied and re-reviewed._
+_To be filled in once round 2 is complete._
