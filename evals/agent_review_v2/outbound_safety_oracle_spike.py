@@ -64,12 +64,78 @@ _SLACK_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9])xox[baprs]-[A-Za-z0-9-]{10,}(?![A
 _PRIVATE_KEY_RE = re.compile(
     r"-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----"
 )
-# ReviewContent carries unified-hunk body lines, so the real outbound form of
-# an added/deleted assignment begins with '+'/'-'.
-_LINE_ASSIGNMENT_RE = re.compile(
-    r"(?mi)^[ \t]*[+-]?(?:export[ \t]+)?(?P<key>[A-Za-z_][A-Za-z0-9_.-]*)[ \t]*(?P<sep>[:=])[ \t]*(?P<value>[^\r\n]*)$"
+
+# --- Round-2 correction --------------------------------------------------
+#
+# Round 1 (this file's original shape) committed a closed-world fallacy:
+# ``_LINE_ASSIGNMENT_RE`` only matched a bare identifier anchored to the
+# START of a line, so it never saw kwarg-call assignments
+# (``connect(password="x")``) or quoted-key dict-literal lines
+# (``"password": "x"``). Because "no regex matched" silently fell through to
+# OUTBOUND_SAFE, those unrecognised shapes were treated as proof of safety
+# instead of absence of evidence.
+#
+# ``_ASSIGNMENT_RE`` below is deliberately *not* anchored to line start and
+# recognises both a bare/dotted identifier key and a quoted dict-literal
+# key, so the same sensitive-key branch below now actually sees these
+# shapes instead of silently missing them.
+
+# Every alternative below is length-bounded. Without a cap, the quoted-string
+# alternative can match an entire JSON-escaped source blob as a single
+# "value" — the Router body wraps reviewed source as a JSON string, so a
+# quoted dict-style key like ``"content"`` sitting in front of that whole
+# blob would otherwise capture thousands of characters as one candidate
+# value and feed the *entire file* through the entropy/opaque check. That is
+# exactly the "generic entropy over an arbitrary JSON string" anti-pattern
+# ``_opaque_value_is_suspicious`` already documents as rejected — it just
+# used to be prevented structurally by the old line-start anchor (which
+# never matched a quoted key at all), and reintroducing quoted-key support
+# reopened the door unless a bound is applied. 512 characters comfortably
+# covers realistic credential shapes (JWTs included) while refusing to treat
+# a multi-KB blob as a single atomic value; nested content inside that blob
+# is still reachable, either through this same regex re-matching a smaller
+# inner span, or through the whole-text JSON-parse recursion in
+# ``_scan_text``.
+_MAX_VALUE_LEN = 512
+_VALUE_ALT = (
+    rf'"(?:[^"\\\n]|\\.){{0,{_MAX_VALUE_LEN}}}"'  # double-quoted value
+    rf"|'(?:[^'\\\n]|\\.){{0,{_MAX_VALUE_LEN}}}'"  # single-quoted value
+    # One-level object/array literal. The trailing `[^\s,)\]}\n]*` matters:
+    # without it, ``[REDACTED]Hunter2`` would match only the short balanced
+    # ``[REDACTED]`` span and silently orphan ``Hunter2`` as unconsumed,
+    # unscanned text after the match — the exact kind of "value the grammar
+    # doesn't quite cover, so it goes unseen" gap this round is fixing.
+    # Requiring the container span to swallow any immediately-adjacent
+    # non-delimiter text means a real container is still captured whole,
+    # while a bracket-prefixed placeholder-with-trailing-secret is captured
+    # whole too and therefore fails `_is_container_literal`'s strict
+    # first/last-character check, falling through to be judged as an
+    # ordinary opaque value instead of being silently split.
+    rf"|\{{[^{{}}\n]{{0,{_MAX_VALUE_LEN * 4}}}\}}[^\s,)\]}}\n]{{0,{_MAX_VALUE_LEN}}}"
+    rf"|\[[^\[\]\n]{{0,{_MAX_VALUE_LEN * 4}}}\][^\s,)\]}}\n]{{0,{_MAX_VALUE_LEN}}}"
+    # Bare token up to a delimiter — but never starting with a JSON-escaped
+    # whitespace pair (``\n``/``\r``/``\t`` as the two literal characters
+    # backslash+letter, not an actual newline byte). Reviewed source travels
+    # JSON-escaped, so a genuine end-of-statement colon with nothing real
+    # after it (``if not api_key:`` followed by a real line break) leaves
+    # exactly that two-character escape sequence sitting right after the
+    # colon. Without this guard, ``api_key`` reads as a "key" and the escape
+    # sequence reads as its "value" — a Python control-flow colon, not an
+    # assignment, misparsed as one because nothing distinguishes "nothing
+    # meaningful follows" from "a value follows" once you stop requiring the
+    # key to be the first token on its line.
+    rf"|(?!\\[nrt])[^\s,)\]}}\n]{{1,{_MAX_VALUE_LEN}}}"
+)
+_ASSIGNMENT_RE = re.compile(
+    r'(?:"(?P<qkey1>[^"\n]{1,80})"|\'(?P<qkey2>[^\'\n]{1,80})\')\s*:\s*(?P<qval>'
+    + _VALUE_ALT
+    + r")"
+    r"|(?P<bkey>[A-Za-z_][A-Za-z0-9_.]{0,80})[ \t]*(?P<bsep>[:=])(?!=)[ \t]*(?P<bval>"
+    + _VALUE_ALT
+    + r")"
 )
 _OPAQUE_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9_+/=-]{24,160}(?![A-Za-z0-9_])")
+_MAX_ASSIGNMENT_RECURSION_DEPTH = 6
 
 _SAFE_VALUE_WORDS = {
     "", "none", "null", "false", "true", "example", "placeholder", "redacted",
@@ -77,6 +143,22 @@ _SAFE_VALUE_WORDS = {
     "string", "int", "integer", "bool", "boolean", "float", "bytes", "path",
     "optional[str]", "optional[int]", "secretstr", "safetext",
 }
+# Exact, bounded set of bracket/brace-wrapped placeholder *shapes*. This is
+# intentionally a closed enumeration checked with fullmatch (never a prefix
+# check) — round 1's ``value.startswith("[redacted")`` accepted
+# ``[REDACTED]Hunter2`` because a prefix match proves nothing about what
+# follows the prefix.
+_SAFE_BRACKET_PLACEHOLDER_RE = re.compile(
+    r"^[<\[](redacted|placeholder|hidden|masked|omitted|example|your[a-z0-9_-]*here)[>\]]$",
+    re.IGNORECASE,
+)
+# Bounded environment-variable-reference grammar. Round 1's
+# ``value.startswith("$")`` accepted ``$ecret123`` because any string
+# beginning with "$" passed, regardless of whether the rest of the value
+# was actually a well-formed reference. An env var name is conventionally
+# all-uppercase; this grammar requires the *entire* value to be exactly
+# ``$NAME`` or ``${NAME}`` with nothing else attached.
+_ENV_VAR_REF_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$|^\$[A-Z_][A-Z0-9_]*$")
 _SAFE_TOKEN_KEYS = {
     "prompttokens", "completiontokens", "inputtokens", "outputtokens", "totaltokens",
     "maxtokens", "tokenusage", "tokencount",
@@ -87,6 +169,17 @@ _SENSITIVE_EXACT = {
     "accesstoken", "refreshtoken", "bearertoken", "csrftoken", "idtoken", "pin",
     "pincode", "passcode", "otp", "accesscode", "verificationcode",
 }
+# Key-name context in which a 40/64-hex-char value is a provable non-secret
+# identifier (a git SHA, a content digest, ...) rather than an opaque
+# credential. Round 1 exempted *any* 40/64-hex value globally regardless of
+# key context ("probably a SHA"), which is exactly the closed-world guess
+# that let ``API_TOKEN=<64-hex secret>`` through — a hex-encoded token is
+# indistinguishable in shape from a hex-encoded digest; only the key name
+# can tell them apart, and even then only affirmatively, never by default.
+_HEX_IDENTIFIER_KEY_SUFFIXES = (
+    "sha", "sha1", "sha256", "hash", "digest", "commit", "revision",
+    "checksum", "etag", "fingerprint",
+)
 
 
 def _normalise_key(value: str) -> str:
@@ -94,12 +187,32 @@ def _normalise_key(value: str) -> str:
 
 
 def _sensitive_key(value: str) -> bool:
+    """Round 1 missed ``API_TOKEN`` (normalised ``apitoken``): the suffix
+    list enumerated specific compound suffixes (``csrftoken``, ``idtoken``,
+    ``authtoken``, ...) but never ``apitoken``, so it was silently treated
+    as non-sensitive.
+
+    The first fix attempt for this widened the suffix to bare ``token``,
+    but real-source calibration (task step 6, scanning ``app/``/``tests/``)
+    showed that is too coarse: this repository's own diff-parsing code has
+    legitimate, non-secret identifiers like ``old_path_token`` and
+    ``command_token`` (a lexer token, not a credential), which a bare
+    ``token`` suffix flags just as eagerly as ``API_TOKEN``. The suffix
+    list instead stays enumerated (specific compounds only), with
+    ``apitoken`` added as the one addition this round actually needed.
+    """
+
     key = _normalise_key(value)
     if key in _SAFE_TOKEN_KEYS:
         return False
     if key in _SENSITIVE_EXACT:
         return True
-    if key.endswith(("password", "passwd", "apikey", "clientsecret", "secretkey", "signingkey", "masterkey", "privatekey", "accesskey", "csrftoken", "idtoken", "authtoken", "accesstoken", "refreshtoken", "bearertoken")):
+    if key.endswith((
+        "password", "passwd", "apikey", "clientsecret", "secretkey",
+        "signingkey", "masterkey", "privatekey", "accesskey", "csrftoken",
+        "idtoken", "authtoken", "accesstoken", "refreshtoken", "bearertoken",
+        "apitoken",
+    )):
         return True
     if key.endswith("secret") and len(key) > len("secret"):
         return True
@@ -114,19 +227,33 @@ def _strip_assignment_value(value: str) -> str:
 
 
 def _safe_placeholder(value: str) -> bool:
-    """Only explicit placeholders are safe under a proven-sensitive key.
+    """Only explicit, *fully matched* placeholders are safe under a
+    proven-sensitive key.
 
     G2B's CI caught a dangerous cross-context exemption: a CapitalCase-like
     value such as ``Ab9Cd...`` was treated as a type name even after the key
     had already established that the line was a password. Type-shape reasoning
     is valid only in non-sensitive contexts; under a sensitive key, anything
     not explicitly a placeholder/environment reference remains suspect.
+
+    Round 1 implemented "explicit placeholder" as a *prefix* check
+    (``value.startswith("$")`` / ``startswith("[redacted")``). A prefix
+    check proves nothing about what follows the prefix, so
+    ``$ecret123``/``[REDACTED]Hunter2`` both satisfied it while carrying an
+    exact secret. Every check below is either an exact set-membership test
+    or a ``fullmatch`` against a bounded grammar — the entire value must be
+    the placeholder, not merely start like one.
     """
 
-    lowered = value.strip().lower()
+    stripped = value.strip()
+    lowered = stripped.lower()
     if lowered in _SAFE_VALUE_WORDS:
         return True
-    return lowered.startswith(("${", "$", "<", "[redacted", "[placeholder"))
+    if _ENV_VAR_REF_RE.fullmatch(stripped):
+        return True
+    if _SAFE_BRACKET_PLACEHOLDER_RE.fullmatch(stripped):
+        return True
+    return False
 
 
 def _placeholder_or_type(value: str) -> bool:
@@ -148,11 +275,26 @@ def _entropy(value: str) -> float:
     return -sum((count / length) * math.log2(count / length) for count in counts.values())
 
 
-def _looks_like_sha_or_identifier(value: str) -> bool:
-    if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", value):
-        return True
+def _looks_like_sha_or_identifier(value: str, *, key: str | None = None) -> bool:
+    """A hex-looking value is a provable non-secret identifier only in an
+    affirmative key context (``head_sha``, ``content_digest``, ...).
+
+    Round 1 exempted *any* 40/64-hex-char value from entropy suspicion
+    unconditionally — "probably a SHA". That is a closed-world guess about
+    shape, not proof: a hex-encoded API token is byte-for-byte
+    indistinguishable from a hex-encoded digest. This version only accepts
+    the exemption when the key itself affirmatively names an
+    identifier/digest role; without a key, or under an unrelated key, a
+    hex-looking value gets no exemption and falls through to the ordinary
+    entropy check like any other opaque token.
+    """
+
     if value.startswith(("agent-review.", "review:", "chunk-", "run-")):
         return True
+    if key is not None and re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", value):
+        normalised_key = _normalise_key(key)
+        if normalised_key.endswith(_HEX_IDENTIFIER_KEY_SUFFIXES):
+            return True
     return False
 
 
@@ -166,7 +308,7 @@ def _looks_token_like_for_entropy(value: str) -> bool:
     )
 
 
-def _opaque_value_is_suspicious(value: str) -> bool:
+def _opaque_value_is_suspicious(value: str, *, key: str | None = None) -> bool:
     """Entropy is meaningful only for an explicitly parsed value context.
 
     Structural JWT/AWS/Slack/PEM detectors remain global because their shape
@@ -178,11 +320,73 @@ def _opaque_value_is_suspicious(value: str) -> bool:
 
     for match in _OPAQUE_TOKEN_RE.finditer(value):
         token = match.group(0)
-        if _looks_like_sha_or_identifier(token) or not _looks_token_like_for_entropy(token):
+        if _looks_like_sha_or_identifier(token, key=key) or not _looks_token_like_for_entropy(token):
             continue
         if _entropy(token) >= 4.25:
             return True
     return False
+
+
+def _is_container_literal(value: str) -> bool:
+    stripped = value.strip()
+    return (
+        len(stripped) >= 2
+        and (
+            (stripped[0] == "{" and stripped[-1] == "}")
+            or (stripped[0] == "[" and stripped[-1] == "]")
+        )
+    )
+
+
+def _scan_assignments(
+    text: str, *, location: str, findings: list[OutboundSafetyFindingV2], depth: int = 0
+) -> None:
+    """Find every assignment-shaped construct in *text* and require a
+    positive safety proof for each one instead of defaulting to safe.
+
+    This is the load-bearing polarity inversion for the round-2 fix. Round 1
+    only recognised a bare identifier anchored to the start of a line
+    (``_LINE_ASSIGNMENT_RE``); a kwarg call (``connect(password="x")``) or a
+    quoted dict-literal key (``"password": "x"``) never matched anything at
+    all, and "nothing matched" silently became OUTBOUND_SAFE. ``_ASSIGNMENT_RE``
+    is unanchored and recognises both shapes, so the *same* sensitive-key
+    logic below — which was already allowlist-only, never match-list-only —
+    now actually gets a chance to run against them. A dict/array-literal
+    value under a non-sensitive key is recursed into (bounded depth) rather
+    than being judged as a single opaque blob, so a nested sensitive key
+    (``config = {"password": "Hunter2"}``) is still found.
+    """
+
+    if depth > _MAX_ASSIGNMENT_RECURSION_DEPTH:
+        return
+
+    for match in _ASSIGNMENT_RE.finditer(text):
+        key = match.group("qkey1") or match.group("qkey2") or match.group("bkey")
+        raw_value = match.group("qval") if match.group("qval") is not None else match.group("bval")
+        value = _strip_assignment_value(raw_value)
+
+        if _sensitive_key(key):
+            if not _safe_placeholder(value):
+                findings.append(
+                    OutboundSafetyFindingV2("sensitive_assignment", location, "sensitive_key_value")
+                )
+            continue
+
+        if _is_container_literal(raw_value):
+            # A container value is not itself a single opaque token; its
+            # safety is fully determined by recursing into its contents. An
+            # empty recursive result means "no assignment-shaped construct
+            # found inside" — the same provably-out-of-domain condition that
+            # makes construct-free prose safe.
+            _scan_assignments(
+                raw_value[1:-1], location=f"{location}::<nested>", findings=findings, depth=depth + 1
+            )
+            continue
+
+        if not _placeholder_or_type(value) and _opaque_value_is_suspicious(value, key=key):
+            findings.append(
+                OutboundSafetyFindingV2("high_entropy_assignment", location, "opaque_candidate")
+            )
 
 
 def _scan_text(text: str, *, location: str, findings: list[OutboundSafetyFindingV2]) -> None:
@@ -195,19 +399,7 @@ def _scan_text(text: str, *, location: str, findings: list[OutboundSafetyFinding
         if regex.search(text):
             findings.append(OutboundSafetyFindingV2(detector, location, "structural_credential"))
 
-    for match in _LINE_ASSIGNMENT_RE.finditer(text):
-        key = match.group("key")
-        value = _strip_assignment_value(match.group("value"))
-        if _sensitive_key(key):
-            if not _safe_placeholder(value):
-                findings.append(
-                    OutboundSafetyFindingV2("sensitive_assignment", location, "sensitive_key_value")
-                )
-            continue
-        if not _placeholder_or_type(value) and _opaque_value_is_suspicious(value):
-            findings.append(
-                OutboundSafetyFindingV2("high_entropy_assignment", location, "opaque_candidate")
-            )
+    _scan_assignments(text, location=location, findings=findings)
 
     # The Router user message contains canonical JSON as a string. Parse and
     # recurse so the oracle reasons about that final material independently of

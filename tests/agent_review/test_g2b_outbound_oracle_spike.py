@@ -109,6 +109,101 @@ def _mandatory_secret_cases() -> list[tuple[str, str]]:
     ]
 
 
+def _round2_closed_world_false_safe_cases() -> list[tuple[str, str]]:
+    """Concrete false-SAFE shapes reproduced by independent review round 1
+    against frozen head 4ad18ecb96ec2bd0c22a6fe7b48f2da2d1cd2365 (PR #293
+    comment). Each of these previously returned OUTBOUND_SAFE from
+    ``inspect_outbound_body_v2`` despite carrying an exact secret value, via
+    six distinct mechanisms:
+
+    1. dict-literal value nested inside a non-sensitive-keyed assignment
+       (``config = {"password": "Hunter2"}``) was never recursively
+       inspected for an embedded sensitive key.
+    2. a bare quoted-key dict-literal line (``"password": "Hunter2"``) did
+       not match the old line-anchored assignment regex at all, because the
+       anchor required the key to be a bare identifier at line start.
+    3. kwarg-call shape (``connect(password="Hunter2")``) was invisible to
+       the same line-start anchor.
+    4. ``password=$ecret123`` exploited a *prefix*-based placeholder
+       carve-out (``startswith("$")``) instead of a bounded grammar.
+    5. ``password=[REDACTED]Hunter2`` exploited the same prefix carve-out
+       (``startswith("[redacted")``).
+    6. ``API_TOKEN=<64-hex secret>`` exploited two compounding bugs: the key
+       normaliser did not classify a bare ``...token`` suffix as sensitive,
+       and — even if it had reached the entropy path — a global "40/64 hex
+       chars is probably a SHA" exemption would have cleared it regardless
+       of key context.
+    """
+
+    hex_token = __import__("hashlib").sha256(b"round2-api-token-fixture").hexdigest()
+    assert len(hex_token) == 64
+    return [
+        ('config = {"password": "Hunter2"}', "Hunter2"),
+        ('"password": "Hunter2"', "Hunter2"),
+        ('connect(password="Hunter2")', "Hunter2"),
+        ("password=$ecret123", "$ecret123"),
+        ("password=[REDACTED]Hunter2", "Hunter2"),
+        (f"API_TOKEN={hex_token}", hex_token),
+    ]
+
+
+@pytest.mark.parametrize(("changed_text", "needle"), _round2_closed_world_false_safe_cases())
+def test_round2_closed_world_false_safes_are_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    changed_text: str,
+    needle: str,
+) -> None:
+    """RED before the round-2 fix, GREEN after: absence of a positive match
+    in an incomplete open grammar must never be promoted to OUTBOUND_SAFE.
+    """
+
+    manifest, content, payload_by_chunk_id = _build_real_content_with_forward_detector_blinded(
+        tmp_path, monkeypatch, changed_text=changed_text
+    )
+    chunk_content = content.chunks[0]
+    payload = payload_by_chunk_id[chunk_content.chunk_id]
+
+    captured_body: list[bytes] = []
+    real_http_delegate_called = False
+
+    def _real_http_delegate():
+        nonlocal real_http_delegate_called
+        real_http_delegate_called = True
+        raise AssertionError("real HTTP delegate must never run for unsafe outbound material")
+
+    def _guarded_http_open(http_request, timeout_seconds):
+        del timeout_seconds
+        body = http_request.data
+        assert isinstance(body, bytes)
+        captured_body.append(body)
+        return guard_exact_outbound_body_v2(body, _real_http_delegate)
+
+    transport = agent_router_transport_v2(
+        base_url="https://router.example/",
+        api_key="fixture-api-key",
+        model="review:code",
+    )
+    with mock.patch(
+        "app.agent_review.review_transport_v2._open_agent_router_request_v2",
+        side_effect=_guarded_http_open,
+    ):
+        with pytest.raises(OutboundSafetyBlockedV2) as excinfo:
+            execute_chunk_review_v2(
+                chunk_content,
+                run_id=content.run_id,
+                head_sha=manifest.identity.head_sha,
+                payload=payload,
+                transport=transport,
+            )
+
+    assert len(captured_body) == 1
+    assert needle.encode("utf-8") in captured_body[0]
+    assert excinfo.value.report.verdict == "OUTBOUND_NOT_PROVEN_SAFE"
+    assert excinfo.value.report.findings
+    assert real_http_delegate_called is False
+
+
 @pytest.mark.parametrize(("changed_text", "needle"), _mandatory_secret_cases())
 def test_independent_oracle_blocks_exact_pre_http_bytes_when_forward_detector_is_blind(
     tmp_path: Path,
