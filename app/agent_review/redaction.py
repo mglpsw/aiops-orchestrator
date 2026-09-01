@@ -39,8 +39,40 @@ _PRIVATE_KEY_RE = re.compile(
 )
 _AUTHORIZATION_BEARER_RE = re.compile(r"(?i)(authorization\s*:\s*)bearer\s+([^\s,;]+)")
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+([A-Za-z0-9._~+/=-]{8,})")
+# `#200-F` authority E. The previous value class was `[^\s&;,\"']+`, which
+# EXCLUDED quote characters -- so `password = "..."`, the dominant shape of a
+# hard-coded secret in source, never matched: the first value character after
+# `=` is a quote, which the class forbids. Only the bare `key = value` form
+# was ever redacted, which is why the gap looked exercised and survived.
+#
+# The value alternatives are ordered and every one is line-bounded. A greedy
+# rule that crossed newlines could swallow an entire file body into a single
+# placeholder and destroy the review it exists to protect.
+#
+#   1. a properly terminated double- or single-quoted string;
+#   2. an UNTERMINATED quote, redacted to end of line -- a truncated or
+#      malformed secret is still a secret;
+#   3. the historical bare run.
+_SENSITIVE_ASSIGNMENT_KEYS_V2 = (
+    r"token|api_key|password|secret|client_secret|access_token|refresh_token"
+)
+_ASSIGNMENT_VALUE_V2 = r"(\"[^\"\n]*\"|'[^'\n]*'|\"[^\n]*|'[^\n]*|[^\s&;,\"']+)"
+
+# The optional quote before the separator is what lets JSON keys match:
+# in `"password": "..."` the character after the key name is the key's own
+# closing quote, not the separator. It is captured into the separator group
+# so the replacement puts it back and the line stays well-formed.
 _ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(token|api_key|password|secret|client_secret|access_token|refresh_token)\s*=\s*([^\s&;,\"']+)"
+    rf"(?i)\b({_SENSITIVE_ASSIGNMENT_KEYS_V2})([\"']?\s*=\s*){_ASSIGNMENT_VALUE_V2}"
+)
+
+# The colon form accepts ONLY a quoted value. `password: str` is a Python type
+# annotation, not a secret, and redacting it would damage exactly the code a
+# reviewer must read. Requiring quotes covers YAML and JSON -- where the leak
+# actually occurs -- without touching annotations.
+_COLON_ASSIGNMENT_RE = re.compile(
+    rf"(?i)\b({_SENSITIVE_ASSIGNMENT_KEYS_V2})([\"']?\s*:\s*)"
+    r"(\"[^\"\n]*\"|'[^'\n]*'|\"[^\n]*|'[^\n]*)"
 )
 _COOKIE_RE = re.compile(r"(?i)\b(set-cookie|cookie)\s*:\s*([^\r\n]+)")
 _GITHUB_TOKEN_RE = re.compile(r"\b(ghp_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b")
@@ -163,15 +195,46 @@ def _sub_bearer(text: str, state: RedactionState) -> str:
     return _BEARER_RE.sub(replace, text)
 
 
-def _sub_assignments(text: str, state: RedactionState) -> str:
-    def replace(match: re.Match[str]) -> str:
-        value = match.group(2)
-        if _is_placeholder(value):
-            return match.group(0)
-        state.record(f"{match.group(1).lower()}_assignment")
-        return f"{match.group(1)}={REDACTED}"
+def _unwrap_assignment_value_v2(value: str) -> tuple[str, str]:
+    """Split a matched value into its quote style and its inner text.
 
-    return _ASSIGNMENT_RE.sub(replace, text)
+    Returns ``("", value)`` for a bare value. An unterminated quote yields its
+    opening character and the remainder, so the placeholder check still sees
+    the real text rather than a stray quote.
+    """
+    if not value or value[0] not in "\"'":
+        return "", value
+    quote = value[0]
+    if len(value) >= 2 and value[-1] == quote:
+        return quote, value[1:-1]
+    return quote, value[1:]
+
+
+def _sub_assignments(text: str, state: RedactionState) -> str:
+    """Redact the value of a sensitive assignment, keeping the code readable.
+
+    Only the value is removed. The key, the separator with its original
+    spacing, and the quoting style all survive, so a reviewer can still see
+    that a credential is assigned, to which name, and in what syntax -- which
+    is the whole point of shipping the fragment for review at all.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        key, separator, value = match.group(1), match.group(2), match.group(3)
+        quote, inner = _unwrap_assignment_value_v2(value)
+        if _is_placeholder(inner):
+            return match.group(0)
+        state.record(f"{key.lower()}_assignment")
+        # A quote is reinstated only when the original was balanced; echoing
+        # an unterminated quote back would emit syntax the source never had.
+        if quote and value.endswith(quote) and len(value) >= 2:
+            redacted_value = f"{quote}{REDACTED}{quote}"
+        else:
+            redacted_value = REDACTED
+        return f"{key}{separator}{redacted_value}"
+
+    redacted = _ASSIGNMENT_RE.sub(replace, text)
+    return _COLON_ASSIGNMENT_RE.sub(replace, redacted)
 
 
 def _sub_cookie_headers(text: str, state: RedactionState) -> str:
