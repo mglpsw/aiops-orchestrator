@@ -40,6 +40,10 @@ from typing import Literal
 from pydantic import TypeAdapter, ValidationError
 
 from app.agent_review.contracts_v2 import RelativePath
+from app.agent_review.external_path_ingress_v2 import (
+    ExternalPathIngressError,
+    validate_external_input_directory_v2,
+)
 
 _RELATIVE_PATH_ADAPTER: TypeAdapter[str] = TypeAdapter(RelativePath)
 
@@ -811,8 +815,17 @@ def _run_git_v2(argv: list[str], *, repo_root: Path) -> subprocess.CompletedProc
     must never be laundered into an acquisition refusal.
     """
 
-    if not Path(repo_root).is_dir():
-        raise DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2)
+    # G4B: `repo_root` is the true ingress boundary for this call -- it is
+    # the caller-selected checkout root, not an engine-derived path. Any
+    # failure shape the centralized authority can observe (missing, wrong
+    # type, symlink loop, overlong path, permission denied) collapses to
+    # the SAME pre-existing `REPO_ROOT_UNUSABLE_REASON_V2`: this call site
+    # never distinguished those cases before, and inventing new public
+    # reason codes here is not this predecessor's job.
+    try:
+        validate_external_input_directory_v2(repo_root)
+    except ExternalPathIngressError as exc:
+        raise DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2) from exc
     try:
         return subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
             argv, cwd=repo_root, capture_output=True, text=False, check=False

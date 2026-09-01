@@ -83,24 +83,6 @@ class PayloadReferenceError(ValueError):
         self.reason_code = reason_code
 
 
-def _external_file_or_missing_v2(
-    path: Path,
-    *,
-    repo_root: Path,
-    missing_reason: str,
-    unreadable_reason: str,
-):
-    try:
-        return validate_external_input_file_v2(path, root=repo_root)
-    except ExternalPathIngressError as exc:
-        if exc.reason_code in {
-            EXTERNAL_PATH_MISSING_REASON_V2,
-            EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
-        }:
-            raise PayloadReferenceError(missing_reason) from exc
-        raise PayloadReferenceError(unreadable_reason) from exc
-
-
 def build_payload_artifact_references_v2(
     profile: TargetProfileV2, repo_root: Path
 ) -> tuple[list[PayloadArtifactReferenceV2], tuple[str, ...]]:

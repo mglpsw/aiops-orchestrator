@@ -74,6 +74,12 @@ from app.agent_review.authoritative_producer_evidence_v2 import (
     ProducerKindV2,
     ProducerWorkflowIdentityV2,
 )
+from app.agent_review.external_path_ingress_v2 import (
+    EXTERNAL_PATH_MISSING_REASON_V2,
+    EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
+    ExternalPathIngressError,
+    validate_external_input_file_v2,
+)
 from app.common.strict_json import canonical_json_digest_hex, raw_bytes_digest_hex
 
 AUTHORITATIVE_CHECK_POLICY_SCHEMA_V2 = "agent-review.authoritative-check-policy.v2"
@@ -341,12 +347,19 @@ def load_authoritative_check_policy_v2(
     ever pass base/default in a privileged workflow."""
 
     policy_path = Path(base_checkout_root) / relative_path
-    if not policy_path.is_file():
-        raise AuthoritativeCheckPolicyErrorV2(POLICY_MISSING_REASON_V2)
+    try:
+        policy_file = validate_external_input_file_v2(policy_path, root=base_checkout_root)
+    except ExternalPathIngressError as exc:
+        if exc.reason_code in {
+            EXTERNAL_PATH_MISSING_REASON_V2,
+            EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
+        }:
+            raise AuthoritativeCheckPolicyErrorV2(POLICY_MISSING_REASON_V2) from exc
+        raise AuthoritativeCheckPolicyErrorV2(POLICY_UNREADABLE_REASON_V2) from exc
 
     try:
-        raw_bytes = policy_path.read_bytes()
-    except OSError as exc:
+        raw_bytes = policy_file.read_bytes()
+    except ExternalPathIngressError as exc:
         raise AuthoritativeCheckPolicyErrorV2(POLICY_UNREADABLE_REASON_V2) from exc
 
     try:
