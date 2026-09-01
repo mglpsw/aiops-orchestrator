@@ -79,7 +79,13 @@ from app.agent_review.operational_refusal_v2 import (  # noqa: E402
 )
 
 _EXIT_OK_V2 = 0
+#: A typed operational refusal. stderr carries exactly one reason code.
 _EXIT_REFUSED_V2 = 2
+#: A command-line usage error. Distinct from a refusal on purpose: argparse
+#: exits 2 by default, which collided with the refusal code, so a consumer
+#: reading "exit 2 => parse the reason code from stderr" got a usage block
+#: instead. sysexits.h EX_USAGE.
+_EXIT_USAGE_V2 = 64
 
 
 def _build_public_parser_v2() -> argparse.ArgumentParser:
@@ -90,7 +96,15 @@ def _build_public_parser_v2() -> argparse.ArgumentParser:
     reach. `#276` relied on the equivalent guard *as* the mechanism and it was
     bypassed.
     """
-    parser = argparse.ArgumentParser(
+    class _UsageExitParserV2(argparse.ArgumentParser):
+        """Exit 64 on a usage error rather than argparse's default 2."""
+
+        def error(self, message: str) -> None:  # type: ignore[override]
+            self.print_usage(sys.stderr)
+            sys.stderr.write(f"{self.prog}: error: {message}\n")
+            raise SystemExit(_EXIT_USAGE_V2)
+
+    parser = _UsageExitParserV2(
         prog="aiops-review-run-v2", allow_abbrev=False, add_help=True
     )
     parser.add_argument("--repo", required=True)
@@ -258,6 +272,25 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
     # The profile goes through its owner's typed loader, which already raises
     # a family member and additionally rejects the ambiguous-YAML-document
     # shapes a bare JSON parse would silently accept.
+    # The controlled target subject, materialised BEFORE any review material
+    # is read. The ordering is the claim: an earlier revision asserted it in a
+    # comment while reading `--diff` first, which review caught. Everything
+    # downstream therefore sees a subject that cannot change underneath it,
+    # and a target repository rewritten or deleted mid-run cannot alter what
+    # was reviewed.
+    #
+    # Scope of what this currently buys, stated honestly: the subject's
+    # identity is derived and reported, and severance and non-mutation are
+    # verified against it. The reviewed *content* is still the caller's
+    # `--diff`; reading review material out of the subject is not wired yet
+    # and is not claimed to be.
+    target_subject_root = Path(_tempfile.mkdtemp(prefix="agent-review-target-"))
+    target_subject = materialise_controlled_target_subject_v2(
+        target_root=validate_existing_directory_v2(arguments.target_root),
+        head_sha=inputs.head_sha,
+        destination=target_subject_root / "subject",
+    )
+
     profile = load_target_profile_text_v2(
         read_caller_document_text_v2(arguments.profile, field_name="profile")
     )
@@ -269,19 +302,40 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
     diff_text = read_caller_document_text_v2(arguments.diff, field_name="diff")
     file_diffs = parse_unified_diff(diff_text)
 
-    # The controlled target subject: the target's committed bytes at the head
-    # under review, severed from the checkout they came from. Materialised
-    # before any review material is read, so everything downstream sees a
-    # subject that cannot change underneath it -- and so a target repository
-    # that is rewritten or deleted mid-run cannot alter what was reviewed.
-    target_subject_root = Path(_tempfile.mkdtemp(prefix="agent-review-target-"))
-    target_subject = materialise_controlled_target_subject_v2(
-        target_root=validate_existing_directory_v2(arguments.target_root),
-        head_sha=inputs.head_sha,
-        destination=target_subject_root / "subject",
-    )
-
     responses_root = Path(arguments.responses)
+
+    try:
+        return _compose_and_emit_v2(
+            inputs=inputs,
+            verified=verified,
+            profile=profile,
+            grouping_policy=grouping_policy,
+            file_diffs=file_diffs,
+            responses_root=responses_root,
+            target_subject=target_subject,
+            toolchain_digest=arguments.toolchain_digest,
+        )
+    finally:
+        # Removed on EVERY path. Cleaning up only on success leaked the
+        # materialised subject whenever a run refused, which is both untidy
+        # and, over many refusals, a real disk-space fault.
+        shutil.rmtree(target_subject_root, ignore_errors=True)
+
+
+def _compose_and_emit_v2(
+    *,
+    inputs,
+    verified,
+    profile,
+    grouping_policy,
+    file_diffs,
+    responses_root,
+    target_subject,
+    toolchain_digest: str,
+) -> int:
+    import json as _json
+
+    from app.agent_review.operational_run_v2 import execute_operational_run_v2
 
     def _offline_transport_v2(payload):
         """Read one prepared response. No network, no provider, ever."""
@@ -299,7 +353,7 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
         grouping_policy=grouping_policy,
         file_diffs=file_diffs,
         transport=_offline_transport_v2,
-        evidence_hash=arguments.toolchain_digest,
+        evidence_hash=toolchain_digest,
     )
 
     sys.stdout.write(
@@ -332,7 +386,6 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
         )
         + "\n"
     )
-    shutil.rmtree(target_subject_root, ignore_errors=True)
     return _EXIT_OK_V2
 
 
@@ -354,9 +407,16 @@ def main(argv: list[str] | None = None) -> int:
         document = read_inner_control_document_v2(control_fd)
     except InnerControlChannelError as exc:
         if exc.reason_code != INNER_CONTROL_CHANNEL_ABSENT_REASON_V2:
-            # A channel that is present but wrong is never silently demoted to
-            # "then I must be the outer" -- that would let a malformed
+            # A channel that is present but *malformed* is never silently
+            # demoted to "then I must be the outer" -- that would let a bad
             # document buy a second, unconstrained attempt.
+            #
+            # Precision, after review: `channel_absent` itself is reached both
+            # when no descriptor was passed and when the descriptor yields no
+            # bytes, so an empty channel does become an outer run. That is not
+            # a weakness -- the resulting outer derives its own authority from
+            # the real checkout and grants the caller nothing -- but the
+            # earlier comment said "never demoted", which overstated it.
             sys.stderr.write(f"{exc.reason_code}\n")
             return _EXIT_REFUSED_V2
         document = None

@@ -16,8 +16,18 @@ renames, mode-only changes, binaries, lockfiles, images, empty-file adds and
 deletes, and submodule pointer moves are therefore **invisible** to coverage,
 which reports `complete` for a run that never examined part of the change.
 
-This is demonstrated, not asserted, by
-`tests/agent_review/test_operational_scope_contract_spike_v2.py::test_coverage_reports_complete_while_a_changed_path_is_invisible`.
+The contract-level shape is shown by
+`test_operational_scope_contract_spike_v2.py::test_coverage_reports_complete_while_a_changed_path_is_invisible`,
+which constructs a coverage value by hand. That test **asserts**; it does not
+demonstrate the pipeline produces one, and an earlier revision of this ADR
+cited it as though it did — a circular claim, corrected here.
+
+The pipeline-level demonstration is
+`test_operational_run_v2.py::test_the_false_ready_path_is_closed`, which exists
+because adversarial review found a real false `ready`: a path named
+`src/pages/[id].tsx` was certified `reviewable` and `scope_complete` by the
+scope authority, silently dropped by the assembly, never reviewed, and the run
+reported `ready`.
 
 The grant requires the two ideas to stay distinct:
 
@@ -153,11 +163,19 @@ rather than a commit.
 **Accepted now**
 
 - Every changed path receives a disposition internally; nothing is dropped.
+  This was *not* true when first written: the scope authority reimplemented
+  three of the assembly's four representability conditions, so a path the
+  assembly could not represent was still classified `reviewable`. The
+  predicate is now shared, and the composer additionally refuses when the two
+  authorities disagree about a run's own scope.
 - `ready` is impossible when `scope_complete` is false — enforced in the
   composer, needing no published vocabulary.
 - A must-review path that is unreviewable fails closed.
 - Ordinary renames, chmod-only changes, binaries and empty files no longer
-  deny the whole review, reversing the `#276` regression.
+  deny the whole review, reversing the `#276` regression. A git *type change*
+  briefly did, under a `scope_assessment_duplicate_changed_path` code that
+  misdescribed it — git renders one type change as a delete plus an add for
+  the same path — and is now dispositioned as `unsupported`.
 
 **Deferred, and honestly visible**
 

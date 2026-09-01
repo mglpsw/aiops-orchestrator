@@ -281,6 +281,13 @@ def _sub_assignments(text: str, state: RedactionState) -> str:
     reviewer can still see that a credential is assigned, to which name, and
     in what syntax.
 
+    Known and pre-existing exception, recorded rather than claimed away: a
+    comparison such as ``if token == expected_token:`` has its second ``=``
+    consumed as the value and becomes ``token =[REDACTED] expected_token``.
+    That predates this slice (base ``f70af2e6`` does the same) and is not
+    introduced here, but "the line stays readable" is not universally true
+    and should not be written as if it were.
+
     A value is spared only when it is a placeholder or matches
     ``_BENIGN_VALUE_RE_V2`` -- a numeric literal, a sentinel, a type
     expression, or a template/environment interpolation. Everything else after

@@ -140,11 +140,17 @@ def bind_offline_response_with_range_authority_v2(
 ) -> BoundChunkResponseV2:
     """Offline path: ranges validated before any bound response exists.
 
-    The envelope is validated into a model **once**, here, and that model --
-    not the caller's original object -- is what both the range check and the
-    binder see. Parsing twice would open a window in which a mutable mapping
-    could present different bytes to each reader, so the fresh value is
-    threaded through instead.
+    The envelope is validated here and the resulting **model** -- not the
+    caller's original object -- is what both the range check and the binder
+    see. That closes the window in which a mutable mapping could present
+    different bytes to each reader.
+
+    Precision, after review: the model is validated *twice*, because
+    ``bind_chunk_response_v2`` re-validates whatever it is handed. An earlier
+    revision of this docstring said "once", which was wrong. The security
+    property is unaffected -- the second validation receives a frozen model,
+    so both readers see identical bytes -- but the sentence was load-bearing
+    about this seam and is corrected rather than quietly left.
     """
     try:
         fresh_envelope = validate_chunk_response_envelope_v2(envelope)

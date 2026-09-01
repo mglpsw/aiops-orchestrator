@@ -40,7 +40,16 @@ _UNREVIEWABLE_CHANGED_FILES_V2 = ("src/renamed.py",)
 
 
 def test_coverage_reports_complete_while_a_changed_path_is_invisible() -> None:
-    """The root hazard, demonstrated rather than described.
+    """The root hazard, shown at the contract level.
+
+    Scope note, corrected after review: this constructs a ``ChunkCoverageV2``
+    by hand and shows the contract *accepts* a complete-looking coverage that
+    omits a changed path. It does **not** demonstrate that the pipeline
+    produces one -- the ADR previously cited it as if it did, which was
+    circular. The pipeline-level demonstration is
+    ``test_operational_run_v2.py::test_the_false_ready_path_is_closed``, which
+    grew out of a real false ``ready`` found by adversarial review.
+
 
     ``ChunkCoverageV2`` is computed over ``expected_files``, which holds paths
     that produced reviewable fragments. A changed path that produces none is
@@ -110,10 +119,25 @@ def test_no_coverage_degradation_reason_describes_unreviewable_material(
     )
 
     assert accepted.status is CoverageStateV2.DEGRADED
-    assert degradation_reason not in {
-        # The vocabulary that would be needed and does not exist. Kept as an
-        # empty-set comparison so this test fails loudly the day someone adds
-        # an honest member -- at which point the STOP can be lifted.
+
+    # The previous revision asserted `degradation_reason not in {}` -- an
+    # empty **dict** literal, true for every possible value, in a test whose
+    # stated purpose is to catch exactly this kind of empty claim. It is
+    # replaced by a check with content: the vocabulary is pinned by name, so
+    # the day an honest member is added this fails and the §8 STOP can be
+    # re-derived rather than assumed to still hold.
+    assert {member.value for member in CoverageDegradationReasonV2} == {
+        "artifact_missing",
+        "budget_exhausted",
+        "transport_failure",
+        "schema_failure",
+        "model_uncertainty",
+    }, (
+        "the coverage degradation vocabulary changed; re-run the §8 "
+        "determination before relying on STOP_SCOPE_CONTRACT_REQUIRED"
+    )
+    assert "unrepresentable_material" not in {
+        member.value for member in CoverageDegradationReasonV2
     }
 
 
@@ -158,10 +182,17 @@ def test_partial_coverage_would_deny_the_distinction_the_grant_requires() -> Non
 def test_no_readiness_reason_code_describes_incomplete_total_scope() -> None:
     """Route (c): say it in ``reason_codes``/``blockers``.
 
-    The readiness vocabulary is fixed and published. Walking it member by
-    member, none means "some changed paths carry material this product cannot
-    represent". ``coverage_failure`` is the nearest and is still false:
-    coverage did not fail, it succeeded over the fragments it was defined on.
+    The readiness vocabulary is fixed and published. None of its members means
+    "some changed paths carry material this product cannot represent".
+    ``coverage_failure`` is the nearest and is still false: coverage did not
+    fail, it succeeded over the fragments it was defined on. ``policy_failure``
+    is the next nearest and is also wrong -- no target policy was violated; the
+    product simply could not render some material.
+
+    The docstring previously said "walking it member by member", which
+    overstated what the assertion does: the test pins the member set so the
+    determination is re-run if the vocabulary ever changes. The member-by-member
+    argument is in ADR-200F, where it belongs.
     """
     assert {reason.value for reason in ReadinessReasonV2} == {
         "schema_failure",

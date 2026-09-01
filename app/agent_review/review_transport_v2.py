@@ -210,6 +210,23 @@ def execute_chunk_review_v2(
         else payload.chunk_id
     )
 
+    # `#200-F`: the manifest carries the fragment ranges the range authority
+    # consults, so a manifest belonging to a *different* run would make the
+    # range verdict follow caller-supplied material rather than this run's own
+    # scope. Two cheap identity assertions make that impossible instead of
+    # merely unlikely; without them the choke point's range authority is
+    # caller-conditional, which is not authority. Placed with the other
+    # cross-object comparisons, before any HTTP call is possible.
+    if not isinstance(manifest, ManifestV2):
+        return ChunkReviewOutcomeV2(
+            outcome_chunk_id, "manual_required", None,
+            CHUNK_TRANSPORT_INVALID_RESPONSE_REASON_V2,
+        )
+    if manifest.run_id != run_id or manifest.identity.head_sha != head_sha:
+        return ChunkReviewOutcomeV2(
+            outcome_chunk_id, "manual_required", None, "cross_run_chunk_result",
+        )
+
     # The cross-object gate precedes request construction, prompt/message
     # construction, and therefore every possible HTTP call.
     try:

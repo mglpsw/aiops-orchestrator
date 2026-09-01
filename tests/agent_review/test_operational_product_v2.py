@@ -461,7 +461,10 @@ def test_no_argv_spelling_can_express_inner_authority(
     """
     completed = _run_product_v2(product_workspace_v2, extra_argv=forgery_argv)
 
-    assert completed.returncode != 0
+    # Exit 64 (EX_USAGE), not 2. A usage error and a typed refusal used to
+    # share exit 2, so a consumer reading "exit 2 => parse the reason code
+    # from stderr" got an argparse usage block instead.
+    assert completed.returncode == 64
     assert "unrecognized arguments" in completed.stderr
 
 
@@ -895,3 +898,24 @@ def test_a_malformed_control_fd_env_var_is_not_a_traceback(
 
     assert "Traceback" not in completed.stderr
     assert "ValueError" not in completed.stderr
+
+
+def test_a_usage_error_and_a_typed_refusal_have_distinct_exit_codes(
+    product_workspace_v2: dict[str, pathlib.Path],
+) -> None:
+    """Exit 2 must mean exactly one thing: a reason code is on stderr.
+
+    argparse exits 2 by default, which collided with the refusal code. A
+    consumer cannot then tell "this run refused, here is why" from "you typed
+    the command wrong".
+    """
+    usage = subprocess.run(
+        [sys.executable, str(_CLI_V2), "--repo", "only-this-flag"],
+        capture_output=True, text=True, cwd=_REPOSITORY_ROOT_V2, timeout=600,
+    )
+    refusal = _run_product_v2(product_workspace_v2, **{"--delivery-id": "bad id here"})
+
+    assert usage.returncode == 64
+    assert refusal.returncode == 2
+    assert refusal.stderr.strip() == "operational_ingress_invalid_delivery_id"
+    assert usage.returncode != refusal.returncode
