@@ -302,3 +302,121 @@ false positives on the mutant.
 A control that cannot be got right is worse than a narrower one that can,
 because its greenness would mean nothing. The exemption is now decidable by
 inspection, and the class that no longer qualifies joined the family instead.
+
+---
+
+# TERMINAL FORENSIC RECONCILIATION — round 2
+
+```yaml
+verdict: STOP_200F_ARCHITECTURE_NOT_CONVERGING
+subject:
+  head: a536df5d4875384615c24ab3aa6ef6b05b074255
+  tree: 16e55d501c3a2f23927db0d19a5dfbf54d8875fa
+  base: f70af2e635643d1ee96ba431857002ae079b502b
+  porcelain: clean
+
+lane_A: BLOCK   # 2 P0, 5 P1, 2 P2
+lane_B: NON_REFUTED   # 1 P1, 5 P2 — scope/subject authorities held
+lane_C: BLOCK   # 3 P0, 3 P1, 6 P2
+
+ready: false
+merge: false
+```
+
+## Why this is a STOP and not a fourth correction round
+
+§18's condition is met, **twice over**, on two independent abstractions:
+
+> If the same new abstraction is independently refuted twice:
+> `STOP_200F_ARCHITECTURE_NOT_CONVERGING`.
+
+### Authority B — exclusive outer→inner authority channel
+
+- **Round 1:** forgeable by *narrowing* `subject_root` to a directory that
+  contains the entry script but excludes `app/agent_review/`, so the digest
+  never covered the semantic code. Fixed by requiring every loaded semantic
+  module (via `sys.modules`) to be inside the digested root.
+- **Round 2 (Lane A, P0-1):** forgeable by **fabrication**. The fix closed the
+  narrowing route but never bound `declared_toolrepo_sha` to anything —
+  verification checks only that it is 40 hex characters. Tamper a semantic
+  module inside the *correctly declared* root, recompute the digest honestly,
+  declare the real HEAD sha, and the product emits `readiness_state: ready`
+  with the tampered code's own injected marker in `reason_codes`, under the
+  real, honest, committed sha. Reproduced independently by the coordinator.
+
+Both refute the identical stated invariant
+(`operational_inner_control_v2.py`'s own docstring): *"a caller of the product
+CLI cannot cause the product to emit an artifact whose declared toolrepo
+identity differs from the code that produced it."* Two different mechanisms,
+same falsified claim, two independent review rounds.
+
+### Authority E — quoted-secret redaction (declared HARD pre-canary blocker)
+
+- **Round 1:** six shapes leaked, three claiming success while leaking. Fixed
+  through three internal sub-attempts (witness-only → 71 lines of real source
+  damaged → 12 existing tests broken by a case-insensitivity bug), landing on
+  a "value suspect unless benign" design.
+- **Round 2 (Lane C):** refuted again, more severely than round 1's starting
+  point:
+  - **P0-1**: ~44% of random alphanumeric secrets leak (`(?-i:...)`
+    "CapitalCase means type" rule matches ordinary mixed-case tokens), **and
+    is a regression against the pre-slice baseline** — `export API_KEY=…` and
+    unquoted `password=…` were correctly redacted by the code this slice
+    replaced and are not redacted now. Confirmed independently.
+  - **P0-2**: JWTs are spared by the dotted-reference rule (a JWT's
+    dot-segments look exactly like `settings.claude_api_key`). Confirmed
+    independently.
+  - **P0-3**: a multiline triple-quoted secret reproduces the *exact* defect
+    round 1 declared closed — `[REDACTED]` emitted while the plaintext
+    survives on the next line, `secret_like_values_found > 0` recorded.
+    Confirmed independently, byte-for-byte.
+  - **P1-6**: the assignment patterns are quadratic on non-matching input. The
+    coordinator's own reproduction of a 16,000-character adversarial line
+    took **90 seconds** (2000→4000: 4.0×; 4000→8000: 4.2×; 8000→16000: 3.8× —
+    consistent O(n²)). A PR diff line is fully attacker-influenced; this is a
+    denial-of-service on the intake path for every review, introduced by this
+    slice, undetected by the slice's own linearity test (which happens to
+    fixture a *matching* prefix, so the quadratic branch never executes).
+
+Authority E is now **worse than the code it was built to replace**, on a
+declared hard pre-canary blocker. That is disqualifying on its own; combined
+with recurring on the identical failure shape from round 1, it is decisive.
+
+## What survived (Lane B, `NON_REFUTED`)
+
+The scope/subject authorities from round 1 — shared representability
+predicate, the scope-authority disagreement detector, the type-change
+pairing, `ls-tree`+`cat-file` subject materialisation, source severance,
+target non-mutation, `--no-replace-objects` — held under a 2,592-case
+differential fuzz, an 82-repository randomised real-git fuzz, and a direct
+`git mktree`-crafted hostile-tree corpus. `ready` is confirmed reachable (not
+vacuous). One P1 (an untested but currently-correct path-containment check,
+capped by `git fsck --strict` on any forge enforcing it) and five P2s
+(documentation overclaims, an unpinned "ready is reachable" regression
+guard, an undiscriminated `-c` hardening block). None of Lane B's findings
+independently or jointly justify a STOP; they are ordinary round-3 material
+if a successor is chartered.
+
+## Disposition
+
+`#200-F` (PR #277) is **not** to receive a third correction round on
+authorities B or E. Per the grant: *"if the same new abstraction is
+independently refuted twice"* — the loop stops, not because the ideas were
+wrong in principle, but because two independent adversarial passes have now
+falsified two different implementations of each, and a third patch would be
+addressing symptoms of designs that have not yet found a sound shape.
+
+```yaml
+core_subject_architecture:
+  refuted: false   # controlled subjects, severance, non-mutation, bounded
+                    # git — all survived round 2 under heavy adversarial
+                    # pressure (Lane B, NON_REFUTED)
+
+operational_boundary:
+  converged: false   # authority B (identity binding) and authority E
+                      # (redaction) each independently refuted twice
+```
+
+No qualification transfers to any successor. The scope/subject work (Lane
+B's surface) is the part worth porting with revalidation; authority B and
+authority E need to be re-derived from a different design, not patched again.
