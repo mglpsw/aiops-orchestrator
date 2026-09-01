@@ -74,6 +74,7 @@ __all__ = [
     "OPERATIONAL_RUN_ASSEMBLY_BLOCKED_REASON_V2",
     "OPERATIONAL_RUN_MISSING_CHUNK_RESPONSE_REASON_V2",
     "OPERATIONAL_RUN_MUST_REVIEW_UNREVIEWABLE_REASON_V2",
+    "OPERATIONAL_RUN_SCOPE_AUTHORITY_DISAGREEMENT_REASON_V2",
     "OperationalRunError",
     "OperationalRunResultV2",
     "execute_operational_run_v2",
@@ -83,6 +84,9 @@ __all__ = [
 OPERATIONAL_RUN_ASSEMBLY_BLOCKED_REASON_V2 = "operational_run_assembly_blocked"
 OPERATIONAL_RUN_MISSING_CHUNK_RESPONSE_REASON_V2 = "operational_run_missing_chunk_response"
 OPERATIONAL_RUN_MUST_REVIEW_UNREVIEWABLE_REASON_V2 = "operational_run_must_review_unreviewable"
+OPERATIONAL_RUN_SCOPE_AUTHORITY_DISAGREEMENT_REASON_V2 = (
+    "operational_run_scope_authority_disagreement"
+)
 
 
 class OperationalRunError(ExpectedOperationalRefusalV2, ValueError):
@@ -183,9 +187,37 @@ def execute_operational_run_v2(
         raise OperationalRunError(OPERATIONAL_RUN_ASSEMBLY_BLOCKED_REASON_V2)
     manifest = outcome.manifest
 
-    # `#276` refused the whole run here whenever excluded_paths was non-empty.
-    # It is now an input to the scope assessment's completeness, not a veto:
-    # a pure rename must not deny an otherwise complete review.
+    # Two independent authorities decided which paths carry reviewable
+    # material: this composer's scope assessment, and the assembly's own
+    # completeness rule. They now share one predicate, so they should agree --
+    # but "should agree" is what the previous revision assumed, and it was
+    # wrong in a way no test could see.
+    #
+    # The failure it is worth describing exactly, because the shape recurs:
+    # the scope authority reimplemented three of the assembly's four
+    # representability conditions. A path like `src/pages/[id].tsx` -- an
+    # everyday framework route -- was therefore certified `reviewable` and
+    # `scope_complete`, silently dropped by the assembly, never reviewed, and
+    # the run emitted `ready`. A false `ready` is the one outcome this whole
+    # architecture exists to make impossible, and `#276`, for all its faults,
+    # never produced one.
+    #
+    # Sharing the predicate fixes today's divergence. This check makes the
+    # NEXT one non-silent: if the assembly ever excludes a path this composer
+    # called reviewable, the two authorities disagree about the run's own
+    # scope, and a disagreement is refused rather than resolved in favour of
+    # whichever happens to be consulted last. It costs one set difference and
+    # it does not require anyone to predict the next divergence.
+    silently_dropped = sorted(
+        set(scope.reviewable_paths) - set(manifest.expected_files)
+    )
+    if silently_dropped:
+        raise OperationalRunError(OPERATIONAL_RUN_SCOPE_AUTHORITY_DISAGREEMENT_REASON_V2)
+
+    # `#276` refused the whole run whenever excluded_paths was non-empty. That
+    # is NOT reinstated here: an excluded path is an input to scope
+    # completeness, not a veto, so a pure rename still cannot deny an
+    # otherwise complete review. Only a *disagreement* refuses.
     parsed_results = []
     for built in build_chunk_payloads_v2(manifest):
         raw_response = transport(built.payload)

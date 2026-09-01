@@ -317,3 +317,88 @@ def test_an_empty_change_set_is_complete_and_unblocked() -> None:
     assert assessment.changed_paths == ()
     assert assessment.scope_complete is True
     assert assessment.blocked is False
+
+
+_GLOB_METACHARACTER_DIFF_V2 = """diff --git a/src/pages/[id].tsx b/src/pages/[id].tsx
+index 3333333..4444444 100644
+--- a/src/pages/[id].tsx
++++ b/src/pages/[id].tsx
+@@ -1,2 +1,3 @@
+ const x = 1
++const SECRET_BACKDOOR = true
+ export default x
+"""
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/pages/[id].tsx",
+        "src/routes/[...slug]/page.tsx",
+        "app/[legacy]/util.py",
+        "docs/faq?.md",
+        "test/fixtures/glob*.txt",
+    ],
+)
+def test_a_path_git_allows_but_the_contract_rejects_is_unsupported(path: str) -> None:
+    """Lane B P0. These are everyday framework routes, not exotic input.
+
+    ``contracts_v2.RelativePath`` forbids glob metacharacters, so the assembly
+    cannot represent such a path. The scope authority previously reimplemented
+    three of the assembly's four representability conditions and omitted this
+    one, certifying the path ``reviewable`` and ``scope_complete`` while the
+    assembly silently dropped it -- and the run emitted ``ready`` having never
+    reviewed it.
+    """
+    diff_text = _GLOB_METACHARACTER_DIFF_V2.replace("src/pages/[id].tsx", path)
+    (file_diff,) = parse_unified_diff(diff_text)
+
+    assert file_diff.path == path
+    assert classify_changed_path_v2(file_diff) is PathDispositionV2.UNSUPPORTED
+
+
+def test_an_unrepresentable_path_makes_scope_incomplete() -> None:
+    """The consequence that actually protects a consumer."""
+    assessment = _assess_v2(_ORDINARY_DIFF_V2, _GLOB_METACHARACTER_DIFF_V2)
+
+    assert assessment.unsupported_paths == ("src/pages/[id].tsx",)
+    assert assessment.scope_complete is False
+
+
+def test_the_scope_authority_agrees_with_the_assembly_about_representability() -> None:
+    """The invariant that would have caught the P0, stated across both owners.
+
+    The previous control, ``test_no_changed_path_is_ever_dropped``, compared
+    ``accounted_paths`` with ``changed_paths`` -- both computed by the same
+    loop over the same input. It could not see a path the *assembly* drops,
+    which is why it stayed green through a false ``ready``.
+
+    This compares the two independent authorities against each other over a
+    corpus spanning every disposition. Any path the scope authority calls
+    reviewable must be a path the assembly can actually represent.
+    """
+    from app.agent_review.diff_acquisition_v2 import (
+        path_violates_relative_path_contract_v2,
+    )
+
+    corpus = (
+        _ORDINARY_DIFF_V2,
+        _PURE_RENAME_DIFF_V2,
+        _CHMOD_ONLY_DIFF_V2,
+        _BINARY_DIFF_V2,
+        _LOCKFILE_BINARY_DIFF_V2,
+        _EMPTY_ADD_DIFF_V2,
+        _EMPTY_DELETE_DIFF_V2,
+        _SUBMODULE_DIFF_V2,
+        _GLOB_METACHARACTER_DIFF_V2,
+    )
+    assessment = _assess_v2(*corpus)
+
+    for reviewable_path in assessment.reviewable_paths:
+        assert not path_violates_relative_path_contract_v2(reviewable_path), (
+            f"{reviewable_path} is called reviewable but the assembly cannot "
+            "represent it; it would be silently dropped"
+        )
+
+    assert assessment.reviewable_paths, "non-vacuity: something must be reviewable"
+    assert "src/pages/[id].tsx" in assessment.unsupported_paths

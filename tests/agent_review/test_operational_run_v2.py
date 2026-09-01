@@ -371,3 +371,99 @@ def test_the_run_identity_records_the_verified_toolrepo_sha_not_a_caller_value()
 
     assert result.manifest.identity.toolrepo_sha == _VERIFIED_TOOLREPO_SHA_V2
     assert result.manifest.identity.toolrepo_sha != _DIGEST_V2[:40]
+
+
+_GLOB_METACHARACTER_DIFF_V2 = """diff --git a/src/pages/[id].tsx b/src/pages/[id].tsx
+index 3333333..4444444 100644
+--- a/src/pages/[id].tsx
++++ b/src/pages/[id].tsx
+@@ -1,2 +1,3 @@
+ const x = 1
++const SECRET_BACKDOOR = true
+ export default x
+"""
+
+
+def test_the_false_ready_path_is_closed() -> None:
+    """Lane B P0, at the composer. The single worst possible outcome.
+
+    Before the fix this returned ``READY`` while ``src/pages/[id].tsx`` --
+    carrying an added line no reviewer ever saw -- was silently absent from
+    the manifest. `#276`, for all its faults, never produced a false ``ready``;
+    this slice did, which makes it the one finding that mattered more than the
+    rest combined.
+    """
+    result = _run_v2(_REVIEWABLE_DIFF_V2, _GLOB_METACHARACTER_DIFF_V2)
+
+    assert result.scope.unsupported_paths == ("src/pages/[id].tsx",)
+    assert result.scope.scope_complete is False
+    assert result.ready is False
+    assert result.readiness_state is ReadinessStateV2.MANUAL_REQUIRED
+
+
+def test_nothing_the_scope_authority_called_reviewable_is_missing_from_the_manifest() -> None:
+    """The cross-authority invariant, asserted on a real composed run.
+
+    Not derived from the scope assessment's own loop -- that is precisely how
+    the previous control stayed green through the P0.
+    """
+    result = _run_v2(_REVIEWABLE_DIFF_V2, _PURE_RENAME_DIFF_V2, _BINARY_DIFF_V2)
+
+    assert set(result.scope.reviewable_paths) <= set(result.manifest.expected_files)
+    assert result.scope.reviewable_paths, "non-vacuity"
+
+
+def test_a_disagreement_between_the_two_scope_authorities_fails_closed() -> None:
+    """The anti-recurrence mechanism, exercised by forcing a disagreement.
+
+    Sharing the predicate fixes today's divergence; this makes the *next* one
+    non-silent. The scope authority is monkeypatched to call an unrepresentable
+    path reviewable -- simulating any future drift -- and the composer must
+    refuse rather than proceed with whichever authority it consulted last.
+
+    Deliberately not asserted by re-reading the source: a structural
+    assertion would prove the code contains a check, not that the check
+    refuses.
+    """
+    import app.agent_review.operational_run_v2 as composer
+    from app.agent_review.operational_scope_v2 import PathDispositionV2
+
+    original = composer.assess_changed_scope_v2
+
+    def _drifted(*, file_diffs, profile):
+        assessment = original(file_diffs=file_diffs, profile=profile)
+        # Move the unrepresentable path back into `reviewable`, exactly as the
+        # pre-fix classifier did.
+        return type(assessment)(
+            changed_paths=assessment.changed_paths,
+            reviewable_paths=tuple(
+                sorted(assessment.reviewable_paths + assessment.unsupported_paths)
+            ),
+            metadata_only_paths=assessment.metadata_only_paths,
+            unsupported_paths=(),
+            must_review_blocked_paths=assessment.must_review_blocked_paths,
+        )
+
+    composer.assess_changed_scope_v2 = _drifted
+    try:
+        with pytest.raises(OperationalRunError) as caught:
+            _run_v2(_REVIEWABLE_DIFF_V2, _GLOB_METACHARACTER_DIFF_V2)
+    finally:
+        composer.assess_changed_scope_v2 = original
+
+    assert caught.value.reason_code == "operational_run_scope_authority_disagreement"
+    assert isinstance(caught.value, ExpectedOperationalRefusalV2)
+
+
+def test_an_excluded_path_alone_does_not_deny_the_review() -> None:
+    """Non-vacuity control for the disagreement detector.
+
+    `#276` refused any run with a non-empty ``excluded_paths``. The detector
+    must not quietly reinstate that: a pure rename is excluded from the
+    manifest and must still review cleanly.
+    """
+    result = _run_v2(_REVIEWABLE_DIFF_V2, _PURE_RENAME_DIFF_V2)
+
+    assert "app/new_name.py" not in result.manifest.expected_files
+    assert result.scope.metadata_only_paths == ("app/new_name.py",)
+    assert result.scope.scope_complete is True

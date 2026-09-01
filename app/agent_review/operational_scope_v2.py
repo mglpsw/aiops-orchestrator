@@ -60,7 +60,10 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from app.agent_review.contracts_v2 import TargetProfileV2
-from app.agent_review.diff_acquisition_v2 import ParsedFileDiffV2
+from app.agent_review.diff_acquisition_v2 import (
+    ParsedFileDiffV2,
+    path_violates_relative_path_contract_v2,
+)
 from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 # Single source of truth for must-review matching. Reusing `run_assembly_v2`'s
@@ -134,6 +137,21 @@ def classify_changed_path_v2(file_diff: ParsedFileDiffV2) -> PathDispositionV2:
         every binary would be misfiled as metadata-only and would stop
         counting against scope completeness.
 
+    unrepresentable path before the hunk test
+        A path git accepts can still be unrepresentable under
+        ``contracts_v2.RelativePath`` -- a glob metacharacter (``[id].tsx`` is
+        an everyday Next.js/SvelteKit route), an overlong name, a decoded
+        control character. The predicate is **imported** from
+        ``diff_acquisition_v2``, which is the module the assembly consults,
+        so the two cannot disagree about what is representable.
+
+        This condition was missing. Its absence let the scope authority
+        certify such a path as ``reviewable`` and ``scope_complete`` while the
+        assembly silently excluded it, producing a run that emitted ``ready``
+        having never reviewed a changed file. Reimplementing three of the
+        assembly's four conditions was the entire defect, which is why this
+        now shares the predicate rather than restating it.
+
     absence of hunks last
         What remains with no hunks is a pure rename, a mode-only change, or an
         empty-file add or delete.
@@ -143,6 +161,8 @@ def classify_changed_path_v2(file_diff: ParsedFileDiffV2) -> PathDispositionV2:
     if file_diff.is_submodule:
         return PathDispositionV2.METADATA_ONLY
     if file_diff.is_binary:
+        return PathDispositionV2.UNSUPPORTED
+    if path_violates_relative_path_contract_v2(file_diff.path):
         return PathDispositionV2.UNSUPPORTED
     if not file_diff.hunks:
         return PathDispositionV2.METADATA_ONLY

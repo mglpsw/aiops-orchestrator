@@ -929,6 +929,31 @@ class DiffCompletenessResultV2:
     submodule policy."""
 
 
+def path_violates_relative_path_contract_v2(path: str) -> bool:
+    """Is this git path unrepresentable under ``contracts_v2.RelativePath``?
+
+    Validates against the actual authoritative contract -- the same type
+    ``FragmentV2.path`` uses -- rather than re-deriving a subset of its rules.
+    A glob metacharacter is only one of several ways a perfectly valid git
+    path (e.g. one containing a decoded control character) can still fail
+    ``RelativePath``'s stricter contract and would otherwise reach the planner
+    as an uncontrolled ``pydantic.ValidationError``.
+
+    **Public and shared on purpose.** This was a nested closure inside
+    ``validate_diff_completeness_v2``, invisible to anyone else, and
+    ``#200-F``'s scope authority consequently reimplemented representability
+    with three of the four conditions -- omitting exactly this one. The
+    result was a path the scope authority certified as ``reviewable`` while
+    the assembly silently dropped it, and a run that emitted ``ready`` having
+    never reviewed it. Two definitions of "representable" is one too many.
+    """
+    try:
+        _RELATIVE_PATH_ADAPTER.validate_python(path)
+    except ValidationError:
+        return True
+    return False
+
+
 def validate_diff_completeness_v2(
     file_diffs: tuple[ParsedFileDiffV2, ...],
     *,
@@ -944,21 +969,6 @@ def validate_diff_completeness_v2(
     present_paths = {file_diff.path for file_diff in file_diffs if file_diff.path}
     missing = frozenset(expected_paths) - present_paths
 
-    def _violates_relative_path_contract(path: str) -> bool:
-        # Validate against the actual authoritative contract
-        # (contracts_v2.RelativePath, the same type FragmentV2.path uses)
-        # rather than re-deriving a subset of its rules here -- a glob
-        # metacharacter is only one of several ways a perfectly valid git
-        # path (e.g. containing a decoded control character from an
-        # escape sequence) can still fail RelativePath's stricter
-        # contract and would otherwise reach the planner as an
-        # uncontrolled pydantic.ValidationError.
-        try:
-            _RELATIVE_PATH_ADAPTER.validate_python(path)
-        except ValidationError:
-            return True
-        return False
-
     unrepresentable = tuple(
         sorted(
             file_diff.path
@@ -968,7 +978,7 @@ def validate_diff_completeness_v2(
                 file_diff.is_binary
                 or file_diff.is_submodule
                 or not file_diff.hunks
-                or _violates_relative_path_contract(file_diff.path)
+                or path_violates_relative_path_contract_v2(file_diff.path)
             )
         )
     )
