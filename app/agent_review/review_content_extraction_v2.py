@@ -645,12 +645,25 @@ def extract_review_content_v2(
     acquisition ``run_assembly_v2`` used to build ``manifest``). This
     function re-acquires the diff independently (below) and calls
     ``verify_manifest_diff_binding_v2`` against that fresh acquisition
-    BEFORE any path/scope classification runs -- there is deliberately no
-    way to skip this by omitting the argument or passing a stale binding:
-    a caller cannot construct a valid one without an already-assembled,
-    identity-matching manifest. This is the #200-G3B closure of the
-    #285-class gap where a path-set-only check could not detect a
-    truncated/tampered diff supplying the same apparent paths.
+    BEFORE any path/scope classification runs -- there is no flag to skip
+    this by omitting the argument. Precise scope, not overclaimed:
+    ``verify_manifest_diff_binding_v2`` only proves the diff bytes
+    re-acquired HERE are byte-identical to the diff bytes committed to at
+    binding-construction time, and that ``binding``'s identity fields match
+    ``manifest.identity`` -- it does not, and is not meant to, prove
+    ``manifest.fragments``/``manifest.chunks`` were themselves correctly
+    DERIVED from those diff bytes (that derivation is ``run_assembly_v2``'s
+    own, separate, unmodified authority; ``ManifestV2``'s own constructor
+    already self-checks ``identity.manifest_hash`` against its full material,
+    which is what makes a genuine ``manifest_hash`` match meaningful here).
+    Like every other plain-data v2 sidecar in this codebase (e.g.
+    ``ParsedChunkResultV2``, per ``chunk_result_scope_v2``'s own docstring),
+    a ``ManifestDiffBindingV2`` is freely constructible by direct pydantic
+    construction -- the guarantee is what THIS verification enforces at
+    extraction time, not that a mismatched or fabricated one is impossible
+    to construct. This is the #200-G3B closure of the #285-class gap where a
+    path-set-only check could not detect a truncated/tampered diff supplying
+    the same apparent paths.
 
     ``target_profile`` must be the SAME ``TargetProfileV2`` that produced
     ``manifest`` -- proven, not assumed: ``compute_profile_hash_v2(target_
