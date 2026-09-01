@@ -247,7 +247,7 @@ Every case asserts `ast.parse` succeeds on the transformed output.
 own regression test as mis-scoped for missing `scripts/`/`tests/`;
 corrected here). Read-only, not wired into CI.
 
-**Final results at frozen HEAD:**
+**Results at round-1 frozen HEAD (`ed25358`, pre-correction):**
 
 ```yaml
 files_scanned: 301
@@ -257,6 +257,19 @@ changed_lines: 184          # via difflib SequenceMatcher opcodes, not
                              # methodology note below
 files_with_changes: 29
 parseability_regressions: 0  # ast.parse succeeds on every transformed file
+```
+
+**Results after the round-2 correction (`d97d656`)**, re-run repeatedly
+during the fix (not once at the end — see "Correction sub-rounds" below
+for why that mattered):
+
+```yaml
+files_scanned: 301
+lines_examined: 123265
+changed_lines: 228            # broader key coverage legitimately touches
+                               # more lines (compound keys now caught)
+files_with_changes: 39
+parseability_regressions: 0
 ```
 
 ### Methodology note: diff counting
@@ -394,18 +407,162 @@ a completely separate, unrelated redaction implementation in
 surface; run anyway (290 passed) to confirm no accidental import-path
 coupling.
 
-## Review rounds
+## Review round 1 (head `ed25358`)
 
 Two independent adversarial reviews dispatched via the Agent tool
 (general-purpose subagents), explicitly instructed to find NEW leak
-shapes and NEW real-source damage beyond this checkpoint's own corpus —
-not to re-verify existing tests. [Findings and disposition recorded here
-after both return; this section is updated in place, not appended, per
-the one-bounded-correction-round rule.]
+shapes and NEW real-source damage beyond this checkpoint's original
+corpus — not to re-verify existing tests.
+
+**Lane A — 3 P0s, all in `redaction.py`/`safe_review_material.py`,
+independently reproduced by me before any fix:**
+
+1. Compound/prefixed key names (`DB_PASSWORD`, `STRIPE_API_KEY`,
+   `JWT_SECRET`, `ADMIN_PASSWORD`) bypassed both the text scanner and the
+   JSON dict-field path entirely — `_match_key_at` required an
+   underscore-bounded WHOLE-WORD match against an enumerated literal set,
+   so a compound identifier never matched at all (kebab-case like
+   `db-password` DID match, purely because `-` isn't a word character and
+   accidentally acted as a boundary — the asymmetry was itself the tell).
+   Reproduced: `derive_safe_review_material('db_password = "SuperSecretPass123!"')`
+   → `SAFE_UNCHANGED`, secret verbatim.
+2. A comma-joined value under one key (`api_key=abcd1234,efgh5678`) only
+   had the pre-comma half captured as a witness and redacted; the tail
+   leaked and, because it was never recorded as a witness, postcondition
+   verification had nothing to check it against. Reproduced:
+   `derive_safe_review_material('api_key=abcd1234,efgh5678')` →
+   `SAFELY_TRANSFORMED`, output `'api_key=[REDACTED],efgh5678'`,
+   `postcondition_verified=True`.
+3. Unquoted dotted `.env`-style values (`token=deadbeef.cafebabe1234`,
+   `password=admin.hunter2value`) were spared OUTRIGHT by the Python-
+   attribute-chain carve-out (meant for `self.api_key`), with ZERO witness
+   recorded — a silent false negative, worse than 1-2 (which at least
+   produce a checkable claim). Reproduced directly.
+
+**Lane B — 1 P0, different mechanism:** `DLPOverrideConfig.additional_
+safe_substrings` reopened the "claims redacted while leaking" defect
+through its own documented extension point. The docstring promised
+exemption only for "the entire matched value", but the implementation
+removed the value from the GLOBAL postcondition witness list — so a
+SECOND, never-redacted occurrence of the same literal elsewhere in the
+material (e.g. repeated in a comment) escaped verification entirely.
+Reproduced: control (no `dlp_config`) correctly returns
+`BLOCKED_UNSAFE_TO_TRANSFORM`; with `additional_safe_substrings={the
+secret}`, returns `SAFELY_TRANSFORMED`/`postcondition_verified=True` with
+the secret still present in the comment.
+
+Lower priority (P2/P3, addressed in the same pass): `_sub_database_urls`
+was missing the placeholder check its sibling `_sub_credential_urls` had
+(over-redaction, not a leak) — fixed alongside the P0s.
+
+### Structural vs. point-fix decision
+
+The coordinator's framing was adopted: rather than four independent
+patches, the root architectural question was whether postcondition
+verification should check against a re-scan of the final output instead
+of only the witnesses the scanner happened to record. Investigation found
+that framing explains findings 1 and 2 (missed/partial witnesses) but
+NOT finding 3 (the value was never even a *candidate*, so no re-scan of
+"suspicious remnants" would surface it either) or finding 4 (a
+DIFFERENT occurrence, at a location the scanner structurally never
+visits — a comment — not a byproduct of an incomplete transform). Each
+fix therefore targets its actual mechanism: word-based key matching
+(1), a bounded comma-tail lookahead (2), a narrowed dotted-reference
+allowlist (3), and rewiring the DLP override through the redactor's own
+placeholder check so a declared-safe value is never a witness in the
+first place, rather than being subtracted from the witness list after
+the fact (4). The postcondition check itself (`_verify_postcondition`)
+was NOT found to be logically wrong in round 1 — every witness it WAS
+given, it correctly verified; the defects were all upstream, in what did
+or didn't become a witness.
+
+### Correction sub-rounds (two were needed)
+
+The word-based key-matching fix for finding 1, naively applied (match if
+ANY component word of a compound identifier is sensitive), reopened real-
+source damage the differential oracle caught before a second review lane
+was ever dispatched:
+
+- `command_token: SafeIdentifier` (this repository's own required
+  negative-corpus exemplar for "project-defined CapitalCase type names")
+  — "token" as a bare compound SUFFIX is genuinely overloaded
+  (`command_token`/`expected_token`/`parse_token` are ordinary code;
+  `session_token`/`auth_token` are credentials) with no structural
+  signal to tell them apart, and casing was rejected again for the same
+  reason it was rejected the first time (the random-secret corpus proved
+  it reopens the leak). Resolved: `token` only counts as sensitive when
+  it is the WHOLE identifier alone, or via the existing explicit compound
+  bigrams (`access_token`, `refresh_token`, `session_token`, `auth_token`)
+  — the same "ambiguous word, enumerate the compound forms" trade-off
+  this module already applied to `key`.
+- `secret_like_values_found` (4 words) and `hardcoded_secret_confirmed`
+  (3 words) — both COUNTS/FLAGS describing secret-shaped material, not
+  credential holders — were flagged via "secret" as a component. Resolved
+  by capping the single-word simple-word check at ≤2 words (every real
+  Lane-A witness is exactly 2 words); the bigram check is intentionally
+  NOT capped the same way, since `stripe_api_key` (3 words) is a real
+  Lane-A witness caught via the `("api","key")` bigram and a bigram is a
+  structurally lower-false-positive signal than a single word.
+- `allow_credentials=True` (FastAPI/Django CORS boolean flag,
+  `app/main.py`) — resolved by moving `credential`/`credentials` to the
+  same single-word-only treatment as `token`.
+- Two bugs surfaced in the comma-tail lookahead itself while fixing the
+  above: it only recognised a BARE identifier as "a new key follows",
+  missing JSON/dict-literal QUOTED keys (`{"secret_like_values_found": 1,
+  "redacted_lines_present": True}` had its first value swallow the rest
+  of the dict); and its whitespace-skip did not include newlines, so
+  ANY multi-line dict/call literal (the dominant real-world formatting
+  style) failed the lookahead and triggered the same over-absorption.
+  Both fixed; both are now permanent regression coverage
+  (`json_lines` in the performance corpus, quoted-key + newline handling
+  in `_looks_like_new_assignment_after`'s own logic).
+- `{"authorization": "Bearer xyz"}` (JSON dict field) briefly regressed
+  when the word-vocabulary rewrite dropped `authorization` from the
+  matchable-word set entirely (only the TEXT-scanner exclusion flag was
+  preserved, not the underlying word membership needed by the JSON path,
+  which intentionally does NOT exclude `authorization`). Fixed by adding
+  it back to the word set and gating exclusion via a parameter
+  (`exclude_authorization`, default `True` for the text scanner, `False`
+  for the JSON dict-field path).
+
+Real-source differential oracle was re-run after every sub-fix (not just
+once at the end) specifically because the first fix attempt reintroduced
+damage silently; final state before dispatching fresh review: 0
+parseability regressions, confirmed at `98fe850`/`d97d656`.
+
+### Mutation testing (round 2 additions)
+
+Repeated for the new logic, same discipline (commit before mutating,
+confirm RED, restore, confirm GREEN, verified via `git status --short`
+clean after each restore):
+
+| # | Mutation | Result |
+|---|---|---|
+| 6 | Disable compound-bigram matching (`_COMPOUND_SENSITIVE_BIGRAMS` check forced `False`) | RED against a `STRIPE_API_KEY` case using a plain (non vendor-prefix-shaped) value — the FIRST version of this test accidentally used a `sk_live_...`-shaped value that the independent Stripe-prefix detector also catches, which stayed GREEN under the mutation and would have masked a real regression; swapped to an isolated witness |
+| 7 | Disable the comma-tail lookahead extension (forced the absorb-loop condition `False`) | RED: 4 tests (comma-joined positive-corpus cases) |
+| 8 | Disable `state.extra_safe_values` wiring from `DLPOverrideConfig` | RED: 2 tests (DLP override cases) — mutation fails CLOSED (`BLOCKED_UNSAFE_TO_TRANSFORM`) rather than leaking, confirming the postcondition check remains a live backstop even when the new wiring is broken |
+
+### Verdict, round 1
+
+Both lanes' P0s independently reproduced and fixed. Real-source oracle
+clean (0 regressions) at the corrected head. Full `tests/agent_review/`
+regression suite re-run (see below). Two fresh, independent review lanes
+dispatched against the new frozen head per the mission's requirement that
+prior review is invalidated by a source change — at least one lane
+instructed to specifically re-attack the postcondition-verification
+architecture itself (not just the four found mechanisms), since that
+abstraction being refuted a second time is the designated
+`STOP_G2_SAFE_REVIEW_MATERIAL_NOT_CONVERGING` trigger.
+
+## Review round 2
+
+[Recorded here once both fresh lanes return, evaluated against head
+`d97d656` (or later, if the regression suite requires a further fix
+before dispatch).]
 
 ## Terminal verdict
 
-[Recorded here once review rounds complete: `PRIMITIVE_NON_REFUTED` or
+[Recorded here once round 2 completes: `PRIMITIVE_NON_REFUTED` or
 `STOP_G2_SAFE_REVIEW_MATERIAL_NOT_CONVERGING`.]
 
 ## Not authorized / not done
