@@ -210,7 +210,20 @@ def _check_profile_v2(target_root_real: Path) -> ProfileCheckV2:
         return ProfileCheckV2(
             status="invalid", profile_hash=None, reason_code=_doctor_reason_for_plan_error_v2(exc)
         )
-    if not resolved.is_file():
+    # G4B correction round: `is_file()` on an already-contained path is
+    # still its own unguarded filesystem operation -- a permission-denied
+    # ancestor (e.g. an `.aiops` a caller made unreadable) or a TOCTOU
+    # symlink swap between containment and this probe raised a raw
+    # `OSError` this function let escape uncaught, reachable live from
+    # `doctor --target-root ...` with no exception handler anywhere in the
+    # call chain up to and including `main()`. Every OTHER probe in this
+    # module already wraps `is_file()`/`read_bytes()` together (see
+    # `_check_receipt_v2`'s per-entry loop below) -- this one was missed.
+    try:
+        exists_as_file = resolved.is_file()
+    except OSError:
+        return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_UNREADABLE_REASON_V2)
+    if not exists_as_file:
         return ProfileCheckV2(status="missing", profile_hash=None, reason_code=TARGET_PROFILE_MISSING_REASON_V2)
     try:
         # `UnicodeDecodeError` as well as `OSError`: `doctor` reads the
@@ -313,7 +326,15 @@ def _check_receipt_v2(
         receipt_path = resolve_within_target_root_v2(target_root_real, target_root_real / RECEIPT_RELATIVE_PATH_V2)
     except PlanError as exc:
         return ReceiptCheckV2(status="invalid", receipt=None, reason_code=_doctor_reason_for_plan_error_v2(exc))
-    if not receipt_path.is_file():
+    # G4B correction round: same gap as `_check_profile_v2` above -- a raw,
+    # unguarded `is_file()` on an already-contained path. A permission-
+    # denied ancestor or a TOCTOU symlink swap between containment and this
+    # probe raised a raw `OSError` this function let escape uncaught.
+    try:
+        exists_as_file = receipt_path.is_file()
+    except OSError:
+        return ReceiptCheckV2(status="invalid", receipt=None, reason_code="target_pack_receipt_invalid")
+    if not exists_as_file:
         return ReceiptCheckV2(status="missing", receipt=None, reason_code="target_pack_receipt_missing")
     try:
         # THE shared authority -- never `model_validate_json` directly.

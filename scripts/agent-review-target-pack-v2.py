@@ -256,7 +256,25 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
 
-    report = run_doctor_v2(target_root=target_root, manifest=manifest, target_repo=args.target_repo)
+    # G4B correction round: `run_doctor_v2`'s OWN `target_root` handling is
+    # correctly migrated onto the ingress authority internally (a symlink
+    # loop or an unreadable `target_root` is converted to a typed
+    # `NotADirectoryError`, per that function's own docstring) -- but that
+    # typed exception was never caught HERE, the CLI dispatch boundary, nor
+    # by main()'s dispatcher below, which only catches `(PlanError,
+    # TargetPackInstallError, TargetPackBuildError)`. A library-level fix
+    # does not close the gap at the adjacent CLI layer by itself: a fix
+    # applied at one layer must be verified at the layer that actually
+    # calls it, not assumed to compose. `validate` needs no equivalent
+    # local catch because `run_validate_v2` is documented as total over its
+    # own failure domain (never raises for a diagnosable target state);
+    # `run_doctor_v2` is not (yet) held to that same invariant, so its one
+    # remaining raise is caught locally instead.
+    try:
+        report = run_doctor_v2(target_root=target_root, manifest=manifest, target_repo=args.target_repo)
+    except NotADirectoryError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
     output = {
         "target_root": report.target_root,
         "healthy": report.is_healthy,
