@@ -28,6 +28,7 @@ from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2,
     IDENTITY_MISSING_TRACKED_FILE_REASON_V2,
     IDENTITY_MODE_MISMATCH_REASON_V2,
+    IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2,
     IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2,
     IDENTITY_UNKNOWN_COMMIT_REASON_V2,
     ExecutedSourceIdentityError,
@@ -530,6 +531,73 @@ def test_missing_tracked_file_is_refused(tmp_path: Path) -> None:
             repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
         )
     assert excinfo.value.reason_code == IDENTITY_MISSING_TRACKED_FILE_REASON_V2
+
+
+def test_path_traversal_tree_entry_cannot_escape_subject_root(tmp_path: Path) -> None:
+    """`git mktree` accepts a subtree literally named `..` (it only refuses
+    a literal `/` inside one path segment); `git ls-tree -r` then flattens
+    that into an entry path like `../evil.py`. Proven exploitable against a
+    naive `subject_root / entry.path` join (the OS resolves the `..` on
+    access, escaping `subject_root`) before this test was written; must be
+    refused instead."""
+    repo = tmp_path / "toolrepo"
+    _init_repo(repo)
+    (repo / "legit.py").write_text("LEGIT = True\n")
+    _commit_all(repo, "init")
+
+    outside_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="evil content\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    inner_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"100644 blob {outside_blob}\tevil.py\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    # A subtree literally named ".." -- ls-tree -r flattens this to
+    # "../evil.py" for anything materialised/verified relative to a subject
+    # root one level down.
+    outer_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"040000 tree {inner_tree}\t..\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    malicious_commit = subprocess.run(
+        ["git", "commit-tree", outer_tree, "-m", "path traversal attempt"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subject_root = tmp_path / "nested" / "subject"
+    subject_root.mkdir(parents=True)
+    # Plant a file at the escape target whose content matches the malicious
+    # blob byte-for-byte -- without a containment check, an unresolved
+    # `subject_root / "../evil.py"` join would read *this* file and the
+    # content comparison would pass, falsely validating identity using
+    # bytes that were never inside subject_root. The refusal below must
+    # fire regardless of what happens to be sitting at the escaped path.
+    (tmp_path / "nested" / "evil.py").write_text("evil content\n")
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo,
+            commit_sha=malicious_commit,
+            subject_root=subject_root,
+            loaded_module_paths=(),
+        )
+    assert excinfo.value.reason_code == IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2
 
 
 def test_nonexistent_subject_root_is_refused(tmp_path: Path) -> None:

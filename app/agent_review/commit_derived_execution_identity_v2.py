@@ -83,6 +83,7 @@ identity check to do so; that is not a boundary this module claims to hold.
 from __future__ import annotations
 
 import os
+import posixpath
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,6 +108,7 @@ __all__ = [
     "IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2",
     "IDENTITY_MISSING_TRACKED_FILE_REASON_V2",
     "IDENTITY_MODE_MISMATCH_REASON_V2",
+    "IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2",
     "IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2",
     "IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2",
     "IDENTITY_TREE_UNREADABLE_REASON_V2",
@@ -131,6 +133,7 @@ IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2 = "identity_symlink_target_mismatch"
 IDENTITY_MODE_MISMATCH_REASON_V2 = "identity_mode_mismatch"
 IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2 = "identity_loaded_code_outside_subject"
 IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2 = "identity_subject_root_unreadable"
+IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2 = "identity_path_escapes_subject"
 
 
 class ExecutedSourceIdentityError(ValueError):
@@ -165,6 +168,43 @@ class ExecutedSourceAuthorizationV2:
     trusted_ref: str
     trusted_ref_sha: str
     authorized: bool
+
+
+def _safe_subject_path_v2(*, subject_root: Path, relative_path: str) -> Path:
+    """Reject any tree entry whose path would land outside ``subject_root``.
+
+    A path from a commit's tree is untrusted input, exactly as it is for
+    ``git_commit_subject_v2._safe_destination_v2`` during materialisation --
+    this function exists because verification must apply the identical
+    containment discipline, not because it can borrow that one unchanged
+    (that helper resolves a destination being *written*, where the leaf
+    typically does not exist yet; this one is checked against a subject
+    whose files already exist, some of which may themselves be symlinks).
+
+    Proven necessary, not merely theoretical: ``git mktree`` accepts a
+    subtree literally named ``..`` (git only refuses a path *segment*
+    containing a literal ``/``, not the two-character name ``..`` on its
+    own), and ``git ls-tree -r`` on such a tree emits a flattened entry path
+    like ``../evil.py``. ``Path(subject_root) / "../evil.py"`` is not
+    rejected by the ``/`` operator (only a truly absolute right-hand side
+    would override the left), but the OS resolves the ``..`` on open/stat,
+    so an unchecked ``actual_path`` would read from *outside*
+    ``subject_root``.
+
+    Containment is decided *lexically*, on ``relative_path`` itself via
+    ``posixpath.normpath`` -- deliberately not via ``Path.resolve()`` against
+    the filesystem. ``resolve()`` would dereference a symlink sitting at
+    ``relative_path`` (a legitimate, already-materialised tracked entry) and
+    judge containment by where that symlink's *target* points, which is a
+    different question this function must not answer: a symlink tampered to
+    point at ``/etc/passwd`` must be caught by the symlink-target-text
+    comparison in the caller, tagged with its own reason code, not folded
+    into this containment check.
+    """
+    normalised = posixpath.normpath(relative_path)
+    if normalised == ".." or normalised.startswith("../") or posixpath.isabs(normalised):
+        raise ExecutedSourceIdentityError(IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2)
+    return subject_root / relative_path
 
 
 def loaded_module_files_v2(*, package_prefix: str = "app.agent_review") -> tuple[Path, ...]:
@@ -220,7 +260,13 @@ def verify_executed_source_identity_v2(
        tree entry is the executable blob mode). This alone makes a
        "narrowed" subject -- one that omits part of the real tree -- an
        *incomplete* subject, refused directly, not merely a subject with a
-       digest a checker forgot to look at closely enough.
+       digest a checker forgot to look at closely enough. Each tree path is
+       resolved through ``_safe_subject_path_v2`` first: a hostile tree can
+       contain a subtree literally named ``..`` (git only rejects a literal
+       ``/`` inside one path segment, not the two-character name ``..``),
+       which ``ls-tree -r`` then flattens into an entry path like
+       ``../evil.py`` -- an unchecked join would read from outside
+       ``subject_root`` when the OS resolves it.
     4. ``subject_root`` contains no file absent from the commit's tree --
        an untracked file planted directly into the subject (whether before
        or after materialisation) is refused rather than silently ignored.
@@ -269,7 +315,7 @@ def verify_executed_source_identity_v2(
             # instead of an uncaught KeyError against
             # `expected_content_by_path`, which never has gitlink entries.
             continue
-        actual_path = subject_root / entry.path
+        actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
         expected_bytes = expected_content_by_path[entry.path]
 
         if entry.mode == SYMLINK_MODE_V2:
