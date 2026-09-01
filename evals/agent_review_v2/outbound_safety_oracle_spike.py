@@ -153,13 +153,13 @@ def _looks_token_like_for_entropy(value: str) -> bool:
 
 
 def _opaque_value_is_suspicious(value: str) -> bool:
-    """Entropy is meaningful only for a value-bearing context, not arbitrary code.
+    """Entropy is meaningful only for an explicitly parsed value context.
 
-    The previous spike scanned every token in source text and independently
-    rediscovered the classic entropy-scanner false-positive: a long legitimate
-    Python identifier in ``run_assembly_v2.py``.  This helper is therefore
-    invoked only for assignment/JSON scalar values.  Structural JWT/AWS/Slack/
-    PEM detectors remain global because their shape itself is the evidence.
+    Structural JWT/AWS/Slack/PEM detectors remain global because their shape
+    itself is evidence. Generic entropy is intentionally *not* applied to
+    arbitrary JSON string values: reviewed source is itself transported as a
+    JSON string, so doing so merely renames a global source scan and recreates
+    the false-positive class this spike is designed to expose.
     """
 
     for match in _OPAQUE_TOKEN_RE.finditer(value):
@@ -216,10 +216,6 @@ def _scan_value(value: Any, *, location: str, findings: list[OutboundSafetyFindi
                     findings.append(
                         OutboundSafetyFindingV2("sensitive_json_key", child_location, "sensitive_key_value")
                     )
-            elif isinstance(child, str) and not _placeholder_or_type(child) and _opaque_value_is_suspicious(child):
-                findings.append(
-                    OutboundSafetyFindingV2("high_entropy_json_value", child_location, "opaque_candidate")
-                )
             _scan_value(child, location=child_location, findings=findings)
         return
     if isinstance(value, list):
