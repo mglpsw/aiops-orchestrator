@@ -39,41 +39,90 @@ _PRIVATE_KEY_RE = re.compile(
 )
 _AUTHORIZATION_BEARER_RE = re.compile(r"(?i)(authorization\s*:\s*)bearer\s+([^\s,;]+)")
 _BEARER_RE = re.compile(r"(?i)\bbearer\s+([A-Za-z0-9._~+/=-]{8,})")
-# `#200-F` authority E. The previous value class was `[^\s&;,\"']+`, which
-# EXCLUDED quote characters -- so `password = "..."`, the dominant shape of a
-# hard-coded secret in source, never matched: the first value character after
-# `=` is a quote, which the class forbids. Only the bare `key = value` form
-# was ever redacted, which is why the gap looked exercised and survived.
+# `#200-F` authority E, round 2. The first attempt fixed the *witness*
+# (`password = "..."`) rather than the *class*, and adversarial review found
+# six shapes still leaking -- three of which emitted `[REDACTED]` while the
+# plaintext survived on the same line, so the artifact asserted a redaction
+# that had not happened. An artifact that misreports its own sanitisation is
+# worse than one that admits it did nothing.
 #
-# The value alternatives are ordered and every one is line-bounded. A greedy
-# rule that crossed newlines could swallow an entire file body into a single
-# placeholder and destroy the review it exists to protect.
+# The mechanism of that failure generalises, and is worth stating: with an
+# ordered alternation, when the character after `=` was not a quote (`f`, `b`,
+# `(`), the bare-run alternative matched that single prefix character,
+# replaced it, and let the quoted literal through untouched.
 #
-#   1. a properly terminated double- or single-quoted string;
-#   2. an UNTERMINATED quote, redacted to end of line -- a truncated or
-#      malformed secret is still a secret;
-#   3. the historical bare run.
-_SENSITIVE_ASSIGNMENT_KEYS_V2 = (
-    r"token|api_key|password|secret|client_secret|access_token|refresh_token"
+# Two inversions follow.
+#
+# 1. Keys are matched by PATTERN, not enumerated. `secret_key` and `apikey`
+#    leaked purely because nobody had listed them. A component-wise pattern
+#    cannot fall behind the same way -- the same reasoning as the operational
+#    refusal family.
+# 2. The value is SUSPECT to end of line and is spared only when demonstrably
+#    benign. Enumerating secret shapes loses to the next shape; enumerating
+#    benign shapes fails safe.
+_SENSITIVE_KEY_V2 = (
+    r"[A-Za-z0-9_.\-]*"
+    r"(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential"
+    r"|private[_-]?key|access[_-]?key)"
+    r"[A-Za-z0-9_.\-]*"
 )
-_ASSIGNMENT_VALUE_V2 = r"(\"[^\"\n]*\"|'[^'\n]*'|\"[^\n]*|'[^\n]*|[^\s&;,\"']+)"
 
-# The optional quote before the separator is what lets JSON keys match:
-# in `"password": "..."` the character after the key name is the key's own
-# closing quote, not the separator. It is captured into the separator group
-# so the replacement puts it back and the line stays well-formed.
+# An optional Python string prefix (f, b, r, u and their pairs) followed by a
+# triple- or single-quoted body, else a bare run. Triple quotes are tried
+# FIRST: a two-quote alternative placed earlier matches the empty string at
+# the start of `"""` and consumes two of the three, which is exactly how the
+# triple-quoted case leaked while reporting success.
+_STRING_PREFIX_V2 = r"(?:[fFbBrRuU]{1,2})?"
+_TRIPLE_DOUBLE_V2 = _STRING_PREFIX_V2 + r'"""[^\n]*?"""'
+_TRIPLE_SINGLE_V2 = _STRING_PREFIX_V2 + r"'''[^\n]*?'''"
+_QUOTED_DOUBLE_V2 = _STRING_PREFIX_V2 + r'"(?:\\.|[^"\\\n])*"'
+_QUOTED_SINGLE_V2 = _STRING_PREFIX_V2 + r"'(?:\\.|[^'\\\n])*'"
+_UNTERMINATED_DOUBLE_V2 = _STRING_PREFIX_V2 + r'"[^\n]*'
+_UNTERMINATED_SINGLE_V2 = _STRING_PREFIX_V2 + r"'[^\n]*"
+_QUOTED_VALUE_V2 = "|".join(
+    (
+        _TRIPLE_DOUBLE_V2,
+        _TRIPLE_SINGLE_V2,
+        _QUOTED_DOUBLE_V2,
+        _QUOTED_SINGLE_V2,
+        _UNTERMINATED_DOUBLE_V2,
+        _UNTERMINATED_SINGLE_V2,
+    )
+)
+
 _ASSIGNMENT_RE = re.compile(
-    rf"(?i)\b({_SENSITIVE_ASSIGNMENT_KEYS_V2})([\"']?\s*=\s*){_ASSIGNMENT_VALUE_V2}"
+    r"(?i)\b(" + _SENSITIVE_KEY_V2 + r")([\"']?\s*=\s*)(" + _QUOTED_VALUE_V2 + r"|[^\s&;,]+)"
 )
 
-# The colon form accepts ONLY a quoted value. `password: str` is a Python type
-# annotation, not a secret, and redacting it would damage exactly the code a
-# reviewer must read. Requiring quotes covers YAML and JSON -- where the leak
-# actually occurs -- without touching annotations.
+# The colon form now accepts UNQUOTED values. Requiring quotes was justified
+# in a comment claiming it "covers YAML and JSON, where the leak actually
+# occurs" -- which was false: `password: hunter2` is the dominant YAML form
+# and was never matched. Python type annotations are spared by recognising the
+# small, closed set of shapes a type expression can take, rather than by
+# demanding quotes of everybody.
 _COLON_ASSIGNMENT_RE = re.compile(
-    rf"(?i)\b({_SENSITIVE_ASSIGNMENT_KEYS_V2})([\"']?\s*:\s*)"
-    r"(\"[^\"\n]*\"|'[^'\n]*'|\"[^\n]*|'[^\n]*)"
+    r"(?i)\b(" + _SENSITIVE_KEY_V2 + r")([\"']?\s*:\s*)(" + _QUOTED_VALUE_V2 + r"|[^\s&;,]+)"
 )
+
+# Values that are not secrets and whose removal would damage the review:
+# `token_count = 5`, `MAX_TOKENS = 100`, `password: str`, `secret: None`.
+_BENIGN_VALUE_RE_V2 = re.compile(
+    r"""(?xi)
+    ^(?:
+        [-+]?\d[\d_]*(?:\.\d+)?(?:[eE][-+]?\d+)?
+      | true|false|none|null|nil|undefined
+      | (?:typing\.|t\.)?
+        (?:str|bytes|int|float|bool|text|any|object|dict|list|set|tuple
+          |optional|union|secretstr|securestring|sequence|mapping|iterable)
+        (?:\s*\[[^\n]*\])?
+        (?:\s*\|\s*[A-Za-z_][A-Za-z0-9_.\[\]]*)*
+      | \{\{[^\n]*\}\}
+      | \$\{[^\n]*\}
+      | \$[A-Za-z_][A-Za-z0-9_]*
+    )$
+    """
+)
+
 _COOKIE_RE = re.compile(r"(?i)\b(set-cookie|cookie)\s*:\s*([^\r\n]+)")
 _GITHUB_TOKEN_RE = re.compile(r"\b(ghp_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b")
 _OPENAI_TOKEN_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")
@@ -195,40 +244,61 @@ def _sub_bearer(text: str, state: RedactionState) -> str:
     return _BEARER_RE.sub(replace, text)
 
 
-def _unwrap_assignment_value_v2(value: str) -> tuple[str, str]:
-    """Split a matched value into its quote style and its inner text.
+def _unwrap_assignment_value_v2(value: str) -> tuple[str, str, str]:
+    """Split a matched value into (prefix, quote, inner text).
 
-    Returns ``("", value)`` for a bare value. An unterminated quote yields its
-    opening character and the remainder, so the placeholder check still sees
-    the real text rather than a stray quote.
+    ``prefix`` is a Python string prefix (``f``, ``b``, ``rb`` ...) when
+    present. It is returned rather than discarded because leaving it attached
+    to the redacted output is what made the f-string case emit
+    ``password = [REDACTED]"the-real-secret"``.
+
+    Returns ``("", "", value)`` for a bare value. An unterminated quote yields
+    its opening character and the remainder, so the benign/placeholder checks
+    still see the real text rather than a stray quote.
     """
-    if not value or value[0] not in "\"'":
-        return "", value
-    quote = value[0]
-    if len(value) >= 2 and value[-1] == quote:
-        return quote, value[1:-1]
-    return quote, value[1:]
+    index = 0
+    while index < len(value) and value[index] in "fFbBrRuU" and index < 2:
+        index += 1
+    prefix, remainder = value[:index], value[index:]
+    if not remainder or remainder[0] not in "\"'":
+        # A leading run of f/b/r/u letters that is not a string prefix is just
+        # part of a bare value (`token = fallback`), so nothing is stripped.
+        return "", "", value
+    quote = remainder[0]
+    triple = quote * 3
+    if remainder.startswith(triple) and remainder.endswith(triple) and len(remainder) >= 6:
+        return prefix, triple, remainder[3:-3]
+    if len(remainder) >= 2 and remainder[-1] == quote:
+        return prefix, quote, remainder[1:-1]
+    return prefix, quote, remainder[1:]
 
 
 def _sub_assignments(text: str, state: RedactionState) -> str:
     """Redact the value of a sensitive assignment, keeping the code readable.
 
     Only the value is removed. The key, the separator with its original
-    spacing, and the quoting style all survive, so a reviewer can still see
-    that a credential is assigned, to which name, and in what syntax -- which
-    is the whole point of shipping the fragment for review at all.
+    spacing, the string prefix and the quoting style all survive, so a
+    reviewer can still see that a credential is assigned, to which name, and
+    in what syntax.
+
+    A value is spared only when it is a placeholder or matches
+    ``_BENIGN_VALUE_RE_V2`` -- a numeric literal, a sentinel, a type
+    expression, or a template/environment interpolation. Everything else after
+    a sensitive key is treated as a secret. That direction is deliberate: over
+    -redacting `token_count = "many"` costs a reviewer one line of context,
+    while under-redacting costs a credential.
     """
 
     def replace(match: re.Match[str]) -> str:
         key, separator, value = match.group(1), match.group(2), match.group(3)
-        quote, inner = _unwrap_assignment_value_v2(value)
-        if _is_placeholder(inner):
+        prefix, quote, inner = _unwrap_assignment_value_v2(value)
+        if _is_placeholder(inner) or _BENIGN_VALUE_RE_V2.match(inner.strip()):
             return match.group(0)
         state.record(f"{key.lower()}_assignment")
-        # A quote is reinstated only when the original was balanced; echoing
-        # an unterminated quote back would emit syntax the source never had.
-        if quote and value.endswith(quote) and len(value) >= 2:
-            redacted_value = f"{quote}{REDACTED}{quote}"
+        # A quote is reinstated only when the original was balanced; echoing an
+        # unterminated quote back would emit syntax the source never had.
+        if quote and value.endswith(quote):
+            redacted_value = f"{prefix}{quote}{REDACTED}{quote}"
         else:
             redacted_value = REDACTED
         return f"{key}{separator}{redacted_value}"

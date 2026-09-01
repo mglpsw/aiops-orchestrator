@@ -231,10 +231,11 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
     import tempfile as _tempfile
 
     from app.agent_review.diff_acquisition_v2 import parse_unified_diff
-    from app.agent_review.contracts_v2 import TargetProfileV2
+    from app.agent_review.profile_loader_v2 import load_target_profile_text_v2
     from app.agent_review.operational_ingress_v2 import (
+        read_caller_document_text_v2,
+        validate_caller_document_v2,
         validate_existing_directory_v2,
-        validate_existing_file_v2,
     )
     from app.agent_review.operational_run_v2 import execute_operational_run_v2
     from app.agent_review.operational_subject_v2 import (
@@ -249,13 +250,23 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
     arguments = _build_public_parser_v2().parse_args(argv)
     inputs = _validated_inputs_v2(arguments)
 
-    profile = TargetProfileV2.model_validate_json(
-        validate_existing_file_v2(arguments.profile).read_text(encoding="utf-8")
+    # Caller-supplied document CONTENT is ingress material, exactly like a
+    # flag value. Handing these to model_validate_json directly -- which is
+    # what the previous revision did -- let a malformed profile emit a raw
+    # pydantic traceback that echoed the file's own bytes to stderr.
+    #
+    # The profile goes through its owner's typed loader, which already raises
+    # a family member and additionally rejects the ambiguous-YAML-document
+    # shapes a bare JSON parse would silently accept.
+    profile = load_target_profile_text_v2(
+        read_caller_document_text_v2(arguments.profile, field_name="profile")
     )
-    grouping_policy = SemanticGroupingPolicyV2.model_validate_json(
-        validate_existing_file_v2(arguments.grouping_policy).read_text(encoding="utf-8")
+    grouping_policy = validate_caller_document_v2(
+        arguments.grouping_policy,
+        model=SemanticGroupingPolicyV2,
+        field_name="grouping_policy",
     )
-    diff_text = validate_existing_file_v2(arguments.diff).read_text(encoding="utf-8")
+    diff_text = read_caller_document_text_v2(arguments.diff, field_name="diff")
     file_diffs = parse_unified_diff(diff_text)
 
     # The controlled target subject: the target's committed bytes at the head
@@ -328,9 +339,17 @@ def _run_inner_semantic_v2(argv: list[str], document: InnerControlDocumentV2) ->
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
 
-    control_fd = int(
-        os.environ.get("AGENT_REVIEW_INNER_CONTROL_FD_V2", INNER_CONTROL_FD_V2)
-    )
+    # Parsed defensively: this is ambient material reaching a conversion
+    # *before* the boundary's own handler, so a non-integer or empty value --
+    # a very plausible CI env-file accident -- used to crash with a raw
+    # ValueError. An unusable value means "no channel was handed to me",
+    # which is exactly what the absent case already means.
+    raw_control_fd = os.environ.get("AGENT_REVIEW_INNER_CONTROL_FD_V2")
+    try:
+        control_fd = int(raw_control_fd) if raw_control_fd else INNER_CONTROL_FD_V2
+    except ValueError:
+        control_fd = INNER_CONTROL_FD_V2
+
     try:
         document = read_inner_control_document_v2(control_fd)
     except InnerControlChannelError as exc:

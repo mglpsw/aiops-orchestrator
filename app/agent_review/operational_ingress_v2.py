@@ -67,6 +67,8 @@ from app.agent_review.contracts_v2 import (
 from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 __all__ = [
+    "INGRESS_DOCUMENT_INVALID_REASON_V2",
+    "INGRESS_DOCUMENT_UNREADABLE_REASON_V2",
     "INGRESS_INVALID_PUBLIC_INPUT_REASON_V2",
     "INGRESS_PATH_NOT_A_FILE_REASON_V2",
     "INGRESS_PATH_NOT_A_DIRECTORY_REASON_V2",
@@ -78,6 +80,8 @@ __all__ = [
     "validate_public_inputs_v2",
     "validate_existing_directory_v2",
     "validate_existing_file_v2",
+    "read_caller_document_text_v2",
+    "validate_caller_document_v2",
 ]
 
 
@@ -86,6 +90,8 @@ INGRESS_UNKNOWN_PUBLIC_INPUT_REASON_V2 = "operational_ingress_unknown_public_inp
 INGRESS_PATH_NOT_ABSOLUTE_REASON_V2 = "operational_ingress_path_not_absolute"
 INGRESS_PATH_NOT_A_FILE_REASON_V2 = "operational_ingress_path_not_a_file"
 INGRESS_PATH_NOT_A_DIRECTORY_REASON_V2 = "operational_ingress_path_not_a_directory"
+INGRESS_DOCUMENT_UNREADABLE_REASON_V2 = "operational_ingress_document_unreadable"
+INGRESS_DOCUMENT_INVALID_REASON_V2 = "operational_ingress_document_invalid"
 
 
 class OperationalIngressError(ExpectedOperationalRefusalV2, ValueError):
@@ -259,3 +265,47 @@ def validate_existing_directory_v2(candidate: str | os.PathLike[str]) -> Path:
     if not path.is_dir():
         raise OperationalIngressError(INGRESS_PATH_NOT_A_DIRECTORY_REASON_V2)
     return path
+
+
+def read_caller_document_text_v2(path: str | os.PathLike[str], *, field_name: str) -> str:
+    """Read a caller-supplied file as UTF-8 text, or refuse in-family.
+
+    File *contents* are caller material exactly as much as flag values are.
+    The first revision of this module validated the nine scalar inputs and
+    then handed ``--profile`` and ``--grouping-policy`` straight to
+    ``model_validate_json`` **after the seal**, where a malformed document
+    produced a raw ``pydantic.ValidationError`` traceback that printed the
+    virtualenv path, the subject temp directory, and -- worst -- pydantic's
+    ``input_value=`` echo of the offending bytes. A credential sitting in a
+    misconfigured profile was therefore printed to stderr.
+
+    That is the `#276` round-4 witness in a different flag, closed for the
+    scalars and left open for the documents. Reading and validating them here
+    is the same authority applied to the same class of material.
+    """
+    resolved = validate_existing_file_v2(path)
+    try:
+        return resolved.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise OperationalIngressError(
+            f"{INGRESS_DOCUMENT_UNREADABLE_REASON_V2}_{field_name}"
+        ) from None
+
+
+def validate_caller_document_v2(
+    path: str | os.PathLike[str], *, model: type[Any], field_name: str
+) -> Any:
+    """Parse a caller-supplied JSON document into a contract model.
+
+    Raises ``OperationalIngressError`` -- never ``ValidationError``. The reason
+    code names the *flag*, never the document's contents: a profile is exactly
+    the kind of file people accidentally put a token in, so nothing parsed
+    from it may reach stderr.
+    """
+    raw_text = read_caller_document_text_v2(path, field_name=field_name)
+    try:
+        return model.model_validate_json(raw_text)
+    except Exception:  # noqa: BLE001 -- normalised; the cause must not escape
+        raise OperationalIngressError(
+            f"{INGRESS_DOCUMENT_INVALID_REASON_V2}_{field_name}"
+        ) from None

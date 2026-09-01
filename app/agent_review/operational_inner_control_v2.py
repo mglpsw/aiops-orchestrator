@@ -28,10 +28,19 @@ private-looking option a caller invents.
 
 *Unforgeability* (this module's verification). Exclusivity alone would still
 let a directly-invoked inner accept whatever document it was handed. So the
-document is never trusted on arrival: the inner checks that the code it is
-*actually executing* lives under the declared subject root, and that the bytes
-under that root digest to the declared value. A document that disagrees with
-reality is refused even though it arrived on the right channel.
+document is never trusted on arrival: the inner checks that **every loaded
+module of the semantic package** lives under the declared subject root, and
+that the bytes under that root digest to the declared value. A document that
+disagrees with reality is refused even though it arrived on the right channel.
+
+The "every loaded module" part is load-bearing and was missing in the first
+revision, which checked only the entry script. A caller could then *narrow*
+the declared root to ``scripts/`` -- which genuinely contains the entry script
+-- and compute its digest with this module's own public helper, satisfying
+both checks while the digest covered none of ``app/agent_review/``. The
+declared toolrepo sha described a tree that had contributed almost nothing to
+the run. Narrowing, not substitution, was the hole; checking a *containing*
+directory is not the same as checking the code.
 
 Neither property is asked to cover for the other, and neither is described
 here as more than it is. A person who can already run arbitrary code on the
@@ -46,6 +55,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,10 +68,12 @@ __all__ = [
     "INNER_CONTROL_FD_V2",
     "INNER_CONTROL_SCHEMA_ID_V2",
     "INNER_CONTROL_SUBJECT_DIGEST_MISMATCH_REASON_V2",
+    "INNER_CONTROL_SUBJECT_EXCLUDES_LOADED_CODE_REASON_V2",
     "INNER_CONTROL_SUBJECT_ROOT_MISMATCH_REASON_V2",
     "InnerControlChannelError",
     "InnerControlDocumentV2",
     "compute_subject_digest_v2",
+    "loaded_semantic_package_files_v2",
     "encode_inner_control_document_v2",
     "read_inner_control_document_v2",
     "verify_inner_control_document_v2",
@@ -81,6 +93,9 @@ INNER_CONTROL_DOCUMENT_UNREADABLE_REASON_V2 = "inner_control_document_unreadable
 INNER_CONTROL_DOCUMENT_MALFORMED_REASON_V2 = "inner_control_document_malformed"
 INNER_CONTROL_SUBJECT_ROOT_MISMATCH_REASON_V2 = "inner_control_subject_root_mismatch"
 INNER_CONTROL_SUBJECT_DIGEST_MISMATCH_REASON_V2 = "inner_control_subject_digest_mismatch"
+INNER_CONTROL_SUBJECT_EXCLUDES_LOADED_CODE_REASON_V2 = (
+    "inner_control_subject_excludes_loaded_code"
+)
 
 _MAX_CONTROL_DOCUMENT_BYTES_V2 = 64 * 1024
 
@@ -213,10 +228,28 @@ def read_inner_control_document_v2(
     )
 
 
+def loaded_semantic_package_files_v2() -> tuple[Path, ...]:
+    """Every file currently loaded from the semantic package.
+
+    Asked of ``sys.modules`` rather than of the filesystem because the
+    question is "which code did this interpreter actually import", and only
+    the interpreter can answer that.
+    """
+    discovered: list[Path] = []
+    for module_name, module in list(sys.modules.items()):
+        if not module_name.startswith("app.agent_review"):
+            continue
+        module_file = getattr(module, "__file__", None)
+        if module_file is not None:
+            discovered.append(Path(module_file))
+    return tuple(discovered)
+
+
 def verify_inner_control_document_v2(
     document: InnerControlDocumentV2,
     *,
     executing_module_path: Path,
+    loaded_semantic_files: tuple[Path, ...] | None = None,
 ) -> InnerControlDocumentV2:
     """Check the document against the code that is actually running.
 
@@ -238,6 +271,35 @@ def verify_inner_control_document_v2(
 
     if not resolved_module.is_relative_to(subject_root):
         raise InnerControlChannelError(INNER_CONTROL_SUBJECT_ROOT_MISMATCH_REASON_V2)
+
+    # The entry script being inside the declared root is NOT sufficient, and
+    # assuming it was is how a caller could forge inner authority.
+    #
+    # The attack: declare `subject_root = <repo>/scripts`. That directory
+    # really does contain the entry script, so the check above passes, and the
+    # caller can compute its digest with this module's own public helper so
+    # the check below passes too. But `scripts/` contains none of
+    # `app/agent_review/` -- the semantic code that actually performs the
+    # review -- so the digest covers no part of it. The declared
+    # toolrepo sha then describes a tree that contributed almost nothing to
+    # the run, and tampering with the semantic modules is invisible.
+    #
+    # Every loaded module of the semantic package must therefore live inside
+    # the digested root.
+    #
+    # `loaded_semantic_files` is injectable ONLY so a unit test can describe a
+    # synthetic subject; production always takes the default, which reads the
+    # real interpreter state. It is not a way to opt out -- passing an empty
+    # tuple asserts "no semantic code is loaded", which is a claim a test
+    # makes about its own fixture, not something a caller of the product can
+    # arrange.
+    if loaded_semantic_files is None:
+        loaded_semantic_files = loaded_semantic_package_files_v2()
+    for module_file in loaded_semantic_files:
+        if not module_file.resolve().is_relative_to(subject_root):
+            raise InnerControlChannelError(
+                INNER_CONTROL_SUBJECT_EXCLUDES_LOADED_CODE_REASON_V2
+            )
 
     if compute_subject_digest_v2(subject_root) != document.subject_digest:
         raise InnerControlChannelError(INNER_CONTROL_SUBJECT_DIGEST_MISMATCH_REASON_V2)

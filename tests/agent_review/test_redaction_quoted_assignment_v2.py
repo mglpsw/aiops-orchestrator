@@ -183,3 +183,131 @@ def test_an_unterminated_quote_does_not_swallow_the_rest_of_the_file() -> None:
 
     assert "def unrelated_function():" in redacted
     assert "return 1" in redacted
+
+
+# ---------------------------------------------------------------------------
+# Round 2. Adversarial review found six shapes the first fix missed, three of
+# which emitted [REDACTED] while the plaintext survived on the same line --
+# so the artifact asserted a redaction that had not happened.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source_line",
+    [
+        # String prefixes. The ordered alternation matched the bare prefix
+        # character and let the literal through -- while recording success.
+        f'password = f"{_SECRET_V2}"',
+        f"password = f'{_SECRET_V2}'",
+        f'api_key = b"{_SECRET_V2}"',
+        f'token = rb"{_SECRET_V2}"',
+        f'token = R"{_SECRET_V2}"',
+        f'password = u"{_SECRET_V2}"',
+        # Triple quotes: a two-quote alternative matches the empty string at
+        # the start of `"""` and consumes two of the three.
+        f'password = """{_SECRET_V2}"""',
+        f"password = '''{_SECRET_V2}'''",
+        # Unquoted YAML -- the dominant YAML form, and the one a comment
+        # incorrectly claimed was covered.
+        f"password: {_SECRET_V2}",
+        f"api_key: {_SECRET_V2}",
+        # Key names absent from the old hand-written list.
+        f'secret_key = "{_SECRET_V2}"',
+        f'apikey = "{_SECRET_V2}"',
+        f'api-key: "{_SECRET_V2}"',
+        f'db_password = "{_SECRET_V2}"',
+        f'private_key = "{_SECRET_V2}"',
+        f'access_key = "{_SECRET_V2}"',
+        f'SECRET_KEY = "{_SECRET_V2}"',
+        f'credentials = "{_SECRET_V2}"',
+    ],
+)
+def test_round_two_shapes_do_not_leak(source_line: str) -> None:
+    """Every shape adversarial review found still leaking."""
+    redacted = redact_text(source_line, RedactionState())
+
+    assert _SECRET_V2 not in redacted, f"raw secret survived: {redacted!r}"
+    assert REDACTED in redacted
+
+
+def test_a_redaction_is_never_claimed_over_material_that_survived() -> None:
+    """The worst property of the round-1 defect, pinned directly.
+
+    Three shapes emitted ``[REDACTED]`` *and* recorded a replacement while the
+    plaintext sat on the same line. An artifact that misreports its own
+    sanitisation is worse than one that admits it did nothing, because a
+    reviewer downstream has no reason to look.
+    """
+    for source_line in (
+        f'password = f"{_SECRET_V2}"',
+        f'password = """{_SECRET_V2}"""',
+        f'api_key = b"{_SECRET_V2}"',
+    ):
+        state = RedactionState()
+        redacted = redact_text(source_line, state)
+
+        claimed = state.secret_like_values_found > 0
+        leaked = _SECRET_V2 in redacted
+
+        assert not (claimed and leaked), (
+            f"claimed a redaction that did not happen: {redacted!r}"
+        )
+        assert not leaked
+
+
+@pytest.mark.parametrize(
+    "benign_line",
+    [
+        "password: str",
+        "token: Optional[str]",
+        "api_key: bytes",
+        "secret: None",
+        "api_key: str | None = None",
+        "token_count = 5",
+        "MAX_TOKENS = 100",
+        "retry_secret_delay = 30",
+        'password = "fake-token"',
+        "token = 'test-token'",
+        "password = ${VAULT_PASSWORD}",
+        "token = $GITHUB_TOKEN",
+        'password = "{{ vault_password }}"',
+    ],
+)
+def test_benign_values_are_left_intact(benign_line: str) -> None:
+    """The cost side of "suspect by default".
+
+    Sparing a *closed* set of benign shapes fails safe; enumerating secret
+    shapes loses to the next shape. But over-redaction still damages the
+    review, so the benign set has to actually work.
+    """
+    assert redact_text(benign_line, RedactionState()) == benign_line
+
+
+def test_the_string_prefix_survives_so_the_line_stays_readable() -> None:
+    """Context preservation, extended to prefixes.
+
+    Dropping the prefix would emit syntax the source never had, and keeping it
+    outside the replacement is what produced ``password = [REDACTED]"real"``.
+    """
+    redacted = redact_text(f'password = f"{_SECRET_V2}"', RedactionState())
+
+    assert redacted == 'password = f"[REDACTED]"'
+
+
+def test_the_new_patterns_are_linear_in_input_length() -> None:
+    """Guards against introducing catastrophic backtracking.
+
+    Review flagged a pre-existing quadratic pattern elsewhere in this module
+    (``_PRIVATE_KEY_RE``); the assignment rules must not add another.
+    """
+    import time
+
+    durations = []
+    for multiplier in (1, 2, 4, 8):
+        text = 'password = "' + "a" * (8000 * multiplier)
+        started = time.perf_counter()
+        redact_text(text, RedactionState())
+        durations.append(time.perf_counter() - started)
+
+    # 8x the input must not cost anything like 8^2 the time.
+    assert durations[-1] < durations[0] * 24, durations

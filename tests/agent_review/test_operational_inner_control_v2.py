@@ -40,6 +40,7 @@ from app.agent_review.operational_inner_control_v2 import (
     INNER_CONTROL_FD_V2,
     INNER_CONTROL_SCHEMA_ID_V2,
     INNER_CONTROL_SUBJECT_DIGEST_MISMATCH_REASON_V2,
+    INNER_CONTROL_SUBJECT_EXCLUDES_LOADED_CODE_REASON_V2,
     INNER_CONTROL_SUBJECT_ROOT_MISMATCH_REASON_V2,
     InnerControlChannelError,
     InnerControlDocumentV2,
@@ -229,13 +230,15 @@ def test_verification_rejects_a_subject_swapped_after_materialisation(
     executing_module = subject / "app" / "agent_review" / "worker.py"
 
     assert verify_inner_control_document_v2(
-        document, executing_module_path=executing_module
+        document, executing_module_path=executing_module, loaded_semantic_files=()
     ) == document
 
     executing_module.write_text("VALUE = 2  # swapped\n", encoding="utf-8")
 
     with pytest.raises(InnerControlChannelError) as caught:
-        verify_inner_control_document_v2(document, executing_module_path=executing_module)
+        verify_inner_control_document_v2(
+            document, executing_module_path=executing_module, loaded_semantic_files=()
+        )
 
     assert caught.value.reason_code == INNER_CONTROL_SUBJECT_DIGEST_MISMATCH_REASON_V2
 
@@ -387,3 +390,69 @@ def test_the_channel_contract_names_a_descriptor_not_a_flag() -> None:
                 f"{exported_name} looks like a command-line flag; inner "
                 "authority must have no argv spelling"
             )
+
+
+def test_the_narrowing_forgery_is_refused_with_real_interpreter_state() -> None:
+    """Lane A P0. Narrowing, not substitution, was the hole.
+
+    The forgery: declare ``subject_root = <repo>/scripts``. That directory
+    genuinely contains the entry script, so the executing-module check passes,
+    and the caller can compute its digest with this module's own public helper
+    so the digest check passes too. But ``scripts/`` contains none of
+    ``app/agent_review/``, so the digest covered no part of the code that
+    actually performs the review, and ``declared_toolrepo_sha`` described a
+    tree that had contributed almost nothing to the run.
+
+    Deliberately run against the **default** ``loaded_semantic_files``, i.e.
+    real ``sys.modules`` state: the injectable parameter exists for synthetic
+    fixtures, and a test of the forgery that used it would be testing nothing.
+
+    The prior test only tried ``subject_root=/tmp/attacker``, an *unrelated*
+    directory. That is why it stayed green: checking a containing directory is
+    not the same as checking the code.
+    """
+    narrowed = _REPOSITORY_ROOT_V2 / "scripts"
+    document = InnerControlDocumentV2(
+        subject_root=str(narrowed),
+        declared_toolrepo_sha="b" * 40,
+        subject_digest=compute_subject_digest_v2(narrowed),
+    )
+
+    assert (narrowed / "aiops-review-run-v2.py").is_file(), (
+        "non-vacuity: the narrowed root really does contain the entry script, "
+        "so the executing-module check alone would pass"
+    )
+    assert not (narrowed / "app").exists(), (
+        "non-vacuity: and it really does exclude the semantic package"
+    )
+
+    with pytest.raises(InnerControlChannelError) as caught:
+        verify_inner_control_document_v2(
+            document,
+            executing_module_path=narrowed / "aiops-review-run-v2.py",
+        )
+
+    assert caught.value.reason_code == (
+        INNER_CONTROL_SUBJECT_EXCLUDES_LOADED_CODE_REASON_V2
+    )
+
+
+def test_the_honest_repository_root_still_verifies() -> None:
+    """Non-vacuity control for the test above.
+
+    A check that rejected every root would satisfy it and break the product.
+    The real repository root contains both the entry script and every loaded
+    semantic module, so it must verify.
+    """
+    document = InnerControlDocumentV2(
+        subject_root=str(_REPOSITORY_ROOT_V2),
+        declared_toolrepo_sha="c" * 40,
+        subject_digest=compute_subject_digest_v2(_REPOSITORY_ROOT_V2),
+    )
+
+    verified = verify_inner_control_document_v2(
+        document,
+        executing_module_path=_REPOSITORY_ROOT_V2 / "scripts" / "aiops-review-run-v2.py",
+    )
+
+    assert verified.declared_toolrepo_sha == "c" * 40

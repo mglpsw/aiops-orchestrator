@@ -809,3 +809,89 @@ def test_a_head_sha_absent_from_the_target_is_a_typed_refusal(
     assert completed.returncode == 2
     assert completed.stderr.strip() == "subject_unknown_commit"
     assert "Traceback" not in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "field, content, expected_reason",
+    [
+        ("--profile", "this is not json", "target_profile_unreadable"),
+        ("--profile", '{"schema_id":"wrong"}', "target_profile_invalid"),
+        ("--grouping-policy", "not json either", "operational_ingress_document_invalid_grouping_policy"),
+        ("--grouping-policy", '{"schema_id":"wrong"}', "operational_ingress_document_invalid_grouping_policy"),
+    ],
+)
+def test_malformed_caller_documents_are_typed_refusals_not_tracebacks(
+    product_workspace_v2: dict[str, pathlib.Path],
+    tmp_path: pathlib.Path,
+    field: str,
+    content: str,
+    expected_reason: str,
+) -> None:
+    """Lane A P0. The `#276` round-4 witness, in a different flag.
+
+    The scalar inputs were validated pre-seal and the *documents* were handed
+    straight to ``model_validate_json`` after it, so a malformed profile
+    emitted a raw pydantic traceback. File contents are caller material
+    exactly as much as flag values are.
+    """
+    document = tmp_path / "caller-document.json"
+    document.write_text(content, encoding="utf-8")
+
+    completed = _run_product_v2(product_workspace_v2, **{field: str(document)})
+
+    assert completed.returncode == 2
+    assert completed.stderr.strip() == expected_reason
+    assert "Traceback" not in completed.stderr
+    assert "pydantic" not in completed.stderr
+    assert "site-packages" not in completed.stderr
+
+
+def test_a_secret_inside_a_caller_document_is_never_echoed(
+    product_workspace_v2: dict[str, pathlib.Path], tmp_path: pathlib.Path
+) -> None:
+    """A profile is exactly the kind of file people put a token in by mistake.
+
+    pydantic's ``input_value=`` renders the offending document, so the raw
+    traceback printed the credential to stderr. Worse than the original
+    witness, which only leaked paths.
+    """
+    secret = "ghp_THIS_MUST_NEVER_BE_ECHOED_0123456789"
+    document = tmp_path / "profile-with-secret.json"
+    document.write_text(f'{{"api_token":"{secret}"}}', encoding="utf-8")
+
+    completed = _run_product_v2(product_workspace_v2, **{"--profile": str(document)})
+
+    assert completed.returncode == 2
+    assert secret not in completed.stderr
+    assert secret not in completed.stdout
+
+
+def test_a_non_utf8_caller_document_is_refused_in_family(
+    product_workspace_v2: dict[str, pathlib.Path], tmp_path: pathlib.Path
+) -> None:
+    """``read_text`` raises ``UnicodeDecodeError``, which is not a family member."""
+    document = tmp_path / "binary-profile.json"
+    document.write_bytes(b"\xff\xfe\x00not text")
+
+    completed = _run_product_v2(product_workspace_v2, **{"--profile": str(document)})
+
+    assert completed.returncode == 2
+    assert completed.stderr.strip() == "operational_ingress_document_unreadable_profile"
+    assert "Traceback" not in completed.stderr
+
+
+@pytest.mark.parametrize("bad_fd", ["notanumber", "", "  "])
+def test_a_malformed_control_fd_env_var_is_not_a_traceback(
+    product_workspace_v2: dict[str, pathlib.Path], bad_fd: str
+) -> None:
+    """Lane A P1. ``int()`` sat outside the boundary's own try.
+
+    An empty value is a very plausible CI env-file accident, and it crashed
+    the CLI before any handler could see it.
+    """
+    completed = _run_product_v2(
+        product_workspace_v2, environment={"AGENT_REVIEW_INNER_CONTROL_FD_V2": bad_fd}
+    )
+
+    assert "Traceback" not in completed.stderr
+    assert "ValueError" not in completed.stderr
