@@ -32,6 +32,7 @@ from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_MISSING_TRACKED_FILE_REASON_V2,
     IDENTITY_MODE_MISMATCH_REASON_V2,
     IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2,
+    IDENTITY_SYMLINKED_DIRECTORY_REASON_V2,
     IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2,
     IDENTITY_UNKNOWN_COMMIT_REASON_V2,
     ExecutedSourceIdentityError,
@@ -522,6 +523,42 @@ def test_gitlink_in_tree_is_refused(tmp_path: Path) -> None:
     assert excinfo.value.reason_code == IDENTITY_GITLINK_PRESENT_REASON_V2
 
 
+def test_pure_gitlink_only_tree_is_refused(tmp_path: Path) -> None:
+    """Independent review (round 2, lane D) noted the existing gitlink test
+    always mixes the gitlink with other tracked files from
+    `_toolrepo_fixture`, so the gitlink-present code path is never isolated
+    -- a regression that broke the check only when a gitlink is the SOLE
+    tree entry could pass the existing test undetected. Committed here as
+    the minimal case: a tree containing nothing but one gitlink."""
+    repo = tmp_path / "toolrepo"
+    _init_repo(repo)
+    fake_submodule_sha = "e" * 40
+    subprocess.run(
+        [
+            "git",
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{fake_submodule_sha},only_submodule",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "--quiet", "-m", "only a gitlink"], cwd=repo, check=True)
+    commit_sha = _rev_parse(repo, "HEAD")
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo,
+            commit_sha=commit_sha,
+            subject_root=subject_root,
+            loaded_module_paths=(),
+        )
+    assert excinfo.value.reason_code == IDENTITY_GITLINK_PRESENT_REASON_V2
+
+
 def test_missing_tracked_file_is_refused(tmp_path: Path) -> None:
     repo, head_sha = _toolrepo_fixture(tmp_path)
     subject_root = tmp_path / "subject"
@@ -643,10 +680,12 @@ def test_symlinked_directory_cannot_hide_an_untracked_file(tmp_path: Path) -> No
         verify_executed_source_identity_v2(
             repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
         )
-    # Refused for containing a symlinked directory at all -- not required to
-    # be this exact reason code by any external contract, but it must not be
-    # IDENTITY_EXTRA_UNTRACKED_FILE's absence read as "nothing to report".
-    assert excinfo.value.reason_code is not None
+    # Independent review (round 2, lane D) noted this assertion was
+    # previously tautological (`is not None` is true for every reason
+    # code). Pinned to the specific code so a future change that swaps in
+    # some other -- still non-None -- refusal cannot pass this test
+    # unnoticed.
+    assert excinfo.value.reason_code == IDENTITY_SYMLINKED_DIRECTORY_REASON_V2
     # The decisive assertion: verification must NOT report success while
     # evil.py sits reachable under subject_root, uncompared against git.
     assert (subject_root / "pkg" / "evil.py").exists()
