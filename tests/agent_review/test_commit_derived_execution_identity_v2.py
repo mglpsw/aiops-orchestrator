@@ -21,11 +21,13 @@ import pytest
 
 from app.agent_review.bounded_git_v2 import BoundedGitError
 from app.agent_review.commit_derived_execution_identity_v2 import (
+    IDENTITY_BLOB_MISSING_REASON_V2,
     IDENTITY_CONTENT_MISMATCH_REASON_V2,
     IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2,
     IDENTITY_GITLINK_PRESENT_REASON_V2,
     IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2,
     IDENTITY_MISSING_TRACKED_FILE_REASON_V2,
+    IDENTITY_MODE_MISMATCH_REASON_V2,
     IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2,
     IDENTITY_UNKNOWN_COMMIT_REASON_V2,
     ExecutedSourceIdentityError,
@@ -148,3 +150,470 @@ def test_round2_tampered_code_honest_digest_honest_sha_fabrication_is_refused(
             loaded_module_paths=(tampered_module,),
         )
     assert excinfo.value.reason_code == IDENTITY_CONTENT_MISMATCH_REASON_V2
+
+
+# -- happy path -----------------------------------------------------------------
+
+
+def test_happy_path_verifies_successfully_for_honest_complete_subject(tmp_path: Path) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    loaded = (subject_root / "app_agent_review" / "core.py",)
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=loaded
+    )
+    assert identity.commit_sha == head_sha
+    assert identity.subject_root == subject_root.resolve()
+
+
+def test_executable_bit_is_materialised_and_verified(tmp_path: Path) -> None:
+    repo, _ = _toolrepo_fixture(tmp_path)
+    script = repo / "run.sh"
+    script.write_text("#!/bin/sh\necho hi\n")
+    script.chmod(0o755)
+    head_sha = _commit_all(repo, "add executable")
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+    )
+    assert identity.commit_sha == head_sha
+    assert os.access(subject_root / "run.sh", os.X_OK)
+
+
+def test_mode_mismatch_is_refused(tmp_path: Path) -> None:
+    """A file materialised as non-executable but then chmod +x'd on disk
+    (without touching content) must be caught -- content-only comparison
+    would miss this."""
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+    (subject_root / "scripts" / "entry.py").chmod(0o755)
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+    assert excinfo.value.reason_code == IDENTITY_MODE_MISMATCH_REASON_V2
+
+
+def test_symlink_content_materialised_and_verified(tmp_path: Path) -> None:
+    repo, _ = _toolrepo_fixture(tmp_path)
+    (repo / "link.py").symlink_to("app_agent_review/core.py")
+    head_sha = _commit_all(repo, "add symlink")
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+    )
+    assert identity.commit_sha == head_sha
+    assert (subject_root / "link.py").is_symlink()
+
+
+def test_tampered_symlink_target_is_refused(tmp_path: Path) -> None:
+    repo, _ = _toolrepo_fixture(tmp_path)
+    (repo / "link.py").symlink_to("app_agent_review/core.py")
+    head_sha = _commit_all(repo, "add symlink")
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    (subject_root / "link.py").unlink()
+    (subject_root / "link.py").symlink_to("/etc/passwd")
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+    assert excinfo.value.reason_code == IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2
+
+
+# -- required negative corpus (#200-G1 issue text) ------------------------------
+
+
+def test_tampered_dev_worktree_is_invisible_to_identity(tmp_path: Path) -> None:
+    """`mutable_dev_checkout must_not_define_executed_identity`: editing the
+    tracked file directly in the source repo's *worktree*, without
+    committing, must not change what materialises or verifies -- identity
+    comes from git objects, never from worktree state."""
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nTAMPERED = True\n")
+    # deliberately NOT committed
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+    )
+    assert identity.commit_sha == head_sha
+    # The materialised bytes reflect the COMMITTED content, not the tamper.
+    assert "TAMPERED" not in (subject_root / "app_agent_review" / "core.py").read_text()
+
+
+def test_untracked_shadow_file_in_subject_is_refused(tmp_path: Path) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    # An extra file planted directly into the subject after materialisation
+    # -- e.g. a TOCTOU write, or a naive design that just points subject_root
+    # at an arbitrary mutable directory.
+    (subject_root / "app_agent_review" / "shadow.py").write_text("EVIL = True\n")
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+    assert excinfo.value.reason_code == IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2
+
+
+def test_tracked_working_tree_edit_is_invisible_to_identity(tmp_path: Path) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    (repo / "scripts" / "entry.py").write_text("import app_agent_review.core\n# edited\n")
+    # not committed
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+    )
+    assert identity.commit_sha == head_sha
+    assert "edited" not in (subject_root / "scripts" / "entry.py").read_text()
+
+
+def test_assume_unchanged_does_not_hide_materialised_identity(tmp_path: Path) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    target = repo / "app_agent_review" / "core.py"
+    subprocess.run(
+        ["git", "update-index", "--assume-unchanged", "app_agent_review/core.py"],
+        cwd=repo,
+        check=True,
+    )
+    target.write_text("SEMANTIC = True\nASSUME_UNCHANGED_TAMPER = True\n")
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+    )
+    assert identity.commit_sha == head_sha
+    assert "ASSUME_UNCHANGED_TAMPER" not in (
+        subject_root / "app_agent_review" / "core.py"
+    ).read_text()
+
+
+def test_skip_worktree_does_not_hide_materialised_identity(tmp_path: Path) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    target = repo / "app_agent_review" / "core.py"
+    subprocess.run(
+        ["git", "update-index", "--skip-worktree", "app_agent_review/core.py"],
+        cwd=repo,
+        check=True,
+    )
+    target.write_text("SEMANTIC = True\nSKIP_WORKTREE_TAMPER = True\n")
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+    )
+    assert identity.commit_sha == head_sha
+    assert "SKIP_WORKTREE_TAMPER" not in (
+        subject_root / "app_agent_review" / "core.py"
+    ).read_text()
+
+
+def test_git_replace_ref_cannot_substitute_a_different_tree(tmp_path: Path) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nOTHER = True\n")
+    other_sha = _commit_all(repo, "other commit with different tree")
+
+    subprocess.run(["git", "replace", head_sha, other_sha], cwd=repo, check=True)
+    try:
+        subject_root = tmp_path / "subject"
+        subject_root.mkdir()
+        materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+        identity = verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+        assert identity.commit_sha == head_sha
+        # Content must be the ORIGINAL head_sha tree, not the replacement's.
+        assert "OTHER" not in (subject_root / "app_agent_review" / "core.py").read_text()
+    finally:
+        subprocess.run(["git", "replace", "-d", head_sha], cwd=repo, check=True)
+
+
+def test_hostile_git_env_vars_have_no_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+
+    decoy_dir = tmp_path / "decoy_objects"
+    decoy_dir.mkdir()
+    decoy_index = tmp_path / "decoy_index"
+
+    monkeypatch.setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", str(decoy_dir))
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(decoy_dir))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(decoy_index))
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nonexistent.git"))
+    monkeypatch.setenv("GIT_CONFIG_PARAMETERS", "'core.hooksPath=/tmp/hostile-hooks'")
+    monkeypatch.setenv("GIT_EXTERNAL_DIFF", "echo hostile-diff-ran > /tmp/hostile-diff-marker")
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+    )
+    assert identity.commit_sha == head_sha
+
+
+def test_fake_git_earlier_in_path_is_never_executed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+
+    marker = tmp_path / "fake-git-ran"
+    fake_git_dir = tmp_path / "fake-bin"
+    fake_git_dir.mkdir()
+    fake_git = fake_git_dir / "git"
+    fake_git.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
+    fake_git.chmod(0o755)
+
+    monkeypatch.setenv("PATH", f"{fake_git_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+    )
+    assert identity.commit_sha == head_sha
+    assert not marker.exists()
+
+
+def test_module_outside_the_executed_closure_is_refused(tmp_path: Path) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    outside_module = tmp_path / "elsewhere.py"
+    outside_module.write_text("SNEAKY = True\n")
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo,
+            commit_sha=head_sha,
+            subject_root=subject_root,
+            loaded_module_paths=(outside_module,),
+        )
+    assert excinfo.value.reason_code == IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2
+
+
+def test_commit_absent_from_object_store_is_refused(tmp_path: Path) -> None:
+    repo, _head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+
+    plausible_but_absent_sha = "a" * 40
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo,
+            commit_sha=plausible_but_absent_sha,
+            subject_root=subject_root,
+            loaded_module_paths=(),
+        )
+    assert excinfo.value.reason_code == IDENTITY_UNKNOWN_COMMIT_REASON_V2
+
+
+def test_blob_absent_from_object_store_is_refused(tmp_path: Path) -> None:
+    """A tree object honestly references a blob sha the object store does
+    not actually have -- constructed directly with plumbing rather than
+    corrupting a real commit, since that is the only reliable, git-version-
+    independent way to produce this state."""
+    repo, _head_sha = _toolrepo_fixture(tmp_path)
+
+    nonexistent_blob_sha = "b" * 40
+    mktree_input = f"100644 blob {nonexistent_blob_sha}\tmissing.py\n"
+    tree_sha = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=mktree_input,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    commit_sha = subprocess.run(
+        ["git", "commit-tree", tree_sha, "-m", "tree with missing blob"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo,
+            commit_sha=commit_sha,
+            subject_root=subject_root,
+            loaded_module_paths=(),
+        )
+    assert excinfo.value.reason_code == IDENTITY_BLOB_MISSING_REASON_V2
+
+
+def test_gitlink_in_tree_is_refused(tmp_path: Path) -> None:
+    """A gitlink (submodule reference, mode 160000) names a commit in
+    another repository -- there are no bytes here for this primitive to
+    verify, so it must refuse rather than silently skip the entry."""
+    repo, _head_sha = _toolrepo_fixture(tmp_path)
+    fake_submodule_sha = "c" * 40
+    subprocess.run(
+        [
+            "git",
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{fake_submodule_sha},vendored",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    # Deliberately NOT `_commit_all` (which runs `git add -A` first): the
+    # gitlink path has no corresponding working-tree directory, so `-A`
+    # would stage its removal again and cancel the `update-index` above.
+    # Commit exactly what is already staged.
+    subprocess.run(["git", "commit", "--quiet", "-m", "add gitlink"], cwd=repo, check=True)
+    commit_sha = _rev_parse(repo, "HEAD")
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo,
+            commit_sha=commit_sha,
+            subject_root=subject_root,
+            loaded_module_paths=(),
+        )
+    assert excinfo.value.reason_code == IDENTITY_GITLINK_PRESENT_REASON_V2
+
+
+def test_missing_tracked_file_is_refused(tmp_path: Path) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+    (subject_root / "app_agent_review" / "core.py").unlink()
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+    assert excinfo.value.reason_code == IDENTITY_MISSING_TRACKED_FILE_REASON_V2
+
+
+def test_nonexistent_subject_root_is_refused(tmp_path: Path) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    with pytest.raises(ExecutedSourceIdentityError):
+        verify_executed_source_identity_v2(
+            repo_root=repo,
+            commit_sha=head_sha,
+            subject_root=tmp_path / "does-not-exist",
+            loaded_module_paths=(),
+        )
+
+
+# -- loaded_module_files_v2 default introspection -------------------------------
+
+
+def test_loaded_module_files_v2_reads_real_interpreter_state() -> None:
+    import sys as _sys
+    import types
+
+    fake_name = "app.agent_review._g1_test_fixture_module"
+    fake_module = types.ModuleType(fake_name)
+    fake_module.__file__ = "/tmp/fake_module_for_test.py"
+
+    _sys.modules[fake_name] = fake_module
+    try:
+        discovered = loaded_module_files_v2(package_prefix="app.agent_review")
+        assert Path("/tmp/fake_module_for_test.py") in discovered
+    finally:
+        del _sys.modules[fake_name]
+
+
+# -- authorization: distinct from identity ---------------------------------------
+
+
+def test_authorization_true_when_commit_is_ancestor_of_trusted_ref(tmp_path: Path) -> None:
+    repo, first_sha = _toolrepo_fixture(tmp_path)
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nMORE = True\n")
+    second_sha = _commit_all(repo, "second commit")
+
+    result = authorize_commit_for_execution_v2(
+        repo_root=repo, commit_sha=first_sha, trusted_ref=second_sha
+    )
+    assert result.authorized is True
+    assert result.commit_sha == first_sha
+    assert result.trusted_ref_sha == second_sha
+
+
+def test_authorization_false_when_commit_is_not_an_ancestor(tmp_path: Path) -> None:
+    """Identity can be perfectly valid for a commit that is simply not
+    authorized for this invocation -- e.g. an un-merged branch tip. This
+    primitive must not conflate 'this sha is real' with 'this sha is
+    permitted': a diverged branch commit is a real, identity-verifiable
+    commit that is nonetheless unauthorized against a different branch."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+
+    subprocess.run(["git", "checkout", "-b", "feature"], cwd=repo, check=True, capture_output=True)
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nFEATURE = True\n")
+    feature_sha = _commit_all(repo, "feature work")
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
+
+    # Identity verification succeeds for the feature commit -- it is a real,
+    # honestly-materialisable commit.
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=feature_sha, destination=subject_root)
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=feature_sha, subject_root=subject_root, loaded_module_paths=()
+    )
+    assert identity.commit_sha == feature_sha
+
+    # But it is NOT authorized against `main` (base_sha), because it is not
+    # an ancestor of it.
+    result = authorize_commit_for_execution_v2(
+        repo_root=repo, commit_sha=feature_sha, trusted_ref="main"
+    )
+    assert result.authorized is False
+    assert result.commit_sha == feature_sha
+
+
+def test_authorization_rejects_an_unresolvable_commit(tmp_path: Path) -> None:
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(
+            repo_root=repo, commit_sha="d" * 40, trusted_ref=head_sha
+        )
+    assert excinfo.value.reason_code == IDENTITY_UNKNOWN_COMMIT_REASON_V2

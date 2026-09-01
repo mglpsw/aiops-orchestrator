@@ -52,6 +52,7 @@ from pathlib import Path
 from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
 
 __all__ = [
+    "SUBJECT_BLOB_MISSING_REASON_V2",
     "SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2",
     "SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2",
     "SUBJECT_TREE_UNREADABLE_REASON_V2",
@@ -70,6 +71,7 @@ SUBJECT_UNKNOWN_COMMIT_REASON_V2 = "subject_unknown_commit"
 SUBJECT_TREE_UNREADABLE_REASON_V2 = "subject_tree_unreadable"
 SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2 = "subject_destination_not_empty"
 SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2 = "subject_path_escapes_subject"
+SUBJECT_BLOB_MISSING_REASON_V2 = "subject_blob_missing"
 
 GITLINK_MODE_V2 = "160000"
 SYMLINK_MODE_V2 = "120000"
@@ -183,6 +185,11 @@ def read_commit_blobs_v2(
         if header_end == -1:
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
         header = stream[offset:header_end].decode("utf-8", "replace").split(" ")
+        if len(header) == 2 and header[1] == "missing":
+            # `cat-file --batch` reports an object it cannot find as
+            # `<sha> missing` -- the tree named a blob the object store does
+            # not have. Distinct from a malformed/unparseable stream.
+            raise SubjectMaterialisationError(SUBJECT_BLOB_MISSING_REASON_V2)
         if len(header) != 3:
             raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2)
         size = int(header[2])
