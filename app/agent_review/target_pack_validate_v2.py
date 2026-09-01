@@ -198,6 +198,7 @@ from app.agent_review.profile_loader_v2 import (
 from app.agent_review.target_pack_build_v2 import SEED_PROFILE_IDENTITY_PLACEHOLDER_V2
 from app.agent_review.target_pack_plan_v2 import (
     PLAN_PATH_RESOLUTION_FAILED_REASON_V2,
+    PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2,
     PlanError,
     resolve_within_target_root_v2,
 )
@@ -401,10 +402,23 @@ StreamedLedgerEntryV2 = (
 def _path_reason_for_plan_error_v2(exc: PlanError) -> str:
     """Single translation site for every `PlanError` this module
     observes -- a genuine containment escape and an unresolvable symlink
-    loop must not collapse into one reason code."""
+    loop must not collapse into one reason code.
+
+    G4B: `resolve_within_target_root_v2` now also raises a THIRD distinct
+    reason for an `OSError` during resolution (EACCES/EIO/ENAMETOOLONG --
+    no containment or structural verdict ever reached). This module
+    already defined `PATH_RESOLUTION_UNREADABLE_REASON_V2` for exactly
+    this case -- previously reached only through this module's OWN
+    `except OSError` fallback in `_resolve_contained_path_v2`, now
+    reached through `PlanError` instead, since the underlying `OSError`
+    no longer propagates untyped out of the shared containment authority.
+    Falling through to the escape code below for this case would assert a
+    containment verdict this branch never observed."""
 
     if exc.reason_code == PLAN_PATH_RESOLUTION_FAILED_REASON_V2:
         return PATH_RESOLUTION_FAILED_REASON_V2
+    if exc.reason_code == PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2:
+        return PATH_RESOLUTION_UNREADABLE_REASON_V2
     return PATH_ESCAPES_TARGET_ROOT_REASON_V2
 
 
@@ -493,11 +507,19 @@ def _resolve_contained_path_v2(target_root_real: Path, candidate: Path) -> tuple
     shared containment authority rather than calling `Path.resolve`
     directly.
 
-    NOTE, deliberately not silently repaired here: the same `OSError` gap
-    remains open in `resolve_within_target_root_v2` itself, and therefore
-    for `doctor`/`init`/the operation planner, which this PR holds no
-    authority to change. Closing it there is a separate predecessor
-    change against a shared module."""
+    UPDATE (`#200-G4B`): the predecessor change this docstring named --
+    "closing it there is a separate predecessor change against a shared
+    module" -- is done. `resolve_within_target_root_v2` now catches
+    `OSError` around its own `Path.resolve(strict=False)` and raises
+    `PlanError(PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2)` instead of
+    letting it propagate untyped, so the `except OSError` branch below is
+    expected to be UNREACHABLE through the shared authority as of this
+    change -- `_path_reason_for_plan_error_v2` now has a matching third
+    branch for that reason code. The branch is kept here anyway, as
+    defence-in-depth: this function does not own `resolve_within_target_
+    root_v2`'s own guarantee, and a future change there that reopened the
+    gap should still fail closed to a reason-coded report here, not a
+    raw traceback."""
 
     try:
         return resolve_within_target_root_v2(target_root_real, candidate), None

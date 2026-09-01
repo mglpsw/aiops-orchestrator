@@ -49,6 +49,16 @@ PLAN_ROLLOUT_CEILING_EXCEEDED_REASON_V2 = "target_pack_plan_rollout_ceiling_exce
 PLAN_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2 = "target_pack_plan_rollout_exceeds_pack_capability"
 PLAN_PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_plan_path_escapes_target_root"
 PLAN_PATH_RESOLUTION_FAILED_REASON_V2 = "target_pack_plan_path_resolution_failed"
+# G4B: the documented predecessor hole. `resolve_within_target_root_v2`'s own
+# `Path.resolve(strict=False)` call could raise a raw, uncaught `OSError`
+# (EACCES on an ancestor, EIO on a failing mount, ENAMETOOLONG on an
+# overlong candidate) -- distinct from both the symlink-loop `RuntimeError`
+# and the containment-escape `ValueError` this module already typed.
+# `target_pack_validate_v2._resolve_contained_path_v2`'s own docstring named
+# this exact gap and deferred it as "a separate predecessor change against a
+# shared module" -- this is that change.
+PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2 = "target_pack_plan_path_resolution_unreadable"
+PLAN_TARGET_ROOT_UNUSABLE_REASON_V2 = "target_pack_plan_target_root_unusable"
 
 _ROLLOUT_ORDER_V2 = ("off", "shadow_minimal", "shadow_full")
 
@@ -199,6 +209,14 @@ def resolve_within_target_root_v2(target_root_real: Path, path: Path) -> Path:
         resolved = path.resolve(strict=False)
     except RuntimeError as exc:
         raise PlanError(PLAN_PATH_RESOLUTION_FAILED_REASON_V2) from exc
+    except OSError as exc:
+        # G4B: the filesystem refused to perform the resolution at all
+        # (EACCES on an ancestor without search permission, EIO on a
+        # failing/disconnected mount, ENAMETOOLONG on an overlong
+        # candidate) -- no containment or structural verdict was ever
+        # reached, so this must not collapse into the escape/loop codes
+        # above, which both assert something this branch never observed.
+        raise PlanError(PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2) from exc
     try:
         resolved.relative_to(target_root_real)
     except ValueError as exc:
@@ -208,9 +226,21 @@ def resolve_within_target_root_v2(target_root_real: Path, path: Path) -> Path:
 
 def _read_on_disk_sha256_v2(target_root_real: Path, relative_path: str) -> str | None:
     full_path = resolve_within_target_root_v2(target_root_real, target_root_real / relative_path)
-    if not full_path.is_file():
+    # G4B: `full_path` is already contained (proven above), but `is_file()`/
+    # `read_bytes()` are themselves unguarded filesystem operations -- an
+    # overlong `relative_path` component, a permission-denied ancestor, or a
+    # TOCTOU symlink-loop swap between containment and this read can each
+    # raise a raw OSError this function previously let escape uncaught.
+    try:
+        is_file = full_path.is_file()
+    except OSError as exc:
+        raise PlanError(PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2) from exc
+    if not is_file:
         return None
-    return _sha256_hex(full_path.read_bytes())
+    try:
+        return _sha256_hex(full_path.read_bytes())
+    except OSError as exc:
+        raise PlanError(PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2) from exc
 
 
 def _classify_action_v2(
@@ -279,7 +309,29 @@ def compute_install_plan_v2(
     recorded = previous_receipt.generated_file_hashes if previous_receipt is not None else {}
     # Resolved exactly once for the whole call, not once per entry -- see
     # `resolve_within_target_root_v2`'s own docstring, round 2.
-    target_root_real = target_root.resolve(strict=False)
+    #
+    # G4B: `target_root` is the true ingress boundary here -- a caller-
+    # selected root, not an engine-derived path -- and this bare
+    # `Path.resolve(strict=False)` had no guard at all (a symlink loop in
+    # `--target-root` raised a raw `RuntimeError`; an overlong path raised
+    # nothing here but crashed the first `is_file()`/`is_dir()` call
+    # downstream instead). Neither `ExternalInputDirectoryV2` (requires
+    # existence -- wrong: a fresh `init` preview against a target that does
+    # not exist ON DISK AT ALL yet is the ordinary, supported "nothing
+    # installed yet" state, see `_read_on_disk_sha256_v2` below) nor
+    # `ExternalOutputPathV2` (refuses a path that already exists AS A
+    # DIRECTORY -- wrong the other way: `target_root` is normally an
+    # EXISTING directory, the target repo checkout itself, not a file this
+    # module is about to create) fits this shape. This resolves the SAME
+    # way `resolve_within_target_root_v2` above now does, reusing that
+    # exact pattern rather than stretching either capability past what it
+    # actually models.
+    try:
+        target_root_real = target_root.resolve(strict=False)
+    except RuntimeError as exc:
+        raise PlanError(PLAN_TARGET_ROOT_UNUSABLE_REASON_V2) from exc
+    except OSError as exc:
+        raise PlanError(PLAN_TARGET_ROOT_UNUSABLE_REASON_V2) from exc
 
     for entry in manifest.generated_files:
         on_disk = _read_on_disk_sha256_v2(target_root_real, entry.path)

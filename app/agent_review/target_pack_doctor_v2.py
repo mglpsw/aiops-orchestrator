@@ -55,6 +55,12 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.agent_review.external_path_ingress_v2 import (
+    EXTERNAL_PATH_MISSING_REASON_V2,
+    EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
+    ExternalPathIngressError,
+    validate_external_input_directory_v2,
+)
 from app.agent_review.profile_loader_v2 import (
     DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
     TARGET_PROFILE_MISSING_REASON_V2,
@@ -70,6 +76,7 @@ from app.agent_review.target_pack_manifest_v2 import (
 )
 from app.agent_review.target_pack_plan_v2 import (
     PLAN_PATH_RESOLUTION_FAILED_REASON_V2,
+    PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2,
     PlanError,
     resolve_within_target_root_v2,
     rollout_mode_exceeds_pack_capability_v2,
@@ -85,6 +92,10 @@ from pydantic import ValidationError
 DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 = "target_pack_doctor_target_root_not_a_directory"
 DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2 = "target_pack_doctor_path_escapes_target_root"
 DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2 = "target_pack_doctor_path_resolution_failed"
+# G4B: the sibling of `DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2` for the
+# OSError shape (EACCES/EIO/ENAMETOOLONG), not the RuntimeError symlink-loop
+# shape that reason code already names.
+DOCTOR_PATH_RESOLUTION_UNREADABLE_REASON_V2 = "target_pack_doctor_path_resolution_unreadable"
 DOCTOR_RECEIPT_TARGET_REPO_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_target_repo_mismatch"
 DOCTOR_RECEIPT_TARGET_OWNED_SET_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_target_owned_set_mismatch"
 DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2 = "target_pack_doctor_receipt_pack_version_mismatch"
@@ -148,6 +159,14 @@ def _doctor_reason_for_plan_error_v2(exc: PlanError) -> str:
 
     if exc.reason_code == PLAN_PATH_RESOLUTION_FAILED_REASON_V2:
         return DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2
+    # G4B: `resolve_within_target_root_v2` now also raises a THIRD distinct
+    # reason (an OSError during resolution -- EACCES/EIO/ENAMETOOLONG, no
+    # containment or structural verdict ever reached). Falling through to
+    # the escape code below for this case would assert a containment
+    # verdict this branch never observed -- the exact class of collapse
+    # this function's own docstring already names as a defect once fixed.
+    if exc.reason_code == PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2:
+        return DOCTOR_PATH_RESOLUTION_UNREADABLE_REASON_V2
     return DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2
 
 
@@ -376,13 +395,37 @@ def _check_secret_names_v2(names: tuple[str, ...]) -> tuple[SecretNameCheckV2, .
 
 
 def run_doctor_v2(*, target_root: Path, manifest: TargetPackManifestV2, target_repo: str) -> DoctorReportV2:
-    if not target_root.is_dir():
-        raise NotADirectoryError(DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2)
-
-    # Resolved exactly once per invocation and threaded through every
-    # containment check below -- not re-resolved per file (round 2, see
-    # `resolve_within_target_root_v2`'s own docstring).
-    target_root_real = target_root.resolve(strict=False)
+    # G4B: `target_root` is `--target-root`, the primary caller-controlled
+    # ingress point hit on EVERY `doctor` invocation -- exactly the shape
+    # the predecessor design (#283) missed twice (round 2 found this exact
+    # sibling: `validate_existing_directory_v2`'s analogue, unguarded, on
+    # the module's own most heavily used function). Previously this was a
+    # bare `is_dir()` (raises a raw `OSError` for e.g. an overlong path)
+    # followed by a completely unguarded `resolve(strict=False)` (raises a
+    # raw `RuntimeError` for a symlink loop -- no guard at all, not even
+    # the one `resolve_within_target_root_v2` has always had for this
+    # exact exception shape). `validate_external_input_directory_v2` closes
+    # all of it in one call: `doctor` diagnoses an ALREADY-INSTALLED
+    # target, so "must already exist as a directory" is the correct, and
+    # only, TARGET_ROOT semantic here (unlike `init`, which must still
+    # tolerate a target that does not exist on disk yet).
+    try:
+        target_root_real = validate_external_input_directory_v2(target_root).resolved_path
+    except ExternalPathIngressError as exc:
+        # `NotADirectoryError` is this function's established raised TYPE
+        # for every `target_root` disposition -- preserved unchanged so
+        # existing `pytest.raises(NotADirectoryError)` callers are not
+        # broken. Missing/wrong-type keep the EXISTING reason code (the
+        # pre-G4B behaviour already collapsed "does not exist" and "is a
+        # file, not a directory" into this one code); a genuine resolution
+        # failure (symlink loop, or an OSError the filesystem raised
+        # trying to resolve/stat at all) is a DIFFERENT, newly-observable
+        # disposition -- collapsing it into "not a directory" would assert
+        # a structural verdict (there IS something there, and it is the
+        # wrong type) this branch never actually reached.
+        if exc.reason_code in {EXTERNAL_PATH_MISSING_REASON_V2, EXTERNAL_PATH_WRONG_TYPE_REASON_V2}:
+            raise NotADirectoryError(DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2) from exc
+        raise NotADirectoryError(DOCTOR_PATH_RESOLUTION_UNREADABLE_REASON_V2) from exc
     profile_check = _check_profile_v2(target_root_real)
     receipt_check = _check_receipt_v2(
         target_root_real=target_root_real,
