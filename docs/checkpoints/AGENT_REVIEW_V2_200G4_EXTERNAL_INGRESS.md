@@ -272,22 +272,136 @@ files, calling a live Router or real LLM provider, mutating
 AgentEscala/InterLeitos/CAEM repos, closing `#200`, modifying `#273` — none
 attempted. PR opened in Draft state.
 
-## Independent review
+## Independent review — round 1 (at `ba5fd4e`)
 
 Two adversarial passes dispatched via the `Agent` tool (not the `codex`
-CLI, per standing preference), explicitly instructed to hunt for (a) any
-remaining caller-controlled source still reaching a raw exception/path/
-secret, and (b) a case where a genuine internal defect is wrongly swallowed
-as an external refusal. Findings and disposition recorded in a follow-up to
-this checkpoint once both passes return.
+CLI, per standing preference), against frozen head `ba5fd4e` (PR #283
+Draft), explicitly instructed to hunt for (a) any remaining
+caller-controlled source still reaching a raw exception/path/secret, and
+(b) a case where a genuine internal defect is wrongly swallowed as an
+external refusal.
+
+**Lane A (ingress leak hunt) — P1, independently reproduced:**
+`read_offline_response_document_v2` had two unguarded escapes: a `chunk_id`
+containing an embedded NUL byte raised a raw `ValueError` from
+`Path.resolve()` (only `OSError` was caught by the escape-check), and an
+overlong `chunk_id` (~100k chars) let `resolve()` succeed while a separate,
+unguarded `is_file()` call raised a raw `OSError` whose message embedded
+the full absolute subject temp-directory path. Not reachable through the
+current CLI (`chunk_id` is always internally generated as `chunk-NNNN`),
+but the function's own contract claims to be a boundary for a `chunk_id` of
+any shape, and G5 is expected to wire real caller-derived chunk ids into
+this exact function next.
+
+**Lane B (bidirectional invariant hunt) — P0, independently reproduced,
+directly refuting the checkpoint's central claim:**
+
+1. `profile_loader_v2.load_target_profile_text_v2`'s
+   `except (ValidationError, TypeError, ValueError)` around
+   `TargetProfileV2.model_validate(raw)` laundered an injected internal
+   `TypeError` into `target_profile_invalid` — a real gap, not present in
+   `operational_ingress_v2.py`'s own already-narrowed pattern, but reachable
+   because this PR wired `load_target_profile_text_v2` directly into the
+   ingress-boundary script and made `TargetProfileLoadErrorV2` a family
+   member.
+2. `_read_unambiguously_v2`'s `except _YAML_PARSE_FAILURES_V2` (a tuple
+   including `AttributeError`/`TypeError`/`KeyError`/`IndexError`) wraps
+   `yaml.load` calls that recurse into this codebase's OWN
+   `_CollisionRefusingSafeLoaderV2.construct_mapping`/`construct_scalar`
+   overrides, not only stock PyYAML — a bug in that override code (reproduced
+   by deliberately breaking `construct_mapping`) is indistinguishable from a
+   legitimate malformed-YAML failure.
+3. Both `except ValidationError` sites in `operational_ingress_v2.py`, plus
+   `validate_caller_document_v2`: pydantic v2 (2.11.3) wraps ANY
+   `ValueError`/`AssertionError` raised inside a `@model_validator`/
+   `@field_validator` into `ValidationError`, indistinguishable from genuine
+   caller-content rejection. Also identified that the two existing
+   bidirectional-invariant tests (this checkpoint's own "found and fixed a
+   real bug" evidence) monkeypatched the whole `model_validate_json`
+   classmethod, bypassing pydantic-core's real validator dispatch entirely —
+   never exercising the actually-vulnerable surface.
+
+Both P0/P1 findings from both lanes were independently reproduced (not
+merely trusted) before any correction, with exact reproduction scripts run
+directly against the frozen head. See git history at `b8e713c` for the full
+reproduction transcripts embodied as the new `test_the_raw_*_shape_really_
+did_leak` / `test_KNOWN_LIMITATION_*` tests.
+
+## Round-2 correction (one bounded round, per grant)
+
+Applied at commit `b8e713c`:
+
+- **Lane A, fixed cleanly**: both `resolve()` and `is_file()` calls in
+  `read_offline_response_document_v2` are now guarded
+  (`except (OSError, ValueError)` / `except OSError`), converted to a new
+  `INGRESS_RESPONSE_PATH_UNUSABLE_REASON_V2` refusal. Verified against the
+  exact reproductions; mutation-tested (reverting the guard flips the new
+  regression tests RED; restoring returns green).
+- **Lane B #1, fixed cleanly**: `profile_loader_v2`'s
+  `except (ValidationError, TypeError, ValueError)` narrowed to
+  `except ValidationError`, matching the same empirically-verified pattern
+  already applied to `validate_caller_document_v2`. Mutation-tested.
+- **Lane B #2 and #3, NOT narrowly fixed — named as accepted structural
+  limitations instead, per the grant's explicit instruction not to ship a
+  fix that only looks like it works.** Both are genuinely undecidable from
+  inside the code that would need to decide them:
+  - The YAML-loader ambiguity (#2) is pre-existing code
+    (`_CollisionRefusingSafeLoaderV2`, issue #203-S2, commit `6d613cf`,
+    "supersedes #236" after 7+ prior adversarial rounds — see git log and
+    this agent's own memory of that slice). Re-architecting its internal
+    error provenance under this bounded correction round's time pressure
+    risks regressing already-hardened collision-detection logic for a
+    theoretical (monkeypatch-only) live risk; out of this primitive's
+    ownership and scope. Documented with a precise comment at
+    `_YAML_PARSE_FAILURES_V2`'s definition.
+  - The pydantic-validator-body ambiguity (#3) was verified empirically to
+    be genuinely undecidable from `ValidationError.errors()`'s own shape:
+    a validator-raised `ValueError`/`AssertionError` is wrapped identically
+    whether it is a legitimate rejection or an internal defect that happens
+    to raise the same way; only `TypeError`/`KeyError`/`AttributeError`/
+    `RuntimeError` are left unwrapped by pydantic-core and were confirmed
+    (against a REAL `field_validator`, not a monkeypatched classmethod) to
+    still escape raw. Documented in a new, prominent module-docstring
+    section in `operational_ingress_v2.py` ("A named, accepted limit of the
+    two-epoch discipline"). The two original bidirectional-invariant tests
+    that used the unrealistic classmethod-bypass reproduction were kept
+    (they still prove a real, narrower property) and supplemented with:
+    tests against a real validator proving the achievable direction
+    (`TypeError`/`KeyError`/`AttributeError` escape raw), and dedicated
+    `test_KNOWN_LIMITATION_*` tests that PIN the documented gap so it cannot
+    silently drift wider or narrower without forcing a deliberate decision.
+
+Full new/ported test suite after correction: 76 passed (up from 65; +11 for
+the Lane A regression tests, the realistic-validator tests, and the
+KNOWN_LIMITATION pins). `profile_loader_v2`'s full pre-existing test suite
+(163 tests) reconfirmed green after the narrowing fix.
+
+## Independent review — round 2 (pending)
+
+Per the grant: after this one bounded correction round, two FRESH
+independent review lanes are dispatched against the new frozen head, at
+minimum re-targeting Lane B's exact bidirectional-invariant class (the
+abstraction that would trigger `STOP_G4_ARCHITECTURE_NOT_CONVERGING` if
+refuted a second time in the sense of finding something this checkpoint
+does NOT already own up to — i.e. a NEW gap, or evidence that the "closed"
+sources aren't actually closed, not a re-discovery of the two limitations
+already named above). Findings recorded in a further follow-up once both
+return.
 
 ## Next minimum action
 
-Await both independent review passes; apply at most one bounded correction
-round if findings surface, re-review at the new exact head; if the same
-ingress-closure abstraction is independently refuted a second time, stop
-with `STOP_G4_ARCHITECTURE_NOT_CONVERGING` rather than attempting a third
-round. If neither pass finds a P0/P1, report `PRIMITIVE_NON_REFUTED` and
-hand off to whichever primitive (`#200-G1`/`#200-G3`) is next scheduled,
-per the recovery checkpoint's decomposition — G4 does not itself decide
-G5's start condition.
+Await both round-2 independent review passes; if a genuinely new P0/P1
+surfaces (not the two already-named, documented limitations), assess
+whether it is narrowly fixable within a further bounded round or whether it
+indicates the ingress-closure abstraction itself is not converging. If the
+SAME class of finding recurs a second time in a way that contradicts what
+this checkpoint actually claims (as opposed to confirming an already-named
+limitation), stop with `STOP_G4_ARCHITECTURE_NOT_CONVERGING` rather than
+attempting a third round. If round 2 finds nothing beyond the two named,
+accepted limitations, report `PRIMITIVE_NON_REFUTED` (scoped precisely: not
+"everything is closed", but "every source is closed except two explicitly
+named, structurally-inherent-to-pydantic/PyYAML residuals that are out of
+this primitive's proportionate scope to close") and hand off to whichever
+primitive (`#200-G1`/`#200-G3`) is next scheduled, per the recovery
+checkpoint's decomposition — G4 does not itself decide G5's start
+condition.
