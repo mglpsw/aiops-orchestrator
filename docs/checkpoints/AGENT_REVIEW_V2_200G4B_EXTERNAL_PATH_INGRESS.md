@@ -171,9 +171,82 @@ entry in the latter's closed-authority conformance matrix.
   is git-subprocess-based, matching the same shape; not touched, and not
   named in the issue's own enumerated scope.
 
-## 7. Review status
+## 7. Review round 1 (against `c1abc24`)
 
 Two independent adversarial review lanes dispatched via the `Agent` tool
-against the frozen head this checkpoint describes (see PR #294 / commit
-history for the exact SHA and CI status at dispatch time). Findings and
-disposition to be appended here once both lanes report.
+against `c1abc24c89e3f789ed6ef3677d1f9fdb0641c225`. Both found real, distinct
+P0s in the `doctor` subcommand -- the same subcommand, different layers of
+the same call chain, both independently reproduced by the author before
+fixing:
+
+- **Lane B P0**: `target_pack_doctor_v2._check_profile_v2`'s `resolved.
+  is_file()` and `_check_receipt_v2`'s `receipt_path.is_file()` were raw,
+  unguarded filesystem operations on already-contained paths -- every OTHER
+  probe in the same module already wrapped this pair; these two were
+  missed. Not caught by `test_g4b_external_path_provenance_v2.py` because
+  `target_pack_doctor_v2.py` was correctly out of that check's scope (it
+  operates on already-contained, not raw caller, paths -- the gap is a
+  plain missing-`try/except` defect, not a provenance violation).
+  Reproduced via targeted `Path.is_file` monkeypatch at the exact resolved
+  path; fixed by wrapping both in `try/except OSError`, folding into the
+  same reason codes each function's own existing downstream read failure
+  already used.
+- **Lane A P0**: `run_doctor_v2` correctly converts a bad `target_root`
+  into a typed `NotADirectoryError` (an earlier, correct commit in this
+  slice) -- but `_cmd_doctor` and `main()`'s dispatcher in
+  `scripts/agent-review-target-pack-v2.py` never caught that type, so it
+  propagated as a raw traceback through the real CLI subprocess. The
+  existing RED/GREEN test for this exact shape
+  (`test_doctor_refuses_a_target_root_symlink_loop_instead_of_crashing`)
+  only ever called `run_doctor_v2` in-process, so it proved the library fix
+  without ever exercising the CLI dispatch boundary built on top of it --
+  reproduced with a plain nonexistent `--target-root` (no symlink
+  required) via the real CLI subprocess; fixed by wrapping `_cmd_doctor`'s
+  call to `run_doctor_v2` locally and catching `NotADirectoryError`,
+  matching `_cmd_init`'s established local-catch pattern (`validate` needs
+  no equivalent catch -- `run_validate_v2` is documented as total over its
+  own failure domain).
+
+Both findings independently reproduced by the author (monkeypatch for
+Lane B; direct CLI subprocess invocation for Lane A) before any fix was
+written. Fixed in commit `50dce03`, with regression coverage added at BOTH
+layers: unit-level monkeypatch tests in `test_target_pack_doctor_v2.py`
+(matching that file's own established pattern) for the `is_file()` gap, and
+NEW subprocess-level tests in `test_agent_review_target_pack_v2_cli.py` for
+the dispatch-layer gap -- the exact blind spot that let the second P0
+through undetected the first time. All three fixes mutation-tested
+(mutate -> confirm RED -> `git checkout --` restore -> confirm GREEN)
+before commit.
+
+Two P2s also reported (Lane A), deliberately deferred rather than fixed in
+this bounded correction round:
+
+- `target_pack_apply_v2._load_previous_receipt_under_epoch_v2` (the real
+  `--apply` receipt read) still uses raw pathlib via the older
+  `resolve_within_target_root_v2` rather than the new `external_path_
+  ingress_v2` authority. Confirmed functionally safe today -- its own local
+  `except (OSError, RuntimeError, ValueError, ValidationError, PlanError)`
+  is already complete -- but it is a second, undeclared "collection of
+  try/except" on a real write-time path, with a reason code
+  (`TARGET_PACK_PREVIOUS_RECEIPT_INVALID_REASON_V2`) that does not match
+  the preview path's for the identical escape case. Not touched this round:
+  it sits on the `--apply` epoch-locked mutation path, where the risk of an
+  unforced architectural-consistency change outweighs the benefit inside a
+  bounded correction round whose job is closing the two reported P0s.
+  Left as an explicit follow-up, not silently dropped.
+- The provenance AST guard (`test_g4b_external_path_provenance_v2.py`) is
+  defeated by a trivial `p = Path(raw); p.read_text()` assign-then-read
+  split (the receiver becomes an `ast.Name`, not an `ast.Call`). Confirmed
+  not currently exploited anywhere in the eight migrated files. The test
+  file's own module docstring already discloses this as the accepted
+  narrowness of the decidable-approximation choice; no action taken, per
+  Lane A's own assessment that none is required.
+
+## 8. Review round 2
+
+Two FRESH independent adversarial review lanes dispatched against the
+corrected head (see PR #294 / commit history for the exact SHA), per the
+"same abstraction refuted twice -> STOP" rule: this round specifically
+targets whether the SAME class of defect (a fix verified at one layer but
+not the adjacent one) recurs. Findings and terminal disposition to be
+appended here once both lanes report.
