@@ -121,4 +121,18 @@ CAEM_LESSONS_PENDING:
       Repeated independent refutation by distinct mechanisms is stronger
       evidence of an incorrect abstraction than simple recurrence of one
       known witness.
+  oracle_independence_is_not_completeness:
+    proposition: >
+      Oracle independence (a second detector not sharing the first
+      detector's blind spots or witness bookkeeping) and oracle completeness
+      (the detector enumerates its whole domain) are separate properties.
+      SAFE must come from positive proof within a bounded, provable domain,
+      never from mere absence of a match over an open/unenumerable grammar
+      such as arbitrary source code -- "no finding" is not "proven safe."
+      Surfaced by #200-G2B round-1 review against PR #293: an independent,
+      correctly-seated (real pre-HTTP body, structurally unrelated to the
+      forward redactor) oracle still returned false OUTBOUND_SAFE on
+      `password={"..."}`, kwarg-shaped assignments, and hex-token values
+      exempted as SHA-like -- independence alone did not close the gap that
+      sank the original #277/#286 witness-scoped design.
 ```
