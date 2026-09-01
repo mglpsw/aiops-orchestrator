@@ -23,7 +23,6 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 EXTERNAL_PATH_INVALID_REASON_V2 = "external_path_invalid"
 EXTERNAL_PATH_RESOLUTION_FAILED_REASON_V2 = "external_path_resolution_failed"
@@ -87,29 +86,24 @@ def _stat_v2(path: Path):
 
 @dataclass(frozen=True)
 class ExternalInputFileV2:
-    """Validated caller-selected input file.
-
-    Consumers should use these methods rather than reconstructing a raw path and
-    performing a second unowned read. Errors remain content/path-free.
-    """
+    """Validated caller-selected input file with ingress-owned reads."""
 
     _resolved_path: Path
     _root: Path | None
 
     @property
     def resolved_path(self) -> Path:
-        """Resolved path for APIs that require a Path after ingress validation."""
         return self._resolved_path
 
     def read_bytes(self) -> bytes:
-        # Re-resolve and re-check containment immediately before the read. This
-        # does not eliminate host-level TOCTOU, but prevents a stale one-time
-        # validation from being treated as permanent authority.
+        # Re-resolve and re-check containment immediately before the read. Use
+        # Path.read_bytes() inside THIS authority so existing independent tests
+        # that inject a real read failure still exercise the exact operation;
+        # the method choice changes, ownership does not.
         resolved = _resolve_v2(self._resolved_path)
         _enforce_containment_v2(resolved, root=self._root)
         try:
-            with resolved.open("rb") as handle:
-                return handle.read()
+            return resolved.read_bytes()
         except FileNotFoundError as exc:
             raise ExternalPathIngressError(EXTERNAL_PATH_MISSING_REASON_V2) from exc
         except (OSError, RuntimeError, ValueError) as exc:
@@ -145,12 +139,9 @@ class ExternalInputDirectoryV2:
 
         files: list[ExternalInputFileV2] = []
         for entry in entries:
-            try:
-                entry_resolved = _resolve_v2(entry)
-                _enforce_containment_v2(entry_resolved, root=self._root)
-                mode = _stat_v2(entry_resolved).st_mode
-            except ExternalPathIngressError:
-                raise
+            entry_resolved = _resolve_v2(entry)
+            _enforce_containment_v2(entry_resolved, root=self._root)
+            mode = _stat_v2(entry_resolved).st_mode
             if stat.S_ISREG(mode):
                 files.append(ExternalInputFileV2(entry_resolved, self._root))
         return tuple(sorted(files, key=lambda item: item.resolved_path.name))
@@ -168,7 +159,6 @@ class ExternalOutputPathV2:
         return self._resolved_path
 
     def open_binary_exclusive(self):
-        """Open for exclusive creation under the same containment authority."""
         resolved = _resolve_v2(self._resolved_path)
         _enforce_containment_v2(resolved, root=self._root)
         parent = _resolve_v2(resolved.parent)
@@ -194,8 +184,6 @@ def validate_external_input_file_v2(
     mode = _stat_v2(resolved).st_mode
     if not stat.S_ISREG(mode):
         raise ExternalPathIngressError(EXTERNAL_PATH_WRONG_TYPE_REASON_V2)
-    # Opening, rather than os.access(), is the meaningful readability probe;
-    # os.access() is especially misleading under privileged test runners.
     try:
         with resolved.open("rb"):
             pass
@@ -218,7 +206,6 @@ def validate_external_input_directory_v2(
     if not stat.S_ISDIR(mode):
         raise ExternalPathIngressError(EXTERNAL_PATH_WRONG_TYPE_REASON_V2)
     try:
-        # Force enumeration now; constructing iterdir() alone performs no IO.
         tuple(resolved.iterdir())
     except FileNotFoundError as exc:
         raise ExternalPathIngressError(EXTERNAL_PATH_MISSING_REASON_V2) from exc
@@ -233,8 +220,7 @@ def validate_external_output_path_v2(
     root: str | os.PathLike[str] | Path | None = None,
 ) -> ExternalOutputPathV2:
     resolved_root = _resolve_root_v2(root)
-    unresolved = _as_path_v2(raw_path)
-    resolved = _resolve_v2(unresolved)
+    resolved = _resolve_v2(_as_path_v2(raw_path))
     _enforce_containment_v2(resolved, root=resolved_root)
     parent = _resolve_v2(resolved.parent)
     _enforce_containment_v2(parent, root=resolved_root)
