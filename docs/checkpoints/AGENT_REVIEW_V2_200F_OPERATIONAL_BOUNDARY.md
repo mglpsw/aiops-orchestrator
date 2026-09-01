@@ -173,7 +173,7 @@ being blind — the exact `#276` failure mode.
 | drop subject digest check | TOCTOU | RED |
 | accept smuggled extra keys | document shape | RED |
 | add environment fallback | exclusivity | RED |
-| remove line-range validation | `#276` P0 | RED (6) |
+| remove line-range validation | `#276` P0 | RED (8) |
 | skip ranges on Router path only | both-paths rule | **survived**, then RED after the gap was closed |
 | restore quote-excluding value class | E witness | RED (16) |
 | drop the colon rule | YAML/JSON leak | RED (4) |
@@ -218,3 +218,87 @@ target_repo_mutation: false
 close_200: false
 change_273: false
 ```
+
+---
+
+# Round 1 — three-lane adversarial review
+
+Subject `0bc8a5c2` / tree `59223d66`. Exact-head CI was green on both jobs.
+**All three lanes returned `BLOCK`.** Every P0 and P1 was independently
+reproduced by the coordinator before any code changed.
+
+## The finding that mattered most
+
+```yaml
+severity: P0
+lane: B
+claim: a changed path git allows but RelativePath rejects reaches `ready`
+```
+
+`src/pages/[id].tsx` — an everyday Next.js/SvelteKit route — was classified
+`reviewable`, silently excluded from `expected_files` by the assembly, never
+reviewed, did not make scope incomplete, and the composer emitted **`ready`**.
+
+This is **strictly worse than the predecessor**. `#276` over-refused, which is
+the safe direction, and its one preserved property was that no false-`ready`
+path existed. This slice produced one.
+
+Root cause: `diff_acquisition_v2` decides representability with four
+conditions; `operational_scope_v2` reimplemented three. The omitted condition
+was a nested closure invisible outside its own function.
+
+## Findings and disposition
+
+| Lane | Sev | Finding | Disposition |
+|---|---|---|---|
+| B | P0 | false `ready` via unrepresentable path | shared predicate + disagreement detector |
+| A | P0 | inner authority forgeable by **narrowing** `subject_root` | every loaded semantic module must be inside the digested root |
+| A | P0 | `--profile`/`--grouping-policy` parsed post-seal; secret echoed | documents routed through the ingress authority |
+| C | P1 | authority E leaked 6 shapes; 3 claimed `redacted` while leaking | keys matched by pattern; value suspect unless benign |
+| B | P1 | git type change denied the whole review | delete+add pair dispositioned as one type change |
+| A | P1 | product-path closure blind to 6/8 `operational_*` | closure derived from the CLI entry point |
+| A | P1 | A3 exemption proved too little | narrowed to underscore-named; the public one joined the family |
+| A | P1 | bare `int()` on control-fd env var | parsed defensively |
+| B/C | P2 | five false or overstated written claims | corrected in place |
+| C | P2 | mutation matrix cell said RED(6), is RED(8) | corrected above |
+| C | P2 | manifest not cross-checked at the choke point | two identity assertions added |
+| A | P2 | usage errors collided with the refusal exit code | usage now exits 64 |
+
+## The meta-pattern, which matters more than any single finding
+
+Every one of these shipped with a **green** control:
+
+- `test_no_changed_path_is_ever_dropped` compared `accounted_paths` with
+  `changed_paths` — both computed by the same loop over the same input — so it
+  could not see a path the *assembly* drops;
+- the spike's key assertion was `not in {}`, an empty dict literal, true for
+  every input, inside a test written to catch empty claims;
+- the duplicate-path test justified its branch with a diff shape git never
+  emits;
+- the channel test tried `subject_root=/tmp/attacker`, an unrelated directory,
+  and never a *narrowing* one;
+- the redaction corpus tested sixteen spellings of one shape and none of the
+  adjacent shapes;
+- the closure list carried a comment claiming it "cannot silently drift
+  narrower than the code" while being narrower than the code.
+
+The tests were written from the same mental model as the code, so they could
+only confirm it. Widening a corpus fixes instances; the structural answers
+adopted here are different in kind — sharing a predicate instead of
+reimplementing it, deriving a closure from the entry point instead of listing
+it, detecting *disagreement* between two authorities instead of predicting the
+next divergence, and matching secret keys by pattern instead of by list.
+
+## An analysis abandoned, and why
+
+A3's exemption originally proved only "raised somewhere, caught somewhere".
+The obvious repair — prove statically that every raise is guarded — was
+attempted twice and abandoned: a lexical rule rejects the real pattern (a
+nested closure raises, the enclosing function catches), and a call-graph rule
+must attribute raises to the *innermost* function and then decide external
+reachability. The attempts produced false negatives on the clean tree, then
+false positives on the mutant.
+
+A control that cannot be got right is worse than a narrower one that can,
+because its greenness would mean nothing. The exemption is now decidable by
+inspection, and the class that no longer qualifies joined the family instead.
