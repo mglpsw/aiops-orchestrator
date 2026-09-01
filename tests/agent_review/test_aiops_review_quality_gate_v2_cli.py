@@ -1228,4 +1228,90 @@ def test_cli_refuses_cleanly_instead_of_crashing_on_an_unrepresentable_decision_
     assert result.returncode != 0
     assert not output_path.exists()
     assert "readiness_decision_unrepresentable_with_required_check_assessment" in result.stderr, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# G4B (#200-G4B): every JSON-bearing CLI input now reads through the
+# centralized external-path ingress authority instead of a bare
+# `Path(path).read_text()` -- these are the RED/GREEN witnesses that a
+# symlink loop at one of those inputs is a typed refusal, not a raw
+# traceback, and that the output write itself is guarded too.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_output_collision_check_refuses_a_symlink_loop_input_instead_of_crashing(
+    tmp_path: Path,
+) -> None:
+    """RED against the unfixed shape: `_check_no_output_input_collision`
+    resolves every file input BEFORE any of them is read -- a symlink loop
+    at one of them used to crash `main()` with a raw `RuntimeError`, since
+    this collision check is the FIRST thing `main()` calls, ahead of every
+    per-input read guard."""
+
+    paths = _write_fixtures(tmp_path)
+    output_path = tmp_path / "readiness.json"
+
+    a = tmp_path / "loop_a2"
+    b = tmp_path / "loop_b2"
+    a.symlink_to("loop_b2")
+    b.symlink_to("loop_a2")
+    paths["identity"] = a
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "gate_input_path_unusable" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_refuses_a_wrong_type_input_instead_of_crashing(tmp_path: Path) -> None:
+    """RED against the unfixed shape: `_read_json`'s own
+    `Path(path).read_text()` raised a raw `IsADirectoryError` (an `OSError`
+    the pre-G4B `except (OSError, json.JSONDecodeError)` DID technically
+    cover -- but only by accident, since nothing distinguished it from a
+    genuine read failure). A directory passes `_check_no_output_input_
+    collision`'s resolve-only check (a directory resolves fine), so this
+    reaches `_read_json`'s own guard, not the collision check's -- proving
+    the two guards are layered, not redundant."""
+
+    paths = _write_fixtures(tmp_path)
+    output_path = tmp_path / "readiness.json"
+
+    directory_instead_of_file = tmp_path / "decision_is_a_directory"
+    directory_instead_of_file.mkdir()
+    paths["decision"] = directory_instead_of_file
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "gate_input_invalid" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_refuses_a_write_failure_at_output_instead_of_crashing(tmp_path: Path) -> None:
+    """RED against the unfixed shape: the final `--output` write sat outside
+    every try/except in `main()` -- pointing `--output` at a path whose
+    parent is an existing FILE (so `mkdir(parents=True)` cannot create it)
+    used to crash with a raw traceback after readiness was already
+    successfully computed. Uses the same vacuous-submission recipe as
+    `test_cli_emits_manual_required_when_a_required_check_has_no_submission`
+    to actually reach the write (a `ready`/promoted state is not reachable
+    through this gate at all in this environment -- see this file's own
+    "Round-7 architectural correction" note -- but `manual_required` still
+    writes a real artifact, which is the case this write-guard must cover)."""
+
+    paths = _write_fixtures(tmp_path)
+    paths["checks"].write_text(json.dumps([]), encoding="utf-8")
+    paths["checks_provenance"].write_text(json.dumps([]), encoding="utf-8")
+    blocking_file = tmp_path / "blocking"
+    blocking_file.write_text("not a directory", encoding="utf-8")
+    output_path = blocking_file / "readiness.json"
+
+    result = _run(_base_args(paths, output_path))
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "gate_output_write_failed" in result.stderr
     assert "Traceback" not in result.stderr

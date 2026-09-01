@@ -27,6 +27,11 @@ if str(REPO_ROOT) not in sys.path:
 from pydantic import ValidationError  # noqa: E402
 
 from app.agent_review.contracts_v2 import ChunkPayloadV2  # noqa: E402
+from app.agent_review.external_path_ingress_v2 import (  # noqa: E402
+    ExternalPathIngressError,
+    validate_external_input_directory_v2,
+    validate_external_input_file_v2,
+)
 from app.agent_review.manifest_v2 import ManifestV2  # noqa: E402
 from app.agent_review.payload_set_emission_v2 import emit_payload_set_v2  # noqa: E402
 from app.agent_review.payload_set_v2 import PayloadSetBindingError  # noqa: E402
@@ -35,6 +40,13 @@ CONTRACT_VERSION_MISSING_REASON_V2 = "contract_version_required"
 MANIFEST_INVALID_REASON_V2 = "manifest_invalid"
 PAYLOAD_INVALID_REASON_V2 = "payload_invalid"
 NO_PAYLOADS_FOUND_REASON_V2 = "no_payloads_found"
+# G4B (#200-G4B): `--payloads-dir` -- the "responses directory" ingress
+# shape for this CLI -- was enumerated with a completely unguarded
+# `payloads_dir.glob("*.json")`: a symlink loop, an overlong path, or
+# `--payloads-dir` pointed at a file rather than a directory each raised raw
+# here, before a single payload was ever read.
+PAYLOADS_DIR_UNUSABLE_REASON_V2 = "payloads_dir_unusable"
+OUTPUT_WRITE_FAILED_REASON_V2 = "output_write_failed"
 
 
 class PayloadSetCliError(ValueError):
@@ -55,9 +67,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def _load_manifest(path: Path) -> ManifestV2:
+    # G4B: `--manifest` is a raw caller-controlled path, read through the
+    # central external-path ingress authority rather than a bare
+    # `Path.read_text()` -- missing/wrong-type/unreadable/symlink-loop/
+    # overlong-path all collapse to the SAME pre-existing
+    # `MANIFEST_INVALID_REASON_V2` this CLI already used, since this CLI
+    # never distinguished those cases before either.
     try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        raw = validate_external_input_file_v2(path).read_text(encoding="utf-8")
+    except ExternalPathIngressError as exc:
         raise PayloadSetCliError(MANIFEST_INVALID_REASON_V2) from exc
     try:
         return ManifestV2.model_validate_json(raw, strict=True)
@@ -66,15 +84,31 @@ def _load_manifest(path: Path) -> ManifestV2:
 
 
 def _load_payloads(payloads_dir: Path) -> list[ChunkPayloadV2]:
-    payload_paths = sorted(payloads_dir.glob("*.json"))
-    if not payload_paths:
+    # G4B: the "responses directory" ingress shape. Enumeration AND every
+    # discovered file's read now go through the authority's directory
+    # capability rather than a raw `.glob()` + `.read_text()` pair -- a
+    # directory-level failure (missing/wrong-type/unreadable/symlink-loop)
+    # gets its own distinct reason code; a per-file failure at read time
+    # (TOCTOU deletion, permission change) still lands on the existing
+    # `PAYLOAD_INVALID_REASON_V2`.
+    try:
+        capability = validate_external_input_directory_v2(payloads_dir)
+        entries = tuple(
+            entry for entry in capability.iter_input_files() if entry.resolved_path.name.endswith(".json")
+        )
+    except ExternalPathIngressError as exc:
+        raise PayloadSetCliError(PAYLOADS_DIR_UNUSABLE_REASON_V2) from exc
+    if not entries:
         raise PayloadSetCliError(NO_PAYLOADS_FOUND_REASON_V2)
     payloads: list[ChunkPayloadV2] = []
-    for payload_path in payload_paths:
+    for entry in entries:
         try:
-            raw = payload_path.read_text(encoding="utf-8")
+            raw = entry.read_text(encoding="utf-8")
+        except ExternalPathIngressError as exc:
+            raise PayloadSetCliError(PAYLOAD_INVALID_REASON_V2) from exc
+        try:
             payloads.append(ChunkPayloadV2.model_validate_json(raw, strict=True))
-        except (OSError, ValidationError) as exc:
+        except ValidationError as exc:
             raise PayloadSetCliError(PAYLOAD_INVALID_REASON_V2) from exc
     return payloads
 
@@ -94,12 +128,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
 
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(payload_set.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    # G4B: this write sat outside every try/except in `main()` -- a
+    # permission-denied parent, a full disk, an overlong `--output` path, or
+    # a symlink loop while creating `parents=True` intermediate directories
+    # each crashed raw, uncaught.
+    try:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(payload_set.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, RuntimeError, ValueError):
+        print(f"error: {OUTPUT_WRITE_FAILED_REASON_V2}", file=sys.stderr)
+        return 1
     return 0
 
 

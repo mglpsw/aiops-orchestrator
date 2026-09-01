@@ -13,6 +13,7 @@ from app.agent_review.diff_acquisition_v2 import (
     RAW_DIFF_PATH_MISMATCH_REASON_V2,
     RAW_DIFF_STATUS_MISMATCH_REASON_V2,
     RAW_DIFF_TYPE_CHANGE_UNSUPPORTED_REASON_V2,
+    REPO_ROOT_UNUSABLE_REASON_V2,
     DiffAcquisitionError,
     RawDiffRecordV2,
     acquire_authoritative_diff_v2,
@@ -1785,3 +1786,23 @@ def test_acquire_raw_diff_fails_closed_on_non_utf8_path_bytes(tmp_path: Path) ->
     with pytest.raises(DiffAcquisitionError) as excinfo:
         acquire_raw_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
     assert excinfo.value.reason_code == DIFF_UNREADABLE_REASON_V2
+
+
+def test_repo_root_symlink_loop_is_typed_not_a_raw_runtimeerror(tmp_path: Path) -> None:
+    """G4B (#200-G4B): `_run_git_v2`'s `repo_root` now routes through the
+    centralized external-path ingress authority before ever invoking git.
+    A symlink loop AT `repo_root` itself used to be entirely unguarded
+    (the predecessor `is_dir()` check only ever raised a plain `OSError`
+    shape, never handled the `RuntimeError` a symlink loop actually
+    produces) -- it must be the SAME typed `REPO_ROOT_UNUSABLE_REASON_V2`
+    every other unusable-repo-root shape produces, never a bare
+    traceback."""
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.symlink_to("b")
+    b.symlink_to("a")
+
+    with pytest.raises(DiffAcquisitionError) as excinfo:
+        acquire_authoritative_diff_v2(a, base_sha="a" * 40, head_sha="b" * 40)
+    assert excinfo.value.reason_code == REPO_ROOT_UNUSABLE_REASON_V2

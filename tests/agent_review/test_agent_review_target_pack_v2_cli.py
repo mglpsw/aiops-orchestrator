@@ -806,3 +806,40 @@ def test_validate_is_write_zero(tmp_path: Path) -> None:
     missing = tmp_path / "definitely-not-here"
     _run_raw(["validate", "--target-root", str(missing)])
     assert not missing.exists()
+
+
+# ---------------------------------------------------------------------------
+# G4B (#200-G4B): `init` preview's `receipt_path` now reads through the
+# centralized external-path ingress authority instead of a raw `is_file()`
+# sitting outside the read's own try/except. RED/GREEN witness that a
+# symlink loop AT the receipt path is a typed refusal, never a raw
+# traceback.
+# ---------------------------------------------------------------------------
+
+
+def test_init_preview_refuses_a_receipt_symlink_loop_instead_of_crashing(tmp_path: Path) -> None:
+    """RED against the unfixed shape: `receipt_path.is_file()` sat outside
+    every try/except in `_cmd_init` -- a symlink loop AT the receipt path
+    itself (not `.aiops`, not `target_root`) crashed this CLI with a raw
+    traceback."""
+
+    aiops_dir = tmp_path / ".aiops"
+    aiops_dir.mkdir()
+    a = aiops_dir / "a"
+    b = aiops_dir / "install-receipt.v2.json"
+    a.symlink_to("install-receipt.v2.json")
+    b.symlink_to("a")
+
+    result = _run_raw(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "target_pack_cli_previous_receipt_invalid" in result.stderr

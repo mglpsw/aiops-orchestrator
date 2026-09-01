@@ -175,3 +175,115 @@ def test_cli_fails_closed_on_an_empty_payloads_directory(tmp_path: Path) -> None
 
     assert result.returncode != 0
     assert not output_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# G4B (#200-G4B): `--manifest` and `--payloads-dir` (the "responses
+# directory" ingress shape for this CLI) now read through the centralized
+# external-path ingress authority instead of a bare `Path.read_text()`/
+# `.glob()`. RED/GREEN witnesses that a symlink loop is a typed refusal,
+# never a raw traceback.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_refuses_a_manifest_symlink_loop_instead_of_crashing(tmp_path: Path) -> None:
+    """RED against the unfixed shape: `_load_manifest`'s own
+    `path.read_text()` had no guard at all for a symlink loop (pathlib's own
+    `RuntimeError`)."""
+
+    _, payloads_dir = _write_fixtures(tmp_path)
+    a = tmp_path / "loop_a"
+    b = tmp_path / "loop_b"
+    a.symlink_to("loop_b")
+    b.symlink_to("loop_a")
+    output_path = tmp_path / "out" / "payload-set.json"
+
+    result = _run(
+        [
+            "--contract-version", "v2",
+            "--manifest", str(a),
+            "--payloads-dir", str(payloads_dir),
+            "--output", str(output_path),
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "manifest_invalid" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_refuses_a_payloads_dir_symlink_loop_instead_of_crashing(tmp_path: Path) -> None:
+    """RED against the unfixed shape: `_load_payloads`'s own
+    `payloads_dir.glob("*.json")` was completely unguarded -- a symlink
+    loop AT `--payloads-dir` itself raised a raw `RuntimeError` before a
+    single payload was ever read."""
+
+    manifest_path, _ = _write_fixtures(tmp_path)
+    a = tmp_path / "loop_dir_a"
+    b = tmp_path / "loop_dir_b"
+    a.symlink_to("loop_dir_b")
+    b.symlink_to("loop_dir_a")
+    output_path = tmp_path / "out" / "payload-set.json"
+
+    result = _run(
+        [
+            "--contract-version", "v2",
+            "--manifest", str(manifest_path),
+            "--payloads-dir", str(a),
+            "--output", str(output_path),
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "payloads_dir_unusable" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_refuses_a_payloads_dir_pointed_at_a_file_instead_of_crashing(tmp_path: Path) -> None:
+    """RED against the unfixed shape: `payloads_dir.glob("*.json")` on a
+    FILE (not a directory) raised a raw `NotADirectoryError` (an `OSError`
+    subclass the old code never caught at all)."""
+
+    manifest_path, _ = _write_fixtures(tmp_path)
+    not_a_dir = tmp_path / "payloads_is_a_file"
+    not_a_dir.write_text("not a directory", encoding="utf-8")
+    output_path = tmp_path / "out" / "payload-set.json"
+
+    result = _run(
+        [
+            "--contract-version", "v2",
+            "--manifest", str(manifest_path),
+            "--payloads-dir", str(not_a_dir),
+            "--output", str(output_path),
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "payloads_dir_unusable" in result.stderr
+    assert not output_path.exists()
+
+
+def test_cli_refuses_a_write_failure_at_output_instead_of_crashing(tmp_path: Path) -> None:
+    """RED against the unfixed shape: the final `--output` write sat
+    outside every try/except in `main()`."""
+
+    manifest_path, payloads_dir = _write_fixtures(tmp_path)
+    blocking_file = tmp_path / "blocking"
+    blocking_file.write_text("not a directory", encoding="utf-8")
+    output_path = blocking_file / "payload-set.json"
+
+    result = _run(
+        [
+            "--contract-version", "v2",
+            "--manifest", str(manifest_path),
+            "--payloads-dir", str(payloads_dir),
+            "--output", str(output_path),
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "output_write_failed" in result.stderr

@@ -119,6 +119,10 @@ if str(REPO_ROOT) not in sys.path:
 from app.agent_review.authoritative_ci_snapshot_v2 import (  # noqa: E402
     parse_authoritative_ci_snapshot_v2,
 )
+from app.agent_review.external_path_ingress_v2 import (  # noqa: E402
+    ExternalPathIngressError,
+    validate_external_input_file_v2,
+)
 from app.agent_review.required_check_provenance_v2 import (  # noqa: E402
     RequiredCheckProvenanceErrorV2,
 )
@@ -211,7 +215,14 @@ def _observe_parents(git_dir: str, commit: str) -> list[str]:
 
 def _fetch_payload(args: argparse.Namespace) -> tuple[dict, bytes]:
     if args.observations is not None:
-        raw = Path(args.observations).read_bytes()
+        # G4B: `--observations` is a raw caller-controlled path (a
+        # pre-fetched GitHub payload, offered as an alternative to a live
+        # network call), read through the central external-path ingress
+        # authority rather than a bare `Path.read_bytes()`.
+        try:
+            raw = validate_external_input_file_v2(args.observations).read_bytes()
+        except ExternalPathIngressError as exc:
+            raise AcquisitionError(ACQUISITION_FAILED_REASON) from exc
         try:
             document = strict_json_loads(raw)
         except ValueError as exc:
@@ -742,13 +753,29 @@ def main(argv: list[str] | None = None) -> int:
         # "GitHub was unreachable" need different responses.
         print(f"error: {exc.reason_code}", file=sys.stderr)
         return 1
-    except (OSError, ValueError) as exc:
+    # G4B: `RuntimeError` -- pathlib's own symlink-loop signal from
+    # `Path.resolve()`, raised inside `_check_no_output_input_collision`/
+    # `_resolve_git_metadata_dir` -- was not in this tuple. Every other
+    # caller-controlled path failure shape (`OSError`, `ValueError`) this
+    # function's own paths can raise was already covered; this closes the
+    # one shape that was not. `AcquisitionError` is itself a `RuntimeError`
+    # but is already caught by the more specific branch above, so this does
+    # not widen what that branch catches.
+    except (OSError, RuntimeError, ValueError) as exc:
         print(f"error: {ACQUISITION_FAILED_REASON} ({type(exc).__name__})", file=sys.stderr)
         return 1
 
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(canonical_json_text(document) + "\n", encoding="utf-8")
+    # G4B: this write sat outside every try/except in `main()` -- a
+    # permission-denied parent, a full disk, or an overlong `--output` path
+    # each crashed raw, uncaught, after every OTHER caller-controlled path
+    # failure in this CLI already converted to a typed refusal.
+    try:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(canonical_json_text(document) + "\n", encoding="utf-8")
+    except (OSError, RuntimeError, ValueError):
+        print(f"error: {ACQUISITION_FAILED_REASON} (write)", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -56,6 +56,13 @@ from app.agent_review.target_pack_apply_v2 import (  # noqa: E402
     apply_authorized_target_pack_init_v2,
 )
 from app.agent_review.target_pack_doctor_v2 import run_doctor_v2  # noqa: E402
+from app.agent_review.external_path_ingress_v2 import (  # noqa: E402
+    EXTERNAL_PATH_ESCAPES_ROOT_REASON_V2,
+    EXTERNAL_PATH_MISSING_REASON_V2,
+    EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
+    ExternalPathIngressError,
+    validate_external_input_file_v2,
+)
 from app.agent_review.target_pack_install_v2 import (  # noqa: E402
     RECEIPT_RELATIVE_PATH_V2,
     TargetPackInstallError,
@@ -166,12 +173,40 @@ def _cmd_init(args: argparse.Namespace) -> int:
     if not args.apply:
         receipt_path = target_root / RECEIPT_RELATIVE_PATH_V2
         previous_receipt = None
-        if receipt_path.is_file():
+        # G4B: `receipt_path` is caller-controlled (`--target-root` joined
+        # with a fixed relative path), and a fresh `init` preview against a
+        # target with no receipt yet -- or against a `.aiops` a caller has
+        # symlinked outside `target_root` (Round 5's own adversarial finding,
+        # `test_init_refuses_when_the_receipt_write_would_escape_target_
+        # root_via_a_symlink`) -- is the ordinary, supported case: there is
+        # no CONTAINED receipt to load, so this stays a silent `previous_
+        # receipt = None` (matching the old `is_file()` behaviour for
+        # missing/wrong-type, and now also for an escape, since `is_file()`
+        # never checked containment at all -- the escape was always meant to
+        # be caught by `compute_target_pack_operation_plan_v2` below, the
+        # ONE authority for target-owned/containment decisions, not
+        # pre-empted here with a less specific reason code). Every OTHER
+        # failure shape (symlink loop AT the receipt path itself, overlong
+        # path, permission denied) still converts to the SAME typed refusal
+        # this block already had, instead of the raw `is_file()` that used
+        # to sit outside the read's own try/except entirely.
+        try:
+            receipt_capability = validate_external_input_file_v2(receipt_path, root=target_root)
+        except ExternalPathIngressError as exc:
+            if exc.reason_code not in {
+                EXTERNAL_PATH_MISSING_REASON_V2,
+                EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
+                EXTERNAL_PATH_ESCAPES_ROOT_REASON_V2,
+            }:
+                print(f"error: {CLI_PREVIOUS_RECEIPT_INVALID_REASON_V2}", file=sys.stderr)
+                return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
+            receipt_capability = None
+        if receipt_capability is not None:
             try:
                 # Preview is write-zero and has no K claim; apply reloads this
                 # declaration under its exclusive epoch instead.
-                previous_receipt = load_target_install_receipt_bytes_v2(receipt_path.read_bytes())
-            except (OSError, ValidationError, ValueError):
+                previous_receipt = load_target_install_receipt_bytes_v2(receipt_capability.read_bytes())
+            except (ExternalPathIngressError, ValidationError, ValueError):
                 print(f"error: {CLI_PREVIOUS_RECEIPT_INVALID_REASON_V2}", file=sys.stderr)
                 return CLI_EXIT_INVALID_INPUT_OR_CONTRACT_V2
         operation = compute_target_pack_operation_plan_v2(
