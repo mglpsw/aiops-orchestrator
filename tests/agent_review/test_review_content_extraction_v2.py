@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from collections import Counter
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
+from app.agent_review.authoritative_diff_identity_v2 import (
+    DIFF_BINDING_DIFF_IDENTITY_MISMATCH_REASON_V2,
+    acquire_authoritative_diff_with_identity_v2,
+    bind_manifest_to_diff_identity_v2,
+)
 from app.agent_review.contracts_v2 import SemanticGroupV2, TargetProfileV2
 from app.agent_review.diff_acquisition_v2 import (
     HunkBodyV2,
@@ -129,7 +136,9 @@ def _grouping_policy() -> SemanticGroupingPolicyV2:
 
 
 def _assemble(repo, base_sha, head_sha, *, profile, max_lines_per_chunk=1000):
-    file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    file_diffs, acquired_identity = acquire_authoritative_diff_with_identity_v2(
+        repo, base_sha=base_sha, head_sha=head_sha
+    )
     outcome = assemble_manifest_from_diff_v2(
         file_diffs, profile=profile, grouping_policy=_grouping_policy(),
         repo="example/repo", pr_number=1, base_sha=base_sha, head_sha=head_sha,
@@ -137,7 +146,8 @@ def _assemble(repo, base_sha, head_sha, *, profile, max_lines_per_chunk=1000):
         max_lines_per_chunk=max_lines_per_chunk,
     )
     assert outcome.state == "assembled", outcome.blocked_reason
-    return outcome.manifest
+    binding = bind_manifest_to_diff_identity_v2(outcome.manifest, acquired_identity)
+    return outcome.manifest, binding
 
 
 def _payload_shas(manifest):
@@ -228,9 +238,9 @@ def test_extract_review_content_round_trips_and_binds_to_the_manifest(tmp_path: 
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["app.py"])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
     )
 
@@ -239,6 +249,83 @@ def test_extract_review_content_round_trips_and_binds_to_the_manifest(tmp_path: 
     assert fragments
     assert all(f.policy is ReviewContentPolicyV2.INCLUDED for f in fragments)
     assert "line 5 CHANGED" in fragments[0].content
+
+
+@pytest.mark.requires_network
+def test_extract_review_content_refuses_a_tampered_re_acquisition_before_any_classification(
+    tmp_path: Path,
+) -> None:
+    """#200-G3B production-wiring witness, through the REAL entrypoint
+    (`extract_review_content_v2`), not `verify_manifest_diff_binding_v2`
+    called directly in isolation -- closing exactly the gap that sank the
+    #285 predecessor: machinery built and unit-tested, but never actually
+    invoked from a real call path.
+
+    `manifest_diff_binding` is built at "assembly time" from the real,
+    untruncated diff. `extract_review_content_v2` re-acquires the diff
+    independently INSIDE its own real body
+    (`review_content_extraction_v2.acquire_diff_v2`, a module-level import
+    distinct from `authoritative_diff_identity_v2`'s own qualified calls) --
+    that second, independent acquisition is patched here to return a
+    truncated diff carrying the SAME apparent `app.py` path, standing in for
+    a tampered/stale checkout at extraction time. The expected mismatch is
+    established via a fresh, direct `hashlib.sha256` call, never by asking
+    the production helper to grade its own homework.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    body = "\n".join(f"line {i}" for i in range(1, 21))
+    (repo / "app.py").write_text(body + "\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+    lines = body.split("\n")
+    lines[4] = "line 5 CHANGED"
+    (repo / "app.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "update")
+
+    profile = _profile(must_review_paths=["app.py"])
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
+
+    from app.agent_review.diff_acquisition_v2 import acquire_diff_v2 as _real_acquire_diff_v2
+
+    real_diff_text = _real_acquire_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    diff_lines = real_diff_text.splitlines(keepends=True)
+    assert any("app.py" in line for line in diff_lines)
+    truncated_diff_text = "".join(diff_lines[:-1])
+    assert "app.py" in truncated_diff_text
+    # Independent oracle, not the production helper computing both sides.
+    assert (
+        hashlib.sha256(truncated_diff_text.encode("utf-8")).hexdigest()
+        != manifest_diff_binding.authoritative_diff_sha256
+    )
+
+    classification_reached = False
+    real_build_fragment_content = (
+        __import__(
+            "app.agent_review.review_content_extraction_v2", fromlist=["_build_fragment_content_v2"]
+        )._build_fragment_content_v2
+    )
+
+    def _tracking_build_fragment_content_v2(*args, **kwargs):
+        nonlocal classification_reached
+        classification_reached = True
+        return real_build_fragment_content(*args, **kwargs)
+
+    with mock.patch(
+        "app.agent_review.review_content_extraction_v2.acquire_diff_v2",
+        return_value=truncated_diff_text,
+    ), mock.patch(
+        "app.agent_review.review_content_extraction_v2._build_fragment_content_v2",
+        side_effect=_tracking_build_fragment_content_v2,
+    ):
+        with pytest.raises(ExtractionBlockedError) as excinfo:
+            extract_review_content_v2(
+                repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+                manifest_diff_binding=manifest_diff_binding,
+                payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
+            )
+
+    assert excinfo.value.reason_code == DIFF_BINDING_DIFF_IDENTITY_MISMATCH_REASON_V2
+    assert classification_reached is False
 
 
 @pytest.mark.requires_network
@@ -251,14 +338,14 @@ def test_extract_review_content_is_byte_deterministic_across_calls(tmp_path: Pat
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["app.py"])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     payloads = _payload_shas(manifest)
     first = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=payloads, target_profile=profile,
     )
     second = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=payloads, target_profile=profile,
     )
     assert first.content_set_sha256 == second.content_set_sha256
@@ -274,9 +361,9 @@ def test_extract_review_content_redacts_a_secret_before_it_reaches_the_sidecar(t
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["app.py"])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
     )
     fragments = [f for chunk in content.chunks for f in chunk.fragments]
@@ -297,14 +384,14 @@ def test_extract_review_content_windows_a_hunk_larger_than_the_line_budget_lossl
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["big.py"], max_chars_per_chunk=200_000)
-    manifest = _assemble(
+    manifest, manifest_diff_binding = _assemble(
         repo, base_sha, head_sha, profile=profile, max_lines_per_chunk=20,
     )
     fragments_for_file = [f for f in manifest.fragments if f.path == "big.py"]
     assert len(fragments_for_file) > 1, "fixture must force windowing"
 
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
     )
     fragments = [f for chunk in content.chunks for f in chunk.fragments]
@@ -329,7 +416,7 @@ def test_extract_review_content_blocks_fail_closed_when_a_must_review_fragment_m
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["app.py"])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     dlp = DlpPolicyDeclarationV2(
         schema_id="agent-review.dlp-policy.v1", schema_version=1,
         rules=[DlpPolicyRuleV2(rule_id="cpf", pattern="cpf_lookup", action="block", detail="synthetic PHI marker")],
@@ -337,7 +424,7 @@ def test_extract_review_content_blocks_fail_closed_when_a_must_review_fragment_m
     )
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile, dlp_policy=dlp,
         )
     assert excinfo.value.reason_code == "transport_blocked_by_dlp"
@@ -353,14 +440,14 @@ def test_extract_review_content_degrades_a_non_must_review_dlp_match_to_a_typed_
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=[])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     dlp = DlpPolicyDeclarationV2(
         schema_id="agent-review.dlp-policy.v1", schema_version=1,
         rules=[DlpPolicyRuleV2(rule_id="cpf", pattern="cpf_lookup", action="block", detail="synthetic PHI marker")],
         detector_name=None, detector_digest=None,
     )
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile, dlp_policy=dlp,
     )
     policies = {f.policy for chunk in content.chunks for f in chunk.fragments}
@@ -384,10 +471,10 @@ def test_extract_review_content_blocks_fail_closed_when_must_review_content_exce
     # assembles normally and only blocks once the REAL redacted content is
     # measured against it.
     profile = _profile(must_review_paths=["app.py"], max_chars_per_chunk=10)
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
         )
     assert excinfo.value.reason_code == CONTENT_REASON_OVER_BUDGET_REQUIRES_REPLAN_V2
@@ -446,9 +533,9 @@ def test_extract_review_content_excludes_a_non_must_review_binary_file_entirely(
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["app.py"])  # image.bin is NOT must_review
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
     )
     policies_by_path = {f.path: f.policy for chunk in content.chunks for f in chunk.fragments}
@@ -467,11 +554,11 @@ def test_extract_review_content_refuses_fail_closed_when_the_manifest_has_no_chu
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["app.py"])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     assert manifest.chunks == []
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id={}, target_profile=profile,
         )
     assert excinfo.value.reason_code == CONTENT_REASON_NO_REVIEWABLE_CHUNKS_V2
@@ -548,7 +635,7 @@ def test_extract_review_content_never_duplicates_a_repeated_anchor_line_across_w
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["big.py"], max_chars_per_chunk=500_000)
-    manifest = _assemble(
+    manifest, manifest_diff_binding = _assemble(
         repo, base_sha, head_sha, profile=profile, max_lines_per_chunk=20,
     )
     fragments_for_file = [f for f in manifest.fragments if f.path == "big.py"]
@@ -557,7 +644,7 @@ def test_extract_review_content_never_duplicates_a_repeated_anchor_line_across_w
     assert old_ranges == {(1, 1)}, "fixture must exercise the repeated-anchor (starved old side) case"
 
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
     )
     included = [f for chunk in content.chunks for f in chunk.fragments if f.policy is ReviewContentPolicyV2.INCLUDED]
@@ -599,14 +686,14 @@ def test_extract_review_content_blocks_when_many_small_must_review_fragments_sum
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=[f"file{i}.py" for i in range(20)], max_chars_per_chunk=500)
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile, max_lines_per_chunk=1000)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile, max_lines_per_chunk=1000)
     # Force every fragment into the SAME single chunk regardless of
     # per-fragment size, so only the chunk-level SUM can trigger the block.
     assert len(manifest.chunks) == 1, "fixture must place every fragment in one chunk"
 
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
         )
     assert excinfo.value.reason_code == CONTENT_REASON_CHUNK_OVER_BUDGET_REQUIRES_REPLAN_V2
@@ -629,11 +716,11 @@ def test_extract_review_content_drops_the_largest_auxiliary_fragments_first_when
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=[], max_chars_per_chunk=500)
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile, max_lines_per_chunk=1000)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile, max_lines_per_chunk=1000)
     assert len(manifest.chunks) == 1
 
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
     )
     fragments = [f for chunk in content.chunks for f in chunk.fragments]
@@ -668,11 +755,11 @@ def test_extract_review_content_drops_auxiliaries_to_make_room_for_a_mixed_requi
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["required.py"], max_chars_per_chunk=500)
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile, max_lines_per_chunk=1000)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile, max_lines_per_chunk=1000)
     assert len(manifest.chunks) == 1, "fixture must place every fragment in one chunk"
 
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
     )
     fragments = [f for chunk in content.chunks for f in chunk.fragments]
@@ -722,13 +809,13 @@ def test_extract_review_content_refuses_a_target_profile_that_did_not_plan_the_m
     head_sha = _commit_all(repo, "update")
 
     planning_profile = _profile(must_review_paths=["app.py"], max_chars_per_chunk=24_000)
-    manifest = _assemble(repo, base_sha, head_sha, profile=planning_profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=planning_profile)
     divergent_profile = _profile(must_review_paths=["app.py"], max_chars_per_chunk=999_999)
     assert divergent_profile != planning_profile
 
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=divergent_profile,
         )
     assert excinfo.value.reason_code == CONTENT_REASON_PROFILE_HASH_MISMATCH_V2
@@ -737,7 +824,7 @@ def test_extract_review_content_refuses_a_target_profile_that_did_not_plan_the_m
     # proving the check is a real content-hash comparison, not identity.
     replanning_profile = _profile(must_review_paths=["app.py"], max_chars_per_chunk=24_000)
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=replanning_profile,
     )
     assert content.chunks
@@ -758,14 +845,14 @@ def test_extract_review_content_blocks_must_review_fail_closed_when_dlp_policy_i
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["app.py"])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     detector_only_dlp = DlpPolicyDeclarationV2(
         schema_id="agent-review.dlp-policy.v1", schema_version=1, rules=[],
         detector_name="host-owned-detector", detector_digest="a" * 64,
     )
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
             dlp_policy=detector_only_dlp,
         )
@@ -784,13 +871,13 @@ def test_extract_review_content_degrades_non_must_review_content_when_dlp_policy
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=[])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     detector_only_dlp = DlpPolicyDeclarationV2(
         schema_id="agent-review.dlp-policy.v1", schema_version=1, rules=[],
         detector_name="host-owned-detector", detector_digest="a" * 64,
     )
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
         dlp_policy=detector_only_dlp,
     )
@@ -814,7 +901,7 @@ def test_extract_review_content_still_evaluates_inline_rules_when_a_policy_also_
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["app.py"])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     combined_dlp = DlpPolicyDeclarationV2(
         schema_id="agent-review.dlp-policy.v1", schema_version=1,
         rules=[DlpPolicyRuleV2(rule_id="never-matches", pattern="ZZZ_NEVER_MATCHES_ZZZ", action="block", detail="d")],
@@ -822,7 +909,7 @@ def test_extract_review_content_still_evaluates_inline_rules_when_a_policy_also_
     )
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
             dlp_policy=combined_dlp,
         )
@@ -842,9 +929,9 @@ def test_extract_review_content_redacts_a_local_home_path_in_content(tmp_path: P
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["app.py"])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
     )
     fragments = [f for chunk in content.chunks for f in chunk.fragments]
@@ -870,9 +957,9 @@ def test_extract_review_content_covers_add_modify_delete_rename_in_one_run(tmp_p
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["modified.py", "deleted.py", "added.py", "new_name.py"])
-    manifest = _assemble(repo, base_sha, head_sha, profile=profile)
+    manifest, manifest_diff_binding = _assemble(repo, base_sha, head_sha, profile=profile)
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
     )
     fragments = [f for chunk in content.chunks for f in chunk.fragments]
@@ -968,14 +1055,14 @@ def test_extract_review_content_handles_two_hunks_of_the_same_file_landing_in_di
     head_sha = _commit_all(repo, "update")
 
     profile = _profile(must_review_paths=["big.py"], max_chars_per_chunk=200_000)
-    manifest = _assemble(
+    manifest, manifest_diff_binding = _assemble(
         repo, base_sha, head_sha, profile=profile, max_lines_per_chunk=10,
     )
     assert len(manifest.chunks) == 2, "fixture must place the two hunks in different chunks"
     assert len(manifest.fragments) == 2, "fixture must not force windowing on either hunk"
 
     content = extract_review_content_v2(
-        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id=_payload_shas(manifest), target_profile=profile,
     )
     bind_review_content_to_manifest_v2(content, manifest)  # re-verified from the outside

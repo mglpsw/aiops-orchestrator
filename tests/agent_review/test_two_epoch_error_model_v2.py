@@ -150,7 +150,7 @@ def test_payload_post_seal_validation_error_is_a_raw_defect(tmp_path: Path) -> N
     """References acquired and validated; payload derivation then fails."""
 
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     with mock.patch(
         "app.agent_review.payload_builder_v2.compute_payload_sha256_v2",
@@ -172,7 +172,7 @@ def test_payload_pre_seal_external_failure_is_a_typed_refusal(tmp_path: Path) ->
         "    kind: diff\n    required: true\n    max_bytes: 1000000",
     )
     repo, base_sha, head_sha = _repo(tmp_path, demanding)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     with pytest.raises(PayloadBuilderError) as excinfo:
         build_chunk_payloads_from_profile_v2(manifest, profile=profile, repo_root=repo)
@@ -186,7 +186,7 @@ def test_payload_set_post_seal_validation_error_is_a_raw_defect(
     tmp_path: Path,
 ) -> None:
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
     built = build_chunk_payloads_from_profile_v2(
         manifest, profile=profile, repo_root=repo
     )
@@ -203,7 +203,7 @@ def test_payload_set_pre_seal_invalid_input_is_a_typed_refusal(
     tmp_path: Path,
 ) -> None:
     repo, base_sha, head_sha = _repo(tmp_path)
-    _, manifest = _assembled(repo, base_sha, head_sha)
+    _, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     with pytest.raises(PayloadSetBindingError) as excinfo:
         emit_payload_set_v2(manifest, [])
@@ -217,7 +217,7 @@ def test_content_post_seal_validation_error_is_a_raw_defect(tmp_path: Path) -> N
     """Diff acquired, redacted and DLP-checked; content derivation then fails."""
 
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
     built = build_chunk_payloads_from_profile_v2(
         manifest, profile=profile, repo_root=repo
     )
@@ -228,7 +228,7 @@ def test_content_post_seal_validation_error_is_a_raw_defect(tmp_path: Path) -> N
     ):
         with pytest.raises(ValidationError):
             extract_review_content_v2(
-                repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+                repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
                 payload_sha256_by_chunk_id={
                     item.chunk_id: item.payload.payload_sha256 for item in built
                 },
@@ -260,14 +260,14 @@ def test_content_pre_seal_unrepresentable_material_is_a_typed_refusal(
     _git(repo, "commit", "--quiet", "-m", "head")
     head_sha = _git(repo, "rev-parse", "HEAD")
 
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
     built = build_chunk_payloads_from_profile_v2(
         manifest, profile=profile, repo_root=repo
     )
 
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id={
                 item.chunk_id: item.payload.payload_sha256 for item in built
             },
@@ -551,11 +551,11 @@ def test_caller_payload_digest_values_are_validated_pre_seal(tmp_path: Path) -> 
     `ChunkContentV2` and escaped past this authority's own epoch-1 boundary."""
 
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id={
                 chunk.chunk_id: "NOT-A-SHA" for chunk in manifest.chunks
             },

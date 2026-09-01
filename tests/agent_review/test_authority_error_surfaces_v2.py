@@ -37,6 +37,10 @@ from unittest import mock
 import pytest
 from pydantic import ValidationError
 
+from app.agent_review.authoritative_diff_identity_v2 import (
+    acquire_authoritative_diff_with_identity_v2,
+    bind_manifest_to_diff_identity_v2,
+)
 from app.agent_review.contracts_v2 import SemanticGroupV2
 from app.agent_review.diff_acquisition_v2 import (
     DiffAcquisitionError,
@@ -143,14 +147,17 @@ def _grouping_policy() -> SemanticGroupingPolicyV2:
 
 def _assembled(repo: Path, base_sha: str, head_sha: str, profile=None):
     profile = profile or load_target_profile_v2(repo)
-    diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    diffs, acquired_identity = acquire_authoritative_diff_with_identity_v2(
+        repo, base_sha=base_sha, head_sha=head_sha
+    )
     outcome = assemble_manifest_from_diff_v2(
         diffs, profile=profile, grouping_policy=_grouping_policy(), repo="example/repo",
         pr_number=1, base_sha=base_sha, head_sha=head_sha, tested_merge_sha=head_sha,
         toolrepo_sha="b" * 40, evidence_hash="c" * 64, max_lines_per_chunk=1000,
     )
     assert outcome.state == "assembled", outcome.blocked_reason
-    return profile, outcome.manifest
+    binding = bind_manifest_to_diff_identity_v2(outcome.manifest, acquired_identity)
+    return profile, outcome.manifest, binding
 
 
 # -- diff acquisition --------------------------------------------------------
@@ -257,7 +264,7 @@ def test_payload_missing_required_artifact_is_a_payload_builder_error(
         "    kind: diff\n    required: true\n    max_bytes: 1000000",
     )
     repo, base_sha, head_sha = _repo(tmp_path, demanding)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     with pytest.raises(PayloadBuilderError) as excinfo:
         build_chunk_payloads_from_profile_v2(manifest, profile=profile, repo_root=repo)
@@ -284,7 +291,7 @@ def test_payload_unreadable_declared_contract_is_a_payload_builder_error(
         ),
         encoding="utf-8",
     )
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     real_read_bytes = Path.read_bytes
 
@@ -310,7 +317,7 @@ def test_payload_set_empty_is_a_payload_set_binding_error(tmp_path: Path) -> Non
     as a raw pydantic ``ValidationError`` from model construction."""
 
     repo, base_sha, head_sha = _repo(tmp_path)
-    _, manifest = _assembled(repo, base_sha, head_sha)
+    _, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     with pytest.raises(PayloadSetBindingError) as excinfo:
         emit_payload_set_v2(manifest, [])
@@ -327,7 +334,7 @@ def test_content_missing_repo_root_is_an_extraction_blocked_error(
     raw ``FileNotFoundError`` outside its declared family."""
 
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
     built = build_chunk_payloads_from_profile_v2(
         manifest, profile=profile, repo_root=repo
     )
@@ -335,7 +342,7 @@ def test_content_missing_repo_root_is_an_extraction_blocked_error(
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
             repo_root=tmp_path / "absent", base_sha=base_sha, head_sha=head_sha,
-            manifest=manifest,
+            manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id={
                 item.chunk_id: item.payload.payload_sha256 for item in built
             },
@@ -431,7 +438,7 @@ def test_payload_builder_does_not_launder_programmer_defects(
     tmp_path: Path, defect: BaseException
 ) -> None:
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     with mock.patch(
         "app.agent_review.payload_builder_v2.build_payload_artifact_references_v2",
@@ -448,7 +455,7 @@ def test_payload_set_does_not_launder_programmer_defects(
     tmp_path: Path, defect: BaseException
 ) -> None:
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
     built = build_chunk_payloads_from_profile_v2(
         manifest, profile=profile, repo_root=repo
     )
@@ -466,7 +473,7 @@ def test_content_does_not_launder_programmer_defects(
     tmp_path: Path, defect: BaseException
 ) -> None:
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
     built = build_chunk_payloads_from_profile_v2(
         manifest, profile=profile, repo_root=repo
     )
@@ -477,7 +484,7 @@ def test_content_does_not_launder_programmer_defects(
     ):
         with pytest.raises(type(defect)):
             extract_review_content_v2(
-                repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+                repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
                 payload_sha256_by_chunk_id={
                     item.chunk_id: item.payload.payload_sha256 for item in built
                 },
@@ -574,7 +581,7 @@ def test_content_internal_digest_perturbation_is_now_a_raw_defect(
     """
 
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
     built = build_chunk_payloads_from_profile_v2(
         manifest, profile=profile, repo_root=repo
     )
@@ -587,7 +594,7 @@ def test_content_internal_digest_perturbation_is_now_a_raw_defect(
     ):
         with pytest.raises(ValidationError):
             extract_review_content_v2(
-                repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+                repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
                 payload_sha256_by_chunk_id={
                     item.chunk_id: item.payload.payload_sha256 for item in built
                 },
@@ -660,7 +667,7 @@ def test_content_binding_family_is_converted_at_the_extraction_boundary(
     from app.agent_review.review_content_v2 import ReviewContentBindingError
 
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
     built = build_chunk_payloads_from_profile_v2(
         manifest, profile=profile, repo_root=repo
     )
@@ -671,7 +678,7 @@ def test_content_binding_family_is_converted_at_the_extraction_boundary(
     ):
         with pytest.raises(ExtractionBlockedError) as excinfo:
             extract_review_content_v2(
-                repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+                repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
                 payload_sha256_by_chunk_id={
                     item.chunk_id: item.payload.payload_sha256 for item in built
                 },
@@ -729,7 +736,7 @@ def test_a_composer_needs_only_owner_families(tmp_path: Path) -> None:
     except RunAssemblyError as exc:
         refusals["assembly"] = exc.reason_code
 
-    _, manifest = _assembled(repo, base_sha, head_sha)
+    _, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     # 4. payload
     demanding_repo, d_base, d_head = _repo(
@@ -740,7 +747,7 @@ def test_a_composer_needs_only_owner_families(tmp_path: Path) -> None:
             "    kind: diff\n    required: true\n    max_bytes: 1000000",
         ),
     )
-    d_profile, d_manifest = _assembled(demanding_repo, d_base, d_head)
+    d_profile, d_manifest, d_manifest_diff_binding = _assembled(demanding_repo, d_base, d_head)
     try:
         build_chunk_payloads_from_profile_v2(
             d_manifest, profile=d_profile, repo_root=demanding_repo
@@ -759,7 +766,7 @@ def test_a_composer_needs_only_owner_families(tmp_path: Path) -> None:
     # unexecuted and the stage unable to prove anything about it.
     try:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id={}, target_profile=profile,
         )
     except ExtractionBlockedError as exc:
@@ -793,7 +800,7 @@ def test_closure_composes_across_authorities(
     )
 
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
     built = build_chunk_payloads_from_profile_v2(
         manifest, profile=profile, repo_root=repo
     )
@@ -802,7 +809,7 @@ def test_closure_composes_across_authorities(
     with pytest.raises(ExtractionBlockedError) as missing_root:
         extract_review_content_v2(
             repo_root=tmp_path / "absent", base_sha=base_sha, head_sha=head_sha,
-            manifest=manifest, payload_sha256_by_chunk_id=payload_map,
+            manifest=manifest, manifest_diff_binding=manifest_diff_binding, payload_sha256_by_chunk_id=payload_map,
             target_profile=profile,
         )
 
@@ -818,7 +825,7 @@ def test_closure_composes_across_authorities(
     with pytest.raises(ExtractionBlockedError) as absent_git:
         extract_review_content_v2(
             repo_root=repo, base_sha=base_sha, head_sha=head_sha,
-            manifest=manifest, payload_sha256_by_chunk_id=payload_map,
+            manifest=manifest, manifest_diff_binding=manifest_diff_binding, payload_sha256_by_chunk_id=payload_map,
             target_profile=profile,
         )
 
@@ -859,14 +866,14 @@ def test_fragment_contract_failure_does_not_leak_diff_content(tmp_path: Path) ->
     _git(repo, "commit", "--quiet", "-m", "head")
     head_sha = _git(repo, "rev-parse", "HEAD")
 
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
     built = build_chunk_payloads_from_profile_v2(
         manifest, profile=profile, repo_root=repo
     )
 
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id={
                 item.chunk_id: item.payload.payload_sha256 for item in built
             },
@@ -891,13 +898,13 @@ def test_acceptance_oracle_content_stage_executes_the_real_body(
     """
 
     repo, base_sha, head_sha = _repo(tmp_path)
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     # a payload map missing the manifest's chunk: reached well inside the body,
     # after acquisition and fragment planning have really run
     with pytest.raises(ExtractionBlockedError) as excinfo:
         extract_review_content_v2(
-            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest, manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id={}, target_profile=profile,
         )
     assert excinfo.value.reason_code == "chunk_payload_sha256_unavailable"
@@ -931,7 +938,7 @@ def test_singular_payload_builder_is_closed_like_its_plural_sibling(
         ),
         encoding="utf-8",
     )
-    profile, manifest = _assembled(repo, base_sha, head_sha)
+    profile, manifest, manifest_diff_binding = _assembled(repo, base_sha, head_sha)
 
     real_read_bytes = Path.read_bytes
 
