@@ -25,6 +25,10 @@ from app.agent_review.contracts_v2 import (
     TargetProfileV2,
     compute_response_sha256_v2,
 )
+from app.agent_review.authoritative_diff_identity_v2 import (
+    acquire_authoritative_diff_with_identity_v2,
+    bind_manifest_to_diff_identity_v2,
+)
 from app.agent_review.diff_acquisition_v2 import acquire_authoritative_diff_v2
 from app.agent_review.payload_builder_v2 import build_chunk_payload_v2
 from app.agent_review.review_content_extraction_v2 import extract_review_content_v2
@@ -123,7 +127,9 @@ def _build_repo_manifest_and_content(tmp_path: Path):
     head_sha = _commit_all(repo, "update")
 
     profile = _profile()
-    file_diffs = acquire_authoritative_diff_v2(repo, base_sha=base_sha, head_sha=head_sha)
+    file_diffs, acquired_identity = acquire_authoritative_diff_with_identity_v2(
+        repo, base_sha=base_sha, head_sha=head_sha
+    )
     outcome = assemble_manifest_from_diff_v2(
         file_diffs, profile=profile, grouping_policy=_grouping_policy(),
         repo="example/repo", pr_number=1, base_sha=base_sha, head_sha=head_sha,
@@ -132,9 +138,11 @@ def _build_repo_manifest_and_content(tmp_path: Path):
     )
     assert outcome.state == "assembled", outcome.blocked_reason
     manifest = outcome.manifest
+    manifest_diff_binding = bind_manifest_to_diff_identity_v2(manifest, acquired_identity)
     payload_by_chunk_id = {c.chunk_id: build_chunk_payload_v2(manifest, c) for c in manifest.chunks}
     content = extract_review_content_v2(
         repo_root=repo, base_sha=base_sha, head_sha=head_sha, manifest=manifest,
+        manifest_diff_binding=manifest_diff_binding,
         payload_sha256_by_chunk_id={cid: p.payload_sha256 for cid, p in payload_by_chunk_id.items()},
         target_profile=profile,
     )

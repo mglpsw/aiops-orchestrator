@@ -2590,6 +2590,12 @@ def test_exported_json_schemas_are_stable_and_deny_unknown_objects() -> None:
         "agent-review.target-pack-manifest.v2.schema.json",
         "agent-review.target-install-receipt.v2.schema.json",
         "agent-review.target-pack-operation-plan.v2.schema.json",
+        # #200-G3B: additive only. ManifestDiffBindingV2 binds one already-
+        # published ManifestV2's run_id/manifest_hash to the SHA-256 of the
+        # exact authoritative diff bytes it was assembled from -- it does
+        # NOT touch ManifestV2, manifest_hash, or run_id themselves (every
+        # schema above this line is unchanged, byte for byte).
+        "agent-review.manifest-diff-binding.v2.schema.json",
     }
 
     for filename, schema in rendered.items():

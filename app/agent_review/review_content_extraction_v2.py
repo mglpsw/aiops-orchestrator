@@ -74,6 +74,11 @@ from typing import Mapping, Sequence
 
 from pydantic import TypeAdapter, ValidationError
 
+from app.agent_review.authoritative_diff_identity_v2 import (
+    ManifestDiffBindingError,
+    ManifestDiffBindingV2,
+    verify_manifest_diff_binding_v2,
+)
 from app.agent_review.contracts_v2 import Sha256, TargetProfileV2
 from app.agent_review.diff_acquisition_v2 import (
     DiffAcquisitionError,
@@ -621,6 +626,7 @@ def extract_review_content_v2(
     base_sha: str,
     head_sha: str,
     manifest: ManifestV2,
+    manifest_diff_binding: ManifestDiffBindingV2,
     payload_sha256_by_chunk_id: Mapping[str, str],
     target_profile: TargetProfileV2,
     dlp_policy: DlpPolicyDeclarationV2 | None = None,
@@ -632,6 +638,19 @@ def extract_review_content_v2(
     caller). Raises ``ExtractionBlockedError`` fail-closed -- never returns
     a partially-covered ``ReviewContentV2`` for a ``coverage_required``
     fragment.
+
+    ``manifest_diff_binding`` (#200-G3B) must be the ``ManifestDiffBindingV2``
+    produced for ``manifest`` at ASSEMBLY time (``authoritative_diff_
+    identity_v2.bind_manifest_to_diff_identity_v2``, from the SAME diff
+    acquisition ``run_assembly_v2`` used to build ``manifest``). This
+    function re-acquires the diff independently (below) and calls
+    ``verify_manifest_diff_binding_v2`` against that fresh acquisition
+    BEFORE any path/scope classification runs -- there is deliberately no
+    way to skip this by omitting the argument or passing a stale binding:
+    a caller cannot construct a valid one without an already-assembled,
+    identity-matching manifest. This is the #200-G3B closure of the
+    #285-class gap where a path-set-only check could not detect a
+    truncated/tampered diff supplying the same apparent paths.
 
     ``target_profile`` must be the SAME ``TargetProfileV2`` that produced
     ``manifest`` -- proven, not assumed: ``compute_profile_hash_v2(target_
@@ -679,6 +698,7 @@ def extract_review_content_v2(
             base_sha=base_sha,
             head_sha=head_sha,
             manifest=manifest,
+            manifest_diff_binding=manifest_diff_binding,
             payload_sha256_by_chunk_id=payload_sha256_by_chunk_id,
             target_profile=target_profile,
             dlp_policy=dlp_policy,
@@ -691,6 +711,11 @@ def extract_review_content_v2(
         # exception already carries semantic meaning from its own authority.
         # This is NOT equivalent to converting a generic `ValidationError`.
         raise ExtractionBlockedError(exc.reason_code, fragment_id=None) from exc
+    except ManifestDiffBindingError as exc:
+        # SIBLING family from the #200-G3B binding verifier; same discipline
+        # as ReviewContentBindingError above -- the exception already carries
+        # a real, typed reason from its own authority.
+        raise ExtractionBlockedError(exc.reason_code, fragment_id=None) from exc
 
 
 def _extract_review_content_v2(
@@ -699,6 +724,7 @@ def _extract_review_content_v2(
     base_sha: str,
     head_sha: str,
     manifest: ManifestV2,
+    manifest_diff_binding: ManifestDiffBindingV2,
     payload_sha256_by_chunk_id: Mapping[str, str],
     target_profile: TargetProfileV2,
     dlp_policy: DlpPolicyDeclarationV2 | None = None,
@@ -717,6 +743,21 @@ def _extract_review_content_v2(
         # PATH" would again be indistinguishable to an operator. Closure has
         # to COMPOSE, not just terminate.
         raise ExtractionBlockedError(exc.reason_code, fragment_id=None) from exc
+
+    # #200-G3B: prove the diff bytes just re-acquired above are the EXACT
+    # same bytes ``manifest_diff_binding`` was built from at assembly time,
+    # BEFORE any path/scope classification below consumes `file_diffs` or
+    # `hunk_bodies`. `verify_manifest_diff_binding_v2` independently
+    # recomputes the digest from `diff_text` -- it never trusts a caller's
+    # claim, and there is no flag to bypass it (mirrors chunk_result_scope_
+    # v2's own "no trusted-flag opt-out" discipline). This is the exact
+    # closure the #285 predecessor never actually wired into a real
+    # entrypoint (verified only in isolated unit tests, never invoked here).
+    verify_manifest_diff_binding_v2(
+        manifest_diff_binding,
+        manifest=manifest,
+        diff_text=diff_text,
+    )
 
     if not manifest.chunks:
         # A diff whose every file was excluded as non-must-review binary/
