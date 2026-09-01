@@ -400,6 +400,12 @@ class ReadinessReasonV2(str, Enum):
     CONFIRMED_CODE_FINDING = "confirmed_code_finding"
     HEAD_MISMATCH = "head_mismatch"
     IDENTITY_MISMATCH = "identity_mismatch"
+    #: `#200-G3`. Distinct from `COVERAGE_FAILURE`: coverage is about
+    #: reviewable FRAGMENTS being reviewed; this is about every CHANGED
+    #: PATH -- including ones that never produced a fragment at all --
+    #: being accounted for. An additive member of an already-published
+    #: enum: see `ScopeCompletenessV2`'s own docstring for why this is safe.
+    SCOPE_INCOMPLETE = "scope_incomplete"
 
 
 SemanticGroupValue = Annotated[SemanticGroupV2, Field(strict=False)]
@@ -1099,6 +1105,7 @@ class PipelineDegradationCauseV2(ContractV2Model):
             ReadinessReasonV2.COVERAGE_FAILURE,
             ReadinessReasonV2.POLICY_FAILURE,
             ReadinessReasonV2.MODEL_UNCERTAINTY,
+            ReadinessReasonV2.SCOPE_INCOMPLETE,
         }
         if self.reason_code not in allowed:
             raise ValueError("pipeline degradation requires a pipeline or uncertainty reason")
@@ -1119,6 +1126,90 @@ class PipelineAssessmentV2(ContractV2Model):
         return self
 
 
+class ScopeCompletenessV2(ContractV2Model):
+    """`#200-G3` -- was every CHANGED path, not merely every reviewable
+    FRAGMENT, accounted for?
+
+    Additive, published alongside ``ChunkCoverageV2`` on
+    ``ReviewReadinessV2`` rather than folded into it: `#200-F`'s ADR
+    (``docs/adr/ADR-200F-SCOPE-COMPLETENESS-CONTRACT.md``) found every
+    existing channel -- an expanded ``CoverageDegradationReasonV2`` member,
+    ``ChunkCoverageV2.status = partial``, an existing
+    ``ReadinessReasonV2`` member, a bare ``limitations`` list -- either
+    asserted something untrue about an ordinary rename/chmod/binary/empty-
+    file change, or collapsed ``FragmentCoverage`` and ``ScopeCompleteness``
+    into one signal, destroying the distinction those two facts require.
+    This object is a NEW, additive, optional field
+    (``ReviewReadinessV2.scope: ScopeCompletenessV2 | None = None``): an
+    already-published artifact that never set it remains valid, and a
+    reader that does not know this field exists safely ignores it (a JSON
+    consumer skipping an unrecognized key) or safely fails closed (a
+    ``ContractV2Model``-pinned Python consumer, which sets ``extra="forbid"``
+    and therefore raises rather than silently misreading a stale/absent
+    completeness signal as "complete").
+
+    Deliberately the COARSE two-bucket split `#200-F`'s ADR itself
+    proposed -- ``metadata_only_paths`` (vacuously representable: renames,
+    chmod-only changes, empty-file transitions, submodule pointer moves)
+    and ``unsupported_paths`` (a genuine capability gap: binaries,
+    truncated patches, unrepresentable paths, git type changes) -- not the
+    richer 9-way structural disposition
+    ``operational_scope_v2.PathDispositionV2`` computes internally. The
+    richer classification stays internal/evidence-only; the wire contract
+    exposes only the two facts a downstream reader actually needs: is
+    total scope accounted for, and which paths fall in which bucket.
+
+    Every path field here uses ``SafeText``, deliberately NOT
+    ``RelativePath``. Caught by this module's own first executable
+    prototype (a real, non-hypothetical finding, not a design guess): an
+    ``unrepresentable``-disposition path is, BY DEFINITION, sometimes
+    exactly a path that fails ``RelativePath`` (the everyday
+    ``src/pages/[id].tsx`` witness). Using the stricter type here would
+    make this contract unable to honestly construct the very artifact it
+    exists to report -- the ``unrepresentable_paths``... no, the
+    ``unsupported_paths``... tuple would refuse to hold the path that made
+    scope incomplete in the first place. ``reviewable_paths`` happens to
+    always satisfy ``RelativePath`` by construction (only a REVIEWABLE
+    disposition ever produces one), but a mixed-type schema for no
+    behavioral benefit is worse than a uniform, slightly more permissive
+    one applied everywhere.
+    """
+
+    complete: StrictBool
+    changed_paths: tuple[SafeText, ...]
+    reviewable_paths: tuple[SafeText, ...]
+    metadata_only_paths: tuple[SafeText, ...]
+    unsupported_paths: tuple[SafeText, ...]
+    must_review_blocked_paths: tuple[SafeText, ...]
+
+    @model_validator(mode="after")
+    def validate_partition(self) -> ScopeCompletenessV2:
+        for name, values in (
+            ("changed_paths", self.changed_paths),
+            ("reviewable_paths", self.reviewable_paths),
+            ("metadata_only_paths", self.metadata_only_paths),
+            ("unsupported_paths", self.unsupported_paths),
+            ("must_review_blocked_paths", self.must_review_blocked_paths),
+        ):
+            if len(values) != len(set(values)):
+                raise ValueError(f"{name} must not contain duplicates")
+
+        changed = set(self.changed_paths)
+        reviewable = set(self.reviewable_paths)
+        metadata_only = set(self.metadata_only_paths)
+        unsupported = set(self.unsupported_paths)
+        must_review_blocked = set(self.must_review_blocked_paths)
+
+        if reviewable & metadata_only or reviewable & unsupported or metadata_only & unsupported:
+            raise ValueError("scope completeness partitions must be disjoint")
+        if (reviewable | metadata_only | unsupported) != changed:
+            raise ValueError("scope completeness partitions must exactly account for every changed path")
+        if not must_review_blocked <= (metadata_only | unsupported):
+            raise ValueError("must_review_blocked_paths must be unreviewable paths")
+        if self.complete != (not unsupported):
+            raise ValueError("complete must be exactly represented by the absence of unsupported paths")
+        return self
+
 
 # `#200-D` two-epoch model: the `ready` preconditions are CALLER-visible, so
 # `review_readiness_emission_v2` must be able to establish them BEFORE the
@@ -1132,6 +1223,7 @@ class PipelineAssessmentV2(ContractV2Model):
 READY_REQUIRES_OPEN_PR_REASON_V2 = "ready_requires_open_pr"
 READY_REQUIRES_GREEN_CHECKS_REASON_V2 = "ready_requires_green_checks"
 READY_REQUIRES_COMPLETE_COVERAGE_REASON_V2 = "ready_requires_complete_coverage"
+READY_REQUIRES_SCOPE_COMPLETE_REASON_V2 = "ready_requires_scope_complete"
 READY_REQUIRES_UNDEGRADED_PIPELINE_REASON_V2 = "ready_requires_undegraded_pipeline"
 READY_REQUIRES_NO_BLOCKERS_REASON_V2 = "ready_requires_no_blockers"
 
@@ -1139,6 +1231,9 @@ _READY_PRECONDITION_MESSAGES_V2 = {
     READY_REQUIRES_OPEN_PR_REASON_V2: "ready requires an open, non-merged pull request",
     READY_REQUIRES_GREEN_CHECKS_REASON_V2: "ready requires every deterministic required check to be green",
     READY_REQUIRES_COMPLETE_COVERAGE_REASON_V2: "ready requires complete total and must-review coverage",
+    READY_REQUIRES_SCOPE_COMPLETE_REASON_V2: (
+        "ready requires every changed path to be accounted for, not only reviewable fragments"
+    ),
     READY_REQUIRES_UNDEGRADED_PIPELINE_REASON_V2: "ready cannot use a degraded pipeline result",
     READY_REQUIRES_NO_BLOCKERS_REASON_V2: "ready cannot contain reasons, active blockers, or blocking findings",
 }
@@ -1158,7 +1253,7 @@ def ready_state_allows_pull_request_v2(*, state, pr_state) -> bool:
 
 
 def evaluate_ready_preconditions_v2(
-    *, pr_state, checks, coverage, pipeline, reason_codes, blockers, findings
+    *, pr_state, checks, coverage, pipeline, reason_codes, blockers, findings, scope=None
 ) -> str | None:
     """Return the stable reason a ``ready`` state is not admissible, or None.
 
@@ -1168,6 +1263,25 @@ def evaluate_ready_preconditions_v2(
     blocker where the validator counts only ACTIVE ones, and omitted blocking
     findings entirely. One authority means one derivation, not one function
     two callers feed differently.
+
+    ``scope`` (`#200-G3`, ``ScopeCompletenessV2 | None``) is the EXACT,
+    explicit, testable three-way relationship the readiness terminal state
+    must honor: fragment coverage (``coverage``), total changed-scope
+    completeness (``scope``), and required checks (``checks``) are each
+    independently necessary for ``ready``. ``scope=None`` means "this run
+    did not assess total scope" -- a distinct, honest third value from both
+    "assessed complete" and "assessed incomplete", preserved rather than
+    silently treated as complete. It is NOT equivalent to "complete": a
+    caller that legitimately never runs a scope assessment (e.g. an
+    isolated unit test of an unrelated precedence rule) is unaffected by
+    this gate, exactly like ``ReadinessDecisionV2``'s own ``scope=None``
+    default -- but any caller producing a REAL readiness artifact for a
+    REAL diff is expected to compute one (``operational_scope_v2.
+    assess_changed_scope_v2``) and pass it through; whether it actually did
+    so is a caller-material/authenticity question this predicate cannot
+    itself verify, exactly like every other readiness input
+    (``review_readiness_emission_v2``'s own module docstring makes the same
+    point about ``decision``/``findings`` more generally).
 
     Content-free: names a rule, never a value.
     """
@@ -1182,6 +1296,15 @@ def evaluate_ready_preconditions_v2(
         return READY_REQUIRES_GREEN_CHECKS_REASON_V2
     if coverage.status is not CoverageStateV2.COMPLETE or coverage.missing_must_review_files:
         return READY_REQUIRES_COMPLETE_COVERAGE_REASON_V2
+    if scope is not None and (not scope.complete or scope.must_review_blocked_paths):
+        # `not scope.complete`: some non-must-review changed path carries
+        # material this product cannot represent. `must_review_blocked_paths`
+        # is checked SEPARATELY and is strictly stronger -- mirrors
+        # `coverage.missing_must_review_files` being checked apart from
+        # `coverage.status` just above: a required path can be blocked
+        # (`ScopeCompletenessV2.must_review_blocked_paths`) while every
+        # OTHER path is vacuously representable and `complete` is still True.
+        return READY_REQUIRES_SCOPE_COMPLETE_REASON_V2
     if pipeline.degraded:
         return READY_REQUIRES_UNDEGRADED_PIPELINE_REASON_V2
 
@@ -1334,6 +1457,11 @@ class ReviewReadinessV2(ContractV2Model):
     pr_state: PullRequestStateValue
     checks: list[RequiredCheckResultV2]
     coverage: ChunkCoverageV2
+    #: `#200-G3`, additive and optional -- see `ScopeCompletenessV2`'s own
+    #: docstring. `None` means this run did not assess total changed-scope
+    #: completeness (distinct from "assessed complete"); an already-
+    #: published artifact predating this field is unaffected.
+    scope: ScopeCompletenessV2 | None = None
     pipeline: PipelineAssessmentV2
     state: ReadinessStateValue
     reason_codes: list[ReadinessReasonValue]
@@ -1403,6 +1531,7 @@ class ReviewReadinessV2(ContractV2Model):
                 reason_codes=self.reason_codes,
                 blockers=self.blockers,
                 findings=self.findings,
+                scope=self.scope,
             )
             if unmet is not None:
                 raise ValueError(_READY_PRECONDITION_MESSAGES_V2[unmet])
@@ -1418,6 +1547,7 @@ class ReviewReadinessV2(ContractV2Model):
                 ReadinessReasonV2.COVERAGE_FAILURE,
                 ReadinessReasonV2.POLICY_FAILURE,
                 ReadinessReasonV2.MODEL_UNCERTAINTY,
+                ReadinessReasonV2.SCOPE_INCOMPLETE,
             }
             pipeline_reasons = reasons - {ReadinessReasonV2.CONFIRMED_CODE_FINDING}
             cause_reasons = {cause.reason_code for cause in self.pipeline.causes}
@@ -1456,6 +1586,7 @@ class ReviewReadinessV2(ContractV2Model):
                 ReadinessReasonV2.TRANSPORT_FAILURE,
                 ReadinessReasonV2.COVERAGE_FAILURE,
                 ReadinessReasonV2.POLICY_FAILURE,
+                ReadinessReasonV2.SCOPE_INCOMPLETE,
             }
             cause_reasons = {cause.reason_code for cause in self.pipeline.causes}
             if not reasons <= allowed or not self.pipeline.degraded or cause_reasons != reasons:
@@ -1471,6 +1602,7 @@ class ReviewReadinessV2(ContractV2Model):
                 ReadinessReasonV2.POLICY_FAILURE,
                 ReadinessReasonV2.MODEL_UNCERTAINTY,
                 ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED,
+                ReadinessReasonV2.SCOPE_INCOMPLETE,
             }
             cause_reasons = {cause.reason_code for cause in self.pipeline.causes}
             pipeline_reasons = reasons - {ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED}

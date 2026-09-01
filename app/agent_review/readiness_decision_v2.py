@@ -88,7 +88,7 @@ acquiring or interpreting ``pr_state``; acquiring or interpreting GitHub
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from app.agent_review.contracts_v2 import (
@@ -104,6 +104,9 @@ from app.agent_review.contracts_v2 import (
     ReadinessBlockerV2,
     ReadinessReasonV2,
     ReadinessStateV2,
+    RequiredCheckConclusionV2,
+    RequiredCheckResultV2,
+    ScopeCompletenessV2,
     TargetPoliciesV2,
 )
 from app.agent_review.manifest_v2 import ManifestV2
@@ -139,6 +142,7 @@ _MANUAL_REQUIRED_SAFE_EXISTING_REASONS_V2 = frozenset(
         ReadinessReasonV2.MODEL_UNCERTAINTY,
         ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED,
         ReadinessReasonV2.POLICY_FAILURE,
+        ReadinessReasonV2.SCOPE_INCOMPLETE,
     }
 )
 # BLOCKED_CODE's own allowed PIPELINE reason set, verbatim (contracts_v2.py,
@@ -155,6 +159,7 @@ _BLOCKED_CODE_SAFE_EXISTING_REASONS_V2 = frozenset(
         ReadinessReasonV2.COVERAGE_FAILURE,
         ReadinessReasonV2.MODEL_UNCERTAINTY,
         ReadinessReasonV2.POLICY_FAILURE,
+        ReadinessReasonV2.SCOPE_INCOMPLETE,
     }
 )
 # BLOCKED_PIPELINE's own allowed reason set, verbatim (contracts_v2.py,
@@ -169,6 +174,7 @@ _BLOCKED_PIPELINE_SAFE_EXISTING_REASONS_V2 = frozenset(
         ReadinessReasonV2.TRANSPORT_FAILURE,
         ReadinessReasonV2.COVERAGE_FAILURE,
         ReadinessReasonV2.POLICY_FAILURE,
+        ReadinessReasonV2.SCOPE_INCOMPLETE,
     }
 )
 
@@ -227,6 +233,14 @@ class ReadinessDecisionV2:
     pipeline: PipelineAssessmentV2
     run_id: str
     manifest_hash: str
+    #: `#200-G3`. `None` means the caller did not assess total changed-scope
+    #: completeness -- see `contracts_v2.evaluate_ready_preconditions_v2`'s
+    #: own docstring for why that is a distinct, honest third value, never
+    #: silently treated as "complete". Defaulted and placed LAST so every
+    #: pre-`#200-G3` keyword-constructed `ReadinessDecisionV2(...)` call
+    #: site -- including hand-built ones in tests unrelated to scope --
+    #: remains valid unchanged.
+    scope: ScopeCompletenessV2 | None = None
 
 
 def bridge_fragment_coverage_to_chunk_coverage_v2(
@@ -340,12 +354,52 @@ def bridge_fragment_coverage_to_chunk_coverage_v2(
     )
 
 
+def fragment_coverage_scope_and_checks_are_ready_v2(
+    *,
+    coverage: ChunkCoverageV2,
+    scope: ScopeCompletenessV2,
+    checks: Sequence[RequiredCheckResultV2],
+) -> bool:
+    """`#200-G3`'s own terminal predicate, in one place: the EXACT, explicit,
+    testable relationship between fragment coverage, total changed-scope
+    completeness, and required checks. Each of the three is INDEPENDENTLY
+    necessary; none substitutes for another.
+
+    This is a real predicate, callable and testable on its own -- not
+    prose. It is the same three-way rule
+    ``contracts_v2.evaluate_ready_preconditions_v2`` enforces as PART of the
+    full five-rule ``ready`` precondition set (which also covers PR state
+    and blockers/findings, orthogonal to this one). Defined here,
+    independently, so the specific fragment-coverage/scope/checks
+    relationship can be asserted in isolation, without needing a full
+    ``ReviewReadinessV2`` or the other two preconditions in scope.
+
+    Unlike ``evaluate_ready_preconditions_v2``'s own ``scope`` parameter,
+    ``scope`` here is REQUIRED, not optional: this function's entire
+    purpose is stating the honest three-way relationship, and a default
+    that silently treated "not assessed" as "ready" would undermine exactly
+    that. Every caller of this function must have a real
+    ``ScopeCompletenessV2`` in hand (``operational_scope_v2.
+    assess_changed_scope_v2(...).to_scope_completeness_v2()``) --
+    unavailability of a real assessment is a caller-side fact this function
+    cannot and does not paper over.
+    """
+
+    coverage_ready = coverage.status is CoverageStateV2.COMPLETE and not coverage.missing_must_review_files
+    scope_ready = scope.complete and not scope.must_review_blocked_paths
+    checks_ready = bool(checks) and all(
+        check.conclusion is RequiredCheckConclusionV2.SUCCESS for check in checks
+    )
+    return coverage_ready and scope_ready and checks_ready
+
+
 def compute_readiness_decision_v2(
     *,
     synthesis: SynthesisResultV2,
     manifest: ManifestV2,
     policies: TargetPoliciesV2,
     stale_reason_codes: frozenset[ReadinessReasonV2] = frozenset(),
+    scope: ScopeCompletenessV2 | None = None,
 ) -> ReadinessDecisionV2:
     """The readiness decision: state, reason codes, blockers, bridged
     coverage, and pipeline assessment -- see the module docstring for the
@@ -360,6 +414,16 @@ def compute_readiness_decision_v2(
     reason codes here short-circuits straight to ``STALE`` -- matching
     ``ReviewReadinessV2.validate_state_invariants``'s own stale branch,
     which ignores coverage/pipeline/findings entirely once stale.
+
+    ``scope`` (`#200-G3`, ``ScopeCompletenessV2 | None``) is total changed-
+    scope completeness -- distinct from ``coverage`` (fragment coverage) --
+    computed by ``operational_scope_v2.assess_changed_scope_v2`` against the
+    SAME diff this run's manifest was assembled from. Defaults to ``None``
+    ("not assessed by this caller"), preserving every pre-`#200-G3` call
+    site of this function unchanged: a caller testing coverage/finding
+    precedence in isolation is not required to also fabricate a scope
+    assessment. ``None`` is never treated as "complete" -- see
+    ``contracts_v2.evaluate_ready_preconditions_v2``'s own docstring.
     """
 
     if synthesis.run_id != manifest.run_id:
@@ -380,6 +444,7 @@ def compute_readiness_decision_v2(
             reason_codes=tuple(sorted(stale_reason_codes, key=lambda code: code.value)),
             blockers=(),
             coverage=coverage,
+            scope=scope,
             pipeline=PipelineAssessmentV2(degraded=False, causes=[]),
             run_id=manifest.run_id,
             manifest_hash=manifest.identity.manifest_hash,
@@ -404,6 +469,14 @@ def compute_readiness_decision_v2(
     coverage_needs_attention = (
         coverage.status is not CoverageStateV2.COMPLETE or bool(coverage.missing_must_review_files)
     )
+    # `#200-G3`: `scope.complete` is FALSE only for a genuine capability gap
+    # (binary/truncated/unrepresentable/type-change paths) -- vacuously
+    # representable paths (rename/chmod/empty-file/submodule) never trip
+    # this. `must_review_blocked_paths` is checked separately and is
+    # strictly stronger, mirroring `coverage.missing_must_review_files`
+    # just above: a required path can be blocked while every OTHER path is
+    # vacuously representable and `scope.complete` is still True.
+    scope_needs_attention = scope is not None and (not scope.complete or bool(scope.must_review_blocked_paths))
     model_uncertainty_present = bool(synthesis.limitations)
 
     reasons: set[ReadinessReasonV2] = set()
@@ -425,6 +498,26 @@ def compute_readiness_decision_v2(
                 reason_code=ReadinessReasonV2.COVERAGE_FAILURE,
                 component="fragment_coverage",
                 detail="one or more expected files are not completely reviewed",
+            )
+        )
+    if scope_needs_attention:
+        reasons.add(ReadinessReasonV2.SCOPE_INCOMPLETE)
+        blockers.append(
+            ReadinessBlockerV2(
+                blocker_id="scope-incomplete",
+                reason_code=ReadinessReasonV2.SCOPE_INCOMPLETE,
+                active=True,
+                finding_id=None,
+            )
+        )
+        causes.append(
+            PipelineDegradationCauseV2(
+                reason_code=ReadinessReasonV2.SCOPE_INCOMPLETE,
+                component="scope_completeness",
+                detail=(
+                    "one or more changed paths carry material this product cannot represent for review, "
+                    "or a must-review path was unreviewable"
+                ),
             )
         )
     if model_uncertainty_present:
@@ -473,7 +566,15 @@ def compute_readiness_decision_v2(
         if new_findings:
             reasons.add(ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED)
             blockers.extend(_confirmation_blockers(new_findings))
-    elif coverage_needs_attention:
+    elif coverage_needs_attention or scope_needs_attention:
+        # `#200-G3`: scope-incomplete folds into the SAME precedence tier
+        # and the SAME policy-driven state selection as coverage-needs-
+        # attention, deliberately -- not a new tier. `ScopeCompleteness` and
+        # `FragmentCoverage` are two different FACTS (kept structurally
+        # distinct in `reason_codes`/`pipeline.causes` above), but the
+        # target's own tolerance for "this run could not fully vouch for
+        # itself" is one policy knob, `policies.coverage_failure_state`,
+        # governing both.
         state = ReadinessStateV2(policies.coverage_failure_state)
         if state is ReadinessStateV2.MANUAL_REQUIRED and new_findings:
             reasons.add(ReadinessReasonV2.FINDING_CONFIRMATION_REQUIRED)
@@ -492,6 +593,7 @@ def compute_readiness_decision_v2(
         reason_codes=tuple(sorted(reasons, key=lambda code: code.value)),
         blockers=tuple(blockers),
         coverage=coverage,
+        scope=scope,
         pipeline=pipeline,
         run_id=manifest.run_id,
         manifest_hash=manifest.identity.manifest_hash,
@@ -766,6 +868,7 @@ def _apply_required_check_assessment_v2(
         ),
         blockers=(*decision.blockers, blocker),
         coverage=decision.coverage,
+        scope=decision.scope,
         pipeline=PipelineAssessmentV2(degraded=True, causes=[*decision.pipeline.causes, cause]),
         run_id=decision.run_id,
         manifest_hash=decision.manifest_hash,

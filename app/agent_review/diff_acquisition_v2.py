@@ -43,6 +43,37 @@ from app.agent_review.contracts_v2 import RelativePath
 
 _RELATIVE_PATH_ADAPTER: TypeAdapter[str] = TypeAdapter(RelativePath)
 
+
+def path_violates_relative_path_contract_v2(path: str) -> bool:
+    """Does ``path`` fail ``contracts_v2.RelativePath`` -- the same frozen
+    contract ``manifest_v2.FragmentV2.path`` uses?
+
+    THE single source of truth for "is this path representable at all",
+    validated against the actual authoritative contract rather than a
+    re-derived subset of its rules. A glob metacharacter (the everyday
+    Next.js/SvelteKit route ``app/[id]/page.tsx``) is only one of several
+    ways a perfectly valid git path -- e.g. one containing a decoded
+    control character from an escape sequence -- can still fail
+    ``RelativePath``'s stricter contract and would otherwise reach the
+    planner as an uncontrolled ``pydantic.ValidationError``.
+
+    `#200-F`'s round-1 defect was exactly two independent reimplementations
+    of this predicate (this module's and ``operational_scope_v2``'s)
+    silently disagreeing: a path this module correctly rejected was, at the
+    time, separately and incorrectly accepted by the other, producing a run
+    that certified a path as reviewable and scope-complete while the
+    assembly silently excluded it. Every caller in this codebase -- this
+    module's own :func:`validate_diff_completeness_v2` and
+    ``operational_scope_v2.classify_changed_path_v2`` -- imports and calls
+    THIS function; neither restates the check.
+    """
+
+    try:
+        _RELATIVE_PATH_ADAPTER.validate_python(path)
+    except ValidationError:
+        return True
+    return False
+
 _HUNK_HEADER_RE = re.compile(
     r"^@@ -(?P<old_start>\d+)(?:,(?P<old_lines>\d+))? "
     r"\+(?P<new_start>\d+)(?:,(?P<new_lines>\d+))? @@"
@@ -943,21 +974,12 @@ def validate_diff_completeness_v2(
     present_paths = {file_diff.path for file_diff in file_diffs if file_diff.path}
     missing = frozenset(expected_paths) - present_paths
 
-    def _violates_relative_path_contract(path: str) -> bool:
-        # Validate against the actual authoritative contract
-        # (contracts_v2.RelativePath, the same type FragmentV2.path uses)
-        # rather than re-deriving a subset of its rules here -- a glob
-        # metacharacter is only one of several ways a perfectly valid git
-        # path (e.g. containing a decoded control character from an
-        # escape sequence) can still fail RelativePath's stricter
-        # contract and would otherwise reach the planner as an
-        # uncontrolled pydantic.ValidationError.
-        try:
-            _RELATIVE_PATH_ADAPTER.validate_python(path)
-        except ValidationError:
-            return True
-        return False
-
+    # `#200-G3`: calls the module-level `path_violates_relative_path_contract_v2`
+    # -- THE single source of truth for path representability, also used by
+    # `operational_scope_v2.classify_changed_path_v2` -- rather than a private
+    # closure restating the same check. See that function's own docstring for
+    # why two independent implementations of this predicate is exactly the
+    # defect class `#200-F` found.
     unrepresentable = tuple(
         sorted(
             file_diff.path
@@ -967,7 +989,7 @@ def validate_diff_completeness_v2(
                 file_diff.is_binary
                 or file_diff.is_submodule
                 or not file_diff.hunks
-                or _violates_relative_path_contract(file_diff.path)
+                or path_violates_relative_path_contract_v2(file_diff.path)
             )
         )
     )

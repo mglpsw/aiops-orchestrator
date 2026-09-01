@@ -98,6 +98,7 @@ from app.agent_review.contracts_v2 import (  # noqa: E402
     ResponseBindingError,
     RunIdentityV2,
     RunOriginV2,
+    ScopeCompletenessV2,
 )
 from app.agent_review.authoritative_check_policy_v2 import (  # noqa: E402
     DEFAULT_AUTHORITATIVE_CHECK_POLICY_RELATIVE_PATH,
@@ -146,7 +147,14 @@ class QualityGateCliError(ValueError):
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--contract-version", required=True, help="must be exactly 'v2'")
-    parser.add_argument("--decision", required=True, help="JSON: state/reason_codes/blockers/coverage/pipeline/run_id/manifest_hash")
+    parser.add_argument(
+        "--decision",
+        required=True,
+        help=(
+            "JSON: state/reason_codes/blockers/coverage/pipeline/run_id/manifest_hash, "
+            "plus an OPTIONAL scope (ScopeCompletenessV2, #200-G3) key"
+        ),
+    )
     parser.add_argument("--identity", required=True, help="JSON: RunIdentityV2 fields")
     parser.add_argument("--evaluated-identity", required=True, help="JSON: RunIdentityV2 fields")
     parser.add_argument("--findings", required=True, help="JSON array of FindingLifecycleRecordV2")
@@ -284,6 +292,20 @@ def _load_decision(path: str) -> ReadinessDecisionV2:
             # Python dict enforces strict=True's Python-level distinction
             # directly, unlike parsing raw JSON text.
             coverage=ChunkCoverageV2.model_validate_json(json.dumps(raw["coverage"])),
+            # `#200-G3`. Optional, back-compatible: an existing `--decision`
+            # file predating this field has no `scope` key, `.get` returns
+            # `None`, and `ReadinessDecisionV2.scope=None` means "not
+            # assessed" -- never silently "complete". A file that DOES carry
+            # one is parsed the same defensive way as `coverage` just above
+            # (`model_validate_json` over the re-dumped dict, not
+            # `model_validate` on the raw parsed value) for the identical
+            # reason: `ScopeCompletenessV2`'s tuple-typed path fields would
+            # otherwise reject a JSON array parsed into a Python list.
+            scope=(
+                ScopeCompletenessV2.model_validate_json(json.dumps(raw["scope"]))
+                if raw.get("scope") is not None
+                else None
+            ),
             pipeline=PipelineAssessmentV2.model_validate(raw["pipeline"]),
             run_id=raw["run_id"],
             manifest_hash=raw["manifest_hash"],

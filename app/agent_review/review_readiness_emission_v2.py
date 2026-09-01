@@ -370,6 +370,7 @@ def _assemble_review_readiness_v2(
         pr_state=pr_state,
         checks=list(checks),
         coverage=decision.coverage,
+        scope=decision.scope,
         pipeline=decision.pipeline,
         state=decision.state,
         reason_codes=list(decision.reason_codes),

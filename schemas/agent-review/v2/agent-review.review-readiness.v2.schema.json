@@ -392,7 +392,8 @@
         "finding_confirmation_required",
         "confirmed_code_finding",
         "head_mismatch",
-        "identity_mismatch"
+        "identity_mismatch",
+        "scope_incomplete"
       ],
       "title": "ReadinessReasonV2",
       "type": "string"
@@ -524,6 +525,71 @@
       ],
       "title": "RunIdentityV2",
       "type": "object"
+    },
+    "ScopeCompletenessV2": {
+      "additionalProperties": false,
+      "description": "`#200-G3` -- was every CHANGED path, not merely every reviewable\nFRAGMENT, accounted for?\n\nAdditive, published alongside ``ChunkCoverageV2`` on\n``ReviewReadinessV2`` rather than folded into it: `#200-F`'s ADR\n(``docs/adr/ADR-200F-SCOPE-COMPLETENESS-CONTRACT.md``) found every\nexisting channel -- an expanded ``CoverageDegradationReasonV2`` member,\n``ChunkCoverageV2.status = partial``, an existing\n``ReadinessReasonV2`` member, a bare ``limitations`` list -- either\nasserted something untrue about an ordinary rename/chmod/binary/empty-\nfile change, or collapsed ``FragmentCoverage`` and ``ScopeCompleteness``\ninto one signal, destroying the distinction those two facts require.\nThis object is a NEW, additive, optional field\n(``ReviewReadinessV2.scope: ScopeCompletenessV2 | None = None``): an\nalready-published artifact that never set it remains valid, and a\nreader that does not know this field exists safely ignores it (a JSON\nconsumer skipping an unrecognized key) or safely fails closed (a\n``ContractV2Model``-pinned Python consumer, which sets ``extra=\"forbid\"``\nand therefore raises rather than silently misreading a stale/absent\ncompleteness signal as \"complete\").\n\nDeliberately the COARSE two-bucket split `#200-F`'s ADR itself\nproposed -- ``metadata_only_paths`` (vacuously representable: renames,\nchmod-only changes, empty-file transitions, submodule pointer moves)\nand ``unsupported_paths`` (a genuine capability gap: binaries,\ntruncated patches, unrepresentable paths, git type changes) -- not the\nricher 9-way structural disposition\n``operational_scope_v2.PathDispositionV2`` computes internally. The\nricher classification stays internal/evidence-only; the wire contract\nexposes only the two facts a downstream reader actually needs: is\ntotal scope accounted for, and which paths fall in which bucket.\n\nEvery path field here uses ``SafeText``, deliberately NOT\n``RelativePath``. Caught by this module's own first executable\nprototype (a real, non-hypothetical finding, not a design guess): an\n``unrepresentable``-disposition path is, BY DEFINITION, sometimes\nexactly a path that fails ``RelativePath`` (the everyday\n``src/pages/[id].tsx`` witness). Using the stricter type here would\nmake this contract unable to honestly construct the very artifact it\nexists to report -- the ``unrepresentable_paths``... no, the\n``unsupported_paths``... tuple would refuse to hold the path that made\nscope incomplete in the first place. ``reviewable_paths`` happens to\nalways satisfy ``RelativePath`` by construction (only a REVIEWABLE\ndisposition ever produces one), but a mixed-type schema for no\nbehavioral benefit is worse than a uniform, slightly more permissive\none applied everywhere.",
+      "properties": {
+        "changed_paths": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Changed Paths",
+          "type": "array"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "metadata_only_paths": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Metadata Only Paths",
+          "type": "array"
+        },
+        "must_review_blocked_paths": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Must Review Blocked Paths",
+          "type": "array"
+        },
+        "reviewable_paths": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Reviewable Paths",
+          "type": "array"
+        },
+        "unsupported_paths": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Unsupported Paths",
+          "type": "array"
+        }
+      },
+      "required": [
+        "complete",
+        "changed_paths",
+        "reviewable_paths",
+        "metadata_only_paths",
+        "unsupported_paths",
+        "must_review_blocked_paths"
+      ],
+      "title": "ScopeCompletenessV2",
+      "type": "object"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -601,6 +667,17 @@
       "const": 2,
       "title": "Schema Version",
       "type": "integer"
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ScopeCompletenessV2"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "source": {
       "const": "aiops-review-quality-gate",
