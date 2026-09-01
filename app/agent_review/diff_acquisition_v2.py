@@ -40,6 +40,7 @@ from typing import Literal
 from pydantic import TypeAdapter, ValidationError
 
 from app.agent_review.contracts_v2 import RelativePath
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 _RELATIVE_PATH_ADAPTER: TypeAdapter[str] = TypeAdapter(RelativePath)
 
@@ -53,10 +54,20 @@ _SUBMODULE_MODE = "160000"
 ChangeTypeV2 = Literal["added", "modified", "deleted", "renamed", "copied", "type_changed"]
 
 
-class DiffAcquisitionError(ValueError):
+class DiffAcquisitionError(ExpectedOperationalRefusalV2, ValueError):
     """Raised for a diff that cannot be safely parsed or acquired. Carries
     a stable ``reason_code`` only -- never raw diff content or a local
-    path, consistent with the rest of AgentReview v2."""
+    path, consistent with the rest of AgentReview v2.
+
+    Mixed into the `#200-G4` operational-refusal family (``operational_
+    refusal_v2.ExpectedOperationalRefusalV2``): ``parse_unified_diff`` is
+    the module that turns caller-supplied ``--diff`` *content* into
+    structured records, so a structurally unreadable diff is exactly the
+    same class of pre-seal external failure the rest of the ingress
+    boundary exists to convert -- not a programmer defect. The historical
+    ``ValueError`` base is retained, so every existing ``except
+    ValueError``/``pytest.raises(ValueError)`` call site keeps working
+    unchanged; this is a pure additive marker, not a behaviour change."""
 
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)

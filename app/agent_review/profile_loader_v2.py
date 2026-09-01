@@ -25,6 +25,7 @@ import yaml
 from pydantic import ValidationError
 
 from app.agent_review.contracts_v2 import TargetProfileV2
+from app.agent_review.operational_refusal_v2 import ExpectedOperationalRefusalV2
 
 TARGET_PROFILE_MISSING_REASON_V2 = "target_profile_missing"
 TARGET_PROFILE_UNREADABLE_REASON_V2 = "target_profile_unreadable"
@@ -33,10 +34,17 @@ TARGET_PROFILE_INVALID_REASON_V2 = "target_profile_invalid"
 DEFAULT_TARGET_PROFILE_RELATIVE_PATH = Path(".aiops") / "target-profile.v2.yaml"
 
 
-class TargetProfileLoadErrorV2(ValueError):
+class TargetProfileLoadErrorV2(ExpectedOperationalRefusalV2, ValueError):
     """Raised for every profile-loading failure. Carries a stable
     ``reason_code`` only -- never raw YAML/JSON content, the original
-    exception text, or a local path."""
+    exception text, or a local path.
+
+    Mixed into the `#200-G4` operational-refusal family: ``load_target_
+    profile_text_v2`` is the function the ingress boundary calls to turn
+    caller-supplied ``--profile`` *content* into a validated profile, so an
+    unparseable or schema-invalid profile is pre-seal external failure, not
+    a programmer defect. Additive only -- the historical ``ValueError``
+    base is retained, so existing call sites are unaffected."""
 
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
@@ -102,8 +110,18 @@ _YAML_PARSE_FAILURES_V2: tuple[type[BaseException], ...] = (
 )
 
 
-class AmbiguousProfileDocumentV2(Exception):
-    """Raised at the exact point PyYAML would otherwise pick silently."""
+class AmbiguousProfileDocumentV2(ExpectedOperationalRefusalV2, Exception):
+    """Raised at the exact point PyYAML would otherwise pick silently.
+
+    `#200-G4`: this has a public name, so it does not qualify for the
+    module-private control-flow-signal exemption a static-analysis proof
+    would otherwise need to establish -- it joins the family and publishes a
+    code instead, exactly as `#277` independently concluded for the same
+    class."""
+
+    def __init__(self, reason_code: str = "target_profile_document_ambiguous") -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
 
 
 class _CollisionRefusingSafeLoaderV2(yaml.SafeLoader):
