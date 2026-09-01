@@ -396,3 +396,112 @@ def test_the_range_predicate_is_shared_with_synthesis_not_reimplemented() -> Non
         binding_module._finding_within_chunk_fragments_v2
         is scope_module._finding_within_chunk_fragments_v2
     )
+
+
+def _verified_router_result_v2(payload: ChunkPayloadV2, *, findings: list[dict[str, object]]):
+    """Build a receipt-verified Router result directly.
+
+    Uses ``_router_receipt_v2``'s own sentinel rather than driving a full
+    Router exchange. That module's docstring is explicit that the sentinel is
+    an internal-API guard against accidental misuse and *not* a cryptographic
+    boundary, so constructing one here tests exactly the seam under
+    examination -- what the range authority does with an already-verified
+    result -- without dragging receipt verification into a binding test. The
+    full path with real receipts is exercised in the product acceptance tests.
+    """
+    from app.agent_review import _router_receipt_v2
+    from app.agent_review.contracts_v2 import ChunkReviewResultV2
+    from app.agent_review.review_transport_contract_v2 import (
+        ChunkReviewRequestV2,
+        compute_request_sha256_v2,
+    )
+
+    content_sha256 = "7" * 64
+    request_material = {
+        "run_id": payload.run_id,
+        "chunk_id": payload.chunk_id,
+        "head_sha": payload.identity.head_sha,
+        "payload_sha256": payload.payload_sha256,
+        "content_sha256": content_sha256,
+    }
+    request = ChunkReviewRequestV2.model_validate(
+        {**request_material, "request_sha256": compute_request_sha256_v2(**request_material)}
+    )
+    result = ChunkReviewResultV2.model_validate_json(
+        json.dumps(
+            {
+                "schema_id": "agent-review.chunk-response.v2",
+                "schema_version": 2,
+                "summary": "review-complete",
+                "findings": findings,
+                "coverage": json.loads(payload.coverage.model_dump_json()),
+                "limitations": [],
+            }
+        )
+    )
+    return _router_receipt_v2._VerifiedRouterResultV2(
+        sentinel=_router_receipt_v2._VERIFIED_RESULT_SENTINEL,
+        request=request,
+        result=result,
+    )
+
+
+def test_the_router_path_gets_the_same_range_authority() -> None:
+    """Both transports, per the grant. Neither may be the weaker one.
+
+    Receipt verification proves the Router-side input, execution and output
+    relations. It establishes nothing about whether the model cited a line
+    inside the hunk it was shown, so a receipt-verified result is scrutinised
+    exactly like an offline one.
+    """
+    from app.agent_review.operational_result_binding_v2 import (
+        bind_router_result_with_range_authority_v2,
+    )
+
+    manifest, payload = _manifest_and_payload_v2()
+    verified = _verified_router_result_v2(
+        payload,
+        findings=[
+            _finding_v2(line_start=_FRAGMENT_END_V2 + 5, line_end=_FRAGMENT_END_V2 + 7)
+        ],
+    )
+
+    with pytest.raises(ResponseBindingError) as caught:
+        bind_router_result_with_range_authority_v2(
+            verified=verified, payload=payload, manifest=manifest
+        )
+
+    assert caught.value.reason_code == FINDING_OUTSIDE_CHUNK_SCOPE_REASON_V2
+
+
+def test_an_in_range_router_result_still_binds() -> None:
+    """Non-vacuity control for the Router path."""
+    from app.agent_review.operational_result_binding_v2 import (
+        bind_router_result_with_range_authority_v2,
+    )
+
+    manifest, payload = _manifest_and_payload_v2()
+    verified = _verified_router_result_v2(
+        payload, findings=[_finding_v2(line_start=12, line_end=15)]
+    )
+
+    bound = bind_router_result_with_range_authority_v2(
+        verified=verified, payload=payload, manifest=manifest
+    )
+
+    assert isinstance(bound, BoundChunkResponseV2)
+    assert bound.findings[0].line_start == 12
+
+
+def test_a_non_verified_object_cannot_enter_the_router_binder() -> None:
+    """Sealed-type discipline survives the extra wrapper layer."""
+    from app.agent_review.operational_result_binding_v2 import (
+        bind_router_result_with_range_authority_v2,
+    )
+
+    manifest, payload = _manifest_and_payload_v2()
+
+    with pytest.raises(ResponseBindingError):
+        bind_router_result_with_range_authority_v2(
+            verified=object(), payload=payload, manifest=manifest
+        )
