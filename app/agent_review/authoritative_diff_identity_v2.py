@@ -87,14 +87,23 @@ def acquire_authoritative_diff_with_identity_v2(
     *,
     base_sha: str,
     head_sha: str,
-) -> tuple[tuple[ParsedFileDiffV2, ...], AcquiredDiffIdentityV2]:
+) -> tuple[tuple[ParsedFileDiffV2, ...], str, AcquiredDiffIdentityV2]:
     """Acquire and correlate both Git diff views while retaining byte identity.
 
     This is the G3B path. ``diff_acquisition_v2.acquire_authoritative_diff_v2``
-    (the legacy wrapper) now delegates to this function and discards the
-    identity value, so both entry points share one acquisition/parsing/
-    correlation implementation. No caller needs to trust a second parser or
-    a path-set projection to establish the digest.
+    (the legacy wrapper) now delegates to this function and discards
+    ``diff_text``/the identity value, so both entry points share one
+    acquisition/parsing/correlation implementation. No caller needs to trust
+    a second parser or a path-set projection to establish the digest.
+
+    Returns ``(file_diffs, diff_text, identity)`` -- ``diff_text`` is
+    returned (#200-G3B correction round, finding 1) precisely so a caller
+    that also needs the raw diff text (e.g. for hunk-body extraction) never
+    has to acquire it a SECOND, independent time. A second acquisition would
+    leave a view (whichever one is not re-hashed and checked) that
+    ``verify_manifest_diff_binding_v2`` never actually covers -- ``file_diffs``
+    and ``diff_text`` must always be two views of the exact same acquired
+    bytes, never two separate acquisitions that happen to usually agree.
     """
 
     # Called through the `diff_acquisition_v2` module object, not as
@@ -115,7 +124,7 @@ def acquire_authoritative_diff_with_identity_v2(
         head_sha=head_sha,
         diff_sha256=compute_authoritative_diff_sha256_v2(diff_text),
     )
-    return file_diffs, identity
+    return file_diffs, diff_text, identity
 
 
 def bind_manifest_to_diff_identity_v2(

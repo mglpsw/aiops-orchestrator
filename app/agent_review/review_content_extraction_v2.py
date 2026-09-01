@@ -77,6 +77,7 @@ from pydantic import TypeAdapter, ValidationError
 from app.agent_review.authoritative_diff_identity_v2 import (
     ManifestDiffBindingError,
     ManifestDiffBindingV2,
+    acquire_authoritative_diff_with_identity_v2,
     verify_manifest_diff_binding_v2,
 )
 from app.agent_review.contracts_v2 import Sha256, TargetProfileV2
@@ -111,6 +112,11 @@ from app.agent_review.redaction import RedactionState
 CONTENT_REASON_NO_REVIEWABLE_CHUNKS_V2 = "no_reviewable_chunks"
 CONTENT_REASON_HUNK_BODY_UNAVAILABLE_V2 = "hunk_body_unavailable"
 CONTENT_REASON_HUNK_RECOMPOSITION_FAILED_V2 = "hunk_recomposition_failed"
+# #200-G3B correction round, finding 2: a fragment's declared range must
+# fall inside its hunk's REAL, re-acquired bounds regardless of whether it
+# takes the whole-hunk or the windowed slicing path -- only the whole-hunk
+# path had any check at all before this.
+CONTENT_REASON_FRAGMENT_RANGE_OUTSIDE_HUNK_BOUNDS_V2 = "fragment_range_outside_hunk_bounds"
 CONTENT_REASON_OVER_BUDGET_REQUIRES_REPLAN_V2 = "content_over_budget_requires_replan"
 CONTENT_REASON_WINDOW_OWNS_NO_LINES_V2 = "window_owns_no_real_lines"
 CONTENT_REASON_DLP_DETECTOR_NOT_EXECUTED_V2 = "dlp_detector_not_executed"
@@ -426,6 +432,25 @@ def _build_fragment_content_v2(
         and fragment.new_range.start == hunk_body.new_start
         and fragment.new_range.end == hunk_new_end
     )
+    # #200-G3B correction round, finding 2: a windowed (non-whole-hunk)
+    # fragment used to reach `slice_hunk_body_by_range_v2`/
+    # `slice_hunk_body_by_owned_lines_v2` below with NO check that its
+    # range actually falls inside this REAL, re-acquired hunk's own bounds
+    # -- only the whole-hunk path (below) ever verified anything. A real
+    # `planner_v2` window is always a strict sub-range of the hunk it was
+    # planned from; a fragment whose range falls outside that is not a
+    # legitimate window of THIS hunk, whatever produced it, and slicing it
+    # anyway would silently return wrong content with no error. Checked
+    # unconditionally, before either slicing path runs.
+    if (
+        fragment.old_range.start < hunk_body.old_start
+        or fragment.old_range.end > hunk_old_end
+        or fragment.new_range.start < hunk_body.new_start
+        or fragment.new_range.end > hunk_new_end
+    ):
+        raise ExtractionBlockedError(
+            CONTENT_REASON_FRAGMENT_RANGE_OUTSIDE_HUNK_BOUNDS_V2, fragment_id=fragment.fragment_id
+        )
     # Whole-hunk fragments (the overwhelmingly common case, and the ONLY
     # case that needs to reproduce diff_sha256 below) always use the plain
     # range slice -- there is exactly one fragment for that hunk, so
@@ -746,8 +771,21 @@ def _extract_review_content_v2(
         raise ExtractionBlockedError(CONTENT_REASON_PROFILE_HASH_MISMATCH_V2, fragment_id=None)
 
     try:
-        file_diffs = acquire_authoritative_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
-        diff_text = acquire_diff_v2(repo_root, base_sha=base_sha, head_sha=head_sha)
+        # #200-G3B correction round, finding 1: `file_diffs` (drives path/
+        # scope classification below) and `diff_text` (what the binding
+        # check below actually hashes) MUST come from the exact same
+        # acquisition -- two separate acquisitions (however unlikely to
+        # differ in practice) leave whichever view is not re-hashed
+        # completely uncovered by `verify_manifest_diff_binding_v2`, and a
+        # divergence there was reproducible via `acquire_authoritative_
+        # diff_v2` alone (fabricated `is_binary` silently drops a real,
+        # non-binary file from review scope, with the binding check still
+        # passing on the untouched `diff_text`). One acquisition now backs
+        # both views: `file_diffs` is literally derived from this exact
+        # `diff_text` by the same parse/correlate pass, not a second one.
+        file_diffs, diff_text, _acquired_identity = acquire_authoritative_diff_with_identity_v2(
+            repo_root, base_sha=base_sha, head_sha=head_sha
+        )
         hunk_bodies = extract_hunk_bodies_v2(diff_text)
     except DiffAcquisitionError as exc:
         # Preserve the acquisition authority's own reason. Flattening every
@@ -766,6 +804,9 @@ def _extract_review_content_v2(
     # v2's own "no trusted-flag opt-out" discipline). This is the exact
     # closure the #285 predecessor never actually wired into a real
     # entrypoint (verified only in isolated unit tests, never invoked here).
+    # Because `file_diffs` is derived from this SAME `diff_text` (above),
+    # this check now also transitively covers the classification view, not
+    # only the hunk-body view.
     verify_manifest_diff_binding_v2(
         manifest_diff_binding,
         manifest=manifest,
