@@ -311,3 +311,76 @@ def test_the_new_patterns_are_linear_in_input_length() -> None:
 
     # 8x the input must not cost anything like 8^2 the time.
     assert durations[-1] < durations[0] * 24, durations
+
+
+def test_redaction_does_not_damage_this_repository_s_own_source() -> None:
+    """The control that would have caught round 2's over-correction.
+
+    Fixing authority E's leaks by making every value after a sensitive key
+    suspect swung too far: measured against this repository's 138 source
+    files, it altered **71 real lines** and left several syntactically
+    broken --
+
+        "prompt_tokens": usage.get("input_tokens", 0)
+          -> "prompt_tokens": [REDACTED], 0)
+
+    -- because ``max_tokens`` and ``prompt_tokens`` are *counts*. A
+    hand-written benign corpus could not have found that; only real code
+    could. Over-redaction is the safe direction for a credential, but handing
+    a reviewer invalid syntax damages exactly the material the product exists
+    to review, so it is not free.
+
+    The only lines this may alter are in ``redaction.py`` itself, whose
+    comments quote example secret assignments verbatim. That is correct
+    behaviour on a file that documents secret shapes, and it is bounded here
+    so it cannot quietly grow.
+    """
+    import pathlib
+
+    package_root = pathlib.Path(
+        __import__("app.agent_review", fromlist=["__file__"]).__file__
+    ).parent
+    application_root = package_root.parent
+
+    damaged: list[str] = []
+    for source_path in sorted(application_root.rglob("*.py")):
+        for line_number, line in enumerate(
+            source_path.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+        ):
+            if redact_text(line, RedactionState()) != line:
+                damaged.append(f"{source_path.name}:{line_number}")
+
+    offenders = [entry for entry in damaged if not entry.startswith("redaction.py:")]
+
+    assert offenders == [], (
+        f"redaction altered {len(offenders)} lines of ordinary source: {offenders[:10]}"
+    )
+    assert len(damaged) < 20, (
+        "even redaction.py's own example-bearing comments should not grow "
+        f"without notice: {len(damaged)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "ordinary_line",
+    [
+        '"max_tokens": max_tokens,',
+        '"prompt_tokens": usage.get("input_tokens", 0),',
+        "self.api_key = settings.claude_api_key",
+        "command_token: SafeIdentifier",
+        "old_path_token = tokens[index]",
+        "if token == expected_token:",
+        "token = ['\"']",
+        "usage: _TokenUsageV1 = Field(default_factory=lambda: None)",
+        'monkey = "banana"',
+        "max_tokens = 100",
+    ],
+)
+def test_ordinary_code_shapes_survive_redaction(ordinary_line: str) -> None:
+    """Each of these was mangled by the first round-2 attempt.
+
+    ``token == expected`` is included because the comparison was being read as
+    an assignment and its second ``=`` consumed as the value -- a defect that
+    predates this slice and is closed here.
+    """
+    assert redact_text(ordinary_line, RedactionState()) == ordinary_line

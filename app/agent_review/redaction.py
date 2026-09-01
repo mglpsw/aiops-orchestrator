@@ -60,11 +60,25 @@ _BEARER_RE = re.compile(r"(?i)\bbearer\s+([A-Za-z0-9._~+/=-]{8,})")
 # 2. The value is SUSPECT to end of line and is spared only when demonstrably
 #    benign. Enumerating secret shapes loses to the next shape; enumerating
 #    benign shapes fails safe.
+# The sensitive word must be the identifier's HEAD NOUN -- at the end, not
+# merely somewhere inside. Measured against this repository's own source, the
+# earlier "contains" form altered 71 real lines and left several
+# SYNTACTICALLY BROKEN, because `max_tokens`/`prompt_tokens` are COUNTS:
+#
+#     "prompt_tokens": usage.get("input_tokens", 0)
+#       -> "prompt_tokens": [REDACTED], 0)
+#
+# Over-redaction is the safe direction for a credential, but not at the price
+# of handing a reviewer invalid syntax -- that damages exactly the material
+# the product exists to review. Plural `tokens` is excluded deliberately: in
+# this domain it means units of text, never a secret.
 _SENSITIVE_KEY_V2 = (
-    r"[A-Za-z0-9_.\-]*"
-    r"(?:password|passwd|pwd|secret|token|api[_-]?key|apikey|credential"
-    r"|private[_-]?key|access[_-]?key)"
-    r"[A-Za-z0-9_.\-]*"
+    r"[A-Za-z0-9_.\-]*?"
+    r"(?:password|passwd|pwd|secret|token|apikey|credentials?"
+    # A separator before `key` is required so `secret_key`, `signing_key` and
+    # `api-key` match while `monkey` and `donkey` do not. Bare `key` is left
+    # out: it is a very common ordinary variable name.
+    r"|[_.\-]key)"
 )
 
 # An optional Python string prefix (f, b, r, u and their pairs) followed by a
@@ -91,7 +105,7 @@ _QUOTED_VALUE_V2 = "|".join(
 )
 
 _ASSIGNMENT_RE = re.compile(
-    r"(?i)\b(" + _SENSITIVE_KEY_V2 + r")([\"']?\s*=\s*)(" + _QUOTED_VALUE_V2 + r"|[^\s&;,]+)"
+    r"(?i)\b(" + _SENSITIVE_KEY_V2 + r")([\"']?\s*=(?![=~])\s*)(" + _QUOTED_VALUE_V2 + r"|[^\s&;,]+)"
 )
 
 # The colon form now accepts UNQUOTED values. Requiring quotes was justified
@@ -119,6 +133,20 @@ _BENIGN_VALUE_RE_V2 = re.compile(
       | \{\{[^\n]*\}\}
       | \$\{[^\n]*\}
       | \$[A-Za-z_][A-Za-z0-9_]*
+      # A dotted name or a call is a REFERENCE, not a literal, so it cannot
+      # itself be a hard-coded secret. `self.api_key = settings.claude_api_key`
+      # and `usage: X = Field(...)` are ordinary code that was being mangled.
+      | [A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+
+      | [A-Za-z_][A-Za-z0-9_.]*\([^\n]*
+      # A subscript is a lookup, not a literal: `token = tokens[index]`.
+      | [A-Za-z_][A-Za-z0-9_.]*\[[^\n]*
+      # A collection literal is not a credential: `token = ['"']`.
+      | [\[\{\(][^\n]*
+      # A CapitalCase name in a type position is a class, not a secret:
+      # `command_token: SafeIdentifier`. Enumerating type names missed every
+      # project-defined one, which is the same enumeration failure this
+      # module keeps relearning.
+      | [A-Z][A-Za-z0-9_]*(?:\[[^\n]*\])?(?:\s*\|\s*[A-Za-z_][A-Za-z0-9_.\[\]]*)*
     )$
     """
 )
