@@ -1,8 +1,18 @@
 # Checkpoint — `#200-G4`: external material ingress closure
 
-**Status:** implemented and locally qualified; independent adversarial review
-pending (required before any Ready/merge consideration, which this checkpoint
-does not request).
+**TERMINAL VERDICT: `STOP_G4_ARCHITECTURE_NOT_CONVERGING`.** The
+ingress-closure mechanism (per-call-site path/document validation in
+`operational_ingress_v2.py`) was independently refuted a second time, after
+one bounded correction round already spent, per the grant's explicit rule
+("if the SAME abstraction is independently refuted a SECOND time:
+`STOP_G4_ARCHITECTURE_NOT_CONVERGING`. Write that verdict and stop.").
+See "Round-2 independent review and final disposition" below. **Not**
+everything in this slice failed: the bidirectional invariant (the
+post-seal/pre-seal asymmetry, `except ValidationError` narrowing) was
+independently re-attacked from scratch in round 2 and confirmed
+`NON_REFUTED` — a real, separable, working piece worth preserving into
+whatever redesign follows. No further correction round attempted or
+authorized here. Draft PR only, no merge, no Ready.
 
 ```yaml
 subject:
@@ -13,11 +23,15 @@ subject:
   parent_issue: 200
   forensic_source: PR #277 (CLOSED, unmerged), commit fe5b0705c66087fb50312865b545c8a3a2b359e0
   forensic_classification: FROZEN_FORENSIC_200F, ported WITH REVALIDATION only
+final_head: <filled in at push time, see git log>
 state:
   merged: false
   ready_marked: false
   ci_workflow_modified: false
   router_or_live_provider_called: false
+  terminal_verdict: STOP_G4_ARCHITECTURE_NOT_CONVERGING
+  bidirectional_invariant_disposition: NON_REFUTED
+  ingress_closure_mechanism_disposition: REFUTED_TWICE
 ```
 
 `base_sha` matches the recovery checkpoint's `master_sha` exactly (no drift
@@ -376,32 +390,162 @@ the Lane A regression tests, the realistic-validator tests, and the
 KNOWN_LIMITATION pins). `profile_loader_v2`'s full pre-existing test suite
 (163 tests) reconfirmed green after the narrowing fix.
 
-## Independent review — round 2 (pending)
+## Independent review — round 2 (at `848a2c5`)
 
-Per the grant: after this one bounded correction round, two FRESH
-independent review lanes are dispatched against the new frozen head, at
-minimum re-targeting Lane B's exact bidirectional-invariant class (the
-abstraction that would trigger `STOP_G4_ARCHITECTURE_NOT_CONVERGING` if
-refuted a second time in the sense of finding something this checkpoint
-does NOT already own up to — i.e. a NEW gap, or evidence that the "closed"
-sources aren't actually closed, not a re-discovery of the two limitations
-already named above). Findings recorded in a further follow-up once both
-return.
+Two FRESH independent review lanes (no memory of round 1) dispatched via the
+`Agent` tool against frozen head `848a2c52978b17b0d8216809be31d13ccddc8a14`
+(PR #283 Draft), per the grant: one re-targeting the bidirectional-invariant
+class specifically (the abstraction whose second refutation would trigger
+the STOP), one hunting broadly for any remaining raw-leak source.
 
-## Next minimum action
+**Lane D (bidirectional invariant re-hunt) — `NON_REFUTED`.** Independently
+re-attacked the round-1 correction from scratch with its own adversarial
+corpus against `profile_loader_v2`'s narrowed `except ValidationError` and
+`operational_ingress_v2`'s pydantic-validator-wrapping analysis, and formed
+its own independent judgment on whether the two named, accepted limitations
+(the YAML-loader ambiguity and the pydantic-validator-body ambiguity) are
+honestly characterized or a convenient excuse. Confirmed: the round-1
+correction holds, and the two named limitations are genuinely structural,
+not closable by a narrower except clause. No P0/P1 against this piece.
 
-Await both round-2 independent review passes; if a genuinely new P0/P1
-surfaces (not the two already-named, documented limitations), assess
-whether it is narrowly fixable within a further bounded round or whether it
-indicates the ingress-closure abstraction itself is not converging. If the
-SAME class of finding recurs a second time in a way that contradicts what
-this checkpoint actually claims (as opposed to confirming an already-named
-limitation), stop with `STOP_G4_ARCHITECTURE_NOT_CONVERGING` rather than
-attempting a third round. If round 2 finds nothing beyond the two named,
-accepted limitations, report `PRIMITIVE_NON_REFUTED` (scoped precisely: not
-"everything is closed", but "every source is closed except two explicitly
-named, structurally-inherent-to-pydantic/PyYAML residuals that are out of
-this primitive's proportionate scope to close") and hand off to whichever
-primitive (`#200-G1`/`#200-G3`) is next scheduled, per the recovery
-checkpoint's decomposition — G4 does not itself decide G5's start
-condition.
+**Lane C (post-correction leak re-hunt) — P0, independently reproduced,
+refuting the ingress-closure mechanism itself:**
+
+1. `validate_existing_file_v2`/`validate_existing_directory_v2` — the
+   actual first-line path validators used directly for `--profile`,
+   `--diff`, `--responses`, and (via `read_caller_document_text_v2`) for
+   `--grouping-policy` -- have **no try/except at all** around
+   `path.is_file()`/`path.is_dir()`. The round-1 correction only wrapped
+   `read_offline_response_document_v2`'s own call site; this sibling call
+   site, exercised on **every single CLI invocation**, was never touched.
+   Independently reproduced twice: directly against the function (an
+   overlong absolute path raises a raw `OSError` uncaught), and through the
+   real CLI end-to-end (`scripts/aiops-review-run-v2.py --profile
+   /aaaa...100000-chars...`) -- exit code `1` (an unhandled crash, not the
+   typed-refusal exit `2`), a full Python traceback on stderr, and the
+   entire 100,000-byte caller-supplied path echoed verbatim in that
+   traceback. This is the mandatory RED witness's exact leak class,
+   reproduced through the module's own most-used, most-basic function.
+
+2. `Path.resolve()` raises `RuntimeError` (not `OSError`/`ValueError`) for a
+   filesystem symlink loop -- a shape the round-1-corrected
+   `except (OSError, ValueError)` in `read_offline_response_document_v2`
+   does **not** catch. Independently reproduced: two symlinked files
+   (`chunk-0000.json` <-> `loop_target.json`) forming a cycle inside a
+   `--responses` directory, read through the CLI's own internally-generated
+   `chunk-0000` id -- no adversarial `chunk_id` construction needed at all,
+   just an operator or a compromised/misconfigured upstream step planting a
+   symlink loop in a directory this module's own docstring already names as
+   exactly that threat model ("an operator, or a compromised/misconfigured
+   upstream step, controls what lands in that directory").
+
+Both reproduced independently by this agent (not merely trusted from the
+review agent's report) before being accepted; see the reproduction
+transcripts run against `848a2c5` (the `OSError`/full-path-echo case
+produced by `validate_existing_file_v2` directly and through the real CLI
+subprocess; the `RuntimeError` case produced by
+`read_offline_response_document_v2` against a real symlink-loop fixture).
+
+## Terminal verdict: `STOP_G4_ARCHITECTURE_NOT_CONVERGING`
+
+Per the grant's explicit rule ("If the SAME abstraction (your
+ingress-closure mechanism) is independently refuted a SECOND time:
+`STOP_G4_ARCHITECTURE_NOT_CONVERGING`. Write that verdict and stop."): the
+ingress-closure mechanism -- per-call-site validation of caller-controlled
+paths and documents in `operational_ingress_v2.py` -- was independently
+refuted in round 1 (Lane A/B, corrected in one bounded round) and refuted
+**again** in round 2 (Lane C), against a *different* call site than round 1
+touched, in the module's own most heavily used function. One correction
+round has already been spent, per the grant's own limit ("This is your ONE
+bounded correction round"); no third round is attempted or authorized here.
+
+**Scoped precisely, not globally**: this STOP applies to the ingress-closure
+*mechanism* -- the pattern of hand-writing a `try`/`except` at each
+individual call site that touches caller-controlled filesystem paths or
+document content. It does **not** apply to the bidirectional invariant
+(pre-seal vs. post-seal asymmetry, the `except ValidationError` narrowing
+discipline), which round 2's Lane D independently re-confirmed
+`NON_REFUTED` from scratch. That piece is real, sound, and worth carrying
+forward into whatever redesign follows -- it should not be discarded along
+with the mechanism that failed.
+
+**Why the mechanism recurred rather than converged**: round 1 fixed exactly
+the call site round 1's reviewers found
+(`read_offline_response_document_v2`'s `resolve()`/`is_file()` pair), and
+round 2 found the *identical defect shape* (an unguarded or
+incompletely-guarded `Path` filesystem operation, raising an exception type
+outside whatever the local `except` clause happens to enumerate) at a
+**sibling** call site (`validate_existing_file_v2`/
+`validate_existing_directory_v2`) that round 1 never touched, plus a
+*third* exception type (`RuntimeError`, from a symlink loop) that not even
+round 1's own fix caught. Two rounds, two distinct call sites, three
+distinct exception shapes (`ValueError`/`OSError`/`RuntimeError`) from what
+is structurally the same underlying operation (stat-ing or resolving a
+caller-influenced path). This is not "one more bug to patch" -- it is
+evidence that per-call-site defensive coding against an open-ended set of
+`pathlib`/OS-level failure modes does not converge by enumeration, the same
+class of lesson `#276`'s hand-maintained exception tuple and `#277`'s own
+STOP already taught this codebase in a different layer (the exception-type
+enumeration problem, one level up).
+
+## Recommendation for whoever picks this up next (NOT implemented here)
+
+No further correction round is authorized under this grant, so the
+following is recorded as a recommendation only, not attempted:
+
+Replace every individual `path.is_file()` / `path.is_dir()` / `path.resolve()`
+call scattered across this module's functions with a **single, centralized
+path-validation primitive** -- one function that every ingress call site
+routes through, whose own `try`/`except` is written and adversarially
+tested exactly once, covering the full realistic exception surface of
+"stat or resolve a caller-influenced path" (`OSError` and all its errno
+variants, `ValueError` for embedded NULs, `RuntimeError` for symlink loops,
+and whatever else a systematic adversarial sweep of `pathlib`'s own
+documented and undocumented failure modes turns up) -- rather than trusting
+each of N call sites to independently enumerate and re-derive that same
+surface correctly. This mirrors the fix already proven for the
+*exception-type* enumeration problem elsewhere in this codebase
+(`operational_refusal_v2.ExpectedOperationalRefusalV2` -- one structural
+marker, checked once, rather than a hand-maintained tuple re-derived at
+every catch site) applied one level down, to *filesystem operations*
+specifically rather than *exception class membership*. A future attempt
+should adversarially fuzz that single primitive directly (a property-style
+corpus of pathological path shapes: null bytes, symlink loops, overlong
+names/components, permission-denied, ENOENT-mid-resolve races, non-UTF-8
+path bytes on POSIX, Windows-reserved-name shapes if cross-platform matters)
+rather than relying on reviewers to find shapes one at a time across
+separate call sites, which is the process that produced two rounds of
+partial, non-converging fixes here.
+
+## What to preserve, what to discard
+
+| Artifact | Disposition |
+|---|---|
+| `operational_refusal_v2.py` (family marker) | Preserve -- unaffected by the STOP, sound |
+| The bidirectional-invariant discipline (`except ValidationError` narrowing, the "named accepted limitation" documentation pattern for the pydantic/YAML residuals) | Preserve -- independently re-confirmed `NON_REFUTED` in round 2 |
+| The 9-scalar/document ingress pattern (`validate_public_inputs_v2`, `read_caller_document_text_v2`, `validate_caller_document_v2`) content-validation logic | Preserve the *validation* logic; the surrounding path-existence checks are exactly what's refuted |
+| Per-call-site `try`/`except` around individual `Path` filesystem operations (`validate_existing_file_v2`, `validate_existing_directory_v2`, `read_offline_response_document_v2`'s path-escape guard) | **Refuted mechanism** -- do not port forward as-is; redesign as a single centralized primitive per the recommendation above |
+| `operational_workspace_v2.temp_workspace_v2` | Preserve -- a different mechanism (guaranteed cleanup via context-manager scoping), not implicated by either round's findings |
+| `scripts/aiops-review-run-v2.py`'s scope decision (ingress-boundary only, not the full two-process product) | Preserve as a scoping lesson for whoever attempts this primitive next |
+
+## Not authorized / not attempted (reconfirmed at STOP)
+
+Marking Ready, merging, tagging/releasing, deploying, modifying CI workflow
+files, calling a live Router or real LLM provider, mutating
+AgentEscala/InterLeitos/CAEM repos, closing `#200`, modifying `#273` — none
+attempted, and none authorized from a `STOP` verdict. PR remains in Draft
+state. No third correction round attempted.
+
+## Final state
+
+- Final head: `848a2c52978b17b0d8216809be31d13ccddc8a14` (the round-2-reviewed
+  commit) plus this checkpoint's own closing update commit -- no further
+  code changes follow the STOP.
+- Branch `feat/200-g4-external-material-ingress` pushed; Draft PR #283 body
+  updated to reflect the STOP verdict.
+- Issue #282 (`#200-G4`) left open, not closed -- a STOP is not a completion.
+- Next minimum action for whoever picks this up: re-derive the ingress path-
+  validation primitive from the recommendation above as a fresh design (not
+  a further patch of this one), independently re-qualify it from zero (no
+  qualification transfer from this branch's per-call-site version), and
+  carry forward the preserved artifacts listed above unchanged.
