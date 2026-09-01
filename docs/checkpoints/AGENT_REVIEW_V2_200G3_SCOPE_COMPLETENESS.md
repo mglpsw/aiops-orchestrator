@@ -139,10 +139,134 @@ verdict, which also depends on round-2 review).
 
 ## Round 2 independent adversarial review disposition
 
-<!-- Filled in after both round-2 passes return. -->
+Both lanes dispatched against head `65ba571e1dd510c9c040350465ac75c9057fd9bf`,
+independently, worktree-isolated, with at least one lane explicitly briefed
+to re-attack "construct a `ready`/non-`SCOPE_INCOMPLETE`-flagged artifact
+through the REAL entrypoint while a changed path goes unaccounted for."
 
-- Lane A (round 2): PENDING
-- Lane B (round 2): PENDING
+**Both lanes independently converged on the same root cause: `REFUTED`.**
+
+- **Lane A, P0.** The round-1 fix (`file_diffs`/`profile` wired into
+  `run_synthetic_review_v2`) closes the exact round-1 witness, but
+  `assert_scope_authority_agrees_with_assembly_v2` only compares
+  `assessment.reviewable_paths` against `manifest.expected_files` -- both
+  DERIVED sets. It is blind by construction to a `file_diffs` that
+  silently OMITS a changed path's block entirely (as opposed to
+  misclassifying a path still present in the list). Repro: build
+  `manifest` from the full diff (correctly excluding the `#277` witness
+  `src/pages/[id].tsx`), then call the scope assessment with a TRUNCATED
+  `file_diffs` that drops that path's block entirely --
+  `assessment_truncated.reviewable_paths` is IDENTICAL to the full-diff
+  case (`{"app.py"}` either way), so the detector does not raise, and the
+  resulting `ScopeCompletenessV2.complete` is `True` with the witness path
+  absent from every field, `SCOPE_INCOMPLETE` never reachable.
+  **Independently reproduced by this agent** (see below) through the
+  exact call shape `run_synthetic_review_v2`'s own docstring claims closes
+  the gap.
+- **Lane B, same defect, independently found, framed as a confused
+  deputy.** The detector never checks that `file_diffs`/`profile` are
+  actually the SAME material `manifest` was built from -- only that the
+  assessment and the assembly agree given WHATEVER `file_diffs` happens to
+  be passed. Repro: build `manifest` from diff A (containing both
+  `app.py` and the witness path, correctly excluding the latter), then
+  assess scope against a DIFFERENT diff B containing only `app.py` -- no
+  disagreement raised, `complete` ends up `True`, silently certifying
+  complete scope while diff A's real unrepresentable path was never
+  accounted for. Lane B additionally confirmed via mutation: deleting the
+  `assert_scope_authority_agrees_with_assembly_v2` call from
+  `run_synthetic_review_v2` entirely produces **zero test failures**
+  across the full scope-related test suite -- the check has no test
+  proving it is load-bearing through the real entrypoint, only through
+  direct unit tests of the function itself. This directly falsifies this
+  ADR's own claim that the detector is "checked as a runtime invariant
+  every run, not merely proven once by a fuzz corpus."
+
+**Independently reproduced by this agent before accepting either finding**
+(per this slice's own process discipline): both the truncated-`file_diffs`
+scenario (confirmed: `assert_scope_authority_agrees_with_assembly_v2` does
+not raise; `ScopeCompletenessV2.complete` is `True` with the witness path
+completely absent from `changed_paths`) and Lane B's mutation (confirmed:
+removing the detector call from `run_synthetic_review_v2` produces
+identical test results -- 301 passed, 16 skipped, no change -- across
+`test_review_transport_v2.py`, `test_operational_scope_v2.py`,
+`test_scope_completeness_contract_v2.py`).
+
+Both lanes independently confirmed the round-1 `ScopeCompletenessV2.
+complete` self-consistency fix and the cross-state `reason_codes` check
+hold under fresh adversarial construction and mutation -- that piece is
+genuinely `NON_REFUTED` and salvageable (see below).
+
+## Terminal verdict: `STOP_G3_SCOPE_CONTRACT_NOT_CONVERGING`
+
+The scope-completeness ANTI-RECURRENCE WIRING -- the specific abstraction
+that the round-1 review already refuted once (unwired entirely) -- was
+independently refuted a SECOND time after the one bounded correction round
+this grant allows, by two separate review lanes converging on the same
+systemic hole: the disagreement detector verifies INTERNAL consistency
+between two values both derived from whatever `file_diffs` a caller
+happens to supply, never the AUTHENTICITY of that `file_diffs` against the
+`manifest` it is supposed to correspond to. Per the grant's own rule ("If
+the SAME abstraction is independently refuted a SECOND time: `STOP_G3_
+SCOPE_CONTRACT_NOT_CONVERGING`... do not attempt a third fix"), this
+primitive stops here. No further code changes were made after this
+verdict was reached.
+
+### What is salvageable (port-with-revalidation candidates for whoever
+### picks this up next)
+
+- **`ScopeCompletenessV2`'s published contract shape and its
+  self-consistency invariants.** Both lanes, across two independent
+  rounds, confirm `NON_REFUTED` on: the `complete` flag's tightened
+  invariant (requires both `unsupported_paths` and `must_review_blocked_
+  paths` empty), the partition/disjointness checks, and the cross-state
+  `reason_codes` cross-check in `ReviewReadinessV2.validate_state_
+  invariants`. The WIRE SHAPE is sound; only the mechanism that PRODUCES a
+  trustworthy `ScopeCompletenessV2` value in the first place is refuted.
+- **`path_violates_relative_path_contract_v2`, the shared representability
+  predicate.** Unaffected by this verdict -- it is a pure function over a
+  single path string, has no dependency on the file_diffs/manifest binding
+  problem, and both review rounds left it unchallenged.
+- **The disagreement-detector CONCEPT** (composer-level refusal on
+  scope-authority/assembly divergence) -- not its current implementation.
+  A redesign needs to bind `file_diffs` to `manifest` BY IDENTITY (e.g. a
+  content hash of the diff bytes/paths actually used, checked against a
+  hash recorded at manifest-assembly time) before comparing DERIVED sets,
+  so that supplying inconsistent or truncated `file_diffs` fails closed
+  rather than silently agreeing. This is a real, structural fix, but it is
+  a NEW design element (an identity-binding mechanism that does not exist
+  today anywhere in this codebase's scope-completeness code), not a
+  bounded correction -- explicitly out of scope for further work under
+  this exhausted grant.
+- **Git type-change pairing and the 9-way `PathDispositionV2`
+  classification work** (`operational_scope_v2.classify_changed_path_v2`,
+  `_is_type_change_pair_v2`). Unaffected by this verdict -- the defect is
+  entirely about BINDING `file_diffs` to `manifest`, not about how
+  individual paths are classified once a trustworthy `file_diffs` is in
+  hand. The 384-case combinatorial fuzz and the real-git fuzz corpus
+  remain valid revalidation evidence for this specific piece.
+
+### Recommendation for the next attempt (not authorized here)
+
+Do not reuse this branch/worktree. Start fresh from live `master`, per
+this effort's own standing convention (`docs/checkpoints/
+AGENT_REVIEW_V2_POST_200F_RECOVERY.md`: "No primitive branch reuses
+[prior] branches or worktrees. Each starts fresh from live `master`.").
+Carry forward the port ledger above with `PORT_WITH_REVALIDATION` for the
+contract shape/predicate/classification work, and `DO_NOT_PORT (authority)`
+for the current `assert_scope_authority_agrees_with_assembly_v2`
+implementation specifically -- its CONCEPT survives, its mechanism does
+not. The next attempt's central design question is exactly: how does a
+scope authority prove, structurally, that the `file_diffs` it assessed is
+the SAME `file_diffs` (not a superset, not a subset, not a different diff
+entirely) that produced the `manifest`/`ChunkCoverageV2` the readiness
+artifact's `coverage` field already carries? A content-hash binding
+(compute a hash over the exact `file_diffs` at manifest-assembly time,
+record it in `ManifestV2` or an adjacent identity object, and require the
+scope authority to be constructed only from a `file_diffs` proven to hash
+identically) is the leading candidate, matching this codebase's existing
+"identity, not merely value equality" discipline elsewhere (e.g.
+`RunIdentityV2`/`compute_run_id`, `ReadinessDecisionV2`'s own `run_id`/
+`manifest_hash` replay-protection precedent).
 
 ## Known limitations (stated plainly, not papered over)
 
@@ -179,13 +303,12 @@ verdict, which also depends on round-2 review).
 
 ## Next minimum action
 
-Await both round-2 adversarial review passes. Per the grant: if the SAME
-abstraction (a false-READY-shaped or any non-scope-incomplete-flagged
-artifact constructible through the REAL entrypoint while a changed path
-goes unaccounted for) is independently refuted a SECOND time after this
-correction: `STOP_G3_SCOPE_CONTRACT_NOT_CONVERGING`, and do not attempt a
-third fix — write that verdict and stop, do not compose further.
-Otherwise: `PRIMITIVE_NON_REFUTED`, reported back to whoever coordinates
-`#200-G5` — WITH the "opt-in, not automatic" and "`scope=None` gap"
-limitations carried forward explicitly, not silently, exactly the
-discipline that failed in round 1's overclaiming and was corrected here.
+None, under this grant. Terminal verdict reached:
+`STOP_G3_SCOPE_CONTRACT_NOT_CONVERGING` (see above). This primitive's work
+under this grant ends here -- no third correction attempted, no further
+code changes made after the verdict, PR left in Draft, no merge. The next
+minimum action belongs to whoever picks up the successor slice: start
+fresh from live `master` (not this branch/worktree), re-derive the
+scope-authority/manifest identity-binding design named above as the
+central open question, and re-attempt with a NEW grant -- this one is
+exhausted.

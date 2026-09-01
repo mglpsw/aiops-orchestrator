@@ -1,6 +1,13 @@
 # ADR-200G3 — representing scope completeness in AgentReview v2 readiness
 
-- **Status:** accepted, implemented
+- **Status:** `STOP_G3_SCOPE_CONTRACT_NOT_CONVERGING` -- the contract
+  SHAPE (`ScopeCompletenessV2` and its self-consistency invariants) is
+  accepted and `NON_REFUTED` across two independent review rounds; the
+  WIRING that is supposed to produce a trustworthy value for it
+  (`assert_scope_authority_agrees_with_assembly_v2`) was independently
+  refuted a second time after one bounded correction round and is
+  therefore NOT accepted as a working anti-recurrence mechanism. See
+  the "Terminal verdict" section at the end of this document.
 - **Slice:** `#200-G3` (issue #281, child of `#200`), successor to `#200-F`'s
   `STOP_SCOPE_CONTRACT_REQUIRED`
 - **Date:** 2026-09-01
@@ -363,8 +370,57 @@ pass `scope=None`, reverting the tightened `complete` invariant, and
 disabling the new cross-state `reason_codes` check were each confirmed to
 flip the relevant new test(s) RED, then restored to GREEN.
 
-**Verdict:** see the `#200-G3` checkpoint
-(`docs/checkpoints/AGENT_REVIEW_V2_200G3_SCOPE_COMPLETENESS.md`) for the
-disposition of the two FRESH adversarial review passes dispatched against
-this correction round's head — this ADR is not updated further per-round;
-the checkpoint is the live status document.
+## Terminal verdict: `STOP_G3_SCOPE_CONTRACT_NOT_CONVERGING`
+
+Two FRESH, independent adversarial review passes were dispatched against
+the correction-round head (`65ba571e1dd510c9c040350465ac75c9057fd9bf`), one
+explicitly briefed to re-attack "construct a `ready`/non-`SCOPE_INCOMPLETE`
+artifact through the REAL entrypoint while a changed path goes
+unaccounted for." Both independently converged on the SAME root cause,
+`REFUTED`:
+
+`assert_scope_authority_agrees_with_assembly_v2` compares
+`assessment.reviewable_paths` against `manifest.expected_files` -- two
+values both DERIVED from whatever `file_diffs` a caller happens to supply
+to each computation. It verifies INTERNAL consistency between those two
+derived values; it never verifies that the `file_diffs` used to compute
+`assessment` is the SAME `file_diffs` that was used to build `manifest` in
+the first place. A `file_diffs` that silently OMITS a changed path's block
+entirely (not merely misclassifies one still present) produces a scope
+assessment that agrees with the manifest VACUOUSLY -- both simply never
+saw the missing path. Independently reproduced by this agent before
+accepting either finding: a truncated `file_diffs` (the `#277` witness
+path's block removed) reaches `run_synthetic_review_v2` via its own
+documented `file_diffs`/`profile` parameters, the detector does not raise,
+and the emitted `ScopeCompletenessV2.complete` is `True` with the witness
+path absent from every field. Separately confirmed by mutation: deleting
+the detector's call site from `run_synthetic_review_v2` entirely produces
+**zero test failures** across the full scope-related suite -- the
+"checked as a runtime invariant every run" claim earlier in this document
+is FALSE for the current implementation; the check is unit-tested in
+isolation but not proven load-bearing through the real entrypoint.
+
+This is the SAME abstraction (the scope-completeness anti-recurrence
+wiring) the FIRST review round already refuted (finding it unwired
+entirely). Refuted a SECOND time, independently, by two lanes converging
+on one systemic hole, after this grant's one allowed bounded correction
+round. Per the grant's own rule: STOP here, do not attempt a third fix.
+
+**What is salvageable**, for a future attempt starting fresh from live
+`master` under a NEW grant (full detail, including the recommended
+identity-binding design direction, in the `#200-G3` checkpoint,
+`docs/checkpoints/AGENT_REVIEW_V2_200G3_SCOPE_COMPLETENESS.md`):
+
+- `ScopeCompletenessV2`'s published contract shape and self-consistency
+  invariants -- `NON_REFUTED` across both rounds, both lanes.
+- `path_violates_relative_path_contract_v2`, the shared representability
+  predicate -- unaffected, unchallenged in both rounds.
+- The disagreement-detector CONCEPT (a real anti-recurrence pattern worth
+  keeping) -- not its current set-comparison-only implementation, which
+  needs to bind `file_diffs` to `manifest` by IDENTITY (e.g. a content
+  hash recorded at assembly time and re-verified at assessment time)
+  before it can honestly refuse a mismatched or truncated input.
+- Git type-change pairing and the 9-way `PathDispositionV2` classification
+  work, including its fuzz coverage -- unaffected; the defect is entirely
+  about binding `file_diffs` to `manifest`, not about classifying
+  individual paths once a trustworthy `file_diffs` is in hand.
