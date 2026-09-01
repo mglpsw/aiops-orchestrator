@@ -33,7 +33,11 @@ POSITIVE_CORPUS = [
     # names -- the single most common real-world secret-naming convention
     # -- bypassed the exact-literal-match scanner entirely.
     pytest.param('db_password = "SuperSecretPass123!"', "SuperSecretPass123!", id="compound_key_db_password"),
-    pytest.param('STRIPE_API_KEY = "sk_live_abcdef1234567890"', "sk_live_abcdef1234567890", id="compound_key_stripe_api_key"),
+    # A plain (non vendor-prefix-shaped) value so this actually exercises
+    # the compound-KEY bigram match, not the independent Stripe-prefix
+    # detector (which would also catch a real `sk_live_...`-shaped value
+    # on its own, masking a regression in the key-matching path itself).
+    pytest.param('STRIPE_API_KEY = "plainSecretValue987"', "plainSecretValue987", id="compound_key_stripe_api_key"),
     pytest.param('JWT_SECRET="whatevershhh12345"', "whatevershhh12345", id="compound_key_jwt_secret"),
     pytest.param('ADMIN_PASSWORD = "letmein987654"', "letmein987654", id="compound_key_admin_password"),
     pytest.param('{"db_password": "SuperSecretPass123!"}', "SuperSecretPass123!", id="compound_key_json_field"),
