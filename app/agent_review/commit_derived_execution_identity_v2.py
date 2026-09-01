@@ -110,6 +110,7 @@ __all__ = [
     "IDENTITY_MODE_MISMATCH_REASON_V2",
     "IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2",
     "IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2",
+    "IDENTITY_SYMLINKED_DIRECTORY_REASON_V2",
     "IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2",
     "IDENTITY_TREE_UNREADABLE_REASON_V2",
     "IDENTITY_UNKNOWN_COMMIT_REASON_V2",
@@ -134,6 +135,7 @@ IDENTITY_MODE_MISMATCH_REASON_V2 = "identity_mode_mismatch"
 IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2 = "identity_loaded_code_outside_subject"
 IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2 = "identity_subject_root_unreadable"
 IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2 = "identity_path_escapes_subject"
+IDENTITY_SYMLINKED_DIRECTORY_REASON_V2 = "identity_symlinked_directory_in_subject"
 
 
 class ExecutedSourceIdentityError(ValueError):
@@ -168,6 +170,15 @@ class ExecutedSourceAuthorizationV2:
     trusted_ref: str
     trusted_ref_sha: str
     authorized: bool
+
+    def __bool__(self) -> bool:
+        # Independent-review finding (correction round): a frozen dataclass
+        # is truthy by default regardless of its fields. Without this, a
+        # future caller writing `if authorize_commit_for_execution_v2(...):`
+        # instead of `.authorized` would always take the "authorized"
+        # branch, silently. Not exercised by any call site today, but a
+        # footgun worth closing before one exists.
+        return self.authorized
 
 
 def _safe_subject_path_v2(*, subject_root: Path, relative_path: str) -> Path:
@@ -205,6 +216,51 @@ def _safe_subject_path_v2(*, subject_root: Path, relative_path: str) -> Path:
     if normalised == ".." or normalised.startswith("../") or posixpath.isabs(normalised):
         raise ExecutedSourceIdentityError(IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2)
     return subject_root / relative_path
+
+
+def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
+    """Enumerate every leaf path under ``subject_root`` with ONE traversal
+    policy, and refuse outright if any symlinked directory is found.
+
+    Independent-review finding (correction round after the first review
+    pair): the original code used two different traversal policies that
+    disagreed about what is "under" ``subject_root``. The per-tracked-path
+    comparison joined paths with plain ``/`` (which the OS resolves by
+    transparently following a symlink in an intermediate component), while
+    the "no extra file" scan used ``Path.rglob("*")`` (which does NOT
+    descend into a symlinked directory -- it reports the symlink entry
+    itself and stops). Replacing a materialised tracked directory with a
+    symlink to an attacker directory containing a byte-identical file
+    (satisfying the tracked-file comparison) plus an extra untracked file
+    made the two checks disagree: the completeness scan never saw the extra
+    file, while it was fully reachable by anything that actually opens
+    files under ``subject_root`` (e.g. Python's import machinery).
+
+    ``materialise_commit_subject_v2`` never creates a symlinked directory
+    itself -- tree structure is always real directories via
+    ``mkdir(parents=True)``, and symlinks are only ever created as leaf blob
+    entries. A symlinked directory anywhere under ``subject_root`` is
+    therefore never something this primitive's own materialisation would
+    produce, and is refused unconditionally rather than given a traversal
+    policy to disagree about. This also means the per-entry comparison
+    loop's plain path joins are safe from this specific class once this
+    function has run: nothing left under ``subject_root`` can transparently
+    redirect an intermediate path component elsewhere.
+
+    ``os.walk(..., followlinks=False)`` is used rather than
+    ``Path.rglob`` for the enumeration itself precisely because it reports
+    (without descending into) any symlinked directory in ``dirnames``,
+    which is exactly the signal this function needs to refuse on.
+    """
+    leaf_paths: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(subject_root, followlinks=False):
+        current_dir = Path(dirpath)
+        for dirname in dirnames:
+            if (current_dir / dirname).is_symlink():
+                raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
+        for filename in filenames:
+            leaf_paths.append((current_dir / filename).relative_to(subject_root).as_posix())
+    return frozenset(leaf_paths)
 
 
 def loaded_module_files_v2(*, package_prefix: str = "app.agent_review") -> tuple[Path, ...]:
@@ -250,11 +306,19 @@ def verify_executed_source_identity_v2(
 
     1. ``commit_sha`` resolves to a real commit in ``repo_root`` (never a
        tree or blob sha, and never a value that merely looks like a sha).
-    2. The commit's tree contains no gitlink -- a submodule reference names
+    2. ``subject_root`` contains no symlinked directory anywhere --
+       ``_reachable_leaf_paths_v2`` walks it with one consistent traversal
+       policy and refuses outright if it finds one, closing a mismatch
+       between that policy and plain path joining that independent review
+       showed could otherwise hide an untracked file behind a symlinked
+       directory. Its result is also what check 4 below compares against,
+       so both "is everything expected present" and "is nothing unexpected
+       present" share the same view of ``subject_root``.
+    3. The commit's tree contains no gitlink -- a submodule reference names
        a commit in another repository, which this primitive has no bytes
        for and therefore cannot verify; refused rather than silently
        skipped.
-    3. Every tracked path in the commit's tree exists under ``subject_root``
+    4. Every tracked path in the commit's tree exists under ``subject_root``
        with byte-identical content (and, for symlinks, byte-identical
        target text) and the mode implied by git (executable bit set iff the
        tree entry is the executable blob mode). This alone makes a
@@ -266,14 +330,18 @@ def verify_executed_source_identity_v2(
        ``/`` inside one path segment, not the two-character name ``..``),
        which ``ls-tree -r`` then flattens into an entry path like
        ``../evil.py`` -- an unchecked join would read from outside
-       ``subject_root`` when the OS resolves it.
-    4. ``subject_root`` contains no file absent from the commit's tree --
+       ``subject_root`` when the OS resolves it. Safe against symlinked-
+       directory redirection specifically because check 2 has already
+       proven none exist under ``subject_root`` by this point.
+    5. ``subject_root`` contains no file absent from the commit's tree --
        an untracked file planted directly into the subject (whether before
        or after materialisation) is refused rather than silently ignored.
-    5. Every path in ``loaded_module_paths`` (defaulting to
+       Compares against the SAME leaf-path set check 2 already computed,
+       not a second, independently-traversed view of the filesystem.
+    6. Every path in ``loaded_module_paths`` (defaulting to
        ``loaded_module_files_v2()``, i.e. real interpreter state) resolves
        under ``subject_root``. Kept as an independent second signal on top
-       of (3): "every tracked path is present" and "every loaded module
+       of (4): "every tracked path is present" and "every loaded module
        lives under the root" are different properties, and neither check is
        asked to cover for the other.
     """
@@ -282,6 +350,12 @@ def verify_executed_source_identity_v2(
 
     if not subject_root.is_dir():
         raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2)
+
+    # Runs before anything else touches subject_root's contents: once this
+    # has not raised, nothing under subject_root can redirect a plain path
+    # join elsewhere, so every later check's use of ordinary path joining is
+    # safe against symlinked-directory substitution.
+    reachable_leaf_paths = _reachable_leaf_paths_v2(subject_root)
 
     try:
         resolved_commit = resolve_commit_v2(repo_root=repo_root, ref=commit_sha)
@@ -336,10 +410,7 @@ def verify_executed_source_identity_v2(
         if should_be_executable != is_executable:
             raise ExecutedSourceIdentityError(IDENTITY_MODE_MISMATCH_REASON_V2)
 
-    for actual_path in sorted(subject_root.rglob("*")):
-        if actual_path.is_dir():
-            continue
-        relative = actual_path.relative_to(subject_root).as_posix()
+    for relative in sorted(reachable_leaf_paths):
         if relative not in expected_paths:
             raise ExecutedSourceIdentityError(IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2)
 

@@ -45,6 +45,7 @@ decision.
 
 from __future__ import annotations
 
+import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +55,7 @@ from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
 __all__ = [
     "SUBJECT_BLOB_MISSING_REASON_V2",
     "SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2",
+    "SUBJECT_PATH_COLLISION_REASON_V2",
     "SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2",
     "SUBJECT_TREE_UNREADABLE_REASON_V2",
     "SUBJECT_UNKNOWN_COMMIT_REASON_V2",
@@ -72,6 +74,7 @@ SUBJECT_TREE_UNREADABLE_REASON_V2 = "subject_tree_unreadable"
 SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2 = "subject_destination_not_empty"
 SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2 = "subject_path_escapes_subject"
 SUBJECT_BLOB_MISSING_REASON_V2 = "subject_blob_missing"
+SUBJECT_PATH_COLLISION_REASON_V2 = "subject_path_collision"
 
 GITLINK_MODE_V2 = "160000"
 SYMLINK_MODE_V2 = "120000"
@@ -234,20 +237,42 @@ def materialise_commit_subject_v2(
     content_by_path = read_commit_blobs_v2(repo_root=repo_root, entries=blobs)
 
     written = 0
-    for entry in blobs:
-        content = content_by_path[entry.path]
-        target = _safe_destination_v2(subject_root=destination, relative_path=entry.path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if entry.mode == SYMLINK_MODE_V2:
-            # A symlink blob's content is its target path. Recreated as a
-            # link so the subject is byte-faithful; the digest below hashes
-            # link targets as text rather than following them.
-            target.symlink_to(content.decode("utf-8", "surrogateescape"))
-        else:
-            target.write_bytes(content)
-            if entry.mode == EXECUTABLE_MODE_V2:
-                target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-        written += 1
+    try:
+        for entry in blobs:
+            content = content_by_path[entry.path]
+            target = _safe_destination_v2(subject_root=destination, relative_path=entry.path)
+            # `mkdir(parents=True, exist_ok=True)` can still raise
+            # `FileExistsError`: git's own tree-sort comparator treats a
+            # subdirectory entry as if it had a trailing "/", so a blob and
+            # a tree can share the exact same one-byte name in a single
+            # tree object without git considering that a duplicate (proven
+            # with real `git mktree` plumbing, not a hypothetical). If the
+            # canonically-sorted blob entry is written first, the later
+            # entry nested under a tree of the same name collides with it.
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if entry.mode == SYMLINK_MODE_V2:
+                # A symlink blob's content is its target path. Recreated as a
+                # link so the subject is byte-faithful; the digest below hashes
+                # link targets as text rather than following them.
+                target.symlink_to(content.decode("utf-8", "surrogateescape"))
+            else:
+                target.write_bytes(content)
+                if entry.mode == EXECUTABLE_MODE_V2:
+                    target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            written += 1
+    except SubjectMaterialisationError:
+        # e.g. `_safe_destination_v2`'s path-escape refusal, raised partway
+        # through the loop. Already typed -- clean up and propagate as-is.
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+    except OSError as exc:
+        # Destination is known to have been empty before this call started
+        # (checked above), so everything under it at this point was written
+        # by this call and is safe to discard -- a caller must never be
+        # left holding a partially-materialised subject that looks like it
+        # might be valid.
+        shutil.rmtree(destination, ignore_errors=True)
+        raise SubjectMaterialisationError(SUBJECT_PATH_COLLISION_REASON_V2) from exc
 
     return MaterialisedCommitSubjectV2(root=destination, commit_sha=commit_sha, file_count=written)
 
