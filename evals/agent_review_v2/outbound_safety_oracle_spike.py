@@ -113,12 +113,26 @@ def _strip_assignment_value(value: str) -> str:
     return result.strip()
 
 
-def _placeholder_or_type(value: str) -> bool:
+def _safe_placeholder(value: str) -> bool:
+    """Only explicit placeholders are safe under a proven-sensitive key.
+
+    G2B's CI caught a dangerous cross-context exemption: a CapitalCase-like
+    value such as ``Ab9Cd...`` was treated as a type name even after the key
+    had already established that the line was a password. Type-shape reasoning
+    is valid only in non-sensitive contexts; under a sensitive key, anything
+    not explicitly a placeholder/environment reference remains suspect.
+    """
+
     lowered = value.strip().lower()
     if lowered in _SAFE_VALUE_WORDS:
         return True
-    if lowered.startswith(("${", "$", "<", "[redacted", "[placeholder")):
+    return lowered.startswith(("${", "$", "<", "[redacted", "[placeholder"))
+
+
+def _placeholder_or_type(value: str) -> bool:
+    if _safe_placeholder(value):
         return True
+    lowered = value.strip().lower()
     if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.\[\]| ]*", value) and (
         value[:1].isupper() or lowered in _SAFE_VALUE_WORDS
     ):
@@ -184,10 +198,11 @@ def _scan_text(text: str, *, location: str, findings: list[OutboundSafetyFinding
     for match in _LINE_ASSIGNMENT_RE.finditer(text):
         key = match.group("key")
         value = _strip_assignment_value(match.group("value"))
-        if _sensitive_key(key) and not _placeholder_or_type(value):
-            findings.append(
-                OutboundSafetyFindingV2("sensitive_assignment", location, "sensitive_key_value")
-            )
+        if _sensitive_key(key):
+            if not _safe_placeholder(value):
+                findings.append(
+                    OutboundSafetyFindingV2("sensitive_assignment", location, "sensitive_key_value")
+                )
             continue
         if not _placeholder_or_type(value) and _opaque_value_is_suspicious(value):
             findings.append(
@@ -212,7 +227,7 @@ def _scan_value(value: Any, *, location: str, findings: list[OutboundSafetyFindi
             child_location = f"{location}.{key}"
             if _sensitive_key(str(key)) and isinstance(child, (str, int, float)):
                 candidate = str(child).strip()
-                if not _placeholder_or_type(candidate):
+                if not _safe_placeholder(candidate):
                     findings.append(
                         OutboundSafetyFindingV2("sensitive_json_key", child_location, "sensitive_key_value")
                     )
