@@ -111,3 +111,14 @@ primitives plus a recomposition, tracked as children of `#200`:
 
 No primitive branch reuses #274/#276/#277/#200-F branches or worktrees. Each
 starts fresh from live `master`.
+
+## CAEM lessons pending
+
+```yaml
+CAEM_LESSONS_PENDING:
+  refutation_diversity:
+    proposition: >
+      Repeated independent refutation by distinct mechanisms is stronger
+      evidence of an incorrect abstraction than simple recurrence of one
+      known witness.
+```
