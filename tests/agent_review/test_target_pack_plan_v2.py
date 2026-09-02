@@ -285,6 +285,22 @@ def test_resolve_within_target_root_returns_a_typed_refusal_for_an_oserror(
     assert exc_info.value.reason_code == PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2
 
 
+def test_resolve_within_target_root_returns_a_typed_refusal_for_an_embedded_nul(
+    tmp_path: Path,
+) -> None:
+    """G4B round-2 review correction: `Path.resolve(strict=False)` can also
+    raise a raw `ValueError` (an embedded NUL byte in a path component) --
+    a shape `external_path_ingress_v2._resolve_v2` already caught but this
+    module's own, older containment authority had not, until this fix.
+    Reproduced directly (no monkeypatch needed): a NUL byte is real input
+    `os.stat`-family calls reject uniformly, not a simulated failure."""
+    candidate = tmp_path / "ab\x00cd"
+
+    with pytest.raises(PlanError) as exc_info:
+        resolve_within_target_root_v2(tmp_path.resolve(strict=False), candidate)
+    assert exc_info.value.reason_code == PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2
+
+
 def test_read_on_disk_sha256_does_not_leak_a_raw_oserror(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

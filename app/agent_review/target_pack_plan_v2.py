@@ -209,13 +209,24 @@ def resolve_within_target_root_v2(target_root_real: Path, path: Path) -> Path:
         resolved = path.resolve(strict=False)
     except RuntimeError as exc:
         raise PlanError(PLAN_PATH_RESOLUTION_FAILED_REASON_V2) from exc
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         # G4B: the filesystem refused to perform the resolution at all
         # (EACCES on an ancestor without search permission, EIO on a
         # failing/disconnected mount, ENAMETOOLONG on an overlong
-        # candidate) -- no containment or structural verdict was ever
-        # reached, so this must not collapse into the escape/loop codes
-        # above, which both assert something this branch never observed.
+        # candidate -- all `OSError`; an embedded NUL byte in a path
+        # component -- `ValueError`, added in this PR's round-2 review
+        # correction to match `external_path_ingress_v2._resolve_v2`'s
+        # already-complete `(OSError, RuntimeError, ValueError)`, which
+        # this function's own guard predates and had drifted from) -- no
+        # containment or structural verdict was ever reached, so this
+        # must not collapse into the escape/loop codes above, which both
+        # assert something this branch never observed. Not currently
+        # reachable through any live caller (every relative-path caller is
+        # `RelativePath`-typed, which rejects any `ord < 32` character
+        # including NUL, at validation; every root-level caller is
+        # `sys.argv`-sourced, which cannot carry an embedded NUL at all --
+        # `subprocess`/`execve` reject it before a child ever starts) --
+        # closed anyway, as defence-in-depth for a shared authority.
         raise PlanError(PLAN_PATH_RESOLUTION_UNREADABLE_REASON_V2) from exc
     try:
         resolved.relative_to(target_root_real)
