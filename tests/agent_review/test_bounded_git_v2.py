@@ -18,6 +18,7 @@ from app.agent_review.bounded_git_v2 import (
     BOUNDED_GIT_WORKTREE_UNUSABLE_REASON_V2,
     BoundedGitError,
     bounded_git_environment_v2,
+    open_bounded_git_session_v2,
     resolve_trusted_git_absolute_path_v2,
     run_bounded_git_v2,
 )
@@ -283,3 +284,108 @@ def test_object_store_snapshot_ignores_files_outside_objects_dir(tmp_path: Path)
     # touch) changed -- only `objects/` is in scope.
     completed = run_bounded_git_v2(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=repo)
     assert completed.returncode == 0
+
+
+# -- `#200-G1-PM` round 3, finding A: retry after a rejected fetch --------------
+
+
+def test_without_a_session_a_retry_after_rejected_fetch_succeeds_silently(
+    tmp_path: Path,
+) -> None:
+    """Sanity/regression witness of the ORIGINAL round-3 finding: without a
+    session, each call takes its own fresh baseline, so a fetched-but
+    -rejected blob is already "old" by the time a second, identical call
+    runs -- reproduced here to confirm the finding is real and to pin the
+    per-call (no-session) default's documented, narrower guarantee."""
+    subject, blob_sha = _real_partial_clone_missing_a_blob(tmp_path)
+    subprocess.run(["git", "remote", "rename", "origin", "evil"], cwd=subject, check=True)
+
+    with pytest.raises(BoundedGitError) as excinfo:
+        run_bounded_git_v2(
+            ["cat-file", "--batch"], cwd=subject, input_bytes=(blob_sha + "\n").encode()
+        )
+    assert excinfo.value.reason_code == BOUNDED_GIT_UNEXPECTED_OBJECT_STORE_WRITE_REASON_V2
+
+    # The retry, with NO session, succeeds -- the blob fetched by the
+    # rejected first call is already part of this call's own fresh
+    # baseline. This is the documented, narrower guarantee of the
+    # no-session default, not a bug in it: cross-call protection is what
+    # `BoundedGitSessionV2` exists for, exercised below.
+    completed = run_bounded_git_v2(
+        ["cat-file", "--batch"], cwd=subject, input_bytes=(blob_sha + "\n").encode()
+    )
+    assert completed.returncode == 0
+
+
+def test_with_a_session_a_retry_after_rejected_fetch_still_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """External Codex review (`#200-G1-PM` round 3 on this PR): a caller
+    that catches `BoundedGitError` and retries (an ordinary pattern) must
+    not have the retry silently succeed just because the first,
+    already-rejected call's fetch left the blob locally present. With a
+    `BoundedGitSessionV2` shared across both calls, the baseline is fixed
+    at session-open time and never re-taken -- so the blob the first call
+    fetched is STILL "new relative to session start" on the second call,
+    even though the second call's own git invocation performs no fetch of
+    its own."""
+    subject, blob_sha = _real_partial_clone_missing_a_blob(tmp_path)
+    subprocess.run(["git", "remote", "rename", "origin", "evil"], cwd=subject, check=True)
+
+    session = open_bounded_git_session_v2(cwd=subject)
+
+    with pytest.raises(BoundedGitError) as excinfo:
+        run_bounded_git_v2(
+            ["cat-file", "--batch"],
+            cwd=subject,
+            input_bytes=(blob_sha + "\n").encode(),
+            session=session,
+        )
+    assert excinfo.value.reason_code == BOUNDED_GIT_UNEXPECTED_OBJECT_STORE_WRITE_REASON_V2
+
+    # The retry, using the SAME session, must ALSO fail closed.
+    with pytest.raises(BoundedGitError) as excinfo:
+        run_bounded_git_v2(
+            ["cat-file", "--batch"],
+            cwd=subject,
+            input_bytes=(blob_sha + "\n").encode(),
+            session=session,
+        )
+    assert excinfo.value.reason_code == BOUNDED_GIT_UNEXPECTED_OBJECT_STORE_WRITE_REASON_V2
+
+
+# -- `#200-G1-PM` round 3, finding B: blind inside a linked worktree ------------
+
+
+def test_lazy_fetch_is_detected_from_inside_a_linked_worktree(tmp_path: Path) -> None:
+    """External Codex review (`#200-G1-PM` round 3 on this PR): `git
+    rev-parse --git-dir` returns a linked worktree's PRIVATE administrative
+    directory (`<main>/.git/worktrees/<name>`), which has no `objects/`
+    subdirectory of its own -- confirmed by direct inspection below.
+    `--git-common-dir` is git's own answer to where the SHARED object store
+    (the same one every worktree of this repository reads from and, in
+    this scenario, lazily fetches into) actually lives. Reproduced exactly
+    as found: from inside a linked worktree of the partial-clone fixture,
+    a lazy fetch must still be detected."""
+    subject, blob_sha = _real_partial_clone_missing_a_blob(tmp_path)
+    subprocess.run(["git", "remote", "rename", "origin", "evil"], cwd=subject, check=True)
+
+    linked = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "--no-checkout", "--detach", str(linked), "HEAD"],
+        cwd=subject,
+        check=True,
+    )
+
+    # Confirm the precondition this fix depends on: the worktree's own
+    # `--git-dir` really does lack an `objects/` directory.
+    worktree_git_dir = subprocess.run(
+        ["git", "rev-parse", "--git-dir"], cwd=linked, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert not (linked / worktree_git_dir / "objects").is_dir()
+
+    with pytest.raises(BoundedGitError) as excinfo:
+        run_bounded_git_v2(
+            ["cat-file", "--batch"], cwd=linked, input_bytes=(blob_sha + "\n").encode()
+        )
+    assert excinfo.value.reason_code == BOUNDED_GIT_UNEXPECTED_OBJECT_STORE_WRITE_REASON_V2

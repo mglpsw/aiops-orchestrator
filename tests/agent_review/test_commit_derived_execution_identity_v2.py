@@ -725,9 +725,9 @@ def test_completeness_is_reverified_close_to_return_not_only_at_call_start(
 
     real_resolve_commit_v2 = commit_derived_execution_identity_module.resolve_commit_v2
 
-    def delayed_resolve_commit_v2(*, repo_root, ref):
+    def delayed_resolve_commit_v2(*, repo_root, ref, session=None):
         time.sleep(0.2)
-        return real_resolve_commit_v2(repo_root=repo_root, ref=ref)
+        return real_resolve_commit_v2(repo_root=repo_root, ref=ref, session=session)
 
     def write_evil_file_partway_through_the_delay() -> None:
         time.sleep(0.05)
@@ -1137,6 +1137,88 @@ def test_dot_named_subtree_alias_colliding_with_a_root_blob_is_refused_at_verifi
         verify_executed_source_identity_v2(
             repo_root=repo,
             commit_sha=alias_commit,
+            subject_root=subject_root,
+            loaded_module_paths=(),
+        )
+    assert excinfo.value.reason_code == IDENTITY_DUPLICATE_TREE_PATH_REASON_V2
+
+
+def test_dotdot_alias_with_identical_content_does_not_mask_the_ambiguity(
+    tmp_path: Path,
+) -> None:
+    """External Codex review (`#200-G1-PM` round 3 on this PR):
+    `_safe_subject_path_v2` validated containment via
+    `posixpath.normpath()` internally but RETURNED `subject_root /
+    relative_path` unresolved -- and plain `Path` joining collapses a bare
+    `.` but never `..`. A tree with byte-identical blobs at raw paths `a`
+    and `x/../a` (the same `..`-subtree `git mktree` trick used elsewhere
+    in this corpus) therefore produced two DIFFERENT `Path` objects in
+    `_reject_resolved_actual_path_collisions_v2`'s duplicate set, even
+    though both entries, once actually read, reach the identical file --
+    and because the two entries happen to carry the same content, the
+    natural per-entry content comparison never caught the ambiguity
+    either, so verification silently reported success for a tree that is
+    genuinely ambiguous at the git-object level."""
+    repo, _head_sha = _toolrepo_fixture(tmp_path)
+
+    shared_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="shared content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    inner_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"100644 blob {shared_blob}\ta\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tree_x = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"040000 tree {inner_tree}\t..\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    outer_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=(f"100644 blob {shared_blob}\ta\n" f"040000 tree {tree_x}\tx\n"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dotdot_commit = subprocess.run(
+        ["git", "commit-tree", outer_tree, "-m", "dotdot alias"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    # Confirm the raw ls-tree really shows two distinct strings for what
+    # is, once resolved, the identical destination.
+    ls_tree = subprocess.run(
+        ["git", "ls-tree", "-r", dotdot_commit], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout
+    assert "\ta\n" in ls_tree
+    assert "x/../a" in ls_tree
+
+    subject_root = tmp_path / "subject_dotdot"
+    subject_root.mkdir()
+    (subject_root / "x").mkdir()
+    (subject_root / "a").write_text("shared content")
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo,
+            commit_sha=dotdot_commit,
             subject_root=subject_root,
             loaded_module_paths=(),
         )

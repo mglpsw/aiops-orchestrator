@@ -130,7 +130,11 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent_review.bounded_git_v2 import run_bounded_git_v2
+from app.agent_review.bounded_git_v2 import (
+    BoundedGitSessionV2,
+    open_bounded_git_session_v2,
+    run_bounded_git_v2,
+)
 from app.agent_review.git_commit_subject_v2 import (
     EXECUTABLE_MODE_V2,
     GITLINK_MODE_V2,
@@ -260,11 +264,30 @@ def _safe_subject_path_v2(*, subject_root: Path, relative_path: str) -> Path:
     point at ``/etc/passwd`` must be caught by the symlink-target-text
     comparison in the caller, tagged with its own reason code, not folded
     into this containment check.
+
+    Returns ``subject_root / normalised`` -- the SAME lexically-normalised
+    string this function already computed to decide containment -- not
+    ``subject_root / relative_path`` (external Codex review, `#200-G1-PM`
+    round 3 on this PR: the earlier version validated containment against
+    ``normalised`` but returned a path built from the ORIGINAL,
+    un-normalised ``relative_path``, so two tree entries whose paths are
+    lexically the same place after normalisation -- e.g. ``a`` and
+    ``x/../a``, proven reachable with the same ``..``-subtree `git mktree`
+    trick used elsewhere in this corpus -- produced two DIFFERENT ``Path``
+    objects here, since plain ``Path`` joining collapses a bare ``.`` but
+    never collapses ``..``. A verification-side duplicate-path check built
+    on top of this function's return value (see
+    ``_reject_resolved_actual_path_collisions_v2``) therefore missed
+    exactly the alias class this function's OWN validation had already
+    correctly identified and normalised away, then discarded. There is now
+    exactly one normalised value computed here, used for both the
+    containment decision and the returned path, so nothing downstream can
+    observe a different path than what was actually validated.
     """
     normalised = posixpath.normpath(relative_path)
     if normalised == ".." or normalised.startswith("../") or posixpath.isabs(normalised):
         raise ExecutedSourceIdentityError(IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2)
-    return subject_root / relative_path
+    return subject_root / normalised
 
 
 def _reject_resolved_actual_path_collisions_v2(
@@ -487,13 +510,23 @@ def verify_executed_source_identity_v2(
     if not subject_root.is_dir():
         raise ExecutedSourceIdentityError(IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2)
 
+    # `#200-G1-PM` round 3 on this PR: one session, opened once, shared by
+    # every git call this verification makes -- so an unexpected
+    # object-store write caused by an EARLIER call (and rejected) still
+    # shows up as "new relative to session start" for every LATER call in
+    # this same verification, not just the call that happened to trigger
+    # it. See `BoundedGitSessionV2`.
+    session = open_bounded_git_session_v2(cwd=repo_root)
+
     try:
-        resolved_commit = resolve_commit_v2(repo_root=repo_root, ref=commit_sha)
+        resolved_commit = resolve_commit_v2(repo_root=repo_root, ref=commit_sha, session=session)
     except SubjectMaterialisationError as exc:
         raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
     try:
-        entries = list_commit_tree_entries_v2(repo_root=repo_root, commit_sha=resolved_commit)
+        entries = list_commit_tree_entries_v2(
+            repo_root=repo_root, commit_sha=resolved_commit, session=session
+        )
     except SubjectMaterialisationError as exc:
         raise ExecutedSourceIdentityError(IDENTITY_TREE_UNREADABLE_REASON_V2) from exc
 
@@ -504,7 +537,9 @@ def verify_executed_source_identity_v2(
     _reject_resolved_actual_path_collisions_v2(subject_root=subject_root, entries=entries)
 
     try:
-        expected_content_by_path = read_commit_blobs_v2(repo_root=repo_root, entries=entries)
+        expected_content_by_path = read_commit_blobs_v2(
+            repo_root=repo_root, entries=entries, session=session
+        )
     except SubjectMaterialisationError as exc:
         if exc.reason_code == SUBJECT_BLOB_MISSING_REASON_V2:
             raise ExecutedSourceIdentityError(IDENTITY_BLOB_MISSING_REASON_V2) from exc
@@ -563,7 +598,9 @@ def verify_executed_source_identity_v2(
     return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=subject_root)
 
 
-def _merge_base_history_is_fully_readable_v2(*, repo_root: Path, commits: tuple[str, str]) -> bool:
+def _merge_base_history_is_fully_readable_v2(
+    *, repo_root: Path, commits: tuple[str, str], session: BoundedGitSessionV2 | None = None
+) -> bool:
     """Independently prove the commit graph reachable from ``commits`` can
     be walked in full, without relying on ``merge-base --is-ancestor``'s own
     exit code to say so.
@@ -597,11 +634,15 @@ def _merge_base_history_is_fully_readable_v2(*, repo_root: Path, commits: tuple[
     which this function's only caller also consults, for why that case
     needs an entirely separate check.
     """
-    completed = run_bounded_git_v2(["rev-list", *commits], cwd=repo_root, check=False)
+    completed = run_bounded_git_v2(
+        ["rev-list", *commits], cwd=repo_root, check=False, session=session
+    )
     return completed.returncode == 0
 
 
-def _repository_is_shallow_v2(*, repo_root: Path) -> bool:
+def _repository_is_shallow_v2(
+    *, repo_root: Path, session: BoundedGitSessionV2 | None = None
+) -> bool:
     """Is ``repo_root`` a shallow repository (any commit grafted as a
     history boundary), at all?
 
@@ -638,7 +679,7 @@ def _repository_is_shallow_v2(*, repo_root: Path) -> bool:
     alternates, and non-standard layouts can all change where it lives).
     """
     completed = run_bounded_git_v2(
-        ["rev-parse", "--is-shallow-repository"], cwd=repo_root, check=False
+        ["rev-parse", "--is-shallow-repository"], cwd=repo_root, check=False, session=session
     )
     if completed.returncode != 0:
         # Cannot determine -- fail closed toward the more conservative
@@ -678,9 +719,16 @@ def authorize_commit_for_execution_v2(
     commits -- makes a negative result UNDETERMINED here.
     """
     repo_root = Path(repo_root).resolve()
+    # `#200-G1-PM` round 3 on this PR: one session, opened once, shared by
+    # every git call this authorization check makes -- see
+    # `BoundedGitSessionV2` and `verify_executed_source_identity_v2`'s
+    # identical use of one.
+    session = open_bounded_git_session_v2(cwd=repo_root)
     try:
-        resolved_commit = resolve_commit_v2(repo_root=repo_root, ref=commit_sha)
-        resolved_trusted = resolve_commit_v2(repo_root=repo_root, ref=trusted_ref)
+        resolved_commit = resolve_commit_v2(repo_root=repo_root, ref=commit_sha, session=session)
+        resolved_trusted = resolve_commit_v2(
+            repo_root=repo_root, ref=trusted_ref, session=session
+        )
     except SubjectMaterialisationError as exc:
         raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
@@ -688,12 +736,15 @@ def authorize_commit_for_execution_v2(
         ["merge-base", "--is-ancestor", resolved_commit, resolved_trusted],
         cwd=repo_root,
         check=False,
+        session=session,
     )
     if completed.returncode == 0:
         authorized = True
     elif completed.returncode == 1:
-        if _repository_is_shallow_v2(repo_root=repo_root) or not _merge_base_history_is_fully_readable_v2(
-            repo_root=repo_root, commits=(resolved_commit, resolved_trusted)
+        if _repository_is_shallow_v2(
+            repo_root=repo_root, session=session
+        ) or not _merge_base_history_is_fully_readable_v2(
+            repo_root=repo_root, commits=(resolved_commit, resolved_trusted), session=session
         ):
             raise ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2)
         authorized = False

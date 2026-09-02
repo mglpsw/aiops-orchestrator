@@ -504,6 +504,122 @@ def test_dot_named_subtree_alias_colliding_with_a_root_blob_is_refused(tmp_path:
     assert not destination.exists() or not any(destination.iterdir())
 
 
+def test_symlink_written_mid_loop_cannot_alias_an_earlier_entry(tmp_path: Path) -> None:
+    """External Codex review (`#200-G1-PM` round 3 on this PR): the
+    round-2 preflight (`_reject_resolved_destination_collisions_v2`) only
+    ever resolves entries ONCE, before any writes -- a TOCTOU window,
+    because the write loop mutates the filesystem (writing symlink
+    entries) as it goes. Reproduced with real `git mktree` plumbing:
+    symlink `a -> e`, blob `e/file`, and blob `z/../a/file` (the same
+    `..`-subtree trick used elsewhere in this corpus). At preflight time
+    `a` does not exist, so `e/file` and `z/../a/file` resolve to different
+    destinations and no collision is seen; once the write loop actually
+    creates `a` as a symlink, `z/../a/file`'s FRESH resolution (recomputed
+    per entry, always against current on-disk state) traverses through it
+    and lands on the same file `e/file` already wrote -- discarding it
+    silently unless the write loop itself, not just the static preflight,
+    also refuses the collision."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.py").write_text("SEED = 1\n")
+    _commit_all(repo, "seed")
+
+    symlink_target_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="e",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    e_file_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="e-file-content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    z_alias_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="z-alias-content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    tree_innermost = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"100644 blob {z_alias_blob}\tfile\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tree_dotdot = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"040000 tree {tree_innermost}\ta\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tree_z = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"040000 tree {tree_dotdot}\t..\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tree_e = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"100644 blob {e_file_blob}\tfile\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    outer_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=(
+            f"120000 blob {symlink_target_blob}\ta\n"
+            f"040000 tree {tree_e}\te\n"
+            f"040000 tree {tree_z}\tz\n"
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    symlink_alias_commit = subprocess.run(
+        ["git", "commit-tree", outer_tree, "-m", "symlink alias"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    # Confirm the raw ls-tree output really does show `z/../a/file` as
+    # distinct from `e/file` (the alias only manifests once `a` is written
+    # as a symlink mid-loop).
+    ls_tree = subprocess.run(
+        ["git", "ls-tree", "-r", symlink_alias_commit], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout
+    assert "z/../a/file" in ls_tree
+    assert "e/file" in ls_tree
+
+    destination = tmp_path / "dest4"
+    with pytest.raises(SubjectMaterialisationError) as excinfo:
+        materialise_commit_subject_v2(
+            repo_root=repo, ref=symlink_alias_commit, destination=destination
+        )
+    assert excinfo.value.reason_code == SUBJECT_DUPLICATE_TREE_PATH_REASON_V2
+    assert not destination.exists() or not any(destination.iterdir())
+
+
 # -- `#200-G1-PM` finding 6: non-UTF-8 path digest encoding ----------------------
 
 

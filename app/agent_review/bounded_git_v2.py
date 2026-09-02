@@ -71,6 +71,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
@@ -80,7 +81,9 @@ __all__ = [
     "BOUNDED_GIT_UNEXPECTED_OBJECT_STORE_WRITE_REASON_V2",
     "BOUNDED_GIT_WORKTREE_UNUSABLE_REASON_V2",
     "BoundedGitError",
+    "BoundedGitSessionV2",
     "bounded_git_environment_v2",
+    "open_bounded_git_session_v2",
     "resolve_trusted_git_absolute_path_v2",
     "run_bounded_git_v2",
 ]
@@ -164,11 +167,28 @@ def bounded_git_environment_v2(*, home: Path | None = None) -> dict[str, str]:
     return environment
 
 
-def _resolve_git_dir_v2(*, executable: str, cwd: Path) -> Path | None:
-    """Resolve `cwd`'s actual git directory via git's own `rev-parse
-    --git-dir`, not an assumed `cwd / ".git"` -- correct for worktrees,
-    `GIT_DIR`-relocated repositories, and any other layout git itself
-    understands, without this module needing to know the details.
+def _resolve_common_git_dir_v2(*, executable: str, cwd: Path) -> Path | None:
+    """Resolve `cwd`'s actual SHARED git directory -- where objects really
+    live -- via git's own `rev-parse --git-common-dir`, not `--git-dir` and
+    not an assumed `cwd / ".git"`.
+
+    External Codex review (`#200-G1-PM` round 3 on this PR): `--git-dir`
+    returns the WORKTREE-PRIVATE administrative directory for a linked
+    worktree (`<main>/.git/worktrees/<name>`), which has no `objects/`
+    subdirectory of its own at all -- confirmed by direct inspection, not
+    assumed: `ls` on that directory shows only `HEAD`, `commondir`,
+    `gitdir`, `index`, `logs`. The earlier version of this function used
+    `--git-dir` and therefore computed an `objects_dir` that never existed
+    for a linked worktree, so `_object_store_snapshot_v2` silently returned
+    an empty snapshot both before and after any command -- the entire
+    invariant check was blind whenever `run_bounded_git_v2` ran with `cwd`
+    inside a linked worktree, reproduced end-to-end against the real lazy
+    -fetch scenario this module exists to catch. `--git-common-dir` is
+    git's own answer to "where do objects/refs/etc. that are SHARED across
+    every worktree of this repository actually live" -- the main
+    repository's `.git` (or a bare repository's own path) for a linked
+    worktree, and identical to `--git-dir` for an ordinary, non-worktree
+    checkout, so this is a strict correction, not a narrower special case.
 
     Returns `None` if it cannot be determined (e.g. `cwd` is not a git
     repository at all): deliberately not an error here, matching the
@@ -180,7 +200,7 @@ def _resolve_git_dir_v2(*, executable: str, cwd: Path) -> Path | None:
     """
     try:
         completed = subprocess.run(  # noqa: S603 -- fixed executable, no shell
-            [executable, "rev-parse", "--git-dir"],
+            [executable, "rev-parse", "--git-common-dir"],
             cwd=cwd,
             env=bounded_git_environment_v2(),
             capture_output=True,
@@ -254,6 +274,65 @@ def _object_store_snapshot_v2(objects_dir: Path) -> frozenset[str]:
     )
 
 
+@dataclass(frozen=True)
+class BoundedGitSessionV2:
+    """A FIXED object-store baseline, captured once, shared across every
+    `run_bounded_git_v2` call a caller passes it to.
+
+    External Codex review (`#200-G1-PM` round 3 on this PR): without a
+    session, every `run_bounded_git_v2` call took its OWN fresh before/after
+    snapshot -- correctly catching a fetch that happened DURING that one
+    call, but proving nothing about calls before or after it. Reproduced
+    end-to-end: a first call against a partial-clone fixture correctly
+    raised `BOUNDED_GIT_UNEXPECTED_OBJECT_STORE_WRITE_REASON_V2`, but the
+    blob it fetched remained on disk, and an immediately-following SECOND
+    call for the identical object succeeded silently -- its own fresh
+    "before" snapshot already included the first call's fetch, so nothing
+    looked new to it. A caller that catches the exception and retries (an
+    ordinary pattern) would treat externally-fetched bytes from a REJECTED
+    invocation as trusted local input.
+
+    A session closes this by fixing the baseline once, at
+    `open_bounded_git_session_v2`, and never re-snapshotting "before" for
+    any call that shares it: every call's "after" is compared against that
+    SAME original baseline, so an object that entered the store at ANY
+    point since the session opened -- whether this call fetched it or an
+    earlier, already-rejected one did -- is still "new relative to session
+    start" on every subsequent call.
+
+    Deliberately opt-in, not the default: a caller that does not create a
+    session (passes `session=None`, the default) keeps today's per-call
+    behaviour, which is still correct for a single, standalone invocation
+    -- and callers that DO want cross-call/retry protection for a whole
+    logical operation (a materialisation, a verification) must create one
+    session and thread it through every git call that operation makes.
+    """
+
+    objects_dir: Path | None
+    baseline_snapshot: frozenset[str] | None
+
+
+def open_bounded_git_session_v2(*, cwd: Path) -> BoundedGitSessionV2:
+    """Capture `cwd`'s object-store baseline ONCE, for a caller that will
+    make multiple `run_bounded_git_v2` calls against the same repository
+    (directly, or via higher-level helpers built on it) and wants every one
+    of them protected against a fetch that any EARLIER call in the same
+    session caused -- not just the call that happens to notice it -- see
+    `BoundedGitSessionV2` for why a fresh per-call snapshot cannot do that.
+
+    Uses `_resolve_common_git_dir_v2` (not `--git-dir`), so a session opened
+    from inside a linked worktree still finds the real, shared object
+    store.
+    """
+    executable = resolve_trusted_git_absolute_path_v2()
+    git_dir = _resolve_common_git_dir_v2(executable=executable, cwd=cwd)
+    objects_dir = (git_dir / "objects") if git_dir is not None else None
+    baseline_snapshot = (
+        _object_store_snapshot_v2(objects_dir) if objects_dir is not None else None
+    )
+    return BoundedGitSessionV2(objects_dir=objects_dir, baseline_snapshot=baseline_snapshot)
+
+
 def run_bounded_git_v2(
     argv: list[str],
     *,
@@ -261,6 +340,7 @@ def run_bounded_git_v2(
     home: Path | None = None,
     check: bool = True,
     input_bytes: bytes | None = None,
+    session: BoundedGitSessionV2 | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     """Run one git command under the bounded contract.
 
@@ -280,6 +360,14 @@ def run_bounded_git_v2(
     `completed` is returned, and before the ordinary `check`/exit-code
     handling below, so an unexpected write is reported even for a command
     that otherwise "succeeded".
+
+    `session`, if given, supplies a FIXED baseline captured once by
+    `open_bounded_git_session_v2` rather than a fresh one taken right
+    before this call -- see `BoundedGitSessionV2` for why a fresh per-call
+    baseline cannot detect an object that an EARLIER, already-rejected call
+    fetched. Without a session (the default), this call takes its own
+    fresh before/after snapshot, exactly as before -- still correct for a
+    single, standalone invocation, just without cross-call memory.
     """
     if not Path(cwd).is_dir():
         raise BoundedGitError(BOUNDED_GIT_WORKTREE_UNUSABLE_REASON_V2)
@@ -292,9 +380,15 @@ def run_bounded_git_v2(
         *argv,
     ]
 
-    git_dir = _resolve_git_dir_v2(executable=executable, cwd=cwd)
-    objects_dir = (git_dir / "objects") if git_dir is not None else None
-    before_snapshot = _object_store_snapshot_v2(objects_dir) if objects_dir is not None else None
+    if session is not None:
+        objects_dir = session.objects_dir
+        before_snapshot = session.baseline_snapshot
+    else:
+        git_dir = _resolve_common_git_dir_v2(executable=executable, cwd=cwd)
+        objects_dir = (git_dir / "objects") if git_dir is not None else None
+        before_snapshot = (
+            _object_store_snapshot_v2(objects_dir) if objects_dir is not None else None
+        )
 
     try:
         completed = subprocess.run(  # noqa: S603 -- fixed executable, no shell

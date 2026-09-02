@@ -50,7 +50,12 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
+from app.agent_review.bounded_git_v2 import (
+    BoundedGitError,
+    BoundedGitSessionV2,
+    open_bounded_git_session_v2,
+    run_bounded_git_v2,
+)
 
 __all__ = [
     "SUBJECT_BLOB_MISSING_REASON_V2",
@@ -111,7 +116,9 @@ class MaterialisedCommitSubjectV2:
     file_count: int
 
 
-def resolve_commit_v2(*, repo_root: Path, ref: str) -> str:
+def resolve_commit_v2(
+    *, repo_root: Path, ref: str, session: BoundedGitSessionV2 | None = None
+) -> str:
     """Confirm `ref` names a commit in `repo_root`'s own object store.
 
     `^{commit}` is required rather than accepting any object: a tree or blob
@@ -120,10 +127,17 @@ def resolve_commit_v2(*, repo_root: Path, ref: str) -> str:
     history actually contains. The returned value is git's own full sha, not
     an echo of whatever string the caller passed in -- resolving `HEAD`, a
     branch name, or an abbreviated sha all go through this same git call.
+
+    `session`, if given, is forwarded to `run_bounded_git_v2` unchanged --
+    see `BoundedGitSessionV2` for why a caller making several git calls as
+    part of one logical operation should share one session across all of
+    them.
     """
     try:
         completed = run_bounded_git_v2(
-            ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], cwd=repo_root
+            ["rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+            cwd=repo_root,
+            session=session,
         )
     except BoundedGitError as exc:
         if exc.reason_code == "bounded_git_command_failed":
@@ -138,8 +152,12 @@ def resolve_commit_v2(*, repo_root: Path, ref: str) -> str:
     return resolved
 
 
-def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[TreeEntryV2]:
+def list_commit_tree_entries_v2(
+    *, repo_root: Path, commit_sha: str, session: BoundedGitSessionV2 | None = None
+) -> list[TreeEntryV2]:
     """List every blob and gitlink in `commit_sha`'s tree, straight from git.
+
+    `session`, if given, is forwarded to `run_bounded_git_v2` unchanged.
 
     `-z` because paths may contain newlines; the non-`-z` form quotes and
     escapes them, and re-decoding that is an avoidable source of divergence
@@ -212,7 +230,9 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
     no destination in hand at all; the other is a property of a specific
     destination's path resolution, which this function does not have.
     """
-    completed = run_bounded_git_v2(["ls-tree", "-r", "-t", "-z", commit_sha], cwd=repo_root)
+    completed = run_bounded_git_v2(
+        ["ls-tree", "-r", "-t", "-z", commit_sha], cwd=repo_root, session=session
+    )
     entries: list[TreeEntryV2] = []
     seen_paths: set[str] = set()
     for record in completed.stdout.split(b"\0"):
@@ -247,20 +267,25 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
 
 
 def read_commit_blobs_v2(
-    *, repo_root: Path, entries: list[TreeEntryV2]
+    *, repo_root: Path, entries: list[TreeEntryV2], session: BoundedGitSessionV2 | None = None
 ) -> dict[str, bytes]:
     """Fetch every blob's raw content in one batched `cat-file` call.
 
     Keyed by path (not object id) because the caller wants "what is at this
     path in the tree", and a repository can legitimately have two paths
     share a blob (identical file content).
+
+    `session`, if given, is forwarded to `run_bounded_git_v2` unchanged.
     """
     blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2]
     if not blobs:
         return {}
     batch_request = "".join(f"{entry.object_id}\n" for entry in blobs)
     completed = run_bounded_git_v2(
-        ["cat-file", "--batch"], cwd=repo_root, input_bytes=batch_request.encode("utf-8")
+        ["cat-file", "--batch"],
+        cwd=repo_root,
+        input_bytes=batch_request.encode("utf-8"),
+        session=session,
     )
     stream = completed.stdout
     offset = 0
@@ -399,6 +424,14 @@ def materialise_commit_subject_v2(
 
     The result is severed from `repo_root`: deleting or rewriting the
     original checkout afterwards cannot change what was materialised.
+
+    Opens its own `BoundedGitSessionV2` (`#200-G1-PM` round 3 on this PR)
+    and threads it through every git call this function makes, so that if
+    an EARLIER call in this materialisation triggers an unexpected object
+    -store write and is rejected, every LATER call in this same
+    materialisation still sees that write as "new relative to session
+    start" -- see `BoundedGitSessionV2` for why a fresh per-call baseline
+    cannot do that.
     """
     destination = Path(destination)
     _reject_symlink_in_destination_ancestry_v2(destination)
@@ -406,8 +439,11 @@ def materialise_commit_subject_v2(
         raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
     destination.mkdir(parents=True, exist_ok=True)
 
-    commit_sha = resolve_commit_v2(repo_root=repo_root, ref=ref)
-    entries = list_commit_tree_entries_v2(repo_root=repo_root, commit_sha=commit_sha)
+    session = open_bounded_git_session_v2(cwd=repo_root)
+    commit_sha = resolve_commit_v2(repo_root=repo_root, ref=ref, session=session)
+    entries = list_commit_tree_entries_v2(
+        repo_root=repo_root, commit_sha=commit_sha, session=session
+    )
     blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2]
 
     try:
@@ -418,13 +454,36 @@ def materialise_commit_subject_v2(
         shutil.rmtree(destination, ignore_errors=True)
         raise
 
-    content_by_path = read_commit_blobs_v2(repo_root=repo_root, entries=blobs)
+    content_by_path = read_commit_blobs_v2(repo_root=repo_root, entries=blobs, session=session)
 
     written = 0
+    # `#200-G1-PM` round 3 on this PR (external Codex review of the round-2
+    # `_reject_resolved_destination_collisions_v2` preflight itself): that
+    # preflight resolves every entry ONCE, before any writes -- a TOCTOU
+    # window, because the write loop below mutates the filesystem as it
+    # goes (writing a symlink entry changes what a LATER entry's `..`
+    # -bearing path resolves through). Reproduced with real `git mktree`
+    # plumbing: symlink `a -> e` plus blobs at `e/file` and `z/../a/file`.
+    # At preflight time `a` does not exist, so the two blob entries resolve
+    # to different destinations and no collision is seen; once the write
+    # loop actually creates `a` as a symlink, the later entry's FRESH
+    # resolution (recomputed per entry below, always against current
+    # on-disk state) now traverses through it, landing on the same file
+    # the earlier entry already wrote -- silently discarding it, unless
+    # THIS collision, not just the preflight one, is also checked.
+    # `written_targets`, populated as each entry is actually about to be
+    # written (not from the static preflight pass), catches this
+    # regardless of which of the two colliding entries git happens to
+    # order first: whichever one resolves to an already-written path,
+    # written earlier in this very loop, is refused before overwriting it.
+    written_targets: set[Path] = set()
     try:
         for entry in blobs:
             content = content_by_path[entry.path]
             target = _safe_destination_v2(subject_root=destination, relative_path=entry.path)
+            if target in written_targets:
+                raise SubjectMaterialisationError(SUBJECT_DUPLICATE_TREE_PATH_REASON_V2)
+            written_targets.add(target)
             # `mkdir(parents=True, exist_ok=True)` can still raise
             # `FileExistsError`: git's own tree-sort comparator treats a
             # subdirectory entry as if it had a trailing "/", so a blob and
