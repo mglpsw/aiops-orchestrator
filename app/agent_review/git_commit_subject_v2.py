@@ -292,21 +292,72 @@ def compute_subject_digest_v2(subject_root: Path) -> str:
     supplied by an untrusted party as a substitute for re-deriving expected
     content from git directly -- see `commit_derived_execution_identity_v2.py`
     for why that distinction is the whole point of this primitive.
+
+    S3 (`#200-G1-S`, issue #305, salvaged from forensic PR #302's finding
+    #6, hardened further after independent review of this fix itself found
+    a second, narrower gap in the first attempt): git tree entry paths are
+    raw bytes and are never required to be valid UTF-8 --
+    `list_commit_tree_entries_v2` already decodes them with
+    `errors="surrogateescape"` for exactly that reason, and this function's
+    own path enumeration (via `pathlib`) round-trips a materialised
+    non-UTF-8 name back to a `str` via `os.fsdecode` on POSIX.
+
+    The first fix attempt re-encoded that `str` back to bytes with
+    `errors="surrogateescape"`, hardcoded to the ``utf-8`` codec -- correct
+    ONLY on a system whose filesystem encoding (`sys.getfilesystemencoding
+    ()`) also happens to be UTF-8 (true in this codebase's own CI/dev
+    environments, but not a property this primitive is entitled to assume
+    of every environment it might run in). On a POSIX system whose
+    filesystem encoding is something else, `pathlib` decodes a raw filename
+    through THAT codec instead, potentially producing ordinary Unicode
+    characters rather than surrogate escapes for the same raw byte -- an
+    unconditional ``.encode("utf-8", "surrogateescape")`` would then hash
+    DIFFERENT bytes than what is actually on disk (e.g. a raw Latin-1
+    ``0xe9`` decodes to ``"\xe9"`` under a Latin-1 filesystem encoding, and
+    re-encodes as UTF-8 bytes ``c3 a9`` -- not the original single byte).
+
+    Fixed by using `os.fsencode` instead of a hardcoded codec: `fsencode`
+    and `fsdecode` are paired inverses of EACH OTHER, always against
+    whatever `sys.getfilesystemencoding()` actually is on the running
+    system -- so `fsencode(fsdecode(raw_bytes)) == raw_bytes` by
+    construction, regardless of what that encoding happens to be. Symlink
+    target text is read via `os.readlink` on the `fsencode`d path directly
+    (returns `bytes`, not `str`), for the same reason -- no `str`
+    round-trip left anywhere in this function's preimage construction. The
+    preimage is now assembled as raw `bytes` throughout, not a `str` joined
+    and encoded once at the end, closing this class of gap structurally
+    rather than by picking a better guess for the encode call.
     """
     import hashlib
     import os as _os
 
-    entries: list[str] = []
-    for path in sorted(subject_root.rglob("*")):
+    # Keyed by the ENCODED path bytes, and sorted by those bytes -- not by
+    # the decoded `str`/`Path`. Independent review of the first byte-faithful
+    # attempt (PR #306) found that sorting `Path` values first and encoding
+    # afterwards leaves a second, subtler environment dependency: on a
+    # filesystem whose codec does not preserve raw-byte collation (e.g.
+    # CP1252, where raw 0x80 and 0x82 decode to characters that sort in the
+    # opposite order), the same raw directory entries concatenate in a
+    # different order than on a UTF-8/surrogateescape host, producing a
+    # different digest for identical on-disk bytes. Sorting the byte keys
+    # makes the ordering a property of the bytes themselves, so it is
+    # identical on every host regardless of filesystem encoding.
+    keyed_entries: list[tuple[bytes, bytes]] = []
+    for path in subject_root.rglob("*"):
         relative = path.relative_to(subject_root).as_posix()
+        relative_bytes = _os.fsencode(relative)
         if path.is_symlink():
-            entries.append(f"l\x00{relative}\x00{_os.readlink(path)}")
+            target_bytes = _os.readlink(_os.fsencode(path))
+            record = b"l\x00" + relative_bytes + b"\x00" + target_bytes
         elif path.is_dir():
-            entries.append(f"d\x00{relative}")
+            record = b"d\x00" + relative_bytes
         elif path.is_file():
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            executable = "1" if _os.access(path, _os.X_OK) else "0"
-            entries.append(f"f\x00{relative}\x00{executable}\x00{digest}")
+            digest = hashlib.sha256(path.read_bytes()).hexdigest().encode("ascii")
+            executable = b"1" if _os.access(path, _os.X_OK) else b"0"
+            record = b"f\x00" + relative_bytes + b"\x00" + executable + b"\x00" + digest
         else:
-            entries.append(f"?\x00{relative}")
-    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+            record = b"?\x00" + relative_bytes
+        keyed_entries.append((relative_bytes, record))
+
+    entries = [record for _key, record in sorted(keyed_entries)]
+    return hashlib.sha256(b"\n".join(entries)).hexdigest()

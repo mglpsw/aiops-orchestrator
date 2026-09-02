@@ -31,7 +31,6 @@ itself) rather than by asking git what a commit's bytes actually are.
 
 ```
 AUTHORIZED COMMIT -> GIT OBJECTS OF THAT COMMIT -> MATERIALIZED BYTES
-                   -> EXECUTED BYTES -> ARTIFACT IDENTITY
 ```
 
 Direction is commit -> bytes, never bytes + document -> claimed commit.
@@ -45,16 +44,45 @@ digest field an attacker can fabricate, because there is no declared digest
 in the trust path at all: the comparison is always against freshly-read git
 object content.
 
+## What this module does NOT prove
+
+The chain this module proves stops at MATERIALIZED BYTES: "the bytes
+currently sitting at ``subject_root`` are exactly ``commit_sha``'s tree,
+re-derived fresh from git's own object store at the moment this function is
+called." It does **not** extend that chain to EXECUTED BYTES -- it says
+nothing about whether an *already-running* interpreter previously loaded
+those bytes, or loaded something else before this check ran, or will still
+be running the same bytes by the time a caller acts on the result. A caller
+that needs "what a fresh process loads matches what was verified" composes
+this primitive with a fresh-process launch that verifies before importing
+anything; a caller that needs "what an *already-running* interpreter has
+already executed matches some commit" is asking a question this module was
+never designed to answer, and no wording change here can make it answer it.
+That second question -- execution provenance for a process that may already
+be running -- is tracked separately as `#301` (`#200-G1B`); it is a
+different layer, not a stricter version of what this module proves, and is
+not conflated with it here.
+
 ## IDENTITY is not AUTHORIZATION
 
 This module deliberately keeps two questions apart and never collapses them
 into one boolean:
 
 ``ExecutedSourceIdentityV2`` / ``verify_executed_source_identity_v2``
-    IDENTITY: which commit produced the bytes that are executing right now.
-    A fact derivable entirely from the toolrepo's own git object store plus
-    what is actually on disk. Says nothing about whether that commit was
-    *supposed* to run.
+    IDENTITY: that ``commit_sha``'s tree matches, byte-for-byte, the bytes
+    currently materialized at ``subject_root``, as of the moment this
+    function is called. This is TREE EQUALITY, not unique provenance: if
+    another commit happens to share the exact same tree (e.g. an empty
+    commit, or identical content committed twice under different messages
+    or on different branches), that other commit's sha would pass this same
+    check against the same on-disk bytes just as validly -- this function
+    proves a match against the specific ``commit_sha`` the caller supplied,
+    never that ``commit_sha`` is the only commit that could explain what is
+    on disk. A fact derivable entirely from the toolrepo's own git object
+    store plus what is actually on disk. Says nothing about whether that
+    commit was *supposed* to run, and says nothing about what any
+    interpreter -- already running or not -- has actually loaded into
+    memory (see "What this module does NOT prove" above).
 
 ``ExecutedSourceAuthorizationV2`` / ``authorize_commit_for_execution_v2``
     AUTHORIZATION: whether a given (already-identified) commit is permitted
@@ -112,6 +140,7 @@ __all__ = [
     "IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2",
     "IDENTITY_SYMLINKED_DIRECTORY_REASON_V2",
     "IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2",
+    "IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2",
     "IDENTITY_TREE_UNREADABLE_REASON_V2",
     "IDENTITY_UNKNOWN_COMMIT_REASON_V2",
     "ExecutedSourceAuthorizationV2",
@@ -129,6 +158,11 @@ IDENTITY_TREE_UNREADABLE_REASON_V2 = "identity_tree_unreadable"
 IDENTITY_GITLINK_PRESENT_REASON_V2 = "identity_gitlink_present"
 IDENTITY_MISSING_TRACKED_FILE_REASON_V2 = "identity_missing_tracked_file"
 IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2 = "identity_extra_untracked_file"
+# S2 (#200-G1-S / issue #305): distinct from every other reason above --
+# raised when the completeness traversal itself could not enumerate a
+# directory (e.g. a permission error), which is NOT the same fact as "that
+# directory is empty". Never silently folded into a clean pass.
+IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2 = "identity_traversal_unreadable"
 IDENTITY_CONTENT_MISMATCH_REASON_V2 = "identity_content_mismatch"
 IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2 = "identity_symlink_target_mismatch"
 IDENTITY_MODE_MISMATCH_REASON_V2 = "identity_mode_mismatch"
@@ -148,10 +182,12 @@ class ExecutedSourceIdentityError(ValueError):
 
 @dataclass(frozen=True)
 class ExecutedSourceIdentityV2:
-    """IDENTITY only: which commit produced the bytes now on disk.
+    """IDENTITY only: ``commit_sha``'s tree matches the bytes now on disk.
 
-    Never carries an opinion about whether that commit was permitted to run
-    -- see ``ExecutedSourceAuthorizationV2`` for that separate question.
+    Tree equality, not unique provenance -- a different commit sharing the
+    exact same tree would pass this same check against the same bytes. Never
+    carries an opinion about whether that commit was permitted to run -- see
+    ``ExecutedSourceAuthorizationV2`` for that separate question.
     """
 
     commit_sha: str
@@ -256,19 +292,66 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
     partway through the call -- is what gets compared against the commit's
     tree for completeness.
 
-    ``os.walk(..., followlinks=False)`` is used rather than
-    ``Path.rglob`` for the enumeration itself precisely because it reports
-    (without descending into) any symlinked directory in ``dirnames``,
-    which is exactly the signal this function needs to refuse on.
+    A manual, recursive ``os.scandir``-based walk is used rather than
+    ``os.walk`` or ``Path.rglob`` for the enumeration itself -- see the S2
+    note below for why ``os.walk`` alone is not enough to fail closed here.
+
+    S2 (``#200-G1-S``, issue #305, salvaged from forensic PR #302's finding
+    #4, hardened further after independent review of this fix itself found
+    a second, narrower gap in the first attempt): "cannot enumerate a
+    directory" is not the same fact as "directory is empty" -- an unreadable
+    subtree must contribute a typed refusal, never zero leaf paths as if it
+    had been checked and found empty. `os.walk`'s default behaviour on a
+    directory it cannot enumerate (e.g. a permission error during
+    ``scandir``) is to silently skip it; passing an ``onerror`` callback
+    closes that gap. But CPython's ``os.walk`` ALSO separately catches an
+    ``OSError`` from classifying an already-enumerated entry (its internal
+    ``entry.is_dir()`` call, used to sort each name into `dirnames` or
+    `filenames`) and silently treats that entry as a non-directory --
+    `onerror` is never invoked for that failure, only for the ``scandir``
+    call itself. A tracked directory whose classification fails at exactly
+    that moment (e.g. a race, a stale NFS handle, a mid-walk permission
+    change) would be added to this function's leaf-path set under its OWN
+    name (not descended into), which is invisible unless that bare name
+    happens to coincide with an actual tracked leaf path -- silently
+    skipping the subtree's real completeness check either way. Reimplemented
+    as an explicit recursive walk over ``os.scandir`` so BOTH failure points
+    -- the initial ``scandir`` call and each entry's own
+    ``is_symlink``/``is_dir`` classification -- are wrapped and raise the
+    same typed refusal, with no CPython-internal fallback path left that
+    this module does not control.
     """
+
     leaf_paths: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(subject_root, followlinks=False):
-        current_dir = Path(dirpath)
-        for dirname in dirnames:
-            if (current_dir / dirname).is_symlink():
-                raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
-        for filename in filenames:
-            leaf_paths.append((current_dir / filename).relative_to(subject_root).as_posix())
+
+    def _walk(directory: Path) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as exc:
+            raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+        for entry in entries:
+            try:
+                # `is_dir()` follows symlinks by default, matching what
+                # `os.walk` itself classifies as a directory entry (a
+                # symlink-to-directory is still sorted into `dirnames`,
+                # just not recursed into when `followlinks=False`) --
+                # `is_symlink()` is checked separately so a symlinked
+                # directory is refused outright rather than given a
+                # traversal policy to disagree about (see this function's
+                # docstring above).
+                is_symlink = entry.is_symlink()
+                is_dir = entry.is_dir()
+            except OSError as exc:
+                raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+            entry_path = Path(entry.path)
+            if is_dir:
+                if is_symlink:
+                    raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
+                _walk(entry_path)
+            else:
+                leaf_paths.append(entry_path.relative_to(subject_root).as_posix())
+
+    _walk(subject_root)
     return frozenset(leaf_paths)
 
 
