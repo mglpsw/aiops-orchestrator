@@ -501,3 +501,21 @@ implies the other. No two-process outer/inner wiring, no CLI, no product
 composer was built in this slice (per the port ledger's
 `PORT_AS_CONCEPT`/G5-deferred disposition) -- G1 delivers the verification
 primitive only.
+
+## 7. Post-merge addendum (`#200-G1-S`, issue #305, salvaged from forensic PR #302)
+
+This document's own prose above (§1, §6) already stated IDENTITY as "which
+commit produced the bytes now on disk" / "as of the moment its checks run" --
+careful language that does not claim execution provenance. The module's
+*docstring* had drifted from that same care (`"the bytes that are executing
+right now"`), which post-merge Codex review on PR #284 flagged as P1 finding
+#1. `#200-G1-S` narrowed the docstring to match this checkpoint's own
+already-accurate framing, and added an explicit "What this module does NOT
+prove" section: G1 proves `authorized/selected commit -> current
+materialized subject bytes`, never `-> what an already-running interpreter
+previously executed`. No public symbol, field, or wire schema changed. The
+actual closure of the execution-provenance question is `#301` (`#200-G1B`),
+not this documentation correction -- see that issue for the open
+architectural gap this checkpoint's §6 already disclosed as a limitation
+(`compute_subject_digest_v2` and the identity check both describe
+disk-state-at-call-time, never a running interpreter's loaded bytes).

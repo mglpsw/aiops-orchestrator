@@ -31,7 +31,6 @@ itself) rather than by asking git what a commit's bytes actually are.
 
 ```
 AUTHORIZED COMMIT -> GIT OBJECTS OF THAT COMMIT -> MATERIALIZED BYTES
-                   -> EXECUTED BYTES -> ARTIFACT IDENTITY
 ```
 
 Direction is commit -> bytes, never bytes + document -> claimed commit.
@@ -45,16 +44,38 @@ digest field an attacker can fabricate, because there is no declared digest
 in the trust path at all: the comparison is always against freshly-read git
 object content.
 
+## What this module does NOT prove
+
+The chain this module proves stops at MATERIALIZED BYTES: "the bytes
+currently sitting at ``subject_root`` are exactly ``commit_sha``'s tree,
+re-derived fresh from git's own object store at the moment this function is
+called." It does **not** extend that chain to EXECUTED BYTES -- it says
+nothing about whether an *already-running* interpreter previously loaded
+those bytes, or loaded something else before this check ran, or will still
+be running the same bytes by the time a caller acts on the result. A caller
+that needs "what a fresh process loads matches what was verified" composes
+this primitive with a fresh-process launch that verifies before importing
+anything; a caller that needs "what an *already-running* interpreter has
+already executed matches some commit" is asking a question this module was
+never designed to answer, and no wording change here can make it answer it.
+That second question -- execution provenance for a process that may already
+be running -- is tracked separately as `#301` (`#200-G1B`); it is a
+different layer, not a stricter version of what this module proves, and is
+not conflated with it here.
+
 ## IDENTITY is not AUTHORIZATION
 
 This module deliberately keeps two questions apart and never collapses them
 into one boolean:
 
 ``ExecutedSourceIdentityV2`` / ``verify_executed_source_identity_v2``
-    IDENTITY: which commit produced the bytes that are executing right now.
-    A fact derivable entirely from the toolrepo's own git object store plus
-    what is actually on disk. Says nothing about whether that commit was
-    *supposed* to run.
+    IDENTITY: which commit produced the bytes currently materialized at
+    ``subject_root``, as of the moment this function is called. A fact
+    derivable entirely from the toolrepo's own git object store plus what is
+    actually on disk. Says nothing about whether that commit was *supposed*
+    to run, and says nothing about what any interpreter -- already running
+    or not -- has actually loaded into memory (see "What this module does
+    NOT prove" above).
 
 ``ExecutedSourceAuthorizationV2`` / ``authorize_commit_for_execution_v2``
     AUTHORIZATION: whether a given (already-identified) commit is permitted
