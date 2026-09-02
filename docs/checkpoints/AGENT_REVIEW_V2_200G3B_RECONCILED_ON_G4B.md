@@ -268,6 +268,60 @@ completion notifications had arrived as of this head; if and when they do,
 their content is reconciled against what is already independently
 established here, not treated as a new, separate source of truth.
 
+## 6a. Correction round: independent Codex review on PR #297's exact head
+
+After PR #297 was opened at head `b7df1111a9fd53eb819842bd2a5be14a483f55ee`,
+an external Codex review was triggered by the coordinator (not by this
+session -- see §7) against that exact head. Its three findings were
+**independently verified before any action was taken**, via direct GitHub
+GraphQL query (`gh api graphql`, review threads on PR #297, author
+`chatgpt-codex-connector`, `path`/`line` confirmed against the real diff at
+that exact commit) -- not accepted from any relayed description.
+
+1. **P1**: the reconciliation round's own new completeness gate
+   (`_verify_hunk_fragment_coverage_completeness_v2`) only iterated
+   `fragments_by_hunk` -- hunks already mentioned by the manifest. A
+   must-review file with multiple real hunks could have a manifest with a
+   complete fragment for one hunk and ZERO fragments for another
+   (`ManifestMaterialV2` only requires >=1 fragment per PATH, never per
+   hunk), so the omitted hunk never reached the gate at all.
+2. **P1** (also this branch's own recorded, but not actually closed,
+   "Lane B Finding 2"): a windowed fragment's declared `diff_sha256` (the
+   hunk-level digest) was never compared against the real, re-acquired
+   `hunk_body.diff_sha256` -- only a whole-hunk fragment's exact-
+   recomposition check proved this, transitively.
+3. **P2**: `verify_manifest_diff_binding_v2` discarded the freshly
+   re-acquired `AcquiredDiffIdentityV2` and only compared the binding's
+   declared SHAs against the manifest's own self-reported SHAs -- an
+   internal self-consistency check, never a check against what was
+   actually executed. Distinct `base_sha`/`head_sha` pairs sharing the same
+   tree produce byte-identical canonical diff patches (verified: an empty
+   commit on top of a base produces a second, distinct SHA with the exact
+   same tree, and `git diff` compares trees, not ancestry).
+
+All three fixed (commit `e7a42f0`): the completeness gate now also walks
+every real re-acquired hunk of a must-review path (not just ones the
+manifest mentions); `_build_fragment_content_v2` now checks every
+fragment's (not only whole-hunk fragments') declared digest against the
+real hunk unconditionally; `verify_manifest_diff_binding_v2` now requires
+and checks `acquired_identity` against the binding. Three new permanent
+regression tests reproduce each finding directly through the real
+`extract_review_content_v2` entrypoint. Two pre-existing test fixtures
+needed updates (a placeholder `diff_sha256` and a discarded mocked
+identity) since both now legitimately trip the new, earlier checks.
+
+**Mutation-tested individually**, each on a clean commit: disabled each of
+the three new checks in turn (`if False and (...)`), confirmed the
+corresponding new test went RED (`DID NOT RAISE`), restored via `git
+checkout --`, confirmed GREEN, `git status` clean before moving to the
+next.
+
+**Post-fix verification**: no false positive against real, planner-
+produced windowed fixtures (re-ran the existing lossless-windowing and
+no-duplicate-anchor tests); full suite clean (2761 passed, 12 skipped, 2
+failed -- same known environment-class sudo tests); schema export and eval
+checks both byte-identical.
+
 ## 7. Explicitly declined this session
 
 A mid-task instruction requested triggering an external Codex review via
@@ -295,10 +349,14 @@ operational composer work.
 
 Requalification is clean: reconciliation structurally sound (verified, not
 assumed), full suite green modulo the known environment-class sudo
-failures, schema/eval checks byte-identical, the newly-found coverage-
-completeness gap closed and mutation-tested, historical-falsifier matrix
-complete with no unresolved `REPRODUCED_CURRENT` entries. **Not recommending
-merge yet** -- pending genuine confirmation from this session's own
-dispatched Lane A/Lane B agents (still outstanding as of this head) and
-resolution of the declined Codex-trigger step (§7) by whoever holds that
-grant. This is a status report for the coordinator, not a Ready request.
+failures, schema/eval checks byte-identical, the reconciliation-round
+coverage-completeness gap AND the three independently-verified Codex
+findings against PR #297's exact head (§6a) all closed and individually
+mutation-tested, historical-falsifier matrix complete with no unresolved
+`REPRODUCED_CURRENT` entries. **Not recommending merge yet** -- pending
+genuine confirmation from this session's own dispatched Lane A/Lane B
+agents (still outstanding as of this head), a fresh Codex pass against
+this new head (`e7a42f0`, not yet reviewed -- any source change invalidates
+a prior Codex review, same discipline as internal review), and resolution
+of the declined Codex-trigger step (§7) by whoever holds that grant. This
+is a status report for the coordinator, not a Ready request.
