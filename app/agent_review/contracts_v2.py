@@ -243,6 +243,20 @@ Rfc3339Timestamp = Annotated[
 ]
 PositiveInt = Annotated[StrictInt, Field(gt=0)]
 NonNegativeInt = Annotated[StrictInt, Field(ge=0)]
+# Post-#200-G4B Codex review of PR #296 (P2): `TargetArtifactV2.max_bytes`
+# fed a size-limited, bounded read (`ExternalInputFileV2.read_bytes_bounded`,
+# which passes `max_bytes + 1` to a C-level `.read()`) with no
+# schema-enforced upper bound. A profile-legal value at or beyond
+# `sys.maxsize` overflows that `.read()` call's `Py_ssize_t` argument
+# conversion, raising a raw `OverflowError` instead of refusing typed. No
+# legitimate artifact -- content meant to reach an LLM prompt via a budget
+# of a few hundred thousand characters (`TargetBudgetsV2.total_prompt_chars`)
+# -- ever needs to declare anywhere near this bound; real profiles in this
+# repository use `max_bytes: 1_000_000`. Refusing at schema/construction
+# time, well below where any read-size arithmetic could overflow, is a
+# strictly earlier and more defensible fail-closed point than catching the
+# overflow after the fact at read time.
+ArtifactMaxBytes = Annotated[StrictInt, Field(gt=0, le=104_857_600)]
 
 
 def _require_json_value(value: object, *, path: str = "$") -> None:
@@ -929,7 +943,7 @@ class TargetArtifactV2(ContractV2Model):
     path: RelativePath
     kind: Literal["json", "yaml", "text", "markdown", "diff"]
     required: StrictBool
-    max_bytes: PositiveInt
+    max_bytes: ArtifactMaxBytes
 
 
 class TargetBudgetsV2(ContractV2Model):

@@ -166,6 +166,18 @@ class ExternalInputFileV2:
                 return handle.read(max_bytes + 1)
         except FileNotFoundError as exc:
             raise ExternalPathIngressError(EXTERNAL_PATH_MISSING_REASON_V2) from exc
+        except OverflowError as exc:
+            # Defense in depth (post-#200-G4B Codex review of PR #296):
+            # `max_bytes` is caller-supplied with no guarantee here that it
+            # was already schema-bounded (`TargetArtifactV2.max_bytes` now
+            # is, but this is a general-purpose primitive, not something
+            # that should rely on every future caller getting that right).
+            # `.read()` converts its argument to a `Py_ssize_t`; a value at
+            # or beyond `sys.maxsize` overflows that conversion and raises
+            # a raw `OverflowError`. Same discipline as every other read
+            # failure this method already converts: typed refusal, never a
+            # raw crash.
+            raise ExternalPathIngressError(EXTERNAL_PATH_UNREADABLE_REASON_V2) from exc
         except (OSError, RuntimeError, ValueError) as exc:
             raise ExternalPathIngressError(EXTERNAL_PATH_UNREADABLE_REASON_V2) from exc
 

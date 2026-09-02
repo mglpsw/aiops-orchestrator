@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -61,6 +62,34 @@ def test_read_bytes_bounded_never_reads_past_max_bytes_plus_one(tmp_path: Path) 
     result = capability.read_bytes_bounded(10)
     assert len(result) == 11
     assert result == b"x" * 11
+
+
+def test_read_bytes_bounded_refuses_typed_instead_of_raw_overflowerror_on_an_absurd_limit(
+    tmp_path: Path,
+) -> None:
+    """Post-merge Codex P2 (against #296's own fix for Codex P1): `max_bytes`
+    comes from a `PositiveInt` profile field with no schema-enforced upper
+    bound. `handle.read(max_bytes + 1)` passes that value to a C-level
+    `.read()`, which converts its argument to a `Py_ssize_t` -- a value at
+    or beyond `sys.maxsize` overflows that conversion and raises a raw
+    `OverflowError`, not the typed `ExternalPathIngressError` family this
+    whole authority exists to guarantee (`test_no_broad_exception_handler_
+    in_authority` below is the same discipline: narrow, TYPED exception
+    handling, never a raw crash). This is defense-in-depth at the
+    mechanical primitive itself, independent of whatever upper bound the
+    profile schema now enforces upstream -- any future caller of this
+    primitive with an untrusted `max_bytes` must still fail closed and
+    typed, not raw."""
+
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "artifact.txt"
+    target.write_bytes(b"hello world")
+    capability = validate_external_input_file_v2(target, root=root)
+
+    with pytest.raises(ExternalPathIngressError) as excinfo:
+        capability.read_bytes_bounded(sys.maxsize)
+    assert _reason(excinfo) == EXTERNAL_PATH_UNREADABLE_REASON_V2
 
 
 def test_missing_path_is_typed_and_path_free(tmp_path: Path) -> None:
