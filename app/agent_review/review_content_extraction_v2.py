@@ -137,6 +137,23 @@ CONTENT_REASON_FRAGMENT_RANGE_OUTSIDE_HUNK_BOUNDS_V2 = "fragment_range_outside_h
 # because completeness is a property of a HUNK's fragment set as a whole,
 # not of any single fragment in isolation.
 CONTENT_REASON_FRAGMENT_COVERAGE_INCOMPLETE_V2 = "fragment_coverage_incomplete"
+# Independent Codex review round, finding 2 (this is also Lane B's
+# "Finding 2" from this branch's own reconciliation checkpoint, not
+# actually closed by that round despite being recorded there): a
+# fragment's declared `diff_sha256` is the HUNK-level digest (shared by
+# every fragment of that hunk, per `compute_fragment_id_v2`'s preimage),
+# and only a WHOLE-hunk fragment's exact-recomposition check transitively
+# proves it matches the real, re-acquired `hunk_body.diff_sha256`. A
+# windowed fragment's declared `diff_sha256` was never compared against
+# anything: a hand-built manifest can split a hunk into fragments whose
+# RANGES fully cover it (passing every other check) while every fragment
+# carries an arbitrary, well-formed-but-wrong digest -- extraction still
+# emits the real, correctly-sliced content (content is always sliced from
+# the real re-acquired hunk body, never from the fragment's own claimed
+# digest), but under a fragment identity that does not actually identify
+# that hunk, corrupting downstream finding/evidence attribution that
+# trusts `fragment_id`/`diff_sha256` as provenance.
+CONTENT_REASON_FRAGMENT_HUNK_DIGEST_MISMATCH_V2 = "fragment_hunk_digest_mismatch"
 CONTENT_REASON_OVER_BUDGET_REQUIRES_REPLAN_V2 = "content_over_budget_requires_replan"
 CONTENT_REASON_WINDOW_OWNS_NO_LINES_V2 = "window_owns_no_real_lines"
 CONTENT_REASON_DLP_DETECTOR_NOT_EXECUTED_V2 = "dlp_detector_not_executed"
@@ -434,6 +451,24 @@ def _build_fragment_content_v2(
             content_sha256=None, redaction_applied=False, chars=0,
         )
 
+    # Independent Codex review round, finding 2: `fragment.diff_sha256` is
+    # the HUNK-level digest (shared by every fragment of that hunk), and
+    # must equal the REAL, re-acquired `hunk_body.diff_sha256` -- checked
+    # here, unconditionally, for EVERY fragment (whole-hunk or windowed),
+    # before either slicing path runs. Previously only a whole-hunk
+    # fragment got an equivalent proof, transitively, via the exact-
+    # recomposition check below; a windowed fragment's declared digest was
+    # never compared against anything, letting a hand-built manifest split
+    # a hunk into range-complete fragments carrying an arbitrary,
+    # well-formed-but-wrong digest each -- content would still be the
+    # real, correctly-sliced material (slicing always reads from
+    # `hunk_body`, never from the fragment's own claimed digest), but
+    # under a fragment identity that does not actually identify that hunk.
+    if fragment.diff_sha256 != hunk_body.diff_sha256:
+        raise ExtractionBlockedError(
+            CONTENT_REASON_FRAGMENT_HUNK_DIGEST_MISMATCH_V2, fragment_id=fragment.fragment_id
+        )
+
     # Exact recomposition check (D-series "hard stop", not a soft warning):
     # for a whole-hunk fragment (its range equals the hunk's own range,
     # EXACTLY -- not merely "starts at the hunk's start", which a windowed
@@ -707,37 +742,55 @@ def _ranges_fully_cover_v2(ranges: Sequence[LineRangeV2], *, full: LineRangeV2) 
 def _verify_hunk_fragment_coverage_completeness_v2(
     fragments_by_hunk: dict[tuple[str, int], list[FragmentV2]],
     hunk_body_by_key: dict[tuple[str, int], HunkBodyV2],
+    *,
+    must_review_files: frozenset[str],
 ) -> None:
-    """Global, pre-classification gate: for every hunk that has at least
-    one ``coverage_required`` fragment, the UNION of every fragment's
-    ``old_range``/``new_range`` referencing that hunk (required or not --
-    a hunk's coverage can legitimately be split across a required and an
-    auxiliary fragment) must equal the hunk's own real, re-acquired full
-    range on BOTH sides. This is deliberately separate from, and does not
-    replace, the per-fragment ``CONTENT_REASON_FRAGMENT_RANGE_OUTSIDE_HUNK_
-    BOUNDS_V2`` guard: that check rejects a fragment claiming MORE than its
-    hunk (overflow); this one rejects a hunk's fragment set claiming LESS
-    than its hunk (a gap) -- a narrow-but-in-bounds ``coverage_required``
-    fragment passes the former and would previously pass everything else,
-    silently omitting real changed lines (including, in the reproduction
-    that motivated this check, a deliberately marked line) from every
-    downstream consumer with no error and no reason code.
+    """Global, pre-classification gate: for every hunk that either (a) has
+    at least one ``coverage_required`` fragment, or (b) belongs to a
+    ``must_review_files`` path at all (independent Codex review round,
+    finding 1 -- see below), the UNION of every fragment's ``old_range``/
+    ``new_range`` referencing that hunk (required or not -- a hunk's
+    coverage can legitimately be split across a required and an auxiliary
+    fragment) must equal the hunk's own real, re-acquired full range on
+    BOTH sides. This is deliberately separate from, and does not replace,
+    the per-fragment ``CONTENT_REASON_FRAGMENT_RANGE_OUTSIDE_HUNK_BOUNDS_V2``
+    guard: that check rejects a fragment claiming MORE than its hunk
+    (overflow); this one rejects a hunk's fragment set claiming LESS than
+    its hunk (a gap, up to and including no fragments at all).
 
-    A hunk with NO fragments at all is not this function's concern -- that
-    is either a legitimately-dropped auxiliary hunk (never checked here,
-    since this only inspects hunks already present in ``fragments_by_hunk``)
-    or a missing-coverage-for-a-must-review-path shape ``ManifestMaterialV2``
-    itself already refuses to construct. A referenced hunk whose body could
-    not be re-acquired at all is deferred to the existing per-fragment
-    ``CONTENT_REASON_HUNK_BODY_UNAVAILABLE_V2`` refusal, not duplicated here.
+    Original version of this check (reconciliation round) only iterated
+    ``fragments_by_hunk.items()`` -- hunks that already have >=1 fragment.
+    Independently reproduced Codex finding: a must-review file with
+    MULTIPLE real hunks can have a manifest with a complete fragment for
+    only ONE of them and omit another entirely; since the omitted hunk
+    never appears in ``fragments_by_hunk`` at all (``ManifestMaterialV2``
+    only requires >=1 fragment per PATH, never per HUNK of that path), the
+    original gate never saw it, and extraction silently returned content
+    missing whole hunks. Now also walks every REAL hunk (from
+    ``hunk_body_by_key``, i.e. the re-acquired diff, not from what the
+    manifest happens to mention) belonging to a must-review path, treating
+    a hunk with zero fragments as the degenerate case of an empty range
+    union (``_ranges_fully_cover_v2`` already returns ``False`` for an
+    empty range list, so this composes without a separate code path).
+
+    A referenced hunk whose body could not be re-acquired at all is
+    deferred to the existing per-fragment ``CONTENT_REASON_HUNK_BODY_
+    UNAVAILABLE_V2`` refusal, not duplicated here.
     """
 
-    for hunk_key, hunk_fragments in fragments_by_hunk.items():
-        if not any(fragment.coverage_required for fragment in hunk_fragments):
-            continue
+    coverage_required_keys = {
+        hunk_key
+        for hunk_key, hunk_fragments in fragments_by_hunk.items()
+        if any(fragment.coverage_required for fragment in hunk_fragments)
+    }
+    must_review_hunk_keys = {
+        hunk_key for hunk_key in hunk_body_by_key if hunk_key[0] in must_review_files
+    }
+    for hunk_key in coverage_required_keys | must_review_hunk_keys:
         hunk_body = hunk_body_by_key.get(hunk_key)
         if hunk_body is None:
             continue
+        hunk_fragments = fragments_by_hunk.get(hunk_key, [])
         full_old_range, full_new_range = _hunk_full_range_v2(hunk_body)
         old_ranges = [fragment.old_range for fragment in hunk_fragments]
         new_ranges = [fragment.new_range for fragment in hunk_fragments]
@@ -749,7 +802,7 @@ def _verify_hunk_fragment_coverage_completeness_v2(
             )
             raise ExtractionBlockedError(
                 CONTENT_REASON_FRAGMENT_COVERAGE_INCOMPLETE_V2,
-                fragment_id=required_fragment_ids[0],
+                fragment_id=required_fragment_ids[0] if required_fragment_ids else None,
             )
 
 
@@ -891,7 +944,7 @@ def _extract_review_content_v2(
         # passing on the untouched `diff_text`). One acquisition now backs
         # both views: `file_diffs` is literally derived from this exact
         # `diff_text` by the same parse/correlate pass, not a second one.
-        file_diffs, diff_text, _acquired_identity = acquire_authoritative_diff_with_identity_v2(
+        file_diffs, diff_text, acquired_identity = acquire_authoritative_diff_with_identity_v2(
             repo_root, base_sha=base_sha, head_sha=head_sha
         )
         hunk_bodies = extract_hunk_bodies_v2(diff_text)
@@ -914,11 +967,16 @@ def _extract_review_content_v2(
     # entrypoint (verified only in isolated unit tests, never invoked here).
     # Because `file_diffs` is derived from this SAME `diff_text` (above),
     # this check now also transitively covers the classification view, not
-    # only the hunk-body view.
+    # only the hunk-body view. `acquired_identity` (independent Codex
+    # review round, finding 3) is threaded through so the verifier checks
+    # the SHAs actually used for THIS acquisition, not only the manifest's
+    # self-reported ones -- distinct SHA pairs can produce byte-identical
+    # diff patches, so the digest check alone does not close that gap.
     verify_manifest_diff_binding_v2(
         manifest_diff_binding,
         manifest=manifest,
         diff_text=diff_text,
+        acquired_identity=acquired_identity,
     )
 
     if not manifest.chunks:
@@ -955,7 +1013,9 @@ def _extract_review_content_v2(
     # `verify_manifest_diff_binding_v2` above proves diff-byte identity, not
     # that `manifest.fragments` actually covers every real line of a hunk a
     # `coverage_required` fragment claims to represent.
-    _verify_hunk_fragment_coverage_completeness_v2(fragments_by_hunk, hunk_body_by_key)
+    _verify_hunk_fragment_coverage_completeness_v2(
+        fragments_by_hunk, hunk_body_by_key, must_review_files=frozenset(manifest.must_review_files)
+    )
 
     ownership_by_fragment_id: dict[str, frozenset[int]] = {}
     for hunk_key, hunk_fragments in fragments_by_hunk.items():

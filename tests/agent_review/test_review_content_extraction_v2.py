@@ -312,9 +312,21 @@ def test_extract_review_content_refuses_a_tampered_re_acquisition_before_any_cla
         classification_reached = True
         return real_build_fragment_content(*args, **kwargs)
 
+    from app.agent_review.authoritative_diff_identity_v2 import AcquiredDiffIdentityV2
+
+    # SHAs match manifest_diff_binding's (this test's tamper is in the diff
+    # BYTES, not the executed commit range) -- otherwise, since Codex's
+    # independent finding 3, the new acquired-identity-vs-binding SHA check
+    # would fire first and this test would stop exercising its own
+    # original target (the digest check).
+    matching_acquired_identity = AcquiredDiffIdentityV2(
+        base_sha=base_sha, head_sha=head_sha,
+        diff_sha256=hashlib.sha256(truncated_diff_text.encode("utf-8")).hexdigest(),
+    )
+
     with mock.patch(
         "app.agent_review.review_content_extraction_v2.acquire_authoritative_diff_with_identity_v2",
-        return_value=(real_file_diffs, truncated_diff_text, None),
+        return_value=(real_file_diffs, truncated_diff_text, matching_acquired_identity),
     ), mock.patch(
         "app.agent_review.review_content_extraction_v2._build_fragment_content_v2",
         side_effect=_tracking_build_fragment_content_v2,
@@ -440,7 +452,12 @@ def test_extract_review_content_rejects_a_fragment_range_outside_its_real_hunk_b
     # whole-hunk) path, which is exactly the path that had no bounds check.
     old_range = LineRangeV2(start=5, end=6)
     new_range = LineRangeV2(start=5, end=6)
-    diff_sha256 = "0" * 64
+    # The REAL hunk's own digest -- so this fixture's out-of-bounds range is
+    # the only thing under test; since Codex's independent finding 2, a
+    # mismatched digest (the previous placeholder value here) would now be
+    # caught first, and this test would stop exercising its own original
+    # target (the range-bounds check).
+    diff_sha256 = hunk_body.diff_sha256
     out_of_bounds_fragment = FragmentV2(
         fragment_id=compute_fragment_id_v2(
             path="app.py", old_range=old_range, new_range=new_range, diff_sha256=diff_sha256
@@ -569,6 +586,246 @@ def test_extract_review_content_rejects_a_manifest_whose_fragments_do_not_cover_
         )
     assert excinfo.value.reason_code == "fragment_coverage_incomplete"
     assert excinfo.value.fragment_id == narrow_fragment_id
+
+
+def test_extract_review_content_rejects_a_manifest_that_omits_a_whole_must_review_hunk(
+    tmp_path: Path,
+) -> None:
+    """Independent Codex review round, finding 1: the reconciliation
+    round's own completeness gate only iterated ``fragments_by_hunk`` --
+    hunks that already have >=1 fragment. A must-review file with MULTIPLE
+    real hunks can have a manifest with a complete fragment for only ONE
+    hunk and omit another entirely: ``ManifestMaterialV2`` only requires
+    >=1 fragment for the whole PATH, never per hunk of that path, so the
+    omitted hunk never reached the old gate at all, and extraction
+    silently returned content missing a whole hunk's changed lines with no
+    error. Reproduced directly: a must-review file with two well-separated
+    hunks; an adversarial manifest keeps only the first hunk's real
+    fragment and drops the second's entirely."""
+    from app.agent_review.authoritative_diff_identity_v2 import (
+        acquire_authoritative_diff_with_identity_v2,
+        bind_manifest_to_diff_identity_v2,
+    )
+    from app.agent_review.contracts_v2 import compute_run_id
+    from app.agent_review.manifest_v2 import ManifestMaterialV2, compute_manifest_hash_v2_for
+    from app.agent_review.payload_builder_v2 import build_chunk_payload_v2
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    path = repo / "app.py"
+    base_lines = [f"orig {i}" for i in range(1, 41)]
+    path.write_text("\n".join(base_lines) + "\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "base")
+    head_lines = list(base_lines)
+    head_lines[2] = "HUNK_ONE_MARKER"
+    head_lines[35] = "HUNK_TWO_MARKER"
+    path.write_text("\n".join(head_lines) + "\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "head")
+
+    profile = _profile(must_review_paths=["app.py"])
+    file_diffs, _diff_text, acquired_identity = acquire_authoritative_diff_with_identity_v2(
+        repo, base_sha=base_sha, head_sha=head_sha
+    )
+    outcome = assemble_manifest_from_diff_v2(
+        file_diffs, profile=profile, grouping_policy=_grouping_policy(),
+        repo="example/repo", pr_number=1, base_sha=base_sha, head_sha=head_sha,
+        tested_merge_sha=head_sha, toolrepo_sha="b" * 40, evidence_hash="c" * 64,
+        max_lines_per_chunk=1000,
+    )
+    assert outcome.state == "assembled", outcome.blocked_reason
+    real_manifest = outcome.manifest
+    assert len(real_manifest.fragments) == 2, "fixture must produce two separate real hunks"
+
+    kept_fragment = real_manifest.fragments[0]
+    material_dict = real_manifest.model_dump(mode="json", exclude={"run_id", "identity"})
+    material_dict["fragments"] = [kept_fragment.model_dump(mode="json")]
+    material_dict["chunks"] = [
+        {
+            "chunk_id": real_manifest.chunks[0].chunk_id, "order_index": 0,
+            "semantic_group": real_manifest.chunks[0].semantic_group,
+            "fragment_ids": [kept_fragment.fragment_id], "payload_sha256": None,
+        }
+    ]
+    material_dict["degradation_causes"] = []
+    material_only = ManifestMaterialV2.model_validate(material_dict)
+    new_manifest_hash = compute_manifest_hash_v2_for(material_only)
+    new_identity = real_manifest.identity.model_copy(update={"manifest_hash": new_manifest_hash})
+    adversarial_manifest = type(real_manifest).model_validate({
+        **material_dict, "run_id": compute_run_id(new_identity), "identity": new_identity.model_dump(mode="json"),
+    })
+
+    binding = bind_manifest_to_diff_identity_v2(adversarial_manifest, acquired_identity)
+    payload_sha256_by_chunk_id = {
+        chunk.chunk_id: build_chunk_payload_v2(adversarial_manifest, chunk).payload_sha256
+        for chunk in adversarial_manifest.chunks
+    }
+
+    with pytest.raises(ExtractionBlockedError) as excinfo:
+        extract_review_content_v2(
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha,
+            manifest=adversarial_manifest, manifest_diff_binding=binding,
+            payload_sha256_by_chunk_id=payload_sha256_by_chunk_id, target_profile=profile,
+        )
+    assert excinfo.value.reason_code == "fragment_coverage_incomplete"
+
+
+def test_extract_review_content_rejects_a_windowed_fragment_with_a_wrong_digest(
+    tmp_path: Path,
+) -> None:
+    """Independent Codex review round, finding 2 (also recorded, but not
+    actually closed, as this branch's own "Lane B Finding 2" during
+    reconciliation): a fragment's declared ``diff_sha256`` is the HUNK-level
+    digest and must equal the real, re-acquired ``hunk_body.diff_sha256`` --
+    but only a whole-hunk fragment's exact-recomposition check transitively
+    proved that; a windowed fragment's declared digest was never compared
+    against anything. Reproduced directly: force real windowing via a small
+    ``max_lines_per_chunk``, take one real windowed fragment, and replace
+    its ``diff_sha256`` (and correspondingly-recomputed ``fragment_id``,
+    since one is a preimage of the other) with an arbitrary, well-formed,
+    WRONG value while keeping its range identical (so the coverage-
+    completeness gate still passes)."""
+    from app.agent_review.authoritative_diff_identity_v2 import (
+        acquire_authoritative_diff_with_identity_v2,
+        bind_manifest_to_diff_identity_v2,
+    )
+    from app.agent_review.contracts_v2 import compute_run_id
+    from app.agent_review.manifest_v2 import (
+        FragmentV2,
+        ManifestMaterialV2,
+        compute_fragment_id_v2,
+        compute_manifest_hash_v2_for,
+    )
+    from app.agent_review.payload_builder_v2 import build_chunk_payload_v2
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "big.py").write_text("\n".join(f"orig {i}" for i in range(1, 121)) + "\n", encoding="utf-8")
+    base_sha = _commit_all(repo, "init")
+    (repo / "big.py").write_text(
+        "\n".join(f"new {i}" if i % 2 == 0 else f"orig {i}" for i in range(1, 121)) + "\n",
+        encoding="utf-8",
+    )
+    head_sha = _commit_all(repo, "update")
+
+    profile = _profile(must_review_paths=["big.py"], max_chars_per_chunk=200_000)
+    file_diffs, _diff_text, acquired_identity = acquire_authoritative_diff_with_identity_v2(
+        repo, base_sha=base_sha, head_sha=head_sha
+    )
+    outcome = assemble_manifest_from_diff_v2(
+        file_diffs, profile=profile, grouping_policy=_grouping_policy(),
+        repo="example/repo", pr_number=1, base_sha=base_sha, head_sha=head_sha,
+        tested_merge_sha=head_sha, toolrepo_sha="b" * 40, evidence_hash="c" * 64,
+        max_lines_per_chunk=20,
+    )
+    assert outcome.state == "assembled", outcome.blocked_reason
+    real_manifest = outcome.manifest
+    windowed_fragments = [f for f in real_manifest.fragments if f.path == "big.py"]
+    assert len(windowed_fragments) > 1, "fixture must force windowing"
+
+    victim = windowed_fragments[0]
+    wrong_digest = ("f" if victim.diff_sha256[0] != "f" else "e") + victim.diff_sha256[1:]
+    tampered_fragment_id = compute_fragment_id_v2(
+        path=victim.path, old_range=victim.old_range, new_range=victim.new_range, diff_sha256=wrong_digest
+    )
+    tampered_fragment = FragmentV2(
+        fragment_id=tampered_fragment_id, path=victim.path,
+        old_range=victim.old_range, new_range=victim.new_range,
+        hunk_indexes=list(victim.hunk_indexes), diff_chars=victim.diff_chars,
+        diff_sha256=wrong_digest, coverage_required=victim.coverage_required,
+    )
+
+    material_dict = real_manifest.model_dump(mode="json", exclude={"run_id", "identity"})
+    fragments_list = list(material_dict["fragments"])
+    victim_index = next(i for i, f in enumerate(fragments_list) if f["fragment_id"] == victim.fragment_id)
+    fragments_list[victim_index] = tampered_fragment.model_dump(mode="json")
+    material_dict["fragments"] = fragments_list
+    for chunk in material_dict["chunks"]:
+        chunk["fragment_ids"] = [
+            tampered_fragment_id if fid == victim.fragment_id else fid for fid in chunk["fragment_ids"]
+        ]
+    material_only = ManifestMaterialV2.model_validate(material_dict)
+    new_manifest_hash = compute_manifest_hash_v2_for(material_only)
+    new_identity = real_manifest.identity.model_copy(update={"manifest_hash": new_manifest_hash})
+    adversarial_manifest = type(real_manifest).model_validate({
+        **material_dict, "run_id": compute_run_id(new_identity), "identity": new_identity.model_dump(mode="json"),
+    })
+
+    binding = bind_manifest_to_diff_identity_v2(adversarial_manifest, acquired_identity)
+    payload_sha256_by_chunk_id = {
+        chunk.chunk_id: build_chunk_payload_v2(adversarial_manifest, chunk).payload_sha256
+        for chunk in adversarial_manifest.chunks
+    }
+
+    with pytest.raises(ExtractionBlockedError) as excinfo:
+        extract_review_content_v2(
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha,
+            manifest=adversarial_manifest, manifest_diff_binding=binding,
+            payload_sha256_by_chunk_id=payload_sha256_by_chunk_id, target_profile=profile,
+        )
+    assert excinfo.value.reason_code == "fragment_hunk_digest_mismatch"
+    assert excinfo.value.fragment_id == tampered_fragment_id
+
+
+def test_extract_review_content_rejects_a_patch_identical_but_distinct_sha_pair(
+    tmp_path: Path,
+) -> None:
+    """Independent Codex review round, finding 3: distinct commit-SHA pairs
+    can produce byte-identical canonical diff patches (two commits with the
+    SAME tree, diffed against the same head -- ``git diff`` compares trees,
+    not ancestry). Before this fix, ``verify_manifest_diff_binding_v2``
+    discarded the freshly re-acquired identity and only compared the
+    binding's declared SHAs against the manifest's OWN self-reported SHAs
+    -- an internal self-consistency check, never a check against what was
+    actually executed. Reproduced directly: ``base2`` is an empty commit on
+    top of ``base1`` (identical tree, distinct SHA); ``git diff base1 head``
+    and ``git diff base2 head`` are asserted byte-identical; a manifest/
+    binding built for (``base1``, ``head``) is then fed to
+    ``extract_review_content_v2`` called with (``base2``, ``head``)."""
+    from app.agent_review.authoritative_diff_identity_v2 import (
+        acquire_authoritative_diff_with_identity_v2,
+        bind_manifest_to_diff_identity_v2,
+    )
+    from app.agent_review.diff_acquisition_v2 import acquire_diff_v2
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "app.py").write_text("a = 1\n", encoding="utf-8")
+    base1_sha = _commit_all(repo, "base1")
+    subprocess.run(["git", "commit", "--quiet", "--allow-empty", "-m", "noop"], cwd=repo, check=True)
+    base2_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert base2_sha != base1_sha
+    subprocess.run(["git", "checkout", "--quiet", base1_sha], cwd=repo, check=True)
+    (repo / "app.py").write_text("a = 2\n", encoding="utf-8")
+    head_sha = _commit_all(repo, "head")
+
+    diff_via_base1 = acquire_diff_v2(repo, base_sha=base1_sha, head_sha=head_sha)
+    diff_via_base2 = acquire_diff_v2(repo, base_sha=base2_sha, head_sha=head_sha)
+    assert diff_via_base1 == diff_via_base2, "fixture must produce byte-identical patches"
+
+    profile = _profile(must_review_paths=["app.py"])
+    file_diffs, _diff_text, acquired_identity = acquire_authoritative_diff_with_identity_v2(
+        repo, base_sha=base1_sha, head_sha=head_sha
+    )
+    outcome = assemble_manifest_from_diff_v2(
+        file_diffs, profile=profile, grouping_policy=_grouping_policy(),
+        repo="example/repo", pr_number=1, base_sha=base1_sha, head_sha=head_sha,
+        tested_merge_sha=head_sha, toolrepo_sha="b" * 40, evidence_hash="c" * 64,
+        max_lines_per_chunk=1000,
+    )
+    assert outcome.state == "assembled", outcome.blocked_reason
+    manifest = outcome.manifest
+    binding = bind_manifest_to_diff_identity_v2(manifest, acquired_identity)
+    payload_sha256_by_chunk_id = _payload_shas(manifest)
+
+    with pytest.raises(ExtractionBlockedError) as excinfo:
+        extract_review_content_v2(
+            repo_root=repo, base_sha=base2_sha, head_sha=head_sha,
+            manifest=manifest, manifest_diff_binding=binding,
+            payload_sha256_by_chunk_id=payload_sha256_by_chunk_id, target_profile=profile,
+        )
+    assert excinfo.value.reason_code == "diff_binding_acquired_sha_mismatch"
 
 
 @pytest.mark.requires_network

@@ -78,6 +78,7 @@ def test_manifest_binding_accepts_the_exact_acquired_diff(tmp_path: Path) -> Non
         binding,
         manifest=manifest,
         diff_text=diff_text,
+        acquired_identity=acquired_identity,
     )
 
     assert verified.repository == manifest.identity.repo
@@ -112,6 +113,7 @@ def test_truncated_diff_with_same_apparent_path_is_rejected_before_scope(tmp_pat
             binding,
             manifest=manifest,
             diff_text=truncated,
+            acquired_identity=acquired_identity,
         )
         would_classify_scope()
 
@@ -135,6 +137,7 @@ def test_binding_cannot_be_replayed_against_another_run_identity(tmp_path: Path)
             binding,
             manifest=adversarial_manifest,
             diff_text=diff_text,
+            acquired_identity=acquired_identity,
         )
     assert excinfo.value.reason_code == DIFF_BINDING_MANIFEST_IDENTITY_MISMATCH_REASON_V2
 

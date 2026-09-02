@@ -33,6 +33,18 @@ MANIFEST_DIFF_BINDING_SCHEMA_V2 = "agent-review.manifest-diff-binding.v2"
 
 DIFF_BINDING_MANIFEST_IDENTITY_MISMATCH_REASON_V2 = "diff_binding_manifest_identity_mismatch"
 DIFF_BINDING_DIFF_IDENTITY_MISMATCH_REASON_V2 = "diff_binding_diff_identity_mismatch"
+# Independent Codex review round, finding 3: distinct `base_sha`/`head_sha`
+# pairs can produce byte-identical canonical diff patches (e.g. two base
+# commits with the same tree but different parent/metadata, diffed against
+# the same head). Before this, `verify_manifest_diff_binding_v2` discarded
+# the freshly re-acquired `AcquiredDiffIdentityV2` (which carries the SHAs
+# that were ACTUALLY used for this acquisition) and only compared the
+# binding's declared SHAs against the manifest's own self-reported SHAs --
+# an internal self-consistency check, never a check against what was
+# really executed. A caller supplying a different-but-patch-identical SHA
+# pair passed the digest check while extraction silently attributed the
+# wrong executed commit range to the manifest's declared range.
+DIFF_BINDING_ACQUIRED_SHA_MISMATCH_REASON_V2 = "diff_binding_acquired_sha_mismatch"
 
 
 class ManifestDiffBindingError(ValueError):
@@ -166,8 +178,21 @@ def verify_manifest_diff_binding_v2(
     *,
     manifest: ManifestV2,
     diff_text: str,
+    acquired_identity: AcquiredDiffIdentityV2,
 ) -> AuthoritativeDiffIdentityV2:
-    """Verify exact diff bytes and run identity before any scope classification."""
+    """Verify exact diff bytes and run identity before any scope classification.
+
+    ``acquired_identity`` (independent Codex review round, finding 3) must
+    be the ``AcquiredDiffIdentityV2`` produced by the SAME acquisition call
+    that returned ``diff_text`` -- required, not optional, matching this
+    codebase's own "no trusted-flag opt-out" discipline. Without it, this
+    function could only prove ``binding`` is internally self-consistent
+    with ``manifest`` and that SOME diff hashes to the recorded digest --
+    never that the ``base_sha``/``head_sha`` actually used for THIS
+    acquisition are the ones ``binding``/``manifest`` claim. Two distinct
+    commit-SHA pairs can produce byte-identical canonical diff patches, so
+    the digest check alone cannot close that gap.
+    """
 
     identity = manifest.identity
     if (
@@ -179,6 +204,9 @@ def verify_manifest_diff_binding_v2(
         or binding.tested_merge_sha != identity.tested_merge_sha
     ):
         raise ManifestDiffBindingError(DIFF_BINDING_MANIFEST_IDENTITY_MISMATCH_REASON_V2)
+
+    if acquired_identity.base_sha != binding.base_sha or acquired_identity.head_sha != binding.head_sha:
+        raise ManifestDiffBindingError(DIFF_BINDING_ACQUIRED_SHA_MISMATCH_REASON_V2)
 
     observed = compute_authoritative_diff_sha256_v2(diff_text)
     if observed != binding.authoritative_diff_sha256:
