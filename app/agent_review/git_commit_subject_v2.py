@@ -187,6 +187,30 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
     handling) assumes every returned entry is a blob or gitlink, and a
     `040000` entry has no batchable blob content to write -- passing one
     through would break that contract rather than extend it.
+
+    NOTE, narrowed by external Codex review of THIS check itself
+    (`#200-G1-PM` round 2 on this PR): comparing raw `ls-tree` path
+    STRINGS, however many special cases it enumerates (`-t` for tree-level
+    names, whatever comes next), catches only tree-OBJECT-level ambiguity
+    -- two entries that are literally, syntactically the SAME path, which
+    is what `git fsck`'s own `duplicateEntries` means. It structurally
+    cannot catch two syntactically DIFFERENT strings that resolve to the
+    identical DESTINATION path once written -- e.g. a subtree literally
+    named `.` containing `a`, alongside a root-level blob also named `a`,
+    which `ls-tree -r -t` reports as `./a` and `a`: two distinct strings by
+    this check, yet `_safe_destination_v2` (materialisation's own writer)
+    resolves both to the same file. That is a different, destination-aware
+    question this destination-agnostic function has no way to answer --
+    see `_reject_resolved_destination_collisions_v2` in
+    `materialise_commit_subject_v2` (and its sibling in
+    `commit_derived_execution_identity_v2.py`'s `verify_executed_source_
+    identity_v2`), which detect that class by resolving every entry
+    through the SAME function that performs the real write/read, rather
+    than maintaining a second, independently-derived string comparison
+    here. The two checks are deliberately kept separate, not merged into
+    one: this one is a property of the tree OBJECT alone, computable with
+    no destination in hand at all; the other is a property of a specific
+    destination's path resolution, which this function does not have.
     """
     completed = run_bounded_git_v2(["ls-tree", "-r", "-t", "-z", commit_sha], cwd=repo_root)
     entries: list[TreeEntryV2] = []
@@ -320,6 +344,54 @@ def _reject_symlink_in_destination_ancestry_v2(destination: Path) -> None:
         candidate = parent
 
 
+def _reject_resolved_destination_collisions_v2(
+    *, subject_root: Path, entries: list[TreeEntryV2]
+) -> None:
+    """Refuse if two DIFFERENT tree entries resolve to the identical
+    destination path, using `_safe_destination_v2` -- the SAME function
+    that performs the real writes in `materialise_commit_subject_v2` below
+    -- as the single authority for what "the same path" means.
+
+    External Codex review (`#200-G1-PM` round 2 on this PR): the earlier
+    fix for duplicate tree paths (in `list_commit_tree_entries_v2`)
+    compares `ls-tree`'s raw path STRINGS. That can never be complete,
+    because `_safe_destination_v2`'s actual resolution and a
+    hand-maintained set of string special-cases are two INDEPENDENT
+    implementations of "what path does this entry refer to", and every
+    special case closed (`.`-only normalisation, which plain `Path`
+    joining already collapses without even needing `.resolve()`, closed
+    here) leaves the next one open. Reproduced with real `git mktree`
+    plumbing: a subtree literally named `.` containing `a`, plus a
+    root-level blob also named `a`, produce the distinct raw strings `./a`
+    and `a` (no duplicate by the string check in
+    `list_commit_tree_entries_v2`), but `_safe_destination_v2` resolves
+    both to the identical destination file; before this fix,
+    materialisation silently overwrote the first write with the second,
+    reporting `file_count=2` for what was really one surviving file with
+    the other's bytes discarded, unsignalled.
+
+    Comparing entries resolved through the SAME function used for the
+    actual write, rather than a second, independently-derived string
+    comparison, is what closes this structurally: there is exactly one
+    authority for "what does this entry's path resolve to", used both to
+    detect the collision and to perform the write, so the two cannot
+    disagree by construction -- no future path-alias form (`..` combined
+    with other segments, mixed separators, whatever comes next) can reopen
+    this specific gap, because there is no second implementation left to
+    fall behind.
+
+    Called BEFORE any write (and before fetching blob content at all, in
+    the caller) so a colliding tree is refused before any bytes are
+    written or discarded.
+    """
+    seen_targets: set[Path] = set()
+    for entry in entries:
+        target = _safe_destination_v2(subject_root=subject_root, relative_path=entry.path)
+        if target in seen_targets:
+            raise SubjectMaterialisationError(SUBJECT_DUPLICATE_TREE_PATH_REASON_V2)
+        seen_targets.add(target)
+
+
 def materialise_commit_subject_v2(
     *, repo_root: Path, ref: str, destination: Path
 ) -> MaterialisedCommitSubjectV2:
@@ -337,6 +409,15 @@ def materialise_commit_subject_v2(
     commit_sha = resolve_commit_v2(repo_root=repo_root, ref=ref)
     entries = list_commit_tree_entries_v2(repo_root=repo_root, commit_sha=commit_sha)
     blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2]
+
+    try:
+        _reject_resolved_destination_collisions_v2(subject_root=destination, entries=blobs)
+    except SubjectMaterialisationError:
+        # Refused before any blob content was even fetched -- destination
+        # is still empty (checked above), safe to discard unconditionally.
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+
     content_by_path = read_commit_blobs_v2(repo_root=repo_root, entries=blobs)
 
     written = 0

@@ -137,6 +137,7 @@ from app.agent_review.git_commit_subject_v2 import (
     SUBJECT_BLOB_MISSING_REASON_V2,
     SYMLINK_MODE_V2,
     SubjectMaterialisationError,
+    TreeEntryV2,
     list_commit_tree_entries_v2,
     read_commit_blobs_v2,
     resolve_commit_v2,
@@ -146,6 +147,7 @@ __all__ = [
     "IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2",
     "IDENTITY_BLOB_MISSING_REASON_V2",
     "IDENTITY_CONTENT_MISMATCH_REASON_V2",
+    "IDENTITY_DUPLICATE_TREE_PATH_REASON_V2",
     "IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2",
     "IDENTITY_GITLINK_PRESENT_REASON_V2",
     "IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2",
@@ -182,6 +184,7 @@ IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2 = "identity_path_escapes_subject"
 IDENTITY_SYMLINKED_DIRECTORY_REASON_V2 = "identity_symlinked_directory_in_subject"
 IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2 = "identity_traversal_unreadable"
 IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2 = "identity_authorization_undetermined"
+IDENTITY_DUPLICATE_TREE_PATH_REASON_V2 = "identity_duplicate_tree_path"
 
 
 class ExecutedSourceIdentityError(ValueError):
@@ -262,6 +265,46 @@ def _safe_subject_path_v2(*, subject_root: Path, relative_path: str) -> Path:
     if normalised == ".." or normalised.startswith("../") or posixpath.isabs(normalised):
         raise ExecutedSourceIdentityError(IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2)
     return subject_root / relative_path
+
+
+def _reject_resolved_actual_path_collisions_v2(
+    *, subject_root: Path, entries: list[TreeEntryV2]
+) -> None:
+    """Refuse if two DIFFERENT tree entries resolve to the identical
+    ``subject_root``-relative path via ``_safe_subject_path_v2`` --
+    verification's own single resolution authority, the same function the
+    main comparison loop below uses to locate each entry's actual file.
+
+    `#200-G1-PM` round 2 on this PR, sibling fix to
+    ``git_commit_subject_v2._reject_resolved_destination_collisions_v2``:
+    the same class of gap applies here independently. A tree with a
+    subtree literally named ``.`` containing ``a``, plus a root blob also
+    named ``a``, has no duplicate raw path STRING (``./a`` vs ``a``), but
+    both resolve through ``_safe_subject_path_v2`` to the identical
+    ``subject_root``-relative path. Without this check, the main
+    comparison loop would compare EACH entry independently against
+    whatever single file actually sits at that shared location -- if the
+    two entries happen to have byte-identical expected content, both
+    comparisons would coincidentally pass despite the tree itself being
+    ambiguous; deliberately not relying on that coincidence, this check
+    refuses the ambiguity itself, unconditionally, before any content
+    comparison. Kept as ``verify_executed_source_identity_v2``'s OWN
+    check, using its OWN resolution function -- not sharing
+    ``git_commit_subject_v2``'s ``_safe_destination_v2`` or its
+    materialisation-side check -- because the two functions deliberately
+    resolve differently (this one lexically, via ``posixpath.normpath``,
+    never following a symlink already on disk; the other via
+    ``Path.resolve()``, for a destination being freshly written) and each
+    must remain the single authority for its own domain.
+    """
+    seen_paths: set[Path] = set()
+    for entry in entries:
+        if entry.mode == GITLINK_MODE_V2:
+            continue
+        actual_path = _safe_subject_path_v2(subject_root=subject_root, relative_path=entry.path)
+        if actual_path in seen_paths:
+            raise ExecutedSourceIdentityError(IDENTITY_DUPLICATE_TREE_PATH_REASON_V2)
+        seen_paths.add(actual_path)
 
 
 def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
@@ -388,6 +431,15 @@ def verify_executed_source_identity_v2(
        a commit in another repository, which this primitive has no bytes
        for and therefore cannot verify; refused rather than silently
        skipped.
+    2a. No two tree entries resolve to the identical actual path under
+       ``subject_root`` via ``_safe_subject_path_v2`` -- see
+       ``_reject_resolved_actual_path_collisions_v2``. `#200-G1-PM` round 2:
+       a raw-string duplicate check (as `list_commit_tree_entries_v2` does
+       for the tree object itself) cannot see two syntactically different
+       paths (e.g. a subtree literally named ``.`` producing ``./a``,
+       alongside a root blob ``a``) that resolve to the same file; only
+       resolving through the SAME function used to locate each entry below
+       can.
     3. Every tracked path in the commit's tree exists under ``subject_root``
        with byte-identical content (and, for symlinks, byte-identical
        target text) and the mode implied by git (executable bit set iff the
@@ -448,6 +500,8 @@ def verify_executed_source_identity_v2(
     for entry in entries:
         if entry.mode == GITLINK_MODE_V2:
             raise ExecutedSourceIdentityError(IDENTITY_GITLINK_PRESENT_REASON_V2)
+
+    _reject_resolved_actual_path_collisions_v2(subject_root=subject_root, entries=entries)
 
     try:
         expected_content_by_path = read_commit_blobs_v2(repo_root=repo_root, entries=entries)

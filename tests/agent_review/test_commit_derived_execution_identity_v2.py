@@ -27,6 +27,7 @@ from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2,
     IDENTITY_BLOB_MISSING_REASON_V2,
     IDENTITY_CONTENT_MISMATCH_REASON_V2,
+    IDENTITY_DUPLICATE_TREE_PATH_REASON_V2,
     IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2,
     IDENTITY_GITLINK_PRESENT_REASON_V2,
     IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2,
@@ -1070,3 +1071,73 @@ def test_finding1_verification_cannot_see_tampering_that_was_restored_before_it_
     # Verification cannot see that different bytes were on disk -- and
     # potentially executed/imported -- at an earlier moment than this call.
     assert identity.commit_sha == head_sha
+
+
+# -- post-review correction round 2: resolved-path collision, sibling of materialise --
+
+
+def test_dot_named_subtree_alias_colliding_with_a_root_blob_is_refused_at_verification(
+    tmp_path: Path,
+) -> None:
+    """External Codex review (`#200-G1-PM` round 2 on this PR), sibling of
+    the same fix in `git_commit_subject_v2.materialise_commit_subject_v2`:
+    a subtree literally named `.` containing `a`, alongside a root-level
+    blob also named `a`, produces the distinct raw strings `./a` and `a`
+    -- no duplicate by `list_commit_tree_entries_v2`'s own tree-object-level
+    check -- but both resolve through `_safe_subject_path_v2` (verification's
+    own resolution authority) to the identical `subject_root`-relative
+    path. `_reject_resolved_actual_path_collisions_v2` must refuse this
+    before any content comparison, using that same resolution function,
+    not a second independently-derived string check."""
+    repo, _head_sha = _toolrepo_fixture(tmp_path)
+
+    root_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="root content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dot_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="dot content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    inner_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"100644 blob {dot_blob}\ta\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    outer_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=(f"040000 tree {inner_tree}\t.\n" f"100644 blob {root_blob}\ta\n"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    alias_commit = subprocess.run(
+        ["git", "commit-tree", outer_tree, "-m", "dot alias"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo,
+            commit_sha=alias_commit,
+            subject_root=subject_root,
+            loaded_module_paths=(),
+        )
+    assert excinfo.value.reason_code == IDENTITY_DUPLICATE_TREE_PATH_REASON_V2

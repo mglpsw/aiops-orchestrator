@@ -428,6 +428,82 @@ def test_duplicate_tree_DIRECTORY_entries_with_disjoint_children_are_refused(
     assert not destination.exists() or not any(destination.iterdir())
 
 
+def test_dot_named_subtree_alias_colliding_with_a_root_blob_is_refused(tmp_path: Path) -> None:
+    """External Codex review (`#200-G1-PM` round 2 on this PR): a
+    raw-string duplicate check, however many special cases it enumerates,
+    cannot catch two syntactically DIFFERENT `ls-tree` path strings that
+    resolve to the SAME destination once written. `git mktree` accepts a
+    subtree literally named `.` (proven below with real plumbing); `git
+    ls-tree -r -t` flattens its child `a` into the path `./a`, distinct
+    from a root-level blob also named `a`. `_safe_destination_v2` (the
+    same function materialisation uses to write) resolves both `./a` and
+    `a` to the identical destination file -- before the fix, the second
+    write silently discarded the first's bytes with `file_count=2`
+    reported for what was really one surviving file. This is now caught
+    by resolving every entry through that same function BEFORE any write,
+    not by adding `.`-awareness to the raw-string check."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.py").write_text("SEED = 1\n")
+    _commit_all(repo, "seed")
+
+    root_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="root content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    dot_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="dot content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    inner_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"100644 blob {dot_blob}\ta\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    outer_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=(f"040000 tree {inner_tree}\t.\n" f"100644 blob {root_blob}\ta\n"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    alias_commit = subprocess.run(
+        ["git", "commit-tree", outer_tree, "-m", "dot alias"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    # Confirm the raw `ls-tree -r -t` strings really are distinct (not a
+    # duplicate by the string-based check) before asserting the resolved
+    # -path check catches it.
+    ls_tree = subprocess.run(
+        ["git", "ls-tree", "-r", "-t", alias_commit], cwd=repo, check=True,
+        capture_output=True, text=True,
+    ).stdout
+    assert "\t./a" in ls_tree or "\t.\n" in ls_tree
+    assert "\ta\n" in ls_tree
+
+    destination = tmp_path / "dest3"
+    with pytest.raises(SubjectMaterialisationError) as excinfo:
+        materialise_commit_subject_v2(repo_root=repo, ref=alias_commit, destination=destination)
+    assert excinfo.value.reason_code == SUBJECT_DUPLICATE_TREE_PATH_REASON_V2
+    assert not destination.exists() or not any(destination.iterdir())
+
+
 # -- `#200-G1-PM` finding 6: non-UTF-8 path digest encoding ----------------------
 
 

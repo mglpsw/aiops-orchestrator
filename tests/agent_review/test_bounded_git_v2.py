@@ -14,13 +14,65 @@ import pytest
 
 from app.agent_review.bounded_git_v2 import (
     BOUNDED_GIT_COMMAND_FAILED_REASON_V2,
-    BOUNDED_GIT_PROMISOR_REMOTE_PRESENT_REASON_V2,
+    BOUNDED_GIT_UNEXPECTED_OBJECT_STORE_WRITE_REASON_V2,
     BOUNDED_GIT_WORKTREE_UNUSABLE_REASON_V2,
     BoundedGitError,
     bounded_git_environment_v2,
     resolve_trusted_git_absolute_path_v2,
     run_bounded_git_v2,
 )
+
+
+def _real_partial_clone_missing_a_blob(tmp_path: Path) -> tuple[Path, str]:
+    """Build a real `--filter=blob:none --no-checkout` partial clone
+    (`subject`, cloned from a fresh `upstream`) with one blob missing
+    locally, and return `(subject, blob_sha)`. Shared setup for every
+    finding-5-family test below, each of which then mutates `subject`'s
+    config differently before attempting to read the missing blob through
+    it.
+
+    `--no-checkout` is required, not optional: without it, `git clone`
+    still populates the working tree, which means the blob for whatever
+    file is at `HEAD` is fetched immediately as PART OF THE CLONE ITSELF
+    (into a pack the clone writes before this function ever returns) --
+    confirmed by direct inspection, not assumed: cloning a one-file repo
+    with `--filter=blob:none` alone (no `--no-checkout`) already left that
+    file's blob content locally present, defeating the entire point of
+    this fixture (a blob that is STILL missing at the moment the test
+    calls `cat-file --batch`, matching exactly how Codex's own round-2
+    reproduction was built).
+    """
+    upstream = tmp_path / "upstream"
+    _init_repo(upstream)
+    (upstream / "f.txt").write_text("hello\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=upstream, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "init"], cwd=upstream, check=True)
+    subprocess.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=upstream, check=True)
+    subprocess.run(
+        ["git", "config", "uploadpack.allowAnySHA1InWant", "true"], cwd=upstream, check=True
+    )
+    blob_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD:f.txt"],
+        cwd=upstream,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subject = tmp_path / "subject"
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--filter=blob:none",
+            "--no-checkout",
+            f"file://{upstream}",
+            str(subject),
+        ],
+        check=True,
+    )
+    return subject, blob_sha
 
 
 def _init_repo(repo: Path) -> None:
@@ -117,68 +169,46 @@ def test_run_bounded_git_ignores_ambient_git_dir(
     assert completed.returncode == 0
 
 
-# -- `#200-G1-PM` finding 5: arbitrary (non-`origin`) promisor remotes -----------
+# -- `#200-G1-PM` finding 5 and its two post-review recurrences: lazy fetch -----
+#
+# `#200-G1-PM` round 0 (original finding) and round 1 (post-review
+# correction) both tried to ENUMERATE the config keys/spellings that make a
+# repository capable of lazy fetch (`remote.<name>.promisor`, in every
+# legal boolean spelling) and refuse pre-emptively when found. Round 2
+# (Codex, this PR) found a THIRD, different marker
+# (`remote.origin.partialclonefilter`, surviving even with `promisor`
+# itself explicitly unset) that the enumeration never covered -- proving
+# enumeration does not converge. The fix below abandons enumeration
+# entirely: `run_bounded_git_v2` now snapshots the object store immediately
+# before and after every invocation and fails closed if anything new
+# appeared, regardless of which config key or marker made the fetch
+# possible. Every scenario below -- the original non-`origin`-name case,
+# the boolean-spelling case, and the new partialclonefilter-only case -- is
+# kept as a regression witness against the SAME outcome-based mechanism,
+# proving it is a structural superset of the enumeration it replaced, not
+# merely a fix for the specific case that motivated it.
 
 
 def test_partial_clone_with_non_origin_promisor_remote_is_refused(tmp_path: Path) -> None:
-    """`remote.origin.promisor=false`, hardcoded, only disables lazy fetching
-    for a remote literally named `origin`. `git remote rename origin evil`
-    (ordinary git, real plumbing below, no mocking) preserves the
-    `promisor` flag under the new name, and this primitive is meant to be
-    fully offline -- nothing it does may pull bytes from outside the
-    repository's own local object store, regardless of what a repository's
-    own remote happens to be named.
-
-    Also proves the severity is broader than "only the non-`origin` case is
-    unhandled": empirically, the *pre-fix* `-c remote.origin.promisor=false`
-    override did not block the fetch even when the remote was still named
-    `origin` on this git build (verified separately, not asserted here) --
-    the fix in this module refuses on ANY promisor remote rather than
-    trying to suppress the fetch by name or by protocol/env switch, none of
-    which proved reliable.
-    """
-    upstream = tmp_path / "upstream"
-    _init_repo(upstream)
-    (upstream / "f.txt").write_text("hello\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=upstream, check=True)
-    subprocess.run(["git", "commit", "--quiet", "-m", "init"], cwd=upstream, check=True)
-    subprocess.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=upstream, check=True)
-    subprocess.run(
-        ["git", "config", "uploadpack.allowAnySHA1InWant", "true"], cwd=upstream, check=True
-    )
-    blob_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD:f.txt"],
-        cwd=upstream,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-
-    subject = tmp_path / "subject"
-    subprocess.run(
-        [
-            "git",
-            "clone",
-            "--quiet",
-            "--filter=blob:none",
-            f"file://{upstream}",
-            str(subject),
-        ],
-        check=True,
-    )
+    """Original finding-5 witness: `git remote rename origin evil`
+    (ordinary git, real plumbing below) preserves the `promisor` flag
+    under the new name. Regression witness for the outcome-based
+    invariant check, not the (now-removed) config-enumeration approach
+    that originally closed this."""
+    subject, blob_sha = _real_partial_clone_missing_a_blob(tmp_path)
     subprocess.run(["git", "remote", "rename", "origin", "evil"], cwd=subject, check=True)
 
     with pytest.raises(BoundedGitError) as excinfo:
         run_bounded_git_v2(
             ["cat-file", "--batch"], cwd=subject, input_bytes=(blob_sha + "\n").encode()
         )
-    assert excinfo.value.reason_code == BOUNDED_GIT_PROMISOR_REMOTE_PRESENT_REASON_V2
+    assert excinfo.value.reason_code == BOUNDED_GIT_UNEXPECTED_OBJECT_STORE_WRITE_REASON_V2
 
 
 def test_repo_without_any_promisor_remote_is_unaffected(tmp_path: Path) -> None:
-    """Sanity check: the finding-5 fix must not refuse an ordinary,
-    non-partial-clone repository with no remotes at all -- the overwhelming
-    majority of calls this primitive ever makes."""
+    """Sanity check: the object-store invariant must not misfire for an
+    ordinary, non-partial-clone repository performing an ordinary read --
+    the overwhelming majority of calls this primitive ever makes."""
     repo = tmp_path / "repo"
     _init_repo(repo)
     (repo / "a.py").write_text("A = 1\n")
@@ -189,58 +219,67 @@ def test_repo_without_any_promisor_remote_is_unaffected(tmp_path: Path) -> None:
     assert completed.returncode == 0
 
 
-# -- post-review correction: promisor value spelled other than literal `true` --
-
-
 def test_partial_clone_with_non_true_spelled_promisor_value_is_refused(tmp_path: Path) -> None:
-    """External Codex review of the finding-5 fix itself (round 1 on this
-    PR): comparing the raw config value against the literal bytes
-    `b"true"` misses every other legal git-boolean spelling of the same
-    value -- `yes`, `on`, `1`, and bare presence with no value, none of
-    which `git config --set` normalises on write. Reproduced with a real
-    partial clone below, then `git config remote.origin.promisor yes`
-    (still the same remote, deliberately isolating this one variable from
-    the already-covered non-`origin`-name case): before this fix, the raw
-    `git config --get-regexp` (no `--type`) echoed the literal text `yes`
-    unchanged, which the literal-`b"true"` comparison never matched,
-    leaving lazy fetch fully enabled."""
-    upstream = tmp_path / "upstream"
-    _init_repo(upstream)
-    (upstream / "f.txt").write_text("hello\n")
-    subprocess.run(["git", "add", "f.txt"], cwd=upstream, check=True)
-    subprocess.run(["git", "commit", "--quiet", "-m", "init"], cwd=upstream, check=True)
-    subprocess.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=upstream, check=True)
-    subprocess.run(
-        ["git", "config", "uploadpack.allowAnySHA1InWant", "true"], cwd=upstream, check=True
-    )
-    blob_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD:f.txt"],
-        cwd=upstream,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-
-    subject = tmp_path / "subject"
-    subprocess.run(
-        [
-            "git",
-            "clone",
-            "--quiet",
-            "--filter=blob:none",
-            f"file://{upstream}",
-            str(subject),
-        ],
-        check=True,
-    )
-    # Same remote name (`origin`) as the already-covered case -- isolating
-    # the boolean-spelling variable specifically.
-    subprocess.run(
-        ["git", "config", "remote.origin.promisor", "yes"], cwd=subject, check=True
-    )
+    """Round-1 post-review witness: `git config remote.origin.promisor yes`
+    (any legal git-boolean spelling other than the literal string `true`).
+    Regression witness for the outcome-based invariant check."""
+    subject, blob_sha = _real_partial_clone_missing_a_blob(tmp_path)
+    subprocess.run(["git", "config", "remote.origin.promisor", "yes"], cwd=subject, check=True)
 
     with pytest.raises(BoundedGitError) as excinfo:
         run_bounded_git_v2(
             ["cat-file", "--batch"], cwd=subject, input_bytes=(blob_sha + "\n").encode()
         )
-    assert excinfo.value.reason_code == BOUNDED_GIT_PROMISOR_REMOTE_PRESENT_REASON_V2
+    assert excinfo.value.reason_code == BOUNDED_GIT_UNEXPECTED_OBJECT_STORE_WRITE_REASON_V2
+
+
+def test_partial_clone_marker_survives_promisor_unset_and_is_still_refused(
+    tmp_path: Path,
+) -> None:
+    """Round-2 finding (Codex, this PR): unsetting `remote.origin.promisor`
+    entirely leaves `remote.origin.partialclonefilter=blob:none` behind,
+    which alone is still enough for git to treat the remote as a
+    partial-clone source and lazily fetch -- reproduced empirically
+    against `run_bounded_git_v2` itself before this fix (the previous,
+    enumeration-based check found nothing, since it only ever looked at
+    `remote.*.promisor`, and the fetch went through uncaught). This is
+    exactly the case that falsified config-key enumeration as a viable
+    long-term approach and motivated the outcome-based redesign below."""
+    subject, blob_sha = _real_partial_clone_missing_a_blob(tmp_path)
+    subprocess.run(["git", "config", "--unset", "remote.origin.promisor"], cwd=subject, check=True)
+    # Confirm the setup: promisor is really gone, the filter marker remains.
+    promisor_check = subprocess.run(
+        ["git", "config", "--get-regexp", "promisor"], cwd=subject, capture_output=True
+    )
+    assert promisor_check.returncode != 0
+    filter_check = subprocess.run(
+        ["git", "config", "--get", "remote.origin.partialclonefilter"],
+        cwd=subject,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert filter_check.stdout.strip() == "blob:none"
+
+    with pytest.raises(BoundedGitError) as excinfo:
+        run_bounded_git_v2(
+            ["cat-file", "--batch"], cwd=subject, input_bytes=(blob_sha + "\n").encode()
+        )
+    assert excinfo.value.reason_code == BOUNDED_GIT_UNEXPECTED_OBJECT_STORE_WRITE_REASON_V2
+
+
+def test_object_store_snapshot_ignores_files_outside_objects_dir(tmp_path: Path) -> None:
+    """Sanity check on the invariant's precision: writing a file elsewhere
+    under `.git` (not `.git/objects`) during a command must not trip the
+    check -- it inspects exactly the object store, nothing broader."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("A = 1\n")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "init"], cwd=repo, check=True)
+
+    # A plain, ordinary read must not be flagged merely because *something*
+    # elsewhere under `.git` (e.g. `logs/HEAD`, which real git commands do
+    # touch) changed -- only `objects/` is in scope.
+    completed = run_bounded_git_v2(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=repo)
+    assert completed.returncode == 0
