@@ -823,12 +823,12 @@ def _run_git_v2(argv: list[str], *, repo_root: Path) -> subprocess.CompletedProc
     # never distinguished those cases before, and inventing new public
     # reason codes here is not this predecessor's job.
     try:
-        validate_external_input_directory_v2(repo_root)
+        validated_repo_root = validate_external_input_directory_v2(repo_root).resolved_path
     except ExternalPathIngressError as exc:
         raise DiffAcquisitionError(REPO_ROOT_UNUSABLE_REASON_V2) from exc
     try:
         return subprocess.run(  # noqa: S603 -- fixed argv, no shell, SHA-validated refs
-            argv, cwd=repo_root, capture_output=True, text=False, check=False
+            argv, cwd=validated_repo_root, capture_output=True, text=False, check=False
         )
     except FileNotFoundError as exc:
         # Ask which file was missing rather than infer it. The earlier version

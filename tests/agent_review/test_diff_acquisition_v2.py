@@ -1806,3 +1806,41 @@ def test_repo_root_symlink_loop_is_typed_not_a_raw_runtimeerror(tmp_path: Path) 
     with pytest.raises(DiffAcquisitionError) as excinfo:
         acquire_authoritative_diff_v2(a, base_sha="a" * 40, head_sha="b" * 40)
     assert excinfo.value.reason_code == REPO_ROOT_UNUSABLE_REASON_V2
+
+
+def test_run_git_v2_cwd_uses_the_validated_resolved_path_not_the_raw_repo_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-merge internal-review finding (companion to G4B, distinct from
+    the two Codex findings): `_run_git_v2` calls
+    `validate_external_input_directory_v2(repo_root)` for its side effect
+    (raising `REPO_ROOT_UNUSABLE_REASON_V2` on an invalid input) but then
+    discarded the returned `ExternalInputDirectoryV2` capability and passed
+    the ORIGINAL, unresolved `repo_root` to `subprocess.run(cwd=...)`.
+    Every other migrated G4B consumer (e.g. `target_pack_doctor_v2.py`)
+    uses `.resolved_path` from the returned capability for the actual
+    filesystem operation. Validating one path and then operating on an
+    independently-reresolved raw path is a TOCTOU gap between validation
+    and execution, even though it does not defeat the diff/digest binding
+    itself (git's content addressing binds diff bytes to the commit SHA
+    pair, not to directory identity)."""
+
+    from app.agent_review import diff_acquisition_v2
+
+    validated_target = tmp_path / "validated_repo"
+    validated_target.mkdir()
+    symlink_repo = tmp_path / "repo_root_symlink"
+    symlink_repo.symlink_to(validated_target)
+
+    captured: dict[str, object] = {}
+
+    def spy_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        captured["cwd"] = kwargs.get("cwd")
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+
+    diff_acquisition_v2._run_git_v2(["git", "status"], repo_root=symlink_repo)
+
+    assert captured["cwd"] == symlink_repo.resolve()
+    assert captured["cwd"] != symlink_repo

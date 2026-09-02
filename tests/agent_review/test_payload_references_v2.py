@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 
 import pytest
 
@@ -174,6 +175,98 @@ def test_an_artifact_exceeding_max_bytes_is_refused_not_truncated(tmp_path) -> N
     with pytest.raises(PayloadReferenceError) as excinfo:
         build_payload_artifact_references_v2(profile, tmp_path)
     assert excinfo.value.reason_code == PAYLOAD_ARTIFACT_EXCEEDS_MAX_BYTES_REASON_V2
+
+
+def test_an_oversized_artifact_is_never_fully_materialized_before_the_size_check(tmp_path, monkeypatch) -> None:
+    """Codex P1 (post-G4B): the G4B migration changed the read sequence
+    from `stat size -> compare against max_bytes -> read file` to
+    `read entire file -> len(raw_bytes) -> compare against max_bytes`, so a
+    large external artifact was fully materialized into memory BEFORE the
+    size limit that is supposed to protect against exactly that. This test
+    proves the ACTUAL bytes pulled off the underlying file handle never
+    exceed `max_bytes + 1`, regardless of how much larger the real file on
+    disk is -- not just that the correct reason code is eventually raised
+    (the buggy code already raised the right reason code; it just did so
+    only after reading the whole file)."""
+
+    from pathlib import Path as _Path
+
+    class _CountingReadProxy:
+        """Wraps a real file handle, recording every byte count `.read()`
+        actually returns. `io.BufferedReader` is a C type with no
+        `__dict__`, so it cannot be monkeypatched directly -- wrapping the
+        handle returned by `Path.open()` is the reliable way to observe
+        what the underlying read primitive actually materialized."""
+
+        def __init__(self, handle, sizes: list[int]) -> None:
+            self._handle = handle
+            self._sizes = sizes
+
+        def read(self, size: int = -1) -> bytes:
+            data = self._handle.read(size)
+            self._sizes.append(len(data))
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._handle.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    real_size = 5_000_000
+    max_bytes = 100
+    (tmp_path / "big.bin").write_bytes(b"x" * real_size)
+    profile = _profile(artifacts=[_artifact_decl(artifact_id="a1", path="big.bin", max_bytes=max_bytes)])
+
+    materialized_sizes: list[int] = []
+    original_open = _Path.open
+
+    def spy_open(self, *args, **kwargs):  # noqa: ANN001
+        handle = original_open(self, *args, **kwargs)
+        return _CountingReadProxy(handle, materialized_sizes)
+
+    monkeypatch.setattr(_Path, "open", spy_open)
+
+    with pytest.raises(PayloadReferenceError) as excinfo:
+        build_payload_artifact_references_v2(profile, tmp_path)
+    assert excinfo.value.reason_code == PAYLOAD_ARTIFACT_EXCEEDS_MAX_BYTES_REASON_V2
+
+    total_materialized = sum(materialized_sizes)
+    assert total_materialized <= max_bytes + 1, (
+        f"materialized {total_materialized} bytes reading a file capped at "
+        f"{max_bytes} bytes (real file was {real_size} bytes) -- the size "
+        "check ran too late"
+    )
+
+
+def test_an_absurdly_large_artifact_max_bytes_never_raises_a_raw_overflowerror(tmp_path) -> None:
+    """External Codex review of PR #296's exact head (b7f01f0) found a P2
+    against that PR's own fix for the P1 above: `artifact.max_bytes` comes
+    from a `PositiveInt` profile field with no schema-enforced upper bound.
+    `read_bytes_bounded` passes `max_bytes + 1` to a C-level `.read()`,
+    which converts its argument to a `Py_ssize_t` -- a profile-legal value
+    at or beyond `sys.maxsize` overflows that conversion and raises a raw,
+    untyped `OverflowError`, not the typed refusal this whole authority
+    exists to guarantee. This must fail closed and typed -- whether the
+    refusal happens at profile construction (a bounded schema field) or at
+    read time (an ingress authority refusal); a raw `OverflowError`
+    reaching the caller is the one outcome that is never acceptable."""
+
+    import pydantic
+
+    (tmp_path / "artifact.txt").write_text("hello world", encoding="utf-8")
+
+    def _attempt() -> None:
+        profile = _profile(
+            artifacts=[_artifact_decl(artifact_id="a1", path="artifact.txt", max_bytes=sys.maxsize)]
+        )
+        build_payload_artifact_references_v2(profile, tmp_path)
+
+    with pytest.raises((pydantic.ValidationError, PayloadReferenceError)):
+        _attempt()
 
 
 # -- build_payload_contract_references_v2 ---------------------------------------

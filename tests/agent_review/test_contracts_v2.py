@@ -910,6 +910,29 @@ def test_target_profile_rejects_absolute_and_parent_paths() -> None:
             _validate_json(TargetProfileV2, payload)
 
 
+def test_target_profile_rejects_an_artifact_max_bytes_that_could_overflow_a_bounded_read() -> None:
+    """Post-#200-G4B Codex review of PR #296 (P2): `max_bytes` fed
+    `ExternalInputFileV2.read_bytes_bounded`, which passes `max_bytes + 1`
+    to a C-level `.read()` -- a value at or beyond `sys.maxsize` overflows
+    that call's `Py_ssize_t` argument conversion and raises a raw
+    `OverflowError`. `TargetArtifactV2.max_bytes` must refuse such a value
+    at schema/construction time, well below where that arithmetic could
+    ever overflow -- real profiles in this repository declare
+    `max_bytes: 1_000_000`, orders of magnitude under the new bound."""
+
+    payload = _target_profile()
+    payload["artifacts"][0]["max_bytes"] = sys.maxsize  # type: ignore[index]
+    with pytest.raises(ValidationError):
+        _validate_json(TargetProfileV2, payload)
+
+
+def test_target_profile_still_accepts_a_realistic_artifact_max_bytes() -> None:
+    payload = _target_profile()
+    payload["artifacts"][0]["max_bytes"] = 1_000_000  # type: ignore[index]
+    parsed = _validate_json(TargetProfileV2, payload)
+    assert parsed.artifacts[0].max_bytes == 1_000_000
+
+
 @pytest.mark.parametrize(
     "branch_name",
     ["master", "develop", "release/2026.07", "feature/agent-review-v2"],
