@@ -148,6 +148,86 @@ def test_digest_hashes_symlink_target_text_not_followed_content(tmp_path: Path) 
     assert before == after
 
 
+# -- #200-G1-S / S3: Git path-byte faithful digest -------------------------------
+
+
+def test_digest_survives_and_is_byte_faithful_for_non_utf8_git_filenames(
+    tmp_path: Path,
+) -> None:
+    """Salvaged from forensic PR #302 (finding #6, already CLOSED_AND_
+    VERIFIED there -- unrelated to that PR's terminal STOP). Git tree entry
+    paths are raw bytes; git never requires them to be valid UTF-8. A
+    legitimately non-UTF-8 filename (constructed here with real `git mktree`
+    plumbing, not a synthetic mock) is decoded by this codebase's own
+    `list_commit_tree_entries_v2` with `errors="surrogateescape"` -- on
+    purpose, per that function's own docstring, so a real property of the
+    commit's history is never refused as "our" error -- and
+    `materialise_commit_subject_v2` round-trips it back onto disk exactly,
+    because `pathlib`/`os` encode a `str` path back to bytes via
+    `os.fsencode`, which uses the same `surrogateescape` error handler by
+    default on POSIX. `compute_subject_digest_v2`'s FINAL step broke that
+    chain: it joined every entry's path into one big string and called
+    `.encode("utf-8")` in *strict* mode -- a lone surrogate codepoint
+    produced by decoding non-UTF-8 bytes with `surrogateescape` cannot be
+    strictly UTF-8-encoded, so digesting a subject materialised from a
+    perfectly legitimate commit crashed with `UnicodeEncodeError`, on the
+    very same bytes the rest of this module's pipeline already handled
+    correctly.
+
+    Two DIFFERENT non-UTF-8 names (differing only in the invalid byte) are
+    digested to prove byte fidelity, not just crash-avoidance: a fix that
+    papered over the crash by discarding or replacing the unrepresentable
+    byte (e.g. `errors="replace"`) would make both names collapse to the
+    same replacement character and digest identically, silently losing the
+    very information a content-addressed digest exists to preserve."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.py").write_text("SEED = 1\n")
+    _commit_all(repo, "seed")
+
+    blob_sha = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input=b"non-utf8-filename fixture content\n",
+        check=True,
+        capture_output=True,
+    ).stdout.decode("ascii").strip()
+
+    def _commit_with_raw_named_blob(raw_name: bytes, message: str) -> str:
+        mktree_input = f"100644 blob {blob_sha}\t".encode("ascii") + raw_name + b"\n"
+        tree_sha = subprocess.run(
+            ["git", "mktree", "--missing"],
+            cwd=repo,
+            input=mktree_input,
+            check=True,
+            capture_output=True,
+        ).stdout.decode("ascii").strip()
+        return subprocess.run(
+            ["git", "commit-tree", tree_sha, "-m", message],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+        ).stdout.decode("ascii").strip()
+
+    # Two names differing only in one invalid byte -- 0xff vs 0xfe are each
+    # invalid as a UTF-8 continuation/lead byte on their own, so both
+    # legitimately round-trip through `surrogateescape`, not through any
+    # valid multi-byte UTF-8 sequence.
+    commit_a = _commit_with_raw_named_blob(b"bad-\xff-name.py", "non-utf8 a")
+    commit_b = _commit_with_raw_named_blob(b"bad-\xfe-name.py", "non-utf8 b")
+
+    destination_a = tmp_path / "subject_a"
+    destination_b = tmp_path / "subject_b"
+    materialise_commit_subject_v2(repo_root=repo, ref=commit_a, destination=destination_a)
+    materialise_commit_subject_v2(repo_root=repo, ref=commit_b, destination=destination_b)
+
+    digest_a = compute_subject_digest_v2(destination_a)  # must not raise UnicodeEncodeError
+    digest_b = compute_subject_digest_v2(destination_b)
+    assert digest_a and len(digest_a) == 64
+    assert digest_b and len(digest_b) == 64
+    assert digest_a != digest_b, "distinct raw byte names must not digest identically"
+
+
 def test_materialise_refuses_blob_subtree_name_collision_instead_of_crashing(
     tmp_path: Path,
 ) -> None:

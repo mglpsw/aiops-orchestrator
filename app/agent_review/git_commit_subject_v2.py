@@ -292,6 +292,22 @@ def compute_subject_digest_v2(subject_root: Path) -> str:
     supplied by an untrusted party as a substitute for re-deriving expected
     content from git directly -- see `commit_derived_execution_identity_v2.py`
     for why that distinction is the whole point of this primitive.
+
+    S3 (`#200-G1-S`, issue #305, salvaged from forensic PR #302's finding
+    #6): git tree entry paths are raw bytes and are never required to be
+    valid UTF-8 -- `list_commit_tree_entries_v2` already decodes them with
+    `errors="surrogateescape"` for exactly that reason, and this function's
+    own path enumeration (via `pathlib`) round-trips a materialised
+    non-UTF-8 name back to a `str` the same way, by construction of how
+    `os.fsdecode` behaves on POSIX. The final encode step here used to
+    re-encode with *strict* UTF-8, which cannot represent a lone surrogate
+    codepoint produced by that same `surrogateescape` decoding -- crashing
+    on a subject materialised from a perfectly legitimate commit. Encoding
+    with `errors="surrogateescape"` here too closes the loop: the same
+    error handler used to decode a path back into this digest's preimage is
+    used to encode it back into bytes, so the digest's preimage is the
+    actual path bytes, faithfully, not a lossy or crashing approximation of
+    them.
     """
     import hashlib
     import os as _os
@@ -309,4 +325,6 @@ def compute_subject_digest_v2(subject_root: Path) -> str:
             entries.append(f"f\x00{relative}\x00{executable}\x00{digest}")
         else:
             entries.append(f"?\x00{relative}")
-    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        "\n".join(entries).encode("utf-8", "surrogateescape")
+    ).hexdigest()
