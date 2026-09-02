@@ -804,6 +804,101 @@ def test_completeness_traversal_error_is_refused_not_silently_swallowed(
     assert excinfo.value.reason_code == IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2
 
 
+class _ClassificationFailureEntry:
+    """Wraps a real `os.DirEntry` so `is_symlink`/`is_dir` raise `OSError`
+    while `name`/`path` stay readable -- reproduces the CPython `os.walk`
+    internal-classification failure Codex found in this PR's own external
+    review (PR #306), a narrower and distinct gap from the `scandir`-level
+    failure `test_completeness_traversal_error_is_refused_not_silently_
+    swallowed` above already covers."""
+
+    def __init__(self, real_entry: os.DirEntry) -> None:
+        self._real = real_entry
+
+    @property
+    def name(self) -> str:
+        return self._real.name
+
+    @property
+    def path(self) -> str:
+        return self._real.path
+
+    def is_symlink(self) -> bool:
+        raise OSError("simulated entry classification failure")
+
+    def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+        raise OSError("simulated entry classification failure")
+
+
+def test_completeness_traversal_classification_error_is_refused_not_silently_treated_as_a_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Independent-review finding (P1) on this PR's own external review
+    (PR #306, on top of `#200-G1-S` / issue #305): CPython's `os.walk`
+    invokes its `onerror` callback only when `os.scandir(top)` itself
+    fails. It separately catches an `OSError` raised by classifying an
+    already-enumerated entry (its internal `entry.is_dir()` call, used to
+    sort a name into `dirnames` vs `filenames`) and silently treats that
+    entry as a non-directory -- `onerror` is never invoked for that second
+    failure point. A tracked directory whose classification fails at
+    exactly that moment would be added to the leaf-path set under its own
+    bare name (never descended into), invisible unless that name happens to
+    coincide with an actual tracked leaf path -- but either way, the
+    subtree's real completeness was never actually checked, silently.
+
+    Closed by replacing `os.walk` with an explicit recursive `os.scandir`
+    walk (see `_reachable_leaf_paths_v2`'s current docstring) where BOTH the
+    `scandir` call and each entry's own `is_symlink`/`is_dir` calls are
+    wrapped and raise the same typed refusal -- reproduced here by wrapping
+    one specific entry so its classification methods raise, while every
+    other entry (and every other directory's `scandir` call) is untouched."""
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    unreadable_dir_name = "app_agent_review"
+    real_scandir = os.scandir
+
+    class _ScandirResultProxy:
+        """Supports both `list(os.scandir(...))` (this module's own
+        traversal) and `with os.scandir(...) as it:` (`os.walk`'s usage) so
+        this fixture exercises either implementation identically."""
+
+        def __init__(self, entries: list) -> None:
+            self._iterator = iter(entries)
+
+        def __iter__(self):
+            return self._iterator
+
+        def __next__(self):
+            return next(self._iterator)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info: object) -> None:
+            return None
+
+    def fake_scandir(path="."):
+        if Path(path) == subject_root:
+            return _ScandirResultProxy(
+                [
+                    _ClassificationFailureEntry(entry) if entry.name == unreadable_dir_name else entry
+                    for entry in real_scandir(path)
+                ]
+            )
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", fake_scandir)
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+    assert excinfo.value.reason_code == IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2
+
+
 def test_nonexistent_subject_root_is_refused(tmp_path: Path) -> None:
     repo, head_sha = _toolrepo_fixture(tmp_path)
     with pytest.raises(ExecutedSourceIdentityError):
@@ -972,6 +1067,86 @@ def test_authorization_is_undetermined_not_false_for_a_shallow_history(
 
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
         authorize_commit_for_execution_v2(repo_root=local, commit_sha=c2, trusted_ref=c3)
+    assert excinfo.value.reason_code == IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2
+
+
+def test_authorization_is_undetermined_for_a_corrupt_non_shallow_history(tmp_path: Path) -> None:
+    """Independent-review finding (P2) on this PR's own external review (PR
+    #306, on top of `#200-G1-S` / issue #305): checking `_history_is_
+    shallow_v2` alone is not enough. A real, non-shallow repository whose
+    object store is missing a commit object that `merge-base --is-ancestor`
+    needs to walk through (constructed here by deleting a real, reachable
+    parent commit's `.git/objects/..` file directly -- not a synthetic
+    mock) makes that command exit 1, the SAME exit code as a genuine clean
+    non-ancestor -- but, empirically verified, it ALSO writes a diagnostic
+    (`error: Could not read <sha>`) to stderr, which a clean negative never
+    does. `git rev-parse --is-shallow-repository` correctly reports `false`
+    for this repository (it genuinely is not shallow), so a fix that only
+    checked shallowness would report a confident `authorized=False` for a
+    graph that was never actually fully walked. The non-empty-stderr check
+    must catch this independent of the shallow check."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    shas = []
+    for i in range(4):
+        (repo / f"f{i}.txt").write_text(f"{i}\n")
+        shas.append(_commit_all(repo, f"c{i}"))
+    c1, c2, c3, c4 = shas
+
+    # Delete a real, reachable MIDDLE commit's own object -- c2 is required
+    # to walk from c4 back to c1, but is neither endpoint being checked.
+    object_path = repo / ".git" / "objects" / c2[:2] / c2[2:]
+    assert object_path.is_file()
+    object_path.unlink()
+
+    is_shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=repo, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert is_shallow == "false", "fixture must genuinely not be shallow, or this test proves nothing"
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c4)
+    assert excinfo.value.reason_code == IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2
+
+
+def test_authorization_is_undetermined_when_the_shallow_probe_itself_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Independent-review finding (P2) on this PR's own external review (PR
+    #306, on top of `#200-G1-S` / issue #305): `_history_is_shallow_v2` is
+    itself a git invocation and can itself fail or emit unexpected output.
+    The first fix attempt used `check=False` to read its exit code without
+    raising, but never actually inspected that exit code or validated the
+    output -- a failed probe's empty/garbage stdout does not equal `"true"`,
+    so it silently evaluated as "not shallow" and let a genuinely
+    undetermined ancestry question resolve to a confident `authorized=
+    False`. Reproduced by monkeypatching `run_bounded_git_v2` to make ONLY
+    the `rev-parse --is-shallow-repository` call fail, leaving the real
+    `merge-base --is-ancestor` call (and everything else) untouched."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+    subprocess.run(["git", "checkout", "-b", "diverged"], cwd=repo, check=True, capture_output=True)
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nDIVERGED = True\n")
+    diverged_sha = _commit_all(repo, "diverged work")
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
+
+    real_run_bounded_git_v2 = commit_derived_execution_identity_module.run_bounded_git_v2
+
+    def failing_shallow_probe(argv, **kwargs):
+        if argv[:2] == ["rev-parse", "--is-shallow-repository"]:
+            return subprocess.CompletedProcess(
+                argv, returncode=129, stdout=b"", stderr=b"fatal: simulated probe failure\n"
+            )
+        return real_run_bounded_git_v2(argv, **kwargs)
+
+    commit_derived_execution_identity_module.run_bounded_git_v2 = failing_shallow_probe
+    try:
+        with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+            authorize_commit_for_execution_v2(
+                repo_root=repo, commit_sha=diverged_sha, trusted_ref="main"
+            )
+    finally:
+        commit_derived_execution_identity_module.run_bounded_git_v2 = real_run_bounded_git_v2
     assert excinfo.value.reason_code == IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2
 
 

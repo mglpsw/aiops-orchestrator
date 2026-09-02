@@ -69,13 +69,20 @@ This module deliberately keeps two questions apart and never collapses them
 into one boolean:
 
 ``ExecutedSourceIdentityV2`` / ``verify_executed_source_identity_v2``
-    IDENTITY: which commit produced the bytes currently materialized at
-    ``subject_root``, as of the moment this function is called. A fact
-    derivable entirely from the toolrepo's own git object store plus what is
-    actually on disk. Says nothing about whether that commit was *supposed*
-    to run, and says nothing about what any interpreter -- already running
-    or not -- has actually loaded into memory (see "What this module does
-    NOT prove" above).
+    IDENTITY: that ``commit_sha``'s tree matches, byte-for-byte, the bytes
+    currently materialized at ``subject_root``, as of the moment this
+    function is called. This is TREE EQUALITY, not unique provenance: if
+    another commit happens to share the exact same tree (e.g. an empty
+    commit, or identical content committed twice under different messages
+    or on different branches), that other commit's sha would pass this same
+    check against the same on-disk bytes just as validly -- this function
+    proves a match against the specific ``commit_sha`` the caller supplied,
+    never that ``commit_sha`` is the only commit that could explain what is
+    on disk. A fact derivable entirely from the toolrepo's own git object
+    store plus what is actually on disk. Says nothing about whether that
+    commit was *supposed* to run, and says nothing about what any
+    interpreter -- already running or not -- has actually loaded into
+    memory (see "What this module does NOT prove" above).
 
 ``ExecutedSourceAuthorizationV2`` / ``authorize_commit_for_execution_v2``
     AUTHORIZATION: whether a given (already-identified) commit is permitted
@@ -105,6 +112,7 @@ from __future__ import annotations
 
 import os
 import posixpath
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -182,10 +190,12 @@ class ExecutedSourceIdentityError(ValueError):
 
 @dataclass(frozen=True)
 class ExecutedSourceIdentityV2:
-    """IDENTITY only: which commit produced the bytes now on disk.
+    """IDENTITY only: ``commit_sha``'s tree matches the bytes now on disk.
 
-    Never carries an opinion about whether that commit was permitted to run
-    -- see ``ExecutedSourceAuthorizationV2`` for that separate question.
+    Tree equality, not unique provenance -- a different commit sharing the
+    exact same tree would pass this same check against the same bytes. Never
+    carries an opinion about whether that commit was permitted to run -- see
+    ``ExecutedSourceAuthorizationV2`` for that separate question.
     """
 
     commit_sha: str
@@ -290,36 +300,66 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
     partway through the call -- is what gets compared against the commit's
     tree for completeness.
 
-    ``os.walk(..., followlinks=False)`` is used rather than
-    ``Path.rglob`` for the enumeration itself precisely because it reports
-    (without descending into) any symlinked directory in ``dirnames``,
-    which is exactly the signal this function needs to refuse on.
+    A manual, recursive ``os.scandir``-based walk is used rather than
+    ``os.walk`` or ``Path.rglob`` for the enumeration itself -- see the S2
+    note below for why ``os.walk`` alone is not enough to fail closed here.
 
     S2 (``#200-G1-S``, issue #305, salvaged from forensic PR #302's finding
-    #4): ``os.walk``'s default behaviour when it cannot enumerate a
-    directory (e.g. a permission error) is to silently skip it -- passed no
-    ``onerror`` callback, an unreadable subtree contributes zero leaf paths,
-    indistinguishable from a genuinely empty one. "Cannot enumerate a
-    directory" is not the same fact as "directory is empty": the former
-    means completeness could not actually be checked for that subtree, and
-    must fail closed rather than silently pass as if it had been checked
-    and found empty. ``onerror`` is passed a callback that re-raises as a
-    typed refusal instead of the default silent swallow.
+    #4, hardened further after independent review of this fix itself found
+    a second, narrower gap in the first attempt): "cannot enumerate a
+    directory" is not the same fact as "directory is empty" -- an unreadable
+    subtree must contribute a typed refusal, never zero leaf paths as if it
+    had been checked and found empty. `os.walk`'s default behaviour on a
+    directory it cannot enumerate (e.g. a permission error during
+    ``scandir``) is to silently skip it; passing an ``onerror`` callback
+    closes that gap. But CPython's ``os.walk`` ALSO separately catches an
+    ``OSError`` from classifying an already-enumerated entry (its internal
+    ``entry.is_dir()`` call, used to sort each name into `dirnames` or
+    `filenames`) and silently treats that entry as a non-directory --
+    `onerror` is never invoked for that failure, only for the ``scandir``
+    call itself. A tracked directory whose classification fails at exactly
+    that moment (e.g. a race, a stale NFS handle, a mid-walk permission
+    change) would be added to this function's leaf-path set under its OWN
+    name (not descended into), which is invisible unless that bare name
+    happens to coincide with an actual tracked leaf path -- silently
+    skipping the subtree's real completeness check either way. Reimplemented
+    as an explicit recursive walk over ``os.scandir`` so BOTH failure points
+    -- the initial ``scandir`` call and each entry's own
+    ``is_symlink``/``is_dir`` classification -- are wrapped and raise the
+    same typed refusal, with no CPython-internal fallback path left that
+    this module does not control.
     """
 
-    def _raise_on_enumeration_failure_v2(error: OSError) -> None:
-        raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from error
-
     leaf_paths: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(
-        subject_root, followlinks=False, onerror=_raise_on_enumeration_failure_v2
-    ):
-        current_dir = Path(dirpath)
-        for dirname in dirnames:
-            if (current_dir / dirname).is_symlink():
-                raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
-        for filename in filenames:
-            leaf_paths.append((current_dir / filename).relative_to(subject_root).as_posix())
+
+    def _walk(directory: Path) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as exc:
+            raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+        for entry in entries:
+            try:
+                # `is_dir()` follows symlinks by default, matching what
+                # `os.walk` itself classifies as a directory entry (a
+                # symlink-to-directory is still sorted into `dirnames`,
+                # just not recursed into when `followlinks=False`) --
+                # `is_symlink()` is checked separately so a symlinked
+                # directory is refused outright rather than given a
+                # traversal policy to disagree about (see this function's
+                # docstring above).
+                is_symlink = entry.is_symlink()
+                is_dir = entry.is_dir()
+            except OSError as exc:
+                raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from exc
+            entry_path = Path(entry.path)
+            if is_dir:
+                if is_symlink:
+                    raise ExecutedSourceIdentityError(IDENTITY_SYMLINKED_DIRECTORY_REASON_V2)
+                _walk(entry_path)
+            else:
+                leaf_paths.append(entry_path.relative_to(subject_root).as_posix())
+
+    _walk(subject_root)
     return frozenset(leaf_paths)
 
 
@@ -504,11 +544,91 @@ def _history_is_shallow_v2(*, repo_root: Path) -> bool:
     separately present in the object store. That is what makes a shallow
     history's negative ``merge-base --is-ancestor`` answers unsafe to trust
     without this check.
+
+    Independent-review finding (P2) on this PR's own external review (PR
+    #306, on top of `#200-G1-S` / issue #305): this probe is itself a git
+    invocation and can itself fail (an older git lacking the flag, a
+    repository that becomes unreadable between the two commands, ...).
+    ``check=False`` was used to read the exit code without an exception, but
+    nothing inspected it -- a failed probe's empty/garbage stdout does not
+    equal the literal string ``"true"``, so it silently evaluated as "not
+    shallow", defeating S4's whole distinction for exactly the failure mode
+    S4 exists to catch. Any non-zero exit or any output other than the two
+    tokens git actually documents is now refused outright, the same as the
+    ancestry check's own undetermined path -- never treated as a confident
+    "not shallow".
     """
     completed = run_bounded_git_v2(
         ["rev-parse", "--is-shallow-repository"], cwd=repo_root, check=False
     )
-    return completed.stdout.decode("utf-8", "surrogateescape").strip() == "true"
+    output = completed.stdout.decode("utf-8", "surrogateescape").strip()
+    if completed.returncode != 0 or output not in ("true", "false"):
+        raise _AncestryUndeterminedV2()
+    return output == "true"
+
+
+class _AncestryUndeterminedV2(Exception):
+    """Internal signal only: some check inside ``_ancestry_negative_is_
+    trustworthy_v2`` could not affirmatively confirm completeness. Never
+    escapes ``authorize_commit_for_execution_v2`` -- it is always converted
+    to ``ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_
+    REASON_V2)`` at that single call site, so there is exactly one place in
+    this module that raises the public, typed refusal for this property.
+    """
+
+
+def _ancestry_negative_is_trustworthy_v2(
+    *, repo_root: Path, merge_base_result: subprocess.CompletedProcess
+) -> bool:
+    """Positively establish whether a ``merge-base --is-ancestor`` exit-1
+    result may be trusted as a clean ``authorized=False``.
+
+    Deliberately shaped as ONE gate that must affirmatively return ``True``
+    -- completeness POSITIVELY confirmed -- rather than a growing list of
+    individually-named bad conditions that defaults to "trust it" for
+    anything not yet on the list. Independent review of an earlier version
+    of this fix (this PR's own external review, PR #306) found a second
+    real gap after the first correction: enumerating "shallow" as the one
+    known cause of an untrustworthy negative missed a corrupt-but-not-
+    shallow object store (a real, reachable parent commit object deleted)
+    as a second, independent cause. Enumerating causes one at a time is
+    exactly the antipattern this module's own history (`#303`/`#304`'s
+    STOP disposition on a structurally similar problem) warns against: the
+    next unenumerated cause would silently fall through to "trusted" again.
+
+    This function's default is refusal, not trust: every branch below ends
+    in ``return False`` unless every check it knows how to run affirmatively
+    succeeded. A future git behaviour this function does not yet have a
+    name for does not need a new branch added here to fail safely -- it
+    already does, because nothing affirmatively confirmed it, and the
+    caller (``authorize_commit_for_execution_v2``) never inverts ``False``
+    from this function into anything but "undetermined".
+
+    Two independent checks currently compose the affirmative confirmation,
+    both empirically grounded, not assumed:
+
+    1. The ancestor check's own diagnostic output. A clean negative is
+       always silent (verified with a real corrupted object store: a
+       reachable-but-deleted parent commit object makes ``merge-base
+       --is-ancestor`` exit 1 WITH ``error: Could not read <sha>`` on
+       stderr; a genuine non-ancestor in a complete history exits 1 with
+       EMPTY stderr). Any stderr at all means the graph was not actually
+       fully walked -- not confirmed, regardless of shallow status.
+    2. Shallow-history confirmation (``_history_is_shallow_v2``). A shallow
+       clone's truncation is a normal boundary condition, not an error --
+       git exits 1 SILENTLY, indistinguishable from a genuine non-ancestor
+       by stderr alone, so it needs its own independent probe. If that
+       probe itself cannot give a definitive answer (``_AncestryUndetermined
+       V2``, e.g. an older git or an unreadable repository), that is ALSO a
+       failure to confirm, not a reason to assume "not shallow".
+    """
+    if merge_base_result.stderr:
+        return False
+    try:
+        is_shallow = _history_is_shallow_v2(repo_root=repo_root)
+    except _AncestryUndeterminedV2:
+        return False
+    return not is_shallow
 
 
 def authorize_commit_for_execution_v2(
@@ -524,23 +644,24 @@ def authorize_commit_for_execution_v2(
     two are meant to be composed by the caller, never merged here.
 
     S4 (``#200-G1-S``, issue #305, salvaged from forensic PR #302's finding
-    #7, ported here as the FINAL qualified form after an intermediate
-    attempt was itself found to have a shallow-history false negative):
-    ``git merge-base --is-ancestor`` exits 1 both when ``commit_sha``
+    #7, ported here as the FINAL qualified form after two prior intermediate
+    attempts were each found to have their own false negative -- first a
+    shallow-history gap, then a corrupt-but-not-shallow gap in the fix for
+    THAT): ``git merge-base --is-ancestor`` exits 1 both when ``commit_sha``
     genuinely is not an ancestor of ``trusted_ref`` in a complete history,
-    AND when the history available to this call is too incomplete (e.g. a
-    shallow clone) to determine that at all -- git's exit code alone does
-    not distinguish "proven not an ancestor" from "could not prove
-    ancestry". Collapsing both into ``authorized=False`` would silently
-    treat "I don't know" as a confident negative. On exit 1, this function
-    independently checks whether the repository is shallow before trusting
-    the negative: a genuinely complete history's exit-1 answer is trusted as
-    ``authorized=False``; a shallow (or otherwise not confidently complete)
-    history's exit-1 answer is refused outright as
-    ``IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2`` rather than silently
-    folded into ``False``. Any exit code other than 0 or 1 (e.g. a corrupt
-    object store) is treated the same way -- an operational failure, never
-    a clean negative.
+    AND when the history available to this call is too incomplete to
+    determine that at all -- git's exit code alone does not distinguish
+    "proven not an ancestor" from "could not prove ancestry". Collapsing
+    both into ``authorized=False`` would silently treat "I don't know" as a
+    confident negative.
+
+    An exit-1 answer is trusted as a clean ``authorized=False`` ONLY when
+    ``_ancestry_negative_is_trustworthy_v2`` affirmatively confirms it --
+    see that function's own docstring for why this is deliberately ONE gate
+    that must positively succeed, not a list of individually-enumerated bad
+    conditions defaulting to "trust it" for anything unnamed. Any exit code
+    other than 0 or 1 (e.g. a usage error) is treated as undetermined the
+    same way -- an operational failure, never a clean negative.
 
     ``PROVEN_NOT_ANCESTOR != COULD_NOT_PROVE_ANCESTRY``.
     """
@@ -559,14 +680,16 @@ def authorize_commit_for_execution_v2(
     if completed.returncode == 0:
         authorized = True
     elif completed.returncode == 1:
-        if _history_is_shallow_v2(repo_root=repo_root):
+        if not _ancestry_negative_is_trustworthy_v2(
+            repo_root=repo_root, merge_base_result=completed
+        ):
             raise ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2)
         authorized = False
     else:
         # Any other exit code (invalid object, corrupt store, usage error)
         # is a genuine operational failure, not a clean negative -- refused
-        # the same way an unprovable-due-to-shallow negative is, rather than
-        # silently becoming `authorized=False`.
+        # the same way an unconfirmed negative is, rather than silently
+        # becoming `authorized=False`.
         raise ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2)
 
     return ExecutedSourceAuthorizationV2(

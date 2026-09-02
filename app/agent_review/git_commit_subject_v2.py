@@ -294,37 +294,56 @@ def compute_subject_digest_v2(subject_root: Path) -> str:
     for why that distinction is the whole point of this primitive.
 
     S3 (`#200-G1-S`, issue #305, salvaged from forensic PR #302's finding
-    #6): git tree entry paths are raw bytes and are never required to be
-    valid UTF-8 -- `list_commit_tree_entries_v2` already decodes them with
+    #6, hardened further after independent review of this fix itself found
+    a second, narrower gap in the first attempt): git tree entry paths are
+    raw bytes and are never required to be valid UTF-8 --
+    `list_commit_tree_entries_v2` already decodes them with
     `errors="surrogateescape"` for exactly that reason, and this function's
     own path enumeration (via `pathlib`) round-trips a materialised
-    non-UTF-8 name back to a `str` the same way, by construction of how
-    `os.fsdecode` behaves on POSIX. The final encode step here used to
-    re-encode with *strict* UTF-8, which cannot represent a lone surrogate
-    codepoint produced by that same `surrogateescape` decoding -- crashing
-    on a subject materialised from a perfectly legitimate commit. Encoding
-    with `errors="surrogateescape"` here too closes the loop: the same
-    error handler used to decode a path back into this digest's preimage is
-    used to encode it back into bytes, so the digest's preimage is the
-    actual path bytes, faithfully, not a lossy or crashing approximation of
-    them.
+    non-UTF-8 name back to a `str` via `os.fsdecode` on POSIX.
+
+    The first fix attempt re-encoded that `str` back to bytes with
+    `errors="surrogateescape"`, hardcoded to the ``utf-8`` codec -- correct
+    ONLY on a system whose filesystem encoding (`sys.getfilesystemencoding
+    ()`) also happens to be UTF-8 (true in this codebase's own CI/dev
+    environments, but not a property this primitive is entitled to assume
+    of every environment it might run in). On a POSIX system whose
+    filesystem encoding is something else, `pathlib` decodes a raw filename
+    through THAT codec instead, potentially producing ordinary Unicode
+    characters rather than surrogate escapes for the same raw byte -- an
+    unconditional ``.encode("utf-8", "surrogateescape")`` would then hash
+    DIFFERENT bytes than what is actually on disk (e.g. a raw Latin-1
+    ``0xe9`` decodes to ``"\xe9"`` under a Latin-1 filesystem encoding, and
+    re-encodes as UTF-8 bytes ``c3 a9`` -- not the original single byte).
+
+    Fixed by using `os.fsencode` instead of a hardcoded codec: `fsencode`
+    and `fsdecode` are paired inverses of EACH OTHER, always against
+    whatever `sys.getfilesystemencoding()` actually is on the running
+    system -- so `fsencode(fsdecode(raw_bytes)) == raw_bytes` by
+    construction, regardless of what that encoding happens to be. Symlink
+    target text is read via `os.readlink` on the `fsencode`d path directly
+    (returns `bytes`, not `str`), for the same reason -- no `str`
+    round-trip left anywhere in this function's preimage construction. The
+    preimage is now assembled as raw `bytes` throughout, not a `str` joined
+    and encoded once at the end, closing this class of gap structurally
+    rather than by picking a better guess for the encode call.
     """
     import hashlib
     import os as _os
 
-    entries: list[str] = []
+    entries: list[bytes] = []
     for path in sorted(subject_root.rglob("*")):
         relative = path.relative_to(subject_root).as_posix()
+        relative_bytes = _os.fsencode(relative)
         if path.is_symlink():
-            entries.append(f"l\x00{relative}\x00{_os.readlink(path)}")
+            target_bytes = _os.readlink(_os.fsencode(path))
+            entries.append(b"l\x00" + relative_bytes + b"\x00" + target_bytes)
         elif path.is_dir():
-            entries.append(f"d\x00{relative}")
+            entries.append(b"d\x00" + relative_bytes)
         elif path.is_file():
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            executable = "1" if _os.access(path, _os.X_OK) else "0"
-            entries.append(f"f\x00{relative}\x00{executable}\x00{digest}")
+            digest = hashlib.sha256(path.read_bytes()).hexdigest().encode("ascii")
+            executable = b"1" if _os.access(path, _os.X_OK) else b"0"
+            entries.append(b"f\x00" + relative_bytes + b"\x00" + executable + b"\x00" + digest)
         else:
-            entries.append(f"?\x00{relative}")
-    return hashlib.sha256(
-        "\n".join(entries).encode("utf-8", "surrogateescape")
-    ).hexdigest()
+            entries.append(b"?\x00" + relative_bytes)
+    return hashlib.sha256(b"\n".join(entries)).hexdigest()
