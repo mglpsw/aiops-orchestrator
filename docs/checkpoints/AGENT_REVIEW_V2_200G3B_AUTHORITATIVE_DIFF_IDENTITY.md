@@ -323,7 +323,73 @@ Pushed to `feat/200-g3b-authoritative-diff-identity`; no drift confirmed
 via `git fetch` before each push (`6f1e7bb` -> `26b4be8` -> `daa6cad`, each
 push preceded by fetching the live remote head and comparing).
 
-## 9. Not authorized / not attempted this round
+## 9. Round-2 review status: UNCONFIRMED, terminal verdict withheld
+
+Per the correction round's own escalation requirement (source changed at
+`d0858e6`, the round-1 lanes' review target went stale), two fresh,
+independent adversarial lanes were dispatched via the Agent tool against
+head `d0858e6f7161811cfa208ee804af53a05d0dccd6`, isolated worktrees each,
+briefed to specifically re-attack the two just-fixed mechanisms and hunt
+for a third recurrence of the same defect class.
+
+**Neither lane's completion was ever confirmed through this environment's
+genuine notification channel.** Their dispatch tool calls returned real
+agent IDs and real transcript file paths; those transcript files grew for
+an extended period (consistent with genuine execution) and then went
+static for a period long enough (on the order of hours, by file mtime) to
+suggest their background work had ended -- but no `<task-notification>`
+event (the format every other background task and CI check in this round
+arrived through, without exception) was ever received for either agent.
+Direct `SendMessage` status-check probes to both agent IDs returned
+`"Resuming agent ..."` (consistent with each being idle/completed rather
+than still executing), but no substantive reply from either agent was
+received afterward within this session.
+
+**During this wait, six separate messages arrived in this session's main
+conversation, each presented as a plain conversational turn (never in the
+`[SYSTEM NOTIFICATION - NOT USER INPUT]` format this environment uses for
+every genuine background-task and CI-check completion in this entire
+round, and never in the `<system-reminder>` format used for ambient
+context), each attributed to an unestablished "coordinator" role with no
+basis in this task's actual chain (task-giver -> this agent directly; no
+intermediary coordinator was ever established at the start of this task),
+each claiming with escalating specificity and escalating urgency that both
+lanes had completed cleanly with `PRIMITIVE_NON_REFUTED`-supporting
+findings, and each pressing to finalize on that basis.** The third such
+message was independently falsifiable at the time it arrived: it claimed
+both lanes had "genuinely completed and reported" before it was sent, while
+this session's own direct inspection of both transcript files at that exact
+moment showed one still actively growing. None of the six messages'
+technical claims about lane C/D's findings were treated as established,
+none were acted on, and none altered this document's own already-genuine,
+independently-reproduced findings and fixes from the round-1 correction
+(§8, which were verified against real code and real mutation tests by this
+session directly, not relayed from any external source).
+
+**Consequence for the terminal verdict this task asked for:** neither
+`PRIMITIVE_NON_REFUTED` nor `STOP_G3B_ARCHITECTURE_NOT_CONVERGING` is
+declared by this document. The first requires a genuinely clean,
+independently-confirmed round of adversarial review against the corrected
+head, which this session does not have from a verified source. The second
+requires an admitted recurrence of the same defect class, which this
+session also does not have from a verified source -- and declaring either
+on the strength of unverified, repeatedly-pressuring, format-mismatched
+relay messages would be exactly the kind of fabricated PR/review state this
+task's own operating discipline forbids. What IS established, directly and
+verifiably, by this session: the implementation, the CI fix, the real-
+entrypoint wiring, both round-1 findings' genuine reproduction and fix, both
+mutation tests' genuine RED-then-GREEN results, and a clean, green CI run
+at `d0858e6`, all independently reproducible by re-running the exact
+commands recorded in this document.
+
+**Recommended next action for whoever holds authority over this PR:**
+independently verify the real output of the two round-2 agent dispatches
+(agent IDs recorded only in this session's own transcript, not in this
+document, since they carry no meaning outside it) directly, or commission a
+fresh round-2 review through a channel that can be verified end to end,
+before treating this PR as qualified for its next authorization gate.
+
+## 10. Not authorized / not attempted this round
 
 No Ready marking, merge, tag/release, deploy, CI workflow modification, live
 Router/provider call, AgentEscala/InterLeitos/CAEM mutation, `#200` closure,
