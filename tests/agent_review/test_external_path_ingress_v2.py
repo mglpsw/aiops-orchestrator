@@ -36,6 +36,33 @@ def test_input_file_capability_reads_valid_file(tmp_path: Path) -> None:
     assert capability.read_bytes() == b'{"ok":true}'
 
 
+def test_read_bytes_bounded_returns_full_content_within_the_limit(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "artifact.txt"
+    target.write_bytes(b"hello")
+    capability = validate_external_input_file_v2(target, root=root)
+    assert capability.read_bytes_bounded(10) == b"hello"
+    assert capability.read_bytes_bounded(5) == b"hello"
+
+
+def test_read_bytes_bounded_never_reads_past_max_bytes_plus_one(tmp_path: Path) -> None:
+    """The mechanical contract of the bounded read: for a file far larger
+    than `max_bytes`, at most `max_bytes + 1` bytes are ever pulled off the
+    underlying file handle -- this is what makes the read race-free without
+    a separate pre-read `stat()` (see #200-G4B post-merge Codex P1)."""
+
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "big.bin"
+    target.write_bytes(b"x" * 1_000_000)
+    capability = validate_external_input_file_v2(target, root=root)
+
+    result = capability.read_bytes_bounded(10)
+    assert len(result) == 11
+    assert result == b"x" * 11
+
+
 def test_missing_path_is_typed_and_path_free(tmp_path: Path) -> None:
     missing = tmp_path / "private-secret-name.json"
     with pytest.raises(ExternalPathIngressError) as excinfo:

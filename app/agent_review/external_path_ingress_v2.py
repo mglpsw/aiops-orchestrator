@@ -90,10 +90,31 @@ class ExternalInputFileV2:
 
     _resolved_path: Path
     _root: Path | None
+    _entry_name: str | None = None
 
     @property
     def resolved_path(self) -> Path:
         return self._resolved_path
+
+    @property
+    def entry_name(self) -> str:
+        """The caller-visible name of this entry, BEFORE symlink
+        resolution -- e.g. the directory-entry name `iter_input_files()`
+        enumerated, not the name of whatever a symlink entry resolves to.
+
+        Enumeration/matching decisions that are meant to operate on what
+        the caller actually presented (e.g. "does this entry's name end in
+        `.json`") must use this, not `resolved_path.name`: resolving
+        symlinks is still correct and necessary for the actual read/
+        containment-safety check, but it must not silently change what
+        counts as a `.json` entry for enumeration purposes (#200-G4B
+        post-merge Codex P2). Falls back to `resolved_path.name` for a
+        capability built directly by `validate_external_input_file_v2`
+        (not through directory enumeration), where there is no separate
+        pre-resolution entry name to preserve.
+        """
+
+        return self._entry_name if self._entry_name is not None else self._resolved_path.name
 
     def read_bytes(self) -> bytes:
         # Re-resolve and re-check containment immediately before the read. Use
@@ -113,6 +134,39 @@ class ExternalInputFileV2:
         try:
             return self.read_bytes().decode(encoding)
         except UnicodeDecodeError as exc:
+            raise ExternalPathIngressError(EXTERNAL_PATH_UNREADABLE_REASON_V2) from exc
+
+    def read_bytes_bounded(self, max_bytes: int) -> bytes:
+        """Read at most ``max_bytes + 1`` bytes without ever materializing
+        more of the file into memory.
+
+        G4B (#200-G4B) changed a prior read sequence of
+        ``stat size -> compare against max_bytes -> read file`` to
+        ``read entire file -> len(raw_bytes) -> compare against max_bytes``,
+        so a size-limited caller (e.g. a target-profile artifact) was fully
+        materialized into memory BEFORE the limit meant to protect against
+        exactly that. Re-introducing a pre-read ``stat()`` check would only
+        trade this bug for its own TOCTOU (the file can grow between the
+        ``stat`` and the ``read``). Reading a bounded ``max_bytes + 1``
+        window is race-free either way: if fewer than or exactly
+        ``max_bytes`` bytes come back, that IS the complete, correctly
+        bounded content; if ``max_bytes + 1`` bytes come back, the caller
+        refuses for being oversized, and this method never read more than
+        one byte past the limit to find that out.
+
+        The caller owns the oversized-vs-not decision (and its own typed
+        reason code) -- this method's contract is purely mechanical: never
+        read more than ``max_bytes + 1`` bytes.
+        """
+
+        resolved = _resolve_v2(self._resolved_path)
+        _enforce_containment_v2(resolved, root=self._root)
+        try:
+            with resolved.open("rb") as handle:
+                return handle.read(max_bytes + 1)
+        except FileNotFoundError as exc:
+            raise ExternalPathIngressError(EXTERNAL_PATH_MISSING_REASON_V2) from exc
+        except (OSError, RuntimeError, ValueError) as exc:
             raise ExternalPathIngressError(EXTERNAL_PATH_UNREADABLE_REASON_V2) from exc
 
 
@@ -143,8 +197,8 @@ class ExternalInputDirectoryV2:
             _enforce_containment_v2(entry_resolved, root=self._root)
             mode = _stat_v2(entry_resolved).st_mode
             if stat.S_ISREG(mode):
-                files.append(ExternalInputFileV2(entry_resolved, self._root))
-        return tuple(sorted(files, key=lambda item: item.resolved_path.name))
+                files.append(ExternalInputFileV2(entry_resolved, self._root, entry.name))
+        return tuple(sorted(files, key=lambda item: item.entry_name))
 
 
 @dataclass(frozen=True)

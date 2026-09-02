@@ -176,6 +176,71 @@ def test_an_artifact_exceeding_max_bytes_is_refused_not_truncated(tmp_path) -> N
     assert excinfo.value.reason_code == PAYLOAD_ARTIFACT_EXCEEDS_MAX_BYTES_REASON_V2
 
 
+def test_an_oversized_artifact_is_never_fully_materialized_before_the_size_check(tmp_path, monkeypatch) -> None:
+    """Codex P1 (post-G4B): the G4B migration changed the read sequence
+    from `stat size -> compare against max_bytes -> read file` to
+    `read entire file -> len(raw_bytes) -> compare against max_bytes`, so a
+    large external artifact was fully materialized into memory BEFORE the
+    size limit that is supposed to protect against exactly that. This test
+    proves the ACTUAL bytes pulled off the underlying file handle never
+    exceed `max_bytes + 1`, regardless of how much larger the real file on
+    disk is -- not just that the correct reason code is eventually raised
+    (the buggy code already raised the right reason code; it just did so
+    only after reading the whole file)."""
+
+    from pathlib import Path as _Path
+
+    class _CountingReadProxy:
+        """Wraps a real file handle, recording every byte count `.read()`
+        actually returns. `io.BufferedReader` is a C type with no
+        `__dict__`, so it cannot be monkeypatched directly -- wrapping the
+        handle returned by `Path.open()` is the reliable way to observe
+        what the underlying read primitive actually materialized."""
+
+        def __init__(self, handle, sizes: list[int]) -> None:
+            self._handle = handle
+            self._sizes = sizes
+
+        def read(self, size: int = -1) -> bytes:
+            data = self._handle.read(size)
+            self._sizes.append(len(data))
+            return data
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return self._handle.__exit__(*exc_info)
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    real_size = 5_000_000
+    max_bytes = 100
+    (tmp_path / "big.bin").write_bytes(b"x" * real_size)
+    profile = _profile(artifacts=[_artifact_decl(artifact_id="a1", path="big.bin", max_bytes=max_bytes)])
+
+    materialized_sizes: list[int] = []
+    original_open = _Path.open
+
+    def spy_open(self, *args, **kwargs):  # noqa: ANN001
+        handle = original_open(self, *args, **kwargs)
+        return _CountingReadProxy(handle, materialized_sizes)
+
+    monkeypatch.setattr(_Path, "open", spy_open)
+
+    with pytest.raises(PayloadReferenceError) as excinfo:
+        build_payload_artifact_references_v2(profile, tmp_path)
+    assert excinfo.value.reason_code == PAYLOAD_ARTIFACT_EXCEEDS_MAX_BYTES_REASON_V2
+
+    total_materialized = sum(materialized_sizes)
+    assert total_materialized <= max_bytes + 1, (
+        f"materialized {total_materialized} bytes reading a file capped at "
+        f"{max_bytes} bytes (real file was {real_size} bytes) -- the size "
+        "check ran too late"
+    )
+
+
 # -- build_payload_contract_references_v2 ---------------------------------------
 
 

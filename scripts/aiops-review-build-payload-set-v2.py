@@ -45,6 +45,14 @@ NO_PAYLOADS_FOUND_REASON_V2 = "no_payloads_found"
 # `payloads_dir.glob("*.json")`: a symlink loop, an overlong path, or
 # `--payloads-dir` pointed at a file rather than a directory each raised raw
 # here, before a single payload was ever read.
+#
+# Post-merge Codex P2: the `.json` filter itself must key off each entry's
+# own caller-visible name (`entry.entry_name`), not the symlink-resolved
+# target's name (`entry.resolved_path.name`) -- otherwise `payload.json`
+# and an `alias.txt -> payload.json` symlink both count as `.json` entries
+# (duplicate), while an `alias.json -> payload.txt` symlink stops counting
+# as one even though its own name says `.json`. Resolution still happens
+# (via `iter_input_files()`) for the actual read/containment-safety check.
 PAYLOADS_DIR_UNUSABLE_REASON_V2 = "payloads_dir_unusable"
 OUTPUT_WRITE_FAILED_REASON_V2 = "output_write_failed"
 
@@ -94,7 +102,7 @@ def _load_payloads(payloads_dir: Path) -> list[ChunkPayloadV2]:
     try:
         capability = validate_external_input_directory_v2(payloads_dir)
         entries = tuple(
-            entry for entry in capability.iter_input_files() if entry.resolved_path.name.endswith(".json")
+            entry for entry in capability.iter_input_files() if entry.entry_name.endswith(".json")
         )
     except ExternalPathIngressError as exc:
         raise PayloadSetCliError(PAYLOADS_DIR_UNUSABLE_REASON_V2) from exc

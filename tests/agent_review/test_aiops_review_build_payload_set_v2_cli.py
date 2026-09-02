@@ -287,3 +287,79 @@ def test_cli_refuses_a_write_failure_at_output_instead_of_crashing(tmp_path: Pat
     assert result.returncode != 0
     assert "Traceback" not in result.stderr
     assert "output_write_failed" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Codex P2 (post-G4B, external review of the merged tree): the pre-G4B code
+# filtered directory entries by `payloads_dir.glob("*.json")` -- filtering
+# on the ENTRY's own (caller-visible) name. The G4B `iter_input_files()`
+# migration switched `_load_payloads` to filter on
+# `entry.resolved_path.name` instead -- the SYMLINK TARGET's name after
+# resolution. `payload.json` and `alias.txt -> payload.json` can now both
+# resolve to appearing as `payload.json` (duplicate/collision); conversely
+# `alias.json -> payload.txt` stops being recognized as a `.json` entry
+# even though the caller-visible name has that extension. Enumeration
+# should decide "is this a .json entry" from the entry's own presented
+# name; resolution should still happen for the actual read/containment
+# check (unchanged). Black-box, full-CLI witnesses -- no reach into CLI
+# internals -- since what matters is observable enumeration behavior.
+# ---------------------------------------------------------------------------
+
+
+def test_cli_does_not_double_count_a_non_json_alias_of_a_json_payload(tmp_path: Path) -> None:
+    """A single-chunk manifest plus a payloads dir containing the one real
+    `<chunk_id>.json` payload AND a non-`.json`-named symlink alias to that
+    SAME file must still emit exactly one payload -- the alias must not be
+    picked up a second time just because it resolves to a `.json` target."""
+
+    manifest_path, payloads_dir = _write_fixtures(tmp_path, paths=["app/a.py"])
+    real_files = sorted(payloads_dir.glob("*.json"))
+    assert len(real_files) == 1
+    alias = payloads_dir / "alias.txt"
+    alias.symlink_to(real_files[0])
+    output_path = tmp_path / "out" / "payload-set.json"
+
+    result = _run(
+        [
+            "--contract-version", "v2",
+            "--manifest", str(manifest_path),
+            "--payloads-dir", str(payloads_dir),
+            "--output", str(output_path),
+        ]
+    )
+
+    assert result.returncode == 0, result.stderr
+    doc = json.loads(output_path.read_text(encoding="utf-8"))
+    payload_set = PayloadSetV2.model_validate(doc)
+    assert len(payload_set.payloads) == 1
+
+
+def test_cli_recognizes_a_json_named_alias_of_a_non_json_file(tmp_path: Path) -> None:
+    """A payloads dir with the real `<chunk_id>.json` payload accessible
+    ONLY through a `.json`-named symlink pointing at a differently-named
+    real file must still be picked up: enumeration goes by the entry's own
+    caller-visible name, not the resolved target's name."""
+
+    manifest_path, payloads_dir = _write_fixtures(tmp_path, paths=["app/a.py"])
+    real_files = sorted(payloads_dir.glob("*.json"))
+    assert len(real_files) == 1
+    real = real_files[0]
+    renamed = payloads_dir / "payload.data"
+    real.rename(renamed)
+    alias = payloads_dir / real.name
+    alias.symlink_to(renamed)
+    output_path = tmp_path / "out" / "payload-set.json"
+
+    result = _run(
+        [
+            "--contract-version", "v2",
+            "--manifest", str(manifest_path),
+            "--payloads-dir", str(payloads_dir),
+            "--output", str(output_path),
+        ]
+    )
+
+    assert result.returncode == 0, result.stderr
+    doc = json.loads(output_path.read_text(encoding="utf-8"))
+    payload_set = PayloadSetV2.model_validate(doc)
+    assert len(payload_set.payloads) == 1

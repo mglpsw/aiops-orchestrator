@@ -107,8 +107,12 @@ def build_payload_artifact_references_v2(
                 continue
             raise PayloadReferenceError(PAYLOAD_ARTIFACT_UNREADABLE_REASON_V2) from exc
 
+        # Bounded read: never materialize more than `max_bytes + 1` bytes,
+        # so an oversized external artifact cannot be fully read into memory
+        # before this size check runs (see `read_bytes_bounded`'s own
+        # docstring for why a pre-read `stat()` isn't the fix either).
         try:
-            raw_bytes = capability.read_bytes()
+            raw_bytes = capability.read_bytes_bounded(artifact.max_bytes)
         except ExternalPathIngressError as exc:
             raise PayloadReferenceError(PAYLOAD_ARTIFACT_UNREADABLE_REASON_V2) from exc
         if len(raw_bytes) > artifact.max_bytes:
