@@ -68,6 +68,16 @@ G1C:
     use, no external-repo-path parameter on any operation), and hard
     byte/object-count budgets are enforced during acquisition, before any
     copied byte is handed to a git reading primitive for interpretation.
+    Correction round 1 (two internal adversarial review lanes; findings
+    independently reproduced before fixing) sharpened the "resolve by exact
+    digest" reuse from a structural description into an enforced check:
+    `_verify_loose_object_hash_v2` re-derives every copied loose object's
+    sha1/sha256 from its own decompressed content and refuses on any
+    mismatch against the path it claims to be -- the same digest-verified-
+    copy shape ADR 0011 states for verifier/tool bytes, independently
+    implemented here for git loose objects specifically (named residual:
+    pack-contained objects are not individually re-hashed, since doing so
+    would mean reimplementing git's pack/delta format).
   not_claimed: >-
     No CAEM conformance, ratification, or qualification transfer. No
     N1-N5 pipeline invoked. No consumption of CAEM's own CAS, schemas, or
