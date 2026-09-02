@@ -109,7 +109,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
+from app.agent_review.bounded_git_v2 import run_bounded_git_v2
 from app.agent_review.git_commit_subject_v2 import (
     EXECUTABLE_MODE_V2,
     GITLINK_MODE_V2,
@@ -122,6 +122,7 @@ from app.agent_review.git_commit_subject_v2 import (
 )
 
 __all__ = [
+    "IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2",
     "IDENTITY_BLOB_MISSING_REASON_V2",
     "IDENTITY_CONTENT_MISMATCH_REASON_V2",
     "IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2",
@@ -133,6 +134,7 @@ __all__ = [
     "IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2",
     "IDENTITY_SYMLINKED_DIRECTORY_REASON_V2",
     "IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2",
+    "IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2",
     "IDENTITY_TREE_UNREADABLE_REASON_V2",
     "IDENTITY_UNKNOWN_COMMIT_REASON_V2",
     "ExecutedSourceAuthorizationV2",
@@ -150,6 +152,17 @@ IDENTITY_TREE_UNREADABLE_REASON_V2 = "identity_tree_unreadable"
 IDENTITY_GITLINK_PRESENT_REASON_V2 = "identity_gitlink_present"
 IDENTITY_MISSING_TRACKED_FILE_REASON_V2 = "identity_missing_tracked_file"
 IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2 = "identity_extra_untracked_file"
+# S2 (#200-G1-S / issue #305): distinct from every other reason above --
+# raised when the completeness traversal itself could not enumerate a
+# directory (e.g. a permission error), which is NOT the same fact as "that
+# directory is empty". Never silently folded into a clean pass.
+IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2 = "identity_traversal_unreadable"
+# S4 (#200-G1-S / issue #305): distinct from `authorized=False`. Raised when
+# `authorize_commit_for_execution_v2` cannot obtain a definitive ancestry
+# answer -- e.g. a shallow or otherwise incomplete history -- rather than
+# silently reporting a clean negative for a question it could not actually
+# answer. `PROVEN_NOT_ANCESTOR != COULD_NOT_PROVE_ANCESTRY`.
+IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2 = "identity_authorization_undetermined"
 IDENTITY_CONTENT_MISMATCH_REASON_V2 = "identity_content_mismatch"
 IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2 = "identity_symlink_target_mismatch"
 IDENTITY_MODE_MISMATCH_REASON_V2 = "identity_mode_mismatch"
@@ -281,9 +294,26 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
     ``Path.rglob`` for the enumeration itself precisely because it reports
     (without descending into) any symlinked directory in ``dirnames``,
     which is exactly the signal this function needs to refuse on.
+
+    S2 (``#200-G1-S``, issue #305, salvaged from forensic PR #302's finding
+    #4): ``os.walk``'s default behaviour when it cannot enumerate a
+    directory (e.g. a permission error) is to silently skip it -- passed no
+    ``onerror`` callback, an unreadable subtree contributes zero leaf paths,
+    indistinguishable from a genuinely empty one. "Cannot enumerate a
+    directory" is not the same fact as "directory is empty": the former
+    means completeness could not actually be checked for that subtree, and
+    must fail closed rather than silently pass as if it had been checked
+    and found empty. ``onerror`` is passed a callback that re-raises as a
+    typed refusal instead of the default silent swallow.
     """
+
+    def _raise_on_enumeration_failure_v2(error: OSError) -> None:
+        raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from error
+
     leaf_paths: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(subject_root, followlinks=False):
+    for dirpath, dirnames, filenames in os.walk(
+        subject_root, followlinks=False, onerror=_raise_on_enumeration_failure_v2
+    ):
         current_dir = Path(dirpath)
         for dirname in dirnames:
             if (current_dir / dirname).is_symlink():
@@ -461,6 +491,26 @@ def verify_executed_source_identity_v2(
     return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=subject_root)
 
 
+def _history_is_shallow_v2(*, repo_root: Path) -> bool:
+    """Is ``repo_root`` a shallow (history-truncated) checkout at all?
+
+    ``git rev-parse --is-shallow-repository`` prints exactly ``true`` or
+    ``false``. A shallow repository can hold a commit object whose own
+    parent field genuinely names another commit that is ALSO separately
+    present locally (e.g. fetched as its own independent shallow tip via a
+    different ref) without the edge between them being traversable: the
+    shallow boundary makes git treat the boundary commit as having no
+    parents for graph-walking purposes, full stop, regardless of what is
+    separately present in the object store. That is what makes a shallow
+    history's negative ``merge-base --is-ancestor`` answers unsafe to trust
+    without this check.
+    """
+    completed = run_bounded_git_v2(
+        ["rev-parse", "--is-shallow-repository"], cwd=repo_root, check=False
+    )
+    return completed.stdout.decode("utf-8", "surrogateescape").strip() == "true"
+
+
 def authorize_commit_for_execution_v2(
     *, repo_root: Path, commit_sha: str, trusted_ref: str
 ) -> ExecutedSourceAuthorizationV2:
@@ -472,6 +522,27 @@ def authorize_commit_for_execution_v2(
     nothing about whether ``commit_sha``'s tree matches any particular bytes
     on disk -- that is ``verify_executed_source_identity_v2``'s job, and the
     two are meant to be composed by the caller, never merged here.
+
+    S4 (``#200-G1-S``, issue #305, salvaged from forensic PR #302's finding
+    #7, ported here as the FINAL qualified form after an intermediate
+    attempt was itself found to have a shallow-history false negative):
+    ``git merge-base --is-ancestor`` exits 1 both when ``commit_sha``
+    genuinely is not an ancestor of ``trusted_ref`` in a complete history,
+    AND when the history available to this call is too incomplete (e.g. a
+    shallow clone) to determine that at all -- git's exit code alone does
+    not distinguish "proven not an ancestor" from "could not prove
+    ancestry". Collapsing both into ``authorized=False`` would silently
+    treat "I don't know" as a confident negative. On exit 1, this function
+    independently checks whether the repository is shallow before trusting
+    the negative: a genuinely complete history's exit-1 answer is trusted as
+    ``authorized=False``; a shallow (or otherwise not confidently complete)
+    history's exit-1 answer is refused outright as
+    ``IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2`` rather than silently
+    folded into ``False``. Any exit code other than 0 or 1 (e.g. a corrupt
+    object store) is treated the same way -- an operational failure, never
+    a clean negative.
+
+    ``PROVEN_NOT_ANCESTOR != COULD_NOT_PROVE_ANCESTRY``.
     """
     repo_root = Path(repo_root).resolve()
     try:
@@ -480,17 +551,23 @@ def authorize_commit_for_execution_v2(
     except SubjectMaterialisationError as exc:
         raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
-    try:
-        run_bounded_git_v2(
-            ["merge-base", "--is-ancestor", resolved_commit, resolved_trusted],
-            cwd=repo_root,
-        )
+    completed = run_bounded_git_v2(
+        ["merge-base", "--is-ancestor", resolved_commit, resolved_trusted],
+        cwd=repo_root,
+        check=False,
+    )
+    if completed.returncode == 0:
         authorized = True
-    except BoundedGitError as exc:
-        if exc.reason_code == "bounded_git_command_failed":
-            authorized = False
-        else:
-            raise
+    elif completed.returncode == 1:
+        if _history_is_shallow_v2(repo_root=repo_root):
+            raise ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2)
+        authorized = False
+    else:
+        # Any other exit code (invalid object, corrupt store, usage error)
+        # is a genuine operational failure, not a clean negative -- refused
+        # the same way an unprovable-due-to-shallow negative is, rather than
+        # silently becoming `authorized=False`.
+        raise ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2)
 
     return ExecutedSourceAuthorizationV2(
         commit_sha=resolved_commit,

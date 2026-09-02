@@ -32,8 +32,10 @@ from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_MISSING_TRACKED_FILE_REASON_V2,
     IDENTITY_MODE_MISMATCH_REASON_V2,
     IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2,
+    IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2,
     IDENTITY_SYMLINKED_DIRECTORY_REASON_V2,
     IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2,
+    IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2,
     IDENTITY_UNKNOWN_COMMIT_REASON_V2,
     ExecutedSourceIdentityError,
     authorize_commit_for_execution_v2,
@@ -749,6 +751,59 @@ def test_completeness_is_reverified_close_to_return_not_only_at_call_start(
     assert evil_path.exists()
 
 
+# -- #200-G1-S / S2: completeness traversal must fail closed --------------------
+
+
+def test_completeness_traversal_error_is_refused_not_silently_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-merge Codex finding on PR #284 (finding #4), salvaged via
+    `#200-G1-S` (issue #305) from forensic PR #302 where it was already
+    `CLOSED_AND_VERIFIED` (unaffected by that PR's terminal STOP, which
+    covers two unrelated mechanisms).
+
+    `os.walk`'s default behaviour on a directory it cannot enumerate (e.g. a
+    permission error) is to silently skip it: "cannot enumerate a directory"
+    is not the same fact as "directory is empty", but the original
+    `os.walk(subject_root, followlinks=False)` call (no `onerror`) treated
+    them identically -- an unreadable subtree contributed zero leaf paths to
+    the completeness scan, exactly like a genuinely empty one, so a
+    directory made unreadable partway through the subject's lifetime could
+    hide an entire subtree from the "no extra untracked file" check without
+    raising anything. Note this is a *different* property from the
+    tracked-file-presence check earlier in `verify_executed_source_identity_
+    v2` (which reads `actual_path` directly, not via `os.walk`, and is
+    unaffected by this bug) -- an unreadable directory does not make its
+    tracked contents look "missing", it just makes anything extra hidden
+    under it invisible to the completeness scan.
+
+    This sandbox runs as root, where a real `chmod 000` does not block
+    traversal (root bypasses DAC permission checks) -- reproduced instead,
+    same as the original finding, by monkeypatching `os.scandir` (what
+    `os.walk` calls internally) to raise a real `PermissionError` for one
+    specific subdirectory, leaving every other call untouched."""
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    unreadable_dir = subject_root / "app_agent_review"
+    real_scandir = os.scandir
+
+    def fake_scandir(path="."):
+        if Path(path) == unreadable_dir:
+            raise PermissionError(f"simulated unreadable directory: {path}")
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", fake_scandir)
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+    assert excinfo.value.reason_code == IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2
+
+
 def test_nonexistent_subject_root_is_refused(tmp_path: Path) -> None:
     repo, head_sha = _toolrepo_fixture(tmp_path)
     with pytest.raises(ExecutedSourceIdentityError):
@@ -834,6 +889,90 @@ def test_authorization_rejects_an_unresolvable_commit(tmp_path: Path) -> None:
             repo_root=repo, commit_sha="d" * 40, trusted_ref=head_sha
         )
     assert excinfo.value.reason_code == IDENTITY_UNKNOWN_COMMIT_REASON_V2
+
+
+# -- #200-G1-S / S4: authorization negative != authorization unavailable --------
+
+
+def test_authorization_false_for_a_genuine_complete_history_non_ancestor(
+    tmp_path: Path,
+) -> None:
+    """Direction 1 of S4: a real, COMPLETE-history repository (never
+    shallow) where `commit_sha` genuinely is not an ancestor of
+    `trusted_ref` must still get a clean `authorized=False` -- the shallow-
+    history undetermined path introduced by this fix must never fire for an
+    ordinary, fully-traversable non-ancestor. Distinct fixture from
+    `test_authorization_false_when_commit_is_not_an_ancestor` above
+    (pre-existing): this one exists specifically as a mutation-testing
+    anchor for the new shallow-vs-false branching logic, tied to `#200-G1-S`
+    (issue #305)."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+    subprocess.run(["git", "checkout", "-b", "diverged"], cwd=repo, check=True, capture_output=True)
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nDIVERGED = True\n")
+    diverged_sha = _commit_all(repo, "diverged work")
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
+
+    result = authorize_commit_for_execution_v2(
+        repo_root=repo, commit_sha=diverged_sha, trusted_ref="main"
+    )
+    assert result.authorized is False
+    assert result.commit_sha == diverged_sha
+    assert result.trusted_ref_sha == base_sha
+
+
+def test_authorization_is_undetermined_not_false_for_a_shallow_history(
+    tmp_path: Path,
+) -> None:
+    """Direction 2 of S4, the false-negative Codex found in the FIRST
+    (graph-readability-only) fix attempt on PR #302: a shallow clone where
+    `commit_sha` and `trusted_ref` are both genuinely present as real local
+    objects -- fetched independently, each as its own shallow tip, via
+    separate refs -- but the edge connecting them is not, because the
+    shallow boundary at `trusted_ref`'s commit makes git treat it as having
+    NO parents during traversal, regardless of what its own commit object's
+    parent field says and regardless of whether the parent object happens
+    to be separately present. `git merge-base --is-ancestor commit_sha
+    trusted_ref` exits 1 here -- the exact same exit code as a genuine
+    non-ancestor -- even though `commit_sha` really is `trusted_ref`'s
+    ancestor in the origin's full history. A readability-only proof (e.g.
+    "can I read `trusted_ref`'s own commit object") would report success
+    here and rubber-stamp the false `authorized=False`; the fix must instead
+    detect that the *history*, not merely the object, is incomplete."""
+    origin = tmp_path / "origin"
+    _init_repo(origin)
+    (origin / "a.py").write_text("A = 1\n")
+    _commit_all(origin, "c1")
+    (origin / "b.py").write_text("B = 1\n")
+    c2 = _commit_all(origin, "c2")
+    subprocess.run(["git", "branch", "mid", c2], cwd=origin, check=True, capture_output=True)
+    (origin / "c.py").write_text("C = 1\n")
+    c3 = _commit_all(origin, "c3")
+
+    local = tmp_path / "local"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--no-checkout", "--depth", "1", "--branch", "main",
+         f"file://{origin}", str(local)],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "fetch", "--quiet", "--depth", "1", "origin", "mid:refs/heads/mid"],
+        cwd=local, check=True, capture_output=True,
+    )
+
+    # Sanity: both objects are genuinely, independently resolvable in
+    # `local` -- this is not a case of an unresolvable/absent commit (that
+    # is `IDENTITY_UNKNOWN_COMMIT_REASON_V2`, already covered elsewhere).
+    assert resolve_commit_v2(repo_root=local, ref=c2) == c2
+    assert resolve_commit_v2(repo_root=local, ref=c3) == c3
+    is_shallow = subprocess.run(
+        ["git", "rev-parse", "--is-shallow-repository"],
+        cwd=local, check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert is_shallow == "true", "fixture must actually be shallow, or this test proves nothing"
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(repo_root=local, commit_sha=c2, trusted_ref=c3)
+    assert excinfo.value.reason_code == IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2
 
 
 def test_unauthorized_result_is_falsy(tmp_path: Path) -> None:
