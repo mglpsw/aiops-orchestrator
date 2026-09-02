@@ -425,6 +425,19 @@ def _delete_loose_object_v2(repo: Path, sha: str) -> None:
     object_path.unlink()
 
 
+def _overwrite_loose_object_v2(object_path: Path, data: bytes) -> None:
+    """Real git writes loose objects read-only (mode 0444) -- overwriting
+    one (simulating a hostile actor with genuine filesystem write access,
+    exactly the threat this module defends against) legitimately requires
+    `chmod`ing it writable first, same as a real attacker would need to.
+    Plain `write_bytes()` alone only worked in this suite's dev sandbox
+    because that shell runs as root (DAC-bypassing); CI's unprivileged
+    runner user correctly enforces the read-only bit and raises
+    `PermissionError` without this."""
+    object_path.chmod(0o644)
+    object_path.write_bytes(data)
+
+
 def test_deleted_parent_object_yields_undetermined_not_a_false_negative(tmp_path: Path) -> None:
     """Withdrawn S4 mechanism #2 (object-store corruption): a reachable
     parent object physically removed from the store makes `git
@@ -735,7 +748,7 @@ def test_loose_object_overwritten_at_its_own_path_no_longer_silently_authorizes_
 
     c1_obj = _object_path_for_sha_v2(repo, c1)
     c2_obj = _object_path_for_sha_v2(repo, c2)
-    c2_obj.write_bytes(c1_obj.read_bytes())
+    _overwrite_loose_object_v2(c2_obj, c1_obj.read_bytes())
 
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
         authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
@@ -776,7 +789,7 @@ def test_forged_parent_line_spliced_into_existing_object_path_no_longer_authoriz
     assert forged_true_sha != c2, "forged content must genuinely differ from c2 -- not a no-op fixture"
 
     c2_obj = _object_path_for_sha_v2(repo, c2)
-    c2_obj.write_bytes(zlib.compress(header + forged_content))
+    _overwrite_loose_object_v2(c2_obj, zlib.compress(header + forged_content))
 
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
         authorize_commit_for_execution_v2(repo_root=repo, commit_sha=evil, trusted_ref=c3)
@@ -791,7 +804,7 @@ def test_loose_object_hash_verification_is_reachable_at_the_authority_level(tmp_
     repo, c1, c2, _c3 = _linear_history_fixture(tmp_path)
     c1_obj = _object_path_for_sha_v2(repo, c1)
     c2_obj = _object_path_for_sha_v2(repo, c2)
-    c2_obj.write_bytes(c1_obj.read_bytes())
+    _overwrite_loose_object_v2(c2_obj, c1_obj.read_bytes())
 
     with pytest.raises(TrustedObjectAuthorityError) as excinfo:
         with open_trusted_object_authority_v2(repo):
