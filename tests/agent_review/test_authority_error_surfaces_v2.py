@@ -507,6 +507,15 @@ _CLOSED_AUTHORITY_MODULES = (
     # catch there is operator-facing too. The guard could not see it before.
     "review_content_v2",
     "review_readiness_emission_v2",
+    # G4B (#200-G4B): the centralized external-path ingress authority. Every
+    # caller-controlled filesystem failure it converts must be typed, never
+    # laundered through a broad catch -- the exact property this guard
+    # exists to hold every closed authority to. `test_external_path_
+    # ingress_v2.py::test_no_broad_exception_handler_in_authority` already
+    # asserts this for the module in isolation; listing it here as well
+    # keeps this file's own conformance matrix -- which DRIVES the guard,
+    # per the note above -- from silently omitting it.
+    "external_path_ingress_v2",
 )
 
 

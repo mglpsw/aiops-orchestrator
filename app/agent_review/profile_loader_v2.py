@@ -25,6 +25,13 @@ import yaml
 from pydantic import ValidationError
 
 from app.agent_review.contracts_v2 import TargetProfileV2
+from app.agent_review.external_path_ingress_v2 import (
+    EXTERNAL_PATH_MISSING_REASON_V2,
+    EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
+    ExternalInputFileV2,
+    ExternalPathIngressError,
+    validate_external_input_file_v2,
+)
 
 TARGET_PROFILE_MISSING_REASON_V2 = "target_profile_missing"
 TARGET_PROFILE_UNREADABLE_REASON_V2 = "target_profile_unreadable"
@@ -43,6 +50,16 @@ class TargetProfileLoadErrorV2(ValueError):
         self.reason_code = reason_code
 
 
+def load_target_profile_file_v2(profile_file: ExternalInputFileV2) -> TargetProfileV2:
+    """Load profile bytes through an already-validated external-path capability."""
+
+    try:
+        raw_text = profile_file.read_text(encoding="utf-8")
+    except ExternalPathIngressError as exc:
+        raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
+    return load_target_profile_text_v2(raw_text)
+
+
 def load_target_profile_v2(
     repo_root: Path | str,
     *,
@@ -54,21 +71,24 @@ def load_target_profile_v2(
     function has no opinion on which checkout that is; the caller is
     responsible for only ever pointing it at base/default, never at a PR
     branch's working tree, in a privileged workflow.
+
+    G4B: raw caller path interpretation is delegated to the centralized
+    external-path authority.  This wrapper exists for compatibility; new
+    callers that already hold a capability should use
+    :func:`load_target_profile_file_v2` directly.
     """
 
     profile_path = Path(repo_root) / relative_path
-    if not profile_path.is_file():
-        raise TargetProfileLoadErrorV2(TARGET_PROFILE_MISSING_REASON_V2)
-
     try:
-        # `UnicodeDecodeError` as well as `OSError`: a target-authored file
-        # holding invalid UTF-8 fails in read_text's DECODE step, which is
-        # a `ValueError`, not an `OSError`.
-        raw_text = profile_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
+        profile_file = validate_external_input_file_v2(profile_path, root=repo_root)
+    except ExternalPathIngressError as exc:
+        if exc.reason_code in {
+            EXTERNAL_PATH_MISSING_REASON_V2,
+            EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
+        }:
+            raise TargetProfileLoadErrorV2(TARGET_PROFILE_MISSING_REASON_V2) from exc
         raise TargetProfileLoadErrorV2(TARGET_PROFILE_UNREADABLE_REASON_V2) from exc
-
-    return load_target_profile_text_v2(raw_text)
+    return load_target_profile_file_v2(profile_file)
 
 
 _YAML_MERGE_TAG_V2 = "tag:yaml.org,2002:merge"
@@ -247,7 +267,7 @@ def load_target_profile_text_v2(raw_text: str) -> TargetProfileV2:
     """Strictly validate profile text without writing it to a target.
 
     Install planning must validate the *prospective* seed or the currently
-    observed TARGET_OWNED bytes before it can construct a receipt.  Routing
+    observed TARGET_OWNED bytes before it can construct a receipt. Routing
     that read-only path through this helper prevents preview from creating a
     temporary target file merely to reuse :func:`load_target_profile_v2`.
     """

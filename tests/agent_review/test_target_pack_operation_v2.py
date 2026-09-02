@@ -411,3 +411,34 @@ def test_read_target_owned_bytes_is_bound_to_the_captured_root_not_a_mutable_ali
 
     assert observed == b"root-content"
     assert observed != b"subdir-divergent-content"
+
+
+def test_read_target_owned_bytes_does_not_leak_a_raw_oserror(tmp_path: Path) -> None:
+    """RED against the unfixed shape (G4B, #200-G4B): `_read_target_owned_
+    bytes_v2`'s own `is_file()`/`read_bytes()` calls, on a path already
+    proven contained by `resolve_within_target_root_v2`, had no guard at
+    all -- a permission-denied ancestor or a TOCTOU symlink swap between
+    containment and this read raised a raw `OSError` this function let
+    escape uncaught."""
+    import app.agent_review.target_pack_operation_v2 as operation_module
+
+    root = tmp_path.resolve(strict=False)
+    (root / ".aiops").mkdir()
+    target = root / ".aiops" / "target-profile.v2.yaml"
+    target.write_bytes(b"x")
+
+    import unittest.mock as mock
+
+    real_is_file = Path.is_file
+
+    def failing_is_file(self: Path):
+        if self == target:
+            raise OSError(13, "denied")
+        return real_is_file(self)
+
+    with mock.patch.object(Path, "is_file", failing_is_file):
+        with pytest.raises(PlanError) as exc_info:
+            operation_module._read_target_owned_bytes_v2(
+                target_root_real=root, path=".aiops/target-profile.v2.yaml"
+            )
+    assert exc_info.value.reason_code == "target_owned_changed_invalid"

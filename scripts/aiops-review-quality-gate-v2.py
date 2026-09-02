@@ -103,6 +103,10 @@ from app.agent_review.authoritative_check_policy_v2 import (  # noqa: E402
     DEFAULT_AUTHORITATIVE_CHECK_POLICY_RELATIVE_PATH,
     AuthoritativeCheckPolicyErrorV2,
 )
+from app.agent_review.external_path_ingress_v2 import (  # noqa: E402
+    ExternalPathIngressError,
+    validate_external_input_file_v2,
+)
 from app.agent_review.profile_loader_v2 import (  # noqa: E402
     DEFAULT_TARGET_PROFILE_RELATIVE_PATH,
     TargetProfileLoadErrorV2,
@@ -135,6 +139,23 @@ INPUT_INVALID_REASON_V2 = "gate_input_invalid"
 READINESS_INVARIANT_VIOLATION_REASON_V2 = "readiness_invariant_violation"
 RESPONSE_WITHOUT_PAYLOAD_REASON_V2 = "gate_response_without_payload"
 OUTPUT_OVERWRITES_INPUT_REASON_V2 = "gate_output_overwrites_input"
+# G4B (#200-G4B): every `Path(...).resolve()` in `_check_no_output_input_
+# collision` is a raw caller-controlled path (`--output` and every file
+# input) resolved purely for EQUALITY COMPARISON, before anything is read --
+# this does not fit `ExternalInputFileV2`/`ExternalOutputPathV2` (an input
+# may legitimately not exist yet at this point in a malformed invocation,
+# and `--output`'s parent may not exist yet either, created below by
+# `mkdir(parents=True)`), so this stays a local, but now TOTAL, guard: a
+# symlink loop (`RuntimeError`), an overlong path or unreadable ancestor
+# (`OSError`), or an embedded NUL byte (`ValueError`) each now convert to
+# this ONE typed, path-free refusal instead of escaping raw.
+GATE_INPUT_PATH_UNUSABLE_REASON_V2 = "gate_input_path_unusable"
+# G4B: the final `--output` write (`mkdir` + `write_text`) sat OUTSIDE every
+# try/except in `main()` -- a permission-denied parent, a full disk, or an
+# overlong `--output` path crashed raw, uncaught, after every other input in
+# this CLI had already been given a typed refusal for the identical failure
+# shapes.
+GATE_OUTPUT_WRITE_FAILED_REASON_V2 = "gate_output_write_failed"
 
 
 class QualityGateCliError(ValueError):
@@ -204,45 +225,65 @@ def _check_no_output_input_collision(args: argparse.Namespace) -> None:
     then the final write silently corrupted the real profile source.
     """
 
-    output_resolved = Path(args.output).resolve()
+    try:
+        output_resolved = Path(args.output).resolve()
 
-    file_input_args = (
-        "decision",
-        "identity",
-        "evaluated_identity",
-        "findings",
-        "checks",
-        "checks_provenance",
-        "checks_snapshot",
-        "run_origin",
-        "payload",
-        "response",
-    )
-    for name in file_input_args:
-        value = getattr(args, name)
-        if value is None:
-            continue
-        if Path(value).resolve() == output_resolved:
-            raise QualityGateCliError(OUTPUT_OVERWRITES_INPUT_REASON_V2)
+        file_input_args = (
+            "decision",
+            "identity",
+            "evaluated_identity",
+            "findings",
+            "checks",
+            "checks_provenance",
+            "checks_snapshot",
+            "run_origin",
+            "payload",
+            "response",
+        )
+        for name in file_input_args:
+            value = getattr(args, name)
+            if value is None:
+                continue
+            if Path(value).resolve() == output_resolved:
+                raise QualityGateCliError(OUTPUT_OVERWRITES_INPUT_REASON_V2)
 
-    if args.target_profile is not None:
-        target_profile_resolved = Path(args.target_profile).resolve()
-        # The root now carries TWO nested inputs. Comparing only against the
-        # bare root, or against the profile alone, would miss a collision with
-        # the authoritative-check policy and silently corrupt it -- the same
-        # class of bug a Codex review of #156 found for the profile itself.
-        nested = [
-            (target_profile_resolved / DEFAULT_TARGET_PROFILE_RELATIVE_PATH).resolve(),
-            (target_profile_resolved / DEFAULT_AUTHORITATIVE_CHECK_POLICY_RELATIVE_PATH).resolve(),
-        ]
-        if output_resolved in (target_profile_resolved, *nested):
-            raise QualityGateCliError(OUTPUT_OVERWRITES_INPUT_REASON_V2)
+        if args.target_profile is not None:
+            target_profile_resolved = Path(args.target_profile).resolve()
+            # The root now carries TWO nested inputs. Comparing only against
+            # the bare root, or against the profile alone, would miss a
+            # collision with the authoritative-check policy and silently
+            # corrupt it -- the same class of bug a Codex review of #156
+            # found for the profile itself.
+            nested = [
+                (target_profile_resolved / DEFAULT_TARGET_PROFILE_RELATIVE_PATH).resolve(),
+                (target_profile_resolved / DEFAULT_AUTHORITATIVE_CHECK_POLICY_RELATIVE_PATH).resolve(),
+            ]
+            if output_resolved in (target_profile_resolved, *nested):
+                raise QualityGateCliError(OUTPUT_OVERWRITES_INPUT_REASON_V2)
+    except QualityGateCliError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise QualityGateCliError(GATE_INPUT_PATH_UNUSABLE_REASON_V2) from exc
+
+
+def _read_external_text_v2(path: str) -> str:
+    """G4B: the ONE place every JSON-bearing CLI input in this script reads
+    caller-controlled file content -- through the central external-path
+    ingress authority, never a raw `Path(path).read_text()`. Missing/wrong-
+    type/unreadable/symlink-loop/overlong-path all collapse to the same
+    pre-existing `INPUT_INVALID_REASON_V2` this CLI already used for a bad
+    input, since this CLI never distinguished those cases before either."""
+
+    try:
+        return validate_external_input_file_v2(path).read_text(encoding="utf-8")
+    except ExternalPathIngressError as exc:
+        raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
 
 
 def _read_json(path: str) -> object:
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        return json.loads(_read_external_text_v2(path))
+    except json.JSONDecodeError as exc:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
 
 
@@ -256,8 +297,10 @@ def _read_json_strict(path: str) -> object:
     same bytes could reasonably see a different one."""
 
     try:
-        return strict_json_loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+        return strict_json_loads(_read_external_text_v2(path))
+    except QualityGateCliError:
+        raise
+    except ValueError as exc:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
 
 
@@ -341,9 +384,11 @@ def _load_checks_snapshot(path: str):
     cannot accept a snapshot the offline pipeline would reject."""
 
     try:
-        return parse_authoritative_ci_snapshot_v2(Path(path).read_bytes())
-    except OSError as exc:
+        raw_bytes = validate_external_input_file_v2(path).read_bytes()
+    except ExternalPathIngressError as exc:
         raise QualityGateCliError(INPUT_INVALID_REASON_V2) from exc
+    try:
+        return parse_authoritative_ci_snapshot_v2(raw_bytes)
     except RequiredCheckProvenanceErrorV2 as exc:
         raise QualityGateCliError(exc.reason_code) from exc
 
@@ -448,12 +493,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {READINESS_INVARIANT_VIOLATION_REASON_V2}", file=sys.stderr)
         return 1
 
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(readiness.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    # G4B: this write sat outside every try/except in `main()` -- a
+    # permission-denied parent, a full disk, an overlong `--output` path, or
+    # a symlink loop while creating `parents=True` intermediate directories
+    # each crashed raw, uncaught, after every OTHER caller-controlled path
+    # failure in this CLI already converted to a typed refusal.
+    try:
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(readiness.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, RuntimeError, ValueError):
+        print(f"error: {GATE_OUTPUT_WRITE_FAILED_REASON_V2}", file=sys.stderr)
+        return 1
     return 0
 
 

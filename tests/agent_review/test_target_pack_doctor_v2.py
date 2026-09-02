@@ -8,10 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from app.agent_review.profile_loader_v2 import compute_profile_hash_v2, load_target_profile_v2
+from app.agent_review.profile_loader_v2 import (
+    TARGET_PROFILE_UNREADABLE_REASON_V2,
+    compute_profile_hash_v2,
+    load_target_profile_v2,
+)
 from app.agent_review.target_pack_doctor_v2 import (
     DOCTOR_PATH_ESCAPES_TARGET_ROOT_REASON_V2,
     DOCTOR_PATH_RESOLUTION_FAILED_REASON_V2,
+    DOCTOR_PATH_RESOLUTION_UNREADABLE_REASON_V2,
     DOCTOR_RECEIPT_PACK_VERSION_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_PROFILE_HASH_MISMATCH_REASON_V2,
     DOCTOR_RECEIPT_ROLLOUT_EXCEEDS_PACK_CAPABILITY_REASON_V2,
@@ -903,3 +908,118 @@ def test_doctor_reads_are_bound_to_the_captured_root_not_a_mutable_alias(
     assert check.status == "present"
     assert check.profile_hash == root_hash
     assert check.profile_hash != sub_hash
+
+
+# ---------------------------------------------------------------------------
+# G4B (#200-G4B): `run_doctor_v2`'s `target_root` handling -- the primary
+# caller-controlled ingress point hit on EVERY `doctor` invocation -- had NO
+# guard at all for a symlink loop (`Path.resolve()`'s own `RuntimeError`) and
+# only an unguarded `is_dir()` (raw `OSError` for e.g. an overlong path) for
+# the rest. This is exactly the shape the frozen `#283`/`STOP_G4_ARCHITECTURE
+# _NOT_CONVERGING` checkpoint's round-2 Lane C named as its most severe
+# finding: an unguarded check on the module's own most heavily used function.
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_refuses_a_target_root_symlink_loop_instead_of_crashing(tmp_path: Path) -> None:
+    """RED against the unfixed shape: a symlink loop AT `--target-root`
+    itself (not a nested manifest/profile/receipt path) used to crash
+    `run_doctor_v2` with an unhandled `RuntimeError` -- there was no guard
+    at all around `target_root.resolve(strict=False)`. A loop is a
+    RESOLUTION failure (the path never resolves anywhere, inside or
+    outside), not a structural "wrong type" verdict -- so it gets the
+    SAME distinct reason code as an OSError-during-resolution, not the
+    missing/wrong-type one."""
+    target_root = tmp_path / "a"
+    (tmp_path / "b").symlink_to("a")
+    target_root.symlink_to("b")
+
+    with pytest.raises(NotADirectoryError) as exc_info:
+        run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+    assert DOCTOR_PATH_RESOLUTION_UNREADABLE_REASON_V2 in str(exc_info.value)
+    assert DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 not in str(exc_info.value)
+
+
+def test_doctor_refuses_a_target_root_resolution_oserror_distinctly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED against the unfixed shape: `target_root.is_dir()` raised a raw,
+    uncaught `OSError` for e.g. an ancestor without search permission or an
+    overlong path -- and even if it had been caught, collapsing it into
+    `DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2` would assert a
+    structural verdict (there IS something there, and it is the wrong
+    type) this case never actually observed."""
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    real_resolve = Path.resolve
+
+    def failing_resolve(self: Path, strict: bool = False):
+        if self == target_root:
+            raise OSError(5, "I/O error")
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", failing_resolve)
+    with pytest.raises(NotADirectoryError) as exc_info:
+        run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+    assert DOCTOR_PATH_RESOLUTION_UNREADABLE_REASON_V2 in str(exc_info.value)
+    assert DOCTOR_TARGET_ROOT_NOT_A_DIRECTORY_REASON_V2 not in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# G4B correction round: independent adversarial review (two lanes) found
+# `_check_profile_v2`'s and `_check_receipt_v2`'s own `is_file()` probes --
+# on paths already proven CONTAINED by `resolve_within_target_root_v2` --
+# were still raw, unguarded filesystem operations. Every OTHER probe in this
+# module already wraps its `is_file()`/`read_bytes()` pair in `try/except
+# OSError` (see the per-entry loop inside `_check_receipt_v2`); these two
+# were missed, and were reachable live from a real `doctor --target-root
+# ...` invocation with no exception handler anywhere in the call chain.
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_profile_check_does_not_leak_a_raw_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED against the unfixed shape: `_check_profile_v2`'s `resolved.
+    is_file()` had no guard at all -- a permission-denied ancestor or a
+    TOCTOU symlink swap between containment and this probe raised a raw
+    `OSError` this function let escape uncaught, all the way out of
+    `run_doctor_v2` and, before this correction round's CLI-layer fix, out
+    of the real CLI subprocess too."""
+
+    target_root = tmp_path / "target"
+    (target_root / ".aiops").mkdir(parents=True)
+    profile_path = (target_root / ".aiops" / "target-profile.v2.yaml").resolve()
+    real_is_file = Path.is_file
+
+    def failing_is_file(self: Path):
+        if self == profile_path:
+            raise OSError(13, "denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", failing_is_file)
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+    assert report.profile.status == "missing"
+    assert report.profile.reason_code == TARGET_PROFILE_UNREADABLE_REASON_V2
+
+
+def test_doctor_receipt_check_does_not_leak_a_raw_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RED against the unfixed shape: `_check_receipt_v2`'s `receipt_path.
+    is_file()` had the identical gap as the profile check above."""
+
+    target_root = tmp_path / "target"
+    (target_root / ".aiops").mkdir(parents=True)
+    receipt_path = (target_root / ".aiops" / "install-receipt.v2.json").resolve()
+    real_is_file = Path.is_file
+
+    def failing_is_file(self: Path):
+        if self == receipt_path:
+            raise OSError(13, "denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", failing_is_file)
+    report = run_doctor_v2(target_root=target_root, manifest=_manifest(), target_repo="owner/repo")
+    assert report.receipt.status == "invalid"
+    assert report.receipt.reason_code == "target_pack_receipt_invalid"

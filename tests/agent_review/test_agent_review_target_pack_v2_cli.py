@@ -806,3 +806,109 @@ def test_validate_is_write_zero(tmp_path: Path) -> None:
     missing = tmp_path / "definitely-not-here"
     _run_raw(["validate", "--target-root", str(missing)])
     assert not missing.exists()
+
+
+# ---------------------------------------------------------------------------
+# G4B (#200-G4B): `init` preview's `receipt_path` now reads through the
+# centralized external-path ingress authority instead of a raw `is_file()`
+# sitting outside the read's own try/except. RED/GREEN witness that a
+# symlink loop AT the receipt path is a typed refusal, never a raw
+# traceback.
+# ---------------------------------------------------------------------------
+
+
+def test_init_preview_refuses_a_receipt_symlink_loop_instead_of_crashing(tmp_path: Path) -> None:
+    """RED against the unfixed shape: `receipt_path.is_file()` sat outside
+    every try/except in `_cmd_init` -- a symlink loop AT the receipt path
+    itself (not `.aiops`, not `target_root`) crashed this CLI with a raw
+    traceback."""
+
+    aiops_dir = tmp_path / ".aiops"
+    aiops_dir.mkdir()
+    a = aiops_dir / "a"
+    b = aiops_dir / "install-receipt.v2.json"
+    a.symlink_to("install-receipt.v2.json")
+    b.symlink_to("a")
+
+    result = _run_raw(
+        [
+            "init",
+            "--target-root", str(tmp_path),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "target_pack_cli_previous_receipt_invalid" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# G4B correction round: adversarial review (two independent lanes) found a
+# defect this PR's own earlier RED/GREEN coverage missed -- `run_doctor_v2`
+# correctly converts a bad `target_root` into a typed `NotADirectoryError`
+# internally (`target_pack_doctor_v2.py`), but neither `_cmd_doctor` nor
+# `main()`'s dispatcher in THIS script ever caught that exception type, so
+# it propagated as a raw, uncaught Python traceback through the real CLI
+# subprocess -- exactly the blind spot the prior `test_target_pack_doctor_
+# v2.py::test_doctor_refuses_a_target_root_symlink_loop_instead_of_crashing`
+# test could not see, because it only ever called `run_doctor_v2` in-process
+# and asserted `pytest.raises(NotADirectoryError)` -- proving the LIBRARY
+# fix, never the CLI DISPATCH boundary built on top of it. This is the
+# subprocess-level counterpart that closes that gap: a fix applied at one
+# layer must be verified at the adjacent layer that actually calls it.
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_refuses_a_nonexistent_target_root_through_the_real_cli_instead_of_crashing(
+    tmp_path: Path,
+) -> None:
+    """RED against the unfixed shape: no symlink even required -- a plain
+    nonexistent `--target-root` was enough to crash the real `doctor` CLI
+    subprocess with an uncaught `NotADirectoryError` traceback, despite
+    `run_doctor_v2` itself raising that exact typed exception on purpose."""
+
+    missing = tmp_path / "definitely-not-here"
+
+    result = _run_raw(
+        [
+            "doctor",
+            "--target-root", str(missing),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "target_pack_doctor_target_root_not_a_directory" in result.stderr
+    assert not missing.exists()
+
+
+def test_doctor_refuses_a_target_root_symlink_loop_through_the_real_cli_instead_of_crashing(
+    tmp_path: Path,
+) -> None:
+    """Same CLI-dispatch gap, via the symlink-loop shape specifically (the
+    exact reproduction the in-process library test used, now exercised end
+    to end through the real subprocess entry point)."""
+
+    target_root = tmp_path / "a"
+    (tmp_path / "b").symlink_to("a")
+    target_root.symlink_to("b")
+
+    result = _run_raw(
+        [
+            "doctor",
+            "--target-root", str(target_root),
+            "--toolrepo-root", str(REPO_ROOT),
+            "--target-repo", "owner/repo",
+            "--pack-version", "0.1.0",
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "target_pack_doctor_path_resolution_unreadable" in result.stderr

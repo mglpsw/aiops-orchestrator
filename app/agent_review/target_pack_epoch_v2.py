@@ -108,7 +108,13 @@ def runtime_carrier_root_v2(*, euid: int | None = None) -> Path:
 def _canonical_target_subject_v2(target_root: Path) -> bytes:
     try:
         return os.fsencode(target_root.resolve(strict=False))
-    except (OSError, RuntimeError) as exc:
+    # G4B round-2 review correction: `ValueError` (an embedded NUL byte)
+    # added alongside the existing `OSError`/`RuntimeError`, matching
+    # `external_path_ingress_v2._resolve_v2` and `target_pack_plan_v2.
+    # resolve_within_target_root_v2`'s identical guards. Not reachable
+    # through `--target-root` in practice -- `sys.argv` cannot carry an
+    # embedded NUL -- closed anyway for the same defence-in-depth reason.
+    except (OSError, RuntimeError, ValueError) as exc:
         raise TargetPackEpochError(TARGET_PACK_EPOCH_UNAVAILABLE_REASON_V2) from exc
 
 
@@ -473,7 +479,10 @@ def _runtime_filesystem_type_v2(
 
     try:
         path.resolve(strict=True)
-    except (OSError, RuntimeError):
+    # G4B round-2 review correction: `ValueError` added alongside the
+    # existing `OSError`/`RuntimeError`, same rationale as `_canonical_
+    # target_subject_v2` above.
+    except (OSError, RuntimeError, ValueError):
         return None
     # The resolution is passed in, already established through the typed
     # authority.  Resolving here would be a second semantic lookup of the same

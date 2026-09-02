@@ -192,11 +192,22 @@ def _read_target_owned_bytes_v2(*, target_root_real: Path, path: str) -> bytes |
     # is no longer a parameter here since nothing else in this function
     # needs the mutable alias once the read is bound to the resolved root.
     candidate = resolve_within_target_root_v2(target_root_real, target_root_real / path)
-    if candidate.is_file():
-        return candidate.read_bytes()
-    if candidate.exists() or candidate.is_symlink():
-        raise PlanError(OPERATION_TARGET_OWNED_CHANGED_INVALID_REASON_V2)
-    return None
+    # G4B: `candidate` is already contained (proven above), but every probe
+    # below it is still its own unguarded filesystem operation -- an
+    # overlong `path` component, a permission-denied ancestor, or a TOCTOU
+    # symlink swap between containment and this read can each raise a raw
+    # `OSError` this function previously let escape uncaught. Any such
+    # failure is folded into the SAME disposition an already-observed
+    # invalid TARGET_OWNED state uses: this function cannot establish what
+    # is currently there, which is exactly what that reason code means.
+    try:
+        if candidate.is_file():
+            return candidate.read_bytes()
+        if candidate.exists() or candidate.is_symlink():
+            raise PlanError(OPERATION_TARGET_OWNED_CHANGED_INVALID_REASON_V2)
+        return None
+    except OSError as exc:
+        raise PlanError(OPERATION_TARGET_OWNED_CHANGED_INVALID_REASON_V2) from exc
 
 
 def _profile_hash_for_bytes_v2(*, content: bytes, target_repo: str) -> str:

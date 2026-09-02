@@ -953,3 +953,68 @@ def test_observations_that_are_not_a_json_object_are_refused(tmp_path: Path, mer
     )
     assert result.returncode != 0
     assert not (tmp_path / "snapshot.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# G4B (#200-G4B): `--observations` now reads through the centralized
+# external-path ingress authority instead of a bare `Path.read_bytes()`.
+# RED/GREEN witnesses that a symlink loop is a typed refusal, never a raw
+# traceback -- and that the final `--output` write is guarded too.
+# ---------------------------------------------------------------------------
+
+
+def test_observations_symlink_loop_is_refused_not_a_raw_traceback(tmp_path: Path, merge_repo) -> None:
+    """RED against the unfixed shape: `_fetch_payload`'s own
+    `Path(args.observations).read_bytes()` had no guard at all for a
+    symlink loop (pathlib's own `RuntimeError`)."""
+
+    repo, _base, head, merge = merge_repo
+    a = tmp_path / "loop_a"
+    b = tmp_path / "loop_b"
+    a.symlink_to("loop_b")
+    b.symlink_to("loop_a")
+
+    result = _run(
+        [
+            "--repository", REPO,
+            "--head-sha", head,
+            "--tested-merge-sha", merge,
+            "--git-dir", str(repo),
+            "--observations", str(a),
+            "--output", str(tmp_path / "snapshot.json"),
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "authoritative_check_acquisition_failed" in result.stderr
+    assert not (tmp_path / "snapshot.json").exists()
+
+
+def test_output_write_failure_is_refused_not_a_raw_traceback(tmp_path: Path, merge_repo) -> None:
+    """RED against the unfixed shape: the final `--output` write sat
+    outside every try/except in `main()`."""
+
+    repo, base, head, merge = merge_repo
+    result = _acquire(tmp_path, merge_repo, _payload())
+    assert result.returncode == 0, result.stderr  # sanity: this payload normally succeeds
+
+    blocking_file = tmp_path / "blocking"
+    blocking_file.write_text("not a directory", encoding="utf-8")
+    observations = tmp_path / "payload2.json"
+    observations.write_text(json.dumps(_payload()), encoding="utf-8")
+
+    result = _run(
+        [
+            "--repository", REPO,
+            "--head-sha", head,
+            "--tested-merge-sha", merge,
+            "--git-dir", str(repo),
+            "--observations", str(observations),
+            "--output", str(blocking_file / "snapshot.json"),
+        ]
+    )
+
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert "authoritative_check_acquisition_failed" in result.stderr

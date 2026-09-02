@@ -54,6 +54,12 @@ from app.agent_review.contracts_v2 import (
     PayloadContractReferenceV2,
     TargetProfileV2,
 )
+from app.agent_review.external_path_ingress_v2 import (
+    EXTERNAL_PATH_MISSING_REASON_V2,
+    EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
+    ExternalPathIngressError,
+    validate_external_input_file_v2,
+)
 from app.agent_review.redaction import sanitize_artifact_value
 
 PAYLOAD_REQUIRED_ARTIFACT_MISSING_REASON_V2 = "payload_required_artifact_missing"
@@ -65,10 +71,6 @@ PAYLOAD_CONTRACT_UNREADABLE_REASON_V2 = "payload_contract_unreadable"
 
 OPTIONAL_ARTIFACT_MISSING_LIMITATION_PREFIX_V2 = "optional_artifact_missing"
 
-# Every profile artifact is referenced the same uniform way: TargetArtifactV2
-# carries no field distinguishing "primary" from "supporting"/"validation"/
-# "coverage" content, so inventing a per-kind or per-artifact role
-# assignment would be a guess this module has no real signal to base on.
 _UNIFORM_ARTIFACT_ROLE_V2 = "primary"
 
 
@@ -84,39 +86,36 @@ class PayloadReferenceError(ValueError):
 def build_payload_artifact_references_v2(
     profile: TargetProfileV2, repo_root: Path
 ) -> tuple[list[PayloadArtifactReferenceV2], tuple[str, ...]]:
-    """Build one ``PayloadArtifactReferenceV2`` per readable, in-budget
-    artifact declared in ``profile.artifacts``. Returns
-    ``(references, limitations)`` -- ``limitations`` names every OPTIONAL
-    artifact that was missing (``optional_artifact_missing:<artifact_id>``),
-    mirroring how a dropped auxiliary fragment is documented rather than
-    silently vanishing. A REQUIRED artifact that is missing, unreadable, or
-    exceeds ``max_bytes`` fails the whole build closed instead."""
+    """Build references from artifact bytes read through G4B path capabilities."""
 
     references: list[PayloadArtifactReferenceV2] = []
     limitations: list[str] = []
     for artifact in profile.artifacts:
         path = Path(repo_root) / artifact.path
-        if not path.is_file():
-            if artifact.required:
-                raise PayloadReferenceError(PAYLOAD_REQUIRED_ARTIFACT_MISSING_REASON_V2)
-            limitations.append(f"{OPTIONAL_ARTIFACT_MISSING_LIMITATION_PREFIX_V2}:{artifact.artifact_id}")
-            continue
-
         try:
-            size = path.stat().st_size
-        except OSError as exc:
-            # `is_file()` above swallows `OSError`; `stat()` does not. On a
-            # TOCTOU between them a raw `FileNotFoundError`/`PermissionError`
-            # escaped this authority -- and `build_chunk_payloads_from_profile_v2`
-            # deliberately declines to catch `OSError`, so it reached the
-            # caller despite that wrapper promising only `PayloadBuilderError`.
+            capability = validate_external_input_file_v2(path, root=repo_root)
+        except ExternalPathIngressError as exc:
+            if exc.reason_code in {
+                EXTERNAL_PATH_MISSING_REASON_V2,
+                EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
+            }:
+                if artifact.required:
+                    raise PayloadReferenceError(PAYLOAD_REQUIRED_ARTIFACT_MISSING_REASON_V2) from exc
+                limitations.append(
+                    f"{OPTIONAL_ARTIFACT_MISSING_LIMITATION_PREFIX_V2}:{artifact.artifact_id}"
+                )
+                continue
             raise PayloadReferenceError(PAYLOAD_ARTIFACT_UNREADABLE_REASON_V2) from exc
-        if size > artifact.max_bytes:
-            raise PayloadReferenceError(PAYLOAD_ARTIFACT_EXCEEDS_MAX_BYTES_REASON_V2)
 
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
+            raw_bytes = capability.read_bytes()
+        except ExternalPathIngressError as exc:
+            raise PayloadReferenceError(PAYLOAD_ARTIFACT_UNREADABLE_REASON_V2) from exc
+        if len(raw_bytes) > artifact.max_bytes:
+            raise PayloadReferenceError(PAYLOAD_ARTIFACT_EXCEEDS_MAX_BYTES_REASON_V2)
+        try:
+            text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
             raise PayloadReferenceError(PAYLOAD_ARTIFACT_UNREADABLE_REASON_V2) from exc
 
         sanitized = sanitize_artifact_value(text)
@@ -135,40 +134,27 @@ def build_payload_artifact_references_v2(
 def build_payload_contract_references_v2(
     profile: TargetProfileV2, repo_root: Path
 ) -> list[PayloadContractReferenceV2]:
-    """Build one ``PayloadContractReferenceV2`` per readable contract
-    declared in ``profile.contracts``, verifying the file on disk still
-    hashes to the profile's own pre-declared ``TargetContractV2.sha256`` --
-    fail closed on divergence, never silently trust the profile's stale
-    claim. A REQUIRED contract that is missing fails the whole build
-    closed; a non-required missing contract is simply omitted (contracts
-    have no analogous "optional" concept to surface as a limitation the
-    way artifacts do -- ``TargetContractV2.required`` already exists purely
-    to gate this).
-
-    ``paths`` is always empty: nothing in ``TargetContractV2`` associates a
-    contract with a specific subset of the diff's changed files, so no
-    per-file linkage is attempted here -- a repository-scoped contract
-    reference applies without needing one.
-    """
+    """Build and verify contract references through G4B path capabilities."""
 
     references: list[PayloadContractReferenceV2] = []
     for contract in profile.contracts:
         path = Path(repo_root) / contract.path
-        if not path.is_file():
-            if contract.required:
-                raise PayloadReferenceError(PAYLOAD_REQUIRED_CONTRACT_MISSING_REASON_V2)
-            continue
+        try:
+            capability = validate_external_input_file_v2(path, root=repo_root)
+        except ExternalPathIngressError as exc:
+            if exc.reason_code in {
+                EXTERNAL_PATH_MISSING_REASON_V2,
+                EXTERNAL_PATH_WRONG_TYPE_REASON_V2,
+            }:
+                if contract.required:
+                    raise PayloadReferenceError(PAYLOAD_REQUIRED_CONTRACT_MISSING_REASON_V2) from exc
+                continue
+            raise PayloadReferenceError(PAYLOAD_CONTRACT_UNREADABLE_REASON_V2) from exc
 
         try:
-            raw_bytes = path.read_bytes()
-        except OSError as exc:
-            # The artifact branch above has always guarded its read; this one
-            # did not, so an unreadable-but-present contract escaped as a raw
-            # `PermissionError` carrying the checkout path. Same owner, same
-            # discipline, and a reason as precise as the artifact one.
-            raise PayloadReferenceError(
-                PAYLOAD_CONTRACT_UNREADABLE_REASON_V2
-            ) from exc
+            raw_bytes = capability.read_bytes()
+        except ExternalPathIngressError as exc:
+            raise PayloadReferenceError(PAYLOAD_CONTRACT_UNREADABLE_REASON_V2) from exc
         sha256 = hashlib.sha256(raw_bytes).hexdigest()
         if sha256 != contract.sha256:
             raise PayloadReferenceError(PAYLOAD_CONTRACT_SHA256_MISMATCH_REASON_V2)

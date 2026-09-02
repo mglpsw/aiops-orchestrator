@@ -134,6 +134,40 @@ def test_malformed_yaml_is_refused(tmp_path: Path) -> None:
     assert exc.value.reason_code == POLICY_UNREADABLE_REASON_V2
 
 
+def test_policy_path_symlink_loop_is_typed_not_raw(tmp_path: Path) -> None:
+    """G4B (#200-G4B): `load_authoritative_check_policy_v2`'s own
+    `policy_path` is caller-controlled (`base_checkout_root` joined with a
+    fixed relative path) and now routes through the centralized external-
+    path ingress authority. A symlink loop AT the policy path used to
+    surface as a raw `RuntimeError` from the bare `policy_path.is_file()`
+    this module had before G4B -- now it must be the SAME typed refusal
+    every other unreadable-policy shape produces, never a bare traceback."""
+
+    root = tmp_path
+    (root / ".aiops").mkdir(parents=True)
+    a = root / ".aiops" / "a"
+    b = root / ".aiops" / "authoritative-checks.v2.yaml"
+    a.symlink_to("authoritative-checks.v2.yaml")
+    b.symlink_to("a")
+    with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
+        load_authoritative_check_policy_v2(root)
+    assert exc.value.reason_code == POLICY_UNREADABLE_REASON_V2
+
+
+def test_policy_path_wrong_type_is_missing(tmp_path: Path) -> None:
+    """G4B: a directory where the policy file should be is a distinct
+    disposition from a genuine read failure -- `is_file()` returned False
+    for both `absent` and `wrong-type` before G4B, and the migration
+    preserves that collapse rather than inventing a new public reason
+    code this module never had."""
+
+    root = tmp_path
+    (root / ".aiops" / "authoritative-checks.v2.yaml").mkdir(parents=True)
+    with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
+        load_authoritative_check_policy_v2(root)
+    assert exc.value.reason_code == POLICY_MISSING_REASON_V2
+
+
 def test_empty_check_list_is_refused(tmp_path: Path) -> None:
     text = VALID_POLICY.split("authoritative_checks:")[0] + "authoritative_checks: []\n"
     with pytest.raises(AuthoritativeCheckPolicyErrorV2) as exc:
