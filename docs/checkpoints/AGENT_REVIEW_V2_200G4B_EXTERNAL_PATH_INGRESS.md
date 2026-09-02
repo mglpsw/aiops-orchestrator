@@ -242,11 +242,88 @@ this bounded correction round:
   narrowness of the decidable-approximation choice; no action taken, per
   Lane A's own assessment that none is required.
 
-## 8. Review round 2
+## 8. Review round 2 (against `6144ba4`)
 
-Two FRESH independent adversarial review lanes dispatched against the
-corrected head (see PR #294 / commit history for the exact SHA), per the
-"same abstraction refuted twice -> STOP" rule: this round specifically
-targets whether the SAME class of defect (a fix verified at one layer but
-not the adjacent one) recurs. Findings and terminal disposition to be
-appended here once both lanes report.
+Two FRESH independent adversarial review lanes dispatched against
+`6144ba4cdd3793a8d82ec873060c5ae24217706b`, specifically targeting whether
+round 1's class of defect (a fix verified at one layer but not the
+adjacent one) recurs.
+
+- **Lane A**: both round-1 P0s confirmed genuinely fixed -- reproduced
+  broken against the pre-correction tree, confirmed fixed against
+  `6144ba4`, both via unit-level and real CLI subprocess reproduction.
+  Exhaustively traced every `raise` reachable from `run_doctor_v2`/
+  `_cmd_doctor`/`_cmd_init`/`_cmd_validate` and their transitive callees:
+  `run_doctor_v2` now has exactly one remaining raise (`NotADirectoryError`),
+  and it is caught; no sibling gap found in `init`/`validate`. One new
+  finding, P1: `resolve_within_target_root_v2` and two sites in `target_
+  pack_epoch_v2.py` were missing `ValueError` in their `.resolve()` guard
+  (see below).
+- **Lane B**: fully clean. Independently defeated both new regression tests
+  (revert each fix -> confirmed RED; restore -> confirmed GREEN) to verify
+  they are structurally complete, not coincidentally passing. Two P2s,
+  both documentation-only (a stale test-name citation in a docstring, and a
+  self-reported-count discrepancy in an earlier, unrelated commit message
+  that does not affect any claim made at this frozen head).
+
+No P0s from either lane in round 2.
+
+### The one P1: `resolve_within_target_root_v2`'s missing `ValueError` guard
+
+Independently reproduced by the author (not just accepted from the review
+report): `resolve_within_target_root_v2(root, root / "ab\x00cd")` raised a
+raw `ValueError` ("embedded null byte") before this fix. Independently
+verified the claimed non-exploitability too, not just the defect: every
+relative-path caller across `target_pack_install_v2.py`, `target_pack_
+apply_v2.py`, `target_pack_operation_v2.py`, `target_pack_plan_v2.py`,
+`target_pack_doctor_v2.py`, and `target_pack_validate_v2.py` is either a
+fixed module constant (`RECEIPT_RELATIVE_PATH_V2`, `DEFAULT_TARGET_PROFILE_
+RELATIVE_PATH`) or a value that passed `contracts_v2.RelativePath`
+validation first (`_validate_normalized_relative_posix` rejects any
+`ord(character) < 32`, including NUL, at the pydantic layer, before the
+string ever reaches this function) -- confirmed by reading that validator
+directly, not by taking the claim on faith. `target_pack_install_v2.py`'s
+own call site (`_canonical_relative_write_path_v2`) additionally already
+wraps its own call in a local `except (OSError, RuntimeError, ValueError,
+PlanError)`, independent of this authority's own completeness. Root-level
+callers (`target_root` itself) are `sys.argv`-sourced, which cannot carry
+an embedded NUL at all.
+
+Fixed anyway (commit `8acb477`) rather than left as a documented follow-up:
+the change is small, mirrors an already-established pattern
+(`external_path_ingress_v2._resolve_v2`'s `(OSError, RuntimeError,
+ValueError)`) exactly, and three drifted `except` clauses across two
+modules is itself a minor instance of the property this whole PR exists to
+close -- a shared containment primitive whose guard is not (yet) uniform
+with the newer authority it predates. Mutation-tested the same way as
+every other fix in this slice (revert -> confirm RED -> restore -> confirm
+GREEN).
+
+## 9. Terminal verdict
+
+**`PRIMITIVE_NON_REFUTED`.**
+
+Two full review rounds (four independent lanes total) against two
+successive frozen heads found: round 1 -- two P0s, both real, both
+independently reproduced and fixed, both closed with regression coverage
+added at the specific layer each one lived at; round 2 -- zero P0s, one
+P1 (independently reproduced, confirmed non-exploitable by two independent
+methods, fixed anyway), two documentation-only P2s. No recurrence of the
+same defect CLASS after correction -- the bar this slice's own terminal-
+state rule sets for declaring `STOP_G4B_ARCHITECTURE_NOT_CONVERGING`
+instead. The centralized external-path ingress authority, its consumer
+migration across the full in-scope surface (four v2 CLI scripts, four v2
+library loaders, and the target-pack module family), and its provenance
+enforcement (the decidable, file-scoped AST approximation, per the issue's
+own explicit instruction not to ship an undiscriminating cross-module
+proof) stand as implemented at the final head below.
+
+Final head: `8acb477` (branch `feat/200-g4b-external-path-ingress`, PR
+#294, still Draft). CI green. Full suite: 2706 passed, 12 skipped, 2
+pre-existing environment-class failures (no `sudo` resolvable in this
+sandbox), unchanged across every commit in this slice.
+
+Not authorized and not attempted under this slice's grant: marking Ready,
+merging, tagging/releasing, deploying, modifying CI workflow files, calling
+a live Router or real LLM provider, mutating AgentEscala/InterLeitos/CAEM
+repos, closing #200, modifying #273, building G5/any operational composer.
