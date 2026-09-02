@@ -462,6 +462,115 @@ def test_extract_review_content_rejects_a_fragment_range_outside_its_real_hunk_b
     assert excinfo.value.reason_code == "fragment_range_outside_hunk_bounds"
 
 
+def test_extract_review_content_rejects_a_manifest_whose_fragments_do_not_cover_the_real_hunk(
+    tmp_path: Path,
+) -> None:
+    """Reconciliation of #200-G3B onto #200-G4B: `verify_manifest_diff_
+    binding_v2` proves the re-acquired diff BYTES are identical to what
+    `manifest_diff_binding` was built from -- it says nothing about whether
+    `manifest.fragments` actually covers every real changed line of a hunk
+    that has a `coverage_required` fragment. `ManifestV2` is freely
+    constructible (not exclusively produced by `assemble_manifest_from_diff_
+    v2`); a hand-built manifest whose sole fragment for a must-review hunk
+    declares a range NARROWER than the hunk's real bounds passes byte-
+    identity binding (the diff text itself is untouched) and the existing
+    `fragment_range_outside_hunk_bounds` guard (the narrow range is still
+    INSIDE the hunk, merely incomplete). Reproduced directly: a 6-line
+    single-hunk change to a must-review file, with an adversarial manifest
+    whose only fragment covers lines 1-3 -- omitting line 4, deliberately
+    marked, entirely. Before this test's fix, `extract_review_content_v2`
+    returned `policy=INCLUDED` content for lines 1-3 only, no error, no
+    reason code, and the marked line never appeared anywhere in the output."""
+    import dataclasses
+
+    from app.agent_review.authoritative_diff_identity_v2 import (
+        acquire_authoritative_diff_with_identity_v2,
+        bind_manifest_to_diff_identity_v2,
+    )
+    from app.agent_review.contracts_v2 import compute_run_id
+    from app.agent_review.manifest_v2 import (
+        FragmentV2,
+        LineRangeV2 as _LineRangeV2,
+        ManifestMaterialV2,
+        compute_fragment_id_v2,
+        compute_manifest_hash_v2_for,
+    )
+    from app.agent_review.payload_builder_v2 import build_chunk_payload_v2
+
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    path = repo / "app.py"
+    path.write_text(
+        "line1 = 1\nline2 = 2\nline3 = 3\nline4 = 4\nline5 = 5\nline6 = 6\n", encoding="utf-8"
+    )
+    base_sha = _commit_all(repo, "base")
+    path.write_text(
+        "line1 = 100\nline2 = 200\nline3 = 300\nline4 = MARKER\nline5 = 500\nline6 = 600\n",
+        encoding="utf-8",
+    )
+    head_sha = _commit_all(repo, "head")
+
+    profile = _profile(must_review_paths=["app.py"])
+    file_diffs, _diff_text, acquired_identity = acquire_authoritative_diff_with_identity_v2(
+        repo, base_sha=base_sha, head_sha=head_sha
+    )
+    outcome = assemble_manifest_from_diff_v2(
+        file_diffs, profile=profile, grouping_policy=_grouping_policy(),
+        repo="example/repo", pr_number=1, base_sha=base_sha, head_sha=head_sha,
+        tested_merge_sha=head_sha, toolrepo_sha="b" * 40, evidence_hash="c" * 64,
+        max_lines_per_chunk=1000,
+    )
+    assert outcome.state == "assembled", outcome.blocked_reason
+    real_manifest = outcome.manifest
+    assert len(real_manifest.fragments) == 1
+    real_fragment = real_manifest.fragments[0]
+
+    narrow_new_range = _LineRangeV2(start=real_fragment.new_range.start, end=real_fragment.new_range.start + 2)
+    narrow_old_range = _LineRangeV2(start=real_fragment.old_range.start, end=real_fragment.old_range.start + 2)
+    narrow_fragment_id = compute_fragment_id_v2(
+        path=real_fragment.path, old_range=narrow_old_range, new_range=narrow_new_range,
+        diff_sha256=real_fragment.diff_sha256,
+    )
+    narrow_fragment = FragmentV2(
+        fragment_id=narrow_fragment_id, path=real_fragment.path,
+        old_range=narrow_old_range, new_range=narrow_new_range,
+        hunk_indexes=list(real_fragment.hunk_indexes), diff_chars=real_fragment.diff_chars,
+        diff_sha256=real_fragment.diff_sha256, coverage_required=True,
+    )
+
+    material_dict = real_manifest.model_dump(mode="json", exclude={"run_id", "identity"})
+    material_dict["fragments"] = [narrow_fragment.model_dump(mode="json")]
+    material_dict["chunks"] = [
+        {
+            "chunk_id": real_manifest.chunks[0].chunk_id, "order_index": 0,
+            "semantic_group": real_manifest.chunks[0].semantic_group,
+            "fragment_ids": [narrow_fragment_id], "payload_sha256": None,
+        }
+    ]
+    material_dict["degradation_causes"] = []
+    material_only = ManifestMaterialV2.model_validate(material_dict)
+    new_manifest_hash = compute_manifest_hash_v2_for(material_only)
+    new_identity = real_manifest.identity.model_copy(update={"manifest_hash": new_manifest_hash})
+    adversarial_manifest = type(real_manifest).model_validate({
+        **material_dict, "run_id": compute_run_id(new_identity), "identity": new_identity.model_dump(mode="json"),
+    })
+
+    binding = bind_manifest_to_diff_identity_v2(adversarial_manifest, acquired_identity)
+    payload_sha256_by_chunk_id = {
+        chunk.chunk_id: build_chunk_payload_v2(adversarial_manifest, chunk).payload_sha256
+        for chunk in adversarial_manifest.chunks
+    }
+
+    with pytest.raises(ExtractionBlockedError) as excinfo:
+        extract_review_content_v2(
+            repo_root=repo, base_sha=base_sha, head_sha=head_sha,
+            manifest=adversarial_manifest, manifest_diff_binding=binding,
+            payload_sha256_by_chunk_id=payload_sha256_by_chunk_id, target_profile=profile,
+        )
+    assert excinfo.value.reason_code == "fragment_coverage_incomplete"
+    assert excinfo.value.fragment_id == narrow_fragment_id
+
+
 @pytest.mark.requires_network
 def test_extract_review_content_is_byte_deterministic_across_calls(tmp_path: Path) -> None:
     repo = tmp_path / "repo"

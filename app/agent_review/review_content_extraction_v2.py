@@ -117,6 +117,26 @@ CONTENT_REASON_HUNK_RECOMPOSITION_FAILED_V2 = "hunk_recomposition_failed"
 # takes the whole-hunk or the windowed slicing path -- only the whole-hunk
 # path had any check at all before this.
 CONTENT_REASON_FRAGMENT_RANGE_OUTSIDE_HUNK_BOUNDS_V2 = "fragment_range_outside_hunk_bounds"
+# Coverage-completeness gap (independently reproduced during #200-G3B's
+# reconciliation onto #200-G4B, prior to any production caller existing for
+# `authoritative_diff_identity_v2.bind_manifest_to_diff_identity_v2`):
+# `verify_manifest_diff_binding_v2` proves the diff BYTES manifest_diff_
+# binding covers are exactly what was re-acquired -- it says nothing about
+# whether `manifest.fragments` actually covers every real line of a hunk
+# that has a `coverage_required` fragment. A manifest is freely
+# constructible (not exclusively produced by `assemble_manifest_from_diff_
+# v2`); a hand-built manifest whose sole fragment for a must-review hunk
+# declares a narrower `old_range`/`new_range` than the hunk's own real
+# bounds passes byte-identity binding (the diff text is untouched) and the
+# existing outside-hunk-bounds guard (the narrow range is still INSIDE the
+# hunk, just incomplete) -- reproduced concretely: a hand-built manifest
+# covering 3 of 6 real changed lines of a must-review file extracted
+# cleanly, `policy=INCLUDED`, with the other 3 lines (including a marker
+# line) never appearing anywhere in the output and no error raised. Checked
+# once, globally, before any chunk's content is built -- not per-fragment,
+# because completeness is a property of a HUNK's fragment set as a whole,
+# not of any single fragment in isolation.
+CONTENT_REASON_FRAGMENT_COVERAGE_INCOMPLETE_V2 = "fragment_coverage_incomplete"
 CONTENT_REASON_OVER_BUDGET_REQUIRES_REPLAN_V2 = "content_over_budget_requires_replan"
 CONTENT_REASON_WINDOW_OWNS_NO_LINES_V2 = "window_owns_no_real_lines"
 CONTENT_REASON_DLP_DETECTOR_NOT_EXECUTED_V2 = "dlp_detector_not_executed"
@@ -645,6 +665,94 @@ def _enforce_chunk_budget_v2(
     return [by_id[f.fragment_id] for f in fragment_contents]
 
 
+def _hunk_full_range_v2(hunk_body: HunkBodyV2) -> tuple[LineRangeV2, LineRangeV2]:
+    """The hunk's own full old/new range, computed the SAME way the
+    whole-hunk exact-recomposition check in ``_build_fragment_content_v2``
+    already does (``max(start + lines - 1, start)``, which also correctly
+    degenerates a zero-``lines`` side -- a pure insertion's old side, or a
+    pure deletion's new side -- to a single-point range at ``start`` rather
+    than an inverted one). One shared definition, not two that could drift
+    apart on that same edge case."""
+
+    old_end = max(hunk_body.old_start + hunk_body.old_lines - 1, hunk_body.old_start)
+    new_end = max(hunk_body.new_start + hunk_body.new_lines - 1, hunk_body.new_start)
+    return (
+        LineRangeV2(start=hunk_body.old_start, end=old_end),
+        LineRangeV2(start=hunk_body.new_start, end=new_end),
+    )
+
+
+def _ranges_fully_cover_v2(ranges: Sequence[LineRangeV2], *, full: LineRangeV2) -> bool:
+    """Does the UNION of ``ranges`` cover every integer in ``[full.start,
+    full.end]``, with no gap? (Overlap between ranges is fine -- only a gap
+    or an out-of-bounds range fails this.) A single ``min(starts) <=
+    full.start and max(ends) >= full.end`` check would miss a hole in the
+    MIDDLE of the union (e.g. two fragments covering only the first and
+    last thirds of a hunk, leaving the middle third silently uncovered) --
+    this walks the sorted union instead, which cannot."""
+
+    if not ranges:
+        return False
+    ordered = sorted(ranges, key=lambda r: r.start)
+    covered_through = full.start - 1
+    for r in ordered:
+        if r.start < full.start or r.end > full.end:
+            return False
+        if r.start > covered_through + 1:
+            return False
+        covered_through = max(covered_through, r.end)
+    return covered_through >= full.end
+
+
+def _verify_hunk_fragment_coverage_completeness_v2(
+    fragments_by_hunk: dict[tuple[str, int], list[FragmentV2]],
+    hunk_body_by_key: dict[tuple[str, int], HunkBodyV2],
+) -> None:
+    """Global, pre-classification gate: for every hunk that has at least
+    one ``coverage_required`` fragment, the UNION of every fragment's
+    ``old_range``/``new_range`` referencing that hunk (required or not --
+    a hunk's coverage can legitimately be split across a required and an
+    auxiliary fragment) must equal the hunk's own real, re-acquired full
+    range on BOTH sides. This is deliberately separate from, and does not
+    replace, the per-fragment ``CONTENT_REASON_FRAGMENT_RANGE_OUTSIDE_HUNK_
+    BOUNDS_V2`` guard: that check rejects a fragment claiming MORE than its
+    hunk (overflow); this one rejects a hunk's fragment set claiming LESS
+    than its hunk (a gap) -- a narrow-but-in-bounds ``coverage_required``
+    fragment passes the former and would previously pass everything else,
+    silently omitting real changed lines (including, in the reproduction
+    that motivated this check, a deliberately marked line) from every
+    downstream consumer with no error and no reason code.
+
+    A hunk with NO fragments at all is not this function's concern -- that
+    is either a legitimately-dropped auxiliary hunk (never checked here,
+    since this only inspects hunks already present in ``fragments_by_hunk``)
+    or a missing-coverage-for-a-must-review-path shape ``ManifestMaterialV2``
+    itself already refuses to construct. A referenced hunk whose body could
+    not be re-acquired at all is deferred to the existing per-fragment
+    ``CONTENT_REASON_HUNK_BODY_UNAVAILABLE_V2`` refusal, not duplicated here.
+    """
+
+    for hunk_key, hunk_fragments in fragments_by_hunk.items():
+        if not any(fragment.coverage_required for fragment in hunk_fragments):
+            continue
+        hunk_body = hunk_body_by_key.get(hunk_key)
+        if hunk_body is None:
+            continue
+        full_old_range, full_new_range = _hunk_full_range_v2(hunk_body)
+        old_ranges = [fragment.old_range for fragment in hunk_fragments]
+        new_ranges = [fragment.new_range for fragment in hunk_fragments]
+        if not _ranges_fully_cover_v2(old_ranges, full=full_old_range) or not _ranges_fully_cover_v2(
+            new_ranges, full=full_new_range
+        ):
+            required_fragment_ids = sorted(
+                fragment.fragment_id for fragment in hunk_fragments if fragment.coverage_required
+            )
+            raise ExtractionBlockedError(
+                CONTENT_REASON_FRAGMENT_COVERAGE_INCOMPLETE_V2,
+                fragment_id=required_fragment_ids[0],
+            )
+
+
 def extract_review_content_v2(
     *,
     repo_root,
@@ -841,6 +949,14 @@ def _extract_review_content_v2(
     for fragment in manifest.fragments:
         key = (fragment.path, fragment.hunk_indexes[0])
         fragments_by_hunk.setdefault(key, []).append(fragment)
+
+    # Global completeness gate, before any chunk's content is built (see
+    # `_verify_hunk_fragment_coverage_completeness_v2`'s own docstring):
+    # `verify_manifest_diff_binding_v2` above proves diff-byte identity, not
+    # that `manifest.fragments` actually covers every real line of a hunk a
+    # `coverage_required` fragment claims to represent.
+    _verify_hunk_fragment_coverage_completeness_v2(fragments_by_hunk, hunk_body_by_key)
+
     ownership_by_fragment_id: dict[str, frozenset[int]] = {}
     for hunk_key, hunk_fragments in fragments_by_hunk.items():
         if len(hunk_fragments) <= 1:
