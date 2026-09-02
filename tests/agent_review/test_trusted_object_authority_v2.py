@@ -50,6 +50,7 @@ from app.agent_review.trusted_object_authority_v2 import (
     TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2,
+    TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2,
     TrustedObjectAuthorityError,
     TrustedObjectAuthorityV2,
@@ -340,6 +341,284 @@ def test_linked_worktree_resolves_the_shared_object_store_not_the_private_worktr
 
     authorization = authorize_commit_for_execution_v2(repo_root=worktree, commit_sha=c1, trusted_ref=c3)
     assert authorization.authorized is True
+
+
+def test_linked_worktree_head_resolves_the_linked_worktrees_own_commit_not_mains(
+    tmp_path: Path,
+) -> None:
+    """Correction round 2 (independent human review, Finding 3): the test
+    above uses explicit commit shas throughout, which masks this -- a
+    linked worktree has a worktree-PRIVATE `HEAD` (in
+    `.git/worktrees/<name>/HEAD`), genuinely different from the common
+    `.git/HEAD` (the MAIN worktree's `HEAD`). Reading `HEAD` from the
+    common dir (round 1's shape) silently resolves `ref="HEAD"` to the
+    main worktree's checked-out commit instead of the linked worktree's
+    own, with no error -- reproduced here exactly as the reviewer did,
+    with a genuinely different `HEAD` on each side and a symbolic `"HEAD"`
+    ref rather than an explicit sha."""
+    repo, c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    # Main worktree's HEAD stays at c3 (the branch tip); the linked
+    # worktree is detached at c1 -- genuinely different commits.
+    worktree = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "--quiet", "--detach", str(worktree), c1],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    assert _rev_parse(repo, "HEAD") == c3
+    assert _rev_parse(worktree, "HEAD") == c1
+
+    destination = tmp_path / "subject"
+    destination.mkdir()
+    result = materialise_commit_subject_v2(repo_root=worktree, ref="HEAD", destination=destination)
+    assert result.commit_sha == c1, (
+        "materialise_commit_subject_v2(repo_root=linked_worktree, ref='HEAD') must resolve "
+        "the LINKED worktree's own HEAD, not the main worktree's"
+    )
+
+
+# -- correction round 2 (independent human review of round 1's own fix) ----------
+#
+# Finding 1 (P1): packed objects were copied byte-verbatim and never had
+# their identity re-verified -- a hostile `.pack`/`.idx` pair can serve one
+# object's real bytes under a different object's claimed sha, exactly like
+# the loose-object finding round 1 already closed, in the pack format
+# instead. Finding 2 (P1): the round-1 symlink fix guards entries found
+# DURING a walk (`_safe_scandir_no_symlinks_v2`) but not the ROOT path
+# handed to it -- `objects`, `objects/pack`, `refs/heads`, `refs/tags` were
+# all still checked with a plain `.is_dir()`, which follows a symlink at
+# the root itself. Finding 3 (P2): documented above, adjacent to the
+# existing linked-worktree test it complements.
+#
+# STOP/REDESIGN classification for Finding 2 (explicit, not silently
+# skipped): this is judged NOT a refutation-diversity STOP signal. The
+# violating mechanism is IDENTICAL to round 1's ("a pathlib call that
+# follows symlinks by default, used somewhere in the objects/refs copy
+# path, without a no-follow guard") -- round 1's own stated obligation was
+# the general proposition "no symlink in the objects/refs tree is ever
+# followed" (see this module's docstring: "a legitimate git objects/refs
+# tree never contains a symlink"), not a narrower "only symlinks
+# encountered as scandir entries". Finding 2's witnesses (root-level
+# `.is_dir()` calls) lie inside that same demonstrated ground -- they are
+# an incomplete application of round 1's own already-correct strategy
+# (refuse-before-follow), not a categorically different attack idea
+# defeating that strategy (contrast PR #302's actual refutation-diversity
+# history: config-key enumeration -> partialclonefilter gap -> object-store
+# snapshot/session redesign were three GENUINELY DIFFERENT strategies).
+# Closed in this same round by applying the identical no-follow discipline
+# to the remaining root-level call sites, not by a new mechanism.
+
+
+def test_symlinked_objects_directory_root_is_refused(tmp_path: Path) -> None:
+    """Finding 2, case B: the top-level `objects` directory itself
+    symlinked to an arbitrary host directory. Round 1's fix (`_safe_scandir_
+    no_symlinks_v2`) only guards entries found once a walk has already been
+    entered with a real root -- `source_objects_dir.is_dir()`, checked
+    BEFORE that walk is ever entered, still followed the symlink."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    outside = tmp_path / "outside_objects"
+    outside.mkdir()
+    (outside / "totally_unrelated_secret.txt").write_text("host bytes\n")
+
+    objects_dir = repo / ".git" / "objects"
+    shutil.rmtree(objects_dir)
+    objects_dir.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised on the symlinked objects/ root")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_symlinked_refs_heads_root_is_refused(tmp_path: Path) -> None:
+    """Finding 2, case A: `refs/heads` ITSELF (not one ref inside it,
+    which round 1's `test_symlinked_ref_is_refused` already covers)
+    symlinked to an arbitrary host directory."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    outside = tmp_path / "outside_refs"
+    outside.mkdir()
+    (outside / "evil-branch").write_text(c3 + "\n")
+
+    refs_heads = repo / ".git" / "refs" / "heads"
+    shutil.rmtree(refs_heads)
+    refs_heads.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised on the symlinked refs/heads root")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+
+
+def test_symlinked_objects_pack_root_is_refused(tmp_path: Path) -> None:
+    """Finding 2, `objects/pack` root specifically. The PROPERTY (a
+    symlinked `objects/pack` must never be followed) is what this test
+    asserts, not which specific line enforces it -- mutation testing found
+    that `_copy_objects_dir_v2`'s own dedicated `pack_dir.is_symlink()`
+    guard is, in the current control flow, provably redundant with the
+    upstream `objects/`-level scan (which blanket-rejects ANY symlinked
+    entry under `objects/`, "pack" included, before the pack-specific code
+    ever runs) -- see the code comment at that guard for why it is kept
+    anyway. This test still correctly verifies the property holds; it does
+    not claim which specific guard is responsible for that."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    outside = tmp_path / "outside_pack"
+    outside.mkdir()
+    (outside / "sneaky_file.txt").write_text("host bytes\n")
+
+    pack_dir = repo / ".git" / "objects" / "pack"
+    pack_dir.rmdir()
+    pack_dir.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised on the symlinked objects/pack root")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_symlinked_head_sibling_does_not_fool_the_alternate_containment_check(
+    tmp_path: Path,
+) -> None:
+    """The alternates containment check's `HEAD`-sibling heuristic must
+    itself be no-follow: a symlinked `HEAD` pointing at any file that
+    happens to exist would otherwise let an ordinary, non-repository-shaped
+    directory pass for free."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    ordinary_dir = tmp_path / "not_a_repository"
+    ordinary_dir.mkdir()
+    (ordinary_dir / "objects").mkdir()
+    somewhere_else = tmp_path / "somewhere_else.txt"
+    somewhere_else.write_text("exists, but is not a real git HEAD\n")
+    (ordinary_dir / "HEAD").symlink_to(somewhere_else)
+
+    info_dir = repo / ".git" / "objects" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "alternates").write_text(str(ordinary_dir / "objects") + "\n")
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised -- symlinked HEAD sibling must not pass containment")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2
+    _ = c3
+
+
+def _build_forged_pack_pair_v2(tmp_path: Path) -> tuple[bytes, bytes, str, str]:
+    """Build a REAL, legitimate one-object pack (containing blob B's real
+    bytes), then hand-edit its `.idx` object-name table entry to claim a
+    different blob A's sha instead (recomputing the idx's own trailing
+    checksum) -- same fanout bucket as B, so a single-object pack's fanout
+    table needs no further edit. Returns (pack_bytes, forged_idx_bytes,
+    real_a, real_b)."""
+    import hashlib
+    import struct
+
+    source = tmp_path / "pack_source"
+    _init_repo(source)
+    content_b = b"REAL CONTENT OF BLOB B\n"
+    proc = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"], cwd=source, input=content_b, check=True, capture_output=True
+    )
+    real_b = proc.stdout.decode().strip()
+
+    target_prefix = real_b[:2]
+    real_a = None
+    for i in range(200_000):
+        candidate = f"FORGED CONTENT candidate {i}\n".encode()
+        sha = hashlib.sha1(b"blob %d\0%b" % (len(candidate), candidate), usedforsecurity=False).hexdigest()  # noqa: S324
+        if sha[:2] == target_prefix and sha != real_b:
+            real_a = sha
+            break
+    assert real_a is not None, "did not find a same-fanout-bucket candidate"
+
+    pack_prefix = tmp_path / "forged"
+    proc = subprocess.run(
+        ["git", "pack-objects", "--no-reuse-delta", str(pack_prefix)],
+        cwd=source,
+        input=(real_b + "\n").encode(),
+        check=True,
+        capture_output=True,
+    )
+    pack_sha = proc.stdout.decode().strip()
+    pack_path = tmp_path / f"forged-{pack_sha}.pack"
+    idx_path = tmp_path / f"forged-{pack_sha}.idx"
+    assert pack_path.is_file() and idx_path.is_file()
+
+    idx_bytes = bytearray(idx_path.read_bytes())
+    assert idx_bytes[0:4] == b"\xfftOc"
+    assert struct.unpack(">I", idx_bytes[4:8])[0] == 2
+    fanout = struct.unpack(">256I", idx_bytes[8:8 + 256 * 4])
+    assert fanout[255] == 1, "expected a one-object pack"
+    names_offset = 8 + 256 * 4
+    assert bytes(idx_bytes[names_offset:names_offset + 20]).hex() == real_b
+    idx_bytes[names_offset:names_offset + 20] = bytes.fromhex(real_a)
+    new_checksum = hashlib.sha1(idx_bytes[:-20], usedforsecurity=False).digest()  # noqa: S324
+    idx_bytes[-20:] = new_checksum
+
+    return pack_path.read_bytes(), bytes(idx_bytes), real_a, real_b
+
+
+def test_forged_pack_index_object_identity_is_refused(tmp_path: Path) -> None:
+    """Finding 1: a real pack containing blob B's bytes, paired with an
+    `.idx` whose object-name table has been edited to claim that same byte
+    range is a different blob A -- `git cat-file -p <A>` against this pair
+    (verified with real git plumbing, independent of this module, before
+    asserting against the module) returns B's bytes under A's identity.
+    Acquisition must refuse rather than copy this pack in as trustworthy."""
+    pack_bytes, forged_idx_bytes, real_a, real_b = _build_forged_pack_pair_v2(tmp_path)
+
+    # Independent, real-git confirmation the forged pair actually fools
+    # ordinary git reads (same verification the reviewer's own repro did),
+    # BEFORE checking the module's behavior.
+    victim_probe = tmp_path / "victim_probe"
+    _init_repo(victim_probe)
+    probe_pack_dir = victim_probe / ".git" / "objects" / "pack"
+    (probe_pack_dir / "forged.pack").write_bytes(pack_bytes)
+    (probe_pack_dir / "forged.idx").write_bytes(forged_idx_bytes)
+    type_proc = subprocess.run(
+        ["git", "cat-file", "-t", real_a], cwd=victim_probe, capture_output=True, text=True
+    )
+    content_proc = subprocess.run(["git", "cat-file", "-p", real_a], cwd=victim_probe, capture_output=True)
+    assert type_proc.returncode == 0 and type_proc.stdout.strip() == "blob", (
+        "fixture assumption violated: forged pair did not fool ordinary git reads"
+    )
+    assert content_proc.stdout == b"REAL CONTENT OF BLOB B\n", (
+        "fixture assumption violated: forged identity did not serve B's real bytes"
+    )
+    fsck = subprocess.run(["git", "fsck", "--strict", "--full"], cwd=victim_probe, capture_output=True)
+    assert fsck.returncode != 0, "fixture assumption violated: fsck did not detect the forgery either"
+
+    # Now the actual module.
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    repo_pack_dir = repo / ".git" / "objects" / "pack"
+    (repo_pack_dir / "forged.pack").write_bytes(pack_bytes)
+    (repo_pack_dir / "forged.idx").write_bytes(forged_idx_bytes)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised on the forged pack/idx pair")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2
+    _ = real_b, c3
+
+
+def test_legitimate_repacked_history_still_works(tmp_path: Path) -> None:
+    """Positive counterpart: an ordinary, legitimate `git repack` (moving
+    every object into a real pack, exactly the shape most real-world
+    repositories converge to) must not be refused."""
+    repo, c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    subprocess.run(["git", "repack", "-a", "-d", "--quiet"], cwd=repo, check=True, capture_output=True)
+    assert list((repo / ".git" / "objects" / "pack").glob("*.pack")), (
+        "fixture did not actually produce a pack"
+    )
+
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    assert result.authorized is True
+
+    destination = tmp_path / "subject"
+    destination.mkdir()
+    materialised = materialise_commit_subject_v2(repo_root=repo, ref=c3, destination=destination)
+    assert materialised.commit_sha == c3
 
 
 # -- 6: forged / unbound capability -------------------------------------------------

@@ -75,15 +75,45 @@ G1C:
     sha1/sha256 from its own decompressed content and refuses on any
     mismatch against the path it claims to be -- the same digest-verified-
     copy shape ADR 0011 states for verifier/tool bytes, independently
-    implemented here for git loose objects specifically (named residual:
-    pack-contained objects are not individually re-hashed, since doing so
-    would mean reimplementing git's pack/delta format).
+    implemented here for git loose objects specifically. Correction round
+    2 (independent human review) closed the adjacent packed-object gap the
+    round-1 entry above left as a named residual: `_verify_pack_integrity_v2`
+    delegates to git's own `verify-pack` plumbing (bounded, local,
+    network-incapable, run against the CAS itself after every pack/idx is
+    copied in and before the authority is ever yielded) rather than
+    independently re-hashing packed objects in Python, which would mean
+    reimplementing git's pack/delta format. Round 2 also closed a
+    root-of-walk symlink-following gap in round 1's own no-follow
+    enforcement (`objects`, `objects/pack`, `refs/heads`, `refs/tags` were
+    checked with a plain, symlink-following `.is_dir()` before round 1's
+    scandir-level guard was ever entered) and a linked-worktree `HEAD`
+    resolution defect (round 1 collapsed `git_dir`/`common_dir` into one
+    value and read `HEAD` from the shared one, silently returning the MAIN
+    worktree's `HEAD` for a caller pointed at a different, linked
+    worktree) -- see `_GitDirectoriesV2`.
+  same_uid_scope_decision: >-
+    Correction round 2 also required an explicit TCB-floor-style scope
+    decision (previously implicit): same-UID/concurrent mutation of the
+    private CAS directory during an authority's lifetime is OUT OF SCOPE
+    for G1C, inheriting the existing `host_arbitrary_code_attacker`
+    exclusion already declared in `commit_derived_execution_identity_v2.py`
+    (the sibling module G1C composes with), not a new or separately-argued
+    boundary. CAEM ADR 0012's `memfd`+seal same-UID closure is prior art
+    for a categorically higher-assurance TCB (a detached launcher producing
+    attestations for parties trusting neither this host nor its operator)
+    and is not reused here. If a later phase (`#200-G1B`/`#200-G5`) needs
+    to widen this process's own trust boundary to include a same-UID
+    adversary, that is a genuinely new TCB floor for that phase to declare
+    explicitly, not something G1C's "immutable" language should be read as
+    having silently already provided.
   not_claimed: >-
     No CAEM conformance, ratification, or qualification transfer. No
     N1-N5 pipeline invoked. No consumption of CAEM's own CAS, schemas, or
     verifier machinery -- only the architectural shape (mutable-path
     resolves once, then trust moves to an authored, controlled copy) is
     reused, reimplemented from scratch for this repository's own subject.
+    No same-UID/concurrent-mutation TCB closure is claimed or reused from
+    ADR 0012 -- see `same_uid_scope_decision` above.
 
 G1D: TODO -- not yet implemented; fill in when that branch lands.
 

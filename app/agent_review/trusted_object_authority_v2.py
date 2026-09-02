@@ -94,11 +94,18 @@ absent from it); an incomplete walk is neither, and is refused.
 
 **A linked worktree.** The filesystem-level resolution above follows a
 linked worktree's `.git` FILE and its private git-dir's `commondir`
-pointer to the *shared* object store, not the worktree-private directory
-that holds only `HEAD`, `index`, and per-worktree refs. This is PR #302's
-own round-3 point-fix,
-carried forward on its underlying insight, not its surrounding (refuted)
-snapshot mechanism.
+pointer to the *shared* object store (`objects/`, `refs/heads`,
+`refs/tags`, `packed-refs`), not the worktree-private directory that also
+holds `index` and per-worktree refs. This is PR #302's own round-3
+point-fix, carried forward on its underlying insight, not its surrounding
+(refuted) snapshot mechanism. Correction round 2 (independent human
+review) sharpened this further: `HEAD` itself is worktree-PRIVATE, not
+shared -- `_GitDirectoriesV2` keeps the private git-dir and the shared
+common-dir as two genuinely distinct values precisely so `HEAD` can be
+read from the former while everything else is read from the latter;
+collapsing both into one value (round 1's shape) silently returned the
+*main* worktree's `HEAD` for a caller that pointed `repo_root` at a
+different, linked worktree.
 
 **A forged/unbound capability.** `TrustedObjectAuthorityV2` cannot be
 constructed except by `open_trusted_object_authority_v2`, which is the only
@@ -116,14 +123,24 @@ shape left to express: there is no parameter to supply repo B's path to.
 
 ## What this module deliberately does NOT do
 
-It does not reimplement Git's object/pack format. Loose objects and pack
+It does not reimplement Git's object/pack *format*. Loose objects and pack
 files are copied as opaque bytes, verbatim; their content is never parsed
-or reconstructed by this module -- verification that the copied bytes are
-what they claim to be is delegated entirely to the *existing*, unchanged
-`bounded_git_v2`/`git_commit_subject_v2` reading primitives running
-against the resulting authority (git's own `cat-file`/`ls-tree` are
-authoritative for object identity; re-deriving that independently in pure
-Python would be reimplementing Git, which is explicitly out of scope).
+or reconstructed by this module. Correction round 2 (independent human
+review) sharpened an overclaim in this section's own predecessor text: it
+used to say object-identity verification was "delegated entirely" to
+`cat-file`/`ls-tree` against the resulting authority -- true for a TREE's
+shape, but false for a PACKED object's claimed identity, which ordinary
+`cat-file` reads do not re-verify against the pack's own index (see the
+now-fixed Finding 1 in `_verify_pack_integrity_v2`'s docstring). The actual
+position is narrower and more precise: object *content interpretation*
+(what bytes a commit/tree/blob's sha actually decodes to, once its identity
+is trusted) is delegated to git's own reading primitives, never
+re-implemented here; object *identity re-verification* (does this path's
+claimed sha genuinely match this path's content) is this module's own,
+explicit responsibility for both loose objects
+(`_verify_loose_object_hash_v2`, byte-level, Python) and packed objects
+(`_verify_pack_integrity_v2`, delegated to git's own `verify-pack`
+plumbing rather than reimplementing pack/delta parsing).
 
 It does not decide *materialisation faithfulness* (symlink/TOCTOU-safe
 writing of a commit's tree onto disk) -- that is `#200-G1D` (issue #304), a
@@ -131,6 +148,40 @@ different, downstream layer this module does not conflate with. This
 module's job stops at producing a trustworthy source for reads; what a
 caller subsequently *writes* from those reads is that caller's own
 concern.
+
+## Threat scope
+
+In scope: a hostile/mutable LIVE repository checkout under a DIFFERENT
+privilege boundary than this process (a different UID, a network peer, or
+a compromised checkout this process merely has read access to) -- lazy
+fetch, promisor/partial-clone contamination, symlink escapes, forged loose
+or packed object identity, hostile config/grafts/replace, alternates
+pointing outside the repository, retry/restart contamination. All of
+`#302`/`#306`'s falsifier corpus and this module's own two correction
+rounds are about this boundary.
+
+Out of scope, explicitly, matching the identical `host_arbitrary_code_
+attacker` boundary already declared in `commit_derived_execution_identity_
+v2.py` (the sibling module this one composes with -- not a new or
+separate decision, an application of an existing one): a SAME-UID
+adversary who can already write to this process's own filesystem
+namespace while an authority is open. The capability's marker proves the
+CAS directory was genuinely built by `open_trusted_object_authority_v2`;
+it does NOT prove -- and this module does not claim it proves -- that
+`objects/`/`refs/` under `trusted_repo_root` remain byte-identical to what
+was verified at build time for the remainder of the `with` block's
+lifetime against a same-UID writer. CAEM's own ADR 0012 predecessor
+explicitly closes an analogous same-UID gap (`memfd` + seal + reopen
+read-only), but for a categorically higher-assurance TCB: a detached
+launcher producing attestations for consumption by parties who trust
+neither this host nor its operator. This module's threat scope is the one
+already declared by the module it composes with -- a same-UID attacker
+does not need to race this authority's private `/tmp` directory when they
+could tamper with the calling process directly, exactly as `host_arbitrary_
+code_attacker` already reasons. A future phase that widens this process's
+own trust boundary to include a same-UID adversary (the CAEM shape) is a
+genuinely new TCB floor, carried forward as an explicit prerequisite for
+whichever of `#200-G1B`/`#200-G5` needs it, not silently assumed here.
 
 ## CAEM design reference -- not authority for this repository
 
@@ -171,6 +222,7 @@ __all__ = [
     "TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_OBJECT_COLLISION_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2",
+    "TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2",
     "TrustedObjectAuthorityError",
@@ -202,6 +254,13 @@ TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2 = "trusted_object_authority_
 # `_looks_like_git_objects_directory_v2`) is refused rather than flattened
 # in as if it were one.
 TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2 = "trusted_object_authority_alternate_rejected"
+# Correction round 2 (independent human review of round 1's own fix):
+# ordinary git reads (`cat-file`, the `rev-list` walk `prove_ancestry`
+# performs) do not re-verify a PACKED object's identity against its pack
+# index entry -- only `git fsck --strict`/`git verify-pack` do. Raised when
+# `git verify-pack`, run against the CAS itself after every pack/idx has
+# been copied in, reports any pack as invalid.
+TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2 = "trusted_object_authority_pack_verification_failed"
 
 #: Hard budgets, enforced *before* any copied byte is handed to git for
 #: parsing (CAEM ADR 0011's "hard budgets precede untrusted parsing",
@@ -365,9 +424,25 @@ def _read_gitdir_pointer_v2(dotgit_file: Path) -> Path:
     return pointed
 
 
-def _resolve_git_common_dir_v2(repo_root: Path) -> Path:
-    """The shared object-store directory, worktree-aware -- resolved by
-    PLAIN FILESYSTEM READS, never a git invocation.
+@dataclass(frozen=True)
+class _GitDirectoriesV2:
+    """`git_dir` (worktree-PRIVATE: `HEAD`, index, per-worktree refs) and
+    `common_dir` (SHARED across every worktree: `objects/`, `refs/heads`,
+    `refs/tags`, `packed-refs`) -- identical for an ordinary, non-worktree
+    repository, genuinely different for a linked worktree. Correction
+    round 2 (independent human review of round 1's own fix): round 1
+    collapsed both into a single `common_dir` and read `HEAD` from it,
+    which is the MAIN worktree's `HEAD`, not necessarily the one
+    `repo_root` (a possibly-linked worktree) actually points at.
+    """
+
+    git_dir: Path
+    common_dir: Path
+
+
+def _resolve_git_directories_v2(repo_root: Path) -> _GitDirectoriesV2:
+    """Resolve both the worktree-private and shared git directories,
+    worktree-aware -- by PLAIN FILESYSTEM READS, never a git invocation.
 
     Earlier drafts of this module resolved this via a bounded
     `git rev-parse --git-common-dir` call against the live repository. That
@@ -411,7 +486,7 @@ def _resolve_git_common_dir_v2(repo_root: Path) -> Path:
 
     if not common_dir.is_dir():
         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
-    return common_dir
+    return _GitDirectoriesV2(git_dir=git_dir, common_dir=common_dir)
 
 
 def _copy_pack_file_v2(source: Path, dest: Path, tracker: _ObjectCopyBudgetTrackerV2) -> None:
@@ -473,7 +548,7 @@ def _copy_named_file_v2(source: Path, dest: Path, tracker: _ObjectCopyBudgetTrac
 def _looks_like_git_objects_directory_v2(objects_dir: Path) -> bool:
     """Minimal structural sanity check for an ALTERNATE objects directory
     (never applied to the primary/top-level source, which is already
-    reached through `_resolve_git_common_dir_v2`'s own validation).
+    reached through `_resolve_git_directories_v2`'s own validation).
 
     Real git always keeps `objects/` as a direct sibling of `HEAD`, in
     both a bare repository root and a non-bare `.git` directory alike --
@@ -494,8 +569,16 @@ def _looks_like_git_objects_directory_v2(objects_dir: Path) -> bool:
     loose-object hash verification as everything else -- this check is
     defense in depth layered in front of that verification, never a
     substitute for it.
+
+    The `HEAD` sibling itself is checked no-follow (correction round 2):
+    a symlinked `HEAD` pointing at any other file that happens to exist
+    would otherwise let an ordinary, non-repository-shaped directory pass
+    this heuristic for free.
     """
-    return (objects_dir.parent / "HEAD").is_file()
+    head_sibling = objects_dir.parent / "HEAD"
+    if head_sibling.is_symlink():
+        return False
+    return head_sibling.is_file()
 
 
 def _parse_alternates_v2(
@@ -599,6 +682,15 @@ def _copy_objects_dir_v2(
     ancestors) is, definitionally, not a file on disk here -- it is simply
     absent from the copy, not detected-and-rejected after the fact.
     """
+    # Correction round 2 (independent human review, Finding 2): checked
+    # BEFORE `.is_dir()`, which follows a symlink at `source_objects_dir`
+    # itself -- `_safe_scandir_no_symlinks_v2` only guards entries found
+    # once a walk has already been entered with a real (non-symlink) root,
+    # never the root path handed to it. A symlinked primary or alternate
+    # `objects/` root had its target directory's contents silently copied
+    # into the CAS as if they belonged to the repository.
+    if source_objects_dir.is_symlink():
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2)
     if not source_objects_dir.is_dir():
         return
     real = os.path.realpath(source_objects_dir)
@@ -631,6 +723,21 @@ def _copy_objects_dir_v2(
     # Pack files: copied verbatim, whatever extension git ships with them
     # -- see `_copy_pack_file_v2` for the named residual limitation here.
     pack_dir = source_objects_dir / "pack"
+    # Correction round 2, Finding 2 (same reasoning as `source_objects_dir`
+    # above): checked before `.is_dir()`, not only guarded once a walk has
+    # already been entered with this as its root. In the CURRENT control
+    # flow this specific check is provably redundant -- the loose-object
+    # loop above already calls `_safe_scandir_no_symlinks_v2(
+    # source_objects_dir)`, which blanket-rejects ANY symlinked entry under
+    # `objects/`, "pack" included, before this line is ever reached
+    # (mutation-tested: disabling this exact line leaves the whole test
+    # suite green, entirely via that upstream catch). Kept anyway,
+    # deliberately, as an explicit, self-documenting guard at the exact
+    # root the finding named -- not a guess this module is entitled to
+    # make about the upstream scan's enumeration order or blanket-ness
+    # never changing under a future refactor.
+    if pack_dir.is_symlink():
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2)
     if pack_dir.is_dir():
         for pack_file in _safe_scandir_no_symlinks_v2(pack_dir):
             if pack_file.is_file(follow_symlinks=False):
@@ -656,25 +763,49 @@ def _copy_objects_dir_v2(
         )
 
 
-def _copy_refs_v2(*, source_git_dir: Path, dest_git_dir: Path, tracker: _ObjectCopyBudgetTrackerV2) -> None:
-    """Copy `refs/heads/`, `refs/tags/`, `packed-refs`, and `HEAD` verbatim.
+def _copy_refs_v2(
+    *, common_git_dir: Path, private_git_dir: Path, dest_git_dir: Path, tracker: _ObjectCopyBudgetTrackerV2
+) -> None:
+    """Copy `refs/heads/`, `refs/tags/`, and `packed-refs` verbatim from
+    `common_git_dir` (SHARED across every worktree), and `HEAD` from
+    `private_git_dir` (worktree-PRIVATE -- identical to `common_git_dir`
+    for an ordinary, non-worktree repository; genuinely different for a
+    linked worktree, see `_GitDirectoriesV2`).
+
+    Correction round 2 (independent human review): reading `HEAD` from the
+    common dir, as round 1 did, silently returns the MAIN worktree's `HEAD`
+    for a caller that pointed `repo_root` at a linked worktree with its own,
+    different, checked-out commit -- `materialise_commit_subject_v2(ref=
+    "HEAD")` would then materialise the wrong commit, with no error.
 
     Deliberately excludes `refs/replace/*` (git replace is separately
     neutralised by every bounded git invocation's `--no-replace-objects`,
     and simply never exists in the authority at all here), `refs/notes/*`,
     and `refs/remotes/*` -- none of those are needed to resolve a commit sha
     or a branch/tag name, and copying them would be scope creep with no
-    corresponding read path.
+    corresponding read path. Also excludes any other worktree-private ref
+    namespace (e.g. `refs/bisect/*`) beyond `HEAD` itself -- not
+    reproduced as a live gap, and not fabricated as a fix for one.
     """
     for namespace in ("heads", "tags"):
-        source_dir = source_git_dir / "refs" / namespace
+        source_dir = common_git_dir / "refs" / namespace
+        # Correction round 2 (independent human review, Finding 2): a
+        # `.is_dir()` check on the ROOT of a walk follows a symlink at
+        # that root -- `_safe_scandir_no_symlinks_v2`/
+        # `_walk_regular_files_no_symlinks_v2` only guard entries found
+        # *during* a walk they have already been entered with, not the
+        # root path handed to them. `refs/heads`/`refs/tags` symlinked to
+        # an arbitrary host directory had that directory's contents
+        # copied into the CAS as if they were real refs.
+        if source_dir.is_symlink():
+            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2)
         if not source_dir.is_dir():
             continue
         for path in _walk_regular_files_no_symlinks_v2(source_dir):
-            relative = path.relative_to(source_git_dir)
+            relative = path.relative_to(common_git_dir)
             _copy_named_file_v2(path, dest_git_dir / relative, tracker)
 
-    packed_refs = source_git_dir / "packed-refs"
+    packed_refs = common_git_dir / "packed-refs"
     if packed_refs.is_symlink():
         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2)
     if packed_refs.is_file():
@@ -713,7 +844,9 @@ def _copy_refs_v2(*, source_git_dir: Path, dest_git_dir: Path, tracker: _ObjectC
             tracker.charge(len(data))
             dest_packed_refs.write_bytes(data)
 
-    head_path = source_git_dir / "HEAD"
+    # From `private_git_dir`, NOT `common_git_dir` -- see this function's
+    # docstring. Identical to `common_git_dir` for a non-worktree repo.
+    head_path = private_git_dir / "HEAD"
     if head_path.is_file():
         _copy_named_file_v2(head_path, dest_git_dir / "HEAD", tracker)
 
@@ -731,6 +864,44 @@ def _write_minimal_bare_skeleton_v2(cas_dir: Path) -> None:
     (cas_dir / "config").write_text(
         "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = true\n"
     )
+
+
+def _verify_pack_integrity_v2(cas_dir: Path) -> None:
+    """Correction round 2 (independent human review, Finding 1): ordinary
+    git reads (`cat-file`, the `rev-list` walk `prove_ancestry` performs)
+    trust a pack's own `.idx` object-name table without re-verifying it --
+    a pack containing object B's real compressed bytes, paired with an
+    `.idx` whose name table and recomputed checksum claim that same byte
+    range is object A instead, makes `git cat-file -p <A>` return B's
+    bytes under A's identity. `git fsck --strict --full` catches this;
+    ordinary reads do not. This is the packed analogue of the loose-object
+    finding correction round 1 already closed
+    (`_verify_loose_object_hash_v2`) -- reimplementing an equivalent
+    byte-level check for the pack/delta format would mean reimplementing
+    git's pack format, explicitly out of this module's scope (see the
+    module docstring's "what this module deliberately does NOT do").
+    Delegating to git's own `verify-pack` -- a bounded, local,
+    network-incapable plumbing command, run here against the CAS itself,
+    never the live repo, strictly after every pack/idx has already been
+    copied in and strictly before the authority is ever yielded to a
+    caller -- closes the same property without that reimplementation.
+
+    Every `.idx` under the CAS's own `objects/pack/` is independently,
+    positively verified; the CAS's own `objects/pack/` is self-authored by
+    this module's own copy step (never attacker-controlled at this point),
+    so a plain `glob` here -- unlike anywhere upstream of the copy step --
+    carries no symlink risk.
+    """
+    pack_dir = cas_dir / "objects" / "pack"
+    if not pack_dir.is_dir():
+        return
+    for idx_path in sorted(pack_dir.glob("*.idx")):
+        try:
+            run_bounded_git_v2(["verify-pack", str(idx_path)], cwd=cas_dir)
+        except BoundedGitError as exc:
+            raise TrustedObjectAuthorityError(
+                TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2
+            ) from exc
 
 
 @dataclass(frozen=True)
@@ -770,11 +941,22 @@ class TrustedObjectAuthorityV2:
 
     @property
     def trusted_repo_root(self) -> Path:
-        """The private, remote-less, immutable-for-the-duration-of-this-call
-        copy's root. Re-verified on every access -- intended for immediate
-        use as the `repo_root` argument to the existing, unchanged
-        `git_commit_subject_v2`/`bounded_git_v2` reading primitives, not for
-        storage or reuse beyond this authority's own lifetime.
+        """The private, remote-less copy's root. Re-verified on every
+        access -- intended for immediate use as the `repo_root` argument
+        to the existing, unchanged `git_commit_subject_v2`/`bounded_git_v2`
+        reading primitives, not for storage or reuse beyond this
+        authority's own lifetime.
+
+        Scope note (correction round 2 -- see the module docstring's
+        "Threat scope"): every object/ref under this path was positively
+        verified (content-hash for loose objects, `verify-pack` for packed
+        objects) at build time, against a LIVE repository under a
+        different privilege boundary. That is this module's threat scope.
+        It is NOT a claim that a SAME-UID writer to this process's own
+        filesystem namespace cannot subsequently alter these bytes before
+        a caller finishes reading them -- that boundary is explicitly out
+        of scope here, matching `commit_derived_execution_identity_v2.py`'s
+        own declared `host_arbitrary_code_attacker` exclusion.
         """
         self._verify_capability_v2()
         return self._cas_root
@@ -826,7 +1008,7 @@ def open_trusted_object_authority_v2(
     if not Path(repo_root).is_dir():
         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
 
-    git_common_dir = _resolve_git_common_dir_v2(Path(repo_root))
+    git_dirs = _resolve_git_directories_v2(Path(repo_root))
     budget = _ObjectCopyBudgetV2(
         max_total_bytes=max_total_bytes,
         max_object_count=max_object_count,
@@ -838,14 +1020,20 @@ def open_trusted_object_authority_v2(
     try:
         _write_minimal_bare_skeleton_v2(cas_dir)
         _copy_objects_dir_v2(
-            source_objects_dir=git_common_dir / "objects",
+            source_objects_dir=git_dirs.common_dir / "objects",
             dest_objects_dir=cas_dir / "objects",
             tracker=tracker,
             visited_real_paths=set(),
             depth=0,
             budget=budget,
         )
-        _copy_refs_v2(source_git_dir=git_common_dir, dest_git_dir=cas_dir, tracker=tracker)
+        _copy_refs_v2(
+            common_git_dir=git_dirs.common_dir,
+            private_git_dir=git_dirs.git_dir,
+            dest_git_dir=cas_dir,
+            tracker=tracker,
+        )
+        _verify_pack_integrity_v2(cas_dir)
 
         marker = secrets.token_bytes(32)
         (cas_dir / _MARKER_FILENAME_V2).write_bytes(marker)
