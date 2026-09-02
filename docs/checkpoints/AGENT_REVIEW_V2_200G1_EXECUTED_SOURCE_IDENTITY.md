@@ -504,18 +504,93 @@ primitive only.
 
 ## 7. Post-merge addendum (`#200-G1-S`, issue #305, salvaged from forensic PR #302)
 
-This document's own prose above (§1, §6) already stated IDENTITY as "which
-commit produced the bytes now on disk" / "as of the moment its checks run" --
-careful language that does not claim execution provenance. The module's
-*docstring* had drifted from that same care (`"the bytes that are executing
-right now"`), which post-merge Codex review on PR #284 flagged as P1 finding
-#1. `#200-G1-S` narrowed the docstring to match this checkpoint's own
-already-accurate framing, and added an explicit "What this module does NOT
-prove" section: G1 proves `authorized/selected commit -> current
-materialized subject bytes`, never `-> what an already-running interpreter
-previously executed`. No public symbol, field, or wire schema changed. The
-actual closure of the execution-provenance question is `#301` (`#200-G1B`),
-not this documentation correction -- see that issue for the open
-architectural gap this checkpoint's §6 already disclosed as a limitation
-(`compute_subject_digest_v2` and the identity check both describe
-disk-state-at-call-time, never a running interpreter's loaded bytes).
+### The claim this primitive actually proves
+
+**Superseding the wording used throughout §1 and §6 above.** Those sections
+repeatedly describe IDENTITY as *"which commit **produced** the bytes now on
+disk"*. That phrasing is wrong in a way this addendum corrects rather than
+preserves, and it should not be read as accurate merely because it appears
+earlier in this document. What `verify_executed_source_identity_v2` actually
+establishes is **tree equality with the caller-selected commit**:
+
+> the bytes currently materialized at `subject_root` are byte-for-byte
+> identical to `commit_sha`'s tree, re-derived fresh from git's own object
+> store at the moment the function is called.
+
+It does **not** establish unique provenance. Two different commits can share
+an identical tree -- an empty commit, the same content committed twice under
+different messages, a cherry-pick, a rebase that preserved the tree -- and
+every one of them would pass this same check against the same on-disk bytes,
+just as validly. The function proves a match against the specific
+`commit_sha` its caller supplied; it cannot determine which commit, of
+possibly several compatible ones, is the one that put those bytes there.
+
+This matters for G5 recomposition and for anything that consumes G1's result
+as evidence: a passing check licenses "these bytes are `commit_sha`'s tree",
+never "`commit_sha` is the unique origin of these bytes". Treating a
+*compatible* commit as *proven* provenance is exactly the overclaim this
+correction exists to prevent.
+
+### Two separate overclaims, both corrected
+
+The module's docstring had drifted further still, claiming IDENTITY was
+*"which commit produced the bytes that are **executing right now**"* --
+flagged as P1 finding #1 by post-merge Codex review on PR #284. `#200-G1-S`
+corrected both layers, docs-only, with no public symbol, field, or wire
+schema changed:
+
+1. **execution → materialization.** G1 proves
+   `authorized/selected commit -> current materialized subject bytes`, never
+   `-> what an already-running interpreter previously executed`. An explicit
+   "What this module does NOT prove" section was added to the module
+   docstring. The actual closure of the execution-provenance question is
+   `#301` (`#200-G1B`) -- a different layer, not a stricter version of this
+   one.
+2. **provenance → tree equality.** As stated above; raised by external Codex
+   review of the `#200-G1-S` PR itself (#306) against the first correction,
+   which had fixed (1) while leaving "produced" in place.
+
+### `authorize_commit_for_execution_v2` remains as merged — deferred to `#303`
+
+`#200-G1-S` also *attempted* to correct the authorization primitive's
+conflation of "proven not an ancestor" with "could not prove ancestry"
+(`merge-base --is-ancestor` exits 1 for both). **That attempt was withdrawn,
+and this function is unchanged from `9dace90c`.** It was withdrawn on
+structural grounds, not because the underlying defect is unreal — it is
+real, and it remains open.
+
+Three successive corrections were each independently falsified by external
+review, every one by a *different* mechanism that defeats ancestry
+determination while producing an exit-1 answer indistinguishable from a
+clean negative:
+
+1. shallow history (truncated graph, silent exit 1);
+2. object-store corruption (a reachable parent object deleted — exit 1, but
+   with a diagnostic on stderr);
+3. `$GIT_DIR/info/grafts` (documented in `gitrepository-layout` as recording
+   *fake commit ancestry*) — exit 1, empty stderr, repository not shallow,
+   and the graft-deprecation warning silenceable by the repository's own
+   `advice.graftFileDeprecated=false`.
+
+Each fix closed its own case and was mutation-tested; the *pattern* is the
+failure. Every version detected a growing list of specific known-bad
+signatures after the fact, rather than positively proving the graph was
+trustworthy before trusting its answer — so each new mechanism arrived as a
+fresh bypass of a gate that had just been "fixed". This is structurally the
+same problem `#303` (`#200-G1C`, isolated immutable object-store authority)
+exists to solve: a **mutable, repository-discoverable git state used as a
+trust root, with after-the-fact detection standing in for positive proof**.
+
+The right direction is `#303`'s trusted-local-CAS-by-digest framing
+(N5 / ADR-0011): once ancestry is established from a sealed,
+digest-addressed local copy rather than live-queried against a repository
+the adversary still controls, grafts, shallow boundaries, corruption and
+whatever the fourth mechanism turns out to be all stop mattering at once —
+because none of them are reachable inputs any more. Patching a fourth
+signature into the same gate would only postpone the next round.
+
+**Consumers must therefore continue to read `authorize_commit_for_execution_
+v2`'s `authorized=False` as "git said no under conditions this primitive
+does not verify", not as a proven negative** — exactly as it has meant since
+`9dace90c`. `#200-G1-S` changed nothing about that; it only established, on
+the record, that the property cannot be closed by instance-level patching.

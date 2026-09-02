@@ -228,6 +228,77 @@ def test_digest_survives_and_is_byte_faithful_for_non_utf8_git_filenames(
     assert digest_a != digest_b, "distinct raw byte names must not digest identically"
 
 
+def test_digest_entry_order_follows_encoded_path_bytes_not_decoded_collation(
+    tmp_path: Path,
+) -> None:
+    """Independent-review finding (P2) on this PR's own external review (PR
+    #306, round 2): the first byte-faithful attempt encoded each record with
+    `os.fsencode` but still ordered them with
+    `sorted(subject_root.rglob("*"))` -- i.e. by the DECODED `Path` values.
+    On a filesystem whose codec does not preserve raw-byte collation (CP1252
+    is the reviewer's example: raw `0x80` and `0x82` decode to characters
+    that sort in the opposite order from their bytes), identical on-disk
+    bytes would concatenate in a different order than on a
+    UTF-8/surrogateescape host and hash to a different digest. Sorting the
+    encoded byte keys makes the ordering a property of the bytes themselves.
+
+    The divergence is made reproducible ON THIS UTF-8 HOST (rather than
+    merely argued about for a hypothetical CP1252 one) by picking two raw
+    filenames whose byte order and decoded-`str` order are genuinely
+    OPPOSITE under surrogateescape:
+
+    * ``b"\\xc3\\xa9.py"`` -- valid UTF-8 for ``é``, decodes to ``U+00E9``;
+    * ``b"\\x80.py"``      -- invalid UTF-8, decodes to the lone surrogate
+      ``U+DC80``.
+
+    By raw bytes, ``0x80 < 0xc3``, so the second sorts FIRST. By code point,
+    ``U+00E9 < U+DC80``, so the first sorts first. An implementation that
+    sorts decoded values before encoding therefore emits its records in the
+    opposite order from one that sorts the encoded bytes, and the two
+    produce different digests -- on this very host, no exotic locale
+    required. The assertion pins the digest to the byte-sorted preimage."""
+    import hashlib
+    import os
+
+    root = tmp_path / "subject"
+    root.mkdir()
+    root_bytes = os.fsencode(root)
+    # Written via raw bytes so the on-disk names are exactly these bytes.
+    with open(os.path.join(root_bytes, b"\xc3\xa9.py"), "wb") as fh:
+        fh.write(b"E\n")
+    with open(os.path.join(root_bytes, b"\x80.py"), "wb") as fh:
+        fh.write(b"S\n")
+    (root / "plain.py").write_text("P\n")
+
+    keyed: list[tuple[bytes, bytes]] = []
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        relative_bytes = os.fsencode(relative)
+        if path.is_symlink():
+            record = b"l\x00" + relative_bytes + b"\x00" + os.readlink(os.fsencode(path))
+        elif path.is_dir():
+            record = b"d\x00" + relative_bytes
+        elif path.is_file():
+            digest = hashlib.sha256(path.read_bytes()).hexdigest().encode("ascii")
+            executable = b"1" if os.access(path, os.X_OK) else b"0"
+            record = b"f\x00" + relative_bytes + b"\x00" + executable + b"\x00" + digest
+        else:
+            record = b"?\x00" + relative_bytes
+        keyed.append((relative_bytes, record))
+
+    # The fixture must genuinely exercise the divergence, or this test would
+    # pass under either implementation and prove nothing.
+    byte_order = [key for key, _record in sorted(keyed)]
+    str_order = [os.fsencode(name) for name in sorted(os.fsdecode(k) for k, _r in keyed)]
+    assert byte_order != str_order, (
+        "fixture failed to produce a byte-order/str-order divergence; without one "
+        "this test cannot distinguish the two implementations"
+    )
+
+    expected_preimage = b"\n".join(record for _key, record in sorted(keyed))
+    assert compute_subject_digest_v2(root) == hashlib.sha256(expected_preimage).hexdigest()
+
+
 def test_materialise_refuses_blob_subtree_name_collision_instead_of_crashing(
     tmp_path: Path,
 ) -> None:

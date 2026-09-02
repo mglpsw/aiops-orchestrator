@@ -112,12 +112,11 @@ from __future__ import annotations
 
 import os
 import posixpath
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent_review.bounded_git_v2 import run_bounded_git_v2
+from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
 from app.agent_review.git_commit_subject_v2 import (
     EXECUTABLE_MODE_V2,
     GITLINK_MODE_V2,
@@ -130,7 +129,6 @@ from app.agent_review.git_commit_subject_v2 import (
 )
 
 __all__ = [
-    "IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2",
     "IDENTITY_BLOB_MISSING_REASON_V2",
     "IDENTITY_CONTENT_MISMATCH_REASON_V2",
     "IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2",
@@ -165,12 +163,6 @@ IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2 = "identity_extra_untracked_file"
 # directory (e.g. a permission error), which is NOT the same fact as "that
 # directory is empty". Never silently folded into a clean pass.
 IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2 = "identity_traversal_unreadable"
-# S4 (#200-G1-S / issue #305): distinct from `authorized=False`. Raised when
-# `authorize_commit_for_execution_v2` cannot obtain a definitive ancestry
-# answer -- e.g. a shallow or otherwise incomplete history -- rather than
-# silently reporting a clean negative for a question it could not actually
-# answer. `PROVEN_NOT_ANCESTOR != COULD_NOT_PROVE_ANCESTRY`.
-IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2 = "identity_authorization_undetermined"
 IDENTITY_CONTENT_MISMATCH_REASON_V2 = "identity_content_mismatch"
 IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2 = "identity_symlink_target_mismatch"
 IDENTITY_MODE_MISMATCH_REASON_V2 = "identity_mode_mismatch"
@@ -531,106 +523,6 @@ def verify_executed_source_identity_v2(
     return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=subject_root)
 
 
-def _history_is_shallow_v2(*, repo_root: Path) -> bool:
-    """Is ``repo_root`` a shallow (history-truncated) checkout at all?
-
-    ``git rev-parse --is-shallow-repository`` prints exactly ``true`` or
-    ``false``. A shallow repository can hold a commit object whose own
-    parent field genuinely names another commit that is ALSO separately
-    present locally (e.g. fetched as its own independent shallow tip via a
-    different ref) without the edge between them being traversable: the
-    shallow boundary makes git treat the boundary commit as having no
-    parents for graph-walking purposes, full stop, regardless of what is
-    separately present in the object store. That is what makes a shallow
-    history's negative ``merge-base --is-ancestor`` answers unsafe to trust
-    without this check.
-
-    Independent-review finding (P2) on this PR's own external review (PR
-    #306, on top of `#200-G1-S` / issue #305): this probe is itself a git
-    invocation and can itself fail (an older git lacking the flag, a
-    repository that becomes unreadable between the two commands, ...).
-    ``check=False`` was used to read the exit code without an exception, but
-    nothing inspected it -- a failed probe's empty/garbage stdout does not
-    equal the literal string ``"true"``, so it silently evaluated as "not
-    shallow", defeating S4's whole distinction for exactly the failure mode
-    S4 exists to catch. Any non-zero exit or any output other than the two
-    tokens git actually documents is now refused outright, the same as the
-    ancestry check's own undetermined path -- never treated as a confident
-    "not shallow".
-    """
-    completed = run_bounded_git_v2(
-        ["rev-parse", "--is-shallow-repository"], cwd=repo_root, check=False
-    )
-    output = completed.stdout.decode("utf-8", "surrogateescape").strip()
-    if completed.returncode != 0 or output not in ("true", "false"):
-        raise _AncestryUndeterminedV2()
-    return output == "true"
-
-
-class _AncestryUndeterminedV2(Exception):
-    """Internal signal only: some check inside ``_ancestry_negative_is_
-    trustworthy_v2`` could not affirmatively confirm completeness. Never
-    escapes ``authorize_commit_for_execution_v2`` -- it is always converted
-    to ``ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_
-    REASON_V2)`` at that single call site, so there is exactly one place in
-    this module that raises the public, typed refusal for this property.
-    """
-
-
-def _ancestry_negative_is_trustworthy_v2(
-    *, repo_root: Path, merge_base_result: subprocess.CompletedProcess
-) -> bool:
-    """Positively establish whether a ``merge-base --is-ancestor`` exit-1
-    result may be trusted as a clean ``authorized=False``.
-
-    Deliberately shaped as ONE gate that must affirmatively return ``True``
-    -- completeness POSITIVELY confirmed -- rather than a growing list of
-    individually-named bad conditions that defaults to "trust it" for
-    anything not yet on the list. Independent review of an earlier version
-    of this fix (this PR's own external review, PR #306) found a second
-    real gap after the first correction: enumerating "shallow" as the one
-    known cause of an untrustworthy negative missed a corrupt-but-not-
-    shallow object store (a real, reachable parent commit object deleted)
-    as a second, independent cause. Enumerating causes one at a time is
-    exactly the antipattern this module's own history (`#303`/`#304`'s
-    STOP disposition on a structurally similar problem) warns against: the
-    next unenumerated cause would silently fall through to "trusted" again.
-
-    This function's default is refusal, not trust: every branch below ends
-    in ``return False`` unless every check it knows how to run affirmatively
-    succeeded. A future git behaviour this function does not yet have a
-    name for does not need a new branch added here to fail safely -- it
-    already does, because nothing affirmatively confirmed it, and the
-    caller (``authorize_commit_for_execution_v2``) never inverts ``False``
-    from this function into anything but "undetermined".
-
-    Two independent checks currently compose the affirmative confirmation,
-    both empirically grounded, not assumed:
-
-    1. The ancestor check's own diagnostic output. A clean negative is
-       always silent (verified with a real corrupted object store: a
-       reachable-but-deleted parent commit object makes ``merge-base
-       --is-ancestor`` exit 1 WITH ``error: Could not read <sha>`` on
-       stderr; a genuine non-ancestor in a complete history exits 1 with
-       EMPTY stderr). Any stderr at all means the graph was not actually
-       fully walked -- not confirmed, regardless of shallow status.
-    2. Shallow-history confirmation (``_history_is_shallow_v2``). A shallow
-       clone's truncation is a normal boundary condition, not an error --
-       git exits 1 SILENTLY, indistinguishable from a genuine non-ancestor
-       by stderr alone, so it needs its own independent probe. If that
-       probe itself cannot give a definitive answer (``_AncestryUndetermined
-       V2``, e.g. an older git or an unreadable repository), that is ALSO a
-       failure to confirm, not a reason to assume "not shallow".
-    """
-    if merge_base_result.stderr:
-        return False
-    try:
-        is_shallow = _history_is_shallow_v2(repo_root=repo_root)
-    except _AncestryUndeterminedV2:
-        return False
-    return not is_shallow
-
-
 def authorize_commit_for_execution_v2(
     *, repo_root: Path, commit_sha: str, trusted_ref: str
 ) -> ExecutedSourceAuthorizationV2:
@@ -642,28 +534,6 @@ def authorize_commit_for_execution_v2(
     nothing about whether ``commit_sha``'s tree matches any particular bytes
     on disk -- that is ``verify_executed_source_identity_v2``'s job, and the
     two are meant to be composed by the caller, never merged here.
-
-    S4 (``#200-G1-S``, issue #305, salvaged from forensic PR #302's finding
-    #7, ported here as the FINAL qualified form after two prior intermediate
-    attempts were each found to have their own false negative -- first a
-    shallow-history gap, then a corrupt-but-not-shallow gap in the fix for
-    THAT): ``git merge-base --is-ancestor`` exits 1 both when ``commit_sha``
-    genuinely is not an ancestor of ``trusted_ref`` in a complete history,
-    AND when the history available to this call is too incomplete to
-    determine that at all -- git's exit code alone does not distinguish
-    "proven not an ancestor" from "could not prove ancestry". Collapsing
-    both into ``authorized=False`` would silently treat "I don't know" as a
-    confident negative.
-
-    An exit-1 answer is trusted as a clean ``authorized=False`` ONLY when
-    ``_ancestry_negative_is_trustworthy_v2`` affirmatively confirms it --
-    see that function's own docstring for why this is deliberately ONE gate
-    that must positively succeed, not a list of individually-enumerated bad
-    conditions defaulting to "trust it" for anything unnamed. Any exit code
-    other than 0 or 1 (e.g. a usage error) is treated as undetermined the
-    same way -- an operational failure, never a clean negative.
-
-    ``PROVEN_NOT_ANCESTOR != COULD_NOT_PROVE_ANCESTRY``.
     """
     repo_root = Path(repo_root).resolve()
     try:
@@ -672,25 +542,17 @@ def authorize_commit_for_execution_v2(
     except SubjectMaterialisationError as exc:
         raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
-    completed = run_bounded_git_v2(
-        ["merge-base", "--is-ancestor", resolved_commit, resolved_trusted],
-        cwd=repo_root,
-        check=False,
-    )
-    if completed.returncode == 0:
+    try:
+        run_bounded_git_v2(
+            ["merge-base", "--is-ancestor", resolved_commit, resolved_trusted],
+            cwd=repo_root,
+        )
         authorized = True
-    elif completed.returncode == 1:
-        if not _ancestry_negative_is_trustworthy_v2(
-            repo_root=repo_root, merge_base_result=completed
-        ):
-            raise ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2)
-        authorized = False
-    else:
-        # Any other exit code (invalid object, corrupt store, usage error)
-        # is a genuine operational failure, not a clean negative -- refused
-        # the same way an unconfirmed negative is, rather than silently
-        # becoming `authorized=False`.
-        raise ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2)
+    except BoundedGitError as exc:
+        if exc.reason_code == "bounded_git_command_failed":
+            authorized = False
+        else:
+            raise
 
     return ExecutedSourceAuthorizationV2(
         commit_sha=resolved_commit,

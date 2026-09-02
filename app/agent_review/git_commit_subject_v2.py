@@ -331,19 +331,33 @@ def compute_subject_digest_v2(subject_root: Path) -> str:
     import hashlib
     import os as _os
 
-    entries: list[bytes] = []
-    for path in sorted(subject_root.rglob("*")):
+    # Keyed by the ENCODED path bytes, and sorted by those bytes -- not by
+    # the decoded `str`/`Path`. Independent review of the first byte-faithful
+    # attempt (PR #306) found that sorting `Path` values first and encoding
+    # afterwards leaves a second, subtler environment dependency: on a
+    # filesystem whose codec does not preserve raw-byte collation (e.g.
+    # CP1252, where raw 0x80 and 0x82 decode to characters that sort in the
+    # opposite order), the same raw directory entries concatenate in a
+    # different order than on a UTF-8/surrogateescape host, producing a
+    # different digest for identical on-disk bytes. Sorting the byte keys
+    # makes the ordering a property of the bytes themselves, so it is
+    # identical on every host regardless of filesystem encoding.
+    keyed_entries: list[tuple[bytes, bytes]] = []
+    for path in subject_root.rglob("*"):
         relative = path.relative_to(subject_root).as_posix()
         relative_bytes = _os.fsencode(relative)
         if path.is_symlink():
             target_bytes = _os.readlink(_os.fsencode(path))
-            entries.append(b"l\x00" + relative_bytes + b"\x00" + target_bytes)
+            record = b"l\x00" + relative_bytes + b"\x00" + target_bytes
         elif path.is_dir():
-            entries.append(b"d\x00" + relative_bytes)
+            record = b"d\x00" + relative_bytes
         elif path.is_file():
             digest = hashlib.sha256(path.read_bytes()).hexdigest().encode("ascii")
             executable = b"1" if _os.access(path, _os.X_OK) else b"0"
-            entries.append(b"f\x00" + relative_bytes + b"\x00" + executable + b"\x00" + digest)
+            record = b"f\x00" + relative_bytes + b"\x00" + executable + b"\x00" + digest
         else:
-            entries.append(b"?\x00" + relative_bytes)
+            record = b"?\x00" + relative_bytes
+        keyed_entries.append((relative_bytes, record))
+
+    entries = [record for _key, record in sorted(keyed_entries)]
     return hashlib.sha256(b"\n".join(entries)).hexdigest()
