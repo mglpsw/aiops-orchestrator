@@ -109,6 +109,10 @@ from app.agent_review.review_transport_contract_v2 import (
     compute_request_sha256_v2,
     verify_transport_echo_v1,
 )
+from app.agent_review.structural_egress_projection_v2 import (
+    StructuralProjectionBlockedV2,
+    project_chunk_content_structural_v2,
+)
 from app.agent_review.synthesis_v2 import synthesize_chunk_results_v2
 
 CHUNK_TRANSPORT_FAILURE_REASON_V2 = "transport_failure"
@@ -444,6 +448,26 @@ def _build_agent_router_messages_v2(
     chunk_content: ChunkContentV2,
     payload: ChunkPayloadV2,
 ) -> list[dict[str, Any]]:
+    """``chunk_content`` NEVER reaches this message in its raw form (#200-
+    G2C, issue #299). ``project_chunk_content_structural_v2`` replaces
+    every fragment's real content with a closed, schema-typed structural
+    projection -- every literal opaque, every identifier aliased -- before
+    anything is serialized into ``user_material``. A fragment this
+    projector cannot PROVE closed (non-Python path, unparseable text, an
+    AST shape outside the live-derived universe) raises
+    ``StructuralProjectionBlockedV2``, which this function re-raises as
+    ``ChunkTransportError`` -- degrading the WHOLE chunk to
+    ``manual_required`` before any message is built and before any HTTP
+    attempt, never sending a best-effort partial payload. See
+    ``structural_egress_projection_v2``'s module docstring for the closure
+    property this establishes and why #200-G2/#200-G2B (content-
+    classification over an open domain) were refuted instead."""
+
+    try:
+        projected_content = project_chunk_content_structural_v2(chunk_content)
+    except StructuralProjectionBlockedV2 as exc:
+        raise ChunkTransportError(exc.reason_code) from exc
+
     user_material = {
         "semantic_group": payload.semantic_group.value,
         "coverage": payload.coverage.model_dump(mode="json"),
@@ -453,13 +477,49 @@ def _build_agent_router_messages_v2(
         "contract_references": [
             item.model_dump(mode="json") for item in payload.contract_references
         ],
-        "chunk_content": chunk_content.model_dump(mode="json"),
+        "chunk_content": projected_content.model_dump(mode="json"),
         "output_contract": ChunkReviewResultV2.model_json_schema(mode="validation"),
     }
     return [
         {"role": "system", "content": _ROUTER_SYSTEM_MESSAGE_V2},
         {"role": "user", "content": _canonical_json_text_v2(user_material)},
     ]
+
+
+def build_agent_router_request_body_v2(
+    *,
+    model: str,
+    request: ChunkReviewRequestV2,
+    messages: list[dict[str, Any]],
+) -> bytes:
+    """The EXACT pre-HTTP request body bytes ``agent_router_transport_v2``'s
+    transport closure sends -- extracted to a top-level, independently
+    callable function specifically so an outbound-safety proof (#200-G2C,
+    issue #299) inspects the REAL bytes a caller would produce, not a
+    separately re-serialized reconstruction (the #200-G2B lesson, #287:
+    'a second correlated projection can silently normalize/reorder/drop
+    exactly the material that would have leaked'). ``agent_router_
+    transport_v2`` below calls this SAME function with the SAME
+    ``messages`` list it also uses for receipt-v2 binding -- there is only
+    one code path that can produce this body, not two that could
+    silently diverge."""
+
+    metadata = {
+        "chunk_id": request.chunk_id,
+        "run_id": request.run_id,
+        "payload_sha256": request.payload_sha256,
+        "head_sha": request.head_sha,
+        "content_sha256": request.content_sha256,
+        "request_sha256": request.request_sha256,
+    }
+    return _canonical_json_text_v2(
+        {
+            "model": model,
+            "messages": messages,
+            "metadata": metadata,
+            "response_format": {"type": "json_object"},
+        }
+    ).encode("utf-8")
 
 
 def agent_router_transport_v2(
@@ -490,22 +550,9 @@ def agent_router_transport_v2(
             chunk_content=chunk_content,
             payload=payload,
         )
-        metadata = {
-            "chunk_id": request.chunk_id,
-            "run_id": request.run_id,
-            "payload_sha256": request.payload_sha256,
-            "head_sha": request.head_sha,
-            "content_sha256": request.content_sha256,
-            "request_sha256": request.request_sha256,
-        }
-        body = _canonical_json_text_v2(
-            {
-                "model": model,
-                "messages": messages,
-                "metadata": metadata,
-                "response_format": {"type": "json_object"},
-            }
-        ).encode("utf-8")
+        body = build_agent_router_request_body_v2(
+            model=model, request=request, messages=messages,
+        )
         http_request = urllib.request.Request(
             endpoint, data=body, method="POST",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
