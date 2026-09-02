@@ -34,6 +34,13 @@ AUTHORIZED COMMIT -> GIT OBJECTS OF THAT COMMIT -> MATERIALIZED BYTES
                    -> EXECUTED BYTES -> ARTIFACT IDENTITY
 ```
 
+The last arrow, MATERIALIZED BYTES -> EXECUTED BYTES, is what this module
+*assumes* a well-behaved caller upholds (verify before import, never
+import-then-verify), not something it independently proves -- see "What
+this module does NOT prove" below for exactly where that assumption can be
+false and how a caller composing this module with a fresh-process ordering
+(`#200-G1B`, not yet implemented) is what would close it.
+
 Direction is commit -> bytes, never bytes + document -> claimed commit.
 ``verify_executed_source_identity_v2`` never accepts a pre-computed digest as
 ground truth. Given a commit sha and the toolrepo's own git repository, it
@@ -51,10 +58,14 @@ This module deliberately keeps two questions apart and never collapses them
 into one boolean:
 
 ``ExecutedSourceIdentityV2`` / ``verify_executed_source_identity_v2``
-    IDENTITY: which commit produced the bytes that are executing right now.
-    A fact derivable entirely from the toolrepo's own git object store plus
-    what is actually on disk. Says nothing about whether that commit was
-    *supposed* to run.
+    IDENTITY: which commit produced the bytes materialised at
+    ``subject_root`` *at the moment this function is called*. A fact
+    derivable entirely from the toolrepo's own git object store plus what
+    is actually on disk right now. Says nothing about whether that commit
+    was *supposed* to run -- see ``ExecutedSourceAuthorizationV2`` below --
+    and, narrowed per the note immediately following this list, says
+    nothing about what an already-running interpreter executed at any
+    *earlier* point either.
 
 ``ExecutedSourceAuthorizationV2`` / ``authorize_commit_for_execution_v2``
     AUTHORIZATION: whether a given (already-identified) commit is permitted
@@ -65,6 +76,37 @@ into one boolean:
 
 A caller that wants an overall accept/refuse decision composes both
 results explicitly; this module does not do that composition for it.
+
+## What this module does NOT prove (narrowed by `#200-G1-PM`, see `#200-G1B`)
+
+Independent review (`#200-G1-PM` finding 1, Codex, PR #284 review of the
+pre-merge head `18dc9e4f`) found this module's name and the paragraph above
+-- in an earlier revision -- overclaimed: "which commit produced the bytes
+*that are executing right now*" reads as a guarantee about the running
+interpreter's actual execution history, which this module cannot make and
+never could. What ``verify_executed_source_identity_v2`` actually proves is
+narrower: at the instant it is called, ``subject_root``'s on-disk bytes
+match ``commit_sha``'s tree, and every path in ``loaded_module_paths``
+resolves under ``subject_root``. It does **not**, and structurally cannot
+on its own, prove that those are the bytes an interpreter actually read
+when it imported a module earlier in this process's lifetime. A module can
+be tampered on disk, imported while tampered, and then restored to match
+the commit before this function is ever called -- every check this module
+performs would report success, because every one of them compares
+*current* disk state, and current disk state is, by then, honestly
+identical to the commit. This is reproduced directly (not merely asserted)
+in this module's own test corpus, and deliberately left unfixed here: doing
+so would require an ordering this module alone cannot enforce --
+verify the materialised subject, THEN start a fresh process, THEN import
+only after verification succeeds, producing a distinct execution-provenance
+receipt -- which is a different primitive composing process/import
+lifecycle this module has no say over. That successor is scoped separately
+as `#200-G1B` (fresh-process execution provenance from a verified commit
+subject). Nothing about the public names in this module (``Executed
+SourceIdentityV2``, ``verify_executed_source_identity_v2``, and friends)
+changed to reflect this narrowing -- they remain the wire-visible contract
+other code already depends on -- only the prose claiming more than the
+implementation proves.
 
 ## Threat scope
 
@@ -88,7 +130,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
+from app.agent_review.bounded_git_v2 import run_bounded_git_v2
 from app.agent_review.git_commit_subject_v2 import (
     EXECUTABLE_MODE_V2,
     GITLINK_MODE_V2,
@@ -101,6 +143,7 @@ from app.agent_review.git_commit_subject_v2 import (
 )
 
 __all__ = [
+    "IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2",
     "IDENTITY_BLOB_MISSING_REASON_V2",
     "IDENTITY_CONTENT_MISMATCH_REASON_V2",
     "IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2",
@@ -112,6 +155,7 @@ __all__ = [
     "IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2",
     "IDENTITY_SYMLINKED_DIRECTORY_REASON_V2",
     "IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2",
+    "IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2",
     "IDENTITY_TREE_UNREADABLE_REASON_V2",
     "IDENTITY_UNKNOWN_COMMIT_REASON_V2",
     "ExecutedSourceAuthorizationV2",
@@ -136,6 +180,8 @@ IDENTITY_LOADED_CODE_OUTSIDE_SUBJECT_REASON_V2 = "identity_loaded_code_outside_s
 IDENTITY_SUBJECT_ROOT_UNREADABLE_REASON_V2 = "identity_subject_root_unreadable"
 IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2 = "identity_path_escapes_subject"
 IDENTITY_SYMLINKED_DIRECTORY_REASON_V2 = "identity_symlinked_directory_in_subject"
+IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2 = "identity_traversal_unreadable"
+IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2 = "identity_authorization_undetermined"
 
 
 class ExecutedSourceIdentityError(ValueError):
@@ -260,9 +306,32 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
     ``Path.rglob`` for the enumeration itself precisely because it reports
     (without descending into) any symlinked directory in ``dirnames``,
     which is exactly the signal this function needs to refuse on.
+
+    ``onerror`` is required for the same reason (`#200-G1-PM` finding 4,
+    Codex, PR #284 review of `18dc9e4f`): by default, ``os.walk`` silently
+    *swallows* any ``OSError`` a ``scandir()`` call raises for a directory
+    it cannot read (permission denied, or the directory disappearing
+    mid-walk) -- with no ``onerror`` callback, that directory is simply
+    treated as empty. A file this scan is unable to see because of that is
+    not "absent"; it is "unknown", and this completeness check's entire
+    purpose is to prove absence, not merely fail to observe presence. A
+    caller (or anything else with filesystem access, e.g. Python's own
+    import machinery, which does not ask this function's permission first)
+    could still read that directory's contents even though this scan
+    could not, which would make ``verify_executed_source_identity_v2``
+    return a successful identity while a file unaccounted for by the
+    commit's tree sits reachable, uncompared, right under ``subject_root``.
+    The callback converts every such traversal failure into an explicit,
+    typed refusal instead of a silent gap in what was actually checked.
     """
     leaf_paths: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(subject_root, followlinks=False):
+
+    def _fail_closed_on_traversal_error(error: OSError) -> None:
+        raise ExecutedSourceIdentityError(IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2) from error
+
+    for dirpath, dirnames, filenames in os.walk(
+        subject_root, followlinks=False, onerror=_fail_closed_on_traversal_error
+    ):
         current_dir = Path(dirpath)
         for dirname in dirnames:
             if (current_dir / dirname).is_symlink():
@@ -440,6 +509,36 @@ def verify_executed_source_identity_v2(
     return ExecutedSourceIdentityV2(commit_sha=resolved_commit, subject_root=subject_root)
 
 
+def _merge_base_history_is_fully_readable_v2(*, repo_root: Path, commits: tuple[str, str]) -> bool:
+    """Independently prove the commit graph reachable from ``commits`` can
+    be walked in full, without relying on ``merge-base --is-ancestor``'s own
+    exit code to say so.
+
+    `#200-G1-PM` finding 7 (Codex, PR #284 review of `18dc9e4f`): `git
+    merge-base --is-ancestor` exits 1 -- git's own documented "not an
+    ancestor" code -- for two epistemically different reasons that its exit
+    code alone does not distinguish: a genuine, fully-determined negative,
+    or an aborted traversal caused by a missing/corrupt object somewhere in
+    the ancestry it needed to walk. Proven empirically, not assumed: two
+    commits diverging from a common root, with that root commit's own
+    object deleted from the store, made `merge-base --is-ancestor
+    <tip-1> <tip-2>` print ``error: Could not read <sha>`` to stderr and
+    still exit 1 -- identical to a clean, complete "not an ancestor"
+    result, on the git version this was tested against.
+
+    ``git rev-list <c1> <c2>`` (deliberately without ``--objects``, so only
+    commit objects are walked, not blobs/trees, which merge-base's own
+    traversal does not need either) independently re-proves whether that
+    same commit graph is completely readable: proven, in the same
+    experiment, to exit non-zero (``fatal: Failed to traverse parents of
+    commit ...``) precisely when an object in that graph cannot be read,
+    and exit zero when the graph is fully readable -- regardless of
+    whether either commit turns out to be an ancestor of the other.
+    """
+    completed = run_bounded_git_v2(["rev-list", *commits], cwd=repo_root, check=False)
+    return completed.returncode == 0
+
+
 def authorize_commit_for_execution_v2(
     *, repo_root: Path, commit_sha: str, trusted_ref: str
 ) -> ExecutedSourceAuthorizationV2:
@@ -451,6 +550,16 @@ def authorize_commit_for_execution_v2(
     nothing about whether ``commit_sha``'s tree matches any particular bytes
     on disk -- that is ``verify_executed_source_identity_v2``'s job, and the
     two are meant to be composed by the caller, never merged here.
+
+    A ``merge-base`` operational failure (missing/corrupt objects in the
+    ancestry) is distinguished from, and never reported the same as, a
+    clean "not an ancestor" result -- see
+    ``_merge_base_history_is_fully_readable_v2`` for why the two cannot be
+    told apart from ``merge-base``'s exit code alone. Collapsing them would
+    let a caller receive ``authorized=False`` -- "this commit is not
+    permitted" -- for what is actually "this cannot be determined right
+    now", an availability failure of the identity primitive itself, not a
+    policy decision about the commit.
     """
     repo_root = Path(repo_root).resolve()
     try:
@@ -459,17 +568,21 @@ def authorize_commit_for_execution_v2(
     except SubjectMaterialisationError as exc:
         raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
-    try:
-        run_bounded_git_v2(
-            ["merge-base", "--is-ancestor", resolved_commit, resolved_trusted],
-            cwd=repo_root,
-        )
+    completed = run_bounded_git_v2(
+        ["merge-base", "--is-ancestor", resolved_commit, resolved_trusted],
+        cwd=repo_root,
+        check=False,
+    )
+    if completed.returncode == 0:
         authorized = True
-    except BoundedGitError as exc:
-        if exc.reason_code == "bounded_git_command_failed":
-            authorized = False
-        else:
-            raise
+    elif completed.returncode == 1:
+        if not _merge_base_history_is_fully_readable_v2(
+            repo_root=repo_root, commits=(resolved_commit, resolved_trusted)
+        ):
+            raise ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2)
+        authorized = False
+    else:
+        raise ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2)
 
     return ExecutedSourceAuthorizationV2(
         commit_sha=resolved_commit,

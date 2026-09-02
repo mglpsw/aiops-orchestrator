@@ -14,6 +14,7 @@ import pytest
 
 from app.agent_review.bounded_git_v2 import (
     BOUNDED_GIT_COMMAND_FAILED_REASON_V2,
+    BOUNDED_GIT_PROMISOR_REMOTE_PRESENT_REASON_V2,
     BOUNDED_GIT_WORKTREE_UNUSABLE_REASON_V2,
     BoundedGitError,
     bounded_git_environment_v2,
@@ -112,5 +113,77 @@ def test_run_bounded_git_ignores_ambient_git_dir(
     subprocess.run(["git", "commit", "--quiet", "-m", "init"], cwd=repo, check=True)
 
     monkeypatch.setenv("GIT_DIR", str(tmp_path / "totally-unrelated.git"))
+    completed = run_bounded_git_v2(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=repo)
+    assert completed.returncode == 0
+
+
+# -- `#200-G1-PM` finding 5: arbitrary (non-`origin`) promisor remotes -----------
+
+
+def test_partial_clone_with_non_origin_promisor_remote_is_refused(tmp_path: Path) -> None:
+    """`remote.origin.promisor=false`, hardcoded, only disables lazy fetching
+    for a remote literally named `origin`. `git remote rename origin evil`
+    (ordinary git, real plumbing below, no mocking) preserves the
+    `promisor` flag under the new name, and this primitive is meant to be
+    fully offline -- nothing it does may pull bytes from outside the
+    repository's own local object store, regardless of what a repository's
+    own remote happens to be named.
+
+    Also proves the severity is broader than "only the non-`origin` case is
+    unhandled": empirically, the *pre-fix* `-c remote.origin.promisor=false`
+    override did not block the fetch even when the remote was still named
+    `origin` on this git build (verified separately, not asserted here) --
+    the fix in this module refuses on ANY promisor remote rather than
+    trying to suppress the fetch by name or by protocol/env switch, none of
+    which proved reliable.
+    """
+    upstream = tmp_path / "upstream"
+    _init_repo(upstream)
+    (upstream / "f.txt").write_text("hello\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=upstream, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "init"], cwd=upstream, check=True)
+    subprocess.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=upstream, check=True)
+    subprocess.run(
+        ["git", "config", "uploadpack.allowAnySHA1InWant", "true"], cwd=upstream, check=True
+    )
+    blob_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD:f.txt"],
+        cwd=upstream,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subject = tmp_path / "subject"
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--filter=blob:none",
+            f"file://{upstream}",
+            str(subject),
+        ],
+        check=True,
+    )
+    subprocess.run(["git", "remote", "rename", "origin", "evil"], cwd=subject, check=True)
+
+    with pytest.raises(BoundedGitError) as excinfo:
+        run_bounded_git_v2(
+            ["cat-file", "--batch"], cwd=subject, input_bytes=(blob_sha + "\n").encode()
+        )
+    assert excinfo.value.reason_code == BOUNDED_GIT_PROMISOR_REMOTE_PRESENT_REASON_V2
+
+
+def test_repo_without_any_promisor_remote_is_unaffected(tmp_path: Path) -> None:
+    """Sanity check: the finding-5 fix must not refuse an ordinary,
+    non-partial-clone repository with no remotes at all -- the overwhelming
+    majority of calls this primitive ever makes."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("A = 1\n")
+    subprocess.run(["git", "add", "a.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "init"], cwd=repo, check=True)
+
     completed = run_bounded_git_v2(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=repo)
     assert completed.returncode == 0

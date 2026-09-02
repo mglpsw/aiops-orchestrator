@@ -54,7 +54,9 @@ from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
 
 __all__ = [
     "SUBJECT_BLOB_MISSING_REASON_V2",
+    "SUBJECT_DESTINATION_IS_SYMLINK_REASON_V2",
     "SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2",
+    "SUBJECT_DUPLICATE_TREE_PATH_REASON_V2",
     "SUBJECT_PATH_COLLISION_REASON_V2",
     "SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2",
     "SUBJECT_TREE_UNREADABLE_REASON_V2",
@@ -75,6 +77,8 @@ SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2 = "subject_destination_not_empty"
 SUBJECT_PATH_ESCAPES_SUBJECT_REASON_V2 = "subject_path_escapes_subject"
 SUBJECT_BLOB_MISSING_REASON_V2 = "subject_blob_missing"
 SUBJECT_PATH_COLLISION_REASON_V2 = "subject_path_collision"
+SUBJECT_DESTINATION_IS_SYMLINK_REASON_V2 = "subject_destination_is_symlink"
+SUBJECT_DUPLICATE_TREE_PATH_REASON_V2 = "subject_duplicate_tree_path"
 
 GITLINK_MODE_V2 = "160000"
 SYMLINK_MODE_V2 = "120000"
@@ -139,9 +143,27 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
     `-z` because paths may contain newlines; the non-`-z` form quotes and
     escapes them, and re-decoding that is an avoidable source of divergence
     between what git recorded and what is written out.
+
+    Refuses a tree containing two entries for the exact same flattened path
+    (`#200-G1-PM` finding 3, Codex, PR #284 review of `18dc9e4f`). Proven
+    with real `git mktree` plumbing, not a hypothetical: `git commit-tree`
+    accepts, and `git ls-tree -r` happily emits, two blob entries sharing
+    one literal path in a single tree object -- nothing about the object
+    format itself forbids it, only the porcelain commands that normally
+    build trees do. Every downstream consumer of this list (materialisation
+    in this module, identity verification in
+    `commit_derived_execution_identity_v2.py`) eventually keys something by
+    `entry.path` -- a dict assignment, a file write -- and a path-keyed
+    structure silently prefers whichever duplicate is seen last, which
+    means one committed object is dropped without any signal. Detecting the
+    ambiguity here, before any caller has a chance to build such a
+    structure, and failing closed with a dedicated reason code, closes that
+    for every caller at once rather than requiring each one to re-derive
+    the same check.
     """
     completed = run_bounded_git_v2(["ls-tree", "-r", "-z", commit_sha], cwd=repo_root)
     entries: list[TreeEntryV2] = []
+    seen_paths: set[str] = set()
     for record in completed.stdout.split(b"\0"):
         if not record:
             continue
@@ -153,12 +175,16 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
         # surrogateescape: git paths are bytes. Decoding strictly would refuse
         # a legitimately non-UTF-8 path, which is a property of the commit's
         # history, not an error on our side.
+        path = raw_path.decode("utf-8", "surrogateescape")
+        if path in seen_paths:
+            raise SubjectMaterialisationError(SUBJECT_DUPLICATE_TREE_PATH_REASON_V2)
+        seen_paths.add(path)
         entries.append(
             TreeEntryV2(
                 mode=mode,
                 object_type=object_type,
                 object_id=object_id,
-                path=raw_path.decode("utf-8", "surrogateescape"),
+                path=path,
             )
         )
     return entries
@@ -227,6 +253,20 @@ def materialise_commit_subject_v2(
     original checkout afterwards cannot change what was materialised.
     """
     destination = Path(destination)
+    if destination.is_symlink():
+        # `#200-G1-PM` finding 2 (Codex, PR #284 review of `18dc9e4f`):
+        # `Path.is_symlink()` inspects the leaf `destination` path without
+        # following it -- exactly what must be rejected before the checks
+        # below, which otherwise resolve it transparently. A symlink to an
+        # empty directory would pass the exists()+iterdir() emptiness check
+        # below, and `mkdir(..., exist_ok=True)` treats "already exists and
+        # is a directory" (true of a symlink that resolves to one) as
+        # success rather than an error -- every subsequent write in this
+        # function then lands wherever the symlink points, not at the
+        # advertised, severed-from-source `destination`, and the returned
+        # `root` stays a retargetable symlink rather than an owned subject
+        # directory.
+        raise SubjectMaterialisationError(SUBJECT_DESTINATION_IS_SYMLINK_REASON_V2)
     if destination.exists() and any(destination.iterdir()):
         raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
     destination.mkdir(parents=True, exist_ok=True)
@@ -309,4 +349,15 @@ def compute_subject_digest_v2(subject_root: Path) -> str:
             entries.append(f"f\x00{relative}\x00{executable}\x00{digest}")
         else:
             entries.append(f"?\x00{relative}")
-    return hashlib.sha256("\n".join(entries).encode("utf-8")).hexdigest()
+    # `#200-G1-PM` finding 6 (Codex, PR #284 review of `18dc9e4f`):
+    # `relative` can contain lone surrogate characters -- `Path.rglob`,
+    # like the rest of Python's filesystem layer on POSIX, decodes raw
+    # path bytes with `surrogateescape` by default, exactly the same
+    # encoding `list_commit_tree_entries_v2` and `materialise_commit_
+    # subject_v2` use for a legitimately non-UTF-8 git path. A plain
+    # `.encode("utf-8")` (strict errors) raises `UnicodeEncodeError` on
+    # those surrogates, so this function could not digest a subject that
+    # the tree-reading and materialisation APIs right next to it explicitly
+    # support -- encoding with the matching `surrogateescape` strategy
+    # round-trips the original raw path bytes instead.
+    return hashlib.sha256("\n".join(entries).encode("utf-8", "surrogateescape")).hexdigest()

@@ -24,6 +24,7 @@ import pytest
 import app.agent_review.commit_derived_execution_identity_v2 as commit_derived_execution_identity_module
 from app.agent_review.bounded_git_v2 import BoundedGitError
 from app.agent_review.commit_derived_execution_identity_v2 import (
+    IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2,
     IDENTITY_BLOB_MISSING_REASON_V2,
     IDENTITY_CONTENT_MISMATCH_REASON_V2,
     IDENTITY_EXTRA_UNTRACKED_FILE_REASON_V2,
@@ -34,6 +35,7 @@ from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_PATH_ESCAPES_SUBJECT_REASON_V2,
     IDENTITY_SYMLINKED_DIRECTORY_REASON_V2,
     IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2,
+    IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2,
     IDENTITY_UNKNOWN_COMMIT_REASON_V2,
     ExecutedSourceIdentityError,
     authorize_commit_for_execution_v2,
@@ -862,3 +864,141 @@ def test_unauthorized_result_is_falsy(tmp_path: Path) -> None:
     )
     assert authorized.authorized is True
     assert authorized
+
+
+# -- `#200-G1-PM` finding 4: completeness traversal error swallowing ------------
+
+
+def test_completeness_traversal_error_is_refused_not_silently_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`os.walk` suppresses any `OSError` `scandir()` raises unless given an
+    `onerror` callback -- with none, a directory the process cannot
+    traverse is simply treated as empty, and any untracked file hidden
+    inside it is invisible to the completeness scan while still reachable
+    by anything that actually opens files (e.g. Python's own import
+    machinery). Tests in this suite commonly run as root, where chmod-based
+    permission denial is not enforced, so the unreadable condition is
+    simulated deterministically by monkeypatching `os.scandir` for the
+    specific directory rather than depending on real filesystem
+    permissions -- the same category of technique this file already uses
+    for the TOCTOU completeness test above (module-level monkeypatching of
+    a specific call, not a black-box permission fixture)."""
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    unreadable_dir = (subject_root / "app_agent_review").resolve()
+    real_scandir = os.scandir
+
+    def fake_scandir(path="."):
+        if Path(path).resolve() == unreadable_dir:
+            raise PermissionError(13, "Permission denied", str(unreadable_dir))
+        return real_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", fake_scandir)
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        verify_executed_source_identity_v2(
+            repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=()
+        )
+    assert excinfo.value.reason_code == IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2
+
+
+# -- `#200-G1-PM` finding 7: merge-base operational failure vs. clean negative --
+
+
+def test_merge_base_operational_failure_is_distinguished_from_clean_non_ancestor(
+    tmp_path: Path,
+) -> None:
+    """`merge-base --is-ancestor` exits 1 -- git's own documented "not an
+    ancestor" code -- both for a genuine negative AND for an aborted
+    traversal caused by a missing/corrupt object in the ancestry it needed
+    to walk (proven with real git plumbing: deleting a repo's root commit's
+    own object, with two branches diverging from it, makes `merge-base
+    --is-ancestor <tip-1> <tip-2>` print `error: Could not read ...` to
+    stderr and still exit 1 -- identical to a clean negative). Collapsing
+    both into `authorized=False` tells a caller "this commit is not
+    permitted" when the true state is "this cannot be determined" -- an
+    availability failure of the identity primitive itself, not a policy
+    decision about the commit."""
+    repo, root_sha = _toolrepo_fixture(tmp_path)
+
+    subprocess.run(["git", "checkout", "-q", "-b", "branch-b"], cwd=repo, check=True)
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nB = True\n")
+    b_sha = _commit_all(repo, "b")
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+
+    subprocess.run(["git", "checkout", "-q", "-b", "branch-d"], cwd=repo, check=True)
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nD = True\n")
+    d_sha = _commit_all(repo, "d")
+    subprocess.run(["git", "checkout", "-q", "main"], cwd=repo, check=True)
+
+    # Sanity check first: without corruption, this is a clean, determined
+    # negative (b and d diverge at root_sha, neither is an ancestor of the
+    # other).
+    clean_result = authorize_commit_for_execution_v2(
+        repo_root=repo, commit_sha=b_sha, trusted_ref=d_sha
+    )
+    assert clean_result.authorized is False
+
+    object_path = repo / ".git" / "objects" / root_sha[:2] / root_sha[2:]
+    assert object_path.exists()
+    object_path.unlink()
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=b_sha, trusted_ref=d_sha)
+    assert excinfo.value.reason_code == IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2
+
+
+# -- `#200-G1-PM` finding 1: architectural, reproduced and NOT fixed here -------
+
+
+def test_finding1_verification_cannot_see_tampering_that_was_restored_before_it_ran(
+    tmp_path: Path,
+) -> None:
+    """`#200-G1-PM` finding 1 (Codex, PR #284 review of `18dc9e4f`):
+    ``verify_executed_source_identity_v2`` binds loaded module bytes only by
+    ``module.__file__``'s PATH, never by content actually read at import
+    time. Reproduced here exactly as specified in `#200-G1-PM`: tamper a
+    module under ``subject_root``, simulate it having been imported while
+    tampered (real interpreter execution/import is not what this finding
+    is about -- the finding is that verification cannot see the tamper
+    window at all, regardless of what a real import statement would have
+    done with the tampered bytes during it), then restore it to match the
+    commit exactly before verification ever runs.
+
+    This SUCCEEDS below -- proving the finding is real. It is deliberately
+    NOT fixed here: closing it would require an ordering this module alone
+    cannot enforce (verify the materialised subject, THEN start a fresh
+    process, THEN import only after verification succeeds), which is a
+    different primitive composing process/import lifecycle this module has
+    no say over. Scoped separately as `#200-G1B` (fresh-process execution
+    provenance from a verified commit subject). This test exists to keep
+    the true, narrowed boundary of what `ExecutedSourceIdentityV2` proves
+    regression-pinned -- see the module docstring's "What this module does
+    NOT prove" section, narrowed in this same corrective change."""
+    repo, head_sha = _toolrepo_fixture(tmp_path)
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref=head_sha, destination=subject_root)
+
+    module_path = subject_root / "app_agent_review" / "core.py"
+    committed_bytes = module_path.read_bytes()
+
+    # Tamper (simulating an import of the tampered bytes happening here),
+    # then restore to match the commit exactly before verification runs.
+    module_path.write_bytes(committed_bytes + b"\nBACKDOOR = True\n")
+    module_path.write_bytes(committed_bytes)
+
+    # `module.__file__` for a real import that happened during the tamper
+    # window would report exactly this path.
+    loaded = (module_path,)
+
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha=head_sha, subject_root=subject_root, loaded_module_paths=loaded
+    )
+    # Verification cannot see that different bytes were on disk -- and
+    # potentially executed/imported -- at an earlier moment than this call.
+    assert identity.commit_sha == head_sha

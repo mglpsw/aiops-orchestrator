@@ -6,16 +6,20 @@ Ported with revalidation from the frozen-forensic `#200-F` reconstruction
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from app.agent_review.git_commit_subject_v2 import (
+    SUBJECT_DESTINATION_IS_SYMLINK_REASON_V2,
     SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2,
+    SUBJECT_DUPLICATE_TREE_PATH_REASON_V2,
     SUBJECT_UNKNOWN_COMMIT_REASON_V2,
     SubjectMaterialisationError,
     compute_subject_digest_v2,
+    list_commit_tree_entries_v2,
     materialise_commit_subject_v2,
     resolve_commit_v2,
 )
@@ -221,3 +225,109 @@ def test_materialise_refuses_blob_subtree_name_collision_instead_of_crashing(
     # No partial write left behind for a caller to mistake for a valid
     # subject.
     assert not destination.exists() or not any(destination.iterdir())
+
+
+# -- `#200-G1-PM` finding 2: symlink destination ---------------------------------
+
+
+def test_materialise_refuses_a_symlink_destination(tmp_path: Path) -> None:
+    """`destination` itself must never be a symlink. If it were, the
+    exists()+iterdir() emptiness check and `mkdir(..., exist_ok=True)` both
+    transparently follow it, and every write in
+    `materialise_commit_subject_v2` would land wherever the symlink points
+    -- not inside the advertised, severed-from-source destination."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("A = 1\n")
+    head = _commit_all(repo, "init")
+
+    real_target = tmp_path / "real_target"
+    real_target.mkdir()
+    destination = tmp_path / "dest_symlink"
+    destination.symlink_to(real_target)
+
+    with pytest.raises(SubjectMaterialisationError) as excinfo:
+        materialise_commit_subject_v2(repo_root=repo, ref=head, destination=destination)
+    assert excinfo.value.reason_code == SUBJECT_DESTINATION_IS_SYMLINK_REASON_V2
+    # Decisive: nothing was written through the symlink into the real
+    # target directory it points at.
+    assert not any(real_target.iterdir())
+
+
+# -- `#200-G1-PM` finding 3: duplicate tree paths --------------------------------
+
+
+def test_duplicate_tree_path_is_refused_instead_of_silently_overwritten(tmp_path: Path) -> None:
+    """`git commit-tree` accepts, and `git ls-tree -r` emits, two blob
+    entries sharing the exact same literal path in a single tree object --
+    proven with real `git mktree` plumbing below, not a hypothetical.
+    Without this check, `list_commit_tree_entries_v2`'s own caller-facing
+    contract silently drops one committed object: any path-keyed structure
+    built from its output (a dict, a materialised file) can only ever hold
+    one of the two."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.py").write_text("SEED = 1\n")
+    _commit_all(repo, "seed")
+
+    first_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="first content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    second_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="second content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    duplicate_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=(f"100644 blob {first_blob}\tsame.py\n" f"100644 blob {second_blob}\tsame.py\n"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    duplicate_commit = subprocess.run(
+        ["git", "commit-tree", duplicate_tree, "-m", "duplicate path"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    with pytest.raises(SubjectMaterialisationError) as excinfo:
+        list_commit_tree_entries_v2(repo_root=repo, commit_sha=duplicate_commit)
+    assert excinfo.value.reason_code == SUBJECT_DUPLICATE_TREE_PATH_REASON_V2
+
+    destination = tmp_path / "dest"
+    with pytest.raises(SubjectMaterialisationError) as excinfo:
+        materialise_commit_subject_v2(repo_root=repo, ref=duplicate_commit, destination=destination)
+    assert excinfo.value.reason_code == SUBJECT_DUPLICATE_TREE_PATH_REASON_V2
+    assert not destination.exists() or not any(destination.iterdir())
+
+
+# -- `#200-G1-PM` finding 6: non-UTF-8 path digest encoding ----------------------
+
+
+def test_digest_handles_non_utf8_filename_via_surrogateescape(tmp_path: Path) -> None:
+    """A materialised subject can legitimately contain a non-UTF-8 path --
+    `list_commit_tree_entries_v2` and `materialise_commit_subject_v2` both
+    already decode/write such paths with `surrogateescape`. Before this
+    fix, `compute_subject_digest_v2`'s plain `.encode("utf-8")` (strict
+    errors) raised `UnicodeEncodeError` on the resulting lone surrogate
+    characters -- unable to digest exactly the subjects the adjacent APIs
+    explicitly support."""
+    root = tmp_path / "root"
+    root.mkdir()
+    weird_name = os.fsdecode(b"weird-\xff-name.py")
+    (root / weird_name).write_bytes(b"content\n")
+
+    digest = compute_subject_digest_v2(root)
+    assert digest and len(digest) == 64
