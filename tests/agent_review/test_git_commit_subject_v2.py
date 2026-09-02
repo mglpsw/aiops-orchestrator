@@ -254,6 +254,36 @@ def test_materialise_refuses_a_symlink_destination(tmp_path: Path) -> None:
     assert not any(real_target.iterdir())
 
 
+def test_materialise_refuses_a_symlink_ANCESTOR_of_the_destination(tmp_path: Path) -> None:
+    """External Codex review of the finding-2 fix itself (`#200-G1-PM`
+    round 1 on this PR): checking only `destination.is_symlink()` -- the
+    leaf -- misses a symlink one level ABOVE the leaf. `destination =
+    link/subject` where `link` is a symlink to `real` and `subject` does
+    not exist yet: `Path("link/subject").is_symlink()` is `False` (the
+    leaf genuinely does not exist), so the leaf-only check let this
+    through, and every write landed inside `real/subject` while the
+    returned `root` stayed the still-retargetable lexical path
+    `link/subject`."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "a.py").write_text("A = 1\n")
+    head = _commit_all(repo, "init")
+
+    real_target = tmp_path / "real_target"
+    real_target.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real_target)
+    # "subject" does not exist yet -- only its PARENT "link" is a symlink.
+    destination = link / "subject"
+
+    with pytest.raises(SubjectMaterialisationError) as excinfo:
+        materialise_commit_subject_v2(repo_root=repo, ref=head, destination=destination)
+    assert excinfo.value.reason_code == SUBJECT_DESTINATION_IS_SYMLINK_REASON_V2
+    # Decisive: nothing was written through the symlink ancestor into the
+    # real target it points at.
+    assert not any(real_target.iterdir())
+
+
 # -- `#200-G1-PM` finding 3: duplicate tree paths --------------------------------
 
 
@@ -307,6 +337,91 @@ def test_duplicate_tree_path_is_refused_instead_of_silently_overwritten(tmp_path
     assert excinfo.value.reason_code == SUBJECT_DUPLICATE_TREE_PATH_REASON_V2
 
     destination = tmp_path / "dest"
+    with pytest.raises(SubjectMaterialisationError) as excinfo:
+        materialise_commit_subject_v2(repo_root=repo, ref=duplicate_commit, destination=destination)
+    assert excinfo.value.reason_code == SUBJECT_DUPLICATE_TREE_PATH_REASON_V2
+    assert not destination.exists() or not any(destination.iterdir())
+
+
+def test_duplicate_tree_DIRECTORY_entries_with_disjoint_children_are_refused(
+    tmp_path: Path,
+) -> None:
+    """External Codex review of the finding-3 fix itself (`#200-G1-PM`
+    round 1 on this PR): the original fix only ever sees BLOB paths,
+    because plain `ls-tree -r` never emits a line for an intermediate
+    directory at all. Two different `040000 tree` objects sharing one name
+    `d`, with DISJOINT children (`d/a.py` only in the first, `d/b.py` only
+    in the second), produce zero duplicate *blob* paths -- `d/a.py` and
+    `d/b.py` are different strings -- so the blob-only check never fired,
+    even though `git fsck` flags this exact tree as `duplicateEntries` and
+    materialisation silently merged both subtrees into what looked like
+    one ordinary `d/{a.py,b.py}` directory. Reproduced with real `git
+    mktree` plumbing below."""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.py").write_text("SEED = 1\n")
+    _commit_all(repo, "seed")
+
+    a_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="a content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    b_blob = subprocess.run(
+        ["git", "hash-object", "-w", "--stdin"],
+        cwd=repo,
+        input="b content",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    inner_tree_1 = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"100644 blob {a_blob}\ta.py\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    inner_tree_2 = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=f"100644 blob {b_blob}\tb.py\n",
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    outer_tree = subprocess.run(
+        ["git", "mktree", "--missing"],
+        cwd=repo,
+        input=(f"040000 tree {inner_tree_1}\td\n" f"040000 tree {inner_tree_2}\td\n"),
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    duplicate_commit = subprocess.run(
+        ["git", "commit-tree", outer_tree, "-m", "duplicate directory entries"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    # Independently confirm git's own view of this tree agrees it is
+    # malformed, not merely this test's own assertion.
+    fsck = subprocess.run(
+        ["git", "fsck", "--full"], cwd=repo, capture_output=True, text=True
+    )
+    assert "duplicateEntries" in fsck.stdout + fsck.stderr
+
+    with pytest.raises(SubjectMaterialisationError) as excinfo:
+        list_commit_tree_entries_v2(repo_root=repo, commit_sha=duplicate_commit)
+    assert excinfo.value.reason_code == SUBJECT_DUPLICATE_TREE_PATH_REASON_V2
+
+    destination = tmp_path / "dest2"
     with pytest.raises(SubjectMaterialisationError) as excinfo:
         materialise_commit_subject_v2(repo_root=repo, ref=duplicate_commit, destination=destination)
     assert excinfo.value.reason_code == SUBJECT_DUPLICATE_TREE_PATH_REASON_V2

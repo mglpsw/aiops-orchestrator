@@ -187,3 +187,60 @@ def test_repo_without_any_promisor_remote_is_unaffected(tmp_path: Path) -> None:
 
     completed = run_bounded_git_v2(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=repo)
     assert completed.returncode == 0
+
+
+# -- post-review correction: promisor value spelled other than literal `true` --
+
+
+def test_partial_clone_with_non_true_spelled_promisor_value_is_refused(tmp_path: Path) -> None:
+    """External Codex review of the finding-5 fix itself (round 1 on this
+    PR): comparing the raw config value against the literal bytes
+    `b"true"` misses every other legal git-boolean spelling of the same
+    value -- `yes`, `on`, `1`, and bare presence with no value, none of
+    which `git config --set` normalises on write. Reproduced with a real
+    partial clone below, then `git config remote.origin.promisor yes`
+    (still the same remote, deliberately isolating this one variable from
+    the already-covered non-`origin`-name case): before this fix, the raw
+    `git config --get-regexp` (no `--type`) echoed the literal text `yes`
+    unchanged, which the literal-`b"true"` comparison never matched,
+    leaving lazy fetch fully enabled."""
+    upstream = tmp_path / "upstream"
+    _init_repo(upstream)
+    (upstream / "f.txt").write_text("hello\n")
+    subprocess.run(["git", "add", "f.txt"], cwd=upstream, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "init"], cwd=upstream, check=True)
+    subprocess.run(["git", "config", "uploadpack.allowFilter", "true"], cwd=upstream, check=True)
+    subprocess.run(
+        ["git", "config", "uploadpack.allowAnySHA1InWant", "true"], cwd=upstream, check=True
+    )
+    blob_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD:f.txt"],
+        cwd=upstream,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    subject = tmp_path / "subject"
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--filter=blob:none",
+            f"file://{upstream}",
+            str(subject),
+        ],
+        check=True,
+    )
+    # Same remote name (`origin`) as the already-covered case -- isolating
+    # the boolean-spelling variable specifically.
+    subprocess.run(
+        ["git", "config", "remote.origin.promisor", "yes"], cwd=subject, check=True
+    )
+
+    with pytest.raises(BoundedGitError) as excinfo:
+        run_bounded_git_v2(
+            ["cat-file", "--batch"], cwd=subject, input_bytes=(blob_sha + "\n").encode()
+        )
+    assert excinfo.value.reason_code == BOUNDED_GIT_PROMISOR_REMOTE_PRESENT_REASON_V2

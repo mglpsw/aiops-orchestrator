@@ -173,10 +173,32 @@ def _refuse_if_promisor_remote_configured_v2(*, executable: str, cwd: Path) -> N
     same underlying condition in its own right, with its own accurate
     reason code, immediately after this returns. This function's only job
     is to convert a *successfully read* `promisor = true` into a refusal.
+
+    `--type=bool` is required, not optional (external post-review
+    correction on this exact fix: the first version compared the raw
+    string value against the literal bytes `b"true"`). Git's own config
+    grammar accepts many boolean spellings for the same true value --
+    `yes`, `on`, `1`, and bare presence with no value, in addition to
+    `true` -- and `git config --set` normalises none of them on write.
+    Proven empirically: `git config remote.origin.promisor yes` still let
+    `cat-file --batch` lazily fetch a missing blob through
+    `run_bounded_git_v2` under the literal-`b"true"`-only comparison, while
+    `git config --get-regexp` (no `--type`) echoed the raw text `yes`
+    unchanged. `--type=bool` asks git itself to normalise every matched
+    value to its own canonical `true`/`false` spelling before this function
+    ever compares it, which is the only way to stay correct across every
+    legal way a value can be spelled without this function re-implementing
+    git's own boolean grammar.
     """
     try:
         completed = subprocess.run(  # noqa: S603 -- fixed executable, no shell
-            [executable, "config", "--get-regexp", r"^remote\..*\.promisor$"],
+            [
+                executable,
+                "config",
+                "--type=bool",
+                "--get-regexp",
+                r"^remote\..*\.promisor$",
+            ],
             cwd=cwd,
             env=bounded_git_environment_v2(),
             capture_output=True,

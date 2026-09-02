@@ -952,6 +952,74 @@ def test_merge_base_operational_failure_is_distinguished_from_clean_non_ancestor
     assert excinfo.value.reason_code == IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2
 
 
+# -- post-review correction: shallow-repository false negative ------------------
+
+
+def test_shallow_repository_makes_a_true_ancestor_undetermined_not_false(
+    tmp_path: Path,
+) -> None:
+    """External Codex review of the finding-7 fix itself (round 1 on this
+    PR): `_merge_base_history_is_fully_readable_v2`'s "rev-list exits zero
+    means fully readable" reasoning is false for a shallow repository,
+    which deliberately truncates history WITHOUT ever producing a read
+    error. Reproduced with real git plumbing below, exactly as found: a
+    linear chain `C -> B -> T`, shallow-cloned with `--depth 2` from `T`'s
+    branch (so `B` becomes the shallow boundary and `C` is initially
+    absent), then `C`'s own commit object fetched separately by a tag
+    pointing at it (`git fetch --depth=1 origin tag c-tag`, mirroring a
+    realistic multi-ref partial fetch) so it is present locally but NOT
+    linked as `B`'s parent from git's structural point of view.
+    `merge-base --is-ancestor C T` exits 1 (traversal from `T` stops at the
+    shallow boundary `B`, never reaching `C`) even though `C` genuinely is
+    `T`'s ancestor in true project history -- and, before this fix, `git
+    rev-list C T` exited 0 (no read error, since git treats a shallow
+    boundary as a legitimate root), which the previous fix's "fully
+    readable" check wrongly took as proof the exit-1 negative was clean.
+    `authorize_commit_for_execution_v2` must raise
+    `IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2` here, not silently
+    return `authorized=False` for a commit that truly is an ancestor."""
+    full = tmp_path / "full"
+    _init_repo(full)
+    (full / "f.txt").write_text("c\n")
+    c_sha = _commit_all(full, "C")
+    subprocess.run(["git", "tag", "c-tag", "HEAD"], cwd=full, check=True)
+    (full / "f.txt").write_text("b\n")
+    b_sha = _commit_all(full, "B")
+    (full / "f.txt").write_text("t\n")
+    t_sha = _commit_all(full, "T")
+
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--depth", "2", f"file://{full}", str(shallow)],
+        check=True,
+    )
+    shallow_marker = shallow / ".git" / "shallow"
+    assert shallow_marker.exists()
+    assert b_sha in shallow_marker.read_text()
+
+    subprocess.run(
+        ["git", "fetch", "--quiet", "--depth=1", "origin", "tag", "c-tag"],
+        cwd=shallow,
+        check=True,
+    )
+    # C's object is present locally now, just not linked as B's parent.
+    present = subprocess.run(
+        ["git", "cat-file", "-t", c_sha], cwd=shallow, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    assert present == "commit"
+
+    # Sanity check first: confirm the false negative this fix must not
+    # silently trust actually reproduces on this git build.
+    merge_base = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", c_sha, t_sha], cwd=shallow, capture_output=True
+    )
+    assert merge_base.returncode == 1
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(repo_root=shallow, commit_sha=c_sha, trusted_ref=t_sha)
+    assert excinfo.value.reason_code == IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2
+
+
 # -- `#200-G1-PM` finding 1: architectural, reproduced and NOT fixed here -------
 
 

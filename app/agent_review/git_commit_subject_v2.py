@@ -83,6 +83,7 @@ SUBJECT_DUPLICATE_TREE_PATH_REASON_V2 = "subject_duplicate_tree_path"
 GITLINK_MODE_V2 = "160000"
 SYMLINK_MODE_V2 = "120000"
 EXECUTABLE_MODE_V2 = "100755"
+TREE_MODE_V2 = "040000"
 
 
 class SubjectMaterialisationError(ValueError):
@@ -160,8 +161,34 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
     structure, and failing closed with a dedicated reason code, closes that
     for every caller at once rather than requiring each one to re-derive
     the same check.
+
+    `-t` is required in addition to `-r` (external Codex review of the
+    original finding-3 fix itself, `#200-G1-PM` round 1 on this PR): plain
+    `ls-tree -r` never emits a line for an intermediate DIRECTORY at all
+    (`git ls-tree -h` documents `-t` as required to "show trees when
+    recursing") -- only leaf blob/gitlink lines. A tree with two DIFFERENT
+    subtree objects both named e.g. `d`, holding disjoint children (`d/a.py`
+    from one, `d/b.py` from the other), has no duplicate *blob* path at
+    all -- `d/a.py` and `d/b.py` are two distinct strings -- so the
+    blob-only duplicate check above never fires, even though `git fsck`
+    itself flags the raw tree as `duplicateEntries`, and materialisation
+    silently merges both subtrees' children into what looks like one
+    ordinary directory. Reproduced with real `git mktree` plumbing, not a
+    hypothetical: two `040000 tree` entries named `d` in one tree object,
+    confirmed as `duplicateEntries` by `git fsck --full`, materialise
+    losslessly (no error) into a single `d/{a.py,b.py}` directory without
+    `-t` in this check. With `-t`, `ls-tree -r` additionally emits a line
+    for `d` itself for EACH of the two subtree objects -- both at the exact
+    same path `d` -- which the same duplicate-path check below now also
+    covers, catching this before the blob level is ever reached. Tree-mode
+    entries are collected only for this duplicate-detection pass and are
+    deliberately NOT included in the returned list: every existing caller
+    (`materialise_commit_subject_v2`'s and `read_commit_blobs_v2`'s content
+    handling) assumes every returned entry is a blob or gitlink, and a
+    `040000` entry has no batchable blob content to write -- passing one
+    through would break that contract rather than extend it.
     """
-    completed = run_bounded_git_v2(["ls-tree", "-r", "-z", commit_sha], cwd=repo_root)
+    completed = run_bounded_git_v2(["ls-tree", "-r", "-t", "-z", commit_sha], cwd=repo_root)
     entries: list[TreeEntryV2] = []
     seen_paths: set[str] = set()
     for record in completed.stdout.split(b"\0"):
@@ -179,6 +206,11 @@ def list_commit_tree_entries_v2(*, repo_root: Path, commit_sha: str) -> list[Tre
         if path in seen_paths:
             raise SubjectMaterialisationError(SUBJECT_DUPLICATE_TREE_PATH_REASON_V2)
         seen_paths.add(path)
+        if mode == TREE_MODE_V2:
+            # Present only via `-t`, only to make this exact path visible
+            # to the duplicate check above; never part of the returned
+            # blob/gitlink-only contract (see docstring).
+            continue
         entries.append(
             TreeEntryV2(
                 mode=mode,
@@ -244,6 +276,50 @@ def _safe_destination_v2(*, subject_root: Path, relative_path: str) -> Path:
     return candidate
 
 
+def _reject_symlink_in_destination_ancestry_v2(destination: Path) -> None:
+    """Refuse if `destination`, or any EXISTING ancestor directory in its
+    path, is a symlink.
+
+    External Codex review of the original finding-2 fix itself
+    (`#200-G1-PM` round 1 on this PR): checking only `destination.is_symlink()`
+    -- the leaf -- misses a symlink one or more levels ABOVE the leaf, e.g.
+    `destination = link/subject` where `link` is a symlink to `real` and
+    `subject` does not exist yet. `Path("link/subject").is_symlink()` is
+    `False` (the leaf genuinely does not exist and is therefore not a
+    symlink itself), so the leaf-only check let this through; every
+    subsequent write in `materialise_commit_subject_v2` then landed inside
+    `real/subject` while the returned, advertised `root` stayed the
+    still-retargetable lexical path `link/subject` -- reproduced here
+    exactly as found, not merely asserted: writing through a two-level
+    `link/subject` destination did put the materialised bytes under
+    `real/subject`, invisible to anything trusting the advertised root.
+
+    Walking every path segment from `destination` up to the filesystem
+    root and checking `is_symlink()` on each -- rather than a single
+    `resolve()` comparison -- is deliberate: `is_symlink()` on a
+    non-existent path returns `False` without raising (unlike `exists()`
+    or `stat()`), so this safely covers the common case where most of
+    `destination`'s ancestry does not exist yet and will be created fresh
+    by `mkdir(parents=True)` below, while still catching a symlink at any
+    position that DOES already exist.
+
+    `destination.absolute()` (not `.resolve()`, which would follow any
+    symlink and defeat the purpose) anchors a relative `destination` at the
+    caller's actual working directory before walking, so a relative path
+    is checked against its full real ancestry rather than stopping early
+    at `Path(".")` (whose own `.parent` is itself).
+    """
+    candidate = destination.absolute()
+    while True:
+        if candidate.is_symlink():
+            raise SubjectMaterialisationError(SUBJECT_DESTINATION_IS_SYMLINK_REASON_V2)
+        parent = candidate.parent
+        if parent == candidate:
+            # Reached the filesystem root (`Path("/").parent == Path("/")`).
+            break
+        candidate = parent
+
+
 def materialise_commit_subject_v2(
     *, repo_root: Path, ref: str, destination: Path
 ) -> MaterialisedCommitSubjectV2:
@@ -253,20 +329,7 @@ def materialise_commit_subject_v2(
     original checkout afterwards cannot change what was materialised.
     """
     destination = Path(destination)
-    if destination.is_symlink():
-        # `#200-G1-PM` finding 2 (Codex, PR #284 review of `18dc9e4f`):
-        # `Path.is_symlink()` inspects the leaf `destination` path without
-        # following it -- exactly what must be rejected before the checks
-        # below, which otherwise resolve it transparently. A symlink to an
-        # empty directory would pass the exists()+iterdir() emptiness check
-        # below, and `mkdir(..., exist_ok=True)` treats "already exists and
-        # is a directory" (true of a symlink that resolves to one) as
-        # success rather than an error -- every subsequent write in this
-        # function then lands wherever the symlink points, not at the
-        # advertised, severed-from-source `destination`, and the returned
-        # `root` stays a retargetable symlink rather than an owned subject
-        # directory.
-        raise SubjectMaterialisationError(SUBJECT_DESTINATION_IS_SYMLINK_REASON_V2)
+    _reject_symlink_in_destination_ancestry_v2(destination)
     if destination.exists() and any(destination.iterdir()):
         raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
     destination.mkdir(parents=True, exist_ok=True)

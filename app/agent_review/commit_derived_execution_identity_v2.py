@@ -534,9 +534,64 @@ def _merge_base_history_is_fully_readable_v2(*, repo_root: Path, commits: tuple[
     commit ...``) precisely when an object in that graph cannot be read,
     and exit zero when the graph is fully readable -- regardless of
     whether either commit turns out to be an ancestor of the other.
+
+    NOTE, narrowed by external Codex review of this exact fix (`#200-G1-PM`
+    round 1 on this PR): "exits zero" here means only "no read error
+    occurred" -- it does NOT mean "the true, full commit graph was walked".
+    A shallow repository deliberately and successfully truncates history
+    without ever producing a read error; see ``_repository_is_shallow_v2``,
+    which this function's only caller also consults, for why that case
+    needs an entirely separate check.
     """
     completed = run_bounded_git_v2(["rev-list", *commits], cwd=repo_root, check=False)
     return completed.returncode == 0
+
+
+def _repository_is_shallow_v2(*, repo_root: Path) -> bool:
+    """Is ``repo_root`` a shallow repository (any commit grafted as a
+    history boundary), at all?
+
+    External Codex review of the finding-7 fix itself (`#200-G1-PM` round 1
+    on this PR): ``_merge_base_history_is_fully_readable_v2``'s "exit zero
+    means fully readable" reasoning is false for a shallow repository.
+    Reproduced with real git plumbing, not a hypothetical: a linear chain
+    ``C -> B -> T``, cloned with ``--depth 2`` from ``T``'s branch (so ``B``
+    becomes a shallow boundary and ``C`` is initially absent), then ``C``'s
+    own commit object fetched separately by its own ref (``git fetch
+    --depth=1 origin <C's tag>``, mirroring a realistic multi-ref partial
+    fetch) so it is present locally but NOT linked as ``B``'s parent.
+    ``merge-base --is-ancestor C T`` exits 1 (git's traversal from ``T``
+    stops at the shallow boundary ``B`` and never reaches ``C``) even
+    though ``C`` genuinely is ``T``'s ancestor in true project history.
+    ``git rev-list C T`` exits 0 -- no read error -- because git treats a
+    shallow boundary as a legitimate root, not a hole, so the "fully
+    readable" check above would have wrongly certified this exit-1 as a
+    clean negative.
+
+    There is no general way to prove "the negative holds even considering
+    the parts hidden by shallow boundaries" from inside this repository
+    without walking history it does not have. Rather than attempt that,
+    any shallow repository at all makes a `merge-base` negative
+    UNDETERMINED, unconditionally -- deliberately more conservative than
+    strictly necessary (a shallow boundary nowhere near either commit would
+    still be flagged), matching this primitive's fail-closed posture
+    elsewhere: "we don't know" must never collapse into "the answer is no".
+
+    ``git rev-parse --is-shallow-repository`` (available on every git
+    version this primitive is tested against) is git's own, direct answer
+    to this question -- not inferred from `.git/shallow`'s presence, whose
+    exact path is not this primitive's concern to know (worktrees,
+    alternates, and non-standard layouts can all change where it lives).
+    """
+    completed = run_bounded_git_v2(
+        ["rev-parse", "--is-shallow-repository"], cwd=repo_root, check=False
+    )
+    if completed.returncode != 0:
+        # Cannot determine -- fail closed toward the more conservative
+        # answer (treat as shallow / untrusted) rather than assume the
+        # repository is safely non-shallow.
+        return True
+    return completed.stdout.strip() == b"true"
 
 
 def authorize_commit_for_execution_v2(
@@ -560,6 +615,13 @@ def authorize_commit_for_execution_v2(
     permitted" -- for what is actually "this cannot be determined right
     now", an availability failure of the identity primitive itself, not a
     policy decision about the commit.
+
+    A shallow repository is treated the same way: see
+    ``_repository_is_shallow_v2`` for why a shallow clone can make
+    ``merge-base``'s "not an ancestor" wrong (not merely unreadable) even
+    when ``rev-list`` reports the graph as cleanly readable, and why any
+    shallow repository at all -- not only one provably affecting these two
+    commits -- makes a negative result UNDETERMINED here.
     """
     repo_root = Path(repo_root).resolve()
     try:
@@ -576,7 +638,7 @@ def authorize_commit_for_execution_v2(
     if completed.returncode == 0:
         authorized = True
     elif completed.returncode == 1:
-        if not _merge_base_history_is_fully_readable_v2(
+        if _repository_is_shallow_v2(repo_root=repo_root) or not _merge_base_history_is_fully_readable_v2(
             repo_root=repo_root, commits=(resolved_commit, resolved_trusted)
         ):
             raise ExecutedSourceIdentityError(IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2)
