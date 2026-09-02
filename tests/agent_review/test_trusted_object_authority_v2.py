@@ -21,17 +21,21 @@ permanent corpus rather than being thrown away.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import inspect
 import os
+import shutil
 import subprocess
 import tempfile
+import zlib
 from pathlib import Path
 
 import pytest
 
 from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2,
+    IDENTITY_TREE_UNREADABLE_REASON_V2,
     IDENTITY_UNKNOWN_COMMIT_REASON_V2,
     ExecutedSourceIdentityError,
     authorize_commit_for_execution_v2,
@@ -42,8 +46,11 @@ from app.agent_review.git_commit_subject_v2 import (
     resolve_commit_v2,
 )
 from app.agent_review.trusted_object_authority_v2 import (
+    TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2,
+    TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2,
+    TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2,
     TrustedObjectAuthorityError,
     TrustedObjectAuthorityV2,
     open_trusted_object_authority_v2,
@@ -613,14 +620,20 @@ def test_object_deleted_from_the_live_repository_mid_copy_is_a_typed_refusal(
 
     repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
 
-    real_read_bytes = Path.read_bytes
+    # Correction round 1 moved the low-level read off `Path.read_bytes()`
+    # onto a no-follow-symlink-safe, pre-charged `os.open`/`os.read` path
+    # (`_read_regular_file_charged_v2`) -- simulate the concurrent deletion
+    # at `os.open` instead, for whichever path is under a two-hex fanout
+    # directory (a loose object).
+    real_open = os.open
 
-    def flaky_read_bytes(self: Path) -> bytes:
-        if self.parent.name and len(self.parent.name) == 2 and self.parent.parent.name == "objects":
-            raise FileNotFoundError(f"simulated concurrent deletion: {self}")
-        return real_read_bytes(self)
+    def flaky_open(path, flags, *args, **kwargs):
+        path_obj = Path(os.fsdecode(path))
+        if path_obj.parent.name and len(path_obj.parent.name) == 2 and path_obj.parent.parent.name == "objects":
+            raise FileNotFoundError(f"simulated concurrent deletion: {path_obj}")
+        return real_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", flaky_read_bytes)
+    monkeypatch.setattr(os, "open", flaky_open)
 
     stray_before = _count_stray_cas_dirs_v2()
     with pytest.raises(TrustedObjectAuthorityError) as excinfo:
@@ -678,3 +691,278 @@ def test_unresolvable_commit_still_raises_unknown_commit_not_undetermined(tmp_pa
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
         authorize_commit_for_execution_v2(repo_root=repo, commit_sha="d" * 40, trusted_ref=c3)
     assert excinfo.value.reason_code == IDENTITY_UNKNOWN_COMMIT_REASON_V2
+
+
+# -- correction round 1 (post-review, both lanes) -----------------------------
+#
+# Lane A (acquisition/trust-transition) reproduced three P0s with runnable
+# repro scripts against the pre-correction head: (1) symlink-following in the
+# objects/refs copy walk let a hostile checkout redirect a fanout directory or
+# ref to arbitrary host bytes; (2) the budget check ran AFTER a full
+# `read_bytes()`, reactive rather than preventive; (3) `_parse_alternates_v2`
+# had zero containment check, letting an ordinary host directory (e.g. `/etc`)
+# be flattened into the CAS as if it were a real object store. Lane B (graph/
+# authorization truth) reproduced, TWICE, through the real production path
+# (`authorize_commit_for_execution_v2` -> `prove_ancestry`), that a loose
+# object's content was never re-verified against the sha its own storage path
+# claims -- overwriting a loose object's bytes at its existing, predictable
+# path flipped a genuine ancestor to `authorized=False` and an unrelated,
+# never-integrated commit to `authorized=True`, both silently, no exception.
+#
+# All five are fixed under ONE coherent design change (content re-verification
+# at CAS-copy time for loose objects + no-follow reads throughout + pre-stat
+# budget checks + alternates structural containment), not four separate
+# patches -- see `trusted_object_authority_v2.py`'s `_verify_loose_object_hash_v2`,
+# `_read_regular_file_charged_v2`, `_safe_scandir_no_symlinks_v2`, and
+# `_looks_like_git_objects_directory_v2`.
+
+
+def test_loose_object_overwritten_at_its_own_path_no_longer_silently_authorizes_false(
+    tmp_path: Path,
+) -> None:
+    """Lane B finding #1, independently reproduced against the real
+    `authorize_commit_for_execution_v2` production path before this
+    correction existed (`/tmp/loose_poc/repro.py`). `c1 -> c2 -> c3`; `c1`
+    is root (no parent), so overwriting `c2`'s loose object with `c1`'s own
+    bytes truncates the real ancestry at `c2`'s path without deleting or
+    corrupting anything -- git decompresses it just fine, it simply is not
+    `c2`'s real content any more. Before this correction: `authorized`
+    silently flipped `True` -> `False`, no exception. After: refused."""
+    repo, c1, c2, c3 = _linear_history_fixture(tmp_path)
+
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    assert result.authorized is True
+
+    c1_obj = _object_path_for_sha_v2(repo, c1)
+    c2_obj = _object_path_for_sha_v2(repo, c2)
+    c2_obj.write_bytes(c1_obj.read_bytes())
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    assert excinfo.value.reason_code == IDENTITY_TREE_UNREADABLE_REASON_V2
+
+
+def test_forged_parent_line_spliced_into_existing_object_path_no_longer_authorizes_true(
+    tmp_path: Path,
+) -> None:
+    """Lane B finding #2, independently reproduced against the real
+    `authorize_commit_for_execution_v2` production path before this
+    correction existed (`/tmp/loose_poc/repro2.py`). An unrelated, never-
+    merged `evil` commit is genuinely NOT an ancestor of `c3`. Overwriting
+    `c2`'s loose object with forged content (same tree/author/committer,
+    with an added `parent evil` line spliced in -- a different real sha
+    than `c2`'s, stored at `c2`'s own path) spliced `evil` into `c3`'s
+    apparent ancestry. Before this correction: `authorized` silently
+    flipped `False` -> `True`, no exception, for a commit that was never
+    actually integrated. After: refused."""
+    repo, c1, c2, c3 = _linear_history_fixture(tmp_path)
+    subprocess.run(["git", "checkout", "--quiet", "-b", "evil", c1], cwd=repo, check=True)
+    (repo / "pkg" / "evil.py").write_text("PWNED=1\n")
+    evil = _commit_all(repo, "evil-commit")
+    subprocess.run(["git", "checkout", "--quiet", "main"], cwd=repo, check=True)
+
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=evil, trusted_ref=c3)
+    assert result.authorized is False
+
+    raw = subprocess.run(
+        ["git", "cat-file", "commit", c2], cwd=repo, capture_output=True, check=True
+    ).stdout
+    lines = raw.split(b"\n")
+    tree_line = next(line for line in lines if line.startswith(b"tree "))
+    rest_index = lines.index(tree_line) + 1
+    forged_content = tree_line + b"\n" + b"parent " + evil.encode() + b"\n" + b"\n".join(lines[rest_index:])
+    header = f"commit {len(forged_content)}\0".encode()
+    forged_true_sha = hashlib.sha1(header + forged_content, usedforsecurity=False).hexdigest()  # noqa: S324
+    assert forged_true_sha != c2, "forged content must genuinely differ from c2 -- not a no-op fixture"
+
+    c2_obj = _object_path_for_sha_v2(repo, c2)
+    c2_obj.write_bytes(zlib.compress(header + forged_content))
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=evil, trusted_ref=c3)
+    assert excinfo.value.reason_code == IDENTITY_TREE_UNREADABLE_REASON_V2
+
+
+def test_loose_object_hash_verification_is_reachable_at_the_authority_level(tmp_path: Path) -> None:
+    """Same forged-loose-object shape as the two tests above, exercised
+    directly against `open_trusted_object_authority_v2` (rather than
+    through `authorize_commit_for_execution_v2`'s error-mapping) to assert
+    the precise, specific reason code the CAS build itself raises."""
+    repo, c1, c2, _c3 = _linear_history_fixture(tmp_path)
+    c1_obj = _object_path_for_sha_v2(repo, c1)
+    c2_obj = _object_path_for_sha_v2(repo, c2)
+    c2_obj.write_bytes(c1_obj.read_bytes())
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised while copying the tampered loose object")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2
+
+
+def test_symlinked_loose_object_fanout_directory_is_refused(tmp_path: Path) -> None:
+    """Lane A finding #1: `.git/objects/<xx>` symlinked to an arbitrary
+    host directory must never have its target's bytes copied into the CAS
+    as if they were real loose objects."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    decoy = tmp_path / "decoy_fanout"
+    decoy.mkdir()
+    (decoy / "0123456789abcdef0123456789abcdef012345").write_bytes(b"not a real git object")
+
+    objects_dir = repo / ".git" / "objects"
+    fanout_dirs = [p for p in objects_dir.iterdir() if p.is_dir() and len(p.name) == 2]
+    assert fanout_dirs, "fixture must have produced at least one real fanout directory"
+    victim = fanout_dirs[0]
+    shutil.rmtree(victim)
+    victim.symlink_to(decoy, target_is_directory=True)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised on the symlinked fanout directory")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_symlinked_ref_is_refused(tmp_path: Path) -> None:
+    """Lane A finding #1, refs side: `.git/refs/heads/<name>` symlinked to
+    an arbitrary host path must never be read and copied verbatim."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    decoy = tmp_path / "decoy_ref_target"
+    decoy.write_text(c3 + "\n")
+
+    evil_ref = repo / ".git" / "refs" / "heads" / "evil"
+    evil_ref.symlink_to(decoy)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised on the symlinked ref")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+
+
+def test_symlinked_packed_refs_is_refused(tmp_path: Path) -> None:
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    decoy = tmp_path / "decoy_packed_refs"
+    decoy.write_text(f"{c3} refs/heads/main\n")
+    (repo / ".git" / "packed-refs").symlink_to(decoy)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised on the symlinked packed-refs file")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+
+
+def test_symlinked_alternates_file_is_refused(tmp_path: Path) -> None:
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    decoy = tmp_path / "decoy_alternates"
+    decoy.write_text("/nonexistent\n")
+    info_dir = repo / ".git" / "objects" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "alternates").symlink_to(decoy)
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised on the symlinked alternates file")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_budget_is_checked_from_stat_before_any_content_is_read(tmp_path: Path) -> None:
+    """Lane A finding #2, exercised directly against the corrected
+    low-level primitive: `os.read` must never be called at all once
+    `fstat`-derived pre-charge has already exceeded budget -- proving the
+    check is genuinely preventive (before any byte enters memory), not
+    merely reactive (after a full read)."""
+    import unittest.mock
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    big_file = tmp_path / "big"
+    big_file.write_bytes(b"x" * 4096)
+
+    tracker = authority_module._ObjectCopyBudgetTrackerV2(  # noqa: SLF001
+        authority_module._ObjectCopyBudgetV2(  # noqa: SLF001
+            max_total_bytes=10, max_object_count=1000, max_alternate_depth=8
+        )
+    )
+
+    original_os_read = os.read
+    read_was_called = False
+
+    def spy_os_read(*args, **kwargs):
+        nonlocal read_was_called
+        read_was_called = True
+        return original_os_read(*args, **kwargs)
+
+    with unittest.mock.patch.object(os, "read", spy_os_read):
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            authority_module._read_regular_file_charged_v2(big_file, tracker)  # noqa: SLF001
+
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2
+    assert read_was_called is False, "budget must be checked from fstat before any os.read call"
+
+
+def test_alternate_pointing_at_an_ordinary_non_repository_directory_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Lane A finding #3: an `objects/info/alternates` entry naming an
+    ordinary host directory that was never shaped like a git repository
+    (no sibling `HEAD`) must be refused, not flattened into the CAS as if
+    it were a real object store."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    ordinary_dir = tmp_path / "not_a_repository_at_all"
+    ordinary_dir.mkdir()
+    (ordinary_dir / "just_some_file.txt").write_text("nothing to see here\n")
+
+    info_dir = repo / ".git" / "objects" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "alternates").write_text(str(ordinary_dir) + "\n")
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised on the non-repository-shaped alternate")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_legitimate_alternate_still_works_after_containment_check(tmp_path: Path) -> None:
+    """Positive counterpart to the refusal test above -- the containment
+    check must not break the real, already-covered `--shared` clone
+    workflow (a genuine alternate always has a `HEAD` sibling)."""
+    base = tmp_path / "base"
+    _init_repo(base, branch="main")
+    (base / "pkg").mkdir()
+    (base / "pkg" / "a.py").write_text("V = 1\n")
+    base_sha = _commit_all(base, "base commit")
+
+    fork = tmp_path / "fork"
+    subprocess.run(
+        ["git", "clone", "--quiet", "--shared", str(base), str(fork)], check=True, capture_output=True
+    )
+
+    destination = tmp_path / "subject"
+    destination.mkdir()
+    result = materialise_commit_subject_v2(repo_root=fork, ref=base_sha, destination=destination)
+    assert result.commit_sha == base_sha
+
+
+def test_packed_refs_with_ordinary_content_still_round_trips(tmp_path: Path) -> None:
+    """Regression guard for the anchored packed-refs parsing (Lane A P2):
+    an ordinary, legitimate `packed-refs` file must still work exactly as
+    before -- the fix narrows what an incidental-substring line could
+    smuggle in, not what a real ref line means."""
+    repo, c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    subprocess.run(["git", "pack-refs", "--all"], cwd=repo, check=True)
+    assert (repo / ".git" / "packed-refs").is_file()
+
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    assert result.authorized is True
+
+
+def test_authority_dataclass_is_frozen(tmp_path: Path) -> None:
+    """Lane A P2: `TrustedObjectAuthorityV2` is frozen like every sibling
+    dataclass in this package's threat-scoped modules -- its own
+    "unforgeable" docstring claim should not be contradicted by ordinary
+    post-construction mutability."""
+    repo, _c1, _c2, _c3 = _linear_history_fixture(tmp_path)
+    with open_trusted_object_authority_v2(repo) as authority:
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            authority._cas_root = Path("/tmp/evil")  # noqa: SLF001

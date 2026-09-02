@@ -151,10 +151,12 @@ a consumer of CAEM's own machinery, and claims no CAEM authorization.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import secrets
 import shutil
 import tempfile
+import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -163,11 +165,14 @@ from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
 
 __all__ = [
     "TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2",
+    "TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_ANCESTRY_UNDETERMINED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_OBJECT_COLLISION_REASON_V2",
+    "TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2",
+    "TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2",
     "TrustedObjectAuthorityError",
     "TrustedObjectAuthorityV2",
     "open_trusted_object_authority_v2",
@@ -180,6 +185,23 @@ TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2 = "trusted_object_authority_b
 TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2 = "trusted_object_authority_forged_capability"
 TRUSTED_OBJECT_AUTHORITY_OBJECT_COLLISION_REASON_V2 = "trusted_object_authority_object_collision"
 TRUSTED_OBJECT_AUTHORITY_ANCESTRY_UNDETERMINED_REASON_V2 = "trusted_object_authority_ancestry_undetermined"
+# Correction round 1 (post-review, both lanes): a loose object's fanout
+# path is git's OWN content-addressing claim -- "the sha1/sha256 of
+# 'type size\0content' is this path" -- and nothing in the ordinary git
+# read path used elsewhere in this codebase (`cat-file`, the `rev-list`
+# walk) re-verifies that claim; only `git fsck --strict` does, and nothing
+# here runs it. Raised when a loose object's decompressed content does not
+# hash to the sha its path claims.
+TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2 = "trusted_object_authority_object_hash_mismatch"
+# Correction round 1: a symlink anywhere under the live repository's
+# objects/refs tree is refused outright rather than followed -- a
+# legitimate git objects/refs tree never contains one.
+TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2 = "trusted_object_authority_symlink_rejected"
+# Correction round 1: an `objects/info/alternates` entry that does not even
+# have the minimal structural shape of a real git object store (see
+# `_looks_like_git_objects_directory_v2`) is refused rather than flattened
+# in as if it were one.
+TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2 = "trusted_object_authority_alternate_rejected"
 
 #: Hard budgets, enforced *before* any copied byte is handed to git for
 #: parsing (CAEM ADR 0011's "hard budgets precede untrusted parsing",
@@ -234,6 +256,95 @@ class _ObjectCopyBudgetTrackerV2:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2)
         if self.total_objects > self._budget.max_object_count:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2)
+
+
+def _read_regular_file_charged_v2(path: Path, tracker: _ObjectCopyBudgetTrackerV2) -> bytes:
+    """Read one file's bytes under TWO correction-round-1 hardenings at once:
+
+    1. **No-follow, TOCTOU-safe.** Opened with `O_NOFOLLOW`: a symlink at
+       `path` -- including one planted *after* an earlier `is_symlink()`
+       check found a regular file there (a listing-to-open race) -- fails
+       to open at all, rather than being transparently followed. A
+       legitimate git objects/refs tree never contains a symlink; nothing
+       here needs to distinguish "attacker-planted" from "unexpected" --
+       both are refused identically.
+    2. **Budget charged from `fstat`, before any content is read into
+       memory.** The prior design read the whole file with `read_bytes()`
+       and charged the budget only afterwards -- reactive, not preventive:
+       a single oversized file (reachable, pre-hardening, via a followed
+       symlink to an arbitrary host file) would be fully loaded into memory
+       before the budget check ever ran. `fstat` on the already-open,
+       already-non-symlink descriptor is charged first; a budget-exceeding
+       size is refused before a single content byte is read.
+
+    A short read relative to the size `fstat` reported (a concurrent
+    truncation) is also refused -- the budget check must have seen the
+    same size the actual read produced, or it protected nothing.
+    """
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+    try:
+        size = os.fstat(fd).st_size
+        tracker.charge(size)
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining > 0:
+            chunk = os.read(fd, min(remaining, 4 * 1024 * 1024))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+    except OSError as exc:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+    finally:
+        os.close(fd)
+    if len(data) != size:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
+    return data
+
+
+def _verify_loose_object_hash_v2(*, expected_sha_hex: str, compressed: bytes) -> None:
+    """Correction round 1 (Lane B, independently reproduced twice through
+    the real `authorize_commit_for_execution_v2` production path): a loose
+    object's fanout directory + filename IS git's own content-addressing
+    claim about that object -- "the sha1 (or sha256, for a sha256-format
+    repository) of `type size\\0content` is this exact path". Ordinary git
+    reads (`cat-file`, the `rev-list` walk this module's own
+    `prove_ancestry` performs) do not re-verify that claim for loose
+    objects; only `git fsck --strict` does, and nothing in this pipeline
+    runs it. Without this check, overwriting a loose object's bytes in the
+    LIVE repository at a fixed, predictable path (no symlink, no alternates,
+    no directory trick -- just different content at the same content-addressed
+    filename) got copied into the "trusted" CAS byte-for-byte and trusted
+    exactly as if it were the real object the path claims to be: a genuine
+    ancestor's commit object overwritten this way silently flips
+    `authorized=True` to a confident `authorized=False`, and a forged
+    `parent` line spliced into an existing commit's content (tree/author/
+    committer otherwise untouched) silently flips an unrelated,
+    never-integrated commit to `authorized=True`. Both were reproduced
+    against this exact production call path before this check existed.
+
+    Decompression failure or a hash mismatch both refuse via the same
+    reason code -- either way, the object copied into the CAS is not
+    genuinely the object its own path claims to be, and nothing downstream
+    should ever see it presented as such.
+    """
+    try:
+        raw = zlib.decompress(compressed)
+    except zlib.error as exc:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2) from exc
+    algorithm = {40: hashlib.sha1, 64: hashlib.sha256}.get(len(expected_sha_hex))
+    if algorithm is None:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2)
+    actual_sha_hex = algorithm(raw, usedforsecurity=False).hexdigest()  # noqa: S324 -- matching git's own object id algorithm, not used as a security primitive here
+    if actual_sha_hex != expected_sha_hex:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2)
 
 
 def _read_gitdir_pointer_v2(dotgit_file: Path) -> Path:
@@ -303,32 +414,41 @@ def _resolve_git_common_dir_v2(repo_root: Path) -> Path:
     return common_dir
 
 
-def _copy_file_bytes_v2(source: Path, dest: Path, tracker: _ObjectCopyBudgetTrackerV2) -> None:
-    """Copy one CONTENT-ADDRESSED object file (loose object or pack file).
+def _copy_pack_file_v2(source: Path, dest: Path, tracker: _ObjectCopyBudgetTrackerV2) -> None:
+    """Copy one pack file (`.pack`/`.idx`/`.rev`/`.bitmap`/...), no-follow
+    and pre-charged (see `_read_regular_file_charged_v2`).
 
-    Only used for paths under `objects/`, where the destination name is
-    itself derived from the content's own hash -- so if `dest` already
-    exists (copied from the primary store or an earlier alternate in the
-    flattened chain), its bytes are expected to be identical by
-    construction, and any difference can only mean a genuine hash
-    collision. Refused rather than silently keeping whichever copy landed
-    first. Not appropriate for named-pointer files (`HEAD`, refs) where two
-    sources legitimately differing is not a collision at all -- see
-    `_copy_named_file_v2` for those.
+    NAMED LIMITATION, stated plainly rather than silently assumed: unlike
+    loose objects (see `_verify_loose_object_hash_v2`), individual objects
+    inside a pack are NOT independently re-hashed here -- doing so would
+    mean parsing git's pack/delta format, which this module deliberately
+    does not reimplement (see the module docstring's "what this module
+    deliberately does NOT do"). A pack's own trailing checksum and its
+    `.idx` CRC32s are git-internal integrity aids consulted by git itself
+    when it later reads from the copied pack (via the existing, unchanged
+    `bounded_git_v2`/`git_commit_subject_v2` primitives against the CAS),
+    not by this module. This is a real, narrower residual surface than the
+    loose-object path and is not claimed to be closed by this correction.
     """
+    data = _read_regular_file_charged_v2(source, tracker)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        data = source.read_bytes()
-    except OSError as exc:
-        # A concurrent writer to the LIVE repository removed or replaced
-        # this object between enumeration and read (TOCTOU). Acquisition
-        # from a moving target is refused outright rather than silently
-        # copying a partial/incoherent snapshot -- a caller that needs a
-        # copy can simply retry, and a fresh retry builds an entirely new,
-        # independent authority (see the module docstring's "no persistent
-        # state" property).
-        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
-    tracker.charge(len(data))
+    if dest.exists():
+        if dest.read_bytes() != data:
+            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_OBJECT_COLLISION_REASON_V2)
+        return
+    dest.write_bytes(data)
+
+
+def _copy_loose_object_v2(
+    source: Path, dest: Path, *, expected_sha_hex: str, tracker: _ObjectCopyBudgetTrackerV2
+) -> None:
+    """Copy one loose object, no-follow/pre-charged, AND content-hash
+    verified against the exact sha its own fanout path claims (see
+    `_verify_loose_object_hash_v2` -- this is the correction-round-1 fix
+    for both of Lane B's independently-reproduced findings)."""
+    data = _read_regular_file_charged_v2(source, tracker)
+    _verify_loose_object_hash_v2(expected_sha_hex=expected_sha_hex, compressed=data)
+    dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         if dest.read_bytes() != data:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_OBJECT_COLLISION_REASON_V2)
@@ -337,33 +457,65 @@ def _copy_file_bytes_v2(source: Path, dest: Path, tracker: _ObjectCopyBudgetTrac
 
 
 def _copy_named_file_v2(source: Path, dest: Path, tracker: _ObjectCopyBudgetTrackerV2) -> None:
-    """Copy one NAMED-POINTER file (`HEAD`, a ref, `packed-refs`).
+    """Copy one NAMED-POINTER file (`HEAD`, a ref, `packed-refs`),
+    no-follow and pre-charged.
 
     Unlike an object file, the destination name here is not derived from
     the content -- an existing destination (e.g. this module's own
     hand-authored placeholder `HEAD`) is expected and simply overwritten,
     never treated as a collision.
     """
+    data = _read_regular_file_charged_v2(source, tracker)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        data = source.read_bytes()
-    except OSError as exc:
-        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
-    tracker.charge(len(data))
     dest.write_bytes(data)
 
 
-def _parse_alternates_v2(alternates_path: Path, *, owning_objects_dir: Path) -> list[Path]:
+def _looks_like_git_objects_directory_v2(objects_dir: Path) -> bool:
+    """Minimal structural sanity check for an ALTERNATE objects directory
+    (never applied to the primary/top-level source, which is already
+    reached through `_resolve_git_common_dir_v2`'s own validation).
+
+    Real git always keeps `objects/` as a direct sibling of `HEAD`, in
+    both a bare repository root and a non-bare `.git` directory alike --
+    this is a load-bearing structural fact about every git repository
+    shape, not a heuristic invented for this check.
+
+    Explicitly NOT claimed: that this proves the directory is a genuine,
+    legitimately-related git repository. An attacker who already has
+    write access to the live repository's `objects/info/alternates` file
+    (in scope for this module's threat model) could construct a
+    throwaway directory with both a `HEAD` file and an `objects/`
+    subdirectory purely to pass this check. What this check closes is the
+    much lower-effort degenerate case -- pointing alternates at an
+    unrelated, ordinary host directory (`/etc`, a user's home directory)
+    that was never shaped like a repository at all and was not
+    necessarily even authored by the same attacker. Every object actually
+    admitted from a passing alternate is still subject to the identical
+    loose-object hash verification as everything else -- this check is
+    defense in depth layered in front of that verification, never a
+    substitute for it.
+    """
+    return (objects_dir.parent / "HEAD").is_file()
+
+
+def _parse_alternates_v2(
+    alternates_path: Path, *, owning_objects_dir: Path, tracker: _ObjectCopyBudgetTrackerV2
+) -> list[Path]:
     """Each line is a path to another repository's `objects/` directory.
 
     Relative entries are relative to the *owning* objects directory itself
     (git's own documented convention for `objects/info/alternates`), not to
     the current working directory or to this module's cwd.
+
+    The alternates file itself is read no-follow: a symlinked alternates
+    file is refused outright (a legitimate one never is), not silently
+    treated as absent.
     """
-    try:
-        raw = alternates_path.read_bytes()
-    except OSError:
+    if alternates_path.is_symlink():
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2)
+    if not alternates_path.is_file():
         return []
+    raw = _read_regular_file_charged_v2(alternates_path, tracker)
     resolved: list[Path] = []
     for raw_line in raw.split(b"\n"):
         line = raw_line.decode("utf-8", "surrogateescape").strip()
@@ -376,14 +528,55 @@ def _parse_alternates_v2(alternates_path: Path, *, owning_objects_dir: Path) -> 
     return resolved
 
 
-def _safe_iterdir_v2(directory: Path) -> list[Path]:
-    """`Path.iterdir()`, but a concurrent writer removing/replacing the
-    directory mid-enumeration raises a typed refusal instead of a raw
-    `OSError` escaping this module's otherwise-typed error surface."""
+def _safe_scandir_no_symlinks_v2(directory: Path) -> list[os.DirEntry]:
+    """Enumerate one directory, refusing (never silently skipping or
+    transparently following) any entry that is itself a symlink.
+
+    Correction round 1 (Lane A, independently reproduced): a legitimate
+    git objects/refs tree never contains a symlink -- loose objects,
+    packs, and refs are always regular files/directories. The prior
+    design's directory walk used `Path.iterdir()` results with
+    `.is_dir()`/`.is_file()`, both of which follow symlinks by default;
+    a hostile checkout with e.g. `.git/objects/de` or
+    `.git/refs/heads/<name>` symlinked to an arbitrary host path had its
+    target's bytes copied into the "trusted" CAS verbatim, directly
+    falsifying this module's own docstring claim of never reading outside
+    the repository's git directory. `os.DirEntry.is_symlink()` does not
+    itself follow the link (a `stat`, not an `lstat`-then-open), so this
+    check is safe to perform before anything downstream ever opens the
+    entry.
+    """
     try:
-        return list(directory.iterdir())
+        entries = list(os.scandir(directory))
     except OSError as exc:
         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+    for entry in entries:
+        try:
+            is_symlink = entry.is_symlink()
+        except OSError as exc:
+            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+        if is_symlink:
+            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2)
+    return entries
+
+
+def _walk_regular_files_no_symlinks_v2(directory: Path) -> list[Path]:
+    """Recursive, symlink-refusing equivalent of `Path.rglob("*")` (which
+    follows symlinked directories during traversal and is not usable here
+    for the same reason `_safe_scandir_no_symlinks_v2` replaced
+    `Path.iterdir()` above)."""
+    discovered: list[Path] = []
+
+    def _walk(current: Path) -> None:
+        for entry in _safe_scandir_no_symlinks_v2(current):
+            entry_path = Path(entry.path)
+            if entry.is_dir(follow_symlinks=False):
+                _walk(entry_path)
+            elif entry.is_file(follow_symlinks=False):
+                discovered.append(entry_path)
+
+    _walk(directory)
+    return discovered
 
 
 def _copy_objects_dir_v2(
@@ -413,30 +606,46 @@ def _copy_objects_dir_v2(
         return
     if depth > budget.max_alternate_depth:
         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2)
+    if depth > 0 and not _looks_like_git_objects_directory_v2(source_objects_dir):
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2)
     visited_real_paths.add(real)
 
-    # Loose objects: two-hex-prefix fanout directories only.
-    for child in _safe_iterdir_v2(source_objects_dir):
-        if child.is_dir() and len(child.name) == 2 and all(c in "0123456789abcdef" for c in child.name):
-            for loose_object in _safe_iterdir_v2(child):
-                if loose_object.is_file():
-                    _copy_file_bytes_v2(
-                        loose_object, dest_objects_dir / child.name / loose_object.name, tracker
+    # Loose objects: two-hex-prefix fanout directories only. Content-hash
+    # verified against the exact sha the fanout-dir-name + filename claims.
+    for child in _safe_scandir_no_symlinks_v2(source_objects_dir):
+        if (
+            child.is_dir(follow_symlinks=False)
+            and len(child.name) == 2
+            and all(c in "0123456789abcdef" for c in child.name)
+        ):
+            for loose_object in _safe_scandir_no_symlinks_v2(Path(child.path)):
+                if loose_object.is_file(follow_symlinks=False):
+                    expected_sha_hex = child.name + loose_object.name
+                    _copy_loose_object_v2(
+                        Path(loose_object.path),
+                        dest_objects_dir / child.name / loose_object.name,
+                        expected_sha_hex=expected_sha_hex,
+                        tracker=tracker,
                     )
 
-    # Pack files: copied verbatim, whatever extension git ships with them.
+    # Pack files: copied verbatim, whatever extension git ships with them
+    # -- see `_copy_pack_file_v2` for the named residual limitation here.
     pack_dir = source_objects_dir / "pack"
     if pack_dir.is_dir():
-        for pack_file in _safe_iterdir_v2(pack_dir):
-            if pack_file.is_file():
-                _copy_file_bytes_v2(pack_file, dest_objects_dir / "pack" / pack_file.name, tracker)
+        for pack_file in _safe_scandir_no_symlinks_v2(pack_dir):
+            if pack_file.is_file(follow_symlinks=False):
+                _copy_pack_file_v2(
+                    Path(pack_file.path), dest_objects_dir / "pack" / pack_file.name, tracker
+                )
 
     # Alternates: recursively flattened INTO this same destination. The
     # authority's own `objects/info/` is never populated with an alternates
     # file -- there is nothing in this module's output for a later reader
     # to chase.
     alternates_path = source_objects_dir / "info" / "alternates"
-    for alternate_objects_dir in _parse_alternates_v2(alternates_path, owning_objects_dir=source_objects_dir):
+    for alternate_objects_dir in _parse_alternates_v2(
+        alternates_path, owning_objects_dir=source_objects_dir, tracker=tracker
+    ):
         _copy_objects_dir_v2(
             source_objects_dir=alternate_objects_dir,
             dest_objects_dir=dest_objects_dir,
@@ -461,22 +670,16 @@ def _copy_refs_v2(*, source_git_dir: Path, dest_git_dir: Path, tracker: _ObjectC
         source_dir = source_git_dir / "refs" / namespace
         if not source_dir.is_dir():
             continue
-        try:
-            paths = list(source_dir.rglob("*"))
-        except OSError as exc:
-            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
-        for path in paths:
-            if path.is_file():
-                relative = path.relative_to(source_git_dir)
-                _copy_named_file_v2(path, dest_git_dir / relative, tracker)
+        for path in _walk_regular_files_no_symlinks_v2(source_dir):
+            relative = path.relative_to(source_git_dir)
+            _copy_named_file_v2(path, dest_git_dir / relative, tracker)
 
     packed_refs = source_git_dir / "packed-refs"
+    if packed_refs.is_symlink():
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2)
     if packed_refs.is_file():
         kept_lines: list[bytes] = []
-        try:
-            packed_refs_bytes = packed_refs.read_bytes()
-        except OSError as exc:
-            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+        packed_refs_bytes = _read_regular_file_charged_v2(packed_refs, tracker)
         for raw_line in packed_refs_bytes.split(b"\n"):
             stripped = raw_line.strip()
             if not stripped or stripped.startswith(b"#"):
@@ -488,7 +691,21 @@ def _copy_refs_v2(*, source_git_dir: Path, dest_git_dir: Path, tracker: _ObjectC
                 if kept_lines:
                     kept_lines.append(stripped)
                 continue
-            if b" refs/heads/" in stripped or b" refs/tags/" in stripped:
+            # Correction round 1 (Lane A P2): anchored to the actual
+            # ref-name FIELD (everything after the first space), not a
+            # raw substring search anywhere in the line -- the prior
+            # `b" refs/heads/" in stripped` form would also have kept a
+            # line whose SHA or ref name merely happened to *contain* that
+            # text elsewhere.
+            parts = stripped.split(b" ", 1)
+            if len(parts) != 2:
+                continue
+            object_id, ref_name = parts
+            if len(object_id) not in (40, 64) or any(
+                c not in b"0123456789abcdef" for c in object_id
+            ):
+                continue
+            if ref_name.startswith(b"refs/heads/") or ref_name.startswith(b"refs/tags/"):
                 kept_lines.append(stripped)
         if kept_lines:
             dest_packed_refs = dest_git_dir / "packed-refs"
@@ -516,7 +733,7 @@ def _write_minimal_bare_skeleton_v2(cas_dir: Path) -> None:
     )
 
 
-@dataclass
+@dataclass(frozen=True)
 class TrustedObjectAuthorityV2:
     """The sole handle through which its own bound object store can be
     read. Never accepts an external path/cwd on any of its operations --
@@ -524,6 +741,13 @@ class TrustedObjectAuthorityV2:
     at a different repository, and no way to construct a genuine instance
     except by `open_trusted_object_authority_v2`, which alone holds the
     build sentinel this class's `__init__` requires.
+
+    `frozen=True` (correction round 1, Lane A P2): every sibling
+    dataclass in this package's threat-scoped modules is frozen; this one
+    was not, which meant `_cas_root`/`_expected_marker` could be reassigned
+    post-construction by anything holding a reference, inconsistent with
+    this class's own "unforgeable" docstring claim even though nothing in
+    the current call graph exercises that mutability.
     """
 
     _cas_root: Path
@@ -532,8 +756,8 @@ class TrustedObjectAuthorityV2:
     def __init__(self, *, cas_root: Path, expected_marker: bytes, _sentinel: object) -> None:
         if _sentinel is not _BUILD_SENTINEL_V2:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2)
-        self._cas_root = cas_root
-        self._expected_marker = expected_marker
+        object.__setattr__(self, "_cas_root", cas_root)
+        object.__setattr__(self, "_expected_marker", expected_marker)
 
     def _verify_capability_v2(self) -> None:
         marker_path = self._cas_root / _MARKER_FILENAME_V2
