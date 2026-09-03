@@ -331,7 +331,18 @@ def compute_subject_digest_v2(subject_root: Path) -> str:
     value returned by this function must never be compared against a value
     supplied by an untrusted party as a substitute for re-deriving expected
     content from git directly -- see `commit_derived_execution_identity_v2.py`
-    for why that distinction is the whole point of this primitive.
+    for why that distinction is the whole point of this primitive. Also
+    worth stating plainly alongside that: this function's return value is
+    exactly 64 lowercase hex characters (a sha256 hexdigest), and a subject
+    whose bytes an adversary controls (this function makes no claim about
+    subject provenance) makes that value ADVERSARY-INFLUENCED, not merely
+    adversary-observable -- it must never be treated as if it were an
+    out-of-band-verified anchor merely because it happens to be shape-valid
+    hex, for the identical reason `commit_derived_execution_identity_v2.py`'s
+    `authorize_commit_for_execution_v2` documents for `trusted_ref_sha`
+    (`#313`/`#200-G1C2-F2`): a hostile-derived producer of a shape-valid hex
+    string is not an out-of-band trust source, regardless of which function
+    produced the string.
 
     S3 (`#200-G1-S`, issue #305, salvaged from forensic PR #302's finding
     #6, hardened further after independent review of this fix itself found

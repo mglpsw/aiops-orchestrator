@@ -36,6 +36,7 @@ from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2,
     IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2,
     IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2,
+    IDENTITY_TRUSTED_REF_SHA_MISMATCH_REASON_V2,
     IDENTITY_UNKNOWN_COMMIT_REASON_V2,
     ExecutedSourceIdentityError,
     authorize_commit_for_execution_v2,
@@ -1112,16 +1113,20 @@ def test_ref_name_shaped_trusted_ref_sha_is_refused_not_resolved(tmp_path: Path)
         "a" * 41,  # one long of a sha1
         "g" * 40,  # right length, not hex
         "A" * 40,  # right length and hex alphabet, wrong case
-        "a" * 63,  # one short of a sha256
+        "a" * 63,  # one short of a sha256 (still wrong even though 64 itself is also refused)
+        "a" * 64,  # sha256 length -- deliberately dropped, see the P0 test above
         "a" * 65,  # one long of a sha256
         "deadbeef",  # a real, but abbreviated, sha
         "not-a-sha-at-all",
     ],
 )
 def test_malformed_trusted_ref_sha_is_refused(tmp_path: Path, malformed: str) -> None:
-    """Anything not exactly 40 or 64 lowercase hex characters is refused
-    with a typed reason code -- never silently truncated, case-folded, or
-    partially matched against a real commit."""
+    """Anything not exactly 40 lowercase hex characters is refused with a
+    typed reason code -- never silently truncated, case-folded, or
+    partially matched against a real commit. 64 (sha256) is included here
+    as a plain shape-refusal case; `test_64_hex_trusted_ref_sha_is_refused_
+    not_shadow_resolved_as_a_ref` above additionally exercises the full
+    reproduced attack path for that specific length."""
     repo, base_sha = _toolrepo_fixture(tmp_path)
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
         authorize_commit_for_execution_v2(
@@ -1220,4 +1225,152 @@ def test_laundering_hostile_ref_through_resolve_commit_v2_reproduces_the_origina
     assert result.authorized is True, (
         "this assertion documents the KNOWN residual risk, not a desired "
         "outcome -- see this test's docstring and #200-G1C2-F3"
+    )
+
+
+# -- #313 correction round 2 (independent adversarial review, P0/P1/P2) ---------
+#
+# Fallback-quorum review of the #313 fix found a real P0: the shape check's
+# accepted lengths were (40, 64) -- 40 for sha1, 64 anticipating sha256 --
+# but the trusted object authority is hardcoded sha1-format ALWAYS, so a
+# 64-hex string can never be a real object id there. Git falls through,
+# silently, to ordinary REF-NAME resolution for a hex string whose length
+# doesn't match the repo's hash algorithm -- and ref values are exactly what
+# this module already treats as hostile. A caller's genuine, public,
+# out-of-band 64-hex anchor could therefore be "shadowed" by an attacker who
+# plants a same-named ref pointing at their own commit. Independently
+# reproduced (by two adversarial review lanes and directly by a human
+# maintainer) before fixing. Fixed two ways: (1) 64 dropped from the
+# accepted shape entirely (zero legitimate use today -- `resolve_commit_v2`
+# independently hard-rejects any resolved value with `len != 40` regardless);
+# (2) a general `resolved_trusted == trusted_ref_sha` equality invariant
+# added, closing the class rather than just the one exploitable length.
+
+
+def test_64_hex_trusted_ref_sha_is_refused_not_shadow_resolved_as_a_ref(
+    tmp_path: Path,
+) -> None:
+    """The reproduced P0: a 64-hex string that LOOKS like a plausible
+    out-of-band sha256 anchor must be refused outright by the shape check,
+    not silently resolved as a ref name -- because the trusted object
+    authority is sha1-only, a 64-hex string can never be a real object id
+    there, and letting it fall through to ref-name resolution would let an
+    attacker who plants `refs/heads/<the caller's own public 64-hex pin>`
+    get their own commit accepted as the trust anchor."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+
+    subprocess.run(
+        ["git", "checkout", "--orphan", "attacker-branch"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(["git", "rm", "-rf", "--quiet", "."], cwd=repo, check=True, capture_output=True)
+    (repo / "evil.py").write_text("EVIL = True\n")
+    evil_sha = _commit_all(repo, "attacker commit")
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
+
+    fake_pin = "a" * 64  # the caller's genuine, public, out-of-band sha256-shaped anchor
+    subprocess.run(
+        ["git", "update-ref", f"refs/heads/{fake_pin}", evil_sha], cwd=repo, check=True, capture_output=True
+    )
+    assert _rev_parse(repo, f"refs/heads/{fake_pin}") == evil_sha
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=evil_sha, trusted_ref_sha=fake_pin)
+    assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2
+
+
+def test_resolved_trusted_ref_sha_must_equal_the_supplied_value(tmp_path: Path) -> None:
+    """The general invariant behind the P0 fix: `trusted_ref_sha` must
+    resolve back to EXACTLY itself, not merely to *some* real commit.
+    Reproduced with an annotated tag: its own object sha is a genuine,
+    shape-valid 40-hex object id in the store (so the shape check and the
+    plain existence check both pass), but `resolve_commit_v2`'s `^{commit}`
+    peels an annotated tag to the commit it points AT -- a different sha
+    than the tag object's own. Supplying the tag's sha as `trusted_ref_sha`
+    must be refused, not silently treated as if the peeled commit sha had
+    been supplied."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nMORE = True\n")
+    second_sha = _commit_all(repo, "second commit")
+
+    subprocess.run(
+        ["git", "tag", "-a", "-m", "annotated", "v-annotated", second_sha],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    tag_object_sha = _rev_parse(repo, "refs/tags/v-annotated")
+    assert tag_object_sha != second_sha, "sanity: the tag object's own sha differs from the commit it peels to"
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(
+            repo_root=repo, commit_sha=base_sha, trusted_ref_sha=tag_object_sha
+        )
+    assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_SHA_MISMATCH_REASON_V2
+
+
+@pytest.mark.parametrize("non_str", [None, 12345, ["a"] * 40, ("a",) * 40, b"a" * 40])
+def test_non_string_trusted_ref_sha_is_refused_with_a_typed_reason_not_a_raw_typeerror(
+    tmp_path: Path, non_str: object
+) -> None:
+    """Independent-review P2: a non-`str` value -- including a list of
+    single hex-digit characters, which would each individually satisfy a
+    naive per-element check -- must be refused via the typed reason code,
+    never allowed to reach `len()`/iteration and either coincidentally
+    "pass" or raise an untyped `TypeError`."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(
+            repo_root=repo, commit_sha=base_sha, trusted_ref_sha=non_str  # type: ignore[arg-type]
+        )
+    assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2
+
+
+def test_composing_identity_and_authorization_from_the_same_input_can_resolve_different_commits(
+    tmp_path: Path,
+) -> None:
+    """KNOWN, DOCUMENTED COMPOSITION HAZARD (independent adversarial review,
+    #313 correction round 2, P1) -- checked in deliberately GREEN (the
+    hazard reproduces) rather than made to fail, because neither function is
+    wrong on its own; see the module docstring's "Composing verify_executed_
+    source_identity_v2 + authorize_commit_for_execution_v2" section for the
+    full explanation and the required caller-side mitigation (compare the
+    resolved shas).
+
+    `commit_sha` is deliberately NOT shape-checked in either function (it
+    may legitimately be a ref name) -- but `verify_executed_source_identity_
+    v2` and `authorize_commit_for_execution_v2` each open their OWN fresh
+    trusted object authority and resolve `commit_sha` independently. If the
+    checkout mutates a ref between the two calls, a caller supplying the
+    SAME literal string to both can get IDENTITY proven about one real
+    commit and AUTHORIZATION granted about a genuinely DIFFERENT real
+    commit."""
+    repo, first_sha = _toolrepo_fixture(tmp_path)
+
+    subject_root = tmp_path / "subject"
+    subject_root.mkdir()
+    materialise_commit_subject_v2(repo_root=repo, ref="main", destination=subject_root)
+    identity = verify_executed_source_identity_v2(
+        repo_root=repo, commit_sha="main", subject_root=subject_root, loaded_module_paths=()
+    )
+    assert identity.commit_sha == first_sha
+
+    # The checkout mutates between the two calls -- `main` now names a
+    # completely different, real commit.
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nMORE = True\n")
+    second_sha = _commit_all(repo, "second commit")
+    assert second_sha != first_sha
+
+    authorization = authorize_commit_for_execution_v2(
+        repo_root=repo, commit_sha="main", trusted_ref_sha=second_sha
+    )
+
+    # Both calls were given the identical literal string `"main"`. Each
+    # function did exactly what it promises, independently -- and yet:
+    assert identity.commit_sha == first_sha
+    assert authorization.commit_sha == second_sha
+    assert identity.commit_sha != authorization.commit_sha, (
+        "this assertion documents the KNOWN composition hazard, not a "
+        "desired outcome -- a caller MUST compare identity.commit_sha == "
+        "authorization.commit_sha before treating the pair as describing "
+        "the same commit; see this test's docstring"
     )

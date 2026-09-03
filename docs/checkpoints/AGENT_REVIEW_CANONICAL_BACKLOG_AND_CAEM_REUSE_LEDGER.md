@@ -75,9 +75,16 @@ issue_312:
 issue_313:
   title: "#200-G1C2-F2 — trusted_ref anchor resolved against hostile-derived authority"
   track: agentreview_v2_trust_primitive
-  canonical_property: "authorize_commit_for_execution_v2 must require an out-of-band-verified SHA trusted_ref_sha, never a ref name resolved inside the hostile-derived store"
+  canonical_property: "authorize_commit_for_execution_v2 must require an out-of-band-verified sha1 trusted_ref_sha (never a ref name, never a 64-hex sha256-shaped value the sha1-only trusted authority cannot host as a real object id), and must verify resolve_commit_v2(trusted_ref_sha) == trusted_ref_sha exactly before using it as an anchor"
   implementation_status: complete
-  qualification_status: 2_internal_adversarial_lanes_reconciled_lane_a_no_p0p1_lane_b_1_p1_disposed_via_docs_plus_regression_test_plus_followup_issue_319   # Codex dispatch pending
+  correction_rounds:
+    - round: 1
+      finding: "trusted_ref (ref-name-shaped anchor resolved against the hostile-derived authority) -- the original #313 defect"
+      disposition: fixed_and_verified
+    - round: 2
+      finding: "fallback-quorum + direct maintainer reproduction, P0: shape check accepted (40, 64) but the trusted object authority is sha1-only, so a 64-hex anchor falls through to hostile-controllable ref-name resolution (git branch/tag literally named after the caller's own public out-of-band pin); P1: commit_sha split-brain across independently-resolving verify_/authorize_ calls; P2: non-str shape-check bypass, compute_subject_digest_v2 attacker-influenced-hex awareness"
+      disposition: "P0 fixed_and_verified (64 dropped from accepted shape + resolved==supplied equality invariant added, both mutation-tested independently); P1 disposed via docstring warning + checked-in reproduction test (test_composing_identity_and_authorization_from_the_same_input_can_resolve_different_commits), no live caller to fix structurally yet; P2s fixed (isinstance str gate) and documented (compute_subject_digest_v2 docstring note)"
+  qualification_status: correction_round_2_complete_reconfirmed_by_3_independent_reproductions_p0_plus_2_lanes_reconciled_round_1_p1_lane_b_disposed_via_319   # Codex re-dispatch pending on new head
   disposition: ACTIVE_CRITICAL_PATH   # still blocks G5 wiring until qualified
   blocking: true
   caem_predecessor_search: NO_RELEVANT_CAEM_PREDECESSOR_FOUND   # ADR 0012/0014 adjacent, not this mechanism
