@@ -373,11 +373,13 @@ def _try_open_dir_no_follow_v2(dir_fd: int, name: str) -> int | None:
 
 def _open_regular_file_no_follow_v2(dir_fd: int, name: str, *, missing_is_legitimate: bool) -> int | None:
     """THE single regular-file-open choke point in this module. Every call
-    site that opens an untrusted, attacker-named regular file -- both the
-    six metadata probes (`commondir`, `packed-refs`, the three `HEAD`
-    probes, `objects/info/alternates`) AND the bulk data-copy path (every
-    loose object, pack file, and ref file discovered via `os.scandir`) --
-    goes through here, and here alone.
+    site that opens an untrusted, attacker-named regular file -- all 7
+    metadata probes (`.git`-as-file for a linked worktree, `commondir`,
+    `packed-refs`, the three `HEAD` probes, `objects/info/alternates`) AND
+    the bulk data-copy path (every loose object, pack file, and ref file
+    discovered via `os.scandir`, 3 more sites) -- goes through here, and
+    here alone: 10 call sites total (verified by grepping every call to
+    this function and its two thin wrappers, not merely asserted).
 
     G1C2-F1 (#312), round 2: the first round of this fix hardened only the
     metadata-probe half (then named `_try_open_file_no_follow_v2`) and left
@@ -501,9 +503,17 @@ def _open_listed_file_no_follow_v2(dir_fd: int, name: str) -> int:
     file THIS MODULE ALREADY OBSERVED via a `scandir` listing moments ago
     (a loose object, a pack file, a ref file) -- see that function's
     docstring for why a vanished file here is refused rather than silently
-    tolerated. `missing_is_legitimate=False` never returns `None`."""
+    tolerated. `missing_is_legitimate=False` never returns `None`: an
+    explicit `TrustedObjectAuthorityError`, not a bare `assert`, guards
+    that invariant here, so the module's typed-error contract holds even
+    under `-O`/`PYTHONOPTIMIZE` (which strips assertions) -- provably
+    unreachable today by exhaustive case analysis of
+    `_open_regular_file_no_follow_v2`'s own branches, but a bare `assert`
+    would let that guarantee silently depend on an interpreter flag this
+    module has no control over."""
     fd = _open_regular_file_no_follow_v2(dir_fd, name, missing_is_legitimate=False)
-    assert fd is not None, "unreachable: missing_is_legitimate=False always raises instead of returning None"
+    if fd is None:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2)
     return fd
 
 

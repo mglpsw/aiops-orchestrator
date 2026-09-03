@@ -1518,20 +1518,24 @@ def test_racing_the_dotgit_classification_stat_still_refuses(tmp_path: Path) -> 
 
 # -- #312 (#200-G1C2-F1): bounded acquisition against hostile-planted special files ---------
 #
-# ROUND 2 NOTE: round 1 of this fix hardened only `_try_open_file_no_follow_v2` (the six
-# metadata probes below). Two independent adversarial review lanes found, and this file's own
-# author independently reproduced a third time before implementing the round-2 fix, that a
-# SEPARATE function -- then named `_open_listed_file_no_follow_v2`, used for every loose
-# object/pack file/ref file discovered via `scandir` -- still had the identical unguarded
-# `O_NOFOLLOW`-only open, a larger attacker-controlled surface than the six named probes. Both
+# ROUND 2 NOTE: round 1 of this fix hardened `_try_open_file_no_follow_v2` (7 metadata-probe
+# call sites -- `.git`-as-file for a linked worktree, `commondir`, `packed-refs`, three `HEAD`
+# probes, `objects/info/alternates`; an earlier draft of this comment undercounted these as
+# "six", omitting the `.git`-as-file site from the enumeration -- round 2's own adversarial
+# review lanes caught and corrected this prose-only undercount, no coverage gap). Two
+# independent adversarial review lanes found, and this file's own author independently
+# reproduced a third time before implementing the round-2 fix, that a SEPARATE function -- then
+# named `_open_listed_file_no_follow_v2`, used for every loose object/pack file/ref file
+# discovered via `scandir` (3 more call sites) -- still had the identical unguarded
+# `O_NOFOLLOW`-only open, a larger attacker-controlled surface than the 7 named probes. Both
 # former functions are now thin wrappers around ONE shared primitive,
 # `_open_regular_file_no_follow_v2` (see its own docstring), which is the SOLE choke point for
-# every regular-file open this module performs -- the six metadata-probe sites below, PLUS the
-# three bulk-data sites exercised by the new `test_racing_*_listing_to_open_with_a_fifo_*`
-# tests near the end of this section. Fixing that one shared primitive once is what makes the
-# corpus below uniform across all nine sites rather than six fixed and three stragglers -- the
-# exact "four fixed, two stragglers" shape that refuted round 2 on the predecessor PR (#308),
-# repeated once already within this very issue before converging here.
+# every regular-file open this module performs -- the 7 metadata-probe sites below, PLUS the
+# 3 bulk-data sites exercised by the new `test_racing_*_listing_to_open_with_a_fifo_*` tests
+# near the end of this section: 10 sites total. Fixing that one shared primitive once is what
+# makes the corpus below uniform across all 10 sites rather than 7 fixed and 3 stragglers --
+# the exact "four fixed, two stragglers" shape that refuted round 2 on the predecessor PR
+# (#308), repeated once already within this very issue before converging here.
 #
 # CAEM predecessor search (mandatory per this project's standing rule before any new
 # mechanism): `mglpsw/caem`'s `tooling/launch_n5_replay_native.c` (`open_regular`,
