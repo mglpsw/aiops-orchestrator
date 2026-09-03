@@ -66,11 +66,12 @@ issue_312:
   title: "#200-G1C2-F1 — unbounded blocking open on hostile-planted FIFO"
   track: agentreview_v2_trust_primitive
   canonical_property: "availability only — probe opens must reject non-regular files / use O_NONBLOCK+fstat, not a trust-boundary break"
-  implementation_status: not_started
-  qualification_status: n/a
+  implementation_status: implemented_pending_review
+  qualification_status: draft_pr_open_awaiting_adversarial_lanes_and_codex
   disposition: ACTIVE_PARALLEL
   blocking: false
-  next_gate: implementation_grant
+  branch: fix/200-g1c2-f312-bounded-special-file-acquisition
+  next_gate: "2 internal adversarial review lanes + Codex (if available) -> coordinator merge decision; NOT marked Ready, NOT merged by this slice"
 
 issue_313:
   title: "#200-G1C2-F2 — trusted_ref anchor resolved against hostile-derived authority"
@@ -341,16 +342,16 @@ agentreview_property:
 
   - issue: 312   # F1, availability
     failure_class: unbounded_blocking_open_on_special_file
-    caem_predecessor: TODO
-    predecessor_truth_maker: TODO
-    predecessor_falsifiers: TODO
-    agentreview_domain_delta: TODO
-    implementation_owner: not_started
-    tests_ported: TODO
-    tests_rederived: TODO
+    caem_predecessor: "mglpsw/caem ADR-0012 + tooling/launch_n5_replay_native.c's open_regular/open_directory (open -> fstat SAME fd -> require S_ISREG/S_ISDIR, fail closed on a special file), design reference only, authority_effect: none for this repo -- PARTIAL predecessor only: covers the TOCTOU-safe type-classification half of this fix, not the non-blocking-acquisition half. A repo-wide search of mglpsw/caem for O_NONBLOCK returns zero hits across gh search code and gh api search/code; ADR 0012's own launcher/replay code paths (native C, replay_n5_bundle.py, launch_n5_replay.py, verify_n5_launcher_attestation.py) all open with a plain blocking open() and would themselves still hang on a hostile FIFO. NO_RELEVANT_CAEM_PREDECESSOR_FOUND for the O_NONBLOCK-anchored-availability property specifically."
+    predecessor_truth_maker: "ADR-0012 half only: a symlink, special file, replacement, or metadata/content race fails closed because the SAME already-open fd is fstat-ed and its type checked before any content is trusted -- never a fresh path-based re-stat. This module's own addition (no CAEM predecessor): O_NONBLOCK at the open() call itself, so a FIFO with no writer returns immediately instead of blocking, before fstat is ever reached."
+    predecessor_falsifiers: "FIFO planted at each of the 6 previously-ungated `_try_open_file_no_follow_v2` call sites (commondir :632, packed-refs :935, HEAD x3 :616/:721/:968, objects/info/alternates :853) -> typed refusal within a 2s bound, not a hang; positive control (regular file) at each site still works, closing a genuine corpus gap for the bare-repository-root site (:616) that had no positive control before this change; AF_UNIX socket special file -> typed refusal (ENXIO at open() itself, ACQUISITION_FAILED); char-special device -> typed refusal (SPECIAL_FILE_REJECTED), skipped with a clear reason where CAP_MKNOD is unavailable in the sandbox; regression check that the already-gated `.git`-as-file site and the listed-file sites are unaffected. Full corpus + mutation-test results (S_ISREG check disabled, O_NONBLOCK dropped -- each independently killed exactly the 6 site witnesses and none of the unrelated tests) in tests/agent_review/test_trusted_object_authority_v2.py."
+    agentreview_domain_delta: "applied to Git probe-file acquisition (commondir/packed-refs/HEAD/alternates reads during trusted-object-authority acquisition) rather than a launcher's dependency-tree/interpreter materialization; fixed once at the shared `_try_open_file_no_follow_v2` choke point all 6 sites call through, not per-site, to avoid the four-fixed-two-stragglers shape that refuted round 2 on the #200-G1C predecessor (PR #308)."
+    implementation_owner: "branch fix/200-g1c2-f312-bounded-special-file-acquisition"
+    tests_ported: "none ported verbatim from #312's own reproduction script (a standalone SIGALRM-bounded repro, not a pytest fixture) -- rederived as a permanent pytest corpus instead"
+    tests_rederived: "9 new tests (6 site-specific FIFO witnesses + socket + regression + 1 new positive control) added to tests/agent_review/test_trusted_object_authority_v2.py; 1 device-special test present but sandbox-skipped (no CAP_MKNOD)"
     authority_effect_in_aiops: none
     qualification_transferred: false
-    current_status: OPEN_NOT_STARTED
+    current_status: IMPLEMENTED_DRAFT_PR_PENDING_ADVERSARIAL_REVIEW
 
   - issue: 313   # F2, authorization-anchor semantics
     failure_class: trust_anchor_resolved_against_hostile_derived_store

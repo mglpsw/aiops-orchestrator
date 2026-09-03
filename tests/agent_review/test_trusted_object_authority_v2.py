@@ -26,8 +26,12 @@ import hashlib
 import inspect
 import os
 import shutil
+import signal
+import socket
+import stat as stat_module
 import subprocess
 import tempfile
+import time
 import unittest.mock
 import zlib
 from pathlib import Path
@@ -47,12 +51,14 @@ from app.agent_review.git_commit_subject_v2 import (
     resolve_commit_v2,
 )
 from app.agent_review.trusted_object_authority_v2 import (
+    TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2,
+    TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2,
     TrustedObjectAuthorityError,
     TrustedObjectAuthorityV2,
@@ -1508,3 +1514,270 @@ def test_racing_the_dotgit_classification_stat_still_refuses(tmp_path: Path) -> 
                 pytest.fail("should have refused the swapped .git")
     assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
     assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+
+
+# -- #312 (#200-G1C2-F1): bounded acquisition against hostile-planted special files ---------
+#
+# `_try_open_file_no_follow_v2` is the SOLE choke point for all six previously-ungated probe
+# sites (`commondir`, `packed-refs`, three distinct `HEAD` probes, `objects/info/alternates`):
+# every one of them calls it, and no other function in this module performs an unbounded
+# blocking open on a name it has not already committed to. Fixing that one function once is
+# what makes the corpus below uniform across all six sites rather than four fixed and two
+# stragglers -- the exact shape that refuted round 2 on the predecessor PR (#308).
+#
+# CAEM predecessor search (mandatory per this project's standing rule before any new
+# mechanism): `mglpsw/caem`'s `tooling/launch_n5_replay_native.c` (`open_regular`,
+# `open_directory`) and ADR 0012 ("any symlink, special file, replacement, or metadata/content
+# race fails closed") already establish "open -> fstat the SAME fd -> require S_ISREG/S_ISDIR"
+# as a design reference for refusing a special file via an fd-anchored, TOCTOU-safe gate --
+# cited here as design reference only (this repo's CAEM pin has `authority_effect: none`, and
+# ADR 0012 lives past this repo's pin, `maturity: candidate, published: false`; no authority is
+# claimed). That predecessor's own C/Python implementations (`open_regular`/`open_directory`,
+# `replay_n5_bundle.py`, `launch_n5_replay.py`, `verify_n5_launcher_attestation.py`) do NOT use
+# `O_NONBLOCK` anywhere -- a repo-wide search for `O_NONBLOCK` across `mglpsw/caem` returns zero
+# hits. That predecessor closes "which type is this fd" (the TOCTOU-safe classification half of
+# this fix); it does NOT close "does opening this fd hang" (the availability half) --
+# `NO_RELEVANT_CAEM_PREDECESSOR_FOUND` for the non-blocking-acquisition-against-a-hostile-FIFO
+# property specifically. This module's fix composes both: `O_NONBLOCK` at open (the part with no
+# CAEM predecessor) plus fstat-same-fd-then-require-S_ISREG (the part ADR 0012 already
+# establishes as a design reference).
+#
+# Secondary finding from #312 (`TimeoutError` subclasses `OSError`, so a caller-side signal
+# watchdog's exception was swallowed and remapped to a generic `ACQUISITION_FAILED`): this fix
+# does not add a distinct timeout reason code. Reasoning, stated explicitly rather than silently
+# dropping the finding: `O_NONBLOCK` at `open()` means a FIFO with no writer (or any other
+# special file whose open would otherwise block) returns immediately -- there is no longer any
+# blocking syscall inside this module's probe path for an external watchdog to ever need to
+# interrupt in the first place. The `_open_and_expect_refusal_within_v2` helper below asserts
+# this positively (elapsed time near-instant, not merely "eventually raised") rather than taking
+# it on faith.
+
+
+def _bounded_by_signal_alarm_v2(seconds: int):
+    """Test-safety-net timeout only -- see this section's own docstring. The fix under test must
+    never need this to fire to pass; it exists so a regression turns into a fast, clear failure
+    instead of a CI run stuck forever. `TimeoutError` (the same class #312 names as swallowed by
+    this module's own `except OSError` handling) is raised from the signal handler; PEP 475 means
+    the interrupted syscall does not silently retry once the handler itself raises."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm():
+        def _on_alarm(signum, frame):
+            raise TimeoutError(
+                f"test exceeded its {seconds}s safety-net bound -- likely an unbounded "
+                "blocking open regression (#312)"
+            )
+
+        previous = signal.signal(signal.SIGALRM, _on_alarm)
+        signal.alarm(seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    return _cm()
+
+
+def _open_and_expect_refusal_within_v2(repo: Path, *, bound_seconds: float = 2.0) -> TrustedObjectAuthorityError:
+    """Opens `repo` through the real public entry point and asserts it raises a typed
+    `TrustedObjectAuthorityError` FAST -- not merely "eventually, rescued by the safety-net
+    alarm". A safety-net alarm roughly 4x the assertion bound backstops the test itself against
+    actually hanging if the fix regresses; the timing assertion is what proves the fix, not the
+    alarm."""
+    start = time.monotonic()
+    with _bounded_by_signal_alarm_v2(int(bound_seconds) + 6):
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            with open_trusted_object_authority_v2(repo):
+                pytest.fail("should have refused, not opened")
+    elapsed = time.monotonic() - start
+    assert elapsed < bound_seconds, (
+        f"acquisition took {elapsed:.2f}s -- a bounded, O_NONBLOCK-anchored open must refuse a "
+        "special file near-instantly, never rely on an external watchdog to rescue it (#312)"
+    )
+    return excinfo.value
+
+
+# -- site `:632` -- commondir ------------------------------------------------------------------
+
+
+def test_fifo_at_commondir_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    """`commondir` is an OPTIONAL probe run unconditionally against `git_dir_fd`, even for a
+    repository that is not a linked worktree at all (an ordinary repo simply doesn't have this
+    file, i.e. the probe already returns `None` here in the non-hostile case)."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    os.mkfifo(repo / ".git" / "commondir")
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- site `:935` -- packed-refs ----------------------------------------------------------------
+
+
+def test_fifo_at_packed_refs_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    os.mkfifo(repo / ".git" / "packed-refs")
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- site `:616` -- HEAD, bare-repository-root probe -------------------------------------------
+
+
+def test_fifo_at_bare_repository_root_head_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    """Reached only when `repo_root` has no `.git` at all -- `repo_root` is itself the bare git
+    directory, and `HEAD` is probed directly against it before `objects` is even checked."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    bare = tmp_path / "bare.git"
+    subprocess.run(["git", "clone", "--quiet", "--bare", str(repo), str(bare)], check=True, capture_output=True)
+    (bare / "HEAD").unlink()
+    os.mkfifo(bare / "HEAD")
+
+    value = _open_and_expect_refusal_within_v2(bare)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- site `:721` -- HEAD, alternate-objects-sibling probe ---------------------------------------
+
+
+def test_fifo_head_sibling_at_alternate_objects_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    """Mirrors `test_symlinked_head_sibling_does_not_fool_the_alternate_containment_check` but
+    with a FIFO instead of a symlink. `_looks_like_git_objects_directory_fd_v2` swallows any
+    `TrustedObjectAuthorityError` its own `HEAD`-sibling probe raises and reports "not a real
+    objects directory" (`ALTERNATE_REJECTED`) -- exactly as it already does for a symlinked
+    sibling. A FIFO here must be refused through that SAME typed, non-hanging path, not left to
+    block forever underneath it."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    ordinary_dir = tmp_path / "not_a_repository_fifo"
+    ordinary_dir.mkdir()
+    (ordinary_dir / "objects").mkdir()
+    os.mkfifo(ordinary_dir / "HEAD")
+
+    info_dir = repo / ".git" / "objects" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "alternates").write_text(str(ordinary_dir / "objects") + "\n")
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- site `:968` -- HEAD, final copy probe in _copy_refs_fd_v2 ----------------------------------
+
+
+def test_fifo_at_head_final_copy_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    """The final `HEAD` read in `_copy_refs_fd_v2`, from `git_dir_fd` (identical to
+    `common_dir_fd` for this ordinary, non-worktree repository) -- reached only after objects,
+    `refs/heads`, `refs/tags`, and `packed-refs` have already copied cleanly, isolating this
+    exact call site from the other five."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    head_path = repo / ".git" / "HEAD"
+    head_path.unlink()
+    os.mkfifo(head_path)
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- site `:853` -- objects/info/alternates ------------------------------------------------------
+
+
+def test_fifo_at_alternates_file_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    info_dir = repo / ".git" / "objects" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(info_dir / "alternates")
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- other special-file shapes -------------------------------------------------------------------
+
+
+def test_unix_domain_socket_at_commondir_is_refused_not_hung(tmp_path: Path) -> None:
+    """Socket special file, where representable on this platform (a real `AF_UNIX` socket bound
+    to a filesystem path) -- a different non-regular inode shape than a FIFO, planted at the same
+    probe site. `open(2)` on an `AF_UNIX` socket special file fails at the `open()` syscall itself
+    (`ENXIO`, confirmed empirically on this platform) rather than succeeding and then failing the
+    `S_ISREG` fstat gate -- this module's existing generic `except OSError` branch in
+    `_try_open_file_no_follow_v2` refuses it there, still typed, still non-blocking, without ever
+    reaching the `fstat`/`S_ISREG` step."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    socket_path = repo / ".git" / "commondir"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(socket_path))
+        value = _open_and_expect_refusal_within_v2(repo)
+        assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+    finally:
+        sock.close()
+    _ = c3
+
+
+def test_char_device_special_file_at_commondir_is_refused_not_hung(tmp_path: Path) -> None:
+    """Device special file, constructed only if this sandbox has the privilege to `mknod` one
+    (typically requires `CAP_MKNOD`/root) -- skipped with a clear reason otherwise, per #312's
+    falsifier-corpus requirement. Mirrors `/dev/null`'s own `(major, minor)` -- a device that
+    never blocks on open/read/write by itself, chosen so this test cannot hang even if the fix
+    under test were somehow absent."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    device_path = repo / ".git" / "commondir"
+    try:
+        os.mknod(str(device_path), mode=0o600 | stat_module.S_IFCHR, device=os.makedev(1, 3))
+    except OSError as exc:
+        pytest.skip(f"cannot mknod a char-special file in this sandbox: {exc}")
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- regression: sites already correctly gated before this fix must remain unaffected -----------
+
+
+def test_fifo_planted_as_dotgit_itself_is_refused_not_hung(tmp_path: Path) -> None:
+    """Regression check for the site already gated BEFORE this fix (`.git`-as-file, `:591`): a
+    `.git` FIFO is refused via the pre-existing classifying `os.stat` in
+    `_resolve_git_directories_fd_v2` -- neither `S_ISDIR` nor `S_ISREG` matches a FIFO, so control
+    never even reaches `_try_open_file_no_follow_v2` for `.git` itself. `os.stat` never blocks
+    regardless of the target's type, so this was already non-hanging on `master` before this fix
+    -- same as it already refuses a `.git` symlink. Included here to confirm this fix changes
+    nothing about that pre-existing behaviour."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    dotgit = repo / ".git"
+    shutil.rmtree(dotgit)
+    os.mkfifo(dotgit)
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- positive controls: a regular file at each site must still work exactly as before -----------
+
+
+def test_bare_repository_head_and_objects_probe_still_works(tmp_path: Path) -> None:
+    """Positive control for the bare-repository-root probe (site `:616`) -- not previously
+    exercised anywhere in this corpus. Regular-file positive controls for the other five sites
+    already exist elsewhere in this file: `commondir` via
+    `test_linked_worktree_resolves_the_shared_object_store_not_the_private_worktree_dir`,
+    `packed-refs` via `test_packed_refs_with_ordinary_content_still_round_trips`, the
+    alternate-objects `HEAD` sibling (site `:721`) via
+    `test_legitimate_alternate_still_works_after_containment_check`, and the final `HEAD` read
+    (site `:968`) via every ordinary end-to-end test in this file, including
+    `test_ordinary_authorization_and_materialisation_still_work_end_to_end`."""
+    repo, c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    bare = tmp_path / "bare.git"
+    subprocess.run(["git", "clone", "--quiet", "--bare", str(repo), str(bare)], check=True, capture_output=True)
+
+    result = authorize_commit_for_execution_v2(repo_root=bare, commit_sha=c1, trusted_ref=c3)
+    assert result.authorized is True

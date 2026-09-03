@@ -153,6 +153,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import fcntl
 import hashlib
 import os
 import secrets
@@ -176,6 +177,7 @@ __all__ = [
     "TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2",
+    "TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2",
     "TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2",
     "TrustedObjectAuthorityError",
     "TrustedObjectAuthorityV2",
@@ -195,6 +197,14 @@ TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2 = "trusted_object_author
 # call) -- never detected after the fact, never dependent on a separate,
 # earlier `is_symlink()` observation of the same pathname.
 TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2 = "trusted_object_authority_symlink_rejected"
+# G1C2-F1 (#312): a FIFO, socket, device, or any other non-regular special
+# file is refused via the SAME already-open fd its open() call produced
+# (`fstat` + `S_ISREG`, never a fresh path-based stat) -- see
+# `_try_open_file_no_follow_v2`. Distinct from `SYMLINK_REJECTED`: a
+# symlink is refused by `O_NOFOLLOW` at the `open()` call itself (`ELOOP`);
+# this reason is for a target that opened successfully (it was not a
+# symlink) but is not a genuine regular file either.
+TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2 = "trusted_object_authority_special_file_rejected"
 TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2 = "trusted_object_authority_alternate_rejected"
 TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2 = "trusted_object_authority_pack_verification_failed"
 
@@ -337,19 +347,54 @@ def _try_open_file_no_follow_v2(dir_fd: int, name: str) -> int | None:
     """Open a regular file, `O_NOFOLLOW`, relative to `dir_fd`, for a file
     this module has NOT already committed to (an optional probe -- e.g.
     `commondir`, `packed-refs`, `objects/info/alternates`, a `gitdir:`
-    pointer -- where "genuinely does not exist" is an expected, legitimate
-    state). Returns `None` if it genuinely does not exist. Raises
-    `SYMLINK_REJECTED` if `name` is a symlink. `ValueError` (an embedded
-    NUL byte -- see `_open_dir_no_follow_v2`) is caught alongside
-    `OSError` for the same reason.
+    pointer, the three `HEAD` probes -- where "genuinely does not exist" is
+    an expected, legitimate state). Returns `None` if it genuinely does not
+    exist. Raises `SYMLINK_REJECTED` if `name` is a symlink. `ValueError`
+    (an embedded NUL byte -- see `_open_dir_no_follow_v2`) is caught
+    alongside `OSError` for the same reason.
 
     NOT for a file already observed via a `scandir` listing moments ago --
     see `_open_listed_file_no_follow_v2` for that case, where a vanished
     file is refused rather than silently tolerated.
+
+    G1C2-F1 (#312): this is the SOLE choke point every one of this
+    module's six previously-ungated probe sites calls through, so the fix
+    lives here once rather than at each call site individually. `name` is
+    untrusted, attacker-controlled content at every call site (a
+    `hostile_target_checkout` can plant a FIFO, socket, or device file at
+    any of them) -- `O_NOFOLLOW` alone rejects a symlink but not a special
+    file, and a plain blocking `open()` on a FIFO with no writer present
+    blocks the calling thread forever (issue #312's reproduction: `.git/
+    commondir` planted as a FIFO hung acquisition indefinitely).
+
+    The fix is the property named in #312, applied atomically against ONE
+    fd, never a fresh path-based reopen (which would reintroduce exactly
+    the TOCTOU class this module's own `#200-G1C2` architecture exists to
+    eliminate -- see the module docstring):
+
+        open O_NONBLOCK | O_NOFOLLOW
+        -> fstat the SAME fd
+        -> require S_ISREG
+        -> clear O_NONBLOCK (fcntl) before returning the fd for reading
+
+    `O_NONBLOCK` at `open()` means a FIFO with no writer returns
+    immediately instead of blocking -- there is no longer any blocking
+    syscall in this probe path at all, so a caller-side watchdog is not
+    needed to protect it (see this fix's PR/ledger notes for the full
+    reasoning on why #312's secondary `TimeoutError`-swallowed-by-`except
+    OSError` finding does not need its own new reason code: there is
+    nothing left in this function for a watchdog to ever need to
+    interrupt). `fstat` never blocks regardless of the fd's underlying
+    file type. If the fd is not a genuine regular file (a FIFO, socket,
+    device, or anything else `S_ISREG` rejects), it is closed and refused
+    via `SPECIAL_FILE_REJECTED` WITHOUT ever calling `os.read` on it.
+    `O_NONBLOCK` is cleared only once `S_ISREG` is confirmed, so every
+    downstream reader (`_read_and_close_fd_charged_v2`) keeps assuming an
+    ordinary blocking regular-file read, unchanged.
     """
-    flags = os.O_RDONLY | os.O_NOFOLLOW
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
-        return os.open(name, flags, dir_fd=dir_fd)
+        fd = os.open(name, flags, dir_fd=dir_fd)
     except FileNotFoundError:
         return None
     except ValueError as exc:
@@ -358,6 +403,25 @@ def _try_open_file_no_follow_v2(dir_fd: int, name: str) -> int | None:
         if exc.errno == errno.ELOOP:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2) from exc
         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+
+    try:
+        file_kind = os.fstat(fd)
+    except OSError as exc:
+        _close_ignoring_errors_v2(fd)
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+
+    if not stat.S_ISREG(file_kind.st_mode):
+        _close_ignoring_errors_v2(fd)
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2)
+
+    try:
+        current_status_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, current_status_flags & ~os.O_NONBLOCK)
+    except OSError as exc:
+        _close_ignoring_errors_v2(fd)
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+
+    return fd
 
 
 def _open_listed_file_no_follow_v2(dir_fd: int, name: str) -> int:
