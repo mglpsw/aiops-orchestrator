@@ -84,14 +84,17 @@ issue_313:
     - round: 2
       finding: "fallback-quorum + direct maintainer reproduction, P0: shape check accepted (40, 64) but the trusted object authority is sha1-only, so a 64-hex anchor falls through to hostile-controllable ref-name resolution (git branch/tag literally named after the caller's own public out-of-band pin); P1: commit_sha split-brain across independently-resolving verify_/authorize_ calls; P2: non-str shape-check bypass, compute_subject_digest_v2 attacker-influenced-hex awareness"
       disposition: "P0 fixed_and_verified (64 dropped from accepted shape + resolved==supplied equality invariant added, both mutation-tested independently); P1 disposed via docstring warning + checked-in reproduction test (test_composing_identity_and_authorization_from_the_same_input_can_resolve_different_commits), no live caller to fix structurally yet; P2s fixed (isinstance str gate) and documented (compute_subject_digest_v2 docstring note)"
-  qualification_status: correction_round_2_complete_reconfirmed_by_3_independent_reproductions_p0_plus_2_lanes_reconciled_round_1_p1_lane_b_disposed_via_319   # Codex re-dispatch pending on new head
+  qualification_status: correction_round_2_complete_reconfirmed_by_3_independent_reproductions_p0_plus_2_lanes_reconciled_round_1_p1_lane_b_disposed_via_319
+  codex_status: UNAVAILABLE_TO_REVIEW   # usage-limit response on final head 7598c7492583ef8b138cbacf4a82d254f7a1e6cc; fallback-quorum exception not self-applied, coordinator's call
+  final_head: 7598c7492583ef8b138cbacf4a82d254f7a1e6cc
+  ci_status: green   # both required checks pass on final_head
   disposition: ACTIVE_CRITICAL_PATH   # still blocks G5 wiring until qualified
   blocking: true
   caem_predecessor_search: NO_RELEVANT_CAEM_PREDECESSOR_FOUND   # ADR 0012/0014 adjacent, not this mechanism
   successor_branch: fix/200-g1c2-f313-out-of-band-authorization-anchor
   successor_pr: 317
   followup_issue: 319   # #200-G1C2-F3, caller-side ref-laundering via resolve_commit_v2, deferred until a live caller exists
-  next_gate: review_and_merge_grant
+  next_gate: coordinator_decision_on_fallback_quorum_or_further_codex_retry   # NOT Ready, NOT merge -- awaiting coordinator
 
 issue_319:
   title: "#200-G1C2-F3 — authorize_commit_for_execution_v2: no mechanism to prevent caller-side ref-laundering via resolve_commit_v2"
