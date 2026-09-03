@@ -75,12 +75,41 @@ issue_312:
 issue_313:
   title: "#200-G1C2-F2 — trusted_ref anchor resolved against hostile-derived authority"
   track: agentreview_v2_trust_primitive
-  canonical_property: "authorize_commit_for_execution_v2 must require an out-of-band-verified SHA trusted_ref, never a ref name resolved inside the hostile-derived store"
+  canonical_property: "authorize_commit_for_execution_v2 must require an out-of-band-verified sha1 trusted_ref_sha (never a ref name, never a 64-hex sha256-shaped value the sha1-only trusted authority cannot host as a real object id), and must verify resolve_commit_v2(trusted_ref_sha) == trusted_ref_sha exactly before using it as an anchor"
+  implementation_status: complete
+  correction_rounds:
+    - round: 1
+      finding: "trusted_ref (ref-name-shaped anchor resolved against the hostile-derived authority) -- the original #313 defect"
+      disposition: fixed_and_verified
+    - round: 2
+      finding: "fallback-quorum + direct maintainer reproduction, P0: shape check accepted (40, 64) but the trusted object authority is sha1-only, so a 64-hex anchor falls through to hostile-controllable ref-name resolution (git branch/tag literally named after the caller's own public out-of-band pin); P1: commit_sha split-brain across independently-resolving verify_/authorize_ calls; P2: non-str shape-check bypass, compute_subject_digest_v2 attacker-influenced-hex awareness"
+      disposition: "P0 fixed_and_verified (64 dropped from accepted shape + resolved==supplied equality invariant added, both mutation-tested independently); P1 disposed via docstring warning + checked-in reproduction test (test_composing_identity_and_authorization_from_the_same_input_can_resolve_different_commits), no live caller to fix structurally yet; P2s fixed (isinstance str gate) and documented (compute_subject_digest_v2 docstring note)"
+    - round: 3
+      finding: "fallback quorum on exact head 1f3f1b019492273cbd9963966ef975f732e4c57f (Codex UNAVAILABLE_TO_REVIEW, two conclusive exact-head usage-limit responses). Lane A (git/ref/object semantics) returned NONBLOCKING_FINDINGS_ONLY and additionally proved by mutation that the 40-only gate and the resolved==supplied invariant are EACH independently sufficient against the round-2 attack. Lane B (python/API/composition semantics) returned BLOCKED_NEW_P1, reproduced independently by the maintainer: round 2's own isinstance(value, str) gate admits str SUBCLASSES, and a subclass defines the very operators both guards are written in terms of (__len__/__iter__ in the shape gate, __ne__ in the resolved==supplied invariant). The lanes do not contradict each other -- lane A never probed subclasses, that not being its assigned angle."
+      mechanism_note: "load-bearing override is __ne__, NOT __eq__. `resolved_trusted != trusted_ref_sha` puts the caller's object on the RIGHT, and python gives the reflected operation priority when the right operand's type is a proper subclass of the left's -- but the name looked up is __ne__, and str DEFINES its own __ne__, so an __eq__-only subclass inherits str.__ne__ and is compared by real content. Lane B's report claimed a single __eq__ override sufficed; that was verified false and corrected before the fix was designed, because it would have invited equality hardening instead of the correct fix. Minimal reproduced witness: one __ne__ override on an instance whose real content is an honest, genuinely resolvable 40-hex annotated-tag object sha -> authorized=True for an orphan commit that is an ancestor of nothing trusted."
+      disposition: "P1 fixed_and_verified (type(value) is str exact-type gate replacing isinstance; RED->GREEN with 6 new witnesses incl. the end-to-end exploit). Mutation-tested both ways: reverting to isinstance fails all 5 subclass witnesses, and disabling the resolved==supplied invariant with the type gate intact still fails the plain-str annotated-tag case -- so the invariant remains INDEPENDENTLY necessary and no redundant equality machinery was added. Lane A P2s (forged-object-store reason-code collapse; unverified multi-pack-index in trusted_object_authority_v2.py) and lane B P2s (untyped BoundedGitError escape; a 40/64 docstring staleness) NOT absorbed here -- outside this diff or non-blocking, follow-up material."
+  qualification_status: correction_round_3_implemented_previous_exact_head_qualification_stale_by_construction   # codex + both fallback lanes must be re-run on the resulting head
+  codex_status: STALE_MUST_RERUN   # UNAVAILABLE_TO_REVIEW was established on 1f3f1b0 (two conclusive exact-head usage-limit responses, 16:32:30Z and 20:32:23Z); that determination does not carry to a new head
+  final_head: pending_round_3_head   # deliberately unpinned: this commit IS the round-3 correction, and pinning a sha it cannot yet know would be fabricated evidence
+  ci_status: pending_round_3_head   # green on 1f3f1b0; must be re-observed on the new head
+  disposition: ACTIVE_CRITICAL_PATH   # still blocks G5 wiring until qualified
+  blocking: true
+  caem_predecessor_search: NO_RELEVANT_CAEM_PREDECESSOR_FOUND   # ADR 0012/0014 adjacent, not this mechanism
+  successor_branch: fix/200-g1c2-f313-out-of-band-authorization-anchor
+  successor_pr: 317
+  followup_issue: 319   # #200-G1C2-F3, caller-side ref-laundering via resolve_commit_v2, deferred until a live caller exists
+  next_gate: rerun_codex_and_both_fallback_lanes_on_round_3_head_then_coordinator_ready_and_merge_grant   # NOT Ready, NOT merge -- awaiting coordinator
+
+issue_319:
+  title: "#200-G1C2-F3 — authorize_commit_for_execution_v2: no mechanism to prevent caller-side ref-laundering via resolve_commit_v2"
+  track: agentreview_v2_trust_primitive
+  canonical_property: "the #313 shape check proves trusted_ref_sha LOOKS like a commit sha, never where it came from; closing the residual gap requires a caller-side provenance/attestation channel that never touches this module family's own hostile-derived read path"
   implementation_status: not_started
   qualification_status: n/a
-  disposition: ACTIVE_CRITICAL_PATH   # blocks G5 wiring, no live callers today so not urgent standalone
-  blocking: true
-  next_gate: implementation_grant
+  disposition: DEFERRED_WITH_VALID_DEPENDENCY   # no live caller of authorize_commit_for_execution_v2 to design the channel against yet
+  blocking: false   # does not block #313/PR #317 or anything currently in flight
+  depends_on: ["#200-G1B", "G5"]   # design against the real composition layer once implemented, not speculatively now
+  next_gate: implementation_grant   # only once a live caller exists
 
 issue_304:
   title: "#200-G1D — canonical no-follow commit materialization authority"

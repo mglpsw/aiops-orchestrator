@@ -85,14 +85,176 @@ into one boolean:
     memory (see "What this module does NOT prove" above).
 
 ``ExecutedSourceAuthorizationV2`` / ``authorize_commit_for_execution_v2``
-    AUTHORIZATION: whether a given (already-identified) commit is permitted
-    for this invocation -- e.g. reachable from a trusted ref such as
-    ``refs/heads/master``. Meaningless applied to an unverified sha, and does
-    not imply identity: a commit can be a perfectly legitimate, unauthorized
-    feature-branch tip.
+    AUTHORIZATION: whether a given (already-identified) commit is reachable
+    from ``trusted_ref_sha`` -- a full commit sha the CALLER has already
+    verified out-of-band, never a ref name such as ``refs/heads/master`` (see
+    "``trusted_ref_sha`` must be an out-of-band anchor" below for why a ref
+    name is refused outright rather than merely discouraged). Meaningless
+    applied to an unverified sha, and does not imply identity: a commit can
+    be a perfectly legitimate, unauthorized feature-branch tip.
 
 A caller that wants an overall accept/refuse decision composes both
 results explicitly; this module does not do that composition for it.
+
+## ``trusted_ref_sha`` must be an out-of-band anchor, never a resolved ref (#313)
+
+``authorize_commit_for_execution_v2`` reads both ``commit_sha`` and
+``trusted_ref_sha`` through the same hostile-derived trusted object
+authority (``#200-G1C2``) that ``verify_executed_source_identity_v2`` uses
+for tree/blob content. That authority's OBJECT content is genuinely sound --
+every loose object is re-hashed against its own fanout path, every pack is
+``verify-pack``'d -- but its REF *values* are copied verbatim from the live,
+hostile-scoped checkout (``_copy_refs_fd_v2`` in
+``trusted_object_authority_v2.py``). A hostile checkout that points
+``refs/heads/master`` at an attacker commit produces an authority whose own
+copy of ``refs/heads/master`` names that same attacker commit. Resolving a
+ref *name* such as ``"refs/heads/master"`` through that authority as the
+trust anchor -- exactly the usage an earlier revision of this docstring
+demonstrated -- authorizes whatever the hostile checkout currently claims
+that name means, not what a legitimate ``master`` actually is. Reproduced by
+external review as issue ``#313``.
+
+There is no verification this module could add to make a ref *value* copied
+from a source its own threat model already declares hostile trustworthy --
+the fix is not "resolve the ref more carefully", it is that this module
+never accepts a ref value as the trust anchor at all. ``trusted_ref_sha``
+must already BE a full, immutable commit sha, supplied by the caller from a
+source outside this module's own hostile-derived read path (e.g. an
+out-of-band-verified release pin obtained before this checkout was ever
+touched). ``authorize_commit_for_execution_v2`` refuses, with
+``IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2``, any ``trusted_ref_sha`` that is
+not exactly 40 lowercase hex characters (sha1 only -- see below for why 64
+is deliberately excluded, not merely unimplemented) -- which rejects every
+ref-name shape (``refs/heads/master``, ``HEAD``, a bare branch or tag name,
+an abbreviated sha) outright, before this module ever opens the trusted
+object authority for that value. This does not make the anchor itself
+trustworthy -- that remains the caller's own out-of-band responsibility,
+exactly as stated above -- it only removes the one mechanism, ref-name
+resolution through a hostile-derived store, by which an attacker could
+otherwise supply their own answer to "what does the trusted anchor mean"
+and have this module accept it as ground truth.
+
+### Why 64-hex (sha256) was dropped, not merely never added (independent review, correction round 2, P0)
+
+An earlier revision of this fix accepted BOTH 40 (sha1) and 64 (sha256) hex
+lengths, reasoning that a future sha256-format repository would need the
+longer shape. That reasoning was correct about the future and wrong about
+the present, and the gap was a real, independently-reproduced P0: the
+private trusted object authority this module reads through
+(``open_trusted_object_authority_v2``) is hardcoded sha1-format ALWAYS
+(``_write_minimal_bare_skeleton_v2`` writes no ``extensions.objectformat``),
+so a 64-hex string can never actually be a valid object id there. Git's own
+object-vs-ref disambiguation only treats a hex string as a candidate object
+id when its length matches the repository's actual hash algorithm; anything
+else falls through, silently, to ORDINARY ref-name resolution -- and this
+authority's ref values are copied verbatim from the same hostile-scoped
+checkout described above. A caller supplying a genuine, public,
+out-of-band-verified 64-hex anchor -- the exact case the shape check exists
+to protect -- was thereby exposed to an attacker who learns that public
+value (it is meant to be publicly verifiable, that is the point of an
+out-of-band anchor) and plants an ordinary ref literally named after it,
+pointing at their own commit. Reproduced independently three times (two
+adversarial review lanes plus direct maintainer reproduction) against the
+pre-fix (40, 64) shape. 64 has zero legitimate use today regardless --
+``resolve_commit_v2`` in ``git_commit_subject_v2.py`` independently
+hard-rejects any resolved value with ``len != 40``, so a genuine sha256
+anchor could never work end-to-end even before this module is involved.
+Re-adding 64 requires the trusted object authority to gain genuine sha256
+support FIRST, not merely widening this shape check again.
+
+### The resolved-equals-supplied invariant (independent review, correction round 2, P0)
+
+Dropping 64 closes the one length that was reproducibly exploitable today,
+but not the general class: ANY shape-valid string that ``resolve_commit_v2``
+resolves to something other than itself was never actually verified to BE
+an object id -- it was only verified to look like one. ``authorize_commit_
+for_execution_v2`` now requires ``resolve_commit_v2(ref=trusted_ref_sha) ==
+trusted_ref_sha`` exactly, refusing with
+``IDENTITY_TRUSTED_REF_SHA_MISMATCH_REASON_V2`` otherwise. This is the
+structural invariant the module's contract always implied -- "supply an
+object id, not something that merely resolves to one" -- made an explicit,
+enforced check rather than an assumption the shape check alone was
+mistakenly relied upon to guarantee.
+
+### Residual risk the shape check does NOT and cannot close (independent review, #313 follow-up)
+
+The shape check proves ``trusted_ref_sha`` LOOKS like a sha. It cannot prove,
+and does not attempt to prove, where that sha actually came from -- Python
+has no way to structurally distinguish "a string an out-of-band-verified
+release pin produced" from "a string this module family's own
+hostile-scoped read path produced" once both are just 40 or 64 hex
+characters. Concretely: a caller who wants to satisfy the new shape
+requirement could plausibly reach for the already-imported sibling
+primitive ``resolve_commit_v2`` (``git_commit_subject_v2.py``) and call it
+against ``open_trusted_object_authority_v2(repo_root).trusted_repo_root`` --
+i.e. resolve a ref NAME through the exact same hostile-derived authority
+this module refuses to do internally, then hand the RESULT (a genuine,
+shape-valid 40-hex sha, because it really does name a real commit in that
+authority) to ``trusted_ref_sha``. That reconstructs the pre-#313 attack one
+call outside this function: if the hostile checkout's branch tip points at
+an attacker commit, this "laundering" path resolves to that same attacker
+commit, which then passes the shape check trivially and gets accepted as
+the trust anchor -- because it IS, genuinely, a real commit sha; it is
+simply not an OUT-OF-BAND one. See
+``test_laundering_hostile_ref_through_resolve_commit_v2_reproduces_the_original_attack``
+in this module's test suite for a checked-in, currently-succeeding
+reproduction -- deliberately preserved as a live demonstration of a known,
+accepted residual risk, not something this module claims to catch.
+
+This is NOT closable by adding more validation here, for the same reason
+tightening the shape check further could not close it: any mechanism built
+from string content alone cannot distinguish the two sources, because
+by the time the string reaches this function both are indistinguishable
+values of the same type. Closing it for real requires a caller-side
+provenance/attestation channel that never touches this module family's own
+hostile-derived read path at all -- out of scope here because there are no
+live callers of ``authorize_commit_for_execution_v2`` today to design that
+channel against (the composition layer that would supply ``trusted_ref_sha``
+in practice, ``#200-G1B``/``#200-G5``, is not yet implemented). Tracked as a
+narrow follow-up, ``#200-G1C2-F3``, scoped for when a real caller exists
+rather than designed speculatively now. Until then, the operative control is
+what this docstring says: never derive ``trusted_ref_sha`` from
+``resolve_commit_v2``, ``open_trusted_object_authority_v2``, or any other
+primitive in this module family applied to the checkout under test -- it
+must come from somewhere else entirely.
+
+## Composing ``verify_executed_source_identity_v2`` + ``authorize_commit_for_execution_v2``: compare the resolved shas (independent review, correction round 2, P1)
+
+Unlike ``trusted_ref_sha``, ``commit_sha`` (the SUBJECT being identified or
+authorized) is never shape-checked in either function -- it may legitimately
+be a ref name, ``HEAD``, or an abbreviated sha, because it is not itself a
+trust anchor. That is correct for each function independently, but it
+creates a split-brain hazard when a caller composes both from the same
+input string, because ``verify_executed_source_identity_v2`` and
+``authorize_commit_for_execution_v2`` each open their OWN fresh trusted
+object authority and resolve ``commit_sha`` separately. If the checkout at
+``repo_root`` mutates a ref between the two calls (or is hostile enough to
+answer differently depending on timing), a caller who wrote something like::
+
+    identity = verify_executed_source_identity_v2(repo_root=r, commit_sha=x, subject_root=s)
+    auth = authorize_commit_for_execution_v2(repo_root=r, commit_sha=x, trusted_ref_sha=pin)
+
+can get IDENTITY proven about one real commit and AUTHORIZATION granted
+about a genuinely DIFFERENT real commit, despite supplying the same literal
+string ``x`` to both calls -- each function did exactly what it promises,
+independently, and neither is wrong on its own. Both result dataclasses
+expose the actual resolved sha they each independently confirmed
+(``identity.commit_sha`` and ``auth.commit_sha``) precisely so a careful
+caller CAN detect this by comparing them -- but nothing before this
+correction round said a caller composing the two MUST do that comparison
+before treating the pair as describing one commit. A caller composing these
+two primitives from a single input string must compare ``identity.commit_sha
+== auth.commit_sha`` (both already-resolved, canonical 40-hex values) before
+treating IDENTITY and AUTHORIZATION as facts about the same commit; treat a
+mismatch as a hard refusal, not a warning. See
+``test_composing_identity_and_authorization_from_the_same_input_can_resolve_different_commits``
+for a checked-in, currently-succeeding reproduction of the hazard (not a
+claimed fix -- there is no live composition caller today to fix it
+against, matching the ``trusted_ref_sha``-laundering residual above; if a
+structural fix becomes cheap once ``#200-G1B``/``#200-G5`` exist -- e.g.
+accepting an already-resolved sha into both calls instead of letting each
+resolve independently -- prefer that over asking every future caller to
+remember the comparison).
 
 ## Threat scope
 
@@ -147,6 +309,8 @@ __all__ = [
     "IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2",
     "IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2",
     "IDENTITY_TREE_UNREADABLE_REASON_V2",
+    "IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2",
+    "IDENTITY_TRUSTED_REF_SHA_MISMATCH_REASON_V2",
     "IDENTITY_UNKNOWN_COMMIT_REASON_V2",
     "ExecutedSourceAuthorizationV2",
     "ExecutedSourceIdentityError",
@@ -181,6 +345,28 @@ IDENTITY_SYMLINKED_DIRECTORY_REASON_V2 = "identity_symlinked_directory_in_subjec
 # trusted ref's full ancestor set. Never collapsed into `authorized=False`:
 # an incomplete closure is not a proof of absence.
 IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2 = "identity_authorization_undetermined"
+# #313 (#200-G1C2-F2): `trusted_ref_sha` is not shaped like a full,
+# immutable sha1 commit sha (exactly 40 lowercase hex characters -- 64/
+# sha256 deliberately excluded, see `_is_full_commit_sha_shape_v2`'s
+# docstring) -- includes every ref-NAME shape (`refs/heads/master`, `HEAD`,
+# a bare branch or tag name, an abbreviated sha). Raised BEFORE this module
+# ever opens the
+# hostile-derived trusted object authority for that value: there is no
+# resolution attempt to make safer, the value is refused outright. See the
+# module docstring's "`trusted_ref_sha` must be an out-of-band anchor"
+# section for why.
+IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2 = "identity_trusted_ref_not_a_sha"
+# P0 (independent review, correction round 2, `#313` follow-up): the shape
+# check alone proved `trusted_ref_sha` LOOKS like a sha, never that
+# `resolve_commit_v2` will actually resolve it back to ITSELF as an object
+# id rather than falling through to ref-name resolution (the exact
+# mechanism the dropped 64-length case exploited, and the general
+# structural invariant the old docstring claimed without the code ever
+# enforcing it). Raised when the two differ -- `resolve_commit_v2`'s
+# return value is git's own canonical resolution of whatever
+# `trusted_ref_sha` named, which must be byte-identical to the value
+# supplied when that value was already meant to BE an object id.
+IDENTITY_TRUSTED_REF_SHA_MISMATCH_REASON_V2 = "identity_trusted_ref_sha_mismatch"
 
 
 class ExecutedSourceIdentityError(ValueError):
@@ -211,10 +397,15 @@ class ExecutedSourceAuthorizationV2:
 
     Never establishes identity by itself -- checking ancestry of an
     unverified sha proves nothing about what actually executed.
+
+    ``trusted_ref_sha`` is always a full commit sha -- both the value the
+    caller supplied (``authorize_commit_for_execution_v2`` refuses anything
+    else, see ``#313``) and, redundantly, the value this module independently
+    re-resolved against the trusted object authority to confirm it names a
+    real, content-verified commit.
     """
 
     commit_sha: str
-    trusted_ref: str
     trusted_ref_sha: str
     authorized: bool
 
@@ -364,6 +555,99 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
 
     _walk(subject_root)
     return frozenset(leaf_paths)
+
+
+_FULL_COMMIT_SHA_LENGTHS_V2 = (40,)  # sha1 only -- see the P0 note below for why 64 is excluded
+_HEX_DIGITS_V2 = frozenset("0123456789abcdef")
+
+
+def _is_full_commit_sha_shape_v2(value: object) -> bool:
+    """True iff ``value`` is an EXACT built-in ``str`` with the exact SHAPE
+    of a full, immutable sha1 commit sha -- exactly 40 lowercase hex
+    characters, nothing more and nothing less.
+
+    P1 (independent review, correction round 3): the type test is
+    ``type(value) is str``, NOT ``isinstance``, because ``isinstance``
+    admits SUBCLASSES and a ``str`` subclass gets to define the very
+    operators both of this anchor's guards are written in terms of --
+    ``__len__`` and ``__iter__`` here, and ``__ne__`` in
+    ``authorize_commit_for_execution_v2``'s resolved==supplied invariant.
+    The reproduced witness needed a single override: ``__ne__`` returning
+    ``False``, on an instance whose real content was an honest, genuinely
+    resolvable 40-hex annotated-tag object sha. Because ``!=`` puts the
+    caller's object on the RIGHT, and Python gives the reflected operation
+    priority when the right operand's type is a proper subclass of the
+    left's, the invariant asked the attacker's own object whether it
+    mismatched and was told no -- returning ``authorized=True`` for an
+    orphan commit that was an ancestor of nothing trusted.
+
+    Note the mechanism precisely, because the obvious guess is wrong and
+    would invite the wrong fix: an ``__eq__``-only subclass does NOT defeat
+    ``!=``, since ``str`` defines its own ``__ne__`` and the subclass
+    inherits it rather than reaching ``object.__ne__``'s
+    delegate-and-negate behaviour. Hardening the comparison was therefore
+    the wrong lever; excluding subclasses at the type gate is the right
+    one, and it is sufficient on its own -- this gate runs BEFORE any
+    resolution, so no subclass instance ever reaches the comparison. See
+    ``test_only_a_ne_override_defeats_the_invariant_eq_alone_does_not``.
+
+    Deliberately shape-only, and deliberately not the whole story:
+
+    - it does NOT prove ``value`` names a real commit -- that is
+      ``resolve_commit_v2``'s job, run afterward against the content-verified
+      trusted object authority;
+    - it does NOT prove ``value`` is the sha a legitimate caller actually
+      intended -- that is the caller's own out-of-band responsibility (see
+      ``authorize_commit_for_execution_v2``'s docstring);
+    - it does NOT, by itself, prove ``resolve_commit_v2`` will resolve
+      ``value`` back to ``value`` -- see ``authorize_commit_for_execution_v2``'s
+      own ``resolved != trusted_ref_sha`` check for the invariant that
+      actually closes that gap; this function is shape-only on purpose.
+
+    What it DOES do: reject every ref-NAME shape (``refs/heads/master``,
+    ``HEAD``, ``main``, an abbreviated sha) outright, so this module never
+    even attempts to resolve one of those against the hostile-derived object
+    authority as a trust anchor (``#313``). Uppercase hex is deliberately
+    also refused rather than case-folded -- git's own tooling always emits
+    lowercase, and silently accepting a second spelling is one more shape a
+    caller (or an attacker influencing what a caller assembles) could use to
+    smuggle something this check did not exactly anticipate. A non-``str``
+    value (e.g. a list of single characters that would each individually
+    satisfy a naive per-element hex check, or ``None``) is refused via an
+    explicit ``isinstance`` gate rather than being allowed to reach ``len()``/
+    iteration and either coincidentally pass or raise an untyped ``TypeError``
+    (independent-review P2, correction round 2).
+
+    ONLY 40 (sha1) is accepted -- 64 (sha256) was deliberately dropped
+    (independent-review P0, correction round 2, ``#313`` follow-up):
+    ``_write_minimal_bare_skeleton_v2`` in ``trusted_object_authority_v2.py``
+    hardcodes the private trusted object authority as sha1-format ALWAYS (no
+    ``extensions.objectformat``), so a 64-hex string can never actually name
+    an object in that store. Git's own object-vs-ref disambiguation only
+    treats a hex string as a candidate object id when its length matches the
+    repository's actual hash algorithm (40 for sha1); a 64-hex string falls
+    through, silently, to ORDINARY REF-NAME resolution instead -- and
+    `_copy_refs_fd_v2` copies `refs/heads/**`/`refs/tags/**` verbatim from
+    the same hostile-scoped checkout this module's own threat model already
+    declares adversarial. A caller supplying a genuine, public,
+    out-of-band-verified 64-hex anchor (the exact case this shape check
+    exists to protect) is thereby exposed to an attacker who learns that
+    public value and plants an ordinary ref (`git branch`/`git tag`) LITERALLY
+    NAMED after it, pointing at their own commit -- `authorize_commit_for_
+    execution_v2` then resolves the caller's own trusted anchor as that ref
+    name and returns `authorized=True` for the attacker's commit. Reproduced
+    directly, independently, three times (two adversarial review lanes plus
+    a human maintainer) against the pre-fix shape (40, 64). Re-adding 64
+    without also giving the trusted object authority genuine sha256 support
+    (which does not exist anywhere in this module family today --
+    ``resolve_commit_v2`` in ``git_commit_subject_v2.py`` independently
+    hard-rejects any resolved value with ``len != 40``, so a real sha256
+    anchor could never work end-to-end regardless) reopens this exact
+    vulnerability with zero corresponding legitimate use.
+    """
+    if type(value) is not str:
+        return False
+    return len(value) in _FULL_COMMIT_SHA_LENGTHS_V2 and all(c in _HEX_DIGITS_V2 for c in value)
 
 
 def loaded_module_files_v2(*, package_prefix: str = "app.agent_review") -> tuple[Path, ...]:
@@ -544,11 +828,58 @@ def verify_executed_source_identity_v2(
 
 
 def authorize_commit_for_execution_v2(
-    *, repo_root: Path, commit_sha: str, trusted_ref: str
+    *, repo_root: Path, commit_sha: str, trusted_ref_sha: str
 ) -> ExecutedSourceAuthorizationV2:
-    """Is ``commit_sha`` reachable from ``trusted_ref``? Distinct from identity.
+    """Is ``commit_sha`` reachable from ``trusted_ref_sha``? Distinct from identity.
 
-    Both ``commit_sha`` and ``trusted_ref`` are independently re-resolved,
+    ``trusted_ref_sha`` MUST already be a full, immutable sha1 commit sha
+    that the caller has verified out-of-band -- never a ref name
+    (``refs/heads/master``, ``HEAD``, a branch/tag name) for this function to
+    resolve itself. Any value that is not exactly 40 lowercase hex
+    characters is refused with ``IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2``
+    BEFORE this function ever opens the trusted object authority -- see the
+    module docstring's "``trusted_ref_sha`` must be an out-of-band anchor"
+    section (``#313``) for why a ref name is refused outright rather than
+    merely discouraged: this authority's ref *values* are copied verbatim
+    from the same hostile-scoped checkout its object *content* verification
+    defends against, so resolving a ref name through it would let whatever
+    that hostile checkout currently claims the name means become the trust
+    anchor. (64-hex/sha256 was deliberately dropped from the accepted shape,
+    not merely left unimplemented -- see ``_is_full_commit_sha_shape_v2``'s
+    own docstring for the reproduced P0 this closes: the private trusted
+    object authority is hardcoded sha1-format, so a 64-hex string can never
+    be a real object id there and instead falls through, silently, to
+    ordinary -- and here, hostile-controllable -- ref-name resolution.)
+
+    SHAPE ALONE IS NOT ENOUGH, EVEN AT 40 HEX -- after ``trusted_ref_sha``
+    passes the shape check, it is resolved via ``resolve_commit_v2`` like any
+    other ref, and the RESULT is required to be byte-identical to the value
+    the caller supplied, refused with
+    ``IDENTITY_TRUSTED_REF_SHA_MISMATCH_REASON_V2`` otherwise. This is the
+    structural invariant this function's contract always implied ("supply an
+    object id, not a name") but never actually enforced before -- a
+    shape-valid string that git's own resolver, for whatever reason
+    (git-version/config difference, hash-length collision with the wrong
+    algorithm, annotated-tag peeling divergence), resolves to something OTHER
+    than itself was never actually verified to BE the object id it looked
+    like. Cheap, and it closes the general class of "shape-valid string that
+    is not actually its own object id", not merely the one dropped length
+    that happened to be reproducibly exploitable today.
+
+    WHAT THE SHAPE CHECK DOES NOT COVER -- do not derive ``trusted_ref_sha``
+    by calling ``resolve_commit_v2`` (or any other read primitive in this
+    module family) against ``open_trusted_object_authority_v2(repo_root)``'s
+    own authority: that reconstructs the exact pre-#313 attack one call
+    outside this function, because the *result* of resolving a hostile ref
+    through the hostile-derived authority is, genuinely, a real, shape-valid
+    commit sha -- just not an out-of-band one. See the module docstring's
+    "Residual risk the shape check does NOT and cannot close" section for
+    why this cannot be closed by validation alone, and ``#200-G1C2-F3`` for
+    the tracked follow-up.
+
+    Both ``commit_sha`` and ``trusted_ref_sha`` are independently re-resolved
+    (the latter only to confirm it names a real, content-verified commit --
+    never to interpret it as anything other than the exact sha supplied),
     and the ancestry question itself is decided, entirely against a private
     trusted object authority built from ``repo_root`` (#200-G1C) -- never
     against ``repo_root`` directly. This function never evaluates ancestry
@@ -568,15 +899,32 @@ def authorize_commit_for_execution_v2(
     that was the specific mechanism that refuted three successive
     corrections in PR #302's withdrawn S4 attempt.
     """
+    if not _is_full_commit_sha_shape_v2(trusted_ref_sha):
+        raise ExecutedSourceIdentityError(IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2)
+
     repo_root = Path(repo_root).resolve()
     try:
         with open_trusted_object_authority_v2(repo_root) as authority:
             trusted_root = authority.trusted_repo_root
             try:
                 resolved_commit = resolve_commit_v2(repo_root=trusted_root, ref=commit_sha)
-                resolved_trusted = resolve_commit_v2(repo_root=trusted_root, ref=trusted_ref)
+                resolved_trusted = resolve_commit_v2(repo_root=trusted_root, ref=trusted_ref_sha)
             except SubjectMaterialisationError as exc:
                 raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
+
+            # P0 fix (independent review, correction round 2): a
+            # shape-valid `trusted_ref_sha` is not necessarily its OWN
+            # resolution -- `resolve_commit_v2` resolves whatever git's own
+            # rev-parse decides `trusted_ref_sha` names, which is ONLY
+            # guaranteed to be the same object id when the resolver actually
+            # treated it as one (see `_is_full_commit_sha_shape_v2`'s
+            # docstring for the reproduced case where it did not: a 64-hex
+            # string falling through to ref-name resolution). This
+            # equality check is the structural invariant that actually
+            # closes that class, independent of which length or mechanism
+            # produces the divergence.
+            if resolved_trusted != trusted_ref_sha:
+                raise ExecutedSourceIdentityError(IDENTITY_TRUSTED_REF_SHA_MISMATCH_REASON_V2)
 
             authorized = authority.prove_ancestry(
                 commit_sha=resolved_commit, trusted_ref_sha=resolved_trusted
@@ -588,7 +936,6 @@ def authorize_commit_for_execution_v2(
 
     return ExecutedSourceAuthorizationV2(
         commit_sha=resolved_commit,
-        trusted_ref=trusted_ref,
         trusted_ref_sha=resolved_trusted,
         authorized=authorized,
     )

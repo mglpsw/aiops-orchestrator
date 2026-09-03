@@ -119,6 +119,21 @@ def resolve_commit_v2(*, repo_root: Path, ref: str) -> str:
     history actually contains. The returned value is git's own full sha, not
     an echo of whatever string the caller passed in -- resolving `HEAD`, a
     branch name, or an abbreviated sha all go through this same git call.
+
+    DO NOT use this function's return value as a `trusted_ref_sha` argument
+    to `commit_derived_execution_identity_v2.authorize_commit_for_execution_v2`
+    (`#313`/`#200-G1C2-F3`). This function resolves `ref` against whatever
+    object store `repo_root` names -- including, when called against
+    `open_trusted_object_authority_v2(...).trusted_repo_root`, a private copy
+    built from a potentially-HOSTILE live checkout, whose ref *values* (not
+    its object *content*) are copied verbatim from that same hostile source.
+    A shape-valid 40/64-hex sha this function returns is a real commit sha,
+    but resolving a ref NAME through a hostile-derived authority and then
+    treating the RESULT as if it were independently, out-of-band trustworthy
+    reconstructs exactly the false-positive `#313` fixed -- one call outside
+    the function that closed it. A `trusted_ref_sha` must come from a source
+    that never calls this function (or any other read primitive in this
+    package) against a checkout under test at all.
     """
     try:
         completed = run_bounded_git_v2(
@@ -316,7 +331,18 @@ def compute_subject_digest_v2(subject_root: Path) -> str:
     value returned by this function must never be compared against a value
     supplied by an untrusted party as a substitute for re-deriving expected
     content from git directly -- see `commit_derived_execution_identity_v2.py`
-    for why that distinction is the whole point of this primitive.
+    for why that distinction is the whole point of this primitive. Also
+    worth stating plainly alongside that: this function's return value is
+    exactly 64 lowercase hex characters (a sha256 hexdigest), and a subject
+    whose bytes an adversary controls (this function makes no claim about
+    subject provenance) makes that value ADVERSARY-INFLUENCED, not merely
+    adversary-observable -- it must never be treated as if it were an
+    out-of-band-verified anchor merely because it happens to be shape-valid
+    hex, for the identical reason `commit_derived_execution_identity_v2.py`'s
+    `authorize_commit_for_execution_v2` documents for `trusted_ref_sha`
+    (`#313`/`#200-G1C2-F2`): a hostile-derived producer of a shape-valid hex
+    string is not an out-of-band trust source, regardless of which function
+    produced the string.
 
     S3 (`#200-G1-S`, issue #305, salvaged from forensic PR #302's finding
     #6, hardened further after independent review of this fix itself found
