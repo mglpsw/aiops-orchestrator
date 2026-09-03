@@ -278,7 +278,7 @@ def test_a_rejected_acquisition_followed_by_a_fresh_retry_still_refuses(tmp_path
 
     for _ in range(2):
         with pytest.raises(ExecutedSourceIdentityError) as excinfo:
-            authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+            authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
         assert excinfo.value.reason_code == IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2
 
 
@@ -341,7 +341,7 @@ def test_linked_worktree_resolves_the_shared_object_store_not_the_private_worktr
     assert result.commit_sha == c1
     assert "V = 1" in (destination / "pkg" / "a.py").read_text()
 
-    authorization = authorize_commit_for_execution_v2(repo_root=worktree, commit_sha=c1, trusted_ref=c3)
+    authorization = authorize_commit_for_execution_v2(repo_root=worktree, commit_sha=c1, trusted_ref_sha=c3)
     assert authorization.authorized is True
 
 
@@ -614,7 +614,7 @@ def test_legitimate_repacked_history_still_works(tmp_path: Path) -> None:
         "fixture did not actually produce a pack"
     )
 
-    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
     assert result.authorized is True
 
     destination = tmp_path / "subject"
@@ -731,7 +731,7 @@ def test_deleted_parent_object_yields_undetermined_not_a_false_negative(tmp_path
     _delete_loose_object_v2(repo, c2)
 
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
-        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
     assert excinfo.value.reason_code == IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2
 
 
@@ -772,7 +772,7 @@ def test_shallow_history_yields_undetermined_not_a_false_negative(tmp_path: Path
     assert _rev_parse(clone, "HEAD") == c3
 
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
-        authorize_commit_for_execution_v2(repo_root=clone, commit_sha=c1, trusted_ref=c3)
+        authorize_commit_for_execution_v2(repo_root=clone, commit_sha=c1, trusted_ref_sha=c3)
     assert excinfo.value.reason_code == IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2
 
 
@@ -795,7 +795,7 @@ def test_grafts_file_is_never_consulted(tmp_path: Path) -> None:
     )
     assert hostile_view.returncode != 0, "fixture's grafts file did not actually fool a direct git invocation"
 
-    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
     assert result.authorized is True
     _ = c2
 
@@ -808,7 +808,7 @@ def test_git_replace_never_affects_ancestry_determination(tmp_path: Path) -> Non
     repo, c1, c2, c3 = _linear_history_fixture(tmp_path)
     subprocess.run(["git", "replace", c1, c3], cwd=repo, check=True)
     try:
-        result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+        result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
         assert result.authorized is True
     finally:
         subprocess.run(["git", "replace", "-d", c1], cwd=repo, check=True)
@@ -826,7 +826,7 @@ def test_hostile_config_in_the_live_repository_is_never_read(tmp_path: Path) -> 
     with config_path.open("a") as handle:
         handle.write("\n[this is not valid git config syntax at all !!! ===\n")
 
-    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
     assert result.authorized is True
 
 
@@ -892,7 +892,7 @@ def test_fake_git_earlier_in_path_is_never_executed_by_authorization(
     fake_git.chmod(0o755)
     monkeypatch.setenv("PATH", f"{fake_git_dir}{os.pathsep}{os.environ.get('PATH', '')}")
 
-    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
     assert result.authorized is True
     assert not marker.exists()
 
@@ -1000,7 +1000,7 @@ def test_ordinary_authorization_and_materialisation_still_work_end_to_end(tmp_pa
     completely ordinary, non-hostile repository."""
     repo, c1, _c2, c3 = _linear_history_fixture(tmp_path)
 
-    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
     assert result.authorized is True
     assert result.commit_sha == c1
     assert result.trusted_ref_sha == c3
@@ -1018,7 +1018,7 @@ def test_unresolvable_commit_still_raises_unknown_commit_not_undetermined(tmp_pa
     reason codes must not collapse into each other."""
     repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
-        authorize_commit_for_execution_v2(repo_root=repo, commit_sha="d" * 40, trusted_ref=c3)
+        authorize_commit_for_execution_v2(repo_root=repo, commit_sha="d" * 40, trusted_ref_sha=c3)
     assert excinfo.value.reason_code == IDENTITY_UNKNOWN_COMMIT_REASON_V2
 
 
@@ -1059,7 +1059,7 @@ def test_loose_object_overwritten_at_its_own_path_no_longer_silently_authorizes_
     silently flipped `True` -> `False`, no exception. After: refused."""
     repo, c1, c2, c3 = _linear_history_fixture(tmp_path)
 
-    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
     assert result.authorized is True
 
     c1_obj = _object_path_for_sha_v2(repo, c1)
@@ -1067,7 +1067,7 @@ def test_loose_object_overwritten_at_its_own_path_no_longer_silently_authorizes_
     _overwrite_loose_object_v2(c2_obj, c1_obj.read_bytes())
 
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
-        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
     assert excinfo.value.reason_code == IDENTITY_TREE_UNREADABLE_REASON_V2
 
 
@@ -1090,7 +1090,7 @@ def test_forged_parent_line_spliced_into_existing_object_path_no_longer_authoriz
     evil = _commit_all(repo, "evil-commit")
     subprocess.run(["git", "checkout", "--quiet", "main"], cwd=repo, check=True)
 
-    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=evil, trusted_ref=c3)
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=evil, trusted_ref_sha=c3)
     assert result.authorized is False
 
     raw = subprocess.run(
@@ -1108,7 +1108,7 @@ def test_forged_parent_line_spliced_into_existing_object_path_no_longer_authoriz
     _overwrite_loose_object_v2(c2_obj, zlib.compress(header + forged_content))
 
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
-        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=evil, trusted_ref=c3)
+        authorize_commit_for_execution_v2(repo_root=repo, commit_sha=evil, trusted_ref_sha=c3)
     assert excinfo.value.reason_code == IDENTITY_TREE_UNREADABLE_REASON_V2
 
 
@@ -1286,7 +1286,7 @@ def test_packed_refs_with_ordinary_content_still_round_trips(tmp_path: Path) -> 
     subprocess.run(["git", "pack-refs", "--all"], cwd=repo, check=True)
     assert (repo / ".git" / "packed-refs").is_file()
 
-    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref=c3)
+    result = authorize_commit_for_execution_v2(repo_root=repo, commit_sha=c1, trusted_ref_sha=c3)
     assert result.authorized is True
 
 

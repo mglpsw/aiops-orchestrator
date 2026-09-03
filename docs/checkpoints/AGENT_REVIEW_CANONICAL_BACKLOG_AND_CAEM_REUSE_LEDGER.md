@@ -75,12 +75,14 @@ issue_312:
 issue_313:
   title: "#200-G1C2-F2 — trusted_ref anchor resolved against hostile-derived authority"
   track: agentreview_v2_trust_primitive
-  canonical_property: "authorize_commit_for_execution_v2 must require an out-of-band-verified SHA trusted_ref, never a ref name resolved inside the hostile-derived store"
-  implementation_status: not_started
-  qualification_status: n/a
-  disposition: ACTIVE_CRITICAL_PATH   # blocks G5 wiring, no live callers today so not urgent standalone
+  canonical_property: "authorize_commit_for_execution_v2 must require an out-of-band-verified SHA trusted_ref_sha, never a ref name resolved inside the hostile-derived store"
+  implementation_status: complete
+  qualification_status: pending_review   # Draft PR open, 2 internal adversarial lanes + Codex dispatched, not yet Ready
+  disposition: ACTIVE_CRITICAL_PATH   # still blocks G5 wiring until qualified
   blocking: true
-  next_gate: implementation_grant
+  caem_predecessor_search: NO_RELEVANT_CAEM_PREDECESSOR_FOUND   # ADR 0012/0014 adjacent, not this mechanism
+  successor_branch: fix/200-g1c2-f313-out-of-band-authorization-anchor
+  next_gate: review_and_merge_grant
 
 issue_304:
   title: "#200-G1D — canonical no-follow commit materialization authority"

@@ -85,14 +85,53 @@ into one boolean:
     memory (see "What this module does NOT prove" above).
 
 ``ExecutedSourceAuthorizationV2`` / ``authorize_commit_for_execution_v2``
-    AUTHORIZATION: whether a given (already-identified) commit is permitted
-    for this invocation -- e.g. reachable from a trusted ref such as
-    ``refs/heads/master``. Meaningless applied to an unverified sha, and does
-    not imply identity: a commit can be a perfectly legitimate, unauthorized
-    feature-branch tip.
+    AUTHORIZATION: whether a given (already-identified) commit is reachable
+    from ``trusted_ref_sha`` -- a full commit sha the CALLER has already
+    verified out-of-band, never a ref name such as ``refs/heads/master`` (see
+    "``trusted_ref_sha`` must be an out-of-band anchor" below for why a ref
+    name is refused outright rather than merely discouraged). Meaningless
+    applied to an unverified sha, and does not imply identity: a commit can
+    be a perfectly legitimate, unauthorized feature-branch tip.
 
 A caller that wants an overall accept/refuse decision composes both
 results explicitly; this module does not do that composition for it.
+
+## ``trusted_ref_sha`` must be an out-of-band anchor, never a resolved ref (#313)
+
+``authorize_commit_for_execution_v2`` reads both ``commit_sha`` and
+``trusted_ref_sha`` through the same hostile-derived trusted object
+authority (``#200-G1C2``) that ``verify_executed_source_identity_v2`` uses
+for tree/blob content. That authority's OBJECT content is genuinely sound --
+every loose object is re-hashed against its own fanout path, every pack is
+``verify-pack``'d -- but its REF *values* are copied verbatim from the live,
+hostile-scoped checkout (``_copy_refs_fd_v2`` in
+``trusted_object_authority_v2.py``). A hostile checkout that points
+``refs/heads/master`` at an attacker commit produces an authority whose own
+copy of ``refs/heads/master`` names that same attacker commit. Resolving a
+ref *name* such as ``"refs/heads/master"`` through that authority as the
+trust anchor -- exactly the usage an earlier revision of this docstring
+demonstrated -- authorizes whatever the hostile checkout currently claims
+that name means, not what a legitimate ``master`` actually is. Reproduced by
+external review as issue ``#313``.
+
+There is no verification this module could add to make a ref *value* copied
+from a source its own threat model already declares hostile trustworthy --
+the fix is not "resolve the ref more carefully", it is that this module
+never accepts a ref value as the trust anchor at all. ``trusted_ref_sha``
+must already BE a full, immutable commit sha, supplied by the caller from a
+source outside this module's own hostile-derived read path (e.g. an
+out-of-band-verified release pin obtained before this checkout was ever
+touched). ``authorize_commit_for_execution_v2`` refuses, with
+``IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2``, any ``trusted_ref_sha`` that is
+not exactly 40 (sha1) or 64 (sha256) lowercase hex characters -- which
+rejects every ref-name shape (``refs/heads/master``, ``HEAD``, a bare branch
+or tag name, an abbreviated sha) outright, before this module ever opens the
+trusted object authority for that value. This does not make the anchor
+itself trustworthy -- that remains the caller's own out-of-band
+responsibility, exactly as stated above -- it only removes the one
+mechanism, ref-name resolution through a hostile-derived store, by which an
+attacker could otherwise supply their own answer to "what does the trusted
+anchor mean" and have this module accept it as ground truth.
 
 ## Threat scope
 
@@ -147,6 +186,7 @@ __all__ = [
     "IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2",
     "IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2",
     "IDENTITY_TREE_UNREADABLE_REASON_V2",
+    "IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2",
     "IDENTITY_UNKNOWN_COMMIT_REASON_V2",
     "ExecutedSourceAuthorizationV2",
     "ExecutedSourceIdentityError",
@@ -181,6 +221,15 @@ IDENTITY_SYMLINKED_DIRECTORY_REASON_V2 = "identity_symlinked_directory_in_subjec
 # trusted ref's full ancestor set. Never collapsed into `authorized=False`:
 # an incomplete closure is not a proof of absence.
 IDENTITY_AUTHORIZATION_UNDETERMINED_REASON_V2 = "identity_authorization_undetermined"
+# #313 (#200-G1C2-F2): `trusted_ref_sha` is not shaped like a full,
+# immutable commit sha (40 lowercase hex for sha1, 64 for sha256) --
+# includes every ref-NAME shape (`refs/heads/master`, `HEAD`, a bare branch
+# or tag name, an abbreviated sha). Raised BEFORE this module ever opens the
+# hostile-derived trusted object authority for that value: there is no
+# resolution attempt to make safer, the value is refused outright. See the
+# module docstring's "`trusted_ref_sha` must be an out-of-band anchor"
+# section for why.
+IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2 = "identity_trusted_ref_not_a_sha"
 
 
 class ExecutedSourceIdentityError(ValueError):
@@ -211,10 +260,15 @@ class ExecutedSourceAuthorizationV2:
 
     Never establishes identity by itself -- checking ancestry of an
     unverified sha proves nothing about what actually executed.
+
+    ``trusted_ref_sha`` is always a full commit sha -- both the value the
+    caller supplied (``authorize_commit_for_execution_v2`` refuses anything
+    else, see ``#313``) and, redundantly, the value this module independently
+    re-resolved against the trusted object authority to confirm it names a
+    real, content-verified commit.
     """
 
     commit_sha: str
-    trusted_ref: str
     trusted_ref_sha: str
     authorized: bool
 
@@ -364,6 +418,36 @@ def _reachable_leaf_paths_v2(subject_root: Path) -> frozenset[str]:
 
     _walk(subject_root)
     return frozenset(leaf_paths)
+
+
+_FULL_COMMIT_SHA_LENGTHS_V2 = (40, 64)  # sha1, sha256
+_HEX_DIGITS_V2 = frozenset("0123456789abcdef")
+
+
+def _is_full_commit_sha_shape_v2(value: str) -> bool:
+    """True iff ``value`` has the exact SHAPE of a full, immutable commit
+    sha -- 40 (sha1) or 64 (sha256) lowercase hex characters, nothing more
+    and nothing less.
+
+    Deliberately shape-only, and deliberately not the whole story:
+
+    - it does NOT prove ``value`` names a real commit -- that is
+      ``resolve_commit_v2``'s job, run afterward against the content-verified
+      trusted object authority;
+    - it does NOT prove ``value`` is the sha a legitimate caller actually
+      intended -- that is the caller's own out-of-band responsibility (see
+      ``authorize_commit_for_execution_v2``'s docstring).
+
+    What it DOES do: reject every ref-NAME shape (``refs/heads/master``,
+    ``HEAD``, ``main``, an abbreviated sha) outright, so this module never
+    even attempts to resolve one of those against the hostile-derived object
+    authority as a trust anchor (``#313``). Uppercase hex is deliberately
+    also refused rather than case-folded -- git's own tooling always emits
+    lowercase, and silently accepting a second spelling is one more shape a
+    caller (or an attacker influencing what a caller assembles) could use to
+    smuggle something this check did not exactly anticipate.
+    """
+    return len(value) in _FULL_COMMIT_SHA_LENGTHS_V2 and all(c in _HEX_DIGITS_V2 for c in value)
 
 
 def loaded_module_files_v2(*, package_prefix: str = "app.agent_review") -> tuple[Path, ...]:
@@ -544,11 +628,27 @@ def verify_executed_source_identity_v2(
 
 
 def authorize_commit_for_execution_v2(
-    *, repo_root: Path, commit_sha: str, trusted_ref: str
+    *, repo_root: Path, commit_sha: str, trusted_ref_sha: str
 ) -> ExecutedSourceAuthorizationV2:
-    """Is ``commit_sha`` reachable from ``trusted_ref``? Distinct from identity.
+    """Is ``commit_sha`` reachable from ``trusted_ref_sha``? Distinct from identity.
 
-    Both ``commit_sha`` and ``trusted_ref`` are independently re-resolved,
+    ``trusted_ref_sha`` MUST already be a full, immutable commit sha that the
+    caller has verified out-of-band -- never a ref name (``refs/heads/master``,
+    ``HEAD``, a branch/tag name) for this function to resolve itself. Any
+    value that is not exactly 40 (sha1) or 64 (sha256) lowercase hex
+    characters is refused with ``IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2``
+    BEFORE this function ever opens the trusted object authority -- see the
+    module docstring's "``trusted_ref_sha`` must be an out-of-band anchor"
+    section (``#313``) for why a ref name is refused outright rather than
+    merely discouraged: this authority's ref *values* are copied verbatim
+    from the same hostile-scoped checkout its object *content* verification
+    defends against, so resolving a ref name through it would let whatever
+    that hostile checkout currently claims the name means become the trust
+    anchor.
+
+    Both ``commit_sha`` and ``trusted_ref_sha`` are independently re-resolved
+    (the latter only to confirm it names a real, content-verified commit --
+    never to interpret it as anything other than the exact sha supplied),
     and the ancestry question itself is decided, entirely against a private
     trusted object authority built from ``repo_root`` (#200-G1C) -- never
     against ``repo_root`` directly. This function never evaluates ancestry
@@ -568,13 +668,16 @@ def authorize_commit_for_execution_v2(
     that was the specific mechanism that refuted three successive
     corrections in PR #302's withdrawn S4 attempt.
     """
+    if not _is_full_commit_sha_shape_v2(trusted_ref_sha):
+        raise ExecutedSourceIdentityError(IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2)
+
     repo_root = Path(repo_root).resolve()
     try:
         with open_trusted_object_authority_v2(repo_root) as authority:
             trusted_root = authority.trusted_repo_root
             try:
                 resolved_commit = resolve_commit_v2(repo_root=trusted_root, ref=commit_sha)
-                resolved_trusted = resolve_commit_v2(repo_root=trusted_root, ref=trusted_ref)
+                resolved_trusted = resolve_commit_v2(repo_root=trusted_root, ref=trusted_ref_sha)
             except SubjectMaterialisationError as exc:
                 raise ExecutedSourceIdentityError(IDENTITY_UNKNOWN_COMMIT_REASON_V2) from exc
 
@@ -588,7 +691,6 @@ def authorize_commit_for_execution_v2(
 
     return ExecutedSourceAuthorizationV2(
         commit_sha=resolved_commit,
-        trusted_ref=trusted_ref,
         trusted_ref_sha=resolved_trusted,
         authorized=authorized,
     )

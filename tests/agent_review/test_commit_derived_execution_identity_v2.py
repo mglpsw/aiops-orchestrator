@@ -35,6 +35,7 @@ from app.agent_review.commit_derived_execution_identity_v2 import (
     IDENTITY_SYMLINKED_DIRECTORY_REASON_V2,
     IDENTITY_SYMLINK_TARGET_MISMATCH_REASON_V2,
     IDENTITY_TRAVERSAL_UNREADABLE_REASON_V2,
+    IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2,
     IDENTITY_UNKNOWN_COMMIT_REASON_V2,
     ExecutedSourceIdentityError,
     authorize_commit_for_execution_v2,
@@ -948,7 +949,7 @@ def test_authorization_true_when_commit_is_ancestor_of_trusted_ref(tmp_path: Pat
     second_sha = _commit_all(repo, "second commit")
 
     result = authorize_commit_for_execution_v2(
-        repo_root=repo, commit_sha=first_sha, trusted_ref=second_sha
+        repo_root=repo, commit_sha=first_sha, trusted_ref_sha=second_sha
     )
     assert result.authorized is True
     assert result.commit_sha == first_sha
@@ -979,9 +980,12 @@ def test_authorization_false_when_commit_is_not_an_ancestor(tmp_path: Path) -> N
     assert identity.commit_sha == feature_sha
 
     # But it is NOT authorized against `main` (base_sha), because it is not
-    # an ancestor of it.
+    # an ancestor of it. `trusted_ref_sha` is the resolved sha `main`
+    # currently names, supplied directly -- never the ref name `"main"`
+    # itself (see `#313`: a ref name is refused outright, exercised
+    # separately below).
     result = authorize_commit_for_execution_v2(
-        repo_root=repo, commit_sha=feature_sha, trusted_ref="main"
+        repo_root=repo, commit_sha=feature_sha, trusted_ref_sha=base_sha
     )
     assert result.authorized is False
     assert result.commit_sha == feature_sha
@@ -991,7 +995,7 @@ def test_authorization_rejects_an_unresolvable_commit(tmp_path: Path) -> None:
     repo, head_sha = _toolrepo_fixture(tmp_path)
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
         authorize_commit_for_execution_v2(
-            repo_root=repo, commit_sha="d" * 40, trusted_ref=head_sha
+            repo_root=repo, commit_sha="d" * 40, trusted_ref_sha=head_sha
         )
     assert excinfo.value.reason_code == IDENTITY_UNKNOWN_COMMIT_REASON_V2
 
@@ -1012,13 +1016,139 @@ def test_unauthorized_result_is_falsy(tmp_path: Path) -> None:
     subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
 
     unauthorized = authorize_commit_for_execution_v2(
-        repo_root=repo, commit_sha=feature_sha, trusted_ref="main"
+        repo_root=repo, commit_sha=feature_sha, trusted_ref_sha=base_sha
     )
     assert unauthorized.authorized is False
     assert not unauthorized, "bool(result) must track .authorized, not always be True"
 
     authorized = authorize_commit_for_execution_v2(
-        repo_root=repo, commit_sha=base_sha, trusted_ref=feature_sha
+        repo_root=repo, commit_sha=base_sha, trusted_ref_sha=feature_sha
     )
     assert authorized.authorized is True
     assert authorized
+
+
+# -- #313 (#200-G1C2-F2): trusted_ref_sha must be an out-of-band anchor ----------
+#
+# `authorize_commit_for_execution_v2` used to accept a ref NAME (e.g.
+# `"refs/heads/master"`) as `trusted_ref` and resolve it against the trusted
+# object authority built from the (potentially hostile) checkout at
+# `repo_root`. Object *content* in that authority is genuinely
+# hash-verified, but ref *values* are copied verbatim from that same
+# checkout -- so a hostile checkout that points a branch at an attacker
+# commit got that commit accepted as the trust anchor, `authorized=True`,
+# using exactly the calling convention the old docstring demonstrated. The
+# tests below are the falsifier corpus for the fix: the positive control
+# (an out-of-band sha still works even when the branch tip is hostile), the
+# exploit reproduction (a ref-name-shaped anchor is refused, not resolved),
+# and the malformed-input corpus (anything not exactly sha-shaped is
+# refused with a typed reason code).
+
+
+def test_positive_control_out_of_band_sha_still_authorizes_when_branch_tip_is_hostile(
+    tmp_path: Path,
+) -> None:
+    """The fix must not break the legitimate case: a caller who has
+    independently, out-of-band verified a real commit sha as its trust
+    anchor still gets a correct `authorized=True` -- even while the live
+    checkout's own branch tip (`main`) has been moved somewhere completely
+    unrelated, simulating a hostile checkout. The anchor here is `trusted_
+    commit_sha` itself, supplied directly by the caller -- never resolved
+    from what `main` currently, possibly-hostilely, points at."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+    (repo / "app_agent_review" / "core.py").write_text("SEMANTIC = True\nMORE = True\n")
+    trusted_commit_sha = _commit_all(repo, "the real, out-of-band verified release commit")
+
+    # Simulate a hostile checkout: move `main`'s tip away from the trusted
+    # commit entirely, onto an unrelated attacker-controlled commit.
+    subprocess.run(
+        ["git", "checkout", "--orphan", "attacker-branch"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(["git", "rm", "-rf", "--quiet", "."], cwd=repo, check=True, capture_output=True)
+    (repo / "evil.py").write_text("ATTACKER = True\n")
+    attacker_sha = _commit_all(repo, "attacker commit, unrelated history")
+    subprocess.run(
+        ["git", "branch", "-f", "main", attacker_sha], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
+    assert _rev_parse(repo, "refs/heads/main") == attacker_sha
+
+    # The caller supplies `trusted_commit_sha` directly -- the real sha it
+    # verified out-of-band before this checkout was ever hostile -- never
+    # the ref name `"main"`, which now names the attacker's commit.
+    result = authorize_commit_for_execution_v2(
+        repo_root=repo, commit_sha=base_sha, trusted_ref_sha=trusted_commit_sha
+    )
+    assert result.authorized is True
+    assert result.commit_sha == base_sha
+    assert result.trusted_ref_sha == trusted_commit_sha
+
+
+def test_ref_name_shaped_trusted_ref_sha_is_refused_not_resolved(tmp_path: Path) -> None:
+    """The exploit reproduction (#313): a ref NAME must never be accepted as
+    `trusted_ref_sha`, regardless of what it currently resolves to in the
+    (potentially hostile) checkout. `main` here genuinely exists and
+    genuinely is an ancestor-inclusive anchor for `base_sha` -- if this
+    module still resolved ref names, this call would have quietly
+    succeeded with `authorized=True`, which is exactly the false-positive
+    #313 reports. It must instead be refused outright, before any
+    resolution attempt."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+
+    for ref_name in ("refs/heads/main", "HEAD", "main"):
+        with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+            authorize_commit_for_execution_v2(
+                repo_root=repo, commit_sha=base_sha, trusted_ref_sha=ref_name
+            )
+        assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2, ref_name
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        "",
+        "a" * 39,  # one short of a sha1
+        "a" * 41,  # one long of a sha1
+        "g" * 40,  # right length, not hex
+        "A" * 40,  # right length and hex alphabet, wrong case
+        "a" * 63,  # one short of a sha256
+        "a" * 65,  # one long of a sha256
+        "deadbeef",  # a real, but abbreviated, sha
+        "not-a-sha-at-all",
+    ],
+)
+def test_malformed_trusted_ref_sha_is_refused(tmp_path: Path, malformed: str) -> None:
+    """Anything not exactly 40 or 64 lowercase hex characters is refused
+    with a typed reason code -- never silently truncated, case-folded, or
+    partially matched against a real commit."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(
+            repo_root=repo, commit_sha=base_sha, trusted_ref_sha=malformed
+        )
+    assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2
+
+
+def test_malformed_trusted_ref_sha_is_refused_before_opening_the_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shape check must run BEFORE this module ever opens the trusted
+    object authority for a malformed value -- not merely reject it
+    eventually via some downstream git failure. Patches `open_trusted_
+    object_authority_v2` to raise if called at all; a malformed
+    `trusted_ref_sha` must never reach it."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+
+    def _must_not_be_called(*args: object, **kwargs: object) -> object:
+        raise AssertionError("open_trusted_object_authority_v2 must not be called for malformed input")
+
+    monkeypatch.setattr(
+        commit_derived_execution_identity_module,
+        "open_trusted_object_authority_v2",
+        _must_not_be_called,
+    )
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(
+            repo_root=repo, commit_sha=base_sha, trusted_ref_sha="refs/heads/main"
+        )
+    assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2
