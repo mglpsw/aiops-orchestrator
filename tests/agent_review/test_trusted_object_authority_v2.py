@@ -1533,7 +1533,21 @@ def test_racing_the_dotgit_classification_stat_still_refuses(tmp_path: Path) -> 
 # every regular-file open this module performs -- the 7 metadata-probe sites below, PLUS the
 # 3 bulk-data sites exercised by the new `test_racing_*_listing_to_open_with_a_fifo_*` tests
 # near the end of this section: 10 sites total. Fixing that one shared primitive once is what
-# makes the corpus below uniform across all 10 sites rather than 7 fixed and 3 stragglers --
+# makes the FIX uniform across all 10 sites rather than 7 fixed and 3 stragglers --
+#
+# Witness count, stated precisely because an earlier round of this same issue shipped a
+# prose/reality mismatch of exactly this kind. Dropping `O_NONBLOCK` and disabling the
+# `S_ISREG` check each independently kill TEN witnesses: six metadata-probe FIFO witnesses,
+# three bulk-data race witnesses, and the same-fd classification witness
+# (`test_type_classification_follows_the_open_fd_not_the_pathname`). Those ten witnesses
+# cover NINE of the ten call sites, not all ten -- the seventh metadata probe, the
+# `.git`-as-file linked-worktree probe, has no witness that reaches the choke point at all,
+# because `test_fifo_planted_as_dotgit_itself_is_refused_not_hung` is caught earlier by the
+# pre-existing classifying `os.stat`. The fix covers that site; this corpus does not
+# independently witness it. Do not restate this as one-witness-per-site.
+# A third mutation -- replacing the same-fd `os.fstat(fd)` with a pathname-based
+# `os.stat(name, dir_fd=...)` -- kills exactly ONE witness, the dedicated same-fd test.
+# All counts verified by running the mutations, not asserted --
 # the exact "four fixed, two stragglers" shape that refuted round 2 on the predecessor PR
 # (#308), repeated once already within this very issue before converging here.
 #
@@ -1611,7 +1625,7 @@ def _open_and_expect_refusal_within_v2(repo: Path, *, bound_seconds: float = 2.0
     return excinfo.value
 
 
-# -- site `:632` -- commondir ------------------------------------------------------------------
+# -- site `:765` -- commondir ------------------------------------------------------------------
 
 
 def test_fifo_at_commondir_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1626,7 +1640,7 @@ def test_fifo_at_commondir_probe_is_refused_not_hung(tmp_path: Path) -> None:
     _ = c3
 
 
-# -- site `:935` -- packed-refs ----------------------------------------------------------------
+# -- site `:1068` -- packed-refs ----------------------------------------------------------------
 
 
 def test_fifo_at_packed_refs_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1638,7 +1652,7 @@ def test_fifo_at_packed_refs_probe_is_refused_not_hung(tmp_path: Path) -> None:
     _ = c3
 
 
-# -- site `:616` -- HEAD, bare-repository-root probe -------------------------------------------
+# -- site `:749` -- HEAD, bare-repository-root probe -------------------------------------------
 
 
 def test_fifo_at_bare_repository_root_head_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1655,7 +1669,7 @@ def test_fifo_at_bare_repository_root_head_probe_is_refused_not_hung(tmp_path: P
     _ = c3
 
 
-# -- site `:721` -- HEAD, alternate-objects-sibling probe ---------------------------------------
+# -- site `:854` -- HEAD, alternate-objects-sibling probe ---------------------------------------
 
 
 def test_fifo_head_sibling_at_alternate_objects_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1680,7 +1694,7 @@ def test_fifo_head_sibling_at_alternate_objects_probe_is_refused_not_hung(tmp_pa
     _ = c3
 
 
-# -- site `:968` -- HEAD, final copy probe in _copy_refs_fd_v2 ----------------------------------
+# -- site `:1101` -- HEAD, final copy probe in _copy_refs_fd_v2 ----------------------------------
 
 
 def test_fifo_at_head_final_copy_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1698,7 +1712,7 @@ def test_fifo_at_head_final_copy_probe_is_refused_not_hung(tmp_path: Path) -> No
     _ = c3
 
 
-# -- site `:853` -- objects/info/alternates ------------------------------------------------------
+# -- site `:986` -- objects/info/alternates ------------------------------------------------------
 
 
 def test_fifo_at_alternates_file_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1778,14 +1792,14 @@ def test_fifo_planted_as_dotgit_itself_is_refused_not_hung(tmp_path: Path) -> No
 
 
 def test_bare_repository_head_and_objects_probe_still_works(tmp_path: Path) -> None:
-    """Positive control for the bare-repository-root probe (site `:616`) -- not previously
+    """Positive control for the bare-repository-root probe (site `:749`) -- not previously
     exercised anywhere in this corpus. Regular-file positive controls for the other five sites
     already exist elsewhere in this file: `commondir` via
     `test_linked_worktree_resolves_the_shared_object_store_not_the_private_worktree_dir`,
     `packed-refs` via `test_packed_refs_with_ordinary_content_still_round_trips`, the
-    alternate-objects `HEAD` sibling (site `:721`) via
+    alternate-objects `HEAD` sibling (site `:854`) via
     `test_legitimate_alternate_still_works_after_containment_check`, and the final `HEAD` read
-    (site `:968`) via every ordinary end-to-end test in this file, including
+    (site `:1101`) via every ordinary end-to-end test in this file, including
     `test_ordinary_authorization_and_materialisation_still_work_end_to_end`."""
     repo, c1, _c2, c3 = _linear_history_fixture(tmp_path)
     bare = tmp_path / "bare.git"
@@ -1811,7 +1825,7 @@ def test_bare_repository_head_and_objects_probe_still_works(tmp_path: Path) -> N
 
 
 def test_racing_loose_object_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
-    """Site formerly `:883` -- a loose object file, swapped to a FIFO after `scandir`'s
+    """Site `:952` -- a loose object file, swapped to a FIFO after `scandir`'s
     `is_file(follow_symlinks=False)` classification but before
     `_open_regular_file_no_follow_v2` (via the `_open_listed_file_no_follow_v2` entry point)
     opens it."""
@@ -1848,7 +1862,7 @@ def test_racing_loose_object_listing_to_open_with_a_fifo_still_refuses(tmp_path:
 
 
 def test_racing_pack_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
-    """Site formerly `:905` -- a pack file, swapped to a FIFO after classification but before
+    """Site `:974` -- a pack file, swapped to a FIFO after classification but before
     open, in a real `git repack`-produced pack directory (same fixture shape as
     `test_legitimate_repacked_history_still_works`)."""
     repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
@@ -1877,7 +1891,7 @@ def test_racing_pack_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Pa
 
 
 def test_racing_ref_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
-    """Site formerly `:963` -- a loose ref file (`refs/heads/main`), swapped to a FIFO after
+    """Site `:1032` -- a loose ref file (`refs/heads/main`), swapped to a FIFO after
     classification but before open, via `_walk_regular_files_fd_v2`."""
     repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
     ref_file = repo / ".git" / "refs" / "heads" / "main"
@@ -1903,11 +1917,20 @@ def test_racing_ref_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Pat
 
 
 def test_racing_listed_file_disappearing_entirely_still_refuses_not_returns_none(tmp_path: Path) -> None:
-    """Regression check for the ONE genuine behavioral difference the unification preserves: a
+    """Regression check on the vanished-listed-file behaviour the unification preserves: a
     file observed via `scandir` that has vanished entirely (not swapped to a FIFO, just deleted)
     by the time the shared primitive opens it must still be `ACQUISITION_FAILED`, never silently
-    treated as `None`/"was never there" -- that is what distinguishes `missing_is_legitimate=
-    False` (this call shape) from `missing_is_legitimate=True` (the metadata-probe shape)."""
+    treated as `None`/"was never there".
+
+    Scope of what this witness actually proves, stated narrowly on purpose: it pins the
+    OBSERVABLE outcome (a typed `ACQUISITION_FAILED`), not the internal mechanism that
+    produces it. It does NOT independently discriminate `missing_is_legitimate=False` from
+    `missing_is_legitimate=True` at this call shape, because `_open_listed_file_no_follow_v2`
+    carries its own `if fd is None: raise ACQUISITION_FAILED` guard that emits the identical
+    reason code -- flipping the parameter alone leaves this test green. The two are mutually
+    redundant by design, which is why the guard is worth keeping: with the parameter flipped
+    it is what converts an otherwise UNTYPED `TypeError` (from `os.close(None)`) into a typed
+    refusal. Do not read this test as a mutation witness for the parameter itself."""
     repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
     ref_file = repo / ".git" / "refs" / "heads" / "main"
     assert ref_file.is_file()
@@ -1929,4 +1952,68 @@ def test_racing_listed_file_disappearing_entirely_still_refuses_not_returns_none
                 pytest.fail("should have refused the vanished ref file")
     assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
     assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+    _ = c3
+
+
+def test_type_classification_follows_the_open_fd_not_the_pathname(tmp_path: Path) -> None:
+    """Pins the same-fd classification invariant itself, which no other witness in this
+    corpus discriminates.
+
+    `_open_regular_file_no_follow_v2` classifies with `os.fstat(fd)` -- the fd it just
+    opened -- and never with a fresh pathname-based `stat`. That is the whole TOCTOU
+    argument: a pathname can be re-pointed between the open and the classification, an
+    open fd cannot. Every other test here plants a special file and leaves it there, so
+    the path and the fd always agree and a pathname-based `stat` would answer identically.
+    Replacing `os.fstat(fd)` with `os.stat(name, dir_fd=dir_fd, follow_symlinks=False)`
+    therefore leaves the rest of the corpus fully green -- the invariant was claimed in
+    prose and enforced in code, but never witnessed.
+
+    This test makes the path and the fd deliberately DISAGREE. The listed file is swapped
+    to a FIFO after `scandir` classified it (the round-2 race), the choke point opens that
+    FIFO under `O_NONBLOCK` -- and then, before classification runs, the pathname is
+    re-pointed at an ordinary regular file. The fd still refers to the FIFO. Classifying
+    the FD refuses; classifying the PATHNAME would admit a special file as regular.
+    """
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    ref_file = repo / ".git" / "refs" / "heads" / "main"
+    assert ref_file.is_file(), "fixture did not produce the ref file -- test is not RED-valid"
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    real_os_open = os.open
+    state = {"swapped_to_fifo": False, "repointed_to_regular": False}
+
+    def hooked_os_open(path, flags, mode=0o777, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        fd = real_os_open(path, flags, mode, dir_fd=dir_fd)
+        # Only for the one attacker-named target, and only once: re-point the PATHNAME at
+        # an ordinary regular file while the returned fd still refers to the FIFO.
+        if state["swapped_to_fifo"] and not state["repointed_to_regular"] and path == ref_file.name:
+            state["repointed_to_regular"] = True
+            ref_file.unlink()
+            ref_file.write_text("an ordinary regular file, planted after the open\n")
+        return fd
+
+    real_open_listed = authority_module._open_listed_file_no_follow_v2  # noqa: SLF001
+
+    def hooked_open_listed(dir_fd: int, name: str) -> int:
+        if not state["swapped_to_fifo"] and name == ref_file.name:
+            state["swapped_to_fifo"] = True
+            ref_file.unlink()
+            os.mkfifo(ref_file)
+        return real_open_listed(dir_fd, name)
+
+    with unittest.mock.patch.object(authority_module, "_open_listed_file_no_follow_v2", hooked_open_listed):
+        with unittest.mock.patch.object(os, "open", hooked_os_open):
+            value = _open_and_expect_refusal_within_v2(repo)
+
+    assert state["swapped_to_fifo"] is True, "fixture assumption violated: the FIFO swap never fired"
+    assert state["repointed_to_regular"] is True, (
+        "fixture assumption violated: the pathname was never re-pointed after the open -- "
+        "this test would pass vacuously, exactly like the corpus it exists to strengthen"
+    )
+    assert ref_file.is_file() and not ref_file.is_fifo(), (
+        "fixture assumption violated: the pathname does not resolve to a regular file at "
+        "classification time, so a pathname-based stat would not have been fooled"
+    )
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
     _ = c3
