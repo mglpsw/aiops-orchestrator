@@ -1791,7 +1791,7 @@ def test_bare_repository_head_and_objects_probe_still_works(tmp_path: Path) -> N
     bare = tmp_path / "bare.git"
     subprocess.run(["git", "clone", "--quiet", "--bare", str(repo), str(bare)], check=True, capture_output=True)
 
-    result = authorize_commit_for_execution_v2(repo_root=bare, commit_sha=c1, trusted_ref=c3)
+    result = authorize_commit_for_execution_v2(repo_root=bare, commit_sha=c1, trusted_ref_sha=c3)
     assert result.authorized is True
 
 
