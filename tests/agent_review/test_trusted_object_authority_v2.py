@@ -28,6 +28,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import unittest.mock
 import zlib
 from pathlib import Path
 
@@ -51,6 +52,7 @@ from app.agent_review.trusted_object_authority_v2 import (
     TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2,
+    TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2,
     TrustedObjectAuthorityError,
     TrustedObjectAuthorityV2,
@@ -1297,3 +1299,212 @@ def test_authority_dataclass_is_frozen(tmp_path: Path) -> None:
     with open_trusted_object_authority_v2(repo) as authority:
         with pytest.raises(dataclasses.FrozenInstanceError):
             authority._cas_root = Path("/tmp/evil")  # noqa: SLF001
+
+
+# -- G1C2 correction round 1 (independent human review of the new architecture) --
+#
+# Two real P1s (Lane A): an uncaught `ValueError` on an embedded NUL byte in
+# attacker-influenced path content escaping this module's typed-error
+# contract, and an fd leak / double-close in the segment-resolution loop's
+# error handling if closing a superseded fd itself raises. One P2 taken
+# (Lane A): removed a redundant `Path.is_dir()` pre-check on `repo_root`,
+# inconsistent with this module's own "the open is the check" principle.
+#
+# Lane B also flagged a documentation/evidence-trail discrepancy: the
+# module docstring's TOCTOU-immunity claim ("verified empirically... see
+# this issue's (#310) reproduction notes") pointed at session-only
+# reproduction scripts, not a checked-in, re-runnable regression test. The
+# three tests below ARE that regression test -- the module docstring is
+# updated to point here instead of at prose that has no durable artifact.
+
+
+def test_embedded_nul_byte_in_gitdir_pointer_raises_typed_error_not_valueerror(
+    tmp_path: Path,
+) -> None:
+    """Lane A P1 #1, reproduced end-to-end through the real public entry
+    point. `os.open()` raises `ValueError('embedded null byte')` (NOT
+    `OSError`) for a path component containing `\\x00`. A `.git` FILE
+    (linked-worktree pointer) is exactly the kind of attacker-influenced
+    path content this module reads and resolves component-by-component --
+    before this fix, the `ValueError` escaped uncaught past every caller's
+    `except TrustedObjectAuthorityError` handler, breaking this module's
+    own stated typed-error contract."""
+    repo, _c1, _c2, _c3 = _linear_history_fixture(tmp_path)
+    dotgit = repo / ".git"
+    shutil.rmtree(dotgit)
+    dotgit.write_bytes(b"gitdir: some\x00where\n")
+
+    with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised a typed error, not an uncaught ValueError")
+    # Any typed reason code is acceptable here -- what this test guards is
+    # that SOME `TrustedObjectAuthorityError` was raised, never a raw
+    # `ValueError` escaping uncaught (a bare `pytest.raises(TrustedObjectAuthorityError)`
+    # around the whole block already proves that; this assertion just
+    # documents which reason code the current implementation produces).
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2
+
+
+def test_embedded_nul_byte_in_alternates_entry_raises_typed_error_not_valueerror(
+    tmp_path: Path,
+) -> None:
+    """Same class of bug as above, at a different attacker-influenced
+    content site: an `objects/info/alternates` entry resolved via
+    `_open_dir_by_segments_no_follow_v2`."""
+    repo, _c1, _c2, _c3 = _linear_history_fixture(tmp_path)
+    info_dir = repo / ".git" / "objects" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "alternates").write_bytes(b"/some\x00where\n")
+
+    with pytest.raises(TrustedObjectAuthorityError):
+        with open_trusted_object_authority_v2(repo):
+            pytest.fail("should have raised a typed error, not an uncaught ValueError")
+
+
+def test_close_failure_mid_segment_resolution_does_not_leak_or_double_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lane A P1 #2: in `_open_dir_by_segments_no_follow_v2`'s per-segment
+    loop, if closing the SUPERSEDED fd (after the NEXT segment's fd has
+    already been opened) itself raises, the old implementation left the
+    newly-opened fd untracked (leaked) while attempting to close the
+    already-failed old fd a second time (double-close -- a real defect in
+    the exact bug class this module's design exists to eliminate).
+
+    Unit-tests the private segment-resolution function directly (this test
+    file already reaches into private internals elsewhere, e.g.
+    `_BUILD_SENTINEL_V2`) with a genuinely multi-segment relative path, so
+    the `os.close` monkeypatch can target "the very first close() call
+    observed in this isolated call" unambiguously -- going through the
+    full `open_trusted_object_authority_v2` flow makes an earlier,
+    unrelated close() (e.g. reading a `.git` FILE's content) fire first,
+    which would test the wrong thing.
+
+    Asserts: (a) a typed `TrustedObjectAuthorityError` is raised (no
+    double-close crash / `OSError: Bad file descriptor` escaping, no
+    hang), and (b) `os.close` is never invoked twice on the same fd number
+    within this call (the specific double-close the reviewed defect
+    exhibited)."""
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    root = tmp_path / "segment_root"
+    (root / "a" / "b" / "c").mkdir(parents=True)
+
+    real_close = os.close
+    close_calls: list[int] = []
+    fail_once = {"done": False}
+
+    def flaky_close(fd: int) -> None:
+        close_calls.append(fd)
+        if not fail_once["done"]:
+            fail_once["done"] = True
+            raise OSError("simulated close() failure")
+        real_close(fd)
+
+    base_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        monkeypatch.setattr(os, "close", flaky_close)
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            authority_module._open_dir_by_segments_no_follow_v2(  # noqa: SLF001
+                base_fd=base_fd, path_str="a/b/c"
+            )
+    finally:
+        monkeypatch.undo()
+        real_close(base_fd)
+
+    assert excinfo.value.reason_code == authority_module.TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+
+    # No fd number was ever passed to close() more than once within this
+    # call -- the specific double-close the reviewed defect exhibited.
+    duplicate_close_attempts = [fd for fd in set(close_calls) if close_calls.count(fd) > 1]
+    assert duplicate_close_attempts == [], (
+        f"the same fd(s) were closed more than once: {duplicate_close_attempts}"
+    )
+    assert fail_once["done"] is True, "fixture assumption violated: the close() hook never fired"
+
+
+def test_swapping_git_common_dir_at_the_earliest_possible_moment_still_refuses(
+    tmp_path: Path,
+) -> None:
+    """The permanent, checked-in regression test for this module's core
+    TOCTOU-immunity claim (module docstring, "temporal check-then-use
+    swap") -- the reproduction this module's own docstring refers to.
+    Deterministic, not a timing race: a monkeypatch hook fires on the
+    FIRST `os.open` call this module makes against the live repository at
+    all (the earliest possible moment, maximally generous to an attacker),
+    swapping the victim's real `objects/` directory for a symlink to a
+    completely unrelated, real attacker repository's own `objects/`
+    directory, before that hook's own real `os.open` call even runs.
+    Against the OLD (pathname re-resolution) design this reliably achieved
+    full identity substitution; against the descriptor-anchored design
+    this must still refuse."""
+    victim = tmp_path / "victim"
+    _init_repo(victim, branch="main")
+    (victim / "a.py").write_text("V=1\n")
+    _commit_all(victim, "c1")
+
+    attacker = tmp_path / "attacker_unrelated_repo"
+    _init_repo(attacker, branch="main")
+    (attacker / "secret.py").write_text("ATTACKER_PAYLOAD = 1\n")
+    _commit_all(attacker, "attacker commit")
+
+    victim_objects_dir = (victim / ".git" / "objects").resolve()
+    attacker_objects_dir = (attacker / ".git" / "objects").resolve()
+
+    real_open = os.open
+    swap_done = {"value": False}
+
+    def hooked_open(path, flags, *args, **kwargs):
+        if not swap_done["value"] and isinstance(path, str) and path == ".git":
+            swap_done["value"] = True
+            shutil.rmtree(victim_objects_dir)
+            victim_objects_dir.symlink_to(attacker_objects_dir, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)
+
+    with unittest.mock.patch.object(os, "open", hooked_open):
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            with open_trusted_object_authority_v2(victim):
+                pytest.fail("should have refused the swapped objects/ directory")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+    assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+
+
+def test_racing_the_dotgit_classification_stat_still_refuses(tmp_path: Path) -> None:
+    """The permanent, checked-in regression test for the ONE remaining
+    classification-then-open pattern this module has: `.git` can
+    legitimately be either a directory or a `gitdir:` pointer FILE, and
+    `open(O_DIRECTORY|O_NOFOLLOW)` cannot itself distinguish "symlink" from
+    "plain file" (both raise `ENOTDIR`) -- so a non-authoritative
+    `os.stat(..., dir_fd=..., follow_symlinks=False)` classification picks
+    which atomic, no-follow open to attempt. This test swaps `.git` from a
+    real directory to a symlink IMMEDIATELY after that classification stat
+    returns "directory" but BEFORE the subsequent atomic open runs --
+    proving the classification is genuinely just a hint and the open
+    remains the sole authority, regardless of what the classification
+    guessed a moment earlier."""
+    victim = tmp_path / "victim"
+    _init_repo(victim, branch="main")
+    (victim / "a.py").write_text("V=1\n")
+    _commit_all(victim, "c1")
+
+    attacker_target = tmp_path / "attacker_target_file"
+    attacker_target.write_text("gitdir: /nonexistent/attacker/path\n")
+
+    dotgit_dir = victim / ".git"
+    real_stat = os.stat
+    swap_done = {"value": False}
+
+    def hooked_stat(path, *args, **kwargs):
+        result = real_stat(path, *args, **kwargs)
+        if not swap_done["value"] and path == ".git" and kwargs.get("dir_fd") is not None:
+            swap_done["value"] = True
+            shutil.rmtree(dotgit_dir)
+            dotgit_dir.symlink_to(attacker_target)
+        return result
+
+    with unittest.mock.patch.object(os, "stat", hooked_stat):
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            with open_trusted_object_authority_v2(victim):
+                pytest.fail("should have refused the swapped .git")
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+    assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"

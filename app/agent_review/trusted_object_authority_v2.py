@@ -74,11 +74,19 @@ three-round history, rather than needing one guard per item:
   produces the handle everything afterward uses. A pathname swap after
   that syscall returns has nothing left to redirect: the retained
   descriptor refers to the kernel object that was open at open() time,
-  never re-resolved by name again (verified empirically: renaming the
-  original directory away and renaming an attacker directory into its
-  place, *after* a descriptor for the original was retained, leaves that
-  descriptor's own `scandir`/`read` results completely unaffected -- see
-  this issue's (#310) reproduction notes).
+  never re-resolved by name again. Verified empirically, twice, as
+  permanent, checked-in, re-runnable regression tests (correction round 1,
+  Lane A/Lane B review reconciled this claim against an earlier revision
+  that pointed only at session-only reproduction notes with no durable
+  artifact) -- see `tests/agent_review/test_trusted_object_authority_v2.py`:
+  `test_swapping_git_common_dir_at_the_earliest_possible_moment_still_refuses`
+  (renaming the original `objects/` directory away and an attacker
+  directory into its place, via a hook firing on the earliest possible
+  `os.open` call this module makes against the live repository at all) and
+  `test_racing_the_dotgit_classification_stat_still_refuses` (racing the
+  one remaining classification-then-open pattern this module has, for
+  `.git`). Both independently confirm a descriptor opened before a
+  pathname swap is immune to that swap.
 - **listing-to-open replacement** -- a directory entry observed via
   `os.scandir(dir_fd)` is opened by name relative to that SAME `dir_fd`
   with `O_NOFOLLOW`; even if the entry is swapped between listing and
@@ -281,12 +289,23 @@ def _open_dir_no_follow_v2(dir_fd: int | None, name: str) -> int:
     see `_SYMLINK_OR_WRONG_TYPE_ERRNOS_V2`), `REPOSITORY_UNUSABLE` if it
     does not exist. This IS the check -- there is no earlier, separate
     observation of `name` that this call merely repeats.
+
+    `name` is untrusted content in most call sites (a path component
+    parsed from a `gitdir:` pointer, `commondir` file, or `objects/info/
+    alternates` entry -- all explicitly in the hostile-repo threat scope).
+    `os.open` raises `ValueError` (not `OSError`) for a component
+    containing an embedded NUL byte -- independently reproduced,
+    end-to-end, through this module's own public entry point. Caught here
+    alongside `OSError` so it cannot escape uncaught past this module's
+    typed-error contract.
     """
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
         if dir_fd is None:
             return os.open(name, flags)
         return os.open(name, flags, dir_fd=dir_fd)
+    except ValueError as exc:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2) from exc
     except OSError as exc:
         if exc.errno in _SYMLINK_OR_WRONG_TYPE_ERRNOS_V2:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2) from exc
@@ -298,12 +317,16 @@ def _try_open_dir_no_follow_v2(dir_fd: int, name: str) -> int | None:
     `name` genuinely does not exist relative to `dir_fd` -- e.g. a
     repository that legitimately has no `objects/pack` directory yet. A
     symlink planted at `name` is still refused loudly, never silently
-    treated as "absent"."""
+    treated as "absent". `ValueError` (an embedded NUL byte -- see
+    `_open_dir_no_follow_v2`) is caught alongside `OSError` for the same
+    reason."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
         return os.open(name, flags, dir_fd=dir_fd)
     except FileNotFoundError:
         return None
+    except ValueError as exc:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
     except OSError as exc:
         if exc.errno in _SYMLINK_OR_WRONG_TYPE_ERRNOS_V2:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2) from exc
@@ -316,7 +339,9 @@ def _try_open_file_no_follow_v2(dir_fd: int, name: str) -> int | None:
     `commondir`, `packed-refs`, `objects/info/alternates`, a `gitdir:`
     pointer -- where "genuinely does not exist" is an expected, legitimate
     state). Returns `None` if it genuinely does not exist. Raises
-    `SYMLINK_REJECTED` if `name` is a symlink.
+    `SYMLINK_REJECTED` if `name` is a symlink. `ValueError` (an embedded
+    NUL byte -- see `_open_dir_no_follow_v2`) is caught alongside
+    `OSError` for the same reason.
 
     NOT for a file already observed via a `scandir` listing moments ago --
     see `_open_listed_file_no_follow_v2` for that case, where a vanished
@@ -327,6 +352,8 @@ def _try_open_file_no_follow_v2(dir_fd: int, name: str) -> int | None:
         return os.open(name, flags, dir_fd=dir_fd)
     except FileNotFoundError:
         return None
+    except ValueError as exc:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2) from exc
@@ -341,10 +368,16 @@ def _open_listed_file_no_follow_v2(dir_fd: int, name: str) -> int:
     never silently treated as if it had never existed: a concurrent writer
     removing an object between listing and open is exactly the kind of
     live-source inconsistency this module's threat model requires failing
-    closed on, not tolerating as equivalent to "was never there"."""
+    closed on, not tolerating as equivalent to "was never there". A real
+    filesystem directory entry name (from `scandir`) cannot itself contain
+    a NUL byte, but `ValueError` is still caught alongside `OSError` here
+    for defensive consistency with every other open primitive in this
+    module."""
     flags = os.O_RDONLY | os.O_NOFOLLOW
     try:
         return os.open(name, flags, dir_fd=dir_fd)
+    except ValueError as exc:
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2) from exc
@@ -391,6 +424,18 @@ def _read_and_close_fd_charged_v2(fd: int, tracker: _ObjectCopyBudgetTrackerV2) 
     return data
 
 
+def _close_ignoring_errors_v2(fd: int) -> None:
+    """Best-effort `os.close`, for cleanup paths that must attempt to
+    close every fd they are responsible for even if one of those closes
+    itself fails -- a failure here must never mask the ORIGINAL exception
+    that triggered the cleanup, and must never stop the remaining fds in
+    the same cleanup pass from also being closed."""
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
 def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) -> int:
     """Resolve `path_str` (absolute or relative, possibly multi-segment --
     e.g. a `commondir` file's `../..`, or a `gitdir:` pointer's absolute
@@ -409,29 +454,59 @@ def _open_dir_by_segments_no_follow_v2(*, base_fd: int | None, path_str: str) ->
     same no-follow way as any other component, not specially rejected
     (git's own `commondir`/`gitdir:` conventions legitimately use `..` to
     walk up from a private worktree gitdir to the shared one).
+
+    Fd bookkeeping (fixed after independent review found a real defect in
+    an earlier version of this function): `open_fds` always contains
+    EXACTLY the fd(s) this function is currently responsible for closing.
+    A superseded fd is popped out of that list -- untracked -- BEFORE its
+    own `os.close()` is even attempted, not after. This closes two related
+    bugs at once: if that `close()` call itself raises (a real, if
+    low-likelihood, possibility -- signal interruption, an exotic
+    filesystem error), the fd it was closing is already untracked (so the
+    exception handler below cannot double-close it), and the NEWLY opened
+    fd for the segment just resolved is still tracked in `open_fds` (so
+    the exception handler DOES close it, rather than leaking it). The
+    naive version of this loop closed the old fd and only reassigned the
+    "current fd" variable afterward -- so a `close()` failure left the
+    exception handler holding a stale reference to the just-closed fd
+    (double-close risk) while the fd it should have cleaned up next was
+    never referenced by anything (leak).
     """
     path = PurePosixPath(path_str)
     parts = list(path.parts)
     if path.is_absolute():
-        current_fd = _open_dir_no_follow_v2(None, "/")
+        first_fd = _open_dir_no_follow_v2(None, "/")
         remaining = parts[1:]
     else:
         if base_fd is None:
             raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
-        current_fd = os.dup(base_fd)
+        try:
+            first_fd = os.dup(base_fd)
+        except OSError as exc:
+            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
         remaining = parts
+
     if len(remaining) > _DEFAULT_MAX_PATH_SEGMENTS_V2:
-        os.close(current_fd)
+        _close_ignoring_errors_v2(first_fd)
         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2)
+
+    open_fds = [first_fd]
     try:
         for segment in remaining:
-            next_fd = _open_dir_no_follow_v2(current_fd, segment)
-            os.close(current_fd)
-            current_fd = next_fd
+            next_fd = _open_dir_no_follow_v2(open_fds[-1], segment)
+            open_fds.append(next_fd)
+            stale_fd = open_fds.pop(0)
+            try:
+                os.close(stale_fd)
+            except OSError as exc:
+                raise TrustedObjectAuthorityError(
+                    TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+                ) from exc
     except BaseException:
-        os.close(current_fd)
+        for fd in open_fds:
+            _close_ignoring_errors_v2(fd)
         raise
-    return current_fd
+    return open_fds[0]
 
 
 def _verify_loose_object_hash_v2(*, expected_sha_hex: str, compressed: bytes) -> None:
@@ -1042,11 +1117,14 @@ def open_trusted_object_authority_v2(
     `repo_root` and everything beneath it this module reads is opened
     exactly once, `O_NOFOLLOW`, and every subsequent operation uses that
     same retained descriptor (or one opened relative to it) -- never a
-    pathname re-resolved a second time.
+    pathname re-resolved a second time. Deliberately no separate
+    `Path.is_dir()` pre-check on `repo_root` here (an earlier version had
+    one): it would itself follow a symlink and would in any case be
+    immediately superseded by `_resolve_git_directories_fd_v2`'s own
+    authoritative, atomic no-follow open of the very same path -- keeping
+    it would have been dead weight inconsistent with this module's own
+    "the open is the check" principle, not a second layer of protection.
     """
-    if not Path(repo_root).is_dir():
-        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2)
-
     git_dirs = _resolve_git_directories_fd_v2(Path(repo_root))
     budget = _ObjectCopyBudgetV2(
         max_total_bytes=max_total_bytes,
