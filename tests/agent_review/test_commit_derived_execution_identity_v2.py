@@ -48,6 +48,7 @@ from app.agent_review.git_commit_subject_v2 import (
     materialise_commit_subject_v2,
     resolve_commit_v2,
 )
+from app.agent_review.trusted_object_authority_v2 import open_trusted_object_authority_v2
 
 
 # -- fixtures ------------------------------------------------------------------
@@ -1152,3 +1153,71 @@ def test_malformed_trusted_ref_sha_is_refused_before_opening_the_authority(
             repo_root=repo, commit_sha=base_sha, trusted_ref_sha="refs/heads/main"
         )
     assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2
+
+
+def test_laundering_hostile_ref_through_resolve_commit_v2_reproduces_the_original_attack(
+    tmp_path: Path,
+) -> None:
+    """KNOWN, ACCEPTED RESIDUAL RISK -- independent adversarial review of
+    #313's fix (`#200-G1C2-F3`), reproduced here deliberately and left
+    GREEN (the bypass succeeds) rather than made to fail, because there is
+    no validation this module could add that would catch it -- see both
+    `authorize_commit_for_execution_v2`'s docstring ("Residual risk the
+    shape check does NOT and cannot close") and `resolve_commit_v2`'s own
+    docstring for the full explanation. This test exists so the risk stays
+    visible and re-verified on every run, not silently forgotten.
+
+    The shape check (`_is_full_commit_sha_shape_v2`) has no bypass of its
+    OWN: a ref name, an abbreviated sha, and every other non-sha shape are
+    all correctly refused (see the tests above). But a caller does not need
+    to bypass the shape check to reconstruct the pre-#313 attack -- they
+    only need to produce a STRING that happens to already be a real,
+    shape-valid commit sha before calling `authorize_commit_for_execution_v2`
+    at all. `resolve_commit_v2`, called directly against the trusted object
+    authority's own `trusted_repo_root` (exactly the composition a caller
+    reaching for "how do I turn a ref name into a sha" would plausibly
+    write), does exactly that: it resolves a ref NAME through the same
+    hostile-derived authority this module refuses to consult internally,
+    and hands back a genuine 40-hex sha -- which, because it IS a real
+    commit sha, sails through the shape check unchanged.
+
+    Closing this for real requires a caller-side provenance/attestation
+    channel that never touches this module family's read path at all --
+    out of scope while there are no live callers of
+    `authorize_commit_for_execution_v2` to design that channel against
+    (tracked as `#200-G1C2-F3`, deliberately not designed speculatively
+    here, matching this session's own discipline of not building
+    architecture ahead of a real consumer -- see `#200-G1B`'s identical
+    scoping)."""
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+
+    # Simulate a hostile checkout: move `main`'s tip to an attacker commit,
+    # unrelated to `base_sha`'s history.
+    subprocess.run(
+        ["git", "checkout", "--orphan", "attacker-branch"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(["git", "rm", "-rf", "--quiet", "."], cwd=repo, check=True, capture_output=True)
+    (repo / "evil.py").write_text("EVIL = True\n")
+    evil_sha = _commit_all(repo, "attacker commit, unrelated history")
+    subprocess.run(["git", "branch", "-f", "main", evil_sha], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
+    assert _rev_parse(repo, "refs/heads/main") == evil_sha
+
+    # The caller resolves the ref THEMSELVES, against the same
+    # hostile-derived trusted object authority `authorize_commit_for_
+    # execution_v2` would have opened internally -- this is the laundering
+    # step this fix cannot see or prevent.
+    with open_trusted_object_authority_v2(repo) as authority:
+        laundered_sha = resolve_commit_v2(repo_root=authority.trusted_repo_root, ref="refs/heads/main")
+    assert laundered_sha == evil_sha, "sanity: the laundered sha is exactly the hostile branch tip"
+
+    # `laundered_sha` is shape-valid (it is a real commit sha), so it passes
+    # the #313 fix's guard. The result reconstructs the original false
+    # positive: an attacker commit accepted as the trust anchor.
+    result = authorize_commit_for_execution_v2(
+        repo_root=repo, commit_sha=evil_sha, trusted_ref_sha=laundered_sha
+    )
+    assert result.authorized is True, (
+        "this assertion documents the KNOWN residual risk, not a desired "
+        "outcome -- see this test's docstring and #200-G1C2-F3"
+    )

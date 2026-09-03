@@ -77,13 +77,25 @@ issue_313:
   track: agentreview_v2_trust_primitive
   canonical_property: "authorize_commit_for_execution_v2 must require an out-of-band-verified SHA trusted_ref_sha, never a ref name resolved inside the hostile-derived store"
   implementation_status: complete
-  qualification_status: pending_review   # Draft PR open, 2 internal adversarial lanes + Codex dispatched, not yet Ready
+  qualification_status: 2_internal_adversarial_lanes_reconciled_lane_a_no_p0p1_lane_b_1_p1_disposed_via_docs_plus_regression_test_plus_followup_issue_319   # Codex dispatch pending
   disposition: ACTIVE_CRITICAL_PATH   # still blocks G5 wiring until qualified
   blocking: true
   caem_predecessor_search: NO_RELEVANT_CAEM_PREDECESSOR_FOUND   # ADR 0012/0014 adjacent, not this mechanism
   successor_branch: fix/200-g1c2-f313-out-of-band-authorization-anchor
   successor_pr: 317
+  followup_issue: 319   # #200-G1C2-F3, caller-side ref-laundering via resolve_commit_v2, deferred until a live caller exists
   next_gate: review_and_merge_grant
+
+issue_319:
+  title: "#200-G1C2-F3 — authorize_commit_for_execution_v2: no mechanism to prevent caller-side ref-laundering via resolve_commit_v2"
+  track: agentreview_v2_trust_primitive
+  canonical_property: "the #313 shape check proves trusted_ref_sha LOOKS like a commit sha, never where it came from; closing the residual gap requires a caller-side provenance/attestation channel that never touches this module family's own hostile-derived read path"
+  implementation_status: not_started
+  qualification_status: n/a
+  disposition: DEFERRED_WITH_VALID_DEPENDENCY   # no live caller of authorize_commit_for_execution_v2 to design the channel against yet
+  blocking: false   # does not block #313/PR #317 or anything currently in flight
+  depends_on: ["#200-G1B", "G5"]   # design against the real composition layer once implemented, not speculatively now
+  next_gate: implementation_grant   # only once a live caller exists
 
 issue_304:
   title: "#200-G1D — canonical no-follow commit materialization authority"

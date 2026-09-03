@@ -133,6 +133,48 @@ mechanism, ref-name resolution through a hostile-derived store, by which an
 attacker could otherwise supply their own answer to "what does the trusted
 anchor mean" and have this module accept it as ground truth.
 
+### Residual risk the shape check does NOT and cannot close (independent review, #313 follow-up)
+
+The shape check proves ``trusted_ref_sha`` LOOKS like a sha. It cannot prove,
+and does not attempt to prove, where that sha actually came from -- Python
+has no way to structurally distinguish "a string an out-of-band-verified
+release pin produced" from "a string this module family's own
+hostile-scoped read path produced" once both are just 40 or 64 hex
+characters. Concretely: a caller who wants to satisfy the new shape
+requirement could plausibly reach for the already-imported sibling
+primitive ``resolve_commit_v2`` (``git_commit_subject_v2.py``) and call it
+against ``open_trusted_object_authority_v2(repo_root).trusted_repo_root`` --
+i.e. resolve a ref NAME through the exact same hostile-derived authority
+this module refuses to do internally, then hand the RESULT (a genuine,
+shape-valid 40-hex sha, because it really does name a real commit in that
+authority) to ``trusted_ref_sha``. That reconstructs the pre-#313 attack one
+call outside this function: if the hostile checkout's branch tip points at
+an attacker commit, this "laundering" path resolves to that same attacker
+commit, which then passes the shape check trivially and gets accepted as
+the trust anchor -- because it IS, genuinely, a real commit sha; it is
+simply not an OUT-OF-BAND one. See
+``test_laundering_hostile_ref_through_resolve_commit_v2_reproduces_the_original_attack``
+in this module's test suite for a checked-in, currently-succeeding
+reproduction -- deliberately preserved as a live demonstration of a known,
+accepted residual risk, not something this module claims to catch.
+
+This is NOT closable by adding more validation here, for the same reason
+tightening the shape check further could not close it: any mechanism built
+from string content alone cannot distinguish the two sources, because
+by the time the string reaches this function both are indistinguishable
+values of the same type. Closing it for real requires a caller-side
+provenance/attestation channel that never touches this module family's own
+hostile-derived read path at all -- out of scope here because there are no
+live callers of ``authorize_commit_for_execution_v2`` today to design that
+channel against (the composition layer that would supply ``trusted_ref_sha``
+in practice, ``#200-G1B``/``#200-G5``, is not yet implemented). Tracked as a
+narrow follow-up, ``#200-G1C2-F3``, scoped for when a real caller exists
+rather than designed speculatively now. Until then, the operative control is
+what this docstring says: never derive ``trusted_ref_sha`` from
+``resolve_commit_v2``, ``open_trusted_object_authority_v2``, or any other
+primitive in this module family applied to the checkout under test -- it
+must come from somewhere else entirely.
+
 ## Threat scope
 
 In scope: ``hostile_target_checkout`` (git-level tricks against the
@@ -645,6 +687,17 @@ def authorize_commit_for_execution_v2(
     defends against, so resolving a ref name through it would let whatever
     that hostile checkout currently claims the name means become the trust
     anchor.
+
+    WHAT THE SHAPE CHECK DOES NOT COVER -- do not derive ``trusted_ref_sha``
+    by calling ``resolve_commit_v2`` (or any other read primitive in this
+    module family) against ``open_trusted_object_authority_v2(repo_root)``'s
+    own authority: that reconstructs the exact pre-#313 attack one call
+    outside this function, because the *result* of resolving a hostile ref
+    through the hostile-derived authority is, genuinely, a real, shape-valid
+    commit sha -- just not an out-of-band one. See the module docstring's
+    "Residual risk the shape check does NOT and cannot close" section for
+    why this cannot be closed by validation alone, and ``#200-G1C2-F3`` for
+    the tracked follow-up.
 
     Both ``commit_sha`` and ``trusted_ref_sha`` are independently re-resolved
     (the latter only to confirm it names a real, content-verified commit --

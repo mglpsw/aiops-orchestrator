@@ -119,6 +119,21 @@ def resolve_commit_v2(*, repo_root: Path, ref: str) -> str:
     history actually contains. The returned value is git's own full sha, not
     an echo of whatever string the caller passed in -- resolving `HEAD`, a
     branch name, or an abbreviated sha all go through this same git call.
+
+    DO NOT use this function's return value as a `trusted_ref_sha` argument
+    to `commit_derived_execution_identity_v2.authorize_commit_for_execution_v2`
+    (`#313`/`#200-G1C2-F3`). This function resolves `ref` against whatever
+    object store `repo_root` names -- including, when called against
+    `open_trusted_object_authority_v2(...).trusted_repo_root`, a private copy
+    built from a potentially-HOSTILE live checkout, whose ref *values* (not
+    its object *content*) are copied verbatim from that same hostile source.
+    A shape-valid 40/64-hex sha this function returns is a real commit sha,
+    but resolving a ref NAME through a hostile-derived authority and then
+    treating the RESULT as if it were independently, out-of-band trustworthy
+    reconstructs exactly the false-positive `#313` fixed -- one call outside
+    the function that closed it. A `trusted_ref_sha` must come from a source
+    that never calls this function (or any other read primitive in this
+    package) against a checkout under test at all.
     """
     try:
         completed = run_bounded_git_v2(
