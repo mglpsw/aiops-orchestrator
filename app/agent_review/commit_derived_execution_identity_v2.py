@@ -562,9 +562,34 @@ _HEX_DIGITS_V2 = frozenset("0123456789abcdef")
 
 
 def _is_full_commit_sha_shape_v2(value: object) -> bool:
-    """True iff ``value`` has the exact SHAPE of a full, immutable sha1
-    commit sha -- exactly 40 lowercase hex characters, nothing more and
-    nothing less.
+    """True iff ``value`` is an EXACT built-in ``str`` with the exact SHAPE
+    of a full, immutable sha1 commit sha -- exactly 40 lowercase hex
+    characters, nothing more and nothing less.
+
+    P1 (independent review, correction round 3): the type test is
+    ``type(value) is str``, NOT ``isinstance``, because ``isinstance``
+    admits SUBCLASSES and a ``str`` subclass gets to define the very
+    operators both of this anchor's guards are written in terms of --
+    ``__len__`` and ``__iter__`` here, and ``__ne__`` in
+    ``authorize_commit_for_execution_v2``'s resolved==supplied invariant.
+    The reproduced witness needed a single override: ``__ne__`` returning
+    ``False``, on an instance whose real content was an honest, genuinely
+    resolvable 40-hex annotated-tag object sha. Because ``!=`` puts the
+    caller's object on the RIGHT, and Python gives the reflected operation
+    priority when the right operand's type is a proper subclass of the
+    left's, the invariant asked the attacker's own object whether it
+    mismatched and was told no -- returning ``authorized=True`` for an
+    orphan commit that was an ancestor of nothing trusted.
+
+    Note the mechanism precisely, because the obvious guess is wrong and
+    would invite the wrong fix: an ``__eq__``-only subclass does NOT defeat
+    ``!=``, since ``str`` defines its own ``__ne__`` and the subclass
+    inherits it rather than reaching ``object.__ne__``'s
+    delegate-and-negate behaviour. Hardening the comparison was therefore
+    the wrong lever; excluding subclasses at the type gate is the right
+    one, and it is sufficient on its own -- this gate runs BEFORE any
+    resolution, so no subclass instance ever reaches the comparison. See
+    ``test_only_a_ne_override_defeats_the_invariant_eq_alone_does_not``.
 
     Deliberately shape-only, and deliberately not the whole story:
 
@@ -620,7 +645,7 @@ def _is_full_commit_sha_shape_v2(value: object) -> bool:
     anchor could never work end-to-end regardless) reopens this exact
     vulnerability with zero corresponding legitimate use.
     """
-    if not isinstance(value, str):
+    if type(value) is not str:
         return False
     return len(value) in _FULL_COMMIT_SHA_LENGTHS_V2 and all(c in _HEX_DIGITS_V2 for c in value)
 

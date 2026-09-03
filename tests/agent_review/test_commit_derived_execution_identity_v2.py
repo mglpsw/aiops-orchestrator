@@ -1325,6 +1325,168 @@ def test_non_string_trusted_ref_sha_is_refused_with_a_typed_reason_not_a_raw_typ
     assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2
 
 
+# -- round 3: adversarial `str` subclass at the trust boundary (RED-first) ------
+#
+# `isinstance(value, str)` accepts SUBCLASSES, and a subclass gets to define
+# the very operators the anchor's guards are written in terms of. Which
+# override is load-bearing was established empirically, not assumed --
+# see `test_only_a_ne_override_defeats_the_invariant_eq_alone_does_not`.
+
+
+class _NeOnlyStr(str):
+    """A `str` subclass whose ONLY override is `__ne__`.
+
+    This is the MINIMAL witness for the round-3 bypass: one dunder, and the
+    instance's real content is an honest, genuinely-resolvable 40-lowercase-hex
+    object id, so every content-based check passes truthfully.
+    """
+
+    def __ne__(self, other: object) -> bool:
+        return False
+
+
+class _EqAndNeStr(str):
+    """Overrides both halves of the equality protocol."""
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __ne__(self, other: object) -> bool:
+        return False
+
+    def __hash__(self) -> int:
+        return str.__hash__(self)
+
+
+class _EqOnlyStr(str):
+    """Overrides ONLY `__eq__` -- deliberately NOT sufficient to bypass;
+    kept as a discriminating control, see the mechanism test below."""
+
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    def __hash__(self) -> int:
+        return str.__hash__(self)
+
+
+class _ShapeLyingStr(str):
+    """Lies about `__len__` and `__iter__` so the shape gate reads a
+    40-hex value while the real content is an attacker-planted REF NAME,
+    and lies about `__ne__` so the resolved==supplied invariant cannot
+    catch the substitution either."""
+
+    _FAKE = "0" * 40
+
+    def __len__(self) -> int:
+        return 40
+
+    def __iter__(self) -> object:
+        return iter(self._FAKE)
+
+    def __ne__(self, other: object) -> bool:
+        return False
+
+
+def test_only_a_ne_override_defeats_the_invariant_eq_alone_does_not() -> None:
+    """Pins the EXACT dispatch mechanism the fix is aimed at, because the
+    obvious guess is wrong and a wrong finding description would invite a
+    wrong (equality-hardening) fix.
+
+    `resolved_trusted != trusted_ref_sha` puts the caller's object on the
+    RIGHT. Python gives the reflected operation priority when the right
+    operand's type is a proper subclass of the left's, so the subclass is
+    consulted first -- but the name it looks up is `__ne__`, and `str`
+    DEFINES its own `__ne__`. A subclass overriding only `__eq__` therefore
+    inherits `str.__ne__` (it never reaches `object.__ne__`'s
+    delegate-and-negate behaviour) and is compared by real content.
+
+    Consequence: `__ne__` is the load-bearing override, and no amount of
+    equality hardening is the right fix -- excluding subclasses at the type
+    gate is.
+    """
+    honest = "a" * 40
+    other = "b" * 40
+    assert (other != _EqOnlyStr(honest)) is True, "an __eq__-only subclass must NOT defeat `!=`"
+    assert (other != _NeOnlyStr(honest)) is False, "a __ne__ override DOES defeat `!=`"
+    assert (other != _EqAndNeStr(honest)) is False
+    assert type(_NeOnlyStr(honest)) is not str and isinstance(_NeOnlyStr(honest), str)
+
+
+@pytest.mark.parametrize(
+    "subclass",
+    [_NeOnlyStr, _EqAndNeStr, _EqOnlyStr, _ShapeLyingStr],
+    ids=["ne_only", "eq_and_ne", "eq_only", "shape_lying"],
+)
+def test_str_subclass_trusted_ref_sha_is_refused_the_anchor_must_be_an_exact_str(
+    tmp_path: Path, subclass: type
+) -> None:
+    """The trust anchor must be an EXACT built-in `str`, never a subclass.
+
+    A subclass passes `isinstance(value, str)` while redefining `__len__`,
+    `__iter__` and `__ne__` -- i.e. every operator the shape gate and the
+    resolved==supplied invariant are expressed in. The object being
+    validated must not be allowed to define what validation means.
+    Refused at the type gate, BEFORE resolution, with the typed reason code.
+    """
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(
+            repo_root=repo,
+            commit_sha=base_sha,
+            trusted_ref_sha=subclass(base_sha),  # type: ignore[arg-type]
+        )
+    assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2
+
+
+def test_str_subclass_anchor_cannot_authorize_an_unrelated_attacker_commit(
+    tmp_path: Path,
+) -> None:
+    """The full round-3 exploit, end to end.
+
+    An annotated tag's own object sha is honest 40-lowercase-hex and really
+    resolves, but `^{commit}` peels it to a DIFFERENT commit -- here the
+    attacker's orphan commit, an ancestor of nothing trusted. On the plain
+    `str` that is caught by the resolved==supplied invariant
+    (`test_resolved_trusted_ref_sha_must_equal_the_supplied_value`). Wrapped
+    in a `str` subclass that overrides `__ne__`, the invariant asks the
+    attacker's own object whether it mismatches and is told no --
+    previously yielding `authorized=True` for the attacker's commit,
+    anchored on the attacker's own commit.
+    """
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+
+    subprocess.run(
+        ["git", "checkout", "--orphan", "attacker-branch"], cwd=repo, check=True, capture_output=True
+    )
+    subprocess.run(["git", "rm", "-rf", "--quiet", "."], cwd=repo, check=True, capture_output=True)
+    (repo / "evil.py").write_text("EVIL = True\n")
+    evil_sha = _commit_all(repo, "attacker commit")
+    subprocess.run(["git", "checkout", "main"], cwd=repo, check=True, capture_output=True)
+
+    subprocess.run(
+        ["git", "tag", "-a", "-m", "annotated", "v-evil", evil_sha],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    tag_object_sha = _rev_parse(repo, "refs/tags/v-evil")
+    assert tag_object_sha != evil_sha, "sanity: the tag object's own sha differs from the commit it peels to"
+    assert len(tag_object_sha) == 40 and tag_object_sha.islower()
+
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(
+            repo_root=repo,
+            commit_sha=evil_sha,
+            trusted_ref_sha=_NeOnlyStr(tag_object_sha),  # type: ignore[arg-type]
+        )
+    assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2
+
+    # and the honest plain-`str` control still works
+    assert authorize_commit_for_execution_v2(
+        repo_root=repo, commit_sha=base_sha, trusted_ref_sha=base_sha
+    ).authorized
+
+
 def test_composing_identity_and_authorization_from_the_same_input_can_resolve_different_commits(
     tmp_path: Path,
 ) -> None:
