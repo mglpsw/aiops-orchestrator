@@ -1625,7 +1625,7 @@ def _open_and_expect_refusal_within_v2(repo: Path, *, bound_seconds: float = 2.0
     return excinfo.value
 
 
-# -- site `:765` -- commondir ------------------------------------------------------------------
+# -- site `commondir probe` ------------------------------------------------------------------
 
 
 def test_fifo_at_commondir_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1640,7 +1640,7 @@ def test_fifo_at_commondir_probe_is_refused_not_hung(tmp_path: Path) -> None:
     _ = c3
 
 
-# -- site `:1068` -- packed-refs ----------------------------------------------------------------
+# -- site `packed-refs probe` ----------------------------------------------------------------
 
 
 def test_fifo_at_packed_refs_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1652,7 +1652,7 @@ def test_fifo_at_packed_refs_probe_is_refused_not_hung(tmp_path: Path) -> None:
     _ = c3
 
 
-# -- site `:749` -- HEAD, bare-repository-root probe -------------------------------------------
+# -- site `HEAD bare-repository-root probe` -------------------------------------------
 
 
 def test_fifo_at_bare_repository_root_head_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1669,7 +1669,7 @@ def test_fifo_at_bare_repository_root_head_probe_is_refused_not_hung(tmp_path: P
     _ = c3
 
 
-# -- site `:854` -- HEAD, alternate-objects-sibling probe ---------------------------------------
+# -- site `HEAD alternate-objects-sibling probe` ---------------------------------------
 
 
 def test_fifo_head_sibling_at_alternate_objects_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1694,7 +1694,7 @@ def test_fifo_head_sibling_at_alternate_objects_probe_is_refused_not_hung(tmp_pa
     _ = c3
 
 
-# -- site `:1101` -- HEAD, final copy probe in _copy_refs_fd_v2 ----------------------------------
+# -- site `HEAD final-copy probe` in `_copy_refs_fd_v2` ----------------------------------
 
 
 def test_fifo_at_head_final_copy_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1712,7 +1712,7 @@ def test_fifo_at_head_final_copy_probe_is_refused_not_hung(tmp_path: Path) -> No
     _ = c3
 
 
-# -- site `:986` -- objects/info/alternates ------------------------------------------------------
+# -- site `objects/info/alternates probe` ------------------------------------------------------
 
 
 def test_fifo_at_alternates_file_probe_is_refused_not_hung(tmp_path: Path) -> None:
@@ -1771,7 +1771,7 @@ def test_char_device_special_file_at_commondir_is_refused_not_hung(tmp_path: Pat
 
 
 def test_fifo_planted_as_dotgit_itself_is_refused_not_hung(tmp_path: Path) -> None:
-    """Regression check for the site already gated BEFORE this fix (`.git`-as-file, `:591`): a
+    """Regression check for the site already gated BEFORE this fix (`.git`-as-file, the pre-existing classifying `os.stat`, NOT the choke point): a
     `.git` FIFO is refused via the pre-existing classifying `os.stat` in
     `_resolve_git_directories_fd_v2` -- neither `S_ISDIR` nor `S_ISREG` matches a FIFO, so control
     never even reaches `_try_open_file_no_follow_v2` for `.git` itself. `os.stat` never blocks
@@ -1792,14 +1792,14 @@ def test_fifo_planted_as_dotgit_itself_is_refused_not_hung(tmp_path: Path) -> No
 
 
 def test_bare_repository_head_and_objects_probe_still_works(tmp_path: Path) -> None:
-    """Positive control for the bare-repository-root probe (site `:749`) -- not previously
+    """Positive control for the bare-repository-root probe (site `HEAD bare-repository-root probe`) -- not previously
     exercised anywhere in this corpus. Regular-file positive controls for the other five sites
     already exist elsewhere in this file: `commondir` via
     `test_linked_worktree_resolves_the_shared_object_store_not_the_private_worktree_dir`,
     `packed-refs` via `test_packed_refs_with_ordinary_content_still_round_trips`, the
-    alternate-objects `HEAD` sibling (site `:854`) via
+    alternate-objects `HEAD` sibling (site `HEAD alternate-objects-sibling probe`) via
     `test_legitimate_alternate_still_works_after_containment_check`, and the final `HEAD` read
-    (site `:1101`) via every ordinary end-to-end test in this file, including
+    (site `HEAD final-copy probe`) via every ordinary end-to-end test in this file, including
     `test_ordinary_authorization_and_materialisation_still_work_end_to_end`."""
     repo, c1, _c2, c3 = _linear_history_fixture(tmp_path)
     bare = tmp_path / "bare.git"
@@ -1825,7 +1825,7 @@ def test_bare_repository_head_and_objects_probe_still_works(tmp_path: Path) -> N
 
 
 def test_racing_loose_object_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
-    """Site `:952` -- a loose object file, swapped to a FIFO after `scandir`'s
+    """Loose-object listed-file site -- a loose object file, swapped to a FIFO after `scandir`'s
     `is_file(follow_symlinks=False)` classification but before
     `_open_regular_file_no_follow_v2` (via the `_open_listed_file_no_follow_v2` entry point)
     opens it."""
@@ -1862,7 +1862,7 @@ def test_racing_loose_object_listing_to_open_with_a_fifo_still_refuses(tmp_path:
 
 
 def test_racing_pack_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
-    """Site `:974` -- a pack file, swapped to a FIFO after classification but before
+    """Pack-file listed-file site -- a pack file, swapped to a FIFO after classification but before
     open, in a real `git repack`-produced pack directory (same fixture shape as
     `test_legitimate_repacked_history_still_works`)."""
     repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
@@ -1891,7 +1891,7 @@ def test_racing_pack_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Pa
 
 
 def test_racing_ref_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
-    """Site `:1032` -- a loose ref file (`refs/heads/main`), swapped to a FIFO after
+    """Loose-ref listed-file site -- a loose ref file (`refs/heads/main`), swapped to a FIFO after
     classification but before open, via `_walk_regular_files_fd_v2`."""
     repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
     ref_file = repo / ".git" / "refs" / "heads" / "main"
