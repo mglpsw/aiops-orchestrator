@@ -82,6 +82,7 @@ issue_313:
   blocking: true
   caem_predecessor_search: NO_RELEVANT_CAEM_PREDECESSOR_FOUND   # ADR 0012/0014 adjacent, not this mechanism
   successor_branch: fix/200-g1c2-f313-out-of-band-authorization-anchor
+  successor_pr: 317
   next_gate: review_and_merge_grant
 
 issue_304:
