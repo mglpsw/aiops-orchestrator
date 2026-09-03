@@ -790,7 +790,14 @@ def test_completeness_traversal_error_is_refused_not_silently_swallowed(
     real_scandir = os.scandir
 
     def fake_scandir(path="."):
-        if Path(path) == unreadable_dir:
+        # `path` is not always a str/Path here: `#200-G1C`'s trusted object
+        # authority is torn down via `shutil.rmtree`, whose safe fd-based
+        # walker calls `os.scandir` with a raw directory file descriptor
+        # (an `int`) for entries below the top -- unrelated to this
+        # fixture's `subject_root`-scoped simulation, and never
+        # constructible as a `Path`. Anything not path-like is passed
+        # through untouched.
+        if isinstance(path, (str, os.PathLike)) and Path(path) == unreadable_dir:
             raise PermissionError(f"simulated unreadable directory: {path}")
         return real_scandir(path)
 
@@ -880,7 +887,11 @@ def test_completeness_traversal_classification_error_is_refused_not_silently_tre
             return None
 
     def fake_scandir(path="."):
-        if Path(path) == subject_root:
+        # See the sibling test above: `path` can be a raw fd (`int`) from
+        # `#200-G1C`'s trusted-object-authority teardown (`shutil.rmtree`'s
+        # fd-based safe walker), never constructible as a `Path`, and
+        # unrelated to this fixture's `subject_root`-scoped simulation.
+        if isinstance(path, (str, os.PathLike)) and Path(path) == subject_root:
             return _ScandirResultProxy(
                 [
                     _ClassificationFailureEntry(entry) if entry.name == unreadable_dir_name else entry

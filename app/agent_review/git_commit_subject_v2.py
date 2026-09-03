@@ -51,6 +51,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.agent_review.bounded_git_v2 import BoundedGitError, run_bounded_git_v2
+from app.agent_review.trusted_object_authority_v2 import (
+    TrustedObjectAuthorityError,
+    open_trusted_object_authority_v2,
+)
 
 __all__ = [
     "SUBJECT_BLOB_MISSING_REASON_V2",
@@ -225,16 +229,37 @@ def materialise_commit_subject_v2(
 
     The result is severed from `repo_root`: deleting or rewriting the
     original checkout afterwards cannot change what was materialised.
+
+    #200-G1C: commit resolution, tree listing, and blob content are all
+    read from a private, remote-less trusted object authority built fresh
+    from `repo_root` (see `trusted_object_authority_v2.py`) -- never from
+    `repo_root` directly. `repo_root` is discovery input only; the object
+    bytes actually written below always come from the private copy. This
+    is unchanged from -- and does not fix or alter -- the write loop that
+    follows: any TOCTOU/symlink-write property of *that* loop belongs to
+    `#200-G1D` (issue #304), a separate, downstream layer this change does
+    not touch.
     """
     destination = Path(destination)
     if destination.exists() and any(destination.iterdir()):
         raise SubjectMaterialisationError(SUBJECT_DESTINATION_NOT_EMPTY_REASON_V2)
     destination.mkdir(parents=True, exist_ok=True)
 
-    commit_sha = resolve_commit_v2(repo_root=repo_root, ref=ref)
-    entries = list_commit_tree_entries_v2(repo_root=repo_root, commit_sha=commit_sha)
-    blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2]
-    content_by_path = read_commit_blobs_v2(repo_root=repo_root, entries=blobs)
+    try:
+        with open_trusted_object_authority_v2(repo_root) as authority:
+            trusted_root = authority.trusted_repo_root
+            commit_sha = resolve_commit_v2(repo_root=trusted_root, ref=ref)
+            entries = list_commit_tree_entries_v2(repo_root=trusted_root, commit_sha=commit_sha)
+            blobs = [entry for entry in entries if entry.mode != GITLINK_MODE_V2]
+            content_by_path = read_commit_blobs_v2(repo_root=trusted_root, entries=blobs)
+    except TrustedObjectAuthorityError as exc:
+        # Mirrors the write loop's own failure-cleanup contract below: a
+        # caller must never be left holding a destination that looks like
+        # it might hold a valid subject. Nothing has been written into it
+        # yet at this point -- the authority build/read failed before the
+        # write loop started -- so this is always safe to discard.
+        shutil.rmtree(destination, ignore_errors=True)
+        raise SubjectMaterialisationError(SUBJECT_TREE_UNREADABLE_REASON_V2) from exc
 
     written = 0
     try:

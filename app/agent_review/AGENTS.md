@@ -99,6 +99,23 @@ v1 golden fixtures (`golden_chunk_payload_hash.json` and siblings) are
 frozen. A change to v1 behavior requires a positive, reasoned justification
 in the PR — not merely "it was convenient while working on v2".
 
+## Trust-mechanism design
+
+`SEARCH_CANONICAL_PREDECESSOR before INVENT_NEW_TRUST_MECHANISM`. Before
+inventing a new detection-based defense against a mutable/hostile input
+(session baselines, before/after snapshots, config-key enumeration, or any
+other "watch it and notice if it changed" strategy), check whether this
+codebase or its documented prior art already has a trust-root-inversion
+answer for the same shape ("stop treating the mutable thing as authority;
+copy what you need into something you control, then trust that instead") --
+see `trusted_object_authority_v2.py` (`#200-G1C`, issue #303) for a worked
+example, including the four-round history of detection-based attempts it
+replaced. `docs/checkpoints/AGENT_REVIEW_CAEM_REUSE_LEDGER.md` records
+which prior art (this codebase's own or design-reference-only external
+material) an entry actually reused, and states plainly what was NOT
+thereby claimed -- reuse of a shape is not authority, qualification, or
+conformance transfer from wherever the shape was first read.
+
 ## Genericity — no target name in the engine
 
 Nothing under this directory may branch on a target repository's name (see
