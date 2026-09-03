@@ -104,13 +104,23 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import hmac
 import io
+import secrets
 import tokenize
 from typing import TYPE_CHECKING, Annotated, Literal
 
 from pydantic import Field, NonNegativeInt, PositiveInt, StrictStr, model_validator
 
-from app.agent_review.contracts_v2 import ContractV2Model, SafeIdentifier, Sha256
+from app.agent_review.contracts_v2 import (
+    ChunkCoverageV2,
+    ContractV2Model,
+    CoverageDegradationReasonValue,
+    CoverageStateValue,
+    PayloadContractReferenceV2,
+    SafeIdentifier,
+    Sha256,
+)
 
 if TYPE_CHECKING:
     from app.agent_review.review_content_v2 import ChunkContentV2
@@ -167,6 +177,31 @@ STRUCTURAL_PROJECTION_UNSUPPORTED_LANGUAGE_V2 = "structural_projection_unsupport
 STRUCTURAL_PROJECTION_PARSE_FAILED_V2 = "structural_projection_parse_failed"
 STRUCTURAL_PROJECTION_UNAUTHORIZED_NODE_TYPE_V2 = "structural_projection_unauthorized_node_type"
 STRUCTURAL_PROJECTION_UNSUPPORTED_LEAF_SHAPE_V2 = "structural_projection_unsupported_leaf_shape"
+STRUCTURAL_PROJECTION_MAX_DEPTH_EXCEEDED_V2 = "structural_projection_max_depth_exceeded"
+
+# Non-bracketed left-recursive AST shapes (attribute chains `a.b.b.b...`,
+# chained binary/unary operators `1+1+1+...`/`not not not...`) have no
+# CPython parser-level nesting guard -- unlike bracketed literals, which the
+# parser itself refuses past ~200 levels. A single ~1-2KB source line can
+# produce a several-hundred-level-deep AST. Empirically (this module's own
+# regression corpus): unbounded, ``_project_node_v2``'s own Python-level
+# recursive descent raises an UNCAUGHT ``RecursionError`` around AST depth
+# ~990 (just under the interpreter's default 1000-frame limit, since this
+# function's own stack frames compound with everything else already on the
+# stack); at a LOWER depth (~250-254 for this exact node/field shape),
+# pydantic-core's serializer -- a SEPARATE recursive walk performed by the
+# caller's later ``.model_dump(mode="json")``, entirely outside this
+# module's own recursion -- hits its own internal recursion-depth safeguard
+# first and raises ``ValueError: Circular reference detected (depth
+# exceeded)`` even though there is no actual cycle, only depth. Both are
+# real, independently reproduced crash vectors, and both sit outside this
+# module's own ``try/except StructuralProjectionBlockedV2`` handling as
+# originally written -- contradicting this module's own "never a crash,
+# always degrade to a controlled block" design contract. Set with a wide
+# safety margin under BOTH observed ceilings (roughly 4x under the lower,
+# ~250-254 pydantic-core one): no legitimate, human-authored Python source
+# in this repository's own corpus comes close to 100 levels of AST nesting.
+MAX_STRUCTURAL_PROJECTION_DEPTH_V2 = 100
 
 
 class StructuralProjectionBlockedV2(Exception):
@@ -191,15 +226,27 @@ class StructuralProjectionBlockedV2(Exception):
 
 _Sha256Prefix12 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{12}$")]
 _SymbolAlias = Annotated[StrictStr, Field(pattern=r"^sym_[0-9]{3,}$")]
+_PathAlias = Annotated[StrictStr, Field(pattern=r"^path_[0-9]{3,}$")]
 _AstNodeTypeName = Annotated[StrictStr, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")]
 _AstFieldName = Annotated[StrictStr, Field(pattern=r"^[a-z_][a-z0-9_]*$")]
 
 
 class ProjectedLiteralV2(ContractV2Model):
     """One opaque literal: never the value, only its shape. ``kind`` is a
-    closed enum; ``length`` is the character/byte count; ``sha256_12`` is a
-    truncated digest (equality-checkable across two identical literals,
-    never reversible to the source bytes)."""
+    closed enum; ``length`` is the encoded-byte count for every kind
+    (UTF-8 bytes for ``str``, the same unit ``sha256_12`` is computed over
+    -- NOT the Python character/code-point count, which would under-count
+    for multibyte characters and disagree with what was actually hashed;
+    #200-G2C round-1 external review, P2, Lane B); ``sha256_12`` is an
+    HMAC-SHA256 digest truncated to 12 hex chars, keyed with a key
+    generated randomly once per process (never derived from ``run_id`` or
+    any other externally-computable value -- see ``_structural_projection_
+    hmac_key_v2``'s docstring) -- equality-checkable across two identical
+    literals WITHIN one process's lifetime, never reversible to the source
+    bytes, and -- unlike a plain unsalted digest -- neither offline-
+    dictionary-confirmable by an observer with a candidate wordlist nor
+    correlatable across different outbound payloads over time (#200-G2C
+    round-1 external review, P2, Lane A)."""
 
     kind: Literal["str", "bytes", "int", "float", "complex", "comment"]
     length: NonNegativeInt
@@ -210,6 +257,30 @@ class ProjectedSymbolV2(ContractV2Model):
     """One identifier's opaque, stable alias."""
 
     alias: _SymbolAlias
+
+
+class ProjectedPathV2(ContractV2Model):
+    """One repository-relative path's opaque, stable alias -- same
+    treatment as ``ProjectedSymbolV2`` and for the same reason: a real repo
+    file path is PR-author-controlled text (the author of a diff chooses
+    every file name in it), not distinguishable in principle from any other
+    arbitrary literal this module already refuses to judge content-wise.
+    Payload fields that carry real paths (``ChunkCoverageV2``'s six
+    ``tuple[RelativePath, ...]`` fields, ``PayloadContractReferenceV2.
+    paths``) are validated only by ``RelativePath``'s near-open pattern
+    (``^[^*?\\[\\]]+$``, excluding just glob metacharacters) plus
+    ``sanitize_artifact_value``'s keyword/regex blocklist -- no AWS-key
+    pattern, no JWT shape, no generic entropy check -- so an attacker-
+    chosen filename shaped like a credential (e.g. an AWS-access-key-shaped
+    basename) reaches those fields exactly as validly as any ordinary
+    filename. The SAME name aliases to the SAME token across one outbound
+    payload (one shared alias table across ``coverage`` and
+    ``contract_references``), so coverage-tracking cross-references (e.g.
+    "the file missing from must-review coverage is the SAME file that
+    appears in expected_files") remain legible without any raw path byte
+    surviving -- the identical trade-off already made for identifiers."""
+
+    alias: _PathAlias
 
 
 class ProjectedClosedValueV2(ContractV2Model):
@@ -338,6 +409,33 @@ def _candidate_source_text_v2(raw_text: str) -> str:
     return raw_text
 
 
+# -- HMAC-keyed digest: closes offline-dictionary-confirmation and
+# cross-payload-correlation against an unsalted digest (#200-G2C round-1
+# external review, P2, Lane A) ------------------------------------------
+
+_structural_projection_hmac_key_v2_cache: bytes | None = None
+
+
+def _structural_projection_hmac_key_v2() -> bytes:
+    """A random key, generated once and cached for the lifetime of this
+    PROCESS -- never derived from ``run_id``, a timestamp, or any other
+    value an outside observer could also compute (this repository's
+    execution model runs one process per review invocation, so process-
+    scoped and run-scoped coincide in practice). Deriving the key from
+    ``run_id`` instead would defeat the whole fix: ``run_id`` is a
+    deterministic function of public identity (repo/PR/SHAs), so an
+    attacker with a candidate wordlist AND the (often public) run identity
+    could recompute the identical key and dictionary-confirm exactly as
+    before. ``secrets.token_bytes`` (not ``random``) because this key
+    stands in an adversarial role, however narrow -- it is a real, if
+    small, HMAC key."""
+
+    global _structural_projection_hmac_key_v2_cache
+    if _structural_projection_hmac_key_v2_cache is None:
+        _structural_projection_hmac_key_v2_cache = secrets.token_bytes(32)
+    return _structural_projection_hmac_key_v2_cache
+
+
 # -- leaf classification: a total function over runtime shape ---------------
 
 
@@ -353,15 +451,18 @@ def _make_literal_v2(kind: str, raw_value: object) -> ProjectedLiteralV2:
     if kind == "str":
         assert isinstance(raw_value, str)
         data = raw_value.encode("utf-8")
-        length = len(raw_value)
     elif kind == "bytes":
         assert isinstance(raw_value, (bytes, bytearray))
         data = bytes(raw_value)
-        length = len(data)
     else:
         data = repr(raw_value).encode("utf-8")
-        length = len(repr(raw_value))
-    digest = hashlib.sha256(data).hexdigest()[:12]
+    # Same unit for `length` and what `sha256_12` is computed over, for
+    # every kind (#200-G2C round-1 external review, P2, Lane B) -- `str`
+    # previously reported the Python character/code-point count here,
+    # which under-counts for multibyte characters and disagreed with the
+    # UTF-8 byte length actually hashed.
+    length = len(data)
+    digest = hmac.new(_structural_projection_hmac_key_v2(), data, hashlib.sha256).hexdigest()[:12]
     return ProjectedLiteralV2(kind=kind, length=length, sha256_12=digest)
 
 
@@ -420,13 +521,22 @@ def _classify_leaf_v2(node_type: str, field_name: str, value: object) -> tuple[s
     raise StructuralProjectionBlockedV2(STRUCTURAL_PROJECTION_UNSUPPORTED_LEAF_SHAPE_V2)
 
 
-def _alias_for_v2(name: str, alias_table: dict[str, str]) -> str:
+def _alias_for_v2(name: str, alias_table: dict[str, str], *, prefix: str = "sym") -> str:
     if name not in alias_table:
-        alias_table[name] = f"sym_{len(alias_table) + 1:03d}"
+        alias_table[name] = f"{prefix}_{len(alias_table) + 1:03d}"
     return alias_table[name]
 
 
-def _project_node_v2(node: ast.AST, *, alias_table: dict[str, str]) -> ProjectedNodeV2:
+def _project_node_v2(
+    node: ast.AST, *, alias_table: dict[str, str], depth: int = 0
+) -> ProjectedNodeV2:
+    if depth > MAX_STRUCTURAL_PROJECTION_DEPTH_V2:
+        # A controlled block, not a crash -- see MAX_STRUCTURAL_PROJECTION_
+        # DEPTH_V2's own comment for the two independently reproduced
+        # uncaught-crash vectors (this function's own recursion, and the
+        # caller's later pydantic-core serialization) this guard closes.
+        raise StructuralProjectionBlockedV2(STRUCTURAL_PROJECTION_MAX_DEPTH_EXCEEDED_V2)
+
     node_type = type(node).__name__
     if node_type not in AUTHORIZED_AST_NODE_TYPES_V2:
         raise StructuralProjectionBlockedV2(STRUCTURAL_PROJECTION_UNAUTHORIZED_NODE_TYPE_V2)
@@ -447,7 +557,7 @@ def _project_node_v2(node: ast.AST, *, alias_table: dict[str, str]) -> Projected
                 child_nodes.append(
                     ProjectedChildNodeV2(
                         field_name=field_name,
-                        node=_project_node_v2(item, alias_table=alias_table),
+                        node=_project_node_v2(item, alias_table=alias_table, depth=depth + 1),
                     )
                 )
             elif kind == "literal":
@@ -518,9 +628,14 @@ def project_fragment_structural_v2(
     ``StructuralProjectionBlockedV2`` -- never returns a partial/best-effort
     result -- for anything this module cannot prove closed: a non-Python
     path, text that does not parse as Python (including a genuinely
-    unterminated/malformed literal), an AST node type outside the
-    live-derived universe, or a field shape outside the closed leaf
-    classification."""
+    unterminated/malformed literal, or -- #200-G2C round-1 external review
+    follow-up, discovered while mutation-testing ``MAX_STRUCTURAL_
+    PROJECTION_DEPTH_V2`` -- an extreme left-recursive chain, e.g. several
+    thousand chained attribute/binary-op levels in one line, deep enough
+    that CPython's OWN ``ast.parse`` raises an uncaught ``RecursionError``
+    before this module's node-by-node depth guard ever gets a tree to
+    walk), an AST node type outside the live-derived universe, or a field
+    shape outside the closed leaf classification."""
 
     if not path.endswith(".py"):
         raise StructuralProjectionBlockedV2(STRUCTURAL_PROJECTION_UNSUPPORTED_LANGUAGE_V2)
@@ -528,7 +643,7 @@ def project_fragment_structural_v2(
     source = _candidate_source_text_v2(content)
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError) as exc:
+    except (SyntaxError, ValueError, RecursionError) as exc:
         raise StructuralProjectionBlockedV2(STRUCTURAL_PROJECTION_PARSE_FAILED_V2) from exc
 
     root = _project_node_v2(tree, alias_table=alias_table)
@@ -564,3 +679,140 @@ def project_chunk_content_structural_v2(chunk_content: "ChunkContentV2") -> Proj
             )
         )
     return ProjectedChunkContentV2(chunk_id=chunk_content.chunk_id, fragments=tuple(fragments))
+
+
+# -- payload path closure (coverage / contract references) ------------------
+#
+# #200-G2C round-1 external review (P0, Lane C, against head 0614965):
+# ``_build_agent_router_messages_v2`` only ever routed ``chunk_content``
+# through this module's closure -- the OTHER five top-level outbound keys
+# (``semantic_group``, ``coverage``, ``artifact_references``, ``contract_
+# references``, ``output_contract``) were raw ``.model_dump(mode="json")``
+# on ``payload``. Of those, ``semantic_group``/``artifact_references``/
+# ``output_contract`` carry no free-text/path-shaped field at all (already
+# closed enums, pattern-constrained ``SafeIdentifier``s, and a JSON SCHEMA
+# generated purely from this codebase's own type annotations, never from PR
+# content); but ``payload.coverage``'s six ``tuple[RelativePath, ...]``
+# fields and ``payload.contract_references[].paths`` carry REAL repo file
+# paths -- exactly the shape #200-G2/#200-G2B's blocklist-over-raw-text
+# failure mode was refuted for, recreated inside a PR whose whole premise
+# is "no blocklist, structural closure only." Reproduced end-to-end through
+# the real production pipeline: a legal ``RelativePath`` filename shaped
+# like an AWS access key sailed straight into the literal outbound body
+# bytes ``build_agent_router_request_body_v2`` produces.
+#
+# Fix: the SAME closure this module already applies to identifiers --
+# deterministic, stable, opaque aliasing (``ProjectedPathV2``), not a
+# per-value "is this shaped like a secret" judgement -- extended to every
+# path-bearing payload field. A real path's raw bytes never reach the wire;
+# what reaches it is a token that is stable within one outbound payload, so
+# coverage-tracking cross-references (the same file appearing in more than
+# one coverage field) remain legible.
+
+
+class ProjectedCoverageDegradationV2(ContractV2Model):
+    """Mirrors ``CoverageDegradationV2`` field-for-field, closing the two
+    fields it carries that are not already a closed enum: ``affected_files``
+    (paths -- aliased, same as everywhere else in this section) and
+    ``detail`` (free text, typed ``SafeText`` upstream -- i.e. protected
+    only by the same keyword/regex blocklist as everything else this
+    section closes; opaqued via the SAME ``ProjectedLiteralV2`` shape
+    ordinary string literals get, since content-wise it IS one: caller-
+    authored free text, not distinguishable in principle from any AST
+    string literal this module already refuses to judge). Currently always
+    constructed with an empty ``degradation_causes`` tuple upstream
+    (``payload_builder_v2.py``'s only call site hardcodes it to ``()``) --
+    this field is dormant in production today, but the schema itself
+    allows content, and nothing before this fix would have caught a future
+    call site populating it unprojected; closing it structurally here means
+    there is no future call site to get wrong."""
+
+    reason_code: CoverageDegradationReasonValue
+    affected_files: tuple[ProjectedPathV2, ...]
+    detail: ProjectedLiteralV2
+
+
+class ProjectedChunkCoverageV2(ContractV2Model):
+    """Mirrors ``ChunkCoverageV2`` field-for-field: ``status`` is already a
+    closed enum (unchanged); every ``tuple[RelativePath, ...]`` field
+    becomes ``tuple[ProjectedPathV2, ...]``."""
+
+    status: CoverageStateValue
+    expected_files: tuple[ProjectedPathV2, ...]
+    reviewed_files: tuple[ProjectedPathV2, ...]
+    partially_reviewed_files: tuple[ProjectedPathV2, ...]
+    missing_files: tuple[ProjectedPathV2, ...]
+    must_review_files: tuple[ProjectedPathV2, ...]
+    missing_must_review_files: tuple[ProjectedPathV2, ...]
+    degradation_causes: tuple[ProjectedCoverageDegradationV2, ...]
+
+
+class ProjectedContractReferenceV2(ContractV2Model):
+    """Mirrors ``PayloadContractReferenceV2`` field-for-field: ``contract_
+    id``/``contract_version``/``sha256``/``scope`` are already closed
+    (pattern-constrained identifiers, a hash, a closed enum -- all operator/
+    target-profile-controlled, not PR-diff-controlled, so out of THIS
+    finding's scope); ``paths`` becomes aliased, same as ``coverage``."""
+
+    contract_id: SafeIdentifier
+    contract_version: SafeIdentifier
+    sha256: Sha256
+    scope: Literal["repository", "semantic_group", "chunk", "file"]
+    paths: tuple[ProjectedPathV2, ...]
+
+
+def _project_path_v2(path: str, *, path_alias_table: dict[str, str]) -> ProjectedPathV2:
+    return ProjectedPathV2(alias=_alias_for_v2(path, path_alias_table, prefix="path"))
+
+
+def project_chunk_coverage_structural_v2(
+    coverage: ChunkCoverageV2, *, path_alias_table: dict[str, str]
+) -> ProjectedChunkCoverageV2:
+    """Project one ``ChunkCoverageV2`` into its closed form. ``path_alias_
+    table`` is shared with ``project_contract_references_structural_v2``
+    (both are called against the SAME outbound payload in ``_build_agent_
+    router_messages_v2``) so the same real path aliases identically across
+    both -- e.g. a file appearing in both ``missing_must_review_files``
+    here and a contract reference's ``paths`` there gets the same token."""
+
+    def _paths(files: tuple[str, ...]) -> tuple[ProjectedPathV2, ...]:
+        return tuple(_project_path_v2(f, path_alias_table=path_alias_table) for f in files)
+
+    return ProjectedChunkCoverageV2(
+        status=coverage.status,
+        expected_files=_paths(coverage.expected_files),
+        reviewed_files=_paths(coverage.reviewed_files),
+        partially_reviewed_files=_paths(coverage.partially_reviewed_files),
+        missing_files=_paths(coverage.missing_files),
+        must_review_files=_paths(coverage.must_review_files),
+        missing_must_review_files=_paths(coverage.missing_must_review_files),
+        degradation_causes=tuple(
+            ProjectedCoverageDegradationV2(
+                reason_code=cause.reason_code,
+                affected_files=_paths(cause.affected_files),
+                detail=_make_literal_v2("str", cause.detail),
+            )
+            for cause in coverage.degradation_causes
+        ),
+    )
+
+
+def project_contract_references_structural_v2(
+    contract_references: list[PayloadContractReferenceV2], *, path_alias_table: dict[str, str]
+) -> tuple[ProjectedContractReferenceV2, ...]:
+    """Project every contract reference's paths into their closed, aliased
+    form. See ``project_chunk_coverage_structural_v2`` for why ``path_
+    alias_table`` is shared across both."""
+
+    return tuple(
+        ProjectedContractReferenceV2(
+            contract_id=item.contract_id,
+            contract_version=item.contract_version,
+            sha256=item.sha256,
+            scope=item.scope,
+            paths=tuple(
+                _project_path_v2(p, path_alias_table=path_alias_table) for p in item.paths
+            ),
+        )
+        for item in contract_references
+    )

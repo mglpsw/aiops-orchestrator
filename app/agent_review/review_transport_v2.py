@@ -110,8 +110,11 @@ from app.agent_review.review_transport_contract_v2 import (
     verify_transport_echo_v1,
 )
 from app.agent_review.structural_egress_projection_v2 import (
+    STRUCTURAL_PROJECTION_MAX_DEPTH_EXCEEDED_V2,
     StructuralProjectionBlockedV2,
     project_chunk_content_structural_v2,
+    project_chunk_coverage_structural_v2,
+    project_contract_references_structural_v2,
 )
 from app.agent_review.synthesis_v2 import synthesize_chunk_results_v2
 
@@ -448,38 +451,78 @@ def _build_agent_router_messages_v2(
     chunk_content: ChunkContentV2,
     payload: ChunkPayloadV2,
 ) -> list[dict[str, Any]]:
-    """``chunk_content`` NEVER reaches this message in its raw form (#200-
-    G2C, issue #299). ``project_chunk_content_structural_v2`` replaces
-    every fragment's real content with a closed, schema-typed structural
-    projection -- every literal opaque, every identifier aliased -- before
-    anything is serialized into ``user_material``. A fragment this
-    projector cannot PROVE closed (non-Python path, unparseable text, an
-    AST shape outside the live-derived universe) raises
+    """Neither ``chunk_content`` nor any path-bearing part of ``payload``
+    reaches this message in raw form (#200-G2C, issue #299).
+    ``project_chunk_content_structural_v2`` replaces every fragment's real
+    content with a closed, schema-typed structural projection -- every
+    literal opaque, every identifier aliased. ``project_chunk_coverage_
+    structural_v2``/``project_contract_references_structural_v2`` apply the
+    SAME closure to every real repository file path in ``payload.coverage``
+    and ``payload.contract_references`` -- a round-1 external review
+    (#200-G2C, P0, against head `0614965`) found these two raw ``.model_
+    dump(mode="json")`` on real PR-diff-controlled paths reachable in the
+    outbound body, the exact G2/G2B blocklist-over-raw-text failure mode
+    this PR exists to eliminate. ``semantic_group``/``artifact_references``/
+    ``output_contract`` are unchanged: none carries a free-text or
+    path-shaped field (closed enums, pattern-constrained identifiers, and a
+    JSON schema generated purely from this codebase's own types, never PR
+    content) -- see ``structural_egress_projection_v2``'s payload-path-
+    closure section docstring for the full analysis.
+
+    A fragment this projector cannot PROVE closed (non-Python path,
+    unparseable text, an AST shape outside the live-derived universe, or
+    nesting past ``MAX_STRUCTURAL_PROJECTION_DEPTH_V2``) raises
     ``StructuralProjectionBlockedV2``, which this function re-raises as
     ``ChunkTransportError`` -- degrading the WHOLE chunk to
     ``manual_required`` before any message is built and before any HTTP
-    attempt, never sending a best-effort partial payload. See
-    ``structural_egress_projection_v2``'s module docstring for the closure
-    property this establishes and why #200-G2/#200-G2B (content-
-    classification over an open domain) were refuted instead."""
+    attempt, never sending a best-effort partial payload. The final
+    ``.model_dump(mode="json")`` calls below are ALSO wrapped: even with the
+    depth guard, pydantic-core's own serializer has a lower, independent
+    recursion ceiling than this module's construction-time guard margin was
+    chosen against (see that constant's docstring) -- a round-1 review
+    finding (P1, independently reproduced) demonstrated an uncaught
+    ``RecursionError``/pydantic ``ValueError`` from exactly this call for a
+    ~1.5-2KB adversarial line, before the depth guard existed. Both defenses
+    are kept: the guard is the primary closure (nothing this deep is ever
+    constructed), this ``except`` is defense-in-depth against any residual
+    serialization-time recursion ceiling this module does not itself
+    control."""
 
     try:
         projected_content = project_chunk_content_structural_v2(chunk_content)
+        path_alias_table: dict[str, str] = {}
+        projected_coverage = project_chunk_coverage_structural_v2(
+            payload.coverage, path_alias_table=path_alias_table
+        )
+        projected_contract_references = project_contract_references_structural_v2(
+            payload.contract_references, path_alias_table=path_alias_table
+        )
     except StructuralProjectionBlockedV2 as exc:
         raise ChunkTransportError(exc.reason_code) from exc
 
-    user_material = {
-        "semantic_group": payload.semantic_group.value,
-        "coverage": payload.coverage.model_dump(mode="json"),
-        "artifact_references": [
-            item.model_dump(mode="json") for item in payload.artifact_references
-        ],
-        "contract_references": [
-            item.model_dump(mode="json") for item in payload.contract_references
-        ],
-        "chunk_content": projected_content.model_dump(mode="json"),
-        "output_contract": ChunkReviewResultV2.model_json_schema(mode="validation"),
-    }
+    try:
+        # Deliberately a SECOND, narrower try/except than the construction
+        # one above: a `pydantic.ValidationError` (a `ValueError` subclass)
+        # from a genuine construction bug should propagate uncaught, same
+        # as it always has -- it must not be mislabeled as a depth-closure
+        # block. Only the SERIALIZATION calls below are wrapped, for the
+        # residual pydantic-core recursion ceiling this module's own depth
+        # guard does not itself control (see this function's docstring).
+        user_material = {
+            "semantic_group": payload.semantic_group.value,
+            "coverage": projected_coverage.model_dump(mode="json"),
+            "artifact_references": [
+                item.model_dump(mode="json") for item in payload.artifact_references
+            ],
+            "contract_references": [
+                item.model_dump(mode="json") for item in projected_contract_references
+            ],
+            "chunk_content": projected_content.model_dump(mode="json"),
+            "output_contract": ChunkReviewResultV2.model_json_schema(mode="validation"),
+        }
+    except (RecursionError, ValueError) as exc:
+        raise ChunkTransportError(STRUCTURAL_PROJECTION_MAX_DEPTH_EXCEEDED_V2) from exc
+
     return [
         {"role": "system", "content": _ROUTER_SYSTEM_MESSAGE_V2},
         {"role": "user", "content": _canonical_json_text_v2(user_material)},

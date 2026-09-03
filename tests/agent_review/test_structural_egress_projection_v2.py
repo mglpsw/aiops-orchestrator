@@ -17,6 +17,49 @@ values, ...) is DEFERRED to a separate, later, isolated regression-suite
 session against this finished implementation -- not written here, not
 even as "clearly synthetic" fixtures. See the Draft PR body for the
 tracking reference.
+
+## Part 6 (below): #200-G2C round-1 external review correction
+
+Three independent adversarial lanes reviewed head `0614965` and returned
+real, independently-reproduced findings:
+
+- **P0 (Lane C)**: ``_build_agent_router_messages_v2`` only projected
+  ``chunk_content``; ``payload.coverage``'s six path-bearing fields and
+  ``payload.contract_references[].paths`` were raw ``.model_dump(mode=
+  "json")`` -- real repo file paths (PR-author-controlled) reaching the
+  outbound bytes gated only by a near-open pattern plus a keyword/regex
+  blocklist, the exact G2/G2B failure mode this PR exists to eliminate.
+  Fixed by extending the SAME identifier-aliasing closure to path fields
+  (``project_chunk_coverage_structural_v2``/``project_contract_
+  references_structural_v2``, ``ProjectedPathV2``).
+  ``AKIAIOSFODNN7EXAMPLE_service_backup.py`` (a legal, AWS-access-key-
+  shaped filename) is the exact witness reproduced end-to-end through the
+  real production pipeline; kept as a filename here (not a value) --
+  provider-key-shaped, mirroring the mitigation the historical regression
+  corpus file already uses for the same reason.
+- **P1 (Lane A + Lane B, independently, same root cause)**:
+  ``_project_node_v2`` had no recursion-depth guard. Non-bracketed left-
+  recursive AST shapes (attribute/binop/unary chains) have no CPython
+  parser-level nesting guard and can reach hundreds of AST levels in a
+  single short (~1.5-2KB) line -- well inside any real chunk budget.
+  Uncaught ``RecursionError`` (this module's own construction-time
+  recursion) or, at a lower depth, an uncaught pydantic-core
+  ``ValueError: Circular reference detected (depth exceeded)`` (the
+  SEPARATE ``.model_dump(mode="json")`` serialization walk) resulted --
+  falsifying this PR's own "never a crash" claim. Fixed with an explicit
+  depth guard (``MAX_STRUCTURAL_PROJECTION_DEPTH_V2``) plus defense-in-
+  depth exception handling around serialization in ``_build_agent_
+  router_messages_v2``.
+- **P2s**: ``sha256_12`` was a plain, unsalted digest (dictionary-
+  confirmable, cross-payload-correlatable) -- fixed with a random,
+  process-scoped HMAC key. ``length`` (Python char count) disagreed with
+  the UTF-8 byte count ``sha256_12`` actually hashes for multibyte
+  strings -- fixed to report the same unit. The dormant ``CoverageDegradationV2.
+  detail`` field is now structurally closed (part of the P0 fix), not
+  merely guarded.
+
+See ``structural_egress_projection_v2.py``'s own inline comments at each
+fix site for the full analysis; not repeated here.
 """
 
 from __future__ import annotations
@@ -28,6 +71,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+
+import hashlib
+import sys
 
 from app.agent_review.contracts_v2 import TargetProfileV2
 from app.agent_review.diff_acquisition_v2 import acquire_authoritative_diff_v2
@@ -47,20 +93,35 @@ from app.agent_review.semantic_grouping_policy_v2 import (
     SemanticGroupingRuleV2,
     compute_semantic_grouping_policy_sha256_v2,
 )
-from app.agent_review.contracts_v2 import SemanticGroupV2
+from app.agent_review.contracts_v2 import (
+    ChunkCoverageV2,
+    CoverageDegradationReasonV2,
+    CoverageDegradationV2,
+    CoverageStateV2,
+    PayloadArtifactReferenceV2,
+    PayloadContractReferenceV2,
+    SemanticGroupV2,
+)
 import app.agent_review.review_transport_v2 as review_transport_v2
 import app.agent_review.structural_egress_projection_v2 as sep
 from app.agent_review.structural_egress_projection_v2 import (
     AUTHORIZED_AST_NODE_TYPES_V2,
+    MAX_STRUCTURAL_PROJECTION_DEPTH_V2,
+    STRUCTURAL_PROJECTION_MAX_DEPTH_EXCEEDED_V2,
     STRUCTURAL_PROJECTION_PARSE_FAILED_V2,
     STRUCTURAL_PROJECTION_UNAUTHORIZED_NODE_TYPE_V2,
     STRUCTURAL_PROJECTION_UNSUPPORTED_LANGUAGE_V2,
     STRUCTURAL_PROJECTION_UNSUPPORTED_LEAF_SHAPE_V2,
     ProjectedChunkContentV2,
+    ProjectedChunkCoverageV2,
+    ProjectedContractReferenceV2,
     ProjectedNodeV2,
     StructuralProjectionBlockedV2,
     _classify_leaf_v2,
+    _make_literal_v2,
     project_chunk_content_structural_v2,
+    project_chunk_coverage_structural_v2,
+    project_contract_references_structural_v2,
     project_fragment_structural_v2,
 )
 
@@ -475,29 +536,64 @@ def _walk_schema_strings(
             _walk_schema_strings(sub, defs, path, violations, seen)
 
 
-def test_schema_field_closure_no_free_text_slot_anywhere() -> None:
+# #200-G2C round-1 external review, P0, Lane C: the original version of
+# this audit walked ONLY ``ProjectedChunkContentV2``'s own schema -- it
+# never saw ``ChunkCoverageV2``/``PayloadContractReferenceV2`` because they
+# were not part of that type at all (they were sent raw, unaudited,
+# alongside the projected content). "The audit's own scope was too
+# narrow, which is why this passed" -- Lane C's own words. Now parametrized
+# over every type that actually appears, as a value, in the REAL outbound
+# ``user_material`` dict ``_build_agent_router_messages_v2`` builds:
+# ``ProjectedChunkContentV2`` (``chunk_content``), ``ProjectedChunkCoverageV2``
+# (``coverage``, post-fix), ``ProjectedContractReferenceV2``
+# (``contract_references``, post-fix), and -- genuinely audited, not
+# assumed -- ``PayloadArtifactReferenceV2`` (``artifact_references``,
+# UNCHANGED: already closed, since it carries no path/free-text field, but
+# that claim is now mechanically checked here rather than only argued in
+# prose). ``output_contract`` is deliberately excluded: it is
+# ``ChunkReviewResultV2.model_json_schema(mode="validation")``, a JSON
+# SCHEMA DOCUMENT generated purely from this codebase's own type
+# annotations, never from PR/diff content -- auditing "does a schema
+# document contain free-text-shaped fields" is a category error (a JSON
+# Schema's OWN vocabulary uses plain strings for `title`/`description`/
+# property names by design; that is not user content flowing through it).
+_REAL_OUTBOUND_SCHEMA_TYPES = (
+    ProjectedChunkContentV2,
+    ProjectedChunkCoverageV2,
+    ProjectedContractReferenceV2,
+    PayloadArtifactReferenceV2,
+)
+
+
+@pytest.mark.parametrize("model_cls", _REAL_OUTBOUND_SCHEMA_TYPES, ids=lambda c: c.__name__)
+def test_schema_field_closure_no_free_text_slot_anywhere(model_cls) -> None:
     """Automated audit (not manual review, per #299's requirement #2):
     every ``string``-typed field anywhere in the FULL recursive schema
     graph is either digest/alias-pattern-constrained or a closed enum/
     const -- there is no field of unconstrained ``str``/``Any`` type
     ANYWHERE this projection can produce, and no field carries a name
-    from the known free-text-escape-hatch vocabulary."""
+    from the known free-text-escape-hatch vocabulary. Parametrized over
+    every type that actually appears in the real outbound payload, not
+    just ``ProjectedChunkContentV2``'s own -- see the module-level comment
+    immediately above this test."""
 
-    schema = ProjectedChunkContentV2.model_json_schema()
+    schema = model_cls.model_json_schema()
     defs = schema.get("$defs", {})
     violations: list[str] = []
-    _walk_schema_strings(schema, defs, "ProjectedChunkContentV2", violations)
+    _walk_schema_strings(schema, defs, model_cls.__name__, violations)
     assert not violations, "\n".join(violations)
 
 
-def test_schema_forbids_additional_properties_everywhere() -> None:
+@pytest.mark.parametrize("model_cls", _REAL_OUTBOUND_SCHEMA_TYPES, ids=lambda c: c.__name__)
+def test_schema_forbids_additional_properties_everywhere(model_cls) -> None:
     """Defense in depth alongside the free-text audit: every object in the
     schema graph has ``additionalProperties: false`` (from
     ``ContractV2Model``'s ``extra=\"forbid\"``), so no undeclared field --
     free-text or otherwise -- could be smuggled in even if this module's
-    own models were extended carelessly later."""
+    own models were extended carelessly later. Parametrized the same way
+    and for the same reason as the free-text audit above."""
 
-    schema = ProjectedChunkContentV2.model_json_schema()
+    schema = model_cls.model_json_schema()
     defs = schema.get("$defs", {})
     for name, definition in defs.items():
         if definition.get("type") == "object":
@@ -773,3 +869,406 @@ def test_negative_direction_real_repo_source_projects_without_crash_or_raw_leak(
                 pytest.fail(f"{py_file}: literal {candidate!r} survived raw in projected form")
 
     assert projected_count > 10, "expected most of the real corpus to project successfully"
+
+
+# ===========================================================================
+# Part 6 -- #200-G2C round-1 external review correction (P0/P1/P2 against
+# head `0614965`). See the module docstring's "Part 6" section for the
+# finding summary; each fix's own inline comment in
+# ``structural_egress_projection_v2.py`` has the full analysis.
+# ===========================================================================
+
+# An AWS-access-key-shaped FILENAME (never a value) -- the exact P0 witness
+# Lane C reproduced end-to-end through the real pipeline. Built by
+# concatenation, same mitigation the historical regression corpus file
+# uses for provider-token-shaped fixtures.
+_AWS_KEY_SHAPED_FILENAME = "AKIA" + "IOSFODNN7EXAMPLE" + "_service_backup.py"
+
+
+def _complete_coverage_v2(
+    files: tuple[str, ...], *, must_review: tuple[str, ...] = ()
+) -> ChunkCoverageV2:
+    return ChunkCoverageV2(
+        status=CoverageStateV2.COMPLETE,
+        expected_files=files,
+        reviewed_files=files,
+        partially_reviewed_files=(),
+        missing_files=(),
+        must_review_files=must_review,
+        missing_must_review_files=(),
+        degradation_causes=(),
+    )
+
+
+def _degraded_coverage_v2(missing_file: str, *, detail: str) -> ChunkCoverageV2:
+    return ChunkCoverageV2(
+        status=CoverageStateV2.DEGRADED,
+        expected_files=(missing_file,),
+        reviewed_files=(),
+        partially_reviewed_files=(),
+        missing_files=(missing_file,),
+        must_review_files=(),
+        missing_must_review_files=(),
+        degradation_causes=(
+            CoverageDegradationV2(
+                reason_code=CoverageDegradationReasonV2.BUDGET_EXHAUSTED,
+                affected_files=(missing_file,),
+                detail=detail,
+            ),
+        ),
+    )
+
+
+def _contract_reference_v2(paths: list[str]) -> PayloadContractReferenceV2:
+    return PayloadContractReferenceV2(
+        contract_id="example-contract",
+        contract_version="1.0.0",
+        sha256="d" * 64,
+        scope="file",
+        paths=paths,
+    )
+
+
+# -- P0 (Lane C): coverage / contract-reference paths were raw -------------
+
+
+def test_coverage_paths_are_aliased_not_raw() -> None:
+    coverage = _complete_coverage_v2(
+        (_AWS_KEY_SHAPED_FILENAME,), must_review=(_AWS_KEY_SHAPED_FILENAME,)
+    )
+    projected = project_chunk_coverage_structural_v2(coverage, path_alias_table={})
+    serialized = json.dumps(projected.model_dump(mode="json"))
+    assert _AWS_KEY_SHAPED_FILENAME not in serialized
+    assert "AKIAIOSFODNN7EXAMPLE" not in serialized
+    assert re.search(r'"alias":\s*"path_\d+"', serialized)
+
+
+def test_coverage_degradation_detail_is_closed_not_raw() -> None:
+    """#200-G2C round-1 external review, P2, Lane C: the dormant
+    ``CoverageDegradationV2.detail`` field, now structurally closed (not
+    merely guarded by a test that assumes nobody populates it)."""
+
+    detail = f"coverage skipped for {_AWS_KEY_SHAPED_FILENAME} due to budget"
+    coverage = _degraded_coverage_v2(_AWS_KEY_SHAPED_FILENAME, detail=detail)
+    projected = project_chunk_coverage_structural_v2(coverage, path_alias_table={})
+    serialized = json.dumps(projected.model_dump(mode="json"))
+    assert _AWS_KEY_SHAPED_FILENAME not in serialized
+    assert "AKIAIOSFODNN7EXAMPLE" not in serialized
+    literal_kinds = [c.detail.kind for c in projected.degradation_causes]
+    assert literal_kinds == ["str"]
+
+
+def test_contract_reference_paths_are_aliased_not_raw() -> None:
+    ref = _contract_reference_v2([_AWS_KEY_SHAPED_FILENAME])
+    projected = project_contract_references_structural_v2([ref], path_alias_table={})
+    serialized = json.dumps([r.model_dump(mode="json") for r in projected])
+    assert _AWS_KEY_SHAPED_FILENAME not in serialized
+    assert "AKIAIOSFODNN7EXAMPLE" not in serialized
+    # Non-path fields are already closed (pattern-constrained identifiers,
+    # a hash, a closed enum) and pass through unchanged.
+    assert projected[0].contract_id == "example-contract"
+    assert projected[0].scope == "file"
+
+
+def test_coverage_and_contract_reference_paths_share_one_alias_table() -> None:
+    """The SAME real path used in ``coverage`` and in a contract
+    reference's ``paths`` must alias to the SAME token when projected with
+    a SHARED ``path_alias_table`` -- exactly how ``_build_agent_router_
+    messages_v2`` calls both -- preserving coverage-tracking cross-
+    reference legibility without any raw path byte surviving."""
+
+    coverage = _complete_coverage_v2((_AWS_KEY_SHAPED_FILENAME,))
+    ref = _contract_reference_v2([_AWS_KEY_SHAPED_FILENAME])
+
+    path_alias_table: dict[str, str] = {}
+    projected_coverage = project_chunk_coverage_structural_v2(
+        coverage, path_alias_table=path_alias_table
+    )
+    projected_refs = project_contract_references_structural_v2(
+        [ref], path_alias_table=path_alias_table
+    )
+    coverage_alias = projected_coverage.expected_files[0].alias
+    contract_alias = projected_refs[0].paths[0].alias
+    assert coverage_alias == contract_alias
+    assert len(path_alias_table) == 1, "one real path must mint exactly one alias"
+
+
+def test_coverage_path_projection_mutation_bypass_would_leak_raw_path() -> None:
+    """Mutation test for this fix's own load-bearing-ness (same pattern as
+    the historical regression corpus file): the RAW, pre-fix serialization
+    of the identical input must leak the path (RED, confirming the
+    baseline itself is meaningful), while the projected, post-fix form
+    must not (GREEN)."""
+
+    coverage = _complete_coverage_v2((_AWS_KEY_SHAPED_FILENAME,))
+
+    raw_serialized = json.dumps(coverage.model_dump(mode="json"))
+    assert _AWS_KEY_SHAPED_FILENAME in raw_serialized, (
+        "expected the RAW (pre-fix) coverage serialization to leak the "
+        "path -- if this fails, the mutation baseline itself is wrong"
+    )
+
+    projected = project_chunk_coverage_structural_v2(coverage, path_alias_table={})
+    projected_serialized = json.dumps(projected.model_dump(mode="json"))
+    assert _AWS_KEY_SHAPED_FILENAME not in projected_serialized
+
+
+def test_real_pre_http_body_carries_no_raw_coverage_or_contract_reference_path(
+    tmp_path: Path,
+) -> None:
+    """The real pre-HTTP seat, same as ``test_real_pre_http_body_carries_
+    no_raw_literal_bytes`` above, but for the P0 finding: an AWS-key-shaped
+    real FILENAME (not a value inside a file) must not reach the real
+    outbound bytes via ``coverage``."""
+
+    before = "def handler():\n    x = 1\n    return x\n"
+    after = "def handler():\n    x = 1\n    y = 2\n    return x\n"
+    body = _real_body(tmp_path, filename=_AWS_KEY_SHAPED_FILENAME, before=before, after=after)
+    text = body.decode("utf-8")
+    assert _AWS_KEY_SHAPED_FILENAME not in text
+    assert "AKIAIOSFODNN7EXAMPLE" not in text
+
+    payload = json.loads(text)
+    user_message = next(m["content"] for m in payload["messages"] if m["role"] == "user")
+    user_material = json.loads(user_message)
+    assert "coverage" in user_material
+    assert user_material["coverage"]["expected_files"], "expected coverage to be non-empty"
+
+
+def test_real_coverage_wiring_is_load_bearing_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation test for the PRODUCTION WIRING (same pattern as ``test_
+    real_router_transport_wiring_is_load_bearing_mutation`` above, for
+    coverage instead of chunk_content): bypass ``project_chunk_coverage_
+    structural_v2`` to return the raw ``ChunkCoverageV2`` unprojected, and
+    confirm the SAME AWS-key-shaped filename now DOES reach the outbound
+    body -- then restore and re-confirm GREEN."""
+
+    before = "def handler():\n    x = 1\n    return x\n"
+    after = "def handler():\n    x = 1\n    y = 2\n    return x\n"
+
+    def _bypass(coverage, *, path_alias_table):
+        del path_alias_table
+        return coverage  # raw ChunkCoverageV2, not projected
+
+    monkeypatch.setattr(review_transport_v2, "project_chunk_coverage_structural_v2", _bypass)
+    body = _real_body(
+        tmp_path / "mutated", filename=_AWS_KEY_SHAPED_FILENAME, before=before, after=after
+    )
+    assert _AWS_KEY_SHAPED_FILENAME in body.decode("utf-8"), (
+        "mutation expected to defeat closure -- if this fails, the "
+        "production code path is not actually calling the projector"
+    )
+
+    monkeypatch.undo()
+    body_restored = _real_body(
+        tmp_path / "restored", filename=_AWS_KEY_SHAPED_FILENAME, before=before, after=after
+    )
+    assert _AWS_KEY_SHAPED_FILENAME not in body_restored.decode("utf-8")
+
+
+# -- P1 (Lane A + Lane B): unbounded recursion depth ------------------------
+
+
+@pytest.mark.parametrize(
+    "name,source",
+    [
+        ("attribute_chain", "a" + (".b" * 600) + "\n"),
+        ("binop_chain", "x = " + "1+" * 600 + "1\n"),
+        ("unary_chain", "x = " + "not " * 600 + "True\n"),
+    ],
+)
+def test_max_depth_guard_blocks_extreme_left_recursive_chains(name: str, source: str) -> None:
+    """Non-bracketed left-recursive shapes (attribute/binop/unary chains)
+    have no CPython parser-level nesting guard, unlike bracketed literals.
+    A single ~1.2-2.4KB line reaches several hundred AST levels here --
+    well inside any real chunk budget (``max_chars_per_chunk`` in this
+    repo's own target profiles is tens of thousands of characters). Must
+    be a controlled block, never a crash."""
+
+    with pytest.raises(StructuralProjectionBlockedV2) as excinfo:
+        project_fragment_structural_v2(
+            fragment_id="a" * 64, path="x.py", content=source, alias_table={}
+        )
+    assert excinfo.value.reason_code == STRUCTURAL_PROJECTION_MAX_DEPTH_EXCEEDED_V2, name
+
+
+def test_extreme_depth_that_defeats_ast_parse_itself_is_also_blocked_not_crashed() -> None:
+    """Self-discovered while mutation-testing the depth guard above: deep
+    enough (thousands of chained attribute levels), CPython's OWN
+    ``ast.parse`` raises an uncaught ``RecursionError`` BEFORE this
+    module's node-by-node depth guard ever gets a tree to walk -- a
+    distinct crash vector from the one the guard closes, at an even more
+    extreme depth. Must degrade the same way, not crash differently."""
+
+    source = "a" + (".b" * 5000) + "\n"
+    with pytest.raises(StructuralProjectionBlockedV2) as excinfo:
+        project_fragment_structural_v2(
+            fragment_id="a" * 64, path="x.py", content=source, alias_table={}
+        )
+    assert excinfo.value.reason_code == STRUCTURAL_PROJECTION_PARSE_FAILED_V2
+
+
+def test_max_depth_guard_mutation_widening_it_reproduces_the_original_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation test for the depth guard itself, the same pattern as Gate
+    A/Gate B above: widen ``MAX_STRUCTURAL_PROJECTION_DEPTH_V2`` far past
+    both empirically-observed crash ceilings (this module's own ~990-deep
+    construction-time ``RecursionError``, and pydantic-core's own
+    ~250-254-deep serialization ``ValueError``) and confirm the SAME input
+    correctly blocked above is no longer blocked -- instead reproducing
+    the exact uncaught crash this guard exists to prevent. Then restore
+    and reconfirm blocked."""
+
+    source = "a" + (".b" * 300) + "\n"
+
+    with pytest.raises(StructuralProjectionBlockedV2) as excinfo:
+        project_fragment_structural_v2(
+            fragment_id="a" * 64, path="x.py", content=source, alias_table={}
+        )
+    assert excinfo.value.reason_code == STRUCTURAL_PROJECTION_MAX_DEPTH_EXCEEDED_V2
+
+    monkeypatch.setattr(sep, "MAX_STRUCTURAL_PROJECTION_DEPTH_V2", 100_000)
+    # Construction now succeeds (guard widened past it) ...
+    frag = project_fragment_structural_v2(
+        fragment_id="a" * 64, path="x.py", content=source, alias_table={}
+    )
+    # ... but the LATER pydantic-core serialization walk -- entirely
+    # outside this module's own guard -- hits its own, lower, independent
+    # ceiling: the exact uncaught crash #200-G2C round-1's P1 finding
+    # reported, reproduced here on demand.
+    with pytest.raises(ValueError, match="[Cc]ircular reference"):
+        frag.model_dump(mode="json")
+
+    monkeypatch.undo()
+    with pytest.raises(StructuralProjectionBlockedV2) as excinfo:
+        project_fragment_structural_v2(
+            fragment_id="a" * 64, path="x.py", content=source, alias_table={}
+        )
+    assert excinfo.value.reason_code == STRUCTURAL_PROJECTION_MAX_DEPTH_EXCEEDED_V2
+
+
+def test_real_pre_http_pipeline_degrades_to_manual_required_for_extreme_recursion_depth(
+    tmp_path: Path,
+) -> None:
+    """Real end-to-end proof (same seat as ``test_unparseable_fragment_
+    degrades_the_whole_chunk_to_manual_required`` above): a chunk
+    containing an adversarial deep-attribute-chain line degrades the WHOLE
+    chunk to ``manual_required`` through the existing failure taxonomy --
+    never a crash, never a partial send -- restoring this PR's own
+    documented claim that #200-G2C round-1's P1 finding falsified."""
+
+    before = "def handler():\n    x = 1\n    return x\n"
+    deep_chain = "a" + (".b" * 600)
+    after = f"def handler():\n    x = 1\n    {deep_chain}\n    return x\n"
+    manifest, content, chunk_content, payload = _build_real_chunk(
+        tmp_path, filename="app.py", before=before, after=after
+    )
+
+    def _never_called_transport(request, chunk_content, payload):  # pragma: no cover
+        raise AssertionError("HTTP transport must never be reached for a blocked fragment")
+
+    from app.agent_review.review_transport_v2 import agent_router_transport_v2
+
+    real_transport = agent_router_transport_v2(
+        base_url="https://router.example/", api_key="secret-token", model="review:code"
+    )
+    outcome = execute_chunk_review_v2(
+        chunk_content,
+        run_id=content.run_id,
+        head_sha=manifest.identity.head_sha,
+        payload=payload,
+        transport=real_transport,
+    )
+    assert outcome.state == "manual_required"
+    assert outcome.result is None
+    assert outcome.reason_code == STRUCTURAL_PROJECTION_MAX_DEPTH_EXCEEDED_V2
+
+
+def test_serialization_defense_in_depth_degrades_cleanly_even_if_the_depth_guard_is_bypassed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The depth guard inside the projector is the PRIMARY closure, but
+    ``_build_agent_router_messages_v2`` ALSO wraps its ``.model_dump(mode=
+    "json")`` calls in a separate ``except (RecursionError, ValueError)``
+    -- defense in depth against pydantic-core's own, independent, lower
+    serialization recursion ceiling. Prove that layer is independently
+    load-bearing (not merely redundant with the primary guard) by
+    DEFEATING the primary guard and confirming the function still degrades
+    cleanly to ``ChunkTransportError`` rather than letting the residual
+    crash propagate raw."""
+
+    before = "def handler():\n    x = 1\n    return x\n"
+    deep_chain = "a" + (".b" * 300)
+    after = f"def handler():\n    x = 1\n    {deep_chain}\n    return x\n"
+    manifest, content, chunk_content, payload = _build_real_chunk(
+        tmp_path, filename="app.py", before=before, after=after
+    )
+
+    monkeypatch.setattr(sep, "MAX_STRUCTURAL_PROJECTION_DEPTH_V2", 100_000)
+    with pytest.raises(ChunkTransportError) as excinfo:
+        _build_agent_router_messages_v2(chunk_content=chunk_content, payload=payload)
+    assert excinfo.value.reason_code == STRUCTURAL_PROJECTION_MAX_DEPTH_EXCEEDED_V2
+
+
+# -- P2s: HMAC-keyed digest, length/hash unit consistency -------------------
+
+
+def test_literal_digest_is_hmac_keyed_not_plain_unsalted_sha256() -> None:
+    """#200-G2C round-1 external review, P2, Lane A: a plain, unsalted
+    ``sha256(value)[:12]`` is offline-dictionary-confirmable by anyone
+    holding a candidate wordlist. The projected digest must NOT match the
+    plain digest of the same raw value."""
+
+    literal = _make_literal_v2("str", "identical_value_marker")
+    plain_digest = hashlib.sha256(b"identical_value_marker").hexdigest()[:12]
+    assert literal.sha256_12 != plain_digest
+
+
+def test_literal_digest_stable_within_one_process() -> None:
+    """The equality-checking design goal (two identical literals must hash
+    equal) survives the HMAC-keying fix, within one process's lifetime."""
+
+    first = _make_literal_v2("str", "identical_value_marker")
+    second = _make_literal_v2("str", "identical_value_marker")
+    assert first.sha256_12 == second.sha256_12
+
+
+def test_literal_digest_differs_across_separate_processes() -> None:
+    """#200-G2C round-1 external review, P2, Lane A: the HMAC key is
+    generated once per PROCESS (this repo's execution model: one process
+    per review invocation). Two separate processes computing the digest
+    for the exact same literal must NOT agree -- proving the key is
+    genuinely randomized per run, not accidentally still deterministic,
+    closing both the dictionary-confirmation and cross-payload-correlation
+    angles."""
+
+    repo_root = str(Path(__file__).resolve().parents[2])
+    code = (
+        "import sys; sys.path.insert(0, %r); "
+        "from app.agent_review.structural_egress_projection_v2 import _make_literal_v2; "
+        "print(_make_literal_v2('str', 'identical_value_marker').sha256_12)"
+    ) % repo_root
+    outputs = set()
+    for _ in range(2):
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, check=True
+        )
+        outputs.add(result.stdout.strip())
+    assert len(outputs) == 2, f"expected two separate processes to disagree, got {outputs}"
+
+
+def test_literal_length_matches_hashed_byte_count_for_multibyte_strings() -> None:
+    """#200-G2C round-1 external review, P2, Lane B: ``length`` previously
+    reported the Python character/code-point count for ``str`` literals,
+    disagreeing with the UTF-8 BYTE count ``sha256_12`` is actually
+    computed over. 'café' is 4 characters but 5 UTF-8 bytes ('é' is a
+    2-byte code point) -- ``length`` must report 5, the same unit as the
+    hash input, for every kind."""
+
+    value = "café"
+    literal = _make_literal_v2("str", value)
+    assert literal.length == len(value.encode("utf-8"))
+    assert literal.length != len(value)
