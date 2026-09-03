@@ -1518,12 +1518,20 @@ def test_racing_the_dotgit_classification_stat_still_refuses(tmp_path: Path) -> 
 
 # -- #312 (#200-G1C2-F1): bounded acquisition against hostile-planted special files ---------
 #
-# `_try_open_file_no_follow_v2` is the SOLE choke point for all six previously-ungated probe
-# sites (`commondir`, `packed-refs`, three distinct `HEAD` probes, `objects/info/alternates`):
-# every one of them calls it, and no other function in this module performs an unbounded
-# blocking open on a name it has not already committed to. Fixing that one function once is
-# what makes the corpus below uniform across all six sites rather than four fixed and two
-# stragglers -- the exact shape that refuted round 2 on the predecessor PR (#308).
+# ROUND 2 NOTE: round 1 of this fix hardened only `_try_open_file_no_follow_v2` (the six
+# metadata probes below). Two independent adversarial review lanes found, and this file's own
+# author independently reproduced a third time before implementing the round-2 fix, that a
+# SEPARATE function -- then named `_open_listed_file_no_follow_v2`, used for every loose
+# object/pack file/ref file discovered via `scandir` -- still had the identical unguarded
+# `O_NOFOLLOW`-only open, a larger attacker-controlled surface than the six named probes. Both
+# former functions are now thin wrappers around ONE shared primitive,
+# `_open_regular_file_no_follow_v2` (see its own docstring), which is the SOLE choke point for
+# every regular-file open this module performs -- the six metadata-probe sites below, PLUS the
+# three bulk-data sites exercised by the new `test_racing_*_listing_to_open_with_a_fifo_*`
+# tests near the end of this section. Fixing that one shared primitive once is what makes the
+# corpus below uniform across all nine sites rather than six fixed and three stragglers -- the
+# exact "four fixed, two stragglers" shape that refuted round 2 on the predecessor PR (#308),
+# repeated once already within this very issue before converging here.
 #
 # CAEM predecessor search (mandatory per this project's standing rule before any new
 # mechanism): `mglpsw/caem`'s `tooling/launch_n5_replay_native.c` (`open_regular`,
@@ -1781,3 +1789,140 @@ def test_bare_repository_head_and_objects_probe_still_works(tmp_path: Path) -> N
 
     result = authorize_commit_for_execution_v2(repo_root=bare, commit_sha=c1, trusted_ref=c3)
     assert result.authorized is True
+
+
+# -- round 2: the bulk-data path (formerly `_open_listed_file_no_follow_v2`) ---------------------
+#
+# These three sites are reached only via a `scandir`-derived `entry.is_file(follow_symlinks=
+# False)` classification hint immediately followed by the open -- a STATIC FIFO placed at any of
+# these paths is filtered out by that classification before the open is ever attempted (a FIFO
+# is not a regular file, so `is_file()` is already `False`), so the falsifier here must be a
+# genuine RACE: classify as regular, THEN swap to a FIFO, THEN open -- exactly the "listing-to-
+# open replacement" shape the module's own docstring already claims is closed. Each test hooks
+# the shared module-level entry point at the exact moment between classification and open (the
+# same technique already established in this file by
+# `test_racing_the_dotgit_classification_stat_still_refuses`), performs the swap for real, then
+# delegates to the genuine implementation -- so what runs afterward is the real production code
+# path, not a simulated one.
+
+
+def test_racing_loose_object_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
+    """Site formerly `:883` -- a loose object file, swapped to a FIFO after `scandir`'s
+    `is_file(follow_symlinks=False)` classification but before
+    `_open_regular_file_no_follow_v2` (via the `_open_listed_file_no_follow_v2` entry point)
+    opens it."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+
+    loose_object = None
+    objects_dir = repo / ".git" / "objects"
+    for fanout in sorted(objects_dir.iterdir()):
+        if fanout.is_dir() and len(fanout.name) == 2:
+            for candidate in sorted(fanout.iterdir()):
+                loose_object = candidate
+                break
+        if loose_object is not None:
+            break
+    assert loose_object is not None, "fixture did not produce a loose object -- test is not RED-valid"
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    real_open_listed = authority_module._open_listed_file_no_follow_v2  # noqa: SLF001
+    swap_done = {"value": False}
+
+    def hooked_open_listed(dir_fd: int, name: str) -> int:
+        if not swap_done["value"] and name == loose_object.name:
+            swap_done["value"] = True
+            loose_object.unlink()
+            os.mkfifo(loose_object)
+        return real_open_listed(dir_fd, name)
+
+    with unittest.mock.patch.object(authority_module, "_open_listed_file_no_follow_v2", hooked_open_listed):
+        value = _open_and_expect_refusal_within_v2(repo)
+    assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_racing_pack_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
+    """Site formerly `:905` -- a pack file, swapped to a FIFO after classification but before
+    open, in a real `git repack`-produced pack directory (same fixture shape as
+    `test_legitimate_repacked_history_still_works`)."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    subprocess.run(["git", "repack", "-a", "-d", "--quiet"], cwd=repo, check=True, capture_output=True)
+    pack_files = sorted((repo / ".git" / "objects" / "pack").glob("*.pack"))
+    assert pack_files, "fixture did not actually produce a pack -- test is not RED-valid"
+    target = pack_files[0]
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    real_open_listed = authority_module._open_listed_file_no_follow_v2  # noqa: SLF001
+    swap_done = {"value": False}
+
+    def hooked_open_listed(dir_fd: int, name: str) -> int:
+        if not swap_done["value"] and name == target.name:
+            swap_done["value"] = True
+            target.unlink()
+            os.mkfifo(target)
+        return real_open_listed(dir_fd, name)
+
+    with unittest.mock.patch.object(authority_module, "_open_listed_file_no_follow_v2", hooked_open_listed):
+        value = _open_and_expect_refusal_within_v2(repo)
+    assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_racing_ref_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
+    """Site formerly `:963` -- a loose ref file (`refs/heads/main`), swapped to a FIFO after
+    classification but before open, via `_walk_regular_files_fd_v2`."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    ref_file = repo / ".git" / "refs" / "heads" / "main"
+    assert ref_file.is_file(), "fixture did not produce a loose ref file -- test is not RED-valid"
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    real_open_listed = authority_module._open_listed_file_no_follow_v2  # noqa: SLF001
+    swap_done = {"value": False}
+
+    def hooked_open_listed(dir_fd: int, name: str) -> int:
+        if not swap_done["value"] and name == ref_file.name:
+            swap_done["value"] = True
+            ref_file.unlink()
+            os.mkfifo(ref_file)
+        return real_open_listed(dir_fd, name)
+
+    with unittest.mock.patch.object(authority_module, "_open_listed_file_no_follow_v2", hooked_open_listed):
+        value = _open_and_expect_refusal_within_v2(repo)
+    assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_racing_listed_file_disappearing_entirely_still_refuses_not_returns_none(tmp_path: Path) -> None:
+    """Regression check for the ONE genuine behavioral difference the unification preserves: a
+    file observed via `scandir` that has vanished entirely (not swapped to a FIFO, just deleted)
+    by the time the shared primitive opens it must still be `ACQUISITION_FAILED`, never silently
+    treated as `None`/"was never there" -- that is what distinguishes `missing_is_legitimate=
+    False` (this call shape) from `missing_is_legitimate=True` (the metadata-probe shape)."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    ref_file = repo / ".git" / "refs" / "heads" / "main"
+    assert ref_file.is_file()
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    real_open_listed = authority_module._open_listed_file_no_follow_v2  # noqa: SLF001
+    swap_done = {"value": False}
+
+    def hooked_open_listed(dir_fd: int, name: str) -> int:
+        if not swap_done["value"] and name == ref_file.name:
+            swap_done["value"] = True
+            ref_file.unlink()
+        return real_open_listed(dir_fd, name)
+
+    with unittest.mock.patch.object(authority_module, "_open_listed_file_no_follow_v2", hooked_open_listed):
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            with open_trusted_object_authority_v2(repo):
+                pytest.fail("should have refused the vanished ref file")
+    assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+    _ = c3

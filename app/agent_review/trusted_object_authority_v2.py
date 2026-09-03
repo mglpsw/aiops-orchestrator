@@ -110,6 +110,34 @@ essentially unchanged -- only *how bytes are acquired* changed, not what is
 done with them once acquired. See each function's own docstring for the
 specific property it establishes; this section does not re-derive them.
 
+## Known residual availability gaps (#312 round 2, deferred, not silently dropped)
+
+Two P1s surfaced by round 2's adversarial review, deliberately NOT fixed in
+this round -- named here rather than left to disappear, tracked in a
+narrow follow-up issue, `#320` (`#200-G1C2-F3`):
+
+- `run_bounded_git_v2` (`bounded_git_v2.py`) invokes `subprocess.run`
+  with no `timeout=`. `_verify_pack_integrity_v2`'s `git verify-pack` and
+  `TrustedObjectAuthorityV2.prove_ancestry`'s `git rev-list` both go
+  through it -- a sufficiently pathological pack (e.g. adversarial delta
+  chains) could make git's own parser run for a very long time,
+  unbounded by this module. Not reproduced live (constructing a genuinely
+  pathological pack was judged out of proportion for this round);
+  reasoned from code inspection only.
+- `_read_and_close_fd_charged_v2`'s `os.read` loop runs against a
+  fd already confirmed `S_ISREG` by this fix -- but a "regular" file on a
+  stalled network/FUSE mount can still put `read(2)` into an
+  uninterruptible sleep on Linux, independent of `O_NONBLOCK` (already
+  cleared before this read by design, once `S_ISREG` is confirmed). Not
+  reproducible in this round's sandbox (no `/dev/fuse`); reasoned, not
+  confirmed.
+
+Both are outside the specific "hostile checkout plants a special file at
+a probe/listed-file site" property this module's own fix closes
+structurally; closing them would mean bounding a different primitive
+(`subprocess.run`, `os.read`) with its own new reason code and falsifier
+corpus, not another instance of the same fix.
+
 ## Threat scope
 
 Unchanged from `#200-G1C`: in scope is a hostile/mutable LIVE repository
@@ -343,34 +371,56 @@ def _try_open_dir_no_follow_v2(dir_fd: int, name: str) -> int | None:
         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
 
 
-def _try_open_file_no_follow_v2(dir_fd: int, name: str) -> int | None:
-    """Open a regular file, `O_NOFOLLOW`, relative to `dir_fd`, for a file
-    this module has NOT already committed to (an optional probe -- e.g.
-    `commondir`, `packed-refs`, `objects/info/alternates`, a `gitdir:`
-    pointer, the three `HEAD` probes -- where "genuinely does not exist" is
-    an expected, legitimate state). Returns `None` if it genuinely does not
-    exist. Raises `SYMLINK_REJECTED` if `name` is a symlink. `ValueError`
-    (an embedded NUL byte -- see `_open_dir_no_follow_v2`) is caught
-    alongside `OSError` for the same reason.
+def _open_regular_file_no_follow_v2(dir_fd: int, name: str, *, missing_is_legitimate: bool) -> int | None:
+    """THE single regular-file-open choke point in this module. Every call
+    site that opens an untrusted, attacker-named regular file -- both the
+    six metadata probes (`commondir`, `packed-refs`, the three `HEAD`
+    probes, `objects/info/alternates`) AND the bulk data-copy path (every
+    loose object, pack file, and ref file discovered via `os.scandir`) --
+    goes through here, and here alone.
 
-    NOT for a file already observed via a `scandir` listing moments ago --
-    see `_open_listed_file_no_follow_v2` for that case, where a vanished
-    file is refused rather than silently tolerated.
+    G1C2-F1 (#312), round 2: the first round of this fix hardened only the
+    metadata-probe half (then named `_try_open_file_no_follow_v2`) and left
+    a SEPARATE function (then named `_open_listed_file_no_follow_v2`, used
+    at what are now the loose-object/pack-file/ref-file call sites) with
+    the original unguarded `O_RDONLY | O_NOFOLLOW` open -- a real gap,
+    independently found and reproduced by two adversarial review lanes
+    against that round's head, and reproduced a third time here before this
+    fix was written. That function's own docstring claim -- "even if the
+    entry is swapped between listing and open, the open() call itself is
+    the authoritative, atomic check" -- is true for IDENTITY (`O_NOFOLLOW`
+    means a symlink swapped in cannot be silently followed) but was FALSE
+    for AVAILABILITY: a FIFO is not a symlink, so `O_NOFOLLOW` does not
+    reject it, and a blocking `open()` on a FIFO with no writer present
+    hangs forever -- squarely inside this module's own declared threat
+    scope ("a source that mutates itself during this module's own
+    acquisition call"). Two separately-maintained copies of the same fix is
+    exactly the shape ("four fixed, two stragglers") that refuted round 2
+    on the `#200-G1C` predecessor (PR #308) -- so this round unifies both
+    former functions into this one, parameterized only by the one genuine
+    behavioral difference between them (`missing_is_legitimate`), so a
+    future fix to this choke point cannot again land in only one of two
+    copies.
 
-    G1C2-F1 (#312): this is the SOLE choke point every one of this
-    module's six previously-ungated probe sites calls through, so the fix
-    lives here once rather than at each call site individually. `name` is
-    untrusted, attacker-controlled content at every call site (a
-    `hostile_target_checkout` can plant a FIFO, socket, or device file at
-    any of them) -- `O_NOFOLLOW` alone rejects a symlink but not a special
-    file, and a plain blocking `open()` on a FIFO with no writer present
-    blocks the calling thread forever (issue #312's reproduction: `.git/
-    commondir` planted as a FIFO hung acquisition indefinitely).
+    `missing_is_legitimate=True` (the former `_try_open_file_no_follow_v2`
+    shape): `name` is a file this module has NOT already committed to --
+    "genuinely does not exist" is an expected, legitimate state, so a
+    `FileNotFoundError` returns `None`.
 
-    The fix is the property named in #312, applied atomically against ONE
-    fd, never a fresh path-based reopen (which would reintroduce exactly
-    the TOCTOU class this module's own `#200-G1C2` architecture exists to
-    eliminate -- see the module docstring):
+    `missing_is_legitimate=False` (the former `_open_listed_file_no_
+    follow_v2` shape): `name` is a file THIS MODULE ALREADY OBSERVED via a
+    `scandir` listing moments ago. A vanished file here is REFUSED
+    (`ACQUISITION_FAILED`), never silently treated as if it had never
+    existed: a concurrent writer removing an object between listing and
+    open is exactly the kind of live-source inconsistency this module's
+    threat model requires failing closed on, not tolerating as equivalent
+    to "was never there".
+
+    Every other step is identical for both shapes and is the fix itself,
+    applied atomically against ONE fd, never a fresh path-based reopen
+    (which would reintroduce exactly the TOCTOU class this module's own
+    `#200-G1C2` architecture exists to eliminate -- see the module
+    docstring):
 
         open O_NONBLOCK | O_NOFOLLOW
         -> fstat the SAME fd
@@ -380,23 +430,31 @@ def _try_open_file_no_follow_v2(dir_fd: int, name: str) -> int | None:
     `O_NONBLOCK` at `open()` means a FIFO with no writer returns
     immediately instead of blocking -- there is no longer any blocking
     syscall in this probe path at all, so a caller-side watchdog is not
-    needed to protect it (see this fix's PR/ledger notes for the full
-    reasoning on why #312's secondary `TimeoutError`-swallowed-by-`except
-    OSError` finding does not need its own new reason code: there is
-    nothing left in this function for a watchdog to ever need to
-    interrupt). `fstat` never blocks regardless of the fd's underlying
-    file type. If the fd is not a genuine regular file (a FIFO, socket,
-    device, or anything else `S_ISREG` rejects), it is closed and refused
-    via `SPECIAL_FILE_REJECTED` WITHOUT ever calling `os.read` on it.
-    `O_NONBLOCK` is cleared only once `S_ISREG` is confirmed, so every
+    needed to protect it (this is why #312's secondary `TimeoutError`-
+    swallowed-by-`except OSError` finding does not get its own new reason
+    code here: there is nothing left in this function for a watchdog to
+    ever need to interrupt). `fstat` never blocks regardless of the fd's
+    underlying file type. If the fd is not a genuine regular file (a FIFO,
+    socket, device, or anything else `S_ISREG` rejects), it is closed and
+    refused via `SPECIAL_FILE_REJECTED` WITHOUT ever calling `os.read` on
+    it. `O_NONBLOCK` is cleared only once `S_ISREG` is confirmed, so every
     downstream reader (`_read_and_close_fd_charged_v2`) keeps assuming an
     ordinary blocking regular-file read, unchanged.
+
+    Raises `SYMLINK_REJECTED` if `name` is a symlink (`ELOOP` at the
+    `open()` call itself). `ValueError` (an embedded NUL byte -- see
+    `_open_dir_no_follow_v2`; a real `scandir`-derived name cannot contain
+    one, but this is still caught here for defensive consistency with
+    every other open primitive in this module) is caught alongside
+    `OSError` for the same reason.
     """
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
     try:
         fd = os.open(name, flags, dir_fd=dir_fd)
-    except FileNotFoundError:
-        return None
+    except FileNotFoundError as exc:
+        if missing_is_legitimate:
+            return None
+        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
     except ValueError as exc:
         raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
     except OSError as exc:
@@ -424,28 +482,29 @@ def _try_open_file_no_follow_v2(dir_fd: int, name: str) -> int | None:
     return fd
 
 
+def _try_open_file_no_follow_v2(dir_fd: int, name: str) -> int | None:
+    """Thin named entry point onto `_open_regular_file_no_follow_v2` for an
+    OPTIONAL probe -- e.g. `commondir`, `packed-refs`, `objects/info/
+    alternates`, a `gitdir:` pointer, the three `HEAD` probes -- where
+    "genuinely does not exist" is an expected, legitimate state. NOT for a
+    file already observed via a `scandir` listing moments ago -- see
+    `_open_listed_file_no_follow_v2` for that case, where a vanished file
+    is refused rather than silently tolerated. Kept as a distinct, named
+    function (rather than inlining `missing_is_legitimate=True` at every
+    call site) purely for call-site readability; all real behavior lives
+    in the shared primitive."""
+    return _open_regular_file_no_follow_v2(dir_fd, name, missing_is_legitimate=True)
+
+
 def _open_listed_file_no_follow_v2(dir_fd: int, name: str) -> int:
-    """Open a regular file, `O_NOFOLLOW`, relative to `dir_fd`, for a file
-    THIS MODULE ALREADY OBSERVED via a `scandir` listing moments ago (a
-    loose object, a pack file, a ref file). Unlike `_try_open_file_no_
-    follow_v2`, a vanished file here is REFUSED (`ACQUISITION_FAILED`),
-    never silently treated as if it had never existed: a concurrent writer
-    removing an object between listing and open is exactly the kind of
-    live-source inconsistency this module's threat model requires failing
-    closed on, not tolerating as equivalent to "was never there". A real
-    filesystem directory entry name (from `scandir`) cannot itself contain
-    a NUL byte, but `ValueError` is still caught alongside `OSError` here
-    for defensive consistency with every other open primitive in this
-    module."""
-    flags = os.O_RDONLY | os.O_NOFOLLOW
-    try:
-        return os.open(name, flags, dir_fd=dir_fd)
-    except ValueError as exc:
-        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2) from exc
-        raise TrustedObjectAuthorityError(TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2) from exc
+    """Thin named entry point onto `_open_regular_file_no_follow_v2` for a
+    file THIS MODULE ALREADY OBSERVED via a `scandir` listing moments ago
+    (a loose object, a pack file, a ref file) -- see that function's
+    docstring for why a vanished file here is refused rather than silently
+    tolerated. `missing_is_legitimate=False` never returns `None`."""
+    fd = _open_regular_file_no_follow_v2(dir_fd, name, missing_is_legitimate=False)
+    assert fd is not None, "unreachable: missing_is_legitimate=False always raises instead of returning None"
+    return fd
 
 
 @contextlib.contextmanager
