@@ -78,6 +78,7 @@ issue_312:
   # is preserved as evidence but transfers no qualification.
   disposition: FORGE_DERIVED
   qualification_status: FORGE_DERIVED
+  blocking: FORGE_DERIVED
   current_qualification_source: "issue #312 and its integrating PR are the sole current-state authority; do not copy a verdict here"
   successor_pr: 325
   predecessor_pr: 318   # closed unmerged, forensic -- see that PR's own comments, not this row
@@ -377,7 +378,7 @@ agentreview_property:
     predecessor_truth_maker: TODO
     predecessor_falsifiers: TODO
     agentreview_domain_delta: TODO
-    implementation_owner: not_started
+    implementation_owner: "PR #325 (merged, squash 021d1881)"
     tests_ported: TODO
     tests_rederived: TODO
     authority_effect_in_aiops: none
@@ -392,7 +393,7 @@ agentreview_property:
     predecessor_truth_maker: TODO
     predecessor_falsifiers: TODO
     agentreview_domain_delta: TODO
-    implementation_owner: not_started
+    implementation_owner: "PR #317 (merged, squash 78f616a2)"
     tests_ported: TODO
     tests_rederived: TODO
     authority_effect_in_aiops: none
