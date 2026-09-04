@@ -66,11 +66,22 @@ issue_312:
   title: "#200-G1C2-F1 — unbounded blocking open on hostile-planted FIFO"
   track: agentreview_v2_trust_primitive
   canonical_property: "availability only — probe opens must reject non-regular files / use O_NONBLOCK+fstat, not a trust-boundary break"
-  implementation_status: not_started
-  qualification_status: n/a
-  disposition: ACTIVE_PARALLEL
-  blocking: false
-  next_gate: implementation_grant
+  # axis A (repo-tree fact, stable): the choke point exists in the current
+  # tree at the time this row was last reconciled (#324's own slice,
+  # verified by direct read of app/agent_review/trusted_object_authority_v2.py
+  # on master at that time). This does not go stale on rebase; re-derive
+  # from the tree if in doubt, never trust this comment alone.
+  implementation_status: complete
+  # axis C/D (current qualification + lifecycle): forge-derived, never a
+  # literal verdict/SHA copied into this document -- see #324. Predecessor
+  # PR #318 (closed unmerged, forensic, STOP_318_EVIDENCE_RECORD_NOT_CONVERGING)
+  # is preserved as evidence but transfers no qualification.
+  disposition: FORGE_DERIVED
+  qualification_status: FORGE_DERIVED
+  current_qualification_source: "issue #312 and its integrating PR are the sole current-state authority; do not copy a verdict here"
+  successor_pr: 325
+  predecessor_pr: 318   # closed unmerged, forensic -- see that PR's own comments, not this row
+  next_gate: FORGE_DERIVED
 
 issue_313:
   title: "#200-G1C2-F2 — trusted_ref anchor resolved against hostile-derived authority"
@@ -88,17 +99,26 @@ issue_313:
       finding: "fallback quorum on exact head 1f3f1b019492273cbd9963966ef975f732e4c57f (Codex UNAVAILABLE_TO_REVIEW, two conclusive exact-head usage-limit responses). Lane A (git/ref/object semantics) returned NONBLOCKING_FINDINGS_ONLY and additionally proved by mutation that the 40-only gate and the resolved==supplied invariant are EACH independently sufficient against the round-2 attack. Lane B (python/API/composition semantics) returned BLOCKED_NEW_P1, reproduced independently by the maintainer: round 2's own isinstance(value, str) gate admits str SUBCLASSES, and a subclass defines the very operators both guards are written in terms of (__len__/__iter__ in the shape gate, __ne__ in the resolved==supplied invariant). The lanes do not contradict each other -- lane A never probed subclasses, that not being its assigned angle."
       mechanism_note: "load-bearing override is __ne__, NOT __eq__. `resolved_trusted != trusted_ref_sha` puts the caller's object on the RIGHT, and python gives the reflected operation priority when the right operand's type is a proper subclass of the left's -- but the name looked up is __ne__, and str DEFINES its own __ne__, so an __eq__-only subclass inherits str.__ne__ and is compared by real content. Lane B's report claimed a single __eq__ override sufficed; that was verified false and corrected before the fix was designed, because it would have invited equality hardening instead of the correct fix. Minimal reproduced witness: one __ne__ override on an instance whose real content is an honest, genuinely resolvable 40-hex annotated-tag object sha -> authorized=True for an orphan commit that is an ancestor of nothing trusted."
       disposition: "P1 fixed_and_verified (type(value) is str exact-type gate replacing isinstance; RED->GREEN with 6 new witnesses incl. the end-to-end exploit). Mutation-tested both ways: reverting to isinstance fails all 5 subclass witnesses, and disabling the resolved==supplied invariant with the type gate intact still fails the plain-str annotated-tag case -- so the invariant remains INDEPENDENTLY necessary and no redundant equality machinery was added. Lane A P2s (forged-object-store reason-code collapse; unverified multi-pack-index in trusted_object_authority_v2.py) and lane B P2s (untyped BoundedGitError escape; a 40/64 docstring staleness) NOT absorbed here -- outside this diff or non-blocking, follow-up material."
-  qualification_status: correction_round_3_implemented_previous_exact_head_qualification_stale_by_construction   # codex + both fallback lanes must be re-run on the resulting head
-  codex_status: STALE_MUST_RERUN   # UNAVAILABLE_TO_REVIEW was established on 1f3f1b0 (two conclusive exact-head usage-limit responses, 16:32:30Z and 20:32:23Z); that determination does not carry to a new head
-  final_head: pending_round_3_head   # deliberately unpinned: this commit IS the round-3 correction, and pinning a sha it cannot yet know would be fabricated evidence
-  ci_status: pending_round_3_head   # green on 1f3f1b0; must be re-observed on the new head
-  disposition: ACTIVE_CRITICAL_PATH   # still blocks G5 wiring until qualified
-  blocking: true
-  caem_predecessor_search: NO_RELEVANT_CAEM_PREDECESSOR_FOUND   # ADR 0012/0014 adjacent, not this mechanism
-  successor_branch: fix/200-g1c2-f313-out-of-band-authorization-anchor
+  # axis C/D (current qualification + lifecycle), reconciled by #324:
+  # forge-derived only, never a literal head SHA/verdict copied into this
+  # document -- the round-3 entry above IS legitimately historical (it is
+  # already epoch-labelled by its own `round: 3` position and bound to the
+  # then-current head 1f3f1b0, itself since superseded); it must never be
+  # re-read as though it answered a CURRENT question. PR #317 merged as
+  # squash 78f616a2 during the round-3 slice above; that fact belongs to
+  # the forge, not to a value copied here.
+  qualification_status: FORGE_DERIVED
+  codex_status: FORGE_DERIVED
+  final_head: FORGE_DERIVED
+  ci_status: FORGE_DERIVED
+  disposition: FORGE_DERIVED
+  current_qualification_source: "issue #313 and its integrating PR are the sole current-state authority; do not copy a verdict here"
+  blocking: FORGE_DERIVED
+  caem_predecessor_search: NO_RELEVANT_CAEM_PREDECESSOR_FOUND   # ADR 0012/0014 adjacent, not this mechanism -- stable historical fact, not current state
+  successor_branch: fix/200-g1c2-f313-out-of-band-authorization-anchor   # HISTORICAL: the branch that became PR #317
   successor_pr: 317
   followup_issue: 319   # #200-G1C2-F3, caller-side ref-laundering via resolve_commit_v2, deferred until a live caller exists
-  next_gate: rerun_codex_and_both_fallback_lanes_on_round_3_head_then_coordinator_ready_and_merge_grant   # NOT Ready, NOT merge -- awaiting coordinator
+  next_gate: FORGE_DERIVED
 
 issue_319:
   title: "#200-G1C2-F3 — authorize_commit_for_execution_v2: no mechanism to prevent caller-side ref-laundering via resolve_commit_v2"
@@ -272,7 +292,9 @@ agentreview_property:
     tests_rederived: TODO
     authority_effect_in_aiops: none
     qualification_transferred: false
-    current_status: INTEGRATED_COMPLETED
+    # current_status intentionally NOT duplicated here -- Section 1's
+    # `disposition`/`current_qualification_source` for this same issue
+    # number is the sole lifecycle authority (#324).
 
   - issue: 304   # #200-G1D, architecture-only
     failure_class: write_side_symlink_interposition_during_materialization
@@ -285,7 +307,9 @@ agentreview_property:
     tests_rederived: TODO
     authority_effect_in_aiops: none
     qualification_transferred: false
-    current_status: OPEN_ARCHITECTURE_ONLY
+    # current_status intentionally NOT duplicated here -- Section 1's
+    # `disposition`/`current_qualification_source` for this same issue
+    # number is the sole lifecycle authority (#324).
 
   - issue: 301   # #200-G1B, architecture-only
     failure_class: import_time_trust_of_module.__file__
@@ -298,7 +322,9 @@ agentreview_property:
     tests_rederived: TODO
     authority_effect_in_aiops: none
     qualification_transferred: false
-    current_status: OPEN_ARCHITECTURE_ONLY
+    # current_status intentionally NOT duplicated here -- Section 1's
+    # `disposition`/`current_qualification_source` for this same issue
+    # number is the sole lifecycle authority (#324).
 
   - issue: 298   # #200-G3C, architecture-only
     failure_class: stored_identity_scalar_not_reverified_against_current_content
@@ -311,7 +337,9 @@ agentreview_property:
     tests_rederived: TODO
     authority_effect_in_aiops: none
     qualification_transferred: false
-    current_status: OPEN_ARCHITECTURE_ONLY
+    # current_status intentionally NOT duplicated here -- Section 1's
+    # `disposition`/`current_qualification_source` for this same issue
+    # number is the sole lifecycle authority (#324).
 
   - issue: 299   # #200-G2C, attempted/stopped
     failure_class: content_classification_over_open_domain
@@ -324,7 +352,9 @@ agentreview_property:
     tests_rederived: TODO
     authority_effect_in_aiops: none
     qualification_transferred: false
-    current_status: ATTEMPTED_STOPPED_SUCCESSOR_314_ACTIVE
+    # current_status intentionally NOT duplicated here -- Section 1's
+    # `disposition`/`current_qualification_source` for this same issue
+    # number is the sole lifecycle authority (#324).
 
   - issue: 314   # #200-G2C-C1, not started
     failure_class: exception_type_enumeration_over_C_level_parser
@@ -337,7 +367,9 @@ agentreview_property:
     tests_rederived: TODO
     authority_effect_in_aiops: none
     qualification_transferred: false
-    current_status: OPEN_NOT_STARTED
+    # current_status intentionally NOT duplicated here -- Section 1's
+    # `disposition`/`current_qualification_source` for this same issue
+    # number is the sole lifecycle authority (#324).
 
   - issue: 312   # F1, availability
     failure_class: unbounded_blocking_open_on_special_file
@@ -350,7 +382,9 @@ agentreview_property:
     tests_rederived: TODO
     authority_effect_in_aiops: none
     qualification_transferred: false
-    current_status: OPEN_NOT_STARTED
+    # current_status intentionally NOT duplicated here -- Section 1's
+    # `disposition`/`current_qualification_source` for this same issue
+    # number is the sole lifecycle authority (#324).
 
   - issue: 313   # F2, authorization-anchor semantics
     failure_class: trust_anchor_resolved_against_hostile_derived_store
@@ -363,7 +397,9 @@ agentreview_property:
     tests_rederived: TODO
     authority_effect_in_aiops: none
     qualification_transferred: false
-    current_status: OPEN_NOT_STARTED
+    # current_status intentionally NOT duplicated here -- Section 1's
+    # `disposition`/`current_qualification_source` for this same issue
+    # number is the sole lifecycle authority (#324).
 
   - issue: G5
     failure_class: n/a   # composition, not a single truth-maker
@@ -376,7 +412,9 @@ agentreview_property:
     tests_rederived: TODO
     authority_effect_in_aiops: none
     qualification_transferred: false
-    current_status: NOT_STARTED
+    # current_status intentionally NOT duplicated here -- Section 1's
+    # `disposition`/`current_qualification_source` for this same issue
+    # number is the sole lifecycle authority (#324).
 ```
 
 ## Process rule cross-reference
