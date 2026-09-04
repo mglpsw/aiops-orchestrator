@@ -1387,6 +1387,47 @@ class _ShapeLyingStr(str):
         return False
 
 
+class _ClassLyingNonSubclass:
+    """NOT a `str` subclass at all -- defeats `isinstance(value, str)` via
+    the `__class__` property rather than via inheritance. #322: every
+    existing witness above is a genuine `str` subclass, so the corpus pins
+    "not a subclass" rather than the actually-required property "exact
+    built-in `str`". `type(value) is str` (the shipped gate) is immune to
+    this; `isinstance(value, str)` and the semantically-plausible refactor
+    `value.__class__ is str` are both defeated by it -- see
+    `test_class_lying_non_subclass_would_defeat_isinstance_or___class___but_not_the_shipped_gate`
+    for the reproduced mutation proof."""
+
+    def __init__(self, v: str) -> None:
+        self._v = v
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return str
+
+    def __len__(self) -> int:
+        return len(self._v)
+
+    def __iter__(self) -> object:
+        return iter(self._v)
+
+    def __ne__(self, other: object) -> bool:
+        return False
+
+    def __str__(self) -> str:
+        # Load-bearing for the full end-to-end reproduction, not decoration:
+        # `resolve_commit_v2` builds its git argv via an f-string
+        # (`f"{ref}^{{commit}}"`), which calls `format(ref, "")` ->
+        # `object.__format__` -> `str(ref)`. Without this override that
+        # falls through to the default `object.__str__` repr, git receives
+        # a garbled non-hex argument, and the reproduction fails for an
+        # UNRELATED reason (rev-parse can't resolve garbage) rather than
+        # demonstrating the actual vulnerability. Returning the honest
+        # content here is what makes this a faithful adversarial object,
+        # not a weaker one.
+        return self._v
+
+
 def test_only_a_ne_override_defeats_the_invariant_eq_alone_does_not() -> None:
     """Pins the EXACT dispatch mechanism the fix is aimed at, because the
     obvious guess is wrong and a wrong finding description would invite a
@@ -1413,27 +1454,88 @@ def test_only_a_ne_override_defeats_the_invariant_eq_alone_does_not() -> None:
 
 
 @pytest.mark.parametrize(
-    "subclass",
-    [_NeOnlyStr, _EqAndNeStr, _EqOnlyStr, _ShapeLyingStr],
-    ids=["ne_only", "eq_and_ne", "eq_only", "shape_lying"],
+    "adversarial_type",
+    [_NeOnlyStr, _EqAndNeStr, _EqOnlyStr, _ShapeLyingStr, _ClassLyingNonSubclass],
+    ids=["ne_only", "eq_and_ne", "eq_only", "shape_lying", "class_lying_non_subclass"],
 )
 def test_str_subclass_trusted_ref_sha_is_refused_the_anchor_must_be_an_exact_str(
-    tmp_path: Path, subclass: type
+    tmp_path: Path, adversarial_type: type
 ) -> None:
-    """The trust anchor must be an EXACT built-in `str`, never a subclass.
+    """The trust anchor must be an EXACT built-in `str`, never a subclass
+    and never a non-subclass object that lies about its type via
+    `__class__` (#322).
 
-    A subclass passes `isinstance(value, str)` while redefining `__len__`,
-    `__iter__` and `__ne__` -- i.e. every operator the shape gate and the
-    resolved==supplied invariant are expressed in. The object being
-    validated must not be allowed to define what validation means.
-    Refused at the type gate, BEFORE resolution, with the typed reason code.
+    A `str` subclass passes `isinstance(value, str)` while redefining
+    `__len__`, `__iter__` and `__ne__` -- i.e. every operator the shape
+    gate and the resolved==supplied invariant are expressed in.
+    `_ClassLyingNonSubclass` is not even a subclass -- it defeats
+    `isinstance` purely via a `__class__` property override, proving the
+    gate must check the object's real type, not merely "not a str
+    subclass". The object being validated must not be allowed to define
+    what validation means. Refused at the type gate, BEFORE resolution,
+    with the typed reason code.
     """
     repo, base_sha = _toolrepo_fixture(tmp_path)
     with pytest.raises(ExecutedSourceIdentityError) as excinfo:
         authorize_commit_for_execution_v2(
             repo_root=repo,
             commit_sha=base_sha,
-            trusted_ref_sha=subclass(base_sha),  # type: ignore[arg-type]
+            trusted_ref_sha=adversarial_type(base_sha),  # type: ignore[arg-type]
+        )
+    assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2
+
+
+def test_class_lying_non_subclass_would_defeat_isinstance_or___class___but_not_the_shipped_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation-discrimination proof for #322: reproduces the exact
+    reviewer-invisible refactor this witness exists to catch.
+
+    `_ClassLyingNonSubclass` defeats `isinstance(value, str)` -- the
+    round-2 gate -- and would equally defeat the semantically-plausible
+    refactor `value.__class__ is str`, because both consult `__class__`
+    rather than the object's real type. Only `type(value) is str` (the
+    shipped gate) is immune. Proven here by temporarily monkeypatching
+    `_is_full_commit_sha_shape_v2` to each of the two vulnerable variants
+    and observing the exploit succeed, then confirming the shipped
+    function refuses the identical input.
+    """
+    repo, base_sha = _toolrepo_fixture(tmp_path)
+    liar = _ClassLyingNonSubclass(base_sha)
+
+    assert isinstance(liar, str) is True, "the exploit precondition: isinstance is fooled"
+    assert type(liar) is not str, "but the real type is not str"
+    assert liar.__class__ is str, "and __class__ is fooled too -- the refactor trap"
+
+    def shape_check_via_isinstance(value: object) -> bool:
+        if not isinstance(value, str):
+            return False
+        return len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
+    def shape_check_via_dunder_class(value: object) -> bool:
+        if value.__class__ is not str:
+            return False
+        return len(value) == 40 and all(c in "0123456789abcdef" for c in value)
+
+    for vulnerable_shape_check in (shape_check_via_isinstance, shape_check_via_dunder_class):
+        monkeypatch.setattr(
+            commit_derived_execution_identity_module,
+            "_is_full_commit_sha_shape_v2",
+            vulnerable_shape_check,
+        )
+        result = authorize_commit_for_execution_v2(
+            repo_root=repo, commit_sha=base_sha, trusted_ref_sha=liar  # type: ignore[arg-type]
+        )
+        assert result.authorized is True, (
+            f"{vulnerable_shape_check.__name__} was expected to be defeated by the "
+            "class-lying object -- if this assertion fails, the mutation stopped "
+            "reproducing the vulnerability this test exists to guard against"
+        )
+
+    monkeypatch.undo()
+    with pytest.raises(ExecutedSourceIdentityError) as excinfo:
+        authorize_commit_for_execution_v2(
+            repo_root=repo, commit_sha=base_sha, trusted_ref_sha=liar  # type: ignore[arg-type]
         )
     assert excinfo.value.reason_code == IDENTITY_TRUSTED_REF_NOT_A_SHA_REASON_V2
 
