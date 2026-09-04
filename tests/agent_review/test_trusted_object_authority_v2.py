@@ -1735,9 +1735,10 @@ def test_unix_domain_socket_at_commondir_is_refused_not_hung(tmp_path: Path) -> 
     to a filesystem path) -- a different non-regular inode shape than a FIFO, planted at the same
     probe site. `open(2)` on an `AF_UNIX` socket special file fails at the `open()` syscall itself
     (`ENXIO`, confirmed empirically on this platform) rather than succeeding and then failing the
-    `S_ISREG` fstat gate -- this module's existing generic `except OSError` branch in
-    `_try_open_file_no_follow_v2` refuses it there, still typed, still non-blocking, without ever
-    reaching the `fstat`/`S_ISREG` step."""
+    `S_ISREG` fstat gate -- the generic `except OSError` branch in
+    `_open_regular_file_no_follow_v2` (the shared choke point, reached here through the
+    `_try_open_file_no_follow_v2` probe wrapper) refuses it there as `ACQUISITION_FAILED`, still
+    typed, still non-blocking, without ever reaching the `fstat`/`S_ISREG` step."""
     repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
     socket_path = repo / ".git" / "commondir"
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -1970,7 +1971,7 @@ def test_type_classification_follows_the_open_fd_not_the_pathname(tmp_path: Path
     prose and enforced in code, but never witnessed.
 
     This test makes the path and the fd deliberately DISAGREE. The listed file is swapped
-    to a FIFO after `scandir` classified it (the round-2 race), the choke point opens that
+    to a FIFO after `scandir` classified it (the listing-to-open replacement race), the choke point opens that
     FIFO under `O_NONBLOCK` -- and then, before classification runs, the pathname is
     re-pointed at an ordinary regular file. The fd still refers to the FIFO. Classifying
     the FD refuses; classifying the PATHNAME would admit a special file as regular.

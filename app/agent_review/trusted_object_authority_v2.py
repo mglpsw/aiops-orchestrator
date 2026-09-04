@@ -124,14 +124,14 @@ open this module's fix addresses:
   through it -- a sufficiently pathological pack (e.g. adversarial delta
   chains) could make git's own parser run for a very long time,
   unbounded by this module. Not reproduced live (constructing a genuinely
-  pathological pack was judged out of proportion for this round);
+  pathological pack was judged out of proportion for this property);
   reasoned from code inspection only.
 - `_read_and_close_fd_charged_v2`'s `os.read` loop runs against a
   fd already confirmed `S_ISREG` by this fix -- but a "regular" file on a
   stalled network/FUSE mount can still put `read(2)` into an
   uninterruptible sleep on Linux, independent of `O_NONBLOCK` (already
   cleared before this read by design, once `S_ISREG` is confirmed). Not
-  reproducible in this round's sandbox (no `/dev/fuse`); reasoned, not
+  reproducible in this sandbox (no `/dev/fuse`); reasoned, not
   confirmed.
 
 Both are outside the specific "hostile checkout plants a special file at
@@ -227,13 +227,23 @@ TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2 = "trusted_object_author
 # call) -- never detected after the fact, never dependent on a separate,
 # earlier `is_symlink()` observation of the same pathname.
 TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2 = "trusted_object_authority_symlink_rejected"
-# G1C2-F1 (#312): a FIFO, socket, device, or any other non-regular special
-# file is refused via the SAME already-open fd its open() call produced
-# (`fstat` + `S_ISREG`, never a fresh path-based stat) -- see
-# `_try_open_file_no_follow_v2`. Distinct from `SYMLINK_REJECTED`: a
-# symlink is refused by `O_NOFOLLOW` at the `open()` call itself (`ELOOP`);
-# this reason is for a target that opened successfully (it was not a
-# symlink) but is not a genuine regular file either.
+# G1C2-F1 (#312): raised for a non-regular object that OPENED SUCCESSFULLY
+# and was then rejected by classifying the SAME already-open fd that
+# `open()` produced (`fstat` + `S_ISREG`, never a fresh path-based stat) --
+# see `_open_regular_file_no_follow_v2`, which owns that branch. A FIFO and
+# a device node take this path.
+#
+# Not every non-regular shape reaches it. An `AF_UNIX` socket fails at the
+# `open()` syscall itself with `ENXIO` (measured on this platform), so no fd
+# ever exists, `fstat` is never reached, and the generic `OSError` branch
+# refuses it as `ACQUISITION_FAILED` instead -- still typed, still
+# non-blocking, but a different reason code. Do not read this constant as
+# covering every special-file type by name.
+#
+# Distinct from `SYMLINK_REJECTED`: a symlink is refused by `O_NOFOLLOW` at
+# the `open()` call itself (`ELOOP`); this reason is for a target that
+# opened successfully (it was not a symlink) but is not a genuine regular
+# file either.
 TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2 = "trusted_object_authority_special_file_rejected"
 TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2 = "trusted_object_authority_alternate_rejected"
 TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2 = "trusted_object_authority_pack_verification_failed"
