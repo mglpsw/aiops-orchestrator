@@ -26,8 +26,12 @@ import hashlib
 import inspect
 import os
 import shutil
+import signal
+import socket
+import stat as stat_module
 import subprocess
 import tempfile
+import time
 import unittest.mock
 import zlib
 from pathlib import Path
@@ -47,12 +51,14 @@ from app.agent_review.git_commit_subject_v2 import (
     resolve_commit_v2,
 )
 from app.agent_review.trusted_object_authority_v2 import (
+    TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_BUDGET_EXCEEDED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_FORGED_CAPABILITY_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_OBJECT_HASH_MISMATCH_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_PACK_VERIFICATION_FAILED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_REPOSITORY_UNUSABLE_REASON_V2,
+    TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2,
     TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2,
     TrustedObjectAuthorityError,
     TrustedObjectAuthorityV2,
@@ -1508,3 +1514,507 @@ def test_racing_the_dotgit_classification_stat_still_refuses(tmp_path: Path) -> 
                 pytest.fail("should have refused the swapped .git")
     assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
     assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+
+
+# -- #312 (#200-G1C2-F1): bounded acquisition against hostile-planted special files ---------
+#
+# PROPERTY UNDER TEST (availability, not a trust-boundary break): acquisition must never
+# block indefinitely on an attacker-planted special file. Every untrusted, attacker-named
+# regular-file open in the module goes through ONE choke point,
+# `_open_regular_file_no_follow_v2` (see its own docstring), which opens with
+# `O_RDONLY | O_NOFOLLOW | O_NONBLOCK`, classifies via `os.fstat` on THE SAME OPENED FD,
+# requires `stat.S_ISREG`, and only then clears `O_NONBLOCK` and reads.
+#
+# The call sites it covers, named semantically rather than by line number (line numbers
+# drift; these names are stable and each maps to exactly one call site):
+#   metadata probes  -- `.git`-as-file linked-worktree probe, `commondir` probe,
+#                       `packed-refs` probe, `HEAD` bare-repository-root probe,
+#                       `HEAD` alternate-objects-sibling probe, `HEAD` final-copy probe,
+#                       `objects/info/alternates` probe
+#   bulk-data sites  -- loose-object, pack-file and loose-ref listed-file sites
+# Both former functions are thin wrappers over that single primitive. Unifying them is
+# load-bearing, not cosmetic: two separately-maintained copies of the same guard is the
+# "four fixed, two stragglers" shape that refuted the `#200-G1C` predecessor, where a fix
+# landed in one copy and not the other.
+#
+# WHAT THE FALSIFIERS BELOW ESTABLISH. Each load-bearing guard has at least one
+# non-vacuous discriminating witness -- dropping `O_NONBLOCK`, disabling the `S_ISREG`
+# refusal, and replacing the same-fd `os.fstat(fd)` with a fresh pathname-based
+# `os.stat(name, dir_fd=...)` each turn at least one test RED, the last of these via the
+# dedicated same-fd witness specifically. That per-guard discrimination is the property.
+# Exact witness totals are an observation of a particular mutation run, not a semantic
+# invariant of this corpus, and are deliberately not asserted here as though they were.
+#
+# One coverage limit, stated rather than left implicit: the `.git`-as-file linked-worktree
+# probe has no special-file witness that reaches the choke point, because a special file at
+# that path is intercepted earlier by the pre-existing classifying `os.stat` and refused on
+# a different path (`test_fifo_planted_as_dotgit_itself_is_refused_not_hung` exercises that
+# earlier path, not this one). The choke point does cover that site -- its regular-file
+# positive controls reach it -- but this corpus does not independently witness it there.
+#
+# CAEM predecessor search (mandatory per this project's standing rule before any new
+# mechanism): `mglpsw/caem`'s `tooling/launch_n5_replay_native.c` (`open_regular`,
+# `open_directory`) and ADR 0012 ("any symlink, special file, replacement, or metadata/content
+# race fails closed") already establish "open -> fstat the SAME fd -> require S_ISREG/S_ISDIR"
+# as a design reference for refusing a special file via an fd-anchored, TOCTOU-safe gate --
+# cited here as design reference only (this repo's CAEM pin has `authority_effect: none`, and
+# ADR 0012 lives past this repo's pin, `maturity: candidate, published: false`; no authority is
+# claimed). That predecessor's own C/Python implementations (`open_regular`/`open_directory`,
+# `replay_n5_bundle.py`, `launch_n5_replay.py`, `verify_n5_launcher_attestation.py`) do NOT use
+# `O_NONBLOCK` anywhere -- a repo-wide search for `O_NONBLOCK` across `mglpsw/caem` returns zero
+# hits. That predecessor closes "which type is this fd" (the TOCTOU-safe classification half of
+# this fix); it does NOT close "does opening this fd hang" (the availability half) --
+# `NO_RELEVANT_CAEM_PREDECESSOR_FOUND` for the non-blocking-acquisition-against-a-hostile-FIFO
+# property specifically. This module's fix composes both: `O_NONBLOCK` at open (the part with no
+# CAEM predecessor) plus fstat-same-fd-then-require-S_ISREG (the part ADR 0012 already
+# establishes as a design reference).
+#
+# Secondary finding from #312 (`TimeoutError` subclasses `OSError`, so a caller-side signal
+# watchdog's exception was swallowed and remapped to a generic `ACQUISITION_FAILED`): this fix
+# does not add a distinct timeout reason code. Reasoning, stated explicitly rather than silently
+# dropping the finding: `O_NONBLOCK` at `open()` means a FIFO with no writer (or any other
+# special file whose open would otherwise block) returns immediately -- there is no longer any
+# blocking syscall inside this module's probe path for an external watchdog to ever need to
+# interrupt in the first place. The `_open_and_expect_refusal_within_v2` helper below asserts
+# this positively (elapsed time near-instant, not merely "eventually raised") rather than taking
+# it on faith.
+
+
+def _bounded_by_signal_alarm_v2(seconds: int):
+    """Test-safety-net timeout only -- see this section's own docstring. The fix under test must
+    never need this to fire to pass; it exists so a regression turns into a fast, clear failure
+    instead of a CI run stuck forever. `TimeoutError` (the same class #312 names as swallowed by
+    this module's own `except OSError` handling) is raised from the signal handler; PEP 475 means
+    the interrupted syscall does not silently retry once the handler itself raises."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _cm():
+        def _on_alarm(signum, frame):
+            raise TimeoutError(
+                f"test exceeded its {seconds}s safety-net bound -- likely an unbounded "
+                "blocking open regression (#312)"
+            )
+
+        previous = signal.signal(signal.SIGALRM, _on_alarm)
+        signal.alarm(seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    return _cm()
+
+
+def _open_and_expect_refusal_within_v2(repo: Path, *, bound_seconds: float = 2.0) -> TrustedObjectAuthorityError:
+    """Opens `repo` through the real public entry point and asserts it raises a typed
+    `TrustedObjectAuthorityError` FAST -- not merely "eventually, rescued by the safety-net
+    alarm". A safety-net alarm roughly 4x the assertion bound backstops the test itself against
+    actually hanging if the fix regresses; the timing assertion is what proves the fix, not the
+    alarm."""
+    start = time.monotonic()
+    with _bounded_by_signal_alarm_v2(int(bound_seconds) + 6):
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            with open_trusted_object_authority_v2(repo):
+                pytest.fail("should have refused, not opened")
+    elapsed = time.monotonic() - start
+    assert elapsed < bound_seconds, (
+        f"acquisition took {elapsed:.2f}s -- a bounded, O_NONBLOCK-anchored open must refuse a "
+        "special file near-instantly, never rely on an external watchdog to rescue it (#312)"
+    )
+    return excinfo.value
+
+
+# -- site `commondir probe` ------------------------------------------------------------------
+
+
+def test_fifo_at_commondir_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    """`commondir` is an OPTIONAL probe run unconditionally against `git_dir_fd`, even for a
+    repository that is not a linked worktree at all (an ordinary repo simply doesn't have this
+    file, i.e. the probe already returns `None` here in the non-hostile case)."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    os.mkfifo(repo / ".git" / "commondir")
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- site `packed-refs probe` ----------------------------------------------------------------
+
+
+def test_fifo_at_packed_refs_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    os.mkfifo(repo / ".git" / "packed-refs")
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- site `HEAD bare-repository-root probe` -------------------------------------------
+
+
+def test_fifo_at_bare_repository_root_head_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    """Reached only when `repo_root` has no `.git` at all -- `repo_root` is itself the bare git
+    directory, and `HEAD` is probed directly against it before `objects` is even checked."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    bare = tmp_path / "bare.git"
+    subprocess.run(["git", "clone", "--quiet", "--bare", str(repo), str(bare)], check=True, capture_output=True)
+    (bare / "HEAD").unlink()
+    os.mkfifo(bare / "HEAD")
+
+    value = _open_and_expect_refusal_within_v2(bare)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- site `HEAD alternate-objects-sibling probe` ---------------------------------------
+
+
+def test_fifo_head_sibling_at_alternate_objects_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    """Mirrors `test_symlinked_head_sibling_does_not_fool_the_alternate_containment_check` but
+    with a FIFO instead of a symlink. `_looks_like_git_objects_directory_fd_v2` swallows any
+    `TrustedObjectAuthorityError` its own `HEAD`-sibling probe raises and reports "not a real
+    objects directory" (`ALTERNATE_REJECTED`) -- exactly as it already does for a symlinked
+    sibling. A FIFO here must be refused through that SAME typed, non-hanging path, not left to
+    block forever underneath it."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    ordinary_dir = tmp_path / "not_a_repository_fifo"
+    ordinary_dir.mkdir()
+    (ordinary_dir / "objects").mkdir()
+    os.mkfifo(ordinary_dir / "HEAD")
+
+    info_dir = repo / ".git" / "objects" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    (info_dir / "alternates").write_text(str(ordinary_dir / "objects") + "\n")
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_ALTERNATE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- site `HEAD final-copy probe` in `_copy_refs_fd_v2` ----------------------------------
+
+
+def test_fifo_at_head_final_copy_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    """The final `HEAD` read in `_copy_refs_fd_v2`, from `git_dir_fd` (identical to
+    `common_dir_fd` for this ordinary, non-worktree repository) -- reached only after objects,
+    `refs/heads`, `refs/tags`, and `packed-refs` have already copied cleanly, isolating this
+    exact call site from the other five."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    head_path = repo / ".git" / "HEAD"
+    head_path.unlink()
+    os.mkfifo(head_path)
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- site `objects/info/alternates probe` ------------------------------------------------------
+
+
+def test_fifo_at_alternates_file_probe_is_refused_not_hung(tmp_path: Path) -> None:
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    info_dir = repo / ".git" / "objects" / "info"
+    info_dir.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(info_dir / "alternates")
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- other special-file shapes -------------------------------------------------------------------
+
+
+def test_unix_domain_socket_at_commondir_is_refused_not_hung(tmp_path: Path) -> None:
+    """Socket special file, where representable on this platform (a real `AF_UNIX` socket bound
+    to a filesystem path) -- a different non-regular inode shape than a FIFO, planted at the same
+    probe site. `open(2)` on an `AF_UNIX` socket special file fails at the `open()` syscall itself
+    (`ENXIO`, confirmed empirically on this platform) rather than succeeding and then failing the
+    `S_ISREG` fstat gate -- this module's existing generic `except OSError` branch in
+    `_try_open_file_no_follow_v2` refuses it there, still typed, still non-blocking, without ever
+    reaching the `fstat`/`S_ISREG` step."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    socket_path = repo / ".git" / "commondir"
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock.bind(str(socket_path))
+        value = _open_and_expect_refusal_within_v2(repo)
+        assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+    finally:
+        sock.close()
+    _ = c3
+
+
+def test_char_device_special_file_at_commondir_is_refused_not_hung(tmp_path: Path) -> None:
+    """Device special file, constructed only if this sandbox has the privilege to `mknod` one
+    (typically requires `CAP_MKNOD`/root) -- skipped with a clear reason otherwise, per #312's
+    falsifier-corpus requirement. Mirrors `/dev/null`'s own `(major, minor)` -- a device that
+    never blocks on open/read/write by itself, chosen so this test cannot hang even if the fix
+    under test were somehow absent."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    device_path = repo / ".git" / "commondir"
+    try:
+        os.mknod(str(device_path), mode=0o600 | stat_module.S_IFCHR, device=os.makedev(1, 3))
+    except OSError as exc:
+        pytest.skip(f"cannot mknod a char-special file in this sandbox: {exc}")
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- regression: sites already correctly gated before this fix must remain unaffected -----------
+
+
+def test_fifo_planted_as_dotgit_itself_is_refused_not_hung(tmp_path: Path) -> None:
+    """Regression check for the site already gated BEFORE this fix (`.git`-as-file, the pre-existing classifying `os.stat`, NOT the choke point): a
+    `.git` FIFO is refused via the pre-existing classifying `os.stat` in
+    `_resolve_git_directories_fd_v2` -- neither `S_ISDIR` nor `S_ISREG` matches a FIFO, so control
+    never even reaches `_try_open_file_no_follow_v2` for `.git` itself. `os.stat` never blocks
+    regardless of the target's type, so this was already non-hanging on `master` before this fix
+    -- same as it already refuses a `.git` symlink. Included here to confirm this fix changes
+    nothing about that pre-existing behaviour."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    dotgit = repo / ".git"
+    shutil.rmtree(dotgit)
+    os.mkfifo(dotgit)
+
+    value = _open_and_expect_refusal_within_v2(repo)
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SYMLINK_REJECTED_REASON_V2
+    _ = c3
+
+
+# -- positive controls: a regular file at each site must still work exactly as before -----------
+
+
+def test_bare_repository_head_and_objects_probe_still_works(tmp_path: Path) -> None:
+    """Positive control for the bare-repository-root probe (site `HEAD bare-repository-root probe`) -- not previously
+    exercised anywhere in this corpus. Regular-file positive controls for the other five sites
+    already exist elsewhere in this file: `commondir` via
+    `test_linked_worktree_resolves_the_shared_object_store_not_the_private_worktree_dir`,
+    `packed-refs` via `test_packed_refs_with_ordinary_content_still_round_trips`, the
+    alternate-objects `HEAD` sibling (site `HEAD alternate-objects-sibling probe`) via
+    `test_legitimate_alternate_still_works_after_containment_check`, and the final `HEAD` read
+    (site `HEAD final-copy probe`) via every ordinary end-to-end test in this file, including
+    `test_ordinary_authorization_and_materialisation_still_work_end_to_end`."""
+    repo, c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    bare = tmp_path / "bare.git"
+    subprocess.run(["git", "clone", "--quiet", "--bare", str(repo), str(bare)], check=True, capture_output=True)
+
+    result = authorize_commit_for_execution_v2(repo_root=bare, commit_sha=c1, trusted_ref_sha=c3)
+    assert result.authorized is True
+
+
+# -- bulk-data listed-file sites (formerly `_open_listed_file_no_follow_v2`) ---------------------
+#
+# These three sites are reached only via a `scandir`-derived `entry.is_file(follow_symlinks=
+# False)` classification hint immediately followed by the open -- a STATIC FIFO placed at any of
+# these paths is filtered out by that classification before the open is ever attempted (a FIFO
+# is not a regular file, so `is_file()` is already `False`), so the falsifier here must be a
+# genuine RACE: classify as regular, THEN swap to a FIFO, THEN open -- exactly the "listing-to-
+# open replacement" shape the module's own docstring already claims is closed. Each test hooks
+# the shared module-level entry point at the exact moment between classification and open (the
+# same technique already established in this file by
+# `test_racing_the_dotgit_classification_stat_still_refuses`), performs the swap for real, then
+# delegates to the genuine implementation -- so what runs afterward is the real production code
+# path, not a simulated one.
+
+
+def test_racing_loose_object_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
+    """Loose-object listed-file site -- a loose object file, swapped to a FIFO after `scandir`'s
+    `is_file(follow_symlinks=False)` classification but before
+    `_open_regular_file_no_follow_v2` (via the `_open_listed_file_no_follow_v2` entry point)
+    opens it."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+
+    loose_object = None
+    objects_dir = repo / ".git" / "objects"
+    for fanout in sorted(objects_dir.iterdir()):
+        if fanout.is_dir() and len(fanout.name) == 2:
+            for candidate in sorted(fanout.iterdir()):
+                loose_object = candidate
+                break
+        if loose_object is not None:
+            break
+    assert loose_object is not None, "fixture did not produce a loose object -- test is not RED-valid"
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    real_open_listed = authority_module._open_listed_file_no_follow_v2  # noqa: SLF001
+    swap_done = {"value": False}
+
+    def hooked_open_listed(dir_fd: int, name: str) -> int:
+        if not swap_done["value"] and name == loose_object.name:
+            swap_done["value"] = True
+            loose_object.unlink()
+            os.mkfifo(loose_object)
+        return real_open_listed(dir_fd, name)
+
+    with unittest.mock.patch.object(authority_module, "_open_listed_file_no_follow_v2", hooked_open_listed):
+        value = _open_and_expect_refusal_within_v2(repo)
+    assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_racing_pack_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
+    """Pack-file listed-file site -- a pack file, swapped to a FIFO after classification but before
+    open, in a real `git repack`-produced pack directory (same fixture shape as
+    `test_legitimate_repacked_history_still_works`)."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    subprocess.run(["git", "repack", "-a", "-d", "--quiet"], cwd=repo, check=True, capture_output=True)
+    pack_files = sorted((repo / ".git" / "objects" / "pack").glob("*.pack"))
+    assert pack_files, "fixture did not actually produce a pack -- test is not RED-valid"
+    target = pack_files[0]
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    real_open_listed = authority_module._open_listed_file_no_follow_v2  # noqa: SLF001
+    swap_done = {"value": False}
+
+    def hooked_open_listed(dir_fd: int, name: str) -> int:
+        if not swap_done["value"] and name == target.name:
+            swap_done["value"] = True
+            target.unlink()
+            os.mkfifo(target)
+        return real_open_listed(dir_fd, name)
+
+    with unittest.mock.patch.object(authority_module, "_open_listed_file_no_follow_v2", hooked_open_listed):
+        value = _open_and_expect_refusal_within_v2(repo)
+    assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_racing_ref_file_listing_to_open_with_a_fifo_still_refuses(tmp_path: Path) -> None:
+    """Loose-ref listed-file site -- a loose ref file (`refs/heads/main`), swapped to a FIFO after
+    classification but before open, via `_walk_regular_files_fd_v2`."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    ref_file = repo / ".git" / "refs" / "heads" / "main"
+    assert ref_file.is_file(), "fixture did not produce a loose ref file -- test is not RED-valid"
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    real_open_listed = authority_module._open_listed_file_no_follow_v2  # noqa: SLF001
+    swap_done = {"value": False}
+
+    def hooked_open_listed(dir_fd: int, name: str) -> int:
+        if not swap_done["value"] and name == ref_file.name:
+            swap_done["value"] = True
+            ref_file.unlink()
+            os.mkfifo(ref_file)
+        return real_open_listed(dir_fd, name)
+
+    with unittest.mock.patch.object(authority_module, "_open_listed_file_no_follow_v2", hooked_open_listed):
+        value = _open_and_expect_refusal_within_v2(repo)
+    assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
+
+
+def test_racing_listed_file_disappearing_entirely_still_refuses_not_returns_none(tmp_path: Path) -> None:
+    """Regression check on the vanished-listed-file behaviour the unification preserves: a
+    file observed via `scandir` that has vanished entirely (not swapped to a FIFO, just deleted)
+    by the time the shared primitive opens it must still be `ACQUISITION_FAILED`, never silently
+    treated as `None`/"was never there".
+
+    Scope of what this witness actually proves, stated narrowly on purpose: it pins the
+    OBSERVABLE outcome (a typed `ACQUISITION_FAILED`), not the internal mechanism that
+    produces it. It does NOT independently discriminate `missing_is_legitimate=False` from
+    `missing_is_legitimate=True` at this call shape, because `_open_listed_file_no_follow_v2`
+    carries its own `if fd is None: raise ACQUISITION_FAILED` guard that emits the identical
+    reason code -- flipping the parameter alone leaves this test green. The two are mutually
+    redundant by design, which is why the guard is worth keeping: with the parameter flipped
+    it is what converts an otherwise UNTYPED `TypeError` (from `os.close(None)`) into a typed
+    refusal. Do not read this test as a mutation witness for the parameter itself."""
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    ref_file = repo / ".git" / "refs" / "heads" / "main"
+    assert ref_file.is_file()
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    real_open_listed = authority_module._open_listed_file_no_follow_v2  # noqa: SLF001
+    swap_done = {"value": False}
+
+    def hooked_open_listed(dir_fd: int, name: str) -> int:
+        if not swap_done["value"] and name == ref_file.name:
+            swap_done["value"] = True
+            ref_file.unlink()
+        return real_open_listed(dir_fd, name)
+
+    with unittest.mock.patch.object(authority_module, "_open_listed_file_no_follow_v2", hooked_open_listed):
+        with pytest.raises(TrustedObjectAuthorityError) as excinfo:
+            with open_trusted_object_authority_v2(repo):
+                pytest.fail("should have refused the vanished ref file")
+    assert swap_done["value"] is True, "fixture assumption violated: the swap hook never fired"
+    assert excinfo.value.reason_code == TRUSTED_OBJECT_AUTHORITY_ACQUISITION_FAILED_REASON_V2
+    _ = c3
+
+
+def test_type_classification_follows_the_open_fd_not_the_pathname(tmp_path: Path) -> None:
+    """Pins the same-fd classification invariant itself, which no other witness in this
+    corpus discriminates.
+
+    `_open_regular_file_no_follow_v2` classifies with `os.fstat(fd)` -- the fd it just
+    opened -- and never with a fresh pathname-based `stat`. That is the whole TOCTOU
+    argument: a pathname can be re-pointed between the open and the classification, an
+    open fd cannot. Every other test here plants a special file and leaves it there, so
+    the path and the fd always agree and a pathname-based `stat` would answer identically.
+    Replacing `os.fstat(fd)` with `os.stat(name, dir_fd=dir_fd, follow_symlinks=False)`
+    therefore leaves the rest of the corpus fully green -- the invariant was claimed in
+    prose and enforced in code, but never witnessed.
+
+    This test makes the path and the fd deliberately DISAGREE. The listed file is swapped
+    to a FIFO after `scandir` classified it (the round-2 race), the choke point opens that
+    FIFO under `O_NONBLOCK` -- and then, before classification runs, the pathname is
+    re-pointed at an ordinary regular file. The fd still refers to the FIFO. Classifying
+    the FD refuses; classifying the PATHNAME would admit a special file as regular.
+    """
+    repo, _c1, _c2, c3 = _linear_history_fixture(tmp_path)
+    ref_file = repo / ".git" / "refs" / "heads" / "main"
+    assert ref_file.is_file(), "fixture did not produce the ref file -- test is not RED-valid"
+
+    import app.agent_review.trusted_object_authority_v2 as authority_module
+
+    real_os_open = os.open
+    state = {"swapped_to_fifo": False, "repointed_to_regular": False}
+
+    def hooked_os_open(path, flags, mode=0o777, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        fd = real_os_open(path, flags, mode, dir_fd=dir_fd)
+        # Only for the one attacker-named target, and only once: re-point the PATHNAME at
+        # an ordinary regular file while the returned fd still refers to the FIFO.
+        if state["swapped_to_fifo"] and not state["repointed_to_regular"] and path == ref_file.name:
+            state["repointed_to_regular"] = True
+            ref_file.unlink()
+            ref_file.write_text("an ordinary regular file, planted after the open\n")
+        return fd
+
+    real_open_listed = authority_module._open_listed_file_no_follow_v2  # noqa: SLF001
+
+    def hooked_open_listed(dir_fd: int, name: str) -> int:
+        if not state["swapped_to_fifo"] and name == ref_file.name:
+            state["swapped_to_fifo"] = True
+            ref_file.unlink()
+            os.mkfifo(ref_file)
+        return real_open_listed(dir_fd, name)
+
+    with unittest.mock.patch.object(authority_module, "_open_listed_file_no_follow_v2", hooked_open_listed):
+        with unittest.mock.patch.object(os, "open", hooked_os_open):
+            value = _open_and_expect_refusal_within_v2(repo)
+
+    assert state["swapped_to_fifo"] is True, "fixture assumption violated: the FIFO swap never fired"
+    assert state["repointed_to_regular"] is True, (
+        "fixture assumption violated: the pathname was never re-pointed after the open -- "
+        "this test would pass vacuously, exactly like the corpus it exists to strengthen"
+    )
+    assert ref_file.is_file() and not ref_file.is_fifo(), (
+        "fixture assumption violated: the pathname does not resolve to a regular file at "
+        "classification time, so a pathname-based stat would not have been fooled"
+    )
+    assert value.reason_code == TRUSTED_OBJECT_AUTHORITY_SPECIAL_FILE_REJECTED_REASON_V2
+    _ = c3
