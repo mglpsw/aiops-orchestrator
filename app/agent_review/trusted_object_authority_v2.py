@@ -447,10 +447,13 @@ def _open_regular_file_no_follow_v2(dir_fd: int, name: str, *, missing_is_legiti
     swallowed-by-`except OSError` finding does not get its own new reason
     code here: there is nothing left in this function for a watchdog to
     ever need to interrupt). `fstat` never blocks regardless of the fd's
-    underlying file type. If the fd is not a genuine regular file (a FIFO,
-    socket, device, or anything else `S_ISREG` rejects), it is closed and
+    underlying file type. If the fd is not a genuine regular file (a FIFO, a
+    device node, or anything else `S_ISREG` rejects), it is closed and
     refused via `SPECIAL_FILE_REJECTED` WITHOUT ever calling `os.read` on
-    it. `O_NONBLOCK` is cleared only once `S_ISREG` is confirmed, so every
+    it. An `AF_UNIX` socket never reaches this branch -- `open()` fails
+    first with `ENXIO`, so no fd exists to classify; see
+    `SPECIAL_FILE_REJECTED`'s own comment for that distinction.
+    `O_NONBLOCK` is cleared only once `S_ISREG` is confirmed, so every
     downstream reader (`_read_and_close_fd_charged_v2`) keeps assuming an
     ordinary blocking regular-file read, unchanged.
 
