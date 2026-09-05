@@ -33,6 +33,7 @@ asserts that by reading the module's own source.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import re
 from pathlib import Path
@@ -51,6 +52,7 @@ from app.agent_review.sgaq_admission_v2 import (
     build_canonical_authority_plan_v2,
     decide_admission_v2,
     recognise_representation_class_v2,
+    verify_plan_digest_v2,
 )
 
 # --------------------------------------------------------------------------
@@ -393,21 +395,81 @@ def test_a_changed_claim_profile_changes_the_plan_identity() -> None:
 # --------------------------------------------------------------------------
 
 
-def test_building_a_plan_does_not_widen_the_contract_that_produced_it() -> None:
-    """No same-run widening: a carrier observed during run N cannot be added to
-    run N's contract. Asserted structurally, by equality of the contract before
-    and after, not by inspecting the implementation."""
-    contract = _contract()
-    before = (
-        contract.contract_id,
-        contract.claim_profile,
-        contract.toolchain,
-    )
-    build_canonical_authority_plan_v2([_loose(), _future_carrier()], contract)
-    assert (contract.contract_id, contract.claim_profile, contract.toolchain) == before
+def test_the_declared_domain_cannot_be_widened_or_narrowed_after_construction() -> None:
+    """The anti-widening guard, rewritten because the first one was vacuous.
 
-    with pytest.raises((AttributeError, TypeError)):
-        contract.contract_id = "widened"  # type: ignore[misc]
+    It snapshotted `(contract_id, claim_profile, toolchain)` and compared them
+    afterwards -- but `claim_profile` is the same object, so the comparison was
+    reflexive and held even after `R_B` had been widened and a carrier had
+    flipped from `observed_not_consumed` to `admitted_source`. The test named as
+    the structural guard could not fail.
+
+    This one snapshots a VALUE, and mutates the caller's own mapping to attempt
+    both directions of ADR 0015's prohibition.
+    """
+    live = {claim: frozenset({"pack_payload"}) for claim in _SUPPORTED_CLAIMS}
+    contract = AdmissionContractV2(
+        contract_id="sgaq-s0-admission-v1",
+        claim_profile=SupportedGitClaimProfileV2(
+            profile_id="mutable-source-v1",
+            claims=frozenset(_SUPPORTED_CLAIMS),
+            required_classes=live,
+        ),
+        toolchain=_toolchain(),
+    )
+    before_names = contract.claim_profile.required_class_names()
+    before_disposition = decide_admission_v2(_loose(), contract)
+
+    live["resolve_exact_oid"] = frozenset({"loose_object_payload", "pack_payload"})
+
+    assert contract.claim_profile.required_class_names() == before_names, (
+        "the caller's mapping widened R_B after construction"
+    )
+    assert decide_admission_v2(_loose(), contract) is before_disposition
+    assert before_disposition is AdmissionDispositionV2.OBSERVED_NOT_CONSUMED
+
+
+def test_meeting_an_unadmittable_requirement_then_deleting_it_does_not_produce_a_plan() -> None:
+    """Retrospective NARROWING, which is the prohibition stated verbatim.
+
+    "Encountering a representation the consumer does not recognize and then
+    shrinking the domain retrospectively is forbidden."
+    """
+    live = {
+        claim: frozenset({"loose_object_payload", "pack_payload", "cannot_be_admitted"})
+        for claim in _SUPPORTED_CLAIMS
+    }
+    contract = AdmissionContractV2(
+        contract_id="sgaq-s0-admission-v1",
+        claim_profile=SupportedGitClaimProfileV2(
+            profile_id="p", claims=frozenset(_SUPPORTED_CLAIMS), required_classes=live
+        ),
+        toolchain=_toolchain(),
+    )
+    first = build_canonical_authority_plan_v2([_pack()], contract)
+    assert first.completeness is PlanCompletenessV2.UNKNOWN_REQUIRED_BLOCKED
+
+    for claim in _SUPPORTED_CLAIMS:                      # shrink the domain
+        live[claim] = frozenset({"loose_object_payload", "pack_payload"})
+
+    second = build_canonical_authority_plan_v2([_pack()], contract)
+    assert second.completeness is PlanCompletenessV2.UNKNOWN_REQUIRED_BLOCKED
+    assert second.plan_digest == first.plan_digest
+
+
+def test_a_claim_with_no_declared_representation_classes_is_refused_at_construction() -> None:
+    """An unmapped claim used to contribute the empty set, so a plan could assert
+    totality over a claim whose requirements had never been stated."""
+    with pytest.raises(ValueError, match="no declared representation classes"):
+        SupportedGitClaimProfileV2(
+            profile_id="p", claims=frozenset({"prove_ancestry"}), required_classes={}
+        )
+    with pytest.raises(ValueError, match="non-empty"):
+        SupportedGitClaimProfileV2(
+            profile_id="p",
+            claims=frozenset({"prove_ancestry"}),
+            required_classes={"prove_ancestry": frozenset()},
+        )
 
 
 def test_production_never_enumerates_historical_carrier_names() -> None:
@@ -443,6 +505,12 @@ def test_the_admissible_class_vocabulary_is_closed_and_small() -> None:
         "observed_not_consumed",
         "unknown_required",
         "forbidden",
+        "insufficient_evidence",
+    }
+    assert {member.value for member in PlanCompletenessV2} == {
+        "complete_for_supported_domain",
+        "unknown_required_blocked",
+        "no_admitted_payload",
     }
 
 
@@ -453,7 +521,7 @@ def test_every_observation_receives_exactly_one_disposition() -> None:
         _observe("HEAD", prefix=b"ref: refs/heads/x\n"),
         _observe("config", prefix=b"[core]\n"),
         _observe("objects/info/whatever", prefix=b"\x00"),
-        _observe(_LOOSE_LOCATION, kind=GitEntryKindV2.SYMLINK, prefix=_ZLIB),
+        _observe("objects/bb/" + "b" * 38, kind=GitEntryKindV2.SYMLINK, prefix=_ZLIB),
         _observe("objects", kind=GitEntryKindV2.DIRECTORY),
     ]
     plan = build_canonical_authority_plan_v2(observations, _contract())
@@ -475,3 +543,134 @@ def test_a_plan_retains_only_bounded_metadata_for_what_it_refused() -> None:
     assert not hasattr(refused, "payload")
     assert refused.content_digest == carrier.content_digest
     assert re.fullmatch(r"[0-9a-f]{64}", refused.content_digest)
+
+
+# ---------------------------------------- findings from independent review --
+#
+# Each of these reproduces a verdict two review lanes obtained from the first
+# version of this contract.
+
+
+def test_the_generated_skeleton_is_a_repository_and_not_a_discovery_fallback() -> None:
+    """The worst finding: the skeleton the plan specified was NOT a repository.
+
+    Measured on git 2.39.5: `is_git_directory()` is a three-way AND over HEAD,
+    objects and refs. A store carrying only HEAD and refs/ fails it, so a tool
+    run inside it searches upward and binds to whatever encloses it -- which is
+    the round-9 escape this module exists to close, reproduced from an
+    incomplete skeleton rather than from a copied carrier.
+    """
+    plan = build_canonical_authority_plan_v2([_loose(), _pack()], _contract())
+    assert {entry.location for entry in plan.generated} == {"HEAD", "objects/", "refs/"}
+
+
+def test_a_pack_payload_outside_a_pack_location_is_not_admitted() -> None:
+    """`AdmittedPayloadV2.location` is the only location the plan carries, so an
+    unconstrained one is a placement instruction written by whoever wrote the
+    store -- a carrier legitimate in one place becoming operational elsewhere."""
+    for hostile in ("/etc/cron.d/pwn", "../../../../home/victim/.ssh/authorized_keys", ""):
+        assert decide_admission_v2(_observe(hostile, prefix=_PACK), _contract()) is (
+            AdmissionDispositionV2.FORBIDDEN
+        ), hostile
+    for ordinary in ("config", "hooks/pre-commit", "packed-refs"):
+        assert decide_admission_v2(_observe(ordinary, prefix=_PACK), _contract()) is (
+            AdmissionDispositionV2.OBSERVED_NOT_CONSUMED
+        ), ordinary
+
+
+def test_an_object_format_the_profile_did_not_declare_blocks_instead_of_vanishing() -> None:
+    """A stock `git init --object-format=sha256` store had every loose payload
+    silently dropped while the plan claimed totality. The accepted id length now
+    comes from the contract, so an unrepresentable store blocks; and a profile
+    that declares the format serves it."""
+    sha256_object = _observe(f"objects/4d/{'a' * 62}", prefix=_ZLIB)
+    assert decide_admission_v2(sha256_object, _contract()) is (
+        AdmissionDispositionV2.UNKNOWN_REQUIRED
+    )
+    assert build_canonical_authority_plan_v2([sha256_object], _contract()).completeness is (
+        PlanCompletenessV2.UNKNOWN_REQUIRED_BLOCKED
+    )
+
+    declared = AdmissionContractV2(
+        contract_id="sgaq-s0-admission-v1",
+        claim_profile=SupportedGitClaimProfileV2(
+            profile_id="both-formats-v1",
+            claims=frozenset(_SUPPORTED_CLAIMS),
+            required_classes={
+                claim: frozenset({"loose_object_payload", "pack_payload"})
+                for claim in _SUPPORTED_CLAIMS
+            },
+            object_formats=frozenset({"sha1", "sha256"}),
+        ),
+        toolchain=_toolchain(),
+    )
+    assert decide_admission_v2(sha256_object, declared) is AdmissionDispositionV2.ADMITTED_SOURCE
+
+
+def test_an_empty_admitted_set_is_vacuous_rather_than_complete() -> None:
+    """A `git clone -s` store holds no payload of its own. Calling that
+    "complete" is how a silent over-refusal looks exactly like success."""
+    assert build_canonical_authority_plan_v2([], _contract()).completeness is (
+        PlanCompletenessV2.NO_ADMITTED_PAYLOAD
+    )
+
+
+def test_observations_from_two_snapshots_cannot_be_fused_into_one_plan() -> None:
+    """A plan is a single-snapshot decision. Two stores used to fuse silently,
+    producing a byte-identical plan identity."""
+    other = dataclasses.replace(_pack(), snapshot_id="a-different-store")
+    with pytest.raises(ValueError, match="single-snapshot"):
+        build_canonical_authority_plan_v2([_loose(), other], _contract())
+    assert build_canonical_authority_plan_v2([_loose(), _pack()], _contract()).snapshot_id == (
+        _SNAPSHOT
+    )
+
+
+def test_two_observations_claiming_one_location_are_refused() -> None:
+    """The plan cannot state both, and choosing one resolves ambiguity by
+    preference. It also made the digest depend on caller iteration order."""
+    with pytest.raises(ValueError, match="same location"):
+        build_canonical_authority_plan_v2(
+            [_loose(), _observe(_LOOSE_LOCATION, kind=GitEntryKindV2.SYMLINK, prefix=_ZLIB)],
+            _contract(),
+        )
+
+
+def test_a_plan_digest_can_be_recomputed_and_covers_what_the_plan_asserts() -> None:
+    """A digest nobody downstream can recompute is a claim on trust.
+
+    `verification_obligation` sat outside the preimage, so a plan could be
+    edited to say no verification was required and still validate.
+    """
+    plan = build_canonical_authority_plan_v2([_loose(), _pack()], _contract())
+    assert verify_plan_digest_v2(plan, _contract())
+
+    forged = dataclasses.replace(
+        plan,
+        admitted=(
+            dataclasses.replace(plan.admitted[0], verification_obligation="no verification"),
+        )
+        + plan.admitted[1:],
+    )
+    assert not verify_plan_digest_v2(forged, _contract())
+
+
+def test_an_admitted_payload_always_carries_a_content_binding() -> None:
+    """A payload with no digest cannot carry a verification obligation, so
+    admitting it would create an obligation nobody can discharge."""
+    unpinned = dataclasses.replace(_pack(), content_digest=None)
+    assert decide_admission_v2(unpinned, _contract()) is (
+        AdmissionDispositionV2.INSUFFICIENT_EVIDENCE
+    )
+
+
+def test_a_blocked_plan_still_records_the_structural_verdict_per_observation() -> None:
+    """A blocked contract used to stamp `unknown_required` over everything,
+    destroying the per-observation verdicts exactly when an operator needs
+    them to diagnose the block."""
+    contract = _contract(extra_required=frozenset({"a_class_this_contract_cannot_admit"}))
+    symlink = _observe("objects/cc/" + "c" * 38, kind=GitEntryKindV2.SYMLINK, prefix=_ZLIB)
+    plan = build_canonical_authority_plan_v2([_loose(), symlink], contract)
+    assert plan.completeness is PlanCompletenessV2.UNKNOWN_REQUIRED_BLOCKED
+    verdicts = {entry.location: entry.disposition for entry in plan.not_consumed}
+    assert verdicts[symlink.location] is AdmissionDispositionV2.FORBIDDEN
