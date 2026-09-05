@@ -53,7 +53,7 @@ def _mutations() -> list[tuple[str, str, str, str]]:
             '        )\n',
             '    if selection.exit_status in (4, 5):\n'
             '        return (MutationOutcome.KILLED, "scored as a kill")\n',
-            "test_a_nodeid_that_does_not_exist_is_invalid_selector_not_killed",
+            "test_every_observation_maps_to_exactly_one_outcome",
         ),
         (
             "collection failure (structured branch): score it as a behavioural kill",
@@ -63,7 +63,7 @@ def _mutations() -> list[tuple[str, str, str, str]]:
             '            f"{list(selection.infrastructure_errors)}",\n'
             '        )\n',
             '        return (MutationOutcome.KILLED, "scored as a kill")\n',
-            "test_a_collection_error_is_not_a_behavioural_kill",
+            "test_every_observation_maps_to_exactly_one_outcome",
         ),
         (
             "collection failure (exit-2 fallback): score it as a behavioural kill",
@@ -74,10 +74,10 @@ def _mutations() -> list[tuple[str, str, str, str]]:
             "test_every_observation_maps_to_exactly_one_outcome",
         ),
         (
-            "infrastructure error: accept it in place of a behavioural failure",
-            "    if selection.behavioural_failures:\n",
-            "    if selection.behavioural_failures or selection.infrastructure_errors:\n",
-            "test_an_infrastructure_error_alone_is_not_a_behavioural_kill",
+            "infrastructure error: score it as a behavioural kill",
+            '    if selection.infrastructure_errors:\n        return (\n            MutationOutcome.INFRA_FAILURE,\n            f"only infrastructure errors, no behavioural failure: "\n            f"{list(selection.infrastructure_errors)}",\n        )\n',
+            '    if selection.infrastructure_errors:\n        return (MutationOutcome.KILLED, "scored as a kill")\n',
+            "test_an_infrastructure_error_caused_by_the_mutation_is_not_a_behavioural_kill",
         ),
         (
             "occurrence-count proof: accept an edit landing at undeclared sites",
@@ -103,6 +103,51 @@ def _mutations() -> list[tuple[str, str, str, str]]:
             "    for relative_path, expected in expected_subject_digests.items():\n",
             "    for relative_path, expected in {}.items():\n",
             "test_every_observation_maps_to_exactly_one_outcome",
+        ),
+        (
+            "baseline proof: stop running the oracle against the pristine subject",
+            "    refusal = prove_oracle_green_at_base(mutation, tree=tree, tmpdir=tmpdir)\n",
+            "    refusal = None\n",
+            "test_an_oracle_red_before_the_mutation_cannot_score_a_kill",
+        ),
+        (
+            "baseline green check: accept an oracle that already fails",
+            "    if baseline.behavioural_failures or baseline.infrastructure_errors:\n",
+            "    if False:\n",
+            "test_an_oracle_red_before_the_mutation_cannot_score_a_kill",
+        ),
+        (
+            "baseline skip check: call a skipped oracle a bad selector",
+            "        if baseline.skipped_nodeids:\n",
+            "        if False:\n",
+            "test_a_skipped_oracle_is_not_reported_as_a_survivor",
+        ),
+        (
+            "rootdir confinement: let the child hoist rootdir out of the tree",
+            '            f"--rootdir={Path(tree).resolve()}",\n'
+            '            f"--confcutdir={Path(tree).resolve()}",\n',
+            "",
+            "test_a_conftest_above_the_tree_cannot_manufacture_a_kill",
+        ),
+        (
+            "subject matching: go back to an unanchored endswith",
+            "                if Path(filename).resolve() != target:\n",
+            "                if not filename.endswith(rel):\n",
+            "test_a_file_whose_name_merely_ends_with_the_subject_is_not_the_subject",
+        ),
+        (
+            "oracle attribution: credit the mutation with any failure in the run",
+            "            if not declared_nodeids or _matches_declared(observed, declared_nodeids)\n",
+            "            if True\n",
+            "test_a_failure_outside_the_declared_oracle_is_not_a_kill",
+        ),
+        (
+            "skip parsing: count a skipped testcase as executed",
+            "            if case.find(\"skipped\") is not None:\n"
+            "                skipped.append(nodeid)\n"
+            "                continue\n",
+            "",
+            "test_a_skipped_oracle_is_not_reported_as_a_survivor",
         ),
     ]
 

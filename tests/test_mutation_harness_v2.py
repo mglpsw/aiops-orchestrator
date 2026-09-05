@@ -129,15 +129,42 @@ def test_a_collection_error_is_not_a_behavioural_kill(tmp_path: Path) -> None:
     assert result.outcome is MutationOutcome.COLLECTION_FAILURE, result.detail
 
 
-def test_an_infrastructure_error_alone_is_not_a_behavioural_kill(tmp_path: Path) -> None:
+def test_an_oracle_broken_before_the_mutation_is_refused_not_scored(tmp_path: Path) -> None:
+    """A fixture that raises makes the oracle red at base, so nothing is measured.
+
+    This used to report INFRA_FAILURE, which was too generous: it described the
+    mutated run as if the mutated run were the thing that broke. The oracle was
+    already broken, and that is a statement about the corpus entry.
+    """
+    tree = _synthetic_tree(tmp_path, oracle="infra")
+    result = harness.run_mutation(Mutation(**_REAL_MUTATION), tree=tree, tmpdir=tmp_path)
+    assert result.outcome is MutationOutcome.ORACLE_NOT_GREEN_AT_BASE, result.detail
+
+
+def test_an_infrastructure_error_caused_by_the_mutation_is_not_a_behavioural_kill(
+    tmp_path: Path,
+) -> None:
     """The case pytest's exit status genuinely cannot separate.
 
     A failing fixture and a failing assertion BOTH exit 1 -- measured. Only the
     structured report distinguishes `<error>` from `<failure>`, which is why the
-    harness reads it instead of the exit status.
+    harness reads it instead of the exit status. Here the oracle is green at
+    base and the mutation itself breaks the fixture, so the run is attributable
+    and still must not be a kill.
     """
-    tree = _synthetic_tree(tmp_path, oracle="infra")
-    result = harness.run_mutation(Mutation(**_REAL_MUTATION), tree=tree, tmpdir=tmp_path)
+    tree = _synthetic_tree(tmp_path)
+    (tree / "test_subject.py").write_text(
+        "import pytest\nfrom subject import admit\n\n"
+        "@pytest.fixture\n"
+        "def prepared():\n"
+        "    return admit(1)\n\n"
+        "def test_negative_is_refused(prepared):\n"
+        "    assert prepared == 1\n"
+    )
+    breaking = dict(_REAL_MUTATION)
+    breaking["old"] = "    return value\n"
+    breaking["new"] = "    raise RuntimeError('the mutation broke the fixture')\n"
+    result = harness.run_mutation(Mutation(**breaking), tree=tree, tmpdir=tmp_path)
     assert result.outcome is MutationOutcome.INFRA_FAILURE, result.detail
     assert result.selection is not None
     assert result.selection.exit_status == 1, "the exit status alone would have said 'kill'"
@@ -283,6 +310,151 @@ def test_the_harness_run_is_immune_to_a_stale_cache_in_the_tree(tmp_path: Path) 
     assert selection.imported_subject_digests.get("subject.py") == on_disk
 
 
+# ------------------------------------------- findings from independent review --
+#
+# Every test below reproduces a verdict two independent review lanes obtained
+# from this instrument before it was corrected. Each one was a KILLED, a
+# SURVIVED or a misattributed digest that the instrument had not earned.
+
+
+def test_an_oracle_red_before_the_mutation_cannot_score_a_kill(tmp_path: Path) -> None:
+    """The finding that made every other guard beside the point.
+
+    Nothing ran the oracle against the pristine subject, so a test that was
+    already failing -- for a pre-existing bug, or an environment gate -- was
+    converted into a kill for a mutation it never examined.
+    """
+    tree = _synthetic_tree(tmp_path)
+    (tree / "test_subject.py").write_text(
+        "from subject import admit\n\n"
+        "def test_negative_is_refused():\n"
+        "    assert admit(1) == 999   # false on the pristine subject too\n"
+    )
+    result = harness.run_mutation(Mutation(**_REAL_MUTATION), tree=tree, tmpdir=tmp_path)
+    assert result.outcome is MutationOutcome.ORACLE_NOT_GREEN_AT_BASE, result.detail
+
+
+def test_a_conftest_above_the_tree_cannot_manufacture_a_kill(tmp_path: Path) -> None:
+    """pytest walks UP for rootdir, and loads every conftest down to the tree.
+
+    Reproduced: a conftest outside the tree injecting a failure turned an inert,
+    comment-only mutation into a reported kill, and silently re-prefixed the
+    recorded nodeids to `tree.test_subject::...`. `--rootdir`/`--confcutdir`
+    close it. The tree here has no pytest.ini, which is what every direct
+    caller of `run_selection` looks like.
+    """
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    (tmp_path / "conftest.py").write_text(
+        "import pytest\n\n"
+        "@pytest.hookimpl(hookwrapper=True)\n"
+        "def pytest_runtest_call(item):\n"
+        "    outcome = yield\n"
+        "    raise AssertionError('injected from outside the tree')\n"
+    )
+    tree = _synthetic_tree(tmp_path)
+    inert = dict(_REAL_MUTATION)
+    inert["old"] = "    return value\n"
+    inert["new"] = "    return value  # inert\n"
+    result = harness.run_mutation(Mutation(**inert), tree=tree, tmpdir=tmp_path)
+    assert result.outcome is MutationOutcome.SURVIVED, result.detail
+    assert result.selection is not None
+    assert not result.selection.executed_nodeids[0].startswith("tree."), (
+        f"rootdir hoisted: {result.selection.executed_nodeids}"
+    )
+
+
+def test_a_failure_outside_the_declared_oracle_is_not_attributed_to_the_mutation(
+    tmp_path: Path,
+) -> None:
+    """A file-level selector let any red test in that file score the kill.
+
+    Here the declared oracle passes and an unrelated test fails. The run is
+    refused rather than credited, and because the unrelated test is red at base
+    it is refused there first -- which is the honest place to notice it.
+    """
+    tree = _synthetic_tree(tmp_path)
+    (tree / "test_subject.py").write_text(
+        "from subject import admit\n\n"
+        "def test_the_declared_oracle_that_does_not_discriminate():\n"
+        "    assert admit(1) == 1\n\n"
+        "def test_something_unrelated_and_already_broken():\n"
+        "    assert False\n"
+    )
+    file_level = dict(_REAL_MUTATION)
+    file_level["nodeids"] = ("test_subject.py",)
+    result = harness.run_mutation(Mutation(**file_level), tree=tree, tmpdir=tmp_path)
+    assert result.outcome is not MutationOutcome.KILLED, result.detail
+    assert result.outcome is MutationOutcome.ORACLE_NOT_GREEN_AT_BASE, result.detail
+
+
+def test_a_skipped_oracle_is_not_reported_as_a_survivor(tmp_path: Path) -> None:
+    """A skipped test observed nothing, so `SURVIVED` would be a fabricated hole.
+
+    The previous detail string said "the oracle passed against the mutated
+    subject" for an oracle that never ran -- a false statement, and exactly the
+    shape a degraded CI environment produces.
+    """
+    tree = _synthetic_tree(tmp_path)
+    (tree / "test_subject.py").write_text(
+        "import pytest\nfrom subject import admit\n\n"
+        "@pytest.mark.skipif(True, reason='an environment gate')\n"
+        "def test_negative_is_refused():\n"
+        "    with pytest.raises(ValueError):\n"
+        "        admit(-1)\n"
+    )
+    result = harness.run_mutation(Mutation(**_REAL_MUTATION), tree=tree, tmpdir=tmp_path)
+    assert result.outcome is MutationOutcome.ORACLE_SKIPPED, result.detail
+
+
+def test_a_file_whose_name_merely_ends_with_the_subject_is_not_the_subject(
+    tmp_path: Path,
+) -> None:
+    """`endswith` had no path boundary, so `xsubject.py` claimed `subject.py`.
+
+    The harness's own convention is a collision -- `test_subject.py` ends with
+    `subject.py` -- so which module won depended on `sys.modules` order, and the
+    detail string reported another file's digest under the subject's name.
+    """
+    tree = _synthetic_tree(tmp_path)
+    (tree / "xsubject.py").write_text("# inert, but its name ends with 'subject.py'\n")
+    (tree / "conftest.py").write_text("import xsubject\n")
+    result = harness.run_mutation(Mutation(**_REAL_MUTATION), tree=tree, tmpdir=tmp_path)
+    assert result.outcome is MutationOutcome.KILLED, result.detail
+
+
+def test_a_subject_the_oracle_never_exercises_is_not_killed(tmp_path: Path) -> None:
+    """The digest guard proves a file was imported, not that the oracle ran it.
+
+    Here the declared subject is imported only by `conftest.py` while the oracle
+    exercises a pristine copy. The mutation genuinely survives, and the
+    instrument must not read the conftest's import as coverage.
+    """
+    tree = _synthetic_tree(tmp_path)
+    (tree / "conftest.py").write_text("import subject\n")
+    package = tree / "sub"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "subject.py").write_text((tree / "subject.py").read_text())
+    (tree / "test_subject.py").write_text(
+        "import pytest\nfrom sub.subject import admit\n\n"
+        "def test_negative_is_refused():\n"
+        "    with pytest.raises(ValueError):\n"
+        "        admit(-1)\n"
+    )
+    result = harness.run_mutation(Mutation(**_REAL_MUTATION), tree=tree, tmpdir=tmp_path)
+    assert result.outcome is MutationOutcome.SURVIVED, result.detail
+
+
+def test_the_child_reports_the_configuration_it_actually_resolved(tmp_path: Path) -> None:
+    """rootdir hoisting changed nodeids silently; it is now in the record."""
+    tree = _synthetic_tree(tmp_path)
+    selection = harness.run_selection(
+        ("test_subject.py::test_negative_is_refused",),
+        tree=tree, subjects=["subject.py"], tmpdir=tmp_path,
+    )
+    assert Path(selection.rootdir).resolve() == tree.resolve(), selection.rootdir
+
+
 def test_a_materialisation_starts_with_no_bytecode(tmp_path: Path) -> None:
     """The structural half of the stale-cache defence: a tree that never held a
     cache cannot serve one."""
@@ -326,10 +498,27 @@ _EXPECTED = {"s.py": "d" * 64}
         ({"exit_status": 5, "executed_nodeids": ()}, MutationOutcome.INVALID_SELECTOR),
         ({"exit_status": 4, "executed_nodeids": ()}, MutationOutcome.INVALID_SELECTOR),
         ({"exit_status": 2, "executed_nodeids": ()}, MutationOutcome.COLLECTION_FAILURE),
+        # exit 4 WITH a recorded <error>: the structured branch, which exists
+        # because a named nodeid in an unimportable module exits 4, not 2.
+        ({"exit_status": 4, "executed_nodeids": ("t::a",),
+          "infrastructure_errors": ("t::a",)}, MutationOutcome.COLLECTION_FAILURE),
         ({"exit_status": 1, "infrastructure_errors": ("t::a",)}, MutationOutcome.INFRA_FAILURE),
         ({"stale_bytecode_detected": ("s.py",)}, MutationOutcome.INFRA_FAILURE),
-        ({"imported_subject_digests": {}}, MutationOutcome.INFRA_FAILURE),
+        ({"imported_subject_digests": {}}, MutationOutcome.SUBJECT_NOT_EXERCISED),
         ({"imported_subject_digests": {"s.py": "e" * 64}}, MutationOutcome.INFRA_FAILURE),
+        # The ordering rows. Without these the identity checks could be moved
+        # below the KILLED return and the whole suite would stay green while
+        # `classify` scored a run that executed the wrong bytes -- measured.
+        ({"exit_status": 1, "behavioural_failures": ("t::a",),
+          "imported_subject_digests": {"s.py": "e" * 64}}, MutationOutcome.INFRA_FAILURE),
+        ({"exit_status": 1, "behavioural_failures": ("t::a",),
+          "imported_subject_digests": {}}, MutationOutcome.SUBJECT_NOT_EXERCISED),
+        ({"exit_status": 1, "behavioural_failures": ("t::a",),
+          "executed_code_mismatch": ("s.py",)}, MutationOutcome.INFRA_FAILURE),
+        ({"exit_status": 1, "behavioural_failures": ("t::a",),
+          "ambiguous_subjects": ("s.py",)}, MutationOutcome.AMBIGUOUS_SUBJECT),
+        ({"exit_status": 0, "executed_nodeids": (), "skipped_nodeids": ("t::a",)},
+         MutationOutcome.ORACLE_SKIPPED),
         ({"executed_nodeids": (), "exit_status": 0}, MutationOutcome.INVALID_SELECTOR),
         ({"exit_status": 3, "executed_nodeids": ("t::a",)}, MutationOutcome.INFRA_FAILURE),
     ],
@@ -345,6 +534,34 @@ def test_every_observation_maps_to_exactly_one_outcome(overrides, expected) -> N
     assert outcome is expected
 
 
+def test_a_failure_outside_the_declared_oracle_is_not_a_kill() -> None:
+    """Attribution, isolated from the baseline check that also happens to catch it.
+
+    Two tests run; the declared oracle passes and another fails. Crediting the
+    mutation with that failure is how a file-level selector let an unrelated red
+    test score a kill.
+    """
+    selection = _selection(
+        exit_status=1,
+        executed_nodeids=("test_m::declared", "test_m::other"),
+        behavioural_failures=("test_m::other",),
+    )
+    outcome, detail = harness.classify(
+        selection,
+        expected_subject_digests=_EXPECTED,
+        declared_nodeids=("test_m.py::declared",),
+    )
+    assert outcome is MutationOutcome.INFRA_FAILURE, detail
+
+    killed, _ = harness.classify(
+        _selection(exit_status=1, executed_nodeids=("test_m::declared",),
+                   behavioural_failures=("test_m::declared",)),
+        expected_subject_digests=_EXPECTED,
+        declared_nodeids=("test_m.py::declared",),
+    )
+    assert killed is MutationOutcome.KILLED, "the declared oracle failing IS a kill"
+
+
 def test_killed_requires_a_behavioural_failure_and_nothing_else_does() -> None:
     """`KILLED` is the only outcome that asserts something about the subject."""
     killers = [
@@ -353,6 +570,15 @@ def test_killed_requires_a_behavioural_failure_and_nothing_else_does() -> None:
             {"exit_status": 1, "behavioural_failures": ("t::a",)},
             {"exit_status": 1, "infrastructure_errors": ("t::a",)},
             {"exit_status": 2}, {"exit_status": 4}, {"exit_status": 5},
+            {"exit_status": 1, "behavioural_failures": ("t::a",),
+             "imported_subject_digests": {"s.py": "e" * 64}},
+            {"exit_status": 1, "behavioural_failures": ("t::a",),
+             "imported_subject_digests": {}},
+            {"exit_status": 1, "behavioural_failures": ("t::a",),
+             "executed_code_mismatch": ("s.py",)},
+            {"exit_status": 1, "behavioural_failures": ("t::a",),
+             "ambiguous_subjects": ("s.py",)},
+            {"exit_status": 0, "executed_nodeids": (), "skipped_nodeids": ("t::a",)},
         )
         if harness.classify(_selection(**overrides), expected_subject_digests=_EXPECTED)[0]
         is MutationOutcome.KILLED

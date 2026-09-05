@@ -21,9 +21,16 @@ and adds the classification an in-process monkeypatch does not need.
 
 THE PROPERTY
 
-    A mutation is KILLED **iff** the intended mutated subject and the intended,
-    non-empty oracle both actually executed, and the oracle discriminated the
-    mutation behaviourally.
+    A mutation is KILLED **iff** the declared oracle passed against the pristine
+    subject, then failed behaviourally against the mutated subject, in a test
+    the mutation itself nominated, having demonstrably loaded the mutated bytes.
+
+The first clause is the one that took two independent review lanes to find. An
+earlier version required only that *a* behavioural failure occurred in a run
+that had imported the subject -- which cannot tell "the oracle failed BECAUSE of
+the mutation" from "the oracle was already failing". Every pre-existing or
+environment-class red in a declared nodeid was silently converted into a kill.
+Nothing ran the oracle against the unmutated subject at all.
 
 Everything that is not that is a different outcome with a different name. In
 particular a generic non-zero exit status is NOT a kill, and this is measured
@@ -36,6 +43,11 @@ WHAT AN INSTRUMENT LIKE THIS GETS WRONG
 
 Each guard below exists because the failure mode was reproduced first, in this
 repository, on this interpreter:
+
+* **An oracle that was already red.** Nothing in a mutated run distinguishes a
+  test failing because the guard is gone from one that was failing anyway. The
+  oracle is therefore run against the pristine subject first, and an entry whose
+  oracle is not green there is refused rather than scored.
 
 * **Stale bytecode.** Rewriting a source file with the *same size* inside one
   mtime tick leaves CPython's `(mtime, size)` invalidation satisfied, so a child
@@ -62,7 +74,30 @@ repository, on this interpreter:
 * **A restore that is not byte-identical.** Every later entry in the run is then
   measuring an unknown subject.
 
+WHAT THE ENVIRONMENT HAS TO BE CONFINED AGAINST
+
+pytest searches *upward* from the tree for `pytest.ini`/`pyproject.toml` and
+then loads every `conftest.py` between that rootdir and the tree. Reproduced: a
+conftest outside the tree turned an inert, comment-only mutation into a reported
+kill, and re-prefixed the recorded nodeids without saying so. `--rootdir` and
+`--confcutdir` pin both to the tree. The production path happened to be safe
+only because a materialised repository carries its own `pytest.ini`; every
+direct caller of `run_selection` was not.
+
 WHAT THIS INSTRUMENT STILL DOES NOT PROVE
+
+The digest check proves the declared subject file was imported by *someone* in
+the child process, not that the declared oracle exercised it -- a `conftest.py`
+importing the subject satisfies it. What closes the false-kill route is the
+baseline requirement, not the digest: if the oracle never touches the mutated
+code, mutating it cannot make a green oracle fail. The digest remains useful
+evidence of identity and nothing more, and is documented as that rather than as
+proof of coverage.
+
+Bytecode immunity is not universal either. `zipimport` ignores
+`sys.pycache_prefix`, so a stale `.pyc` inside a zip can execute under a fresh
+prefix. Such a module has a `__file__` ending in `.pyc`, so the probe does not
+match it and the run degrades to a refusal rather than a false kill.
 
 It does not prove the oracle is *sufficient* -- only that it discriminated this
 mutation. It does not prove the mutation is *faithful* to a defect anyone would
@@ -111,6 +146,11 @@ class MutationOutcome(enum.Enum):
     COLLECTION_FAILURE = "collection_failure"
     INFRA_FAILURE = "infra_failure"
     RESTORE_FAILURE = "restore_failure"
+    # Added after independent review reproduced a KILLED for each of these.
+    ORACLE_NOT_GREEN_AT_BASE = "oracle_not_green_at_base"
+    ORACLE_SKIPPED = "oracle_skipped"
+    SUBJECT_NOT_EXERCISED = "subject_not_exercised"
+    AMBIGUOUS_SUBJECT = "ambiguous_subject"
 
 
 class MutationHarnessError(AssertionError):
@@ -136,6 +176,23 @@ class SelectionResult:
     infrastructure_errors: tuple[str, ...]
     imported_subject_digests: dict[str, str]
     stale_bytecode_detected: tuple[str, ...]
+    #: Tests pytest reported as `<skipped>`. They are NOT in `executed_nodeids`:
+    #: a skipped oracle did not run, and reporting it as a survivor states
+    #: something about the subject that was never observed.
+    skipped_nodeids: tuple[str, ...] = ()
+    #: Subjects whose resident code objects disagree with a fresh compile of the
+    #: bytes on disk. This replaces an `(mtime, size)` header comparison that was
+    #: measured to be unreachable: the per-run cache prefix means `__cached__`
+    #: never exists, and the fixture that does reproduce the defect makes
+    #: `(mtime, size)` agree on purpose.
+    executed_code_mismatch: tuple[str, ...] = ()
+    #: Subjects matched by more than one resident module. Ambiguity is refused,
+    #: not resolved by preference.
+    ambiguous_subjects: tuple[str, ...] = ()
+    #: What the child actually resolved as its configuration, so rootdir
+    #: hoisting is visible in the record instead of silently changing nodeids.
+    rootdir: str = ""
+    configfile: str = ""
 
     @property
     def selected_count(self) -> int:
@@ -172,57 +229,105 @@ class MutationResult:
 # --------------------------------------------------------------------------
 
 _PROBE_PLUGIN = '''
-"""Injected into the child so the run reports what it actually imported.
+"""Injected into the child so the run reports what it actually EXECUTED.
 
 Written by the harness, never checked in as a fixture: it has to describe the
 subjects of *this* run.
+
+Two things here were rebuilt after independent review reproduced a false kill
+against the previous version:
+
+* Matching was `filename.endswith(rel)`, which has no path-separator boundary.
+  `test_subject.py` ends with `subject.py`, so the harness's own naming
+  convention was a collision, and whichever module `sys.modules` happened to
+  hold first won. Matching is now by resolved path against the tree, and every
+  match is collected rather than the first one winning.
+
+* Staleness was an `(mtime, size)` header comparison, which is unreachable here
+  (the per-run cache prefix means `__cached__` never exists) and blind anyway to
+  the one fixture that reproduces the defect, which makes `(mtime, size)` agree
+  on purpose. It is replaced by comparing the code objects actually resident in
+  the module against a fresh compile of the bytes on disk.
 """
-import hashlib, json, os, struct, sys
+import hashlib, json, os, sys, types
 from pathlib import Path
 
 _SUBJECTS = json.loads(os.environ["AR_MUTATION_SUBJECTS"])
 _OUT = os.environ["AR_MUTATION_PROBE_OUT"]
+_TREE = Path(os.environ["AR_MUTATION_TREE"])
 
 
-def _pyc_is_stale(source: Path, cached: str | None) -> bool:
-    """Does a cached bytecode file claim to describe bytes the source no longer has?
+def _resident_code(module, path):
+    """`co_code` of every function/class body defined in this module, by name."""
+    out = {}
+    for name, value in vars(module).items():
+        code = getattr(value, "__code__", None)
+        if code is None and isinstance(value, type):
+            continue
+        if code is None:
+            continue
+        if code.co_filename != str(path):
+            continue
+        out[name] = hashlib.sha256(code.co_code).hexdigest()
+    return out
 
-    CPython validates `(mtime, size)`. Both can agree while the content differs,
-    which is exactly the reproduced defect; comparing them here reports the
-    condition the child is actually subject to rather than assuming it away.
-    """
-    if not cached or not os.path.exists(cached):
-        return False
+
+def _fresh_code(path):
+    """The same mapping, compiled from the bytes on disk right now."""
     try:
-        with open(cached, "rb") as fh:
-            header = fh.read(16)
-        if len(header) < 16:
-            return True
-        flags, mtime, size = struct.unpack("<III", header[4:16])
-        if flags & 0b1:  # hash-based pyc: (mtime, size) carry no meaning
-            return False
-        st = source.stat()
-        return not (mtime == int(st.st_mtime) & 0xFFFFFFFF and size == st.st_size & 0xFFFFFFFF)
+        source = path.read_bytes()
     except OSError:
-        return True
+        return None
+    try:
+        module = types.ModuleType("_ar_fresh")
+        module.__dict__["__file__"] = str(path)
+        exec(compile(source, str(path), "exec"), module.__dict__)  # noqa: S102
+    except Exception:
+        return None
+    return _resident_code(module, path)
 
 
 def pytest_sessionfinish(session, exitstatus):
-    digests, stale = {}, []
+    digests, mismatched, ambiguous = {}, [], []
     for rel in _SUBJECTS:
+        target = (_TREE / rel).resolve()
+        matches = []
         for module in list(sys.modules.values()):
             filename = getattr(module, "__file__", None)
-            if not filename or not filename.endswith(rel.replace("/", os.sep)):
+            if not filename:
                 continue
-            path = Path(filename)
             try:
-                digests[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+                if Path(filename).resolve() != target:
+                    continue
             except OSError:
                 continue
-            if _pyc_is_stale(path, getattr(module, "__cached__", None)):
-                stale.append(rel)
-            break
-    Path(_OUT).write_text(json.dumps({"digests": digests, "stale": sorted(set(stale))}))
+            matches.append(module)
+        if not matches:
+            continue
+        if len(matches) > 1:
+            ambiguous.append(rel)
+        module = matches[0]
+        try:
+            digests[rel] = hashlib.sha256(target.read_bytes()).hexdigest()
+        except OSError:
+            continue
+        resident = _resident_code(module, target)
+        fresh = _fresh_code(target)
+        # Only a positive disagreement counts. If the source cannot be compiled
+        # in isolation (imports, side effects) `fresh` is None and this claims
+        # nothing, rather than inventing a mismatch it did not observe.
+        if resident and fresh is not None and fresh and resident != fresh:
+            mismatched.append(rel)
+
+    config = getattr(session, "config", None)
+    Path(_OUT).write_text(json.dumps({
+        "digests": digests,
+        "stale": [],
+        "code_mismatch": sorted(set(mismatched)),
+        "ambiguous": sorted(set(ambiguous)),
+        "rootdir": str(getattr(config, "rootpath", "")) if config else "",
+        "configfile": str(getattr(config, "inipath", "") or "") if config else "",
+    }))
 '''
 
 
@@ -283,6 +388,7 @@ def run_selection(
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPYCACHEPREFIX": str(pycache),
         "PYTHONPATH": str(run_dir),
+        "AR_MUTATION_TREE": str(Path(tree).resolve()),
         "AR_MUTATION_SUBJECTS": json.dumps(list(subjects)),
         "AR_MUTATION_PROBE_OUT": str(probe_out),
     }
@@ -292,6 +398,13 @@ def run_selection(
             *nodeids,
             "-q", "-p", "no:randomly", "-p", "no:cacheprovider",
             "-p", "ar_mutation_probe",
+            # Without these the child walks UP from `tree` looking for
+            # pytest.ini/pyproject.toml and loads every conftest.py between the
+            # hoisted rootdir and the tree. Reproduced: a conftest ABOVE the
+            # tree injecting a failure turned an inert, comment-only mutation
+            # into a reported kill, and silently re-prefixed the nodeids.
+            f"--rootdir={Path(tree).resolve()}",
+            f"--confcutdir={Path(tree).resolve()}",
             f"--junit-xml={junit}",
         ],
         cwd=tree,
@@ -303,39 +416,91 @@ def run_selection(
     executed: list[str] = []
     failures: list[str] = []
     errors: list[str] = []
+    skipped: list[str] = []
     if junit.exists():
         root = ET.parse(junit).getroot()
         suite = root if root.tag == "testsuite" else root.find("testsuite")
         for case in [] if suite is None else suite.iter("testcase"):
             nodeid = f"{case.get('classname', '')}::{case.get('name', '')}"
-            executed.append(nodeid)
             if case.find("failure") is not None:
                 failures.append(nodeid)
             if case.find("error") is not None:
                 errors.append(nodeid)
+            if case.find("skipped") is not None:
+                skipped.append(nodeid)
+                continue
+            # One test that fails and then errors in teardown emits TWO
+            # <testcase> records, so counting records counts that test twice.
+            if nodeid not in executed:
+                executed.append(nodeid)
 
     probe = json.loads(probe_out.read_text()) if probe_out.exists() else {}
     return SelectionResult(
         exit_status=completed.returncode,
         executed_nodeids=tuple(executed),
-        behavioural_failures=tuple(failures),
-        infrastructure_errors=tuple(errors),
+        behavioural_failures=tuple(dict.fromkeys(failures)),
+        infrastructure_errors=tuple(dict.fromkeys(errors)),
         imported_subject_digests=dict(probe.get("digests", {})),
         stale_bytecode_detected=tuple(probe.get("stale", ())),
+        skipped_nodeids=tuple(dict.fromkeys(skipped)),
+        executed_code_mismatch=tuple(probe.get("code_mismatch", ())),
+        ambiguous_subjects=tuple(probe.get("ambiguous", ())),
+        rootdir=str(probe.get("rootdir", "")),
+        configfile=str(probe.get("configfile", "")),
     )
+
+
+def junit_key(nodeid: str) -> str:
+    """A declared pytest nodeid in the form the JUnit report uses.
+
+    pytest writes `classname="pkg.module" name="test_x"`, not the nodeid it was
+    given. Without this the harness can never compare what it ASKED to run
+    against what ran -- which is how a file-level selector let an unrelated,
+    already-broken test in the same file score the kill.
+    """
+    path, _, name = nodeid.partition("::")
+    module = path[:-3] if path.endswith(".py") else path
+    module = module.replace("/", ".").replace(os.sep, ".")
+    return f"{module}::{name}" if name else module
+
+
+def _matches_declared(observed: str, declared: Sequence[str]) -> bool:
+    """Is `observed` (a JUnit `classname::name`) covered by a declared selector?"""
+    for nodeid in declared:
+        key = junit_key(nodeid)
+        if "::" in key:
+            if observed == key:
+                return True
+        elif observed.split("::", 1)[0] == key:
+            return True
+    return False
 
 
 def classify(
     selection: SelectionResult,
     *,
     expected_subject_digests: dict[str, str],
+    declared_nodeids: Sequence[str] = (),
 ) -> tuple[MutationOutcome, str]:
     """Turn one observed run into exactly one outcome.
 
     Pure, so it can be exercised without running pytest at all, and ordered so
     that every way of *not* having measured the subject is ruled out before a
-    kill can be returned.
+    kill can be returned. The ordering is load-bearing, not stylistic: moving
+    the identity checks below the KILLED return was measured to produce a kill
+    for a run that executed the wrong bytes, with the whole suite still green.
     """
+    if selection.ambiguous_subjects:
+        return (
+            MutationOutcome.AMBIGUOUS_SUBJECT,
+            f"more than one resident module claims {list(selection.ambiguous_subjects)}",
+        )
+    if selection.executed_code_mismatch:
+        return (
+            MutationOutcome.INFRA_FAILURE,
+            f"executed code disagrees with the source on disk for "
+            f"{list(selection.executed_code_mismatch)}",
+        )
     if selection.stale_bytecode_detected:
         return (
             MutationOutcome.INFRA_FAILURE,
@@ -361,13 +526,38 @@ def classify(
             f"pytest exit {selection.exit_status}: no intended test was executed",
         )
     if selection.selected_count == 0:
+        if selection.skipped_nodeids:
+            return (
+                MutationOutcome.ORACLE_SKIPPED,
+                f"every selected test was skipped: {list(selection.skipped_nodeids)}",
+            )
         return (MutationOutcome.INVALID_SELECTOR, "no test executed")
+
+    # The declared oracle must be the thing that ran. A skipped oracle has not
+    # observed the subject at all, so reporting it as a survivor would state
+    # something about the subject that was never measured.
+    if declared_nodeids:
+        for observed in selection.skipped_nodeids:
+            if _matches_declared(observed, declared_nodeids):
+                return (
+                    MutationOutcome.ORACLE_SKIPPED,
+                    f"the declared oracle was skipped: {observed}",
+                )
+        if not any(
+            _matches_declared(observed, declared_nodeids)
+            for observed in selection.executed_nodeids
+        ):
+            return (
+                MutationOutcome.INVALID_SELECTOR,
+                f"none of the declared nodeids ran; executed "
+                f"{list(selection.executed_nodeids)}",
+            )
 
     for relative_path, expected in expected_subject_digests.items():
         actual = selection.imported_subject_digests.get(relative_path)
         if actual is None:
             return (
-                MutationOutcome.INFRA_FAILURE,
+                MutationOutcome.SUBJECT_NOT_EXERCISED,
                 f"the run never imported the mutated subject {relative_path}",
             )
         if actual != expected:
@@ -377,10 +567,20 @@ def classify(
             )
 
     if selection.behavioural_failures:
-        return (
-            MutationOutcome.KILLED,
-            f"behavioural failure in {list(selection.behavioural_failures)}",
-        )
+        # A failure somewhere in the run is not a kill. It has to be a failure of
+        # a test this mutation nominated as its oracle, or the mutation is being
+        # credited with damage it may not have caused.
+        attributable = [
+            observed for observed in selection.behavioural_failures
+            if not declared_nodeids or _matches_declared(observed, declared_nodeids)
+        ]
+        if not attributable:
+            return (
+                MutationOutcome.INFRA_FAILURE,
+                f"behavioural failures, but none in the declared oracle: "
+                f"{list(selection.behavioural_failures)}",
+            )
+        return (MutationOutcome.KILLED, f"behavioural failure in {attributable}")
     if selection.infrastructure_errors:
         return (
             MutationOutcome.INFRA_FAILURE,
@@ -413,10 +613,83 @@ class _NotApplied(Exception):
     """Internal: the edit could not be made as declared."""
 
 
+def prove_oracle_green_at_base(
+    mutation: Mutation, *, tree: Path, tmpdir: Path
+) -> tuple[MutationOutcome, str] | None:
+    """Run the declared oracle against the PRISTINE subject. Returns a refusal, or None.
+
+    This is the check whose absence made every other guard beside the point.
+    Without it `classify` cannot tell "the oracle failed BECAUSE of the mutation"
+    from "the oracle was already failing", so any pre-existing or
+    environment-class red in a declared nodeid was silently converted into a
+    kill -- reproduced, with an oracle that never touched the mutated guard.
+
+    It also discharges the obligation to prove, before executing anything, that
+    the selector collects and selects a non-zero number of tests.
+    """
+    baseline = run_selection(
+        mutation.nodeids, tree=tree, subjects=[mutation.relative_path], tmpdir=tmpdir
+    )
+    # Structured evidence before exit status, for the same reason `classify`
+    # does it: a named nodeid inside a module that fails to import exits 4, not
+    # 2, while recording the error all along. Reading the status first called
+    # that a bad selector and sent the corpus author hunting for a typo.
+    if baseline.exit_status == 2 or (
+        baseline.infrastructure_errors and baseline.exit_status in (2, 4)
+    ):
+        return (
+            MutationOutcome.COLLECTION_FAILURE,
+            f"the oracle does not collect against the pristine subject: "
+            f"{list(baseline.infrastructure_errors)}",
+        )
+    if baseline.exit_status in (4, 5) or baseline.selected_count == 0:
+        if baseline.skipped_nodeids:
+            return (
+                MutationOutcome.ORACLE_SKIPPED,
+                f"the oracle is skipped against the pristine subject: "
+                f"{list(baseline.skipped_nodeids)}",
+            )
+        return (
+            MutationOutcome.INVALID_SELECTOR,
+            f"the selector runs no test against the pristine subject "
+            f"(pytest exit {baseline.exit_status})",
+        )
+    for observed in baseline.skipped_nodeids:
+        if _matches_declared(observed, mutation.nodeids):
+            return (
+                MutationOutcome.ORACLE_SKIPPED,
+                f"the declared oracle is skipped against the pristine subject: {observed}",
+            )
+    if baseline.behavioural_failures or baseline.infrastructure_errors:
+        return (
+            MutationOutcome.ORACLE_NOT_GREEN_AT_BASE,
+            f"the oracle already fails without the mutation: "
+            f"failures={list(baseline.behavioural_failures)} "
+            f"errors={list(baseline.infrastructure_errors)}",
+        )
+    if baseline.exit_status != 0:
+        return (
+            MutationOutcome.INFRA_FAILURE,
+            f"the pristine run exited {baseline.exit_status} with nothing recorded",
+        )
+    return None
+
+
 def run_mutation(mutation: Mutation, *, tree: Path, tmpdir: Path) -> MutationResult:
-    """Apply one mutation to `tree`, measure, restore, and verify the restore."""
+    """Prove the oracle green at base, apply one mutation, measure, restore, verify."""
     path = tree / mutation.relative_path
     pristine = path.read_bytes()
+
+    refusal = prove_oracle_green_at_base(mutation, tree=tree, tmpdir=tmpdir)
+    if refusal is not None:
+        return MutationResult(mutation.name, refusal[0], refusal[1])
+
+    if hashlib.sha256(path.read_bytes()).hexdigest() != hashlib.sha256(pristine).hexdigest():
+        return MutationResult(
+            mutation.name, MutationOutcome.INFRA_FAILURE,
+            "the baseline run modified the subject",
+        )
+
     try:
         mutated_digest = _apply(tree, mutation)
     except _NotApplied as exc:
@@ -430,7 +703,9 @@ def run_mutation(mutation: Mutation, *, tree: Path, tmpdir: Path) -> MutationRes
             tmpdir=tmpdir,
         )
         outcome, detail = classify(
-            selection, expected_subject_digests={mutation.relative_path: mutated_digest}
+            selection,
+            expected_subject_digests={mutation.relative_path: mutated_digest},
+            declared_nodeids=mutation.nodeids,
         )
     finally:
         path.write_bytes(pristine)
