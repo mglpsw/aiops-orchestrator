@@ -177,6 +177,51 @@ def test_a_source_pack_index_is_not_admitted_and_the_plan_derives_one_instead() 
     assert _pack().location in derived_from, "the plan must derive an index from the admitted pack"
 
 
+def test_zlib_bytes_outside_the_canonical_object_location_are_not_a_loose_object() -> None:
+    """The location IS the identity claim, so it is part of the class.
+
+    A loose object's path states the object id its payload must re-derive to.
+    Compressed bytes sitting somewhere else make no such claim and cannot be
+    admitted as that class, however well-formed they look.
+    """
+    misplaced = _observe("objects/info/an-ordinary-looking-file", prefix=_ZLIB)
+    assert recognise_representation_class_v2(misplaced) is GitRepresentationClassV2.UNRECOGNISED
+    assert decide_admission_v2(misplaced, _contract()) is (
+        AdmissionDispositionV2.OBSERVED_NOT_CONSUMED
+    )
+
+    wrong_shape = _observe(f"objects/{_OID[:3]}/{_OID[3:]}", prefix=_ZLIB)
+    assert recognise_representation_class_v2(wrong_shape) is (
+        GitRepresentationClassV2.UNRECOGNISED
+    )
+
+
+def test_a_recognised_class_no_supported_claim_requires_is_not_admitted() -> None:
+    """Recognition is necessary for admission and not sufficient for it.
+
+    `R_B` decides what gets in, not the recogniser. Under a profile whose claims
+    need only pack payloads, a perfectly valid loose object is observed and left
+    inert -- otherwise the admitted set would be whatever the code can parse
+    rather than what the contract requires.
+    """
+    pack_only = AdmissionContractV2(
+        contract_id="sgaq-s0-admission-v1",
+        claim_profile=SupportedGitClaimProfileV2(
+            profile_id="pack-only-v1",
+            claims=frozenset({"verify_pack"}),
+            required_classes={"verify_pack": frozenset({"pack_payload"})},
+        ),
+        toolchain=_toolchain(),
+    )
+    assert recognise_representation_class_v2(_loose()) is (
+        GitRepresentationClassV2.LOOSE_OBJECT_PAYLOAD
+    )
+    assert decide_admission_v2(_loose(), pack_only) is (
+        AdmissionDispositionV2.OBSERVED_NOT_CONSUMED
+    )
+    assert decide_admission_v2(_pack(), pack_only) is AdmissionDispositionV2.ADMITTED_SOURCE
+
+
 # --------------------------------------------------------------------------
 # A, B, C -- the unknown carrier, read in both directions
 # --------------------------------------------------------------------------
