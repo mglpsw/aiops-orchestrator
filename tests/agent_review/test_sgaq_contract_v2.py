@@ -35,6 +35,8 @@ from __future__ import annotations
 import copy
 import dataclasses
 import pickle
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -402,6 +404,39 @@ def test_the_production_field_class_table_must_cover_every_field() -> None:
     finally:
         sgaq._SEMANTIC_FIELDS = original
     sgaq._assert_field_universe_is_total()
+
+
+def test_the_totality_check_is_actually_wired_at_import(tmp_path) -> None:
+    """The function working and the function being CALLED are different guards.
+
+    A test that invokes `_assert_field_universe_is_total()` directly stays green
+    when the module-level call is deleted. This imports a copy whose class table
+    is incomplete, so only a wired check can refuse it.
+    """
+    import importlib.util
+
+    source = Path(sgaq.__file__).read_text()
+    broken = source.replace('    "object_formats",\n', "", 1)
+    assert broken != source, "the field to drop was not found"
+    module_path = tmp_path / "sgaq_contract_incomplete.py"
+    module_path.write_text(broken)
+
+    name = "sgaq_contract_incomplete"
+    spec = importlib.util.spec_from_file_location(name, module_path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    # A slots=True dataclass re-creates its class and looks the module up in
+    # sys.modules while doing so, so it has to be registered before exec.
+    sys.modules[name] = module
+    try:
+        # The copy defines its OWN SemanticProjectionError, a different class
+        # object from the imported one, so the type is asserted by name.
+        with pytest.raises(Exception) as raised:
+            spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(name, None)
+    assert type(raised.value).__name__ == "SemanticProjectionError"
+    assert "not total" in str(raised.value)
 
 
 def test_a_field_declared_in_two_classes_is_refused() -> None:
