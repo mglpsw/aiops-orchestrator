@@ -160,27 +160,30 @@ authenticate the origin of a caller-supplied `ReadinessDecisionV2`/
 `findings`. `ReadinessDecisionV2` remains, by C1's own design, a plain,
 freely constructible value — the only binding enforced on it is REPLAY
 protection (`decision.run_id`/`manifest_hash` must match
-`evaluated_identity`), never origin. This is inert today because no
-required-check submission can reach `SATISFIED` for any current target
-(Path A has no caller; Path B needs an independent-judge execution mode that
-the target's own base-owned policy has authorized, and no shipped policy
-authorizes one — see `#331` SGAQ-CI1R) — a fabricated `READY` decision is
-still narrowed to `manual_required` the moment any required check is
-missing or unestablished, which is always, today.
+`evaluated_identity`), never origin. This is inert for any target that has
+not authorised an independent judge (Path A has no caller; Path B needs an
+independent-judge execution mode that the target's own base-owned policy has
+authorized — see `#331` SGAQ-CI1R) — a fabricated `READY` decision is then
+still narrowed to `manual_required` the moment any required check is missing
+or unestablished.
 
 **The ground of that inertness changed with `#331` SGAQ-CI1R, and it is worth
 being exact about.** Path B used to be refused *unconditionally*: the
 capability did not exist, so no configuration could reach it. It is now
 refused *conditionally*: the capability exists and is gated on an explicit
-opt-in in the trusted base-owned `AuthoritativeCheckPolicy`. The practical
-state is unchanged — nothing opts in — but the assumption doing the work is
-no longer "this path is closed". It is "this path is closed unless a target
-authorizes it", which makes the requirement that the policy be read from a
-TRUSTED BASE checkout load-bearing where it was previously inert. A target
-that opts in has, by that act, made `decision`/`findings` origin
-authentication a live concern rather than a latent one; per the paragraph
-below that is a new trust-boundary decision, not something `#201-C` or
-`#331` absorbed silently.
+opt-in in the trusted base-owned `AuthoritativeCheckPolicy`. The assumption
+doing the work is no longer "this path is closed". It is "this path is closed
+unless a target authorizes it", which makes the requirement that the policy be
+read from a TRUSTED BASE checkout load-bearing where it was previously inert.
+
+**What is and is not known about who has opted in.** The two policy fixtures
+shipped in this repository do not. Policies live in target repositories and are
+loaded from a caller-supplied base checkout, so no test or inventory here
+establishes the state of any real target — `test_no_policy_file_in_this_
+repository_opts_in` says so in its own docstring. A target that has opted in
+has, by that act, made `decision`/`findings` origin authentication a live
+concern rather than a latent one; per the paragraph below that is a new
+trust-boundary decision, not something `#201-C` or `#331` absorbed silently.
 
 Tests: `tests/agent_review/test_required_check_readiness_v2.py` (the choke
 point, unit + real-C0), `test_readiness_decision_v2.py` (the precedence

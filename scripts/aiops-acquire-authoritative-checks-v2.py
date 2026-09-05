@@ -91,13 +91,15 @@ would be exactly the kind of local patch to an unratified model this slice
 was told not to make. It waits for a ratified amendment together with
 `#203`'s producer-installation design, not for improvisation here.
 
-It is also, today, moot for authority: `assemble_authoritative_ci_promotion_v2`
-refuses every subject-code check unconditionally regardless of what the
-acquirer observes -- see `authoritative_producer_evidence_v2`'s module
-docstring, "Round-7 architectural correction". So this acquirer currently
-produces evidence for a path that is refused twice over, once by the query
-scope and once by `#201-B3`'s theorem. Both facts are recorded rather than
-concealed; neither is worked around by this module.
+It also mattered less than it looks while `assemble_authoritative_ci_
+promotion_v2` refused every subject-code check -- see
+`authoritative_producer_evidence_v2`'s module docstring, "Round-7
+architectural correction" AND the section after it, "WHAT `#331` SGAQ-CI1R
+CHANGED". Since `#331` the evidence this acquirer produces does feed a
+promotable path: a producer declaring `independent_data_only_host_tool`, under
+a base-owned policy whose entry authorises that mode, promotes. The query-scope
+limitation above is therefore a live limitation again, not a moot one. It is
+recorded rather than concealed, and is not worked around by this module.
 """
 
 from __future__ import annotations

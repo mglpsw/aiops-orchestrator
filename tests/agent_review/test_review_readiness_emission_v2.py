@@ -214,14 +214,14 @@ def test_submission_order_never_changes_the_serialized_artifact_bytes() -> None:
     -> `_assemble_review_readiness_v2`, all real, none patched. Class B is
     the correct layer for this: the property under test is canonical
     SERIALIZATION, which is independent of authority, and the C0 boundary
-    refuses every non-empty submission any CURRENT target can produce -- since
-    `#331` SGAQ-CI1R that is because no shipped policy authorizes an
-    independent-judge execution mode, not because the path is categorically
-    closed -- so this invariance is not observable end-to-end (see the
-    `#201-C` plan's own Class A/B/C split). No `produce_review_readiness_v2` /
-    `run_synthetic_review_v2` call is made and nothing is monkeypatched,
-    so `test_required_check_readiness_arch_v2.py`'s assert-7 guard is
-    unaffected."""
+    refuses every non-empty submission from a target that has not authorised
+    an independent judge -- since `#331` SGAQ-CI1R the path is gated by policy
+    authorization rather than categorically closed -- so this invariance is
+    not observable end-to-end here (see the `#201-C` plan's own Class A/B/C
+    split). No `produce_review_readiness_v2` /
+    `run_synthetic_review_v2` call is made and nothing is monkeypatched, so
+    `test_required_check_readiness_arch_v2.py`'s boundary-patch guard (which
+    replaced assert 7, retired by `#331`) is unaffected."""
 
     manifest, report = _fully_reviewed_manifest_and_report()
     synthesis = _synthesis(manifest=manifest, coverage_report=report)
@@ -407,9 +407,15 @@ def test_emit_review_readiness_rejects_a_decision_with_matching_run_id_but_diver
 # -- `produce_review_readiness_v2` -- the real production path, Class A -----
 #
 # Every test below goes through the REAL, unpatched #201-C0 verifier. None
-# reaches `ready` or `blocked_pipeline` -- see the module docstring and
-# test_required_check_readiness_arch_v2.py's assert 7 for why no fixture in
-# this codebase is permitted to make that happen today.
+# reaches `ready` or `blocked_pipeline`, because none of them declares an
+# independent-judge execution mode under a policy that authorises one.
+#
+# `#331` SGAQ-CI1R correction: this used to cite assert 7 of
+# `test_required_check_readiness_arch_v2.py` as the reason "no fixture in this
+# codebase is permitted to make that happen". That invariant is RETIRED --
+# reaching a positive state through the real boundary is legitimate now, and
+# the CLI suite does it. What survives there is only the prohibition on
+# monkeypatching an authority boundary.
 
 
 def _profile_bound_identity(tmp_path, *, required_checks: list[str]):

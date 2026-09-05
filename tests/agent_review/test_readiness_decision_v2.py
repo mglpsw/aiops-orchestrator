@@ -1281,7 +1281,8 @@ def test_blocked_pipeline_with_a_pending_new_finding_survives_full_construction(
     hand-crafted: the shipped `agent_escala` target profile sets
     `coverage_failure_state: blocked_pipeline`, so degraded coverage plus
     one pending new finding plus the absence of required-check authority
-    (always true today) was enough to reach it."""
+    (true for any target that has not authorised an independent judge -- see
+    `#331` SGAQ-CI1R) was enough to reach it."""
 
     manifest, report = _plain_split_manifest_and_report()
     finding = _new_finding(finding_id="finding-9", head_sha=manifest.identity.head_sha)

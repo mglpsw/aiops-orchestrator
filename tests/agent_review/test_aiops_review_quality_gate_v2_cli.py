@@ -48,9 +48,13 @@ def _hand_built_ci_pair(
     This is not a bypass and not a shortcut: `assemble_authoritative_ci_
     promotion_v2` refuses `AUTHORITATIVE_CI` for every execution mode these
     fixtures declare (round-7 architectural correction, preserving `#201-B3`'s
-    theorem), so a genuinely PROMOTED pair cannot be built from them. `#331`
-    SGAQ-CI1R adds a mode that CAN promote, but only under a policy that
-    authorises it; the fixtures here deliberately do not. What this function
+    theorem), so a genuinely PROMOTED pair cannot be built from them BY
+    DEFAULT. `#331` SGAQ-CI1R adds a mode that CAN promote under a policy that
+    authorises it, and `_write_fixtures` now takes both `check_execution_mode`
+    and `permitted_execution_modes` -- so a caller supplying them gets a pair
+    that IS a faithful reconstruction of a legitimate promotion rather than an
+    attacker's claim. `test_cli_needs_both_the_independent_mode_and_the_
+    policy_opt_in` is that caller. What this function
     produces is the honest test-side equivalent of an ATTACKER's submission:
     a self-consistent claim, built from real per-observation data via
     `select_observation_v2`/`resolve_conclusion_v2`/`compute_observation_
@@ -61,10 +65,12 @@ def _hand_built_ci_pair(
     `reassemble_and_verify_required_checks_v2` exists to catch: it does not
     trust this claim, it independently re-derives from the snapshot via the
     real `assemble_authoritative_ci_promotion_v2` and requires a byte-for-byte
-    match. Since that re-derivation refuses for every mode these fixtures
-    declare, submitting this pair to the live CLI produces the SAME outcome a
-    genuine attacker's submission would: refusal, for a real, unpatched,
-    structural reason."""
+    match. For the DEFAULT fixture parameters that re-derivation refuses, so
+    submitting this pair to the live CLI produces the SAME outcome a genuine
+    attacker's submission would: refusal, for a real, unpatched, structural
+    reason. Supply the independent mode plus a policy opt-in and the same
+    machinery produces a genuinely promoted pair instead -- which is the point,
+    and why this helper is not a bypass in either direction."""
 
     entry = loaded_policy.policy.entry_for(check_name)
     observation = select_observation_v2(
@@ -275,9 +281,10 @@ def _write_fixtures(
     # A real, parseable snapshot -- but `--checks`/`--checks-provenance` are
     # now built by hand (`_hand_built_ci_pair`), not by calling the real
     # assembler. `assemble_authoritative_ci_promotion_v2` refuses
-    # AUTHORITATIVE_CI for every mode these fixtures declare since the round-7
-    # architectural correction, so there is no "genuine" promoted pair to build
-    # from them -- see that function's docstring in
+    # AUTHORITATIVE_CI for the modes these fixtures declare BY DEFAULT since
+    # the round-7 architectural correction, so there is no "genuine" promoted
+    # pair to build from the defaults -- see `check_execution_mode` /
+    # `permitted_execution_modes` above for the parameters that change that -- see that function's docstring in
     # `authoritative_producer_evidence_v2`. What these fixtures represent
     # instead is exactly the adversarial case `reassemble_and_verify_
     # required_checks_v2` exists to catch: a self-consistent CLAIM, submitted
@@ -517,8 +524,10 @@ def _base_args(paths: dict[str, Path], output_path: Path, *, pr_state: str = "op
 ##
 ## `#331` SGAQ-CI1R addendum, which REVOKES the blanket claim above that
 ## `ready` is unreachable through this CLI. It is unreachable for every
-## execution mode these fixtures declare, and for every policy that does not
-## authorise an independent judge -- which is every shipped policy. It is
+## execution mode these fixtures declare, and for any policy that does not
+## authorise an independent judge -- which is true of the policy fixtures in
+## this repository, and is not a statement about target-owned policies, which
+## are not observable from here. It is
 ## reachable for a producer declaring `independent_data_only_host_tool` UNDER
 ## a policy whose entry lists that mode in `permitted_execution_modes`. Both
 ## halves are required and neither alone suffices; that is the whole
@@ -538,7 +547,11 @@ def _assert_reached_the_independent_judge_gate(result: subprocess.CompletedProce
 
 def test_cli_emits_a_valid_ready_readiness_artifact(tmp_path: Path) -> None:
     """Was: proves a nominal invocation reaches `state: ready`. That terminal
-    state is not reachable today for any source -- see the module note above.
+    state is not reachable for THESE fixtures, which declare a subject-code
+    execution mode under a policy authorising only the legacy modes -- see the
+    module note above and its `#331` addendum. It IS reachable through this
+    same CLI with the independent mode plus a policy opt-in; see
+    `test_cli_needs_both_the_independent_mode_and_the_policy_opt_in`.
     What is still real and still worth proving: a nominal invocation is not
     rejected by any EARLIER stage (collision guards, contract-version
     handling, decision binding, required-check coverage) -- it reaches the
@@ -1267,8 +1280,10 @@ def test_cli_needs_both_the_independent_mode_and_the_policy_opt_in(tmp_path: Pat
     Every fixture here is coherent: the snapshot is built with the declared
     mode BEFORE the hand-built pair is derived from it, and the policy is real
     YAML loaded through the real loader, so the gate's independent re-derivation
-    matches rather than being bypassed. No shipped policy opts in; this test is
-    the only place in the repository that does."""
+    matches rather than being bypassed. No policy fixture in this repository
+    opts in; this test builds its own opted-in policy and is the only place
+    here that does. Whether any target repository has opted in is not
+    observable from this repository."""
 
     independent = "independent_data_only_host_tool"
     legacy = ["reexecuted_in_producer_run", "upstream_artifact_republished"]

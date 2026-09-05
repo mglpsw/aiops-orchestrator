@@ -614,25 +614,52 @@
     bounded and strictly parsed, refusing when two artifacts (or two zip
     members) share the conventional name; fetching them does not validate
     them.
-  - **`AuthoritativeCIPromotion` is refused unconditionally, by ratified
-    architectural correction.** An independent audit of the base-owned model
-    above found that `reexecuted_in_producer_run` means exactly what it says:
-    the producer re-runs the PULL REQUEST'S OWN test suite and reports its
-    exit code. A base-owned workflow *definition* does not change who
+  - **`AuthoritativeCIPromotion` is refused for every subject-code check, by
+    ratified architectural correction.** An independent audit of the base-owned
+    model above found that `reexecuted_in_producer_run` means exactly what it
+    says: the producer re-runs the PULL REQUEST'S OWN test suite and reports
+    its exit code. A base-owned workflow *definition* does not change who
     authors the value being measured — `#201-B3`'s theorem
     (`controls(subject, success_signal) => not authoritative(success_signal)`)
     still applies; running the subject's tests inside a differently-owned
     runner relocates that boundary, it does not cross it. The round-7
     acceptance condition this model was built to satisfy is **revoked, not
-    reinterpreted**: no `check_execution_mode` defined today supplies a
-    semantic judge independent of the subject, so promotion is refused by a
-    single, final, explicit gate (`verify_independent_semantic_judge_v2`),
-    reached only after producer identity, base-ownership and tree binding
-    have all already succeeded — that infrastructure remains real and still
-    closes `#217`'s check-name-only bypass; it no longer implies a subject-code
-    check can ever become authoritative on its own. `AUTHORITATIVE_PYTEST_
-    PROMOTION=UNAVAILABLE_BY_DESIGN` until a producer kind with a genuinely
-    independent judge is designed and ratified.
+    reinterpreted**: promotion is refused by a single, final, explicit gate
+    (`verify_independent_semantic_judge_v2`), reached only after producer
+    identity, base-ownership and tree binding have all already succeeded —
+    that infrastructure remains real and still closes `#217`'s
+    check-name-only bypass; it no longer implies a subject-code check can ever
+    become authoritative on its own.
+  - **`#331` SGAQ-CI1R — an independent judge is now representable, and
+    policy-gated.** The two bullets above described the state between `#201-C0`
+    round 7 and `#331`, when no defined `check_execution_mode` supplied a judge
+    independent of the subject and promotion was therefore refused
+    categorically. That is no longer current, and the sentences that said so
+    have been amended rather than left standing.
+    `independent_data_only_host_tool` is a third execution mode whose verdict
+    is not authored by the subject — a host-owned tool decides it with the
+    target consumed strictly as DATA. It passes
+    `verify_independent_semantic_judge_v2`, but a declaration alone grants
+    nothing: `AuthoritativeCheckEntryV2` gains `permitted_execution_modes`, and
+    `verify_execution_mode_is_policy_authorized_v2` requires the trusted
+    base-owned policy entry to list the mode. A policy omitting the field
+    authorizes exactly the two pre-`#331` modes, so no target acquires a
+    promotion path by upgrading the engine. Promotion needs the producer's
+    declaration AND the target's prior authorization; neither alone suffices.
+    The policy semantic digest is projected to its effective value, so a policy
+    that did not change meaning keeps its previous digest. The two policy
+    fixtures in this repository do not opt in; target-owned policy state is not
+    observable from this repository and is not asserted here.
+
+    One qualification-surface consequence, recorded because it is a
+    trust-boundary change and not a detail: the architecture invariant "no test
+    fixture creates a production-reachable positive-authority path"
+    (`temporary_until_203`) is **retired**, and the AST detector that enforced
+    it is deleted. `#331` makes that proposition false on purpose — a positive
+    path reached through the real boundary with an authorised independent judge
+    is legitimate. What remains enforced is the narrower and still-valid half:
+    a test that calls a production readiness entry point may not, in the same
+    function body, monkeypatch an authority-boundary function.
   - **Acquirer hardening**, from the same audit: every GitHub list endpoint is
     paged and refuses rather than truncating — a silently short list is
     indistinguishable from "the producer did not run". `--output` may not

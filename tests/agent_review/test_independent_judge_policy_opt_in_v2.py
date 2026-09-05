@@ -103,7 +103,8 @@ INDEPENDENT = "independent_data_only_host_tool"
 #: (6 distinct values over 40 fresh processes) and reversing the sort changes it
 #: outright, and the whole suite stayed green for both. A same-process
 #: comparison of two frozensets cannot see either, because both sides get the
-#: same iteration order. Verified stable across hash seeds 0/1/42/12345/99999.
+#: same iteration order. The test below pins seeds 0/1/42/12345; the value was
+#: additionally checked by hand at seed 99999, which the test does not run.
 OPTED_IN_SEMANTIC_DIGEST = "7e391125b581bb7583fa948ff40a51b13107894188386f2e913c3ba6fe6b1254"
 
 
@@ -283,7 +284,7 @@ def test_an_opted_in_policy_has_a_pinned_canonical_semantic_digest(tmp_path: Pat
 
 
 def test_the_projected_digest_is_stable_across_processes(tmp_path: Path) -> None:
-    """Same policy, fresh interpreters, randomized hash seeds -- one digest.
+    """Same policy, fresh interpreters, four pinned hash seeds -- one digest.
 
     The digest travels into provenance sidecars and is compared across runs, so
     a value that depends on this process's set-iteration order would be a real
@@ -346,7 +347,9 @@ def test_p1_b_independent_mode_with_explicit_legacy_only_refuses(tmp_path: Path)
 
 
 def test_p1_c_independent_mode_with_explicit_opt_in_promotes(tmp_path: Path) -> None:
-    """The positive path, and the only one in this repository."""
+    """The positive path: the only COMBINATION of declared mode and policy
+    authorization that promotes. Other tests here reach a promotion too; they
+    reach it through this same combination."""
 
     loaded = _load(tmp_path, permitted=[*LEGACY_MODES, INDEPENDENT])
     promoted = _assemble(loaded, observation=_independent_obs())
@@ -375,8 +378,18 @@ def test_p1_d_the_producer_declaration_alone_is_not_authority(tmp_path: Path) ->
 
 @pytest.mark.parametrize("target", sorted(MASTER_SEMANTIC_DIGESTS))
 def test_p1_e_no_shipped_policy_authorizes_the_new_mode(target: str) -> None:
-    """The engine learning the vocabulary must not hand any existing target a
-    promotion path. Asserted through the real loader on the real files."""
+    """The engine learning the vocabulary must not hand a promotion path to a
+    policy that did not ask for one.
+
+    "shipped" in the name means the policy fixtures shipped in THIS
+    repository, and nothing wider. The name is left unchanged so this
+    documentation-only amendment introduces no executable delta outside the
+    architecture test; the scope is stated here instead.
+
+    Asserted through the real loader on the real fixture files. The mechanism
+    is a hardcoded two-key parametrization over the fixtures in this
+    repository, so that is exactly what it establishes -- not anything about
+    target repositories, whose policies are not observable from here."""
 
     loaded = load_authoritative_check_policy_v2(FIXTURES / target)
     for entry in loaded.policy.authoritative_checks:
@@ -636,9 +649,18 @@ def test_no_policy_file_in_this_repository_opts_in() -> None:
     matters more than it looks: a one-time grep during review proves the state
     on the day it ran, and this proves it on every run.
 
-    Every discovered policy is loaded through the REAL loader and asked for its
-    EFFECTIVE authorization, so a file that opted in via some representation
-    this test did not anticipate would still be caught.
+    Every discovered policy is loaded through the REAL loader and asked for
+    its EFFECTIVE authorization, rather than being pattern-matched for the
+    mode string.
+
+    Two limits of the discovery, stated because an audit found this paragraph
+    claiming more: the glob is `authoritative-checks*.yaml`, so a `.yml` file
+    is not discovered at all; and the loader always reads
+    `<root>/.aiops/authoritative-checks.v2.yaml`, so a discovered file at a
+    non-canonical name causes the CANONICAL file to be loaded in its place and
+    the failure label would name the wrong path. This walk therefore covers
+    policies at the canonical location, not every representation a policy
+    could take.
 
     SCOPE, STATED HONESTLY. An authoritative-check policy lives in the TARGET
     repository, not here -- see `authoritative_check_policy_v2`'s module

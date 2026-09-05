@@ -627,8 +627,9 @@ def _apply_required_check_assessment_v2(
        later -- for an ordinary, real target configuration: the shipped
        `agent_escala` profile sets `coverage_failure_state:
        blocked_pipeline`, so degraded coverage plus one pending new
-       finding plus the (always true today) absence of required-check
-       authority was enough to reach it.
+       finding plus the absence of required-check authority (true for any
+       target that has not authorised an independent judge -- see `#331`
+       SGAQ-CI1R) was enough to reach it.
 
        Refusing that combination with `ReadinessDecisionError` was
        rejected as the fix: it would leave readiness unable to represent

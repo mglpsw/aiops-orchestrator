@@ -21,9 +21,11 @@ Two tiers, matching the module's own two functions:
 No test in this file patches `verify_independent_semantic_judge_v2`,
 `reassemble_and_verify_required_checks_v2`, or
 `_verify_and_assess_required_checks_v2` itself. See
-`test_required_check_readiness_arch_v2.py` for the AST-level proof that no
-test anywhere in this codebase does either, for a test that calls the
-production readiness path.
+`test_required_check_readiness_arch_v2.py` for the AST-level check that no
+test in `tests/agent_review/test_*.py` does either in a function that also
+calls the production readiness path. That scan is non-recursive and covers
+that directory only, and its reach is narrower than "anywhere in this
+codebase" -- read its own reach note before citing it as a guarantee.
 """
 
 from __future__ import annotations
@@ -157,11 +159,11 @@ def test_a_red_non_required_check_never_produces_satisfied() -> None:
     branch requires EVERY entry of `self.checks` to be green, not only the
     required-named ones, so this combination previously crashed
     `ReviewReadinessV2.__init__` with an uncaught `pydantic.ValidationError`
-    several calls later -- not reachable through the real C0 boundary for
-    any current target (no positive authority source exists in production;
-    since `#331` SGAQ-CI1R that is an authorization fact, not a categorical
-    one), but a real latent defect at the pure-composition layer this module
-    is exercised at directly. `status` must now be `FAILED`, and "lint" must appear in
+    several calls later -- not reachable through the real C0 boundary for a
+    target that has not authorised an independent judge (since `#331`
+    SGAQ-CI1R that is an authorization fact, not a categorical one), but a
+    real latent defect at the pure-composition layer this module is exercised
+    at directly. `status` must now be `FAILED`, and "lint" must appear in
     `failed_check_names`, so `_apply_required_check_assessment_v2` never
     lets this combination reach construction unchanged."""
 

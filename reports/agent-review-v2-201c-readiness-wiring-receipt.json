@@ -1,5 +1,6 @@
 {
   "note": "Lightweight, human-authored summary of this slice. Not validated by a strict schema/loader -- no such receipt contract exists in this repository yet. Do not treat this as equivalent in authority to a ReviewReadinessV2 artifact or any other ContractV2Model-backed contract.",
+  "as_of": "HISTORICAL SNAPSHOT of slice #201-C at base_sha below. This file records state as it stood when written and is NOT current. Its present-tense statements resolve to that cut, not to read time -- in particular 'no legitimate authority source exists in production' and 'authoritative_pytest_promotion: UNAVAILABLE_BY_DESIGN' were revoked by #331 SGAQ-CI1R, which made an independent-judge execution mode representable and gated on an explicit base-owned policy opt-in. Added by #331 rather than rewriting the statements, so the record of what was believed then survives intact. See docs/PROJECT_STATUS.md for current state.",
   "repository": "mglpsw/aiops-orchestrator",
   "epic": 199,
   "issue": 201,

@@ -132,10 +132,13 @@ same-input-same-output test.
   SGAQ-CI1R made one REPRESENTABLE and POLICY-GATED — the execution mode
   `independent_data_only_host_tool` passes
   `verify_independent_semantic_judge_v2`, but only when the trusted base-owned
-  policy entry lists it in `permitted_execution_modes`, which no shipped
-  policy does. So `AuthoritativeCIPromotion` remains unreachable for every
-  target today, by authorization rather than by absence of vocabulary. What is
-  still missing is a real host-owned data-only judge to declare it, and a
+  policy entry lists it in `permitted_execution_modes`, which neither policy
+  fixture in this repository does. So `AuthoritativeCIPromotion` is gated by
+  authorization rather than closed by absence of vocabulary. Whether any
+  target repository has authorised it is not observable from here — policies
+  live in the target, and a target whose trusted base checkout lists the mode
+  can promote today. What is still missing is a real host-owned data-only
+  judge to declare it, and a
   target that decides to authorise one (deferred, no target date);
 - AgentEscala's own adoption and closure of `#750` (target-side, tracked
   in that repository, not here).

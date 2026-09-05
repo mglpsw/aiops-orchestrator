@@ -806,14 +806,24 @@ def test_interleitos_stale_on_identity_divergence():
 # (read in `_load_profile`'s own `FIXTURES_ROOT / target` root). This is
 # what this file's own genericity claim ("the v2 engine is genuinely generic
 # across two independent targets") means for required-check authority
-# specifically: the honestly-reachable state today -- `manual_required` with
-# `policy_failure`, never `ready` -- is proven identical in shape across
-# both targets, not just asserted for one.
+# specifically: the state these fixtures reach -- `manual_required` with
+# `policy_failure` -- is proven identical in shape across both targets, not
+# just asserted for one.
 #
-# No monkeypatch of the boundary; no assertion that either result is
-# `ready`/`blocked_pipeline` -- see
-# `test_required_check_readiness_arch_v2.py`'s assert 7, which checks this
-# mechanically for every test in this file too.
+# Scope, corrected under `#331` SGAQ-CI1R: both tests here submit an EMPTY
+# required-check claim (`_empty_authority_kwargs`), which is vacuously
+# `AUTHORITY_NOT_ESTABLISHED`. So they never submit a non-empty claim and
+# cannot observe whether `ready` is reachable at all -- "never `ready`" was a
+# statement about these fixtures, not a property they demonstrate, and it is
+# now false in general: a producer declaring `independent_data_only_host_tool`
+# under a policy that authorises it does reach `ready`.
+#
+# No monkeypatch of the boundary here. The mechanical check for that lives in
+# `test_required_check_readiness_arch_v2.py`; its companion invariant about
+# positive states being unreachable was RETIRED by `#331`, and that scan does
+# not cover this file (it globs `tests/agent_review/test_*.py`, which this
+# file matches, but only flags functions that call an in-process entry point
+# by name -- these reach the engine differently).
 # -------------------------------------------------------------------------
 
 

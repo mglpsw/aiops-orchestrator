@@ -59,13 +59,14 @@ contract with its own schema/hash" -- the only binding this module (via
 (``decision.run_id``/``manifest_hash`` must match ``evaluated_identity``),
 never origin. This is a preexisting trust assumption inherited unchanged
 from C1/C2 (`#127`/`#130`), not created or widened by `#201-C`: today it is
-provably inert, because with no positive required-check authority reaching
-this function (`#201-C0`'s ``verify_independent_semantic_judge_v2`` accepts
-only ``independent_data_only_host_tool``, which no shipped policy authorises
--- see `#331` SGAQ-CI1R -- and ``TRUSTED_HOST_PROMOTION`` has no production
+inert for any target that has not authorised an independent judge
+(`#201-C0`'s ``verify_independent_semantic_judge_v2`` accepts only
+``independent_data_only_host_tool``, which no policy fixture in this
+repository opts in to -- target-owned policy state is not observable from
+here, see `#331` SGAQ-CI1R -- and ``TRUSTED_HOST_PROMOTION`` has no production
 caller), a fabricated ``decision`` claiming ``READY`` is still narrowed by
 ``_apply_required_check_assessment_v2`` the moment any required check is
-missing or unestablished -- which is always, today. If a future slice
+missing or unestablished. If a future slice
 (`#203`/CT104 bringing positive authority online) ever makes it possible
 for subject-controlled code to influence ``decision``/``findings`` in a way
 that becomes reachable through this function, that is a NEW trust-boundary

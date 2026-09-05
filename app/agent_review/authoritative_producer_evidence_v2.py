@@ -134,12 +134,25 @@ The condition has two halves, and both are required:
   `verify_execution_mode_is_policy_authorized_v2` checks.
 
 A declaration alone buys nothing. A policy omitting the field authorizes
-exactly the two pre-CI1R modes, so no target acquired a promotion path by the
-engine learning this vocabulary, and no shipped policy authorizes the new mode
-today. `AuthoritativeCIPromotion` is therefore unreachable for every current
-target -- by AUTHORIZATION, not by absence of vocabulary. That distinction is
-the whole content of SGAQ-CI1R and the reason this module can no longer say
-"categorically".
+exactly the two pre-CI1R modes, so no target acquired a promotion path merely
+by the engine learning this vocabulary.
+
+WHAT THIS MODULE CAN AND CANNOT SAY ABOUT WHO HAS OPTED IN
+
+It can say that the two policy fixtures shipped in THIS repository do not opt
+in, because they are here and are loaded by a test that reads them.
+
+It cannot say that no target has opted in. An `AuthoritativeCheckPolicy` lives
+in the TARGET repository (see `authoritative_check_policy_v2`) and is loaded
+from a caller-supplied base checkout, so target-owned policy state is not
+observable from here and is not established by any in-repo inventory. A target
+whose trusted base checkout already lists this mode CAN promote today, and that
+is the intended design rather than a defect.
+
+So `AuthoritativeCIPromotion` is gated by AUTHORIZATION rather than closed by
+absence of vocabulary. That is the whole content of SGAQ-CI1R and the reason
+this module can no longer say "categorically" -- and the reason it must not
+replace that word with an equally universal claim in the other direction.
 
 This did NOT unwind the rest of this module. Producer identity, base-ownership
 and tree binding remain real, tested infrastructure -- they answer "is this

@@ -310,10 +310,9 @@ def test_run_synthetic_review_produces_manual_required_when_authority_is_not_est
     hand-built green check. Under `#201-C` that check is no longer a
     trusted array -- it is a CLAIM `run_synthetic_review_v2` re-verifies
     against the real, unpatched `#201-C0` boundary itself. No positive
-    required-check authority is reachable for any current target -- since
-    `#331` SGAQ-CI1R because no shipped policy authorizes an
-    independent-judge execution mode (see `required_check_readiness_v2`'s own
-    module docstring) -- so the
+    required-check authority is reachable for a target that has not authorised
+    an independent judge, which is the case for the fixtures used here (see
+    `required_check_readiness_v2`'s own module docstring), so the
     genuinely reachable, honest outcome of a clean chunk bind with an
     empty (never fabricated) required-check submission is
     `manual_required` + `policy_failure` -- not `ready`. The composition-

@@ -2,15 +2,19 @@
 holds structurally, not just by convention (plan rev.2.1, §6.3/§6.5).
 
 This file proves what code review and docstrings cannot: that no
-production function anywhere in ``app/``/``scripts/`` can construct a
+production function in the modules it scans can construct a
 ``ReviewReadinessV2`` outside ``produce_review_readiness_v2``'s own chain,
 that no production function accepts a
 ``RequiredCheckReadinessAssessmentV2`` or a caller-supplied required-check
-name list, that the ``#201-C0`` boundary is never wrapped in an
-``except``, and that no TEST fixture creates a production-reachable
-positive-authority path (a real, if narrower, guarantee than "nobody has
-done this yet" -- a regression here fails loudly, by name, instead of
-silently).
+name list, that the ``#201-C0`` boundary is never wrapped in an ``except``,
+and that no test fixture calling a production readiness entry point also
+monkeypatches an authority-boundary function in the same function body.
+
+The last of those replaced a broader invariant -- "no test fixture creates a
+production-reachable positive-authority path" -- which `#331` SGAQ-CI1R makes
+false on purpose. See the retirement note further down. The replacement is
+narrower than the sentence it replaces, and narrower than its own name might
+suggest; its exact reach is stated where it is enforced.
 
 These asserts are deliberately mechanical rather than semantic: they scan
 syntax, not behavior. That is the point -- a refactor that violates one of
@@ -26,6 +30,7 @@ loosening the C0 boundary itself.
 from __future__ import annotations
 
 import ast
+import textwrap
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parents[2] / "app" / "agent_review"
@@ -34,6 +39,13 @@ TESTS_DIR = Path(__file__).resolve().parent
 
 # v1 is explicitly out of #201-C's scope and shares no symbols with v2's
 # readiness authority -- scanning it would only add noise.
+# NOTE ON SCAN SCOPE, because the docstring above used to say "anywhere in
+# `app/`/`scripts/`" and this glob is NOT recursive: it sees
+# `app/agent_review/*.py` and the scripts listed below, and no nested package.
+# Every module that can construct a `ReviewReadinessV2` lives at that level
+# today, so the proof holds -- but it holds by repository layout, not by
+# construction, and a future `app/agent_review/<subpackage>/` would be
+# invisible here.
 PRODUCTION_FILES = sorted(
     [p for p in APP_DIR.glob("*.py")]
     + [p for p in SCRIPTS_DIR.glob("*.py") if p.name != "aiops-review-quality-gate.py"]
@@ -383,22 +395,60 @@ def test_forbidden_completeness_param_names_matches_its_own_docstring_claim() ->
     assert FORBIDDEN_COMPLETENESS_PARAM_NAMES == {"required_check_names", "required_checks", "loaded_policy"}
 
 
-# -- assert 7 (§6.5): no fixture creates a production-reachable positive
-# authority path -- temporary_until_203, removed (not relaxed) once a
-# legitimately promotable source exists (plan rev.2.1 §12, class C).
+def test_the_protected_boundary_set_is_pinned() -> None:
+    """`BOUNDARY_FUNCTION_NAMES` is what the boundary-patch guard protects, and
+    nothing else in this file constrains its contents.
+
+    A mutation dropping a member was reproduced and SURVIVED the whole file:
+    `test_the_boundary_patch_detector_rejects_a_synthetic_bypass` iterates over
+    the set, so removing a name makes it test fewer names rather than fail. A
+    set cannot witness its own completeness, which is the same defect that made
+    `FORBIDDEN_COMPLETENESS_PARAM_NAMES` above silently narrower than its own
+    docstring, and the same one that left this very set missing
+    `verify_execution_mode_is_policy_authorized_v2` when `#331` added it.
+
+    Pinned to a literal so removing OR adding a gate is a deliberate edit here,
+    visible in review, rather than a silent change in what is protected."""
+
+    assert BOUNDARY_FUNCTION_NAMES == {
+        "reassemble_and_verify_required_checks_v2",
+        "verify_independent_semantic_judge_v2",
+        "verify_execution_mode_is_policy_authorized_v2",
+        "_verify_and_assess_required_checks_v2",
+    }
+# -- assert 7 (§6.5), RETIRED AND REPLACED by `#331` SGAQ-CI1R.
 #
-# `#331` SGAQ-CI1R note: a promotable SHAPE now exists -- an
-# `independent_data_only_host_tool` producer under a policy that authorizes
-# that mode. No shipped policy authorizes one, so no PRODUCTION-reachable
-# positive path exists and this guard still holds as written. The condition
-# for removing it is now "a target has authorized an independent judge", not
-# "the vocabulary was added".
+# The original invariant was "no fixture creates a production-reachable
+# positive authority path", carried as temporary_until_203. CI1R makes that
+# proposition FALSE on purpose: an `independent_data_only_host_tool` producer
+# under a base-owned policy that authorizes the mode is a legitimate positive
+# path, and `test_aiops_review_quality_gate_v2_cli.py` exercises it through the
+# real gate subprocess.
+#
+# Codex found that the old guard did not merely become obsolete -- it became
+# FALSE STRUCTURAL EVIDENCE. It recognised only direct AST calls to the two
+# in-process entry points, so the CLI-subprocess fixture that reaches
+# `state: ready` was skipped entirely and the guard kept passing while its
+# stated invariant no longer held.
+#
+# Teaching the detector about `_run()` was deliberately NOT done: that would
+# re-enforce a revoked proposition against a wider surface. The invariant is
+# retired instead.
+#
+# What survives is the half that is still true and still load-bearing: a test
+# exercising a production readiness path must not GAIN AUTHORITY by
+# monkeypatching or replacing an authority-boundary function. That property is
+# independent of whether positive states are reachable, and it is the one
+# `#201-C`'s stop conditions actually turn on.
+#
+# Positive READY is now legitimate when reached through the real boundary with
+# the independent execution mode AND an explicit trusted-base policy opt-in.
+# The behavioural truth table for that lives in the CLI suite and is NOT
+# duplicated here as another brittle AST approximation.
 # -----------------------------------------------------------------------
 
 
 PRODUCTION_ENTRY_CALL_NAMES = {"produce_review_readiness_v2", "run_synthetic_review_v2"}
-_READY_LIKE_VALUES = {"ready", "blocked_pipeline"}
-
 
 def _test_files() -> list[Path]:
     return sorted(TESTS_DIR.glob("test_*.py"))
@@ -412,105 +462,51 @@ def _root_name(node: ast.expr) -> str | None:
         node = node.value
     return node.id if isinstance(node, ast.Name) else None
 
+def _patches_authority_boundary(func: ast.AST, source: str) -> str | None:
+    """The boundary-name a `func` monkeypatches, if any.
 
-def _result_names_from(func: ast.FunctionDef) -> set[str]:
-    """Every variable name directly assigned the return value of a
-    production entry-point call within `func` -- e.g. `outcome` in
-    `outcome = run_synthetic_review_v2(...)`, or `readiness` in
-    `readiness = produce_review_readiness_v2(...)`."""
+    Recognises `setattr(...)`, `monkeypatch.setattr(...)`, `patch(...)`,
+    `mock.patch.object(...)` and friends, then looks for any
+    `BOUNDARY_FUNCTION_NAMES` member inside the call's own source segment."""
 
-    names: set[str] = set()
     for node in ast.walk(func):
-        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
-            if _call_name(node.value.func) in PRODUCTION_ENTRY_CALL_NAMES:
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        names.add(target.id)
-    return names
-
-
-def _compares_state_to_ready_like(node: ast.AST, result_names: set[str]) -> str | None:
-    """If `node` is a `Compare` asserting `<result>.state` (or
-    `<result>.readiness.state`, for the `SyntheticReviewOutcomeV2` wrapper)
-    equals -- or, per the round-6 fix below, is a MEMBER of a container
-    containing -- a ready-like value, where `<result>` is one of
-    `result_names`, return that value; else None. Scoped to the entry
-    point's OWN return value specifically -- an intermediate
-    `decision.state == READY` used to set up a fixture's PRECONDITION (the
-    content decision the required-check gate is about to narrow) is not a
-    claim about what the entry point itself produced, and must not be
-    flagged.
-
-    Adversarial review finding, confirmed and fixed (round 6): the
-    original version recognized only `==`/`is` against a single scalar
-    value, so a fixture asserting membership --
-    `result.state in {ReadinessStateV2.READY, ReadinessStateV2.
-    BLOCKED_PIPELINE}` -- would silently bypass this mechanical proof
-    entirely, exactly the "regression here fails loudly, by name" guarantee
-    this file's own module docstring claims to provide.
-    """
-
-    if not isinstance(node, ast.Compare):
-        return None
-    if len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Eq, ast.Is, ast.In)):
-        return None
-    op = node.ops[0]
-    left, right = node.left, node.comparators[0]
-
-    def _is_result_state_access(n: ast.expr) -> bool:
-        is_state = (isinstance(n, ast.Attribute) and n.attr == "state") or (
-            isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant) and n.slice.value == "state"
-        )
-        return is_state and _root_name(n) in result_names
-
-    def _ready_like_value(n: ast.expr) -> str | None:
-        if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in _READY_LIKE_VALUES:
-            return n.value
-        if isinstance(n, ast.Attribute) and n.attr.lower() in {"ready", "blocked_pipeline"}:
-            return n.attr.lower()
-        return None
-
-    if isinstance(op, ast.In):
-        if not _is_result_state_access(left):
-            return None
-        if not isinstance(right, (ast.Set, ast.Tuple, ast.List)):
-            return None
-        for elt in right.elts:
-            value = _ready_like_value(elt)
-            if value is not None:
-                return value
-        return None
-
-    if _is_result_state_access(left):
-        return _ready_like_value(right)
-    if _is_result_state_access(right):
-        return _ready_like_value(left)
+        if not isinstance(node, ast.Call):
+            continue
+        called = _call_name(node.func)
+        if called in {"setattr", "patch"} or (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"setattr", "patch", "object"}
+        ):
+            segment = ast.get_source_segment(source, node) or ""
+            for boundary_name in BOUNDARY_FUNCTION_NAMES:
+                if boundary_name in segment:
+                    return boundary_name
     return None
 
 
-def test_compares_state_to_ready_like_catches_membership_form() -> None:
-    """Direct unit test of `_compares_state_to_ready_like`, proving the
-    round-6 fix without depending on any test file happening to use the
-    membership form today: `result.state in {...}` and `result.readiness.
-    state in (...)` must both resolve to the ready-like value found in the
-    container, and an unrelated name must still resolve to `None`."""
+def test_no_production_readiness_fixture_patches_an_authority_boundary() -> None:
+    """The surviving half of the retired assert-7.
 
-    set_form = ast.parse("outcome.state in {ReadinessStateV2.READY}", mode="eval").body
-    assert _compares_state_to_ready_like(set_form, {"outcome"}) == "ready"
+    A fixture may legitimately reach a positive readiness state now. It may
+    not, IN THE SAME FUNCTION BODY, both call a production readiness entry
+    point and `setattr`/`patch` an authority-boundary function.
 
-    tuple_form = ast.parse(
-        "outcome.readiness.state in (ReadinessStateV2.BLOCKED_PIPELINE,)", mode="eval"
-    ).body
-    assert _compares_state_to_ready_like(tuple_form, {"outcome"}) == "blocked_pipeline"
+    THE REACH OF THIS GUARD, STATED EXACTLY, BECAUSE IT IS NARROWER THAN THE
+    PROPERTY IT SERVES. An independent claim audit reproduced three bypasses
+    this mechanism does NOT flag:
 
-    unrelated_result = ast.parse("other.state in {ReadinessStateV2.READY}", mode="eval").body
-    assert _compares_state_to_ready_like(unrelated_result, {"outcome"}) is None
+    - the patch applied in a `@pytest.fixture`, the entry point called in the
+      test that consumes it;
+    - the patch applied by a module-level helper the test calls;
+    - plain attribute assignment (`mod.verify_x = lambda ...`), with no
+      `setattr`/`patch` call at all.
 
-    no_ready_like_member = ast.parse("outcome.state in {ReadinessStateV2.MANUAL_REQUIRED}", mode="eval").body
-    assert _compares_state_to_ready_like(no_ready_like_member, {"outcome"}) is None
+    So this is a syntactic tripwire for the obvious form, not a proof that no
+    fixture anywhere gains authority by replacement. It is kept because the
+    obvious form is the one written by accident, and because a tripwire that
+    names its own limits is worth more than a deleted one. It is not evidence
+    of exhaustiveness and must not be cited as such."""
 
-
-def test_no_fixture_creates_a_production_reachable_positive_authority_path() -> None:
     for path in _test_files():
         tree = _parse(path)
         source = path.read_text(encoding="utf-8")
@@ -518,34 +514,53 @@ def test_no_fixture_creates_a_production_reachable_positive_authority_path() -> 
             call_names = {_call_name(n.func) for n in ast.walk(func) if isinstance(n, ast.Call)}
             if not (call_names & PRODUCTION_ENTRY_CALL_NAMES):
                 continue
+            patched = _patches_authority_boundary(func, source)
+            assert patched is None, (
+                f"{path.name}:{func.name} patches {patched} in a function that also "
+                "calls a production readiness entry point -- this is exactly the test-only "
+                "authority bypass #201-C's stop conditions forbid"
+            )
 
-            # No monkeypatch/mock.patch of the boundary in a function that
-            # also calls a production entry point.
-            for node in ast.walk(func):
-                if isinstance(node, ast.Call):
-                    called = _call_name(node.func)
-                    if called in {"setattr", "patch"} or (
-                        isinstance(node.func, ast.Attribute) and node.func.attr in {"setattr", "patch", "object"}
-                    ):
-                        segment = ast.get_source_segment(source, node) or ""
-                        for boundary_name in BOUNDARY_FUNCTION_NAMES:
-                            assert boundary_name not in segment, (
-                                f"{path.name}:{func.name} patches {boundary_name} in a function that also "
-                                "calls a production readiness entry point -- this is exactly the test-only "
-                                "authority bypass #201-C's stop conditions forbid"
-                            )
 
-            # No assertion that the ENTRY POINT'S OWN RESULT has
-            # state == ready/blocked_pipeline.
-            result_names = _result_names_from(func)
-            if not result_names:
-                continue
-            for node in ast.walk(func):
-                value = _compares_state_to_ready_like(node, result_names)
-                if value is not None:
-                    raise AssertionError(
-                        f"{path.name}:{func.name} calls a production readiness entry point AND asserts "
-                        f"its result's state == {value!r} -- no fixture may claim READY/BLOCKED_PIPELINE is "
-                        "reachable through the real C0 boundary today (plan rev.2.1 R7); see class B/C in "
-                        "the plan for how to test positive states legitimately"
-                    )
+def test_the_boundary_patch_detector_rejects_a_synthetic_bypass() -> None:
+    """The required falsifier, and the reason this guard is not vacuous.
+
+    The enforcement loop above passes trivially if no test file happens to
+    contain a bypass -- which is the desired steady state, and also exactly
+    what a broken detector looks like. This feeds the detector a fixture that
+    DOES both things and requires it to be caught, so the DETECTOR is proven
+    to recognise the canonical `monkeypatch.setattr` form rather than being
+    vacuously green. It does not prove the guard's SCOPE -- see the reach note
+    on the enforcement test above.
+
+    Each member of `BOUNDARY_FUNCTION_NAMES` is exercised against that form.
+    Note what this cannot do: the synthetic source is interpolated from the
+    same set the detector reads, so a name is found by construction and this
+    loop can never fail because a name is missing from the set. The risk it
+    does NOT cover -- a new authority gate added in `app/` and never added to
+    the set -- is covered by nothing here; `test_the_protected_boundary_set_
+    is_pinned` only makes changing the set a deliberate, reviewable edit."""
+
+    for boundary in sorted(BOUNDARY_FUNCTION_NAMES):
+        bypass = textwrap.dedent(
+            f"""
+            def test_synthetic_bypass(monkeypatch):
+                monkeypatch.setattr(module, "{boundary}", lambda **kw: None)
+                return produce_review_readiness_v2(payload)
+            """
+        )
+        func = ast.parse(bypass).body[0]
+        assert _patches_authority_boundary(func, bypass) == boundary, boundary
+
+    honest = textwrap.dedent(
+        """
+        def test_honest_positive():
+            result = produce_review_readiness_v2(payload)
+            assert result.state == "ready"
+        """
+    )
+    func = ast.parse(honest).body[0]
+    assert _patches_authority_boundary(func, honest) is None, (
+        "asserting a positive state through the real boundary is legitimate under "
+        "`#331` SGAQ-CI1R and must not be flagged"
+    )
